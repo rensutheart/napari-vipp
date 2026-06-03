@@ -185,10 +185,6 @@ class NodeProxy(QGraphicsProxyWidget):
         ):
             for connection in self.connections:
                 connection.update_path()
-            scene = self.scene()
-            if scene is not None:
-                bounds = scene.itemsBoundingRect().adjusted(-120, -120, 160, 120)
-                scene.setSceneRect(bounds)
         return result
 
     def _card(self) -> NodeCard | None:
@@ -286,9 +282,10 @@ class PipelineGraphView(QGraphicsView):
 
         self._add_connection("input", "gaussian")
         self._add_connection("gaussian", "threshold")
-        scene_rect = self.scene.itemsBoundingRect().adjusted(-80, -80, 120, 80)
-        self.scene.setSceneRect(scene_rect)
-        self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
+        graph_rect = self.scene.itemsBoundingRect()
+        self.scene.setSceneRect(graph_rect.adjusted(-1600, -1200, 1800, 1200))
+        self.resetTransform()
+        self.fitInView(graph_rect.adjusted(-80, -80, 120, 80), Qt.KeepAspectRatio)
 
     def set_thumbnail(self, node_id: str, thumbnail: np.ndarray | None) -> None:
         card = self._cards.get(node_id)

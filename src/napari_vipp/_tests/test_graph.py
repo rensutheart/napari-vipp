@@ -48,3 +48,32 @@ def test_thumbnail_click_still_requests_inspection(qtbot):
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=start)
 
     assert inspected == ["gaussian"]
+
+
+def test_dragging_node_keeps_viewport_stationary(qtbot):
+    view = PipelineGraphView()
+    qtbot.addWidget(view)
+    view.resize(980, 520)
+    view.build_demo_graph(PROTOTYPE_NODES)
+    view.show()
+    qtbot.waitExposed(view)
+
+    proxy = view._proxies["input"]
+    scene_rect_before = view.scene.sceneRect()
+    h_scroll_before = view.horizontalScrollBar().value()
+    v_scroll_before = view.verticalScrollBar().value()
+    center_before = view.mapToScene(view.viewport().rect().center())
+
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = start + QPoint(0, -90)
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    center_after = view.mapToScene(view.viewport().rect().center())
+    center_delta = center_after - center_before
+
+    assert view.scene.sceneRect() == scene_rect_before
+    assert view.horizontalScrollBar().value() == h_scroll_before
+    assert view.verticalScrollBar().value() == v_scroll_before
+    assert center_delta.manhattanLength() < 0.01
