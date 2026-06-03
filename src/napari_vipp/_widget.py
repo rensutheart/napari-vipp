@@ -228,13 +228,19 @@ class VippWidget(QWidget):
             self.status_label.setText("That node has no output to pin yet.")
             return
         title = self._node_title(node_id)
-        name = self._unique_layer_name(f"VIPP Pinned: {title}")
-        self._add_image_or_labels(
-            name,
-            data,
-            metadata={"napari_vipp_kind": "pinned", "node_id": node_id},
-        )
-        self.status_label.setText(f"Pinned '{title}' as a persistent napari layer.")
+        metadata = {"napari_vipp_kind": "pinned", "node_id": node_id}
+        layer = self._pinned_layer_for_node(node_id)
+        if layer is None:
+            self._add_image_or_labels(self._pinned_layer_name(title), data, metadata)
+            self.status_label.setText(
+                f"Pinned '{title}' as a persistent napari layer."
+            )
+            return
+
+        layer.data = self._display_data(data)
+        layer.metadata.update(metadata)
+        layer.visible = True
+        self.status_label.setText(f"Updated pinned layer for '{title}'.")
 
     def _refresh_inspection_layer_if_active(self) -> None:
         layer = self._layer_by_name(self._inspect_layer_name)
@@ -291,6 +297,21 @@ class VippWidget(QWidget):
         while self._layer_by_name(f"{base} {index}") is not None:
             index += 1
         return f"{base} {index}"
+
+    def _pinned_layer_name(self, title: str) -> str:
+        return f"VIPP Pinned: {title}"
+
+    def _pinned_layer_for_node(self, node_id: str):
+        for layer in self.viewer.layers:
+            try:
+                if (
+                    layer.metadata.get("napari_vipp_kind") == "pinned"
+                    and layer.metadata.get("node_id") == node_id
+                ):
+                    return layer
+            except Exception:
+                continue
+        return None
 
     def _current_step(self):
         try:

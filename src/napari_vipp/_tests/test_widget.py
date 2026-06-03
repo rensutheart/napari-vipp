@@ -99,3 +99,23 @@ def test_widget_pins_threshold_as_labels(qtbot):
     pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
+
+
+def test_pin_reuses_existing_node_layer(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pin_node("threshold")
+    widget.pin_node("threshold")
+    widget.pin_node("threshold")
+
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+        and layer.metadata.get("node_id") == "threshold"
+    ]
+    assert len(pinned_layers) == 1
+    assert len(viewer.layers) == 2
+    assert widget.status_label.text() == "Updated pinned layer for 'Otsu Threshold'."
