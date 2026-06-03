@@ -1,0 +1,52 @@
+# napari-vipp Planning Notes
+
+## Manual Graph Editing
+
+The graph should behave like Blender shader nodes, Unreal Blueprints, and the
+original VIPP/Ryven editor:
+
+- nodes can be freely repositioned on a large pan/zoom canvas;
+- users can create space in the graph and insert nodes between existing stages;
+- ports should be visible on node edges;
+- connections should be made by clicking or dragging from an output port to an
+  input port;
+- invalid connections should be rejected visually;
+- connectors should remain attached while nodes move.
+
+The first prototype supports moving existing node cards and keeps connector
+curves attached. Dynamic add/remove/connect interactions are the next graph
+editing milestone.
+
+## Pipeline Export
+
+Once a user has manually built and tuned a pipeline, the system should export
+that pipeline as runnable Python code. The export should be suitable for:
+
+- batch processing over files, timepoints, channels, or positions;
+- sharing by email or repository;
+- including in supplementary material for a paper;
+- running headless without napari when only computation is needed.
+
+The exported code should be generated from the same graph model used by the UI,
+not reverse-engineered from widget state.
+
+## Workflow Save And Load
+
+The graph should also save to a portable JSON or YAML workflow file containing:
+
+- node ids and stable operation ids;
+- parameter values;
+- input/output connections;
+- node positions on the canvas;
+- preview settings;
+- version metadata;
+- optional provenance and notes.
+
+Loading the file in another napari-vipp installation should recreate the same
+graph layout, parameters, and connections.
+
+## Suggested Future Artifacts
+
+- `workflow.json` or `workflow.yaml`: portable GUI workflow.
+- `pipeline.py`: exported runnable script.
+- `batch_config.yaml`: input/output paths and batch dimensions.

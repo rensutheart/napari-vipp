@@ -7,6 +7,7 @@ from qtpy.QtCore import QPointF, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from qtpy.QtWidgets import (
     QFrame,
+    QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsProxyWidget,
     QGraphicsScene,
@@ -40,6 +41,7 @@ class NodeCard(QFrame):
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(220)
+        self.setCursor(Qt.OpenHandCursor)
         self.setStyleSheet(
             """
             QFrame#NodeCard {
@@ -92,7 +94,13 @@ class NodeCard(QFrame):
 
     def mousePressEvent(self, event):  # noqa: N802
         self.selected.emit(self.node_id)
+        if event.button() == Qt.LeftButton:
+            self.setCursor(Qt.ClosedHandCursor)
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        self.setCursor(Qt.OpenHandCursor)
+        super().mouseReleaseEvent(event)
 
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
         if thumbnail is None:
@@ -114,8 +122,34 @@ class NodeCard(QFrame):
         )
 
 
+class NodeProxy(QGraphicsProxyWidget):
+    """Movable graphics item that keeps connected wires attached."""
+
+    def __init__(self):
+        super().__init__()
+        self.connections: list[ConnectionItem] = []
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+
+    def itemChange(self, change, value):  # noqa: N802
+        result = super().itemChange(change, value)
+        if change in (
+            QGraphicsItem.ItemPositionHasChanged,
+            QGraphicsItem.ItemTransformHasChanged,
+        ):
+            for connection in self.connections:
+                connection.update_path()
+            scene = self.scene()
+            if scene is not None:
+                bounds = scene.itemsBoundingRect().adjusted(-120, -120, 160, 120)
+                scene.setSceneRect(bounds)
+        return result
+
+
 class ConnectionItem(QGraphicsPathItem):
-    def __init__(self, source: QGraphicsProxyWidget, target: QGraphicsProxyWidget):
+    def __init__(self, source: NodeProxy, target: NodeProxy):
         super().__init__()
         self.source = source
         self.target = target
@@ -154,7 +188,7 @@ class PipelineGraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setBackgroundBrush(QColor("#151922"))
-        self._proxies: dict[str, QGraphicsProxyWidget] = {}
+        self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
         self._connections: list[ConnectionItem] = []
 
@@ -174,7 +208,9 @@ class PipelineGraphView(QGraphicsView):
             card.selected.connect(self.node_selected)
             card.inspect_requested.connect(self.inspect_requested)
             card.pin_requested.connect(self.pin_requested)
-            proxy = self.scene.addWidget(card)
+            proxy = NodeProxy()
+            proxy.setWidget(card)
+            self.scene.addItem(proxy)
             proxy.setPos(positions.get(node.id, QPointF(0, 0)))
             self._cards[node.id] = card
             self._proxies[node.id] = proxy
@@ -195,6 +231,8 @@ class PipelineGraphView(QGraphicsView):
         target = self._proxies[target_id]
         item = ConnectionItem(source, target)
         self.scene.addItem(item)
+        source.connections.append(item)
+        target.connections.append(item)
         self._connections.append(item)
 
     def wheelEvent(self, event):  # noqa: N802
