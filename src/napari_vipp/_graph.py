@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import QPointF, Qt, Signal
+from qtpy.QtCore import QPoint, QPointF, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from qtpy.QtWidgets import (
     QFrame,
@@ -128,10 +128,54 @@ class NodeProxy(QGraphicsProxyWidget):
     def __init__(self):
         super().__init__()
         self.connections: list[ConnectionItem] = []
+        self._drag_start_scene: QPointF | None = None
+        self._drag_start_pos: QPointF | None = None
+        self._dragging = False
+        self._press_was_preview = False
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.LeftButton and not self._press_on_button(event):
+            card = self._card()
+            if card is not None:
+                card.selected.emit(card.node_id)
+                card.setCursor(Qt.ClosedHandCursor)
+            self.setSelected(True)
+            self._drag_start_scene = QPointF(event.scenePos())
+            self._drag_start_pos = QPointF(self.pos())
+            self._dragging = False
+            self._press_was_preview = self._press_on_preview(event)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._drag_start_scene is not None and event.buttons() & Qt.LeftButton:
+            delta = event.scenePos() - self._drag_start_scene
+            if delta.manhattanLength() >= 3:
+                self._dragging = True
+                self.setPos(self._drag_start_pos + delta)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._drag_start_scene is not None and event.button() == Qt.LeftButton:
+            card = self._card()
+            if card is not None:
+                card.setCursor(Qt.OpenHandCursor)
+                if self._press_was_preview and not self._dragging:
+                    card.inspect_requested.emit(card.node_id)
+            self._drag_start_scene = None
+            self._drag_start_pos = None
+            self._dragging = False
+            self._press_was_preview = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def itemChange(self, change, value):  # noqa: N802
         result = super().itemChange(change, value)
@@ -146,6 +190,27 @@ class NodeProxy(QGraphicsProxyWidget):
                 bounds = scene.itemsBoundingRect().adjusted(-120, -120, 160, 120)
                 scene.setSceneRect(bounds)
         return result
+
+    def _card(self) -> NodeCard | None:
+        widget = self.widget()
+        return widget if isinstance(widget, NodeCard) else None
+
+    def _press_on_button(self, event) -> bool:
+        return self._has_parent_widget_type(event, QPushButton)
+
+    def _press_on_preview(self, event) -> bool:
+        return self._has_parent_widget_type(event, ClickablePreview)
+
+    def _has_parent_widget_type(self, event, widget_type: type) -> bool:
+        card = self._card()
+        if card is None:
+            return False
+        child = card.childAt(_point_from_event(event))
+        while child is not None and child is not card:
+            if isinstance(child, widget_type):
+                return True
+            child = child.parentWidget()
+        return False
 
 
 class ConnectionItem(QGraphicsPathItem):
@@ -184,13 +249,17 @@ class PipelineGraphView(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setBackgroundBrush(QColor("#151922"))
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
         self._connections: list[ConnectionItem] = []
+        self._panning = False
+        self._pan_start = QPoint()
+        self._pan_h_value = 0
+        self._pan_v_value = 0
 
     def build_demo_graph(self, nodes) -> None:
         self.scene.clear()
@@ -242,3 +311,48 @@ class PipelineGraphView(QGraphicsView):
             event.accept()
             return
         super().wheelEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        pos = _point_from_event(event)
+        background_click = self.itemAt(pos) is None
+        if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
+            event.button() == Qt.LeftButton and background_click
+        ):
+            self._start_panning(pos)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        if self._panning:
+            pos = _point_from_event(event)
+            delta = pos - self._pan_start
+            self.horizontalScrollBar().setValue(self._pan_h_value - delta.x())
+            self.verticalScrollBar().setValue(self._pan_v_value - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._panning and event.button() in (
+            Qt.LeftButton,
+            Qt.MiddleButton,
+            Qt.RightButton,
+        ):
+            self._panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _start_panning(self, pos: QPoint) -> None:
+        self._panning = True
+        self._pan_start = QPoint(pos)
+        self._pan_h_value = self.horizontalScrollBar().value()
+        self._pan_v_value = self.verticalScrollBar().value()
+        self.setCursor(Qt.ClosedHandCursor)
+
+
+def _point_from_event(event) -> QPoint:
+    pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+    return pos.toPoint() if hasattr(pos, "toPoint") else pos
