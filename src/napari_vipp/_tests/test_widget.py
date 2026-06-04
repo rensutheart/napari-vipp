@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from napari_vipp._widget import VippWidget
+from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
 
 
 class _Event:
@@ -252,6 +253,21 @@ def test_palette_adds_node_and_connects_branch(qtbot):
         for connection in widget.pipeline.connections
     }
     assert widget.pipeline.outputs[node.id] is not None
+
+
+def test_palette_image_operations_can_run(qtbot):
+    data = np.zeros((3, 18, 20), dtype=np.uint8)
+    data[:, 5:14, 6:16] = 180
+    data[1, 8, 10] = 255
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    for spec in PALETTE_NODE_LIBRARY:
+        node = widget.add_node_from_palette(spec.id)
+        widget._connect_nodes("input", node.id)
+
+        assert widget.pipeline.outputs[node.id] is not None, spec.id
 
 
 def test_mask_output_can_feed_gaussian_blur(qtbot):

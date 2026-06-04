@@ -426,6 +426,12 @@ class VippWidget(QWidget):
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
             return self._axis_bounds(node_id, spec)
+        if spec.name in {"top", "bottom", "left", "right"}:
+            return self._crop_bounds(node_id, spec)
+        if spec.name == "channel":
+            return self._channel_bounds(node_id, spec)
+        if spec.name == "block_size":
+            return self._block_size_bounds(node_id, spec)
         return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
 
     def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
@@ -466,6 +472,32 @@ class VippWidget(QWidget):
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         maximum = max(np.asarray(data).ndim - 1, 0)
         return ParameterBounds(0, maximum, 1, 0)
+
+    def _crop_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        height, width = _xy_shape(np.asarray(data))
+        maximum = height - 1 if spec.name in {"top", "bottom"} else width - 1
+        return ParameterBounds(0, max(maximum, 0), 1, 0)
+
+    def _channel_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        arr = np.asarray(data)
+        maximum = arr.shape[-1] - 1 if arr.ndim >= 3 and arr.shape[-1] in (3, 4) else 0
+        return ParameterBounds(0, maximum, 1, 0)
+
+    def _block_size_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        height, width = _xy_shape(np.asarray(data))
+        maximum = max(min(height, width), 3)
+        if maximum % 2 == 0:
+            maximum -= 1
+        return ParameterBounds(3, maximum, 2, 0)
 
     def _clear_parameter_form(self) -> None:
         self._parameter_widgets.clear()
@@ -852,3 +884,11 @@ def _finite_values(arr: np.ndarray) -> np.ndarray:
 def _expanded_bounds(value: float) -> tuple[float, float]:
     padding = abs(value) * 0.1 or 1.0
     return value - padding, value + padding
+
+
+def _xy_shape(arr: np.ndarray) -> tuple[int, int]:
+    if arr.ndim < 2:
+        return 1, 1
+    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+        return int(arr.shape[-3]), int(arr.shape[-2])
+    return int(arr.shape[-2]), int(arr.shape[-1])
