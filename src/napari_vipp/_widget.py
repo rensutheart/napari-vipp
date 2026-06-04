@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -291,6 +292,17 @@ class VippWidget(QWidget):
         self.palette.setMinimumWidth(190)
         self.graph_view = PipelineGraphView()
         self.graph_view.setMinimumHeight(180)
+        self.left_panel_toggle = QToolButton()
+        self.left_panel_toggle.setObjectName("LeftPanelToggle")
+        self.left_panel_toggle.setAutoRaise(True)
+        self.left_panel_toggle.setFixedWidth(28)
+        self.right_panel_toggle = QToolButton()
+        self.right_panel_toggle.setObjectName("RightPanelToggle")
+        self.right_panel_toggle.setAutoRaise(True)
+        self.right_panel_toggle.setFixedWidth(28)
+        self._default_splitter_sizes = [210, 850, 260]
+        self._left_panel_last_width = self._default_splitter_sizes[0]
+        self._right_panel_last_width = self._default_splitter_sizes[2]
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
@@ -318,6 +330,7 @@ class VippWidget(QWidget):
         self.histogram_plot = HistogramPlot()
 
         self.pin_button = QPushButton("Pin selected")
+        self.inspector_panel = self._build_inspector()
 
         self._debounce_timer = QTimer(self)
         self._debounce_timer.setInterval(150)
@@ -345,16 +358,32 @@ class VippWidget(QWidget):
         toolbar.addWidget(self.refresh_button)
         root.addLayout(toolbar)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.palette)
-        splitter.addWidget(self.graph_view)
-        splitter.addWidget(self._build_inspector())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 5)
-        splitter.setStretchFactor(2, 1)
-        splitter.setSizes([210, 850, 260])
-        root.addWidget(splitter, 1)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(self.palette)
+        self.splitter.addWidget(self._build_graph_panel())
+        self.splitter.addWidget(self.inspector_panel)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 5)
+        self.splitter.setStretchFactor(2, 1)
+        self.splitter.setSizes(self._default_splitter_sizes)
+        root.addWidget(self.splitter, 1)
         root.addWidget(self.status_label)
+
+    def _build_graph_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        panel_controls = QHBoxLayout()
+        panel_controls.setContentsMargins(0, 0, 0, 0)
+        panel_controls.addWidget(self.left_panel_toggle)
+        panel_controls.addStretch(1)
+        panel_controls.addWidget(self.right_panel_toggle)
+        layout.addLayout(panel_controls)
+        layout.addWidget(self.graph_view, 1)
+        self._sync_side_panel_toggles()
+        return panel
 
     def _build_inspector(self) -> QWidget:
         panel = QWidget()
@@ -399,6 +428,8 @@ class VippWidget(QWidget):
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
+        self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
+        self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -423,6 +454,64 @@ class VippWidget(QWidget):
             )
         except Exception:
             pass
+
+    def _toggle_left_panel(self) -> None:
+        self._set_left_panel_visible(self.palette.isHidden())
+
+    def _toggle_right_panel(self) -> None:
+        self._set_right_panel_visible(self.inspector_panel.isHidden())
+
+    def _set_left_panel_visible(self, visible: bool) -> None:
+        self._set_side_panel_visible("left", visible)
+
+    def _set_right_panel_visible(self, visible: bool) -> None:
+        self._set_side_panel_visible("right", visible)
+
+    def _set_side_panel_visible(self, side: str, visible: bool) -> None:
+        sizes = self._current_splitter_sizes()
+        if side == "left":
+            widget = self.palette
+            index = 0
+            if not visible and sizes[index] > 0:
+                self._left_panel_last_width = sizes[index]
+        else:
+            widget = self.inspector_panel
+            index = 2
+            if not visible and sizes[index] > 0:
+                self._right_panel_last_width = sizes[index]
+
+        widget.setVisible(visible)
+        self._apply_splitter_panel_sizes()
+        self._sync_side_panel_toggles()
+        action = "shown" if visible else "hidden"
+        panel = "node library" if side == "left" else "inspector"
+        self.status_label.setText(f"{panel.capitalize()} {action}.")
+
+    def _current_splitter_sizes(self) -> list[int]:
+        sizes = self.splitter.sizes()
+        if len(sizes) != 3 or sum(sizes) <= 0:
+            return list(self._default_splitter_sizes)
+        return [max(int(size), 0) for size in sizes]
+
+    def _apply_splitter_panel_sizes(self) -> None:
+        current = self._current_splitter_sizes()
+        total = max(sum(current), sum(self._default_splitter_sizes))
+        left = 0 if self.palette.isHidden() else self._left_panel_last_width
+        right = 0 if self.inspector_panel.isHidden() else self._right_panel_last_width
+        middle = max(total - left - right, 320)
+        self.splitter.setSizes([left, middle, right])
+
+    def _sync_side_panel_toggles(self) -> None:
+        left_visible = not self.palette.isHidden()
+        right_visible = not self.inspector_panel.isHidden()
+        self.left_panel_toggle.setText("<" if left_visible else ">")
+        self.left_panel_toggle.setToolTip(
+            "Hide node library" if left_visible else "Show node library"
+        )
+        self.right_panel_toggle.setText(">" if right_visible else "<")
+        self.right_panel_toggle.setToolTip(
+            "Hide inspector" if right_visible else "Show inspector"
+        )
 
     def add_node_from_palette(self, operation_id: str):
         return self._add_node_at(operation_id, self.graph_view.suggest_node_position())

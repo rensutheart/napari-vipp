@@ -195,6 +195,31 @@ def test_dock_widget_can_shrink_vertically(qtbot):
     assert widget.histogram_plot.minimumHeight() <= 80
 
 
+def test_side_panels_can_be_collapsed_and_restored(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert not widget.palette.isHidden()
+    assert not widget.inspector_panel.isHidden()
+
+    widget.left_panel_toggle.click()
+    widget.right_panel_toggle.click()
+
+    assert widget.palette.isHidden()
+    assert widget.inspector_panel.isHidden()
+    assert widget.left_panel_toggle.text() == ">"
+    assert widget.right_panel_toggle.text() == "<"
+
+    widget.left_panel_toggle.click()
+    widget.right_panel_toggle.click()
+
+    assert not widget.palette.isHidden()
+    assert not widget.inspector_panel.isHidden()
+    assert widget.left_panel_toggle.text() == "<"
+    assert widget.right_panel_toggle.text() == ">"
+
+
 def test_histogram_updates_for_selected_node(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint8).reshape(4, 16, 18)
     viewer = _Viewer(data)
