@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QDockWidget, QWidget
 
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
@@ -239,16 +240,38 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
 
     assert widget.palette.isHidden()
     assert widget.inspector_panel.isHidden()
-    assert widget.left_panel_toggle.text() == ">"
-    assert widget.right_panel_toggle.text() == "<"
+    assert not widget.left_panel_toggle._expanded
+    assert not widget.right_panel_toggle._expanded
+    assert widget.left_panel_toggle.toolTip() == "Show node library"
+    assert widget.right_panel_toggle.toolTip() == "Show inspector"
 
     widget.left_panel_toggle.click()
     widget.right_panel_toggle.click()
 
     assert not widget.palette.isHidden()
     assert not widget.inspector_panel.isHidden()
-    assert widget.left_panel_toggle.text() == "<"
-    assert widget.right_panel_toggle.text() == ">"
+    assert widget.left_panel_toggle._expanded
+    assert widget.right_panel_toggle._expanded
+    assert widget.left_panel_toggle.toolTip() == "Hide node library"
+    assert widget.right_panel_toggle.toolTip() == "Hide inspector"
+
+
+def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    dock = QDockWidget()
+    qtbot.addWidget(dock)
+    dock.setTitleBarWidget(QWidget())
+    dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+    dock.setWidget(widget)
+
+    widget._ensure_dock_widget_chrome()
+
+    assert dock.titleBarWidget() is None
+    assert dock.windowTitle() == "VIPP Workflow"
+    assert dock.features() & QDockWidget.DockWidgetMovable
+    assert dock.features() & QDockWidget.DockWidgetFloatable
+    assert dock.features() & QDockWidget.DockWidgetClosable
 
 
 def test_histogram_updates_for_selected_node(qtbot):

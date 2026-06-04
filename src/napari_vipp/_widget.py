@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from qtpy.QtCore import QMimeData, QSignalBlocker, QSize, Qt, QTimer, Signal
+from qtpy.QtCore import QMimeData, QRect, QSignalBlocker, QSize, Qt, QTimer, Signal
 from qtpy.QtGui import QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -365,6 +366,66 @@ class HistogramPlot(QWidget):
         painter.end()
 
 
+class SidePanelToggleButton(QToolButton):
+    """Compact glyph button for showing or hiding a side panel."""
+
+    def __init__(self, side: str, parent=None):
+        super().__init__(parent)
+        self._side = side
+        self._expanded = True
+        self.setAutoRaise(False)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(36, 26)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setPen(QPen(QColor("#94a3b8"), 1.2))
+        painter.setBrush(QColor("#27303a"))
+        painter.drawRoundedRect(rect, 4, 4)
+
+        panel_x = rect.left() + 7 if self._side == "left" else rect.right() - 16
+        panel_y = rect.top() + 6
+        panel_w = 11
+        panel_h = 12
+        panel_rect = QRect(panel_x, panel_y, panel_w, panel_h)
+        painter.setPen(QPen(QColor("#cbd5e1"), 1))
+        painter.setBrush(QColor("#111827"))
+        painter.drawRect(panel_rect)
+        strip_x = panel_rect.left() if self._side == "left" else panel_rect.right() - 3
+        painter.fillRect(
+            strip_x,
+            panel_rect.top(),
+            4,
+            panel_rect.height(),
+            QColor("#60a5fa"),
+        )
+
+        direction = self._direction()
+        cx = rect.right() - 9 if self._side == "left" else rect.left() + 9
+        cy = rect.center().y()
+        painter.setPen(QPen(QColor("#e5e7eb"), 2))
+        if direction < 0:
+            painter.drawLine(cx + 3, cy - 5, cx - 3, cy)
+            painter.drawLine(cx - 3, cy, cx + 3, cy + 5)
+        else:
+            painter.drawLine(cx - 3, cy - 5, cx + 3, cy)
+            painter.drawLine(cx + 3, cy, cx - 3, cy + 5)
+        painter.end()
+
+    def _direction(self) -> int:
+        if self._side == "left":
+            return -1 if self._expanded else 1
+        return 1 if self._expanded else -1
+
+
 class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
@@ -397,14 +458,10 @@ class VippWidget(QWidget):
         self.palette.setMinimumWidth(190)
         self.graph_view = PipelineGraphView()
         self.graph_view.setMinimumHeight(180)
-        self.left_panel_toggle = QToolButton()
+        self.left_panel_toggle = SidePanelToggleButton("left")
         self.left_panel_toggle.setObjectName("LeftPanelToggle")
-        self.left_panel_toggle.setAutoRaise(True)
-        self.left_panel_toggle.setFixedWidth(28)
-        self.right_panel_toggle = QToolButton()
+        self.right_panel_toggle = SidePanelToggleButton("right")
         self.right_panel_toggle.setObjectName("RightPanelToggle")
-        self.right_panel_toggle.setAutoRaise(True)
-        self.right_panel_toggle.setFixedWidth(28)
         self._default_splitter_sizes = [210, 850, 260]
         self._left_panel_last_width = self._default_splitter_sizes[0]
         self._right_panel_last_width = self._default_splitter_sizes[2]
@@ -452,6 +509,34 @@ class VippWidget(QWidget):
     def closeEvent(self, event):  # noqa: N802
         self._restore_hidden_input_layers()
         super().closeEvent(event)
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._ensure_dock_widget_chrome)
+
+    def _ensure_dock_widget_chrome(self) -> None:
+        dock = self._dock_widget()
+        if dock is None:
+            return
+        try:
+            dock.setWindowTitle("VIPP Workflow")
+            dock.setTitleBarWidget(None)
+            dock.setFeatures(
+                QDockWidget.DockWidgetClosable
+                | QDockWidget.DockWidgetMovable
+                | QDockWidget.DockWidgetFloatable
+            )
+            dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        except Exception:
+            pass
+
+    def _dock_widget(self):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QDockWidget):
+                return parent
+            parent = parent.parentWidget()
+        return None
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
@@ -613,11 +698,11 @@ class VippWidget(QWidget):
     def _sync_side_panel_toggles(self) -> None:
         left_visible = not self.palette.isHidden()
         right_visible = not self.inspector_panel.isHidden()
-        self.left_panel_toggle.setText("<" if left_visible else ">")
+        self.left_panel_toggle.set_expanded(left_visible)
         self.left_panel_toggle.setToolTip(
             "Hide node library" if left_visible else "Show node library"
         )
-        self.right_panel_toggle.setText(">" if right_visible else "<")
+        self.right_panel_toggle.set_expanded(right_visible)
         self.right_panel_toggle.setToolTip(
             "Hide inspector" if right_visible else "Show inspector"
         )

@@ -13,7 +13,11 @@ def main() -> None:
     for data, metadata, layer_type in make_sample_data():
         add = getattr(viewer, f"add_{layer_type}")
         add(data, **metadata)
-    viewer.window.add_dock_widget(VippWidget(viewer), area="bottom")
+    viewer.window.add_dock_widget(
+        VippWidget(viewer),
+        area="bottom",
+        name="VIPP Workflow",
+    )
     napari.run()
 
 
