@@ -354,11 +354,12 @@ class VippWidget(QWidget):
             self.status_label.setText("That node has no output to inspect yet.")
             return
         title = self._node_title(node_id)
-        self._set_or_add_image_layer(
+        self._set_or_add_generated_layer(
             self._inspect_layer_name,
             data,
             metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
         )
+        self._keep_active_pin_on_top()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def pin_node(self, node_id: str) -> None:
@@ -409,7 +410,12 @@ class VippWidget(QWidget):
             node_id in self.pipeline.outputs
             and self.pipeline.outputs[node_id] is not None
         ):
-            layer.data = self._display_data(self.pipeline.outputs[node_id])
+            self._set_or_add_generated_layer(
+                self._inspect_layer_name,
+                self.pipeline.outputs[node_id],
+                metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
+            )
+            self._keep_active_pin_on_top()
 
     def _refresh_pinned_layer_if_active(self) -> None:
         if self._active_pinned_node_id is None:
@@ -433,10 +439,15 @@ class VippWidget(QWidget):
                     return layer
         return None
 
-    def _set_or_add_image_layer(self, name: str, data, metadata: dict) -> None:
+    def _set_or_add_generated_layer(self, name: str, data, metadata: dict) -> None:
+        metadata = {**metadata, "display_kind": self._display_kind(data)}
         layer = self._layer_by_name(name)
         display_data = self._display_data(data)
         if layer is None:
+            self._add_image_or_labels(name, data, metadata=metadata)
+            return
+        if layer.metadata.get("display_kind") != metadata["display_kind"]:
+            self._remove_layer(layer)
             self._add_image_or_labels(name, data, metadata=metadata)
             return
         layer.data = display_data
@@ -480,6 +491,11 @@ class VippWidget(QWidget):
             layers.append(layer)
         except Exception:
             pass
+
+    def _keep_active_pin_on_top(self) -> None:
+        layer = self._active_pinned_layer()
+        if layer is not None:
+            self._move_layer_to_top(layer)
 
     def _remove_layer(self, layer) -> None:
         try:

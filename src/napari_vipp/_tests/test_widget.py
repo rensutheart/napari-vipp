@@ -35,10 +35,11 @@ class _Dims:
 
 
 class _Layer:
-    def __init__(self, data, name, metadata=None):
+    def __init__(self, data, name, metadata=None, layer_type="image"):
         self.data = data
         self.name = name
         self.metadata = metadata or {}
+        self.layer_type = layer_type
         self.visible = True
 
 
@@ -68,12 +69,22 @@ class _Viewer:
         self.dims = _Dims()
 
     def add_image(self, data, **kwargs):
-        layer = _Layer(data, kwargs["name"], metadata=kwargs.get("metadata"))
+        layer = _Layer(
+            data,
+            kwargs["name"],
+            metadata=kwargs.get("metadata"),
+            layer_type="image",
+        )
         self.layers.append(layer)
         return layer
 
     def add_labels(self, data, **kwargs):
-        layer = _Layer(data, kwargs["name"], metadata=kwargs.get("metadata"))
+        layer = _Layer(
+            data,
+            kwargs["name"],
+            metadata=kwargs.get("metadata"),
+            layer_type="labels",
+        )
         self.layers.append(layer)
         return layer
 
@@ -185,3 +196,35 @@ def test_only_one_node_is_actively_pinned(qtbot):
     assert widget.graph_view._cards["threshold"]._pinned
     assert not widget.graph_view._cards["gaussian"]._pinned
     assert viewer.layers[-1] is pinned_layers[0]
+
+
+def test_active_pin_stays_on_top_after_inspect(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pin_node("threshold")
+    widget.inspect_node("gaussian")
+
+    assert viewer.layers[-1].metadata["napari_vipp_kind"] == "pinned"
+    assert viewer.layers[-1].metadata["node_id"] == "threshold"
+    assert viewer.layers[-2].metadata["napari_vipp_kind"] == "inspect"
+
+
+def test_inspect_replaces_image_layer_with_labels_for_mask(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.inspect_node("gaussian")
+    first_inspect = viewer.layers["VIPP Inspect"]
+    assert first_inspect.layer_type == "image"
+    assert first_inspect.metadata["display_kind"] == "image"
+
+    widget.inspect_node("threshold")
+    second_inspect = viewer.layers["VIPP Inspect"]
+
+    assert second_inspect is not first_inspect
+    assert second_inspect.layer_type == "labels"
+    assert second_inspect.metadata["display_kind"] == "labels"
+    assert second_inspect.metadata["node_id"] == "threshold"
