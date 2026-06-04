@@ -115,6 +115,37 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "gaussian"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
+    assert not viewer.layers["input volume"].visible
+
+
+def test_widget_restores_hidden_source_layer_on_close(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert not viewer.layers["input volume"].visible
+
+    widget.close()
+
+    assert viewer.layers["input volume"].visible
+
+
+def test_switching_input_layers_restores_previous_source(qtbot):
+    viewer = _Viewer()
+    viewer.layers.append(_Layer(np.ones((4, 16, 18), dtype=np.float32), "second"))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    first = viewer.layers["input volume"]
+    second = viewer.layers["second"]
+
+    assert not first.visible
+    assert second.visible
+
+    widget.layer_combo.setCurrentText("second")
+
+    assert first.visible
+    assert not second.visible
 
 
 def test_selecting_node_updates_inspection_layer(qtbot):

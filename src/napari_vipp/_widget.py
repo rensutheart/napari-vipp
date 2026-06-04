@@ -299,6 +299,7 @@ class VippWidget(QWidget):
         self._inspect_layer_name = "VIPP Inspect"
         self._last_input_layer_name: str | None = None
         self._preview_disabled_node_ids: set[str] = set()
+        self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
 
         self.layer_combo = QComboBox()
         self.layer_combo.setMinimumWidth(220)
@@ -369,6 +370,10 @@ class VippWidget(QWidget):
         self._build_graph_from_pipeline()
         self._select_node(self._selected_node_id)
         self.run_pipeline()
+
+    def closeEvent(self, event):  # noqa: N802
+        self._restore_hidden_input_layers()
+        super().closeEvent(event)
 
     def _build_layout(self) -> None:
         root = QVBoxLayout(self)
@@ -570,6 +575,38 @@ class VippWidget(QWidget):
     def _refresh_and_run(self) -> None:
         self._refresh_layer_choices()
         self.run_pipeline()
+
+    def _hide_input_layer_for_inspection(self, layer) -> None:
+        if layer is None or self._is_vipp_generated_layer(layer):
+            return
+        key = id(layer)
+        if key not in self._hidden_input_layer_states:
+            self._hidden_input_layer_states[key] = (
+                layer,
+                bool(getattr(layer, "visible", True)),
+            )
+        try:
+            layer.visible = False
+        except Exception:
+            pass
+
+    def _restore_hidden_input_layers(self, except_layer=None) -> None:
+        keep_key = id(except_layer) if except_layer is not None else None
+        for key, (layer, visible) in list(self._hidden_input_layer_states.items()):
+            if key == keep_key:
+                continue
+            if self._layer_is_present(layer):
+                try:
+                    layer.visible = visible
+                except Exception:
+                    pass
+            self._hidden_input_layer_states.pop(key, None)
+
+    def _layer_is_present(self, layer) -> bool:
+        try:
+            return any(candidate is layer for candidate in self.viewer.layers)
+        except Exception:
+            return False
 
     def _refresh_layer_choices(self) -> None:
         current = self.layer_combo.currentText()
@@ -806,6 +843,7 @@ class VippWidget(QWidget):
     def run_pipeline(self) -> None:
         layer = self._selected_input_layer()
         if layer is None:
+            self._restore_hidden_input_layers()
             self.pipeline.run(None)
             self._update_thumbnails()
             self._update_histogram()
@@ -813,6 +851,7 @@ class VippWidget(QWidget):
             return
 
         self._last_input_layer_name = layer.name
+        self._restore_hidden_input_layers(except_layer=layer)
         try:
             self.pipeline.run(layer.data)
         except Exception as exc:
@@ -820,6 +859,7 @@ class VippWidget(QWidget):
             return
         if self._refresh_selected_parameter_controls():
             self.pipeline.run(layer.data)
+        self._hide_input_layer_for_inspection(layer)
 
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
