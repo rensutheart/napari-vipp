@@ -248,11 +248,15 @@ def test_histogram_can_switch_between_slice_and_stack(qtbot):
     widget.graph_view.select_node("input")
 
     assert widget.histogram_plot._counts.tolist() == [30.0]
+    assert widget.histogram_plot._x_min_label == "0"
+    assert widget.histogram_plot._x_max_label == "0"
 
     widget.histogram_scope_combo.setCurrentText("Stack")
 
     assert widget.histogram_plot._counts.size == 256
     assert widget.histogram_plot._counts.sum() == 60
+    assert widget.histogram_plot._x_min_label == "0"
+    assert widget.histogram_plot._x_max_label == "255"
 
 
 def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):

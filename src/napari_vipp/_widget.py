@@ -206,15 +206,28 @@ class HistogramPlot(QWidget):
         super().__init__(parent)
         self._counts = np.array([], dtype=np.float32)
         self._log_scale = False
+        self._x_min_label = ""
+        self._x_max_label = ""
         self.setMinimumHeight(80)
 
-    def set_histogram(self, counts: np.ndarray | None, log_scale: bool) -> None:
+    def set_histogram(
+        self,
+        counts: np.ndarray | None,
+        log_scale: bool,
+        x_range: tuple[float, float] | None = None,
+    ) -> None:
         self._counts = (
             np.asarray(counts, dtype=np.float32)
             if counts is not None
             else np.array([], dtype=np.float32)
         )
         self._log_scale = log_scale
+        if x_range is None or self._counts.size == 0:
+            self._x_min_label = ""
+            self._x_max_label = ""
+        else:
+            self._x_min_label = _format_histogram_label(x_range[0])
+            self._x_max_label = _format_histogram_label(x_range[1])
         self.update()
 
     def paintEvent(self, event):  # noqa: N802
@@ -227,9 +240,12 @@ class HistogramPlot(QWidget):
         painter.setPen(QPen(QColor("#374151"), 1))
         painter.drawRect(rect)
 
+        label_height = painter.fontMetrics().height() + 5
+        plot_frame = rect.adjusted(0, 0, 0, -label_height)
+
         if self._counts.size == 0:
             painter.setPen(QColor("#9ca3af"))
-            painter.drawText(rect, Qt.AlignCenter, "No data")
+            painter.drawText(plot_frame, Qt.AlignCenter, "No data")
             painter.end()
             return
 
@@ -241,7 +257,7 @@ class HistogramPlot(QWidget):
             painter.end()
             return
 
-        plot_rect = rect.adjusted(8, 8, -8, -8)
+        plot_rect = plot_frame.adjusted(8, 8, -8, -8)
         width = max(plot_rect.width(), 1)
         height = max(plot_rect.height(), 1)
         step = max(int(np.ceil(values.size / width)), 1)
@@ -258,6 +274,16 @@ class HistogramPlot(QWidget):
             y = plot_rect.bottom() - int((float(value) / maximum) * height)
             painter.drawLine(last_x, last_y, x, y)
             last_x, last_y = x, y
+        if self._x_min_label or self._x_max_label:
+            painter.setPen(QColor("#9ca3af"))
+            baseline = rect.bottom() - 3
+            painter.drawText(rect.left() + 8, baseline, self._x_min_label)
+            right_width = painter.fontMetrics().horizontalAdvance(self._x_max_label)
+            painter.drawText(
+                rect.right() - 8 - right_width,
+                baseline,
+                self._x_max_label,
+            )
         painter.end()
 
 
@@ -852,7 +878,7 @@ class VippWidget(QWidget):
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)
-        counts = _histogram_counts(
+        counts, x_range = _histogram_summary(
             data,
             scope=self.histogram_scope_combo.currentText(),
             current_step=(
@@ -862,6 +888,7 @@ class VippWidget(QWidget):
         self.histogram_plot.set_histogram(
             counts,
             log_scale=self.histogram_log_checkbox.isChecked(),
+            x_range=x_range,
         )
 
     def inspect_node(self, node_id: str) -> None:
@@ -1254,18 +1281,27 @@ def _histogram_counts(
     scope: str = "Slice",
     current_step=None,
 ) -> np.ndarray | None:
+    counts, _x_range = _histogram_summary(data, scope=scope, current_step=current_step)
+    return counts
+
+
+def _histogram_summary(
+    data,
+    scope: str = "Slice",
+    current_step=None,
+) -> tuple[np.ndarray | None, tuple[float, float] | None]:
     if data is None:
-        return None
+        return None, None
 
     if scope.lower() == "stack":
         arr = np.asarray(data)
     else:
         preview = make_preview(data, mode="slice", current_step=current_step)
         if preview is None:
-            return None
+            return None, None
         arr = np.asarray(preview)
     if arr.size == 0:
-        return None
+        return None, None
     if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
         arr = (
             arr[..., 0].astype(np.float32) * 0.299
@@ -1273,11 +1309,11 @@ def _histogram_counts(
             + arr[..., 2].astype(np.float32) * 0.114
         )
     if arr.dtype == bool:
-        return np.bincount(arr.ravel().astype(np.uint8), minlength=2)
+        return np.bincount(arr.ravel().astype(np.uint8), minlength=2), (0.0, 1.0)
 
     values = arr[np.isfinite(arr)].ravel()
     if values.size == 0:
-        return None
+        return None, None
     if values.size > 500_000:
         stride = int(np.ceil(values.size / 500_000))
         values = values[::stride]
@@ -1286,15 +1322,32 @@ def _histogram_counts(
         finite_min = int(values.min())
         finite_max = int(values.max())
         if finite_min == finite_max:
-            return np.array([values.size], dtype=np.int64)
+            return np.array([values.size], dtype=np.int64), (
+                float(finite_min),
+                float(finite_max),
+            )
         if 0 <= finite_min and finite_max <= 255:
             counts, _edges = np.histogram(values, bins=256, range=(0, 255))
+            x_range = (0.0, 255.0)
         else:
             counts, _edges = np.histogram(values, bins=128)
+            x_range = (float(finite_min), float(finite_max))
     else:
         finite_min = float(values.min())
         finite_max = float(values.max())
         if finite_min == finite_max:
-            return np.array([values.size], dtype=np.int64)
+            return np.array([values.size], dtype=np.int64), (
+                finite_min,
+                finite_max,
+            )
         counts, _edges = np.histogram(values, bins=128)
-    return counts
+        x_range = (finite_min, finite_max)
+    return counts, x_range
+
+
+def _format_histogram_label(value: float) -> str:
+    if not np.isfinite(value):
+        return ""
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    return f"{value:.4g}"
