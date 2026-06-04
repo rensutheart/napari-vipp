@@ -47,6 +47,7 @@ class ParameterBounds:
     maximum: float | int
     step: float | int
     decimals: int
+    expandable: bool = False
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -115,6 +116,9 @@ class ParameterControl(QWidget):
         super().__init__(parent)
         self.spec = spec
         self._is_integer = spec.kind == "int"
+        self._bounds = bounds
+        self._entry_minimum = bounds.minimum
+        self._entry_maximum = bounds.maximum
         self._scale = self._scale_for(bounds)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimumWidth(120)
@@ -143,13 +147,25 @@ class ParameterControl(QWidget):
         value=None,
         emit: bool = False,
     ) -> None:
+        entry_minimum, entry_maximum = self._entry_bounds_for(bounds)
         current = self.value() if value is None else value
-        current = self._clamped_value(current, bounds)
+        current = self._clamped_value(current, entry_minimum, entry_maximum)
+        bounds = self._expanded_bounds_for_value(bounds, current)
+        bounds = _slider_safe_bounds(
+            bounds.minimum,
+            bounds.maximum,
+            bounds.step,
+            bounds.decimals,
+            expandable=bounds.expandable,
+        )
+        self._bounds = bounds
+        self._entry_minimum = entry_minimum
+        self._entry_maximum = entry_maximum
         self._scale = self._scale_for(bounds)
 
         with QSignalBlocker(self.slider), QSignalBlocker(self.value_box):
             if self._is_integer:
-                self.value_box.setRange(int(bounds.minimum), int(bounds.maximum))
+                self.value_box.setRange(int(entry_minimum), int(entry_maximum))
                 self.value_box.setSingleStep(max(int(bounds.step), 1))
                 self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
                 self.slider.setSingleStep(max(int(bounds.step), 1))
@@ -157,7 +173,7 @@ class ParameterControl(QWidget):
                 self.value_box.setValue(int(current))
             else:
                 self.value_box.setDecimals(bounds.decimals)
-                self.value_box.setRange(float(bounds.minimum), float(bounds.maximum))
+                self.value_box.setRange(float(entry_minimum), float(entry_maximum))
                 self.value_box.setSingleStep(float(bounds.step))
                 self.slider.setRange(
                     self._to_slider(bounds.minimum),
@@ -177,6 +193,10 @@ class ParameterControl(QWidget):
         self.valueChanged.emit(self.value())
 
     def _on_box_changed(self, value) -> None:
+        if self._bounds.expandable and not self._value_in_slider_bounds(value):
+            self.set_bounds(self._bounds, value, emit=False)
+            self.valueChanged.emit(self.value())
+            return
         with QSignalBlocker(self.slider):
             slider_value = int(value) if self._is_integer else self._to_slider(value)
             self.slider.setValue(slider_value)
@@ -193,10 +213,68 @@ class ParameterControl(QWidget):
     def _to_slider(self, value) -> int:
         return int(round(float(value) * self._scale))
 
-    def _clamped_value(self, value, bounds: ParameterBounds):
+    def _clamped_value(self, value, minimum, maximum):
         if value is None:
-            value = bounds.minimum
-        return min(max(value, bounds.minimum), bounds.maximum)
+            value = minimum
+        return min(max(value, minimum), maximum)
+
+    def _entry_bounds_for(
+        self,
+        bounds: ParameterBounds,
+    ) -> tuple[float | int, float | int]:
+        if not bounds.expandable:
+            return bounds.minimum, bounds.maximum
+        minimum = bounds.minimum
+        maximum = bounds.maximum
+        if float(minimum) < 0:
+            minimum = min(float(minimum), -1_000_000.0)
+        maximum = max(float(maximum), 1_000_000.0)
+        if self._is_integer:
+            return int(round(minimum)), int(round(maximum))
+        return float(minimum), float(maximum)
+
+    def _expanded_bounds_for_value(
+        self,
+        bounds: ParameterBounds,
+        value,
+    ) -> ParameterBounds:
+        if not bounds.expandable:
+            return bounds
+        minimum = float(bounds.minimum)
+        maximum = float(bounds.maximum)
+        value = float(value)
+        span = max(
+            maximum - minimum,
+            abs(maximum),
+            abs(minimum),
+            float(bounds.step),
+            1.0,
+        )
+        if value > maximum:
+            maximum = value + max(span * 0.25, abs(value) * 0.25, float(bounds.step))
+        if value < minimum and minimum < 0:
+            minimum = value - max(span * 0.25, abs(value) * 0.25, float(bounds.step))
+        if self._is_integer:
+            return ParameterBounds(
+                int(np.floor(minimum)),
+                int(np.ceil(maximum)),
+                bounds.step,
+                bounds.decimals,
+                bounds.expandable,
+            )
+        return ParameterBounds(
+            minimum,
+            maximum,
+            bounds.step,
+            bounds.decimals,
+            bounds.expandable,
+        )
+
+    def _value_in_slider_bounds(self, value) -> bool:
+        if self._is_integer:
+            return self.slider.minimum() <= int(value) <= self.slider.maximum()
+        slider_value = self._to_slider(value)
+        return self.slider.minimum() <= slider_value <= self.slider.maximum()
 
 
 class HistogramPlot(QWidget):
@@ -713,12 +791,24 @@ class VippWidget(QWidget):
             return self._channel_bounds(node_id, spec)
         if spec.name == "block_size":
             return self._block_size_bounds(node_id, spec)
-        return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        return ParameterBounds(
+            spec.minimum,
+            spec.maximum,
+            spec.step,
+            spec.decimals,
+            expandable=True,
+        )
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
         if node is None:
-            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+                expandable=True,
+            )
 
         current = _safe_float(node.params.get(spec.name, spec.default), spec.default)
         minimum = float(spec.minimum)
@@ -732,7 +822,13 @@ class VippWidget(QWidget):
                 maximum = extent
         if minimum == maximum:
             minimum, maximum = _expanded_bounds(minimum)
-        return _slider_safe_bounds(minimum, maximum, spec.step, spec.decimals)
+        return _slider_safe_bounds(
+            minimum,
+            maximum,
+            spec.step,
+            spec.decimals,
+            expandable=True,
+        )
 
     def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -1284,6 +1380,7 @@ def _slider_safe_bounds(
     maximum: float,
     step: float | int,
     decimals: int,
+    expandable: bool = False,
 ) -> ParameterBounds:
     maximum_slider_units = 1_000_000_000
     decimals = int(decimals)
@@ -1300,6 +1397,7 @@ def _slider_safe_bounds(
         float(maximum),
         max(float(step), smallest_step),
         decimals,
+        expandable,
     )
 
 

@@ -659,6 +659,43 @@ def test_projection_axis_slider_uses_input_dimensionality(qtbot):
     assert control.value_box.maximum() == 3
 
 
+def test_soft_parameter_text_entry_expands_slider_range(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    control = widget._parameter_widgets["sigma"]
+
+    assert control.value_box.maximum() > control.slider.maximum() / 100
+    assert control.slider.maximum() == 1200
+
+    control.value_box.setValue(20.0)
+
+    assert control.slider.maximum() >= 2000
+    assert control.slider.value() == 2000
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == 20.0
+
+
+def test_crop_parameter_text_entry_stays_image_limited(qtbot):
+    viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["top"]
+
+    assert control.slider.maximum() == 15
+    assert control.value_box.maximum() == 15
+
+    control.value_box.setValue(99)
+
+    assert control.value() == 15
+    assert control.slider.maximum() == 15
+    assert widget.pipeline.nodes[node.id].params["top"] == 15
+
+
 def test_auto_contrast_button_updates_scale_and_offset(qtbot):
     data = np.arange(100, dtype=np.uint8).reshape(10, 10)
     viewer = _Viewer(data)
