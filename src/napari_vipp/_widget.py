@@ -640,7 +640,7 @@ class VippWidget(QWidget):
         if layer is None:
             self._add_image_or_labels(name, data, metadata=metadata)
             return
-        if layer.metadata.get("display_kind") != metadata["display_kind"]:
+        if self._generated_layer_needs_replacement(layer, metadata):
             self._remove_layer(layer)
             self._add_image_or_labels(name, data, metadata=metadata)
             return
@@ -663,6 +663,12 @@ class VippWidget(QWidget):
                 }
             )
         return self.viewer.add_image(display_data, **kwargs)
+
+    def _generated_layer_needs_replacement(self, layer, metadata: dict) -> bool:
+        return (
+            layer.metadata.get("display_kind") != metadata["display_kind"]
+            or layer.metadata.get("data_kind") != metadata["data_kind"]
+        )
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
         if metadata["display_kind"] != "image":

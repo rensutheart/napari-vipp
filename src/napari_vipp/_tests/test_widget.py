@@ -266,7 +266,7 @@ def test_inspect_shows_mask_as_standalone_image(qtbot):
     widget.inspect_node("threshold")
     second_inspect = viewer.layers["VIPP Inspect"]
 
-    assert second_inspect is first_inspect
+    assert second_inspect is not first_inspect
     assert second_inspect.layer_type == "image"
     assert second_inspect.metadata["display_kind"] == "image"
     assert second_inspect.metadata["data_kind"] == "mask"
@@ -292,6 +292,32 @@ def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
     assert pinned.layer_type == "labels"
     assert pinned.metadata["display_kind"] == "labels"
     assert viewer.layers[-2] is inspect
+    assert viewer.layers[-1] is pinned
+
+
+def test_inspecting_input_after_mask_resets_inspect_display(qtbot):
+    data = np.arange(4 * 16 * 18, dtype=np.uint8).reshape(4, 16, 18)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pin_node("threshold")
+    widget.inspect_node("threshold")
+    mask_inspect = viewer.layers["VIPP Inspect"]
+    assert mask_inspect.metadata["data_kind"] == "mask"
+    assert mask_inspect.contrast_limits == (0, 1)
+
+    widget.inspect_node("input")
+    input_inspect = viewer.layers["VIPP Inspect"]
+    pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
+
+    assert input_inspect is not mask_inspect
+    assert input_inspect.layer_type == "image"
+    assert input_inspect.metadata["data_kind"] == "image"
+    assert input_inspect.metadata["node_id"] == "input"
+    assert input_inspect.contrast_limits is None
+    assert input_inspect.blending is None
+    assert viewer.layers[-2] is input_inspect
     assert viewer.layers[-1] is pinned
 
 
