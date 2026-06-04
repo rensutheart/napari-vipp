@@ -186,6 +186,15 @@ def test_palette_has_bottom_scroll_slack(qtbot):
     assert spacer.sizeHint(0).height() >= 36
 
 
+def test_dock_widget_can_shrink_vertically(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.graph_view.minimumHeight() <= 180
+    assert widget.histogram_plot.minimumHeight() <= 80
+
+
 def test_histogram_updates_for_selected_node(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint8).reshape(4, 16, 18)
     viewer = _Viewer(data)

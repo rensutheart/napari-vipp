@@ -192,7 +192,7 @@ class HistogramPlot(QWidget):
         super().__init__(parent)
         self._counts = np.array([], dtype=np.float32)
         self._log_scale = False
-        self.setMinimumHeight(140)
+        self.setMinimumHeight(80)
 
     def set_histogram(self, counts: np.ndarray | None, log_scale: bool) -> None:
         self._counts = (
@@ -277,7 +277,7 @@ class VippWidget(QWidget):
         self.palette = NodePalette(grouped_palette_specs())
         self.palette.setMinimumWidth(190)
         self.graph_view = PipelineGraphView()
-        self.graph_view.setMinimumHeight(520)
+        self.graph_view.setMinimumHeight(180)
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
