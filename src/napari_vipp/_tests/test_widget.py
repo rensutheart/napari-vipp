@@ -62,9 +62,11 @@ class _LayerList(list):
 
 
 class _Viewer:
-    def __init__(self):
+    def __init__(self, data=None):
+        if data is None:
+            data = np.zeros((4, 16, 18), dtype=np.float32)
         self.layers = _LayerList(
-            [_Layer(np.zeros((4, 16, 18), dtype=np.float32), "input volume")]
+            [_Layer(data, "input volume")]
         )
         self.dims = _Dims()
 
@@ -228,3 +230,51 @@ def test_inspect_replaces_image_layer_with_labels_for_mask(qtbot):
     assert second_inspect.layer_type == "labels"
     assert second_inspect.metadata["display_kind"] == "labels"
     assert second_inspect.metadata["node_id"] == "threshold"
+
+
+def test_binary_threshold_uses_uint8_slider_range(qtbot):
+    viewer = _Viewer(np.arange(16, dtype=np.uint8).reshape(4, 4))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["threshold"]
+    assert control.slider.minimum() == 0
+    assert control.slider.maximum() == 255
+    assert control.value_box.minimum() == 0
+    assert control.value_box.maximum() == 255
+
+    control.slider.setValue(128)
+
+    assert widget.pipeline.nodes[node.id].params["threshold"] == 128
+
+
+def test_binary_threshold_uses_unit_float_slider_range(qtbot):
+    data = np.linspace(0.0, 1.0, 16, dtype=np.float32).reshape(4, 4)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["threshold"]
+    assert control.value_box.minimum() == 0.0
+    assert control.value_box.maximum() == 1.0
+    assert control.slider.maximum() == 1000
+
+
+def test_projection_axis_slider_uses_input_dimensionality(qtbot):
+    viewer = _Viewer(np.zeros((2, 3, 4, 5), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("mip")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["axis"]
+    assert control.slider.minimum() == 0
+    assert control.slider.maximum() == 3
+    assert control.value_box.maximum() == 3

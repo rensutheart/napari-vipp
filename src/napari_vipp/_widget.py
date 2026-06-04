@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTreeWidget,
@@ -34,6 +36,14 @@ from napari_vipp.core.preview import make_preview, normalize_thumbnail
 
 if TYPE_CHECKING:
     import napari
+
+
+@dataclass(frozen=True)
+class ParameterBounds:
+    minimum: float | int
+    maximum: float | int
+    step: float | int
+    decimals: int
 
 
 class NodePalette(QTreeWidget):
@@ -72,6 +82,99 @@ class NodePalette(QTreeWidget):
         operation_id = item.data(0, Qt.UserRole)
         if operation_id:
             self.operation_requested.emit(str(operation_id))
+
+
+class ParameterControl(QWidget):
+    """Slider with numeric entry for a single node parameter."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, spec, value, bounds: ParameterBounds, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self._is_integer = spec.kind == "int"
+        self._scale = self._scale_for(bounds)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimumWidth(120)
+        if self._is_integer:
+            self.value_box = QSpinBox()
+        else:
+            self.value_box = QDoubleSpinBox()
+            self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setMinimumWidth(74)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.value_box)
+
+        self.set_bounds(bounds, value, emit=False)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        self.value_box.valueChanged.connect(self._on_box_changed)
+
+    def value(self):
+        return self.value_box.value()
+
+    def set_bounds(
+        self,
+        bounds: ParameterBounds,
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        current = self.value() if value is None else value
+        current = self._clamped_value(current, bounds)
+        self._scale = self._scale_for(bounds)
+
+        with QSignalBlocker(self.slider), QSignalBlocker(self.value_box):
+            if self._is_integer:
+                self.value_box.setRange(int(bounds.minimum), int(bounds.maximum))
+                self.value_box.setSingleStep(max(int(bounds.step), 1))
+                self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
+                self.slider.setSingleStep(max(int(bounds.step), 1))
+                self.slider.setValue(int(current))
+                self.value_box.setValue(int(current))
+            else:
+                self.value_box.setDecimals(bounds.decimals)
+                self.value_box.setRange(float(bounds.minimum), float(bounds.maximum))
+                self.value_box.setSingleStep(float(bounds.step))
+                self.slider.setRange(
+                    self._to_slider(bounds.minimum),
+                    self._to_slider(bounds.maximum),
+                )
+                self.slider.setSingleStep(max(self._to_slider(bounds.step), 1))
+                self.slider.setValue(self._to_slider(current))
+                self.value_box.setValue(float(current))
+
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def _on_slider_changed(self, value: int) -> None:
+        mapped = int(value) if self._is_integer else value / self._scale
+        with QSignalBlocker(self.value_box):
+            self.value_box.setValue(mapped)
+        self.valueChanged.emit(self.value())
+
+    def _on_box_changed(self, value) -> None:
+        with QSignalBlocker(self.slider):
+            slider_value = int(value) if self._is_integer else self._to_slider(value)
+            self.slider.setValue(slider_value)
+        self.valueChanged.emit(self.value())
+
+    def _scale_for(self, bounds: ParameterBounds) -> int:
+        if self._is_integer:
+            return 1
+        if bounds.decimals > 0:
+            return 10**bounds.decimals
+        step = float(bounds.step)
+        return max(int(round(1 / step)), 1) if step > 0 else 100
+
+    def _to_slider(self, value) -> int:
+        return int(round(float(value) * self._scale))
+
+    def _clamped_value(self, value, bounds: ParameterBounds):
+        if value is None:
+            value = bounds.minimum
+        return min(max(value, bounds.minimum), bounds.maximum)
 
 
 class VippWidget(QWidget):
@@ -281,27 +384,81 @@ class VippWidget(QWidget):
 
         node = self.pipeline.nodes[node_id]
         for spec in specs:
-            widget = self._parameter_widget(spec, node.params.get(spec.name))
+            bounds = self._parameter_bounds_for(node_id, spec)
+            widget = ParameterControl(spec, node.params.get(spec.name), bounds)
+            node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
                 lambda value, name=spec.name: self._on_param_changed(name, value)
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
 
-    def _parameter_widget(self, spec, value):
-        if spec.kind == "int":
-            widget = QSpinBox()
-            widget.setRange(int(spec.minimum), int(spec.maximum))
-            widget.setSingleStep(int(spec.step))
-            widget.setValue(int(value))
-            return widget
+    def _refresh_selected_parameter_controls(self) -> bool:
+        if self._selected_node_id not in self.pipeline.nodes:
+            return False
+        changed = False
+        node = self.pipeline.nodes[self._selected_node_id]
+        for spec in self.pipeline.node_parameter_specs(self._selected_node_id):
+            widget = self._parameter_widgets.get(spec.name)
+            if widget is None:
+                continue
+            previous = node.params.get(spec.name)
+            widget.set_bounds(
+                self._parameter_bounds_for(self._selected_node_id, spec),
+                previous,
+                emit=False,
+            )
+            current = widget.value()
+            if current != previous:
+                node.params[spec.name] = current
+                changed = True
+        return changed
 
-        widget = QDoubleSpinBox()
-        widget.setRange(float(spec.minimum), float(spec.maximum))
-        widget.setSingleStep(float(spec.step))
-        widget.setDecimals(spec.decimals)
-        widget.setValue(float(value))
-        return widget
+    def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
+        if spec.name == "threshold":
+            return self._threshold_bounds(node_id, spec)
+        if spec.name == "axis":
+            return self._axis_bounds(node_id, spec)
+        return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+
+    def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        arr = np.asarray(data)
+        if arr.dtype == bool:
+            return ParameterBounds(0, 1, 1, 0)
+        if np.issubdtype(arr.dtype, np.integer):
+            if arr.dtype == np.uint8:
+                return ParameterBounds(0, 255, 1, 0)
+            finite = _finite_values(arr)
+            if finite.size:
+                return ParameterBounds(
+                    int(finite.min()),
+                    int(finite.max()),
+                    1,
+                    0,
+                )
+            return ParameterBounds(0, 255, 1, 0)
+
+        finite = _finite_values(arr)
+        if finite.size == 0:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        minimum = float(finite.min())
+        maximum = float(finite.max())
+        if 0.0 <= minimum and maximum <= 1.0:
+            return ParameterBounds(0.0, 1.0, 0.01, 3)
+        if minimum == maximum:
+            minimum, maximum = _expanded_bounds(minimum)
+        step = max((maximum - minimum) / 200.0, 1e-6)
+        return ParameterBounds(minimum, maximum, step, 3)
+
+    def _axis_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        maximum = max(np.asarray(data).ndim - 1, 0)
+        return ParameterBounds(0, maximum, 1, 0)
 
     def _clear_parameter_form(self) -> None:
         self._parameter_widgets.clear()
@@ -329,6 +486,8 @@ class VippWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
             return
+        if self._refresh_selected_parameter_controls():
+            self.pipeline.run(layer.data)
 
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
@@ -523,3 +682,18 @@ class VippWidget(QWidget):
             }
         except Exception:
             return False
+
+
+def _finite_values(arr: np.ndarray) -> np.ndarray:
+    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+        arr = (
+            arr[..., 0].astype(np.float32) * 0.299
+            + arr[..., 1].astype(np.float32) * 0.587
+            + arr[..., 2].astype(np.float32) * 0.114
+        )
+    return arr[np.isfinite(arr)]
+
+
+def _expanded_bounds(value: float) -> tuple[float, float]:
+    padding = abs(value) * 0.1 or 1.0
+    return value - padding, value + padding

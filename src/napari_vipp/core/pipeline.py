@@ -257,6 +257,12 @@ class PrototypePipeline:
         node = self.nodes[node_id]
         return self.operation_spec(node.operation_id).parameters
 
+    def input_data_for_node(self, node_id: str):
+        sources = self._input_sources(node_id)
+        if not sources:
+            return None
+        return self.outputs.get(sources[0])
+
     def run(self, input_data) -> dict[str, Any]:
         self.outputs = {node_id: None for node_id in self.nodes}
         remaining = set(self.nodes)
