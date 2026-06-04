@@ -28,6 +28,45 @@ def otsu_threshold(data) -> np.ndarray:
     return grayscale > threshold
 
 
+def binary_threshold(data, threshold: float = 0.5) -> np.ndarray:
+    """Return a binary mask using a fixed intensity threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return arr > float(threshold)
+
+
+def median_filter(data, size: int = 3) -> np.ndarray:
+    """Apply a median filter while preserving RGB/RGBA channel axes."""
+    arr = np.asarray(data)
+    size = max(int(size), 1)
+    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+        size_by_axis = [size] * arr.ndim
+        size_by_axis[-1] = 1
+        return ndi.median_filter(arr, size=size_by_axis)
+    return ndi.median_filter(arr, size=size)
+
+
+def invert(data) -> np.ndarray:
+    """Invert boolean masks or intensity images."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return np.logical_not(arr)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return arr.copy()
+    return finite.max() + finite.min() - arr
+
+
+def max_intensity_projection(data, axis: int = 0) -> np.ndarray:
+    """Project an image along one axis using maximum intensity."""
+    arr = np.asarray(data)
+    if arr.ndim <= 2:
+        return arr.copy()
+    axis = int(axis)
+    if axis < 0 or axis >= arr.ndim:
+        axis = 0
+    return np.max(arr, axis=axis)
+
+
 def _to_grayscale(arr: np.ndarray) -> np.ndarray:
     if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
         rgb = arr[..., :3].astype(np.float32)

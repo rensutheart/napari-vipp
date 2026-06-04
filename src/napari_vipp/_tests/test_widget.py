@@ -55,6 +55,10 @@ class _LayerList(list):
             raise KeyError(item)
         return super().__getitem__(item)
 
+    def move(self, source, target):
+        layer = self.pop(source)
+        self.insert(target, layer)
+
 
 class _Viewer:
     def __init__(self):
@@ -118,4 +122,66 @@ def test_pin_reuses_existing_node_layer(qtbot):
     ]
     assert len(pinned_layers) == 1
     assert len(viewer.layers) == 2
-    assert widget.status_label.text() == "Updated pinned layer for 'Otsu Threshold'."
+    assert widget.status_label.text() == "Pinned 'Otsu Threshold'."
+
+
+def test_nodes_without_parameters_hide_parameter_group(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._select_node("threshold")
+
+    assert widget.parameter_group.isHidden()
+
+
+def test_palette_adds_node_and_connects_branch(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("median_filter")
+    widget._connect_nodes("input", node.id)
+
+    assert node.id in widget.pipeline.nodes
+    assert (("input", node.id)) in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget.pipeline.outputs[node.id] is not None
+
+
+def test_incompatible_connection_is_rejected(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("threshold", node.id)
+
+    assert ("threshold", node.id) not in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert "Cannot connect mask output to image input" in widget.status_label.text()
+
+
+def test_only_one_node_is_actively_pinned(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pin_node("gaussian")
+    widget.pin_node("threshold")
+
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+    ]
+    assert len(pinned_layers) == 1
+    assert pinned_layers[0].metadata["node_id"] == "threshold"
+    assert widget._active_pinned_node_id == "threshold"
+    assert widget.graph_view._cards["threshold"]._pinned
+    assert not widget.graph_view._cards["gaussian"]._pinned
+    assert viewer.layers[-1] is pinned_layers[0]

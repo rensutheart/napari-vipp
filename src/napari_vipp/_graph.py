@@ -7,6 +7,7 @@ from qtpy.QtCore import QPoint, QPointF, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from qtpy.QtWidgets import (
     QFrame,
+    QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPathItem,
     QGraphicsProxyWidget,
@@ -14,9 +15,12 @@ from qtpy.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QVBoxLayout,
 )
+
+OPERATION_MIME = "application/x-napari-vipp-operation"
 
 
 class ClickablePreview(QLabel):
@@ -38,30 +42,16 @@ class NodeCard(QFrame):
     def __init__(self, node_id: str, title: str, category: str, parent=None):
         super().__init__(parent)
         self.node_id = node_id
+        self._selected = False
+        self._pinned = False
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(220)
         self.setCursor(Qt.OpenHandCursor)
-        self.setStyleSheet(
-            """
-            QFrame#NodeCard {
-                background: #20242b;
-                border: 1px solid #4b5563;
-                border-radius: 6px;
-            }
-            QLabel {
-                color: #f3f4f6;
-            }
-            QPushButton {
-                padding: 3px 7px;
-            }
-            """
-        )
 
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-weight: 650;")
         self.category_label = QLabel(category)
-        self.category_label.setStyleSheet("color: #a5b4fc; font-size: 10px;")
 
         self.preview = ClickablePreview()
         self.preview.setAlignment(Qt.AlignCenter)
@@ -91,6 +81,7 @@ class NodeCard(QFrame):
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview)
         layout.addLayout(actions)
+        self._refresh_style()
 
     def mousePressEvent(self, event):  # noqa: N802
         self.selected.emit(self.node_id)
@@ -101,6 +92,14 @@ class NodeCard(QFrame):
     def mouseReleaseEvent(self, event):  # noqa: N802
         self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._refresh_style()
+
+    def set_pinned(self, pinned: bool) -> None:
+        self._pinned = pinned
+        self._refresh_style()
 
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
         if thumbnail is None:
@@ -121,13 +120,120 @@ class NodeCard(QFrame):
             )
         )
 
+    def _refresh_style(self) -> None:
+        border = "#4b5563"
+        if self._selected:
+            border = "#60a5fa"
+        if self._pinned:
+            border = "#facc15"
+        self.setStyleSheet(
+            f"""
+            QFrame#NodeCard {{
+                background: #20242b;
+                border: 2px solid {border};
+                border-radius: 6px;
+            }}
+            QLabel {{
+                color: #f3f4f6;
+            }}
+            QPushButton {{
+                padding: 3px 7px;
+            }}
+            """
+        )
+        self.category_label.setStyleSheet("color: #a5b4fc; font-size: 10px;")
+
+
+class PortItem(QGraphicsEllipseItem):
+    """Clickable node port used for graph connections."""
+
+    radius = 6.0
+
+    def __init__(self, node_id: str, kind: str, data_type: str, parent):
+        super().__init__(-self.radius, -self.radius, 2 * self.radius, 2 * self.radius)
+        self.node_id = node_id
+        self.kind = kind
+        self.data_type = data_type
+        self.setParentItem(parent)
+        self.setZValue(30)
+        self.setCursor(Qt.CrossCursor)
+        self.setAcceptHoverEvents(True)
+        self.setToolTip(f"{kind}: {data_type}")
+        self._refresh_style(False)
+
+    def hoverEnterEvent(self, event):  # noqa: N802
+        self._refresh_style(True)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):  # noqa: N802
+        self._refresh_style(False)
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        view = _view_for_scene(self.scene())
+        if view is not None and event.button() == Qt.LeftButton:
+            if self.kind == "output":
+                view.begin_connection(self, event.scenePos())
+            else:
+                view.complete_connection(self)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802
+        view = _view_for_scene(self.scene())
+        if (
+            view is not None
+            and self.kind == "output"
+            and event.buttons() & Qt.LeftButton
+        ):
+            view.update_pending_connection(event.scenePos(), dragging=True)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        view = _view_for_scene(self.scene())
+        if (
+            view is not None
+            and self.kind == "output"
+            and event.button() == Qt.LeftButton
+        ):
+            view.release_connection(event.scenePos())
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _refresh_style(self, hovered: bool) -> None:
+        color = "#22c55e"
+        if self.data_type == "mask":
+            color = "#c084fc"
+        elif self.data_type == "any":
+            color = "#f59e0b"
+        self.setBrush(QColor(color))
+        self.setPen(QPen(QColor("#f9fafb" if hovered else "#111827"), 1.5))
+
 
 class NodeProxy(QGraphicsProxyWidget):
     """Movable graphics item that keeps connected wires attached."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        node_id: str,
+        input_type: str | None,
+        output_type: str,
+        has_input: bool,
+        has_output: bool = True,
+    ):
         super().__init__()
+        self.node_id = node_id
+        self.input_type = input_type
+        self.output_type = output_type
         self.connections: list[ConnectionItem] = []
+        self.input_port: PortItem | None = None
+        self.output_port: PortItem | None = None
+        self._has_input = has_input
+        self._has_output = has_output
         self._drag_start_scene: QPointF | None = None
         self._drag_start_pos: QPointF | None = None
         self._dragging = False
@@ -136,6 +242,28 @@ class NodeProxy(QGraphicsProxyWidget):
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
+
+    def refresh_ports(self) -> None:
+        rect = self.boundingRect()
+        if self._has_input and self.input_type is not None:
+            if self.input_port is None:
+                self.input_port = PortItem(self.node_id, "input", self.input_type, self)
+            self.input_port.setPos(rect.left(), rect.center().y())
+        if self._has_output:
+            if self.output_port is None:
+                self.output_port = PortItem(
+                    self.node_id, "output", self.output_type, self
+                )
+            self.output_port.setPos(rect.right(), rect.center().y())
+
+    def port_scene_pos(self, kind: str) -> QPointF:
+        port = self.output_port if kind == "output" else self.input_port
+        if port is not None:
+            return port.mapToScene(QPointF(0, 0))
+        rect = self.sceneBoundingRect()
+        if kind == "output":
+            return QPointF(rect.right(), rect.center().y())
+        return QPointF(rect.left(), rect.center().y())
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton and not self._press_on_button(event):
@@ -214,23 +342,55 @@ class ConnectionItem(QGraphicsPathItem):
         super().__init__()
         self.source = source
         self.target = target
-        self.setPen(QPen(QColor("#8aa0c8"), 2.0))
+        self.source_id = source.node_id
+        self.target_id = target.node_id
         self.setZValue(-10)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self._refresh_pen()
         self.update_path()
 
     def update_path(self) -> None:
-        src = self.source.sceneBoundingRect()
-        dst = self.target.sceneBoundingRect()
-        start = QPointF(src.right(), src.center().y())
-        end = QPointF(dst.left(), dst.center().y())
-        dx = max(80.0, (end.x() - start.x()) * 0.5)
-        path = QPainterPath(start)
-        path.cubicTo(
-            QPointF(start.x() + dx, start.y()),
-            QPointF(end.x() - dx, end.y()),
-            end,
-        )
-        self.setPath(path)
+        start = self.source.port_scene_pos("output")
+        end = self.target.port_scene_pos("input")
+        self.setPath(_wire_path(start, end))
+
+    def itemChange(self, change, value):  # noqa: N802
+        result = super().itemChange(change, value)
+        if change == QGraphicsItem.ItemSelectedHasChanged:
+            self._refresh_pen()
+        return result
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        view = _view_for_scene(self.scene())
+        menu = QMenu()
+        info_action = menu.addAction("Info")
+        delete_action = menu.addAction("Delete")
+        action = _exec_menu(menu, event.screenPos())
+        if view is not None and action == delete_action:
+            view.delete_connection_item(self, notify=True)
+        elif view is not None and action == info_action:
+            view.status_message.emit(
+                f"Connection {self.source_id} -> {self.target_id}: "
+                f"{self.source.output_type} to {self.target.input_type}."
+            )
+
+    def _refresh_pen(self) -> None:
+        color = "#facc15" if self.isSelected() else "#8aa0c8"
+        width = 3.0 if self.isSelected() else 2.0
+        self.setPen(QPen(QColor(color), width))
+
+
+class PendingConnectionItem(QGraphicsPathItem):
+    def __init__(self, source_port: PortItem, end: QPointF):
+        super().__init__()
+        self.source_port = source_port
+        pen = QPen(QColor("#d1d5db"), 2.0, Qt.DashLine)
+        self.setPen(pen)
+        self.setZValue(-5)
+        self.update_end(end)
+
+    def update_end(self, end: QPointF) -> None:
+        self.setPath(_wire_path(self.source_port.mapToScene(QPointF(0, 0)), end))
 
 
 class PipelineGraphView(QGraphicsView):
@@ -239,6 +399,10 @@ class PipelineGraphView(QGraphicsView):
     node_selected = Signal(str)
     inspect_requested = Signal(str)
     pin_requested = Signal(str)
+    node_create_requested = Signal(str, QPointF)
+    connection_requested = Signal(str, str)
+    connection_removed = Signal(str, str)
+    status_message = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,50 +413,69 @@ class PipelineGraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setBackgroundBrush(QColor("#151922"))
+        self.setAcceptDrops(True)
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
         self._connections: list[ConnectionItem] = []
+        self._pending_source: PortItem | None = None
+        self._pending_wire: PendingConnectionItem | None = None
+        self._connection_dragging = False
         self._panning = False
         self._pan_start = QPoint()
         self._pan_h_value = 0
         self._pan_v_value = 0
 
-    def build_demo_graph(self, nodes) -> None:
+    def build_graph(self, nodes, connections, positions=None) -> None:
         self.scene.clear()
         self._proxies.clear()
         self._cards.clear()
         self._connections.clear()
+        self._pending_source = None
+        self._pending_wire = None
 
-        positions = {
+        default_positions = {
             "input": QPointF(0, 20),
             "gaussian": QPointF(330, 20),
             "threshold": QPointF(660, 20),
         }
-        for node in nodes:
-            card = NodeCard(node.id, node.title, node.category)
-            card.selected.connect(self.node_selected)
-            card.inspect_requested.connect(self.inspect_requested)
-            card.pin_requested.connect(self.pin_requested)
-            proxy = NodeProxy()
-            proxy.setWidget(card)
-            self.scene.addItem(proxy)
-            proxy.setPos(positions.get(node.id, QPointF(0, 0)))
-            self._cards[node.id] = card
-            self._proxies[node.id] = proxy
+        positions = positions or default_positions
+        for index, node in enumerate(nodes):
+            fallback = QPointF(330 * index, 20)
+            self.add_node(node, positions.get(node.id, fallback))
 
-        self._add_connection("input", "gaussian")
-        self._add_connection("gaussian", "threshold")
+        for connection in connections:
+            self.add_connection(connection.source_id, connection.target_id)
+
         graph_rect = self.scene.itemsBoundingRect()
         self.scene.setSceneRect(graph_rect.adjusted(-1600, -1200, 1800, 1200))
         self.resetTransform()
         self.fitInView(graph_rect.adjusted(-80, -80, 120, 80), Qt.KeepAspectRatio)
 
-    def set_thumbnail(self, node_id: str, thumbnail: np.ndarray | None) -> None:
-        card = self._cards.get(node_id)
-        if card is not None:
-            card.set_thumbnail(thumbnail)
+    def build_demo_graph(self, nodes) -> None:
+        self.build_graph(nodes, [])
 
-    def _add_connection(self, source_id: str, target_id: str) -> None:
+    def add_node(self, node, position: QPointF) -> None:
+        card = NodeCard(node.id, node.title, node.category)
+        card.selected.connect(self._select_node)
+        card.inspect_requested.connect(self.inspect_requested)
+        card.pin_requested.connect(self.pin_requested)
+        proxy = NodeProxy(
+            node.id,
+            node.input_type,
+            node.output_type,
+            node.has_input,
+            True,
+        )
+        proxy.setWidget(card)
+        self.scene.addItem(proxy)
+        proxy.setPos(position)
+        proxy.refresh_ports()
+        self._cards[node.id] = card
+        self._proxies[node.id] = proxy
+
+    def add_connection(self, source_id: str, target_id: str) -> None:
+        if self._connection_exists(source_id, target_id):
+            return
         source = self._proxies[source_id]
         target = self._proxies[target_id]
         item = ConnectionItem(source, target)
@@ -300,6 +483,121 @@ class PipelineGraphView(QGraphicsView):
         source.connections.append(item)
         target.connections.append(item)
         self._connections.append(item)
+
+    def remove_connection(
+        self,
+        source_id: str,
+        target_id: str,
+        notify: bool = False,
+    ) -> None:
+        for item in list(self._connections):
+            if item.source_id == source_id and item.target_id == target_id:
+                self.delete_connection_item(item, notify=notify)
+
+    def delete_connection_item(
+        self,
+        item: ConnectionItem,
+        notify: bool = False,
+    ) -> None:
+        if item not in self._connections:
+            return
+        self._connections.remove(item)
+        if item in item.source.connections:
+            item.source.connections.remove(item)
+        if item in item.target.connections:
+            item.target.connections.remove(item)
+        self.scene.removeItem(item)
+        if notify:
+            self.connection_removed.emit(item.source_id, item.target_id)
+
+    def set_thumbnail(self, node_id: str, thumbnail: np.ndarray | None) -> None:
+        card = self._cards.get(node_id)
+        if card is not None:
+            card.set_thumbnail(thumbnail)
+
+    def set_pinned_node(self, node_id: str | None) -> None:
+        for card_id, card in self._cards.items():
+            card.set_pinned(card_id == node_id)
+
+    def select_node(self, node_id: str) -> None:
+        if node_id in self._cards:
+            self._select_node(node_id)
+
+    def begin_connection(self, source_port: PortItem, scene_pos: QPointF) -> None:
+        if source_port.kind != "output":
+            return
+        self._cancel_pending_connection()
+        self._pending_source = source_port
+        self._connection_dragging = False
+        self._pending_wire = PendingConnectionItem(source_port, scene_pos)
+        self.scene.addItem(self._pending_wire)
+
+    def update_pending_connection(self, scene_pos: QPointF, dragging: bool) -> None:
+        if self._pending_wire is None:
+            return
+        self._connection_dragging = self._connection_dragging or dragging
+        self._pending_wire.update_end(scene_pos)
+
+    def release_connection(self, scene_pos: QPointF) -> None:
+        target = self._input_port_at(scene_pos)
+        if target is not None:
+            self.complete_connection(target)
+            return
+        if self._connection_dragging:
+            self._cancel_pending_connection()
+        elif self._pending_wire is not None:
+            self.scene.removeItem(self._pending_wire)
+            self._pending_wire = None
+
+    def complete_connection(self, target_port: PortItem) -> None:
+        if self._pending_source is None:
+            return
+        source_port = self._pending_source
+        self._cancel_pending_connection()
+        if target_port.kind != "input":
+            return
+        self.connection_requested.emit(source_port.node_id, target_port.node_id)
+
+    def suggest_node_position(self) -> QPointF:
+        center = self.mapToScene(self.viewport().rect().center())
+        return center + QPointF(40 + len(self._proxies) * 18, 40)
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if event.mimeData().hasFormat(OPERATION_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        if event.mimeData().hasFormat(OPERATION_MIME):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802
+        if event.mimeData().hasFormat(OPERATION_MIME):
+            operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
+            self.node_create_requested.emit(
+                operation_id,
+                self.mapToScene(_point_from_event(event)),
+            )
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected = [
+                item
+                for item in self.scene.selectedItems()
+                if isinstance(item, ConnectionItem)
+            ]
+            for item in selected:
+                self.delete_connection_item(item, notify=True)
+            if selected:
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def wheelEvent(self, event):  # noqa: N802
         if event.modifiers() & Qt.ControlModifier:
@@ -312,6 +610,14 @@ class PipelineGraphView(QGraphicsView):
     def mousePressEvent(self, event):  # noqa: N802
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
+        if (
+            self._pending_source is not None
+            and event.button() == Qt.LeftButton
+            and background_click
+        ):
+            self._cancel_pending_connection()
+            event.accept()
+            return
         if event.button() in (Qt.MiddleButton, Qt.RightButton) or (
             event.button() == Qt.LeftButton and background_click
         ):
@@ -342,6 +648,11 @@ class PipelineGraphView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def _select_node(self, node_id: str) -> None:
+        for card_id, card in self._cards.items():
+            card.set_selected(card_id == node_id)
+        self.node_selected.emit(node_id)
+
     def _start_panning(self, pos: QPoint) -> None:
         self._panning = True
         self._pan_start = QPoint(pos)
@@ -349,7 +660,50 @@ class PipelineGraphView(QGraphicsView):
         self._pan_v_value = self.verticalScrollBar().value()
         self.setCursor(Qt.ClosedHandCursor)
 
+    def _input_port_at(self, scene_pos: QPointF) -> PortItem | None:
+        for item in self.scene.items(scene_pos):
+            if isinstance(item, PortItem) and item.kind == "input":
+                return item
+        return None
+
+    def _cancel_pending_connection(self) -> None:
+        if self._pending_wire is not None:
+            self.scene.removeItem(self._pending_wire)
+        self._pending_source = None
+        self._pending_wire = None
+        self._connection_dragging = False
+
+    def _connection_exists(self, source_id: str, target_id: str) -> bool:
+        return any(
+            item.source_id == source_id and item.target_id == target_id
+            for item in self._connections
+        )
+
+
+def _wire_path(start: QPointF, end: QPointF) -> QPainterPath:
+    dx = max(80.0, abs(end.x() - start.x()) * 0.5)
+    path = QPainterPath(start)
+    path.cubicTo(
+        QPointF(start.x() + dx, start.y()),
+        QPointF(end.x() - dx, end.y()),
+        end,
+    )
+    return path
+
 
 def _point_from_event(event) -> QPoint:
     pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
     return pos.toPoint() if hasattr(pos, "toPoint") else pos
+
+
+def _view_for_scene(scene) -> PipelineGraphView | None:
+    if scene is None or not scene.views():
+        return None
+    view = scene.views()[0]
+    return view if isinstance(view, PipelineGraphView) else None
+
+
+def _exec_menu(menu: QMenu, pos):
+    if hasattr(menu, "exec"):
+        return menu.exec(pos)
+    return menu.exec_(pos)

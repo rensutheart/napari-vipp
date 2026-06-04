@@ -3,14 +3,20 @@ from __future__ import annotations
 from qtpy.QtCore import QPoint, QPointF, Qt
 
 from napari_vipp._graph import PipelineGraphView
-from napari_vipp.core.pipeline import PROTOTYPE_NODES
+from napari_vipp.core.pipeline import PrototypePipeline
+
+
+def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
+    pipeline = PrototypePipeline()
+    view = PipelineGraphView()
+    view.resize(980, 520)
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    return view, pipeline
 
 
 def test_graph_node_can_be_dragged_with_mouse(qtbot):
-    view = PipelineGraphView()
+    view, _pipeline = _build_view()
     qtbot.addWidget(view)
-    view.resize(980, 520)
-    view.build_demo_graph(PROTOTYPE_NODES)
     view.show()
     qtbot.waitExposed(view)
 
@@ -30,10 +36,8 @@ def test_graph_node_can_be_dragged_with_mouse(qtbot):
 
 
 def test_thumbnail_click_still_requests_inspection(qtbot):
-    view = PipelineGraphView()
+    view, _pipeline = _build_view()
     qtbot.addWidget(view)
-    view.resize(980, 520)
-    view.build_demo_graph(PROTOTYPE_NODES)
     view.show()
     qtbot.waitExposed(view)
 
@@ -51,10 +55,8 @@ def test_thumbnail_click_still_requests_inspection(qtbot):
 
 
 def test_dragging_node_keeps_viewport_stationary(qtbot):
-    view = PipelineGraphView()
+    view, _pipeline = _build_view()
     qtbot.addWidget(view)
-    view.resize(980, 520)
-    view.build_demo_graph(PROTOTYPE_NODES)
     view.show()
     qtbot.waitExposed(view)
 
