@@ -311,6 +311,16 @@ def max_intensity_projection(data, axis: int = 0) -> np.ndarray:
     return np.max(arr, axis=axis)
 
 
+def select_axis_slice(data, axis: int = 0, index: int = 0) -> np.ndarray:
+    """Select a single slice from any axis and remove that axis."""
+    arr = np.asarray(data)
+    if arr.ndim == 0:
+        return arr.copy()
+    axis = int(np.clip(int(axis), 0, arr.ndim - 1))
+    index = int(np.clip(int(index), 0, arr.shape[axis] - 1))
+    return np.take(arr, index, axis=axis)
+
+
 def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndarray:
     arr = _to_grayscale(np.asarray(data))
 

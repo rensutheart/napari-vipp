@@ -48,15 +48,24 @@ graph layout, parameters, and connections.
 ## Data State Visibility
 
 Each graph stage should make the flowing image state visible, not just the
-preview image. The first metadata pass exposes inferred shape, axes, z/time
-dimensions, RGB/channel status, stored dtype, bit depth, value range, and memory
-size in both compact node cards and the selected-node inspector.
+preview image. The metadata model should be OME-NGFF-inspired: each node output
+carries axis names, axis types, units, scale/origin transforms, shape, dtype,
+value range, and transform history. When an input layer has OME-NGFF
+`multiscales` axes, VIPP should use those directly. When the source is only a
+plain NumPy array, the UI may fall back to inferred axes, but must explicitly
+label that fallback so the user understands that the input axes still need to be
+declared or loaded from a richer source.
 
 Type conversion should be explicit in the graph. Converter nodes can turn a
 volume into `uint8`, `uint16`, `float32`, or `bool` output using either rescale,
 clip, or preserve-cast behavior. This keeps downstream batch/export workflows
 honest about when a 16-bit image became an 8-bit display-oriented
 representation, or when an intensity image became a logical mask.
+
+Axis subsetting should also be explicit. A generic Select Axis Slice node lets
+users select a single timepoint, channel, z-slice, or other axis index and drops
+that axis from downstream metadata. Future UI work should label these controls
+with axis names rather than only numeric axis indices.
 
 ## Legacy VIPP Node Migration
 

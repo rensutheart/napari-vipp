@@ -1,101 +1,298 @@
-"""Image metadata summaries for graph nodes and inspector panels."""
+"""OME-NGFF-inspired image state metadata for graph execution."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 
 RGB_CHANNELS = (3, 4)
 MAX_METADATA_VALUES = 500_000
+CHANNEL_COLLAPSE_OPERATIONS = {
+    "otsu_threshold",
+    "triangle_threshold",
+    "binary_threshold",
+    "adaptive_mean_threshold",
+    "adaptive_gaussian_threshold",
+}
 
 
 @dataclass(frozen=True)
-class ImageMetadata:
-    kind: str
-    shape: str
-    axes: str
-    dimensions: str
-    channels: str
-    timepoints: str
-    z_slices: str
+class AxisMetadata:
+    """Single array axis with OME-NGFF-like semantics."""
+
+    name: str
+    type: str
+    unit: str | None = None
+    scale: float = 1.0
+    translation: float = 0.0
+
+    @property
+    def short_label(self) -> str:
+        return self.name.upper() if len(self.name) == 1 else self.name
+
+    def to_dict(self) -> dict[str, object]:
+        data: dict[str, object] = {
+            "name": self.name,
+            "type": self.type,
+            "scale": self.scale,
+            "translation": self.translation,
+        }
+        if self.unit:
+            data["unit"] = self.unit
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> AxisMetadata:
+        name = str(data.get("name", "d"))
+        return cls(
+            name=name,
+            type=str(data.get("type", _axis_type_for_name(name))),
+            unit=str(data["unit"]) if data.get("unit") else None,
+            scale=_safe_float(data.get("scale"), 1.0),
+            translation=_safe_float(data.get("translation"), 0.0),
+        )
+
+
+@dataclass(frozen=True)
+class ImageState:
+    """Array metadata carried alongside every pipeline node output."""
+
+    shape: tuple[int, ...]
     dtype: str
+    kind: str
+    axes: tuple[AxisMetadata, ...]
     bit_depth: str
     value_range: str
     value_pattern: str
     memory: str
+    metadata_source: str
+    source_name: str = ""
+    history: tuple[str, ...] = ()
+
+    @property
+    def axis_order(self) -> str:
+        if not self.axes:
+            return "scalar"
+        labels = [axis.short_label for axis in self.axes]
+        if all(len(label) == 1 for label in labels):
+            return "".join(labels)
+        return ",".join(labels)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "shape": list(self.shape),
+            "dtype": self.dtype,
+            "kind": self.kind,
+            "axes": [axis.to_dict() for axis in self.axes],
+            "bit_depth": self.bit_depth,
+            "value_range": self.value_range,
+            "value_pattern": self.value_pattern,
+            "memory": self.memory,
+            "metadata_source": self.metadata_source,
+            "source_name": self.source_name,
+            "history": list(self.history),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> ImageState | None:
+        axes_data = data.get("axes")
+        if not isinstance(axes_data, list):
+            return None
+        try:
+            axes = tuple(
+                AxisMetadata.from_dict(axis)
+                for axis in axes_data
+                if isinstance(axis, dict)
+            )
+            return cls(
+                shape=tuple(int(value) for value in data.get("shape", ())),
+                dtype=str(data.get("dtype", "")),
+                kind=str(data.get("kind", "")),
+                axes=axes,
+                bit_depth=str(data.get("bit_depth", "")),
+                value_range=str(data.get("value_range", "")),
+                value_pattern=str(data.get("value_pattern", "")),
+                memory=str(data.get("memory", "")),
+                metadata_source=str(data.get("metadata_source", "VIPP carried state")),
+                source_name=str(data.get("source_name", "")),
+                history=tuple(str(step) for step in data.get("history", ())),
+            )
+        except Exception:
+            return None
 
 
-def summarize_image(data) -> ImageMetadata | None:
-    """Return a compact, inferred metadata model for array-like image data."""
+def image_state_from_array(
+    data,
+    *,
+    layer_metadata: dict | None = None,
+    source_name: str = "",
+    axes: tuple[AxisMetadata, ...] | None = None,
+    metadata_source: str | None = None,
+    history: tuple[str, ...] = (),
+) -> ImageState | None:
+    """Create a carried image state from array data and optional metadata."""
     if data is None:
         return None
 
     arr = np.asarray(data)
-    axes = infer_axes(arr)
-    return ImageMetadata(
-        kind=_kind_label(arr),
-        shape=_shape_label(arr.shape),
-        axes=axes,
-        dimensions=_dimensions_label(arr, axes),
-        channels=_channels_label(arr, axes),
-        timepoints=_axis_count_label(arr, axes, "T"),
-        z_slices=_axis_count_label(arr, axes, "Z"),
+    if axes is None:
+        axes, parsed_source, parsed_history = _axes_from_layer_metadata(
+            layer_metadata,
+            arr.shape,
+        )
+        if parsed_history:
+            history = parsed_history + history
+        metadata_source = metadata_source or parsed_source
+    else:
+        metadata_source = metadata_source or "VIPP transformed metadata"
+
+    if len(axes) != arr.ndim:
+        axes = infer_axis_metadata(arr)
+        metadata_source = "inferred from array shape"
+
+    return ImageState(
+        shape=tuple(int(size) for size in arr.shape),
         dtype=arr.dtype.name,
+        kind=_kind_label(arr, axes),
+        axes=axes,
         bit_depth=_bit_depth_label(arr.dtype),
         value_range=_value_range_label(arr),
         value_pattern=_value_pattern_label(arr),
         memory=_memory_label(arr.nbytes),
+        metadata_source=metadata_source or "inferred from array shape",
+        source_name=source_name,
+        history=history,
     )
 
 
-def format_compact_metadata(data) -> str:
+def transform_image_state(
+    data,
+    input_state: ImageState | None,
+    *,
+    operation_id: str,
+    operation_title: str,
+    params: dict[str, Any],
+) -> ImageState | None:
+    """Transform carried metadata after an operation has produced output data."""
+    if data is None:
+        return None
+    if input_state is None:
+        return image_state_from_array(
+            data,
+            metadata_source=f"inferred after {operation_title}",
+            history=(f"{operation_title}: metadata reconstructed from output shape",),
+        )
+
+    arr = np.asarray(data)
+    axes = _transformed_axes(
+        input_state,
+        arr,
+        operation_id=operation_id,
+        params=params,
+    )
+    metadata_source = input_state.metadata_source
+    if len(axes) != arr.ndim:
+        axes = infer_axis_metadata(arr)
+        metadata_source = f"inferred after {operation_title}"
+
+    return image_state_from_array(
+        arr,
+        axes=axes,
+        metadata_source=metadata_source,
+        source_name=input_state.source_name,
+        history=input_state.history
+        + (_operation_history(input_state, operation_id, operation_title, params),),
+    )
+
+
+def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
-    metadata = summarize_image(data)
-    if metadata is None:
+    state = _coerce_state(state_or_data)
+    if state is None:
         return "No output"
 
-    first = f"{metadata.axes} {metadata.shape} | {metadata.dtype}"
-    second_parts = [metadata.kind, metadata.bit_depth, f"range {metadata.value_range}"]
-    if metadata.value_pattern:
-        second_parts.insert(1, metadata.value_pattern)
+    first = f"{state.axis_order} {_shape_label(state.shape)} | {state.dtype}"
+    second_parts = [state.kind, state.bit_depth, f"range {state.value_range}"]
+    if state.value_pattern:
+        second_parts.insert(1, state.value_pattern)
+    if "inferred" in state.metadata_source:
+        second_parts.append("axes inferred")
     return first + "\n" + " | ".join(second_parts)
 
 
-def format_detailed_metadata(data) -> str:
+def format_detailed_metadata(state_or_data) -> str:
     """Multi-line metadata summary for the selected node inspector."""
-    metadata = summarize_image(data)
-    if metadata is None:
+    state = _coerce_state(state_or_data)
+    if state is None:
         return "No output yet."
 
     lines = [
-        f"Kind: {metadata.kind}",
-        f"Shape: {metadata.shape}",
-        f"Axes: {metadata.axes} (inferred)",
-        f"Dimensions: {metadata.dimensions}",
-        f"Channels: {metadata.channels}",
-        f"Timepoints: {metadata.timepoints}",
-        f"Z slices: {metadata.z_slices}",
-        f"Dtype: {metadata.dtype}",
-        f"Bit depth: {metadata.bit_depth}",
-        f"Value range: {metadata.value_range}",
+        f"Kind: {state.kind}",
+        f"Shape: {_shape_label(state.shape)}",
+        f"Axes: {_axes_detail_label(state)}",
+        f"Dimensions: {_dimensions_label(state)}",
+        f"Physical scale: {_scale_label(state)}",
+        f"Origin: {_origin_label(state)}",
+        f"Channels: {_axis_count_label(state, 'channel')}",
+        f"Timepoints: {_axis_count_label(state, 'time')}",
+        f"Z slices: {_named_axis_count_label(state, 'z')}",
+        f"Dtype: {state.dtype}",
+        f"Bit depth: {state.bit_depth}",
+        f"Value range: {state.value_range}",
     ]
-    if metadata.value_pattern:
-        lines.append(f"Value pattern: {metadata.value_pattern}")
-    lines.append(f"Memory: {metadata.memory}")
+    if state.value_pattern:
+        lines.append(f"Value pattern: {state.value_pattern}")
+    lines.extend(
+        [
+            f"Memory: {state.memory}",
+            f"Metadata source: {state.metadata_source}",
+        ]
+    )
+    if state.source_name:
+        lines.append(f"Source: {state.source_name}")
+    if state.history:
+        lines.append("History: " + " -> ".join(state.history[-4:]))
     return "\n".join(lines)
+
+
+def infer_axis_metadata(arr: np.ndarray) -> tuple[AxisMetadata, ...]:
+    """Infer common bioimage axes from shape when no explicit metadata exists."""
+    names = infer_axes(arr)
+    return _axis_metadata_from_order(names)
+
+
+def infer_axis_metadata_from_shape(shape: tuple[int, ...]) -> tuple[AxisMetadata, ...]:
+    """Infer axes from shape without allocating a same-shaped temporary array."""
+    names = _infer_axes_from_shape(shape)
+    return _axis_metadata_from_order(names)
+
+
+def _axis_metadata_from_order(names: str) -> tuple[AxisMetadata, ...]:
+    if names == "scalar":
+        return ()
+    return tuple(
+        AxisMetadata(name=name.lower(), type=_axis_type_for_name(name))
+        for name in _split_axis_order(names)
+    )
 
 
 def infer_axes(arr: np.ndarray) -> str:
     """Infer common bioimage axes from shape alone."""
-    if arr.ndim == 0:
+    return _infer_axes_from_shape(tuple(arr.shape))
+
+
+def _infer_axes_from_shape(shape: tuple[int, ...]) -> str:
+    ndim = len(shape)
+    if ndim == 0:
         return "scalar"
-    if arr.ndim == 1:
+    if ndim == 1:
         return "X"
 
-    has_channels = _has_channel_axis(arr)
+    has_channels = len(shape) >= 3 and shape[-1] in RGB_CHANNELS
     if has_channels:
-        spatial_ndim = arr.ndim - 1
+        spatial_ndim = ndim - 1
         if spatial_ndim == 2:
             return "YXC"
         if spatial_ndim == 3:
@@ -104,20 +301,267 @@ def infer_axes(arr: np.ndarray) -> str:
             return "TZYXC"
         return _fallback_axes(spatial_ndim - 2) + "YXC"
 
-    if arr.ndim == 2:
+    if ndim == 2:
         return "YX"
-    if arr.ndim == 3:
+    if ndim == 3:
         return "ZYX"
-    if arr.ndim == 4:
+    if ndim == 4:
         return "TZYX"
-    return _fallback_axes(arr.ndim - 2) + "YX"
+    return _fallback_axes(ndim - 2) + "YX"
 
 
-def _kind_label(arr: np.ndarray) -> str:
+def _axes_from_layer_metadata(
+    layer_metadata: dict | None,
+    shape: tuple[int, ...],
+) -> tuple[tuple[AxisMetadata, ...], str, tuple[str, ...]]:
+    if not isinstance(layer_metadata, dict):
+        return infer_axis_metadata_from_shape(shape), "inferred from array shape", ()
+
+    carried = layer_metadata.get("vipp_image_state")
+    if isinstance(carried, dict):
+        state = ImageState.from_dict(carried)
+        if state is not None and len(state.axes) == len(shape):
+            return state.axes, "VIPP carried state", state.history
+
+    ome = layer_metadata.get("ome")
+    if isinstance(ome, dict):
+        axes = _axes_from_multiscales(ome.get("multiscales"), shape)
+        if axes is not None:
+            return axes, "OME-NGFF multiscales", ()
+
+    axes = _axes_from_multiscales(layer_metadata.get("multiscales"), shape)
+    if axes is not None:
+        return axes, "OME-NGFF multiscales", ()
+
+    axes_value = (
+        layer_metadata.get("axes")
+        or layer_metadata.get("axis_order")
+        or layer_metadata.get("vipp_axis_order")
+    )
+    axes = _axes_from_value(axes_value, shape)
+    if axes is not None:
+        return axes, "napari layer axes metadata", ()
+
+    return infer_axis_metadata_from_shape(shape), "inferred from array shape", ()
+
+
+def _axes_from_multiscales(value, shape: tuple[int, ...]):
+    if not isinstance(value, list) or not value:
+        return None
+    multiscale = value[0]
+    if not isinstance(multiscale, dict):
+        return None
+    axes = _axes_from_value(multiscale.get("axes"), shape)
+    if axes is None:
+        return None
+
+    datasets = multiscale.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        return axes
+    dataset = datasets[0]
+    if not isinstance(dataset, dict):
+        return axes
+
+    scales: list[float] | None = None
+    translations: list[float] | None = None
+    transforms = dataset.get("coordinateTransformations")
+    if isinstance(transforms, list):
+        for transform in transforms:
+            if not isinstance(transform, dict):
+                continue
+            values = transform.get("scale")
+            if transform.get("type") == "scale" and isinstance(values, list):
+                scales = [_safe_float(value, 1.0) for value in values]
+            values = transform.get("translation")
+            if transform.get("type") == "translation" and isinstance(values, list):
+                translations = [_safe_float(value, 0.0) for value in values]
+
+    if scales is None and translations is None:
+        return axes
+    return tuple(
+        replace(
+            axis,
+            scale=scales[index] if scales and index < len(scales) else axis.scale,
+            translation=(
+                translations[index]
+                if translations and index < len(translations)
+                else axis.translation
+            ),
+        )
+        for index, axis in enumerate(axes)
+    )
+
+
+def _axes_from_value(value, shape: tuple[int, ...]):
+    if isinstance(value, str):
+        names = _split_axis_order(value)
+        if len(names) != len(shape):
+            return None
+        return tuple(
+            AxisMetadata(name=name.lower(), type=_axis_type_for_name(name))
+            for name in names
+        )
+    if isinstance(value, list):
+        if len(value) != len(shape):
+            return None
+        axes: list[AxisMetadata] = []
+        for index, axis in enumerate(value):
+            if isinstance(axis, str):
+                axes.append(
+                    AxisMetadata(
+                        name=axis.lower(),
+                        type=_axis_type_for_name(axis),
+                    )
+                )
+            elif isinstance(axis, dict):
+                axis_name = str(axis.get("name", f"d{index}"))
+                axes.append(
+                    AxisMetadata(
+                        name=axis_name,
+                        type=str(axis.get("type", _axis_type_for_name(axis_name))),
+                        unit=str(axis["unit"]) if axis.get("unit") else None,
+                    )
+                )
+            else:
+                return None
+        return tuple(axes)
+    return None
+
+
+def _transformed_axes(
+    input_state: ImageState,
+    arr: np.ndarray,
+    *,
+    operation_id: str,
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    axes = input_state.axes
+    if operation_id == "crop_stack":
+        axes = _crop_shifted_axes(axes, params)
+
+    if arr.ndim == len(axes):
+        return axes
+
+    if operation_id in {"mip", "select_axis_slice"} and arr.ndim == len(axes) - 1:
+        axis_index = _clamped_axis(params.get("axis", 0), len(axes))
+        return _remove_axis(axes, axis_index)
+
+    if operation_id == "extract_channel" and arr.ndim == len(axes) - 1:
+        channel_index = _channel_axis_index(axes)
+        if channel_index is not None:
+            return _remove_axis(axes, channel_index)
+
+    if (
+        operation_id in CHANNEL_COLLAPSE_OPERATIONS | {"convert_dtype"}
+        and arr.ndim == len(axes) - 1
+    ):
+        channel_index = _channel_axis_index(axes)
+        if channel_index is not None:
+            return _remove_axis(axes, channel_index)
+
+    return axes
+
+
+def _crop_shifted_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    spatial = [index for index, axis in enumerate(axes) if axis.type == "space"]
+    if len(spatial) < 2:
+        return axes
+
+    y_index, x_index = spatial[-2], spatial[-1]
+    top = _safe_float(params.get("top"), 0.0)
+    left = _safe_float(params.get("left"), 0.0)
+    shifted = list(axes)
+    shifted[y_index] = _translated_axis(shifted[y_index], top)
+    shifted[x_index] = _translated_axis(shifted[x_index], left)
+    return tuple(shifted)
+
+
+def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:
+    return replace(axis, translation=axis.translation + pixels * axis.scale)
+
+
+def _remove_axis(
+    axes: tuple[AxisMetadata, ...],
+    axis_index: int,
+) -> tuple[AxisMetadata, ...]:
+    return tuple(axis for index, axis in enumerate(axes) if index != axis_index)
+
+
+def _operation_history(
+    input_state: ImageState,
+    operation_id: str,
+    operation_title: str,
+    params: dict[str, Any],
+) -> str:
+    if operation_id == "mip":
+        axis = _axis_label(input_state.axes, params.get("axis", 0))
+        return f"{operation_title}: projected {axis}"
+    if operation_id == "select_axis_slice":
+        axis = _axis_label(input_state.axes, params.get("axis", 0))
+        return f"{operation_title}: selected {axis}[{int(params.get('index', 0))}]"
+    if operation_id == "extract_channel":
+        return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
+    if operation_id == "crop_stack":
+        return (
+            f"{operation_title}: cropped top={int(params.get('top', 0))}, "
+            f"bottom={int(params.get('bottom', 0))}, "
+            f"left={int(params.get('left', 0))}, right={int(params.get('right', 0))}"
+        )
+    if operation_id == "convert_dtype":
+        return (
+            f"{operation_title}: {params.get('output_dtype', 'uint8')} "
+            f"via {params.get('scaling', 'rescale')}"
+        )
+    return operation_title
+
+
+def _axis_label(axes: tuple[AxisMetadata, ...], axis_value) -> str:
+    if not axes:
+        return "axis 0"
+    axis_index = _clamped_axis(axis_value, len(axes))
+    axis = axes[axis_index]
+    return f"{axis.name} axis ({axis_index})"
+
+
+def _clamped_axis(value, ndim: int) -> int:
+    if ndim <= 0:
+        return 0
+    try:
+        axis = int(value)
+    except Exception:
+        axis = 0
+    return min(max(axis, 0), ndim - 1)
+
+
+def _channel_axis_index(axes: tuple[AxisMetadata, ...]) -> int | None:
+    for index, axis in enumerate(axes):
+        if axis.type == "channel" or axis.name.lower() == "c":
+            return index
+    return None
+
+
+def _coerce_state(state_or_data) -> ImageState | None:
+    if state_or_data is None:
+        return None
+    if isinstance(state_or_data, ImageState):
+        return state_or_data
+    return image_state_from_array(state_or_data)
+
+
+def _kind_label(arr: np.ndarray, axes: tuple[AxisMetadata, ...]) -> str:
     if arr.dtype == bool:
         return "binary mask"
-    if _has_channel_axis(arr):
-        return "RGBA image" if arr.shape[-1] == 4 else "RGB image"
+    channel_axis = _channel_axis_index(axes)
+    if channel_axis is not None:
+        channel_count = arr.shape[channel_axis]
+        if channel_axis == arr.ndim - 1 and channel_count == 3:
+            return "RGB image"
+        if channel_axis == arr.ndim - 1 and channel_count == 4:
+            return "RGBA image"
+        return "multi-channel image"
     if np.issubdtype(arr.dtype, np.number):
         return "intensity image"
     return "array"
@@ -127,29 +571,55 @@ def _shape_label(shape: tuple[int, ...]) -> str:
     return " x ".join(str(size) for size in shape) if shape else "scalar"
 
 
-def _dimensions_label(arr: np.ndarray, axes: str) -> str:
-    if len(axes) != arr.ndim:
-        return _shape_label(arr.shape)
+def _axes_detail_label(state: ImageState) -> str:
+    if not state.axes:
+        return "scalar"
     return ", ".join(
-        f"{axis}={size}" for axis, size in zip(axes, arr.shape, strict=True)
+        f"{axis.name}({axis.type})" for axis in state.axes
     )
 
 
-def _channels_label(arr: np.ndarray, axes: str) -> str:
-    if "C" not in axes or len(axes) != arr.ndim:
-        return "none inferred"
-    count = arr.shape[axes.index("C")]
-    if count == 3:
-        return "RGB (3)"
-    if count == 4:
-        return "RGBA (4)"
-    return str(count)
+def _dimensions_label(state: ImageState) -> str:
+    if len(state.axes) != len(state.shape):
+        return _shape_label(state.shape)
+    return ", ".join(
+        f"{axis.name}={size}"
+        for axis, size in zip(state.axes, state.shape, strict=True)
+    )
 
 
-def _axis_count_label(arr: np.ndarray, axes: str, axis: str) -> str:
-    if axis not in axes or len(axes) != arr.ndim:
-        return "none inferred"
-    return str(arr.shape[axes.index(axis)])
+def _scale_label(state: ImageState) -> str:
+    axes = [axis for axis in state.axes if axis.type in {"space", "time"}]
+    if not axes:
+        return "not specified"
+    return ", ".join(
+        f"{axis.name}={_format_number(axis.scale)} {axis.unit or 'pixel'}"
+        for axis in axes
+    )
+
+
+def _origin_label(state: ImageState) -> str:
+    axes = [axis for axis in state.axes if axis.type in {"space", "time"}]
+    if not axes:
+        return "not specified"
+    return ", ".join(
+        f"{axis.name}={_format_number(axis.translation)} {axis.unit or 'pixel'}"
+        for axis in axes
+    )
+
+
+def _axis_count_label(state: ImageState, axis_type: str) -> str:
+    for axis, size in zip(state.axes, state.shape, strict=False):
+        if axis.type == axis_type:
+            return str(size)
+    return "none"
+
+
+def _named_axis_count_label(state: ImageState, name: str) -> str:
+    for axis, size in zip(state.axes, state.shape, strict=False):
+        if axis.name.lower() == name:
+            return str(size)
+    return "none"
 
 
 def _bit_depth_label(dtype: np.dtype) -> str:
@@ -223,6 +693,24 @@ def _memory_label(nbytes: int) -> str:
     return f"{value:.2f} TB"
 
 
+def _split_axis_order(value: str) -> list[str]:
+    value = value.strip()
+    if "," in value:
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return [part for part in value if not part.isspace()]
+
+
+def _axis_type_for_name(name: str) -> str:
+    normalized = name.lower()
+    if normalized == "t":
+        return "time"
+    if normalized == "c":
+        return "channel"
+    if normalized in {"x", "y", "z"}:
+        return "space"
+    return "unknown"
+
+
 def _fallback_axes(prefix_count: int) -> str:
     if prefix_count <= 0:
         return ""
@@ -235,3 +723,13 @@ def _fallback_axes(prefix_count: int) -> str:
 
 def _has_channel_axis(arr: np.ndarray) -> bool:
     return arr.ndim >= 3 and arr.shape[-1] in RGB_CHANNELS
+
+
+def _safe_float(value, default: float) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    if not np.isfinite(number):
+        return default
+    return number

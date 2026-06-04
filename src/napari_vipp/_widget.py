@@ -989,6 +989,8 @@ class VippWidget(QWidget):
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
             return self._axis_bounds(node_id, spec)
+        if spec.name == "index":
+            return self._slice_index_bounds(node_id, spec)
         if spec.name in {"top", "bottom", "left", "right"}:
             return self._crop_bounds(node_id, spec)
         if spec.name == "channel":
@@ -1073,6 +1075,17 @@ class VippWidget(QWidget):
         maximum = max(np.asarray(data).ndim - 1, 0)
         return ParameterBounds(0, maximum, 1, 0)
 
+    def _slice_index_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        node = self.pipeline.nodes.get(node_id)
+        if data is None or node is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        arr = np.asarray(data)
+        if arr.ndim == 0:
+            return ParameterBounds(0, 0, 1, 0)
+        axis = int(np.clip(int(node.params.get("axis", 0)), 0, arr.ndim - 1))
+        return ParameterBounds(0, max(arr.shape[axis] - 1, 0), 1, 0)
+
     def _crop_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
@@ -1109,6 +1122,8 @@ class VippWidget(QWidget):
 
     def _on_param_changed(self, name: str, value) -> None:
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if name == "axis":
+            self._refresh_selected_parameter_controls()
         self._debounce_timer.start()
 
     def _apply_auto_contrast(self) -> None:
@@ -1154,12 +1169,20 @@ class VippWidget(QWidget):
         self._last_input_layer_name = layer.name
         self._restore_hidden_input_layers(except_layer=layer)
         try:
-            self.pipeline.run(layer.data)
+            self.pipeline.run(
+                layer.data,
+                input_metadata=getattr(layer, "metadata", None),
+                input_name=getattr(layer, "name", ""),
+            )
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
             return
         if self._refresh_selected_parameter_controls():
-            self.pipeline.run(layer.data)
+            self.pipeline.run(
+                layer.data,
+                input_metadata=getattr(layer, "metadata", None),
+                input_name=getattr(layer, "name", ""),
+            )
         self._hide_input_layer_for_inspection(layer)
 
         self._update_thumbnails()
@@ -1185,7 +1208,10 @@ class VippWidget(QWidget):
         )
         previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
-            self.graph_view.set_node_metadata(node_id, format_compact_metadata(data))
+            self.graph_view.set_node_metadata(
+                node_id,
+                format_compact_metadata(self.pipeline.output_states.get(node_id)),
+            )
             self.graph_view.set_node_output_type(
                 node_id,
                 self._node_output_type(node_id),
@@ -1221,8 +1247,8 @@ class VippWidget(QWidget):
         )
 
     def _update_metadata_panel(self) -> None:
-        data = self.pipeline.outputs.get(self._selected_node_id)
-        self.metadata_label.setText(format_detailed_metadata(data))
+        state = self.pipeline.output_states.get(self._selected_node_id)
+        self.metadata_label.setText(format_detailed_metadata(state))
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)
@@ -1248,7 +1274,11 @@ class VippWidget(QWidget):
         self._set_or_add_generated_layer(
             self._inspect_layer_name,
             data,
-            metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
+            metadata={
+                "napari_vipp_kind": "inspect",
+                "node_id": node_id,
+                "vipp_image_state": self._node_state_dict(node_id),
+            },
             role="inspect",
         )
         self._keep_active_pin_on_top()
@@ -1283,6 +1313,7 @@ class VippWidget(QWidget):
             "data_kind": self._data_kind(data),
             "display_kind": self._display_kind(data, "pinned"),
             "display_ndim": np.asarray(display_data).ndim,
+            "vipp_image_state": self._node_state_dict(node_id),
         }
         layer = self._active_pinned_layer()
         if layer is not None and self._generated_layer_needs_replacement(
@@ -1334,7 +1365,11 @@ class VippWidget(QWidget):
             self._set_or_add_generated_layer(
                 self._inspect_layer_name,
                 self.pipeline.outputs[node_id],
-                metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
+                metadata={
+                    "napari_vipp_kind": "inspect",
+                    "node_id": node_id,
+                    "vipp_image_state": self._node_state_dict(node_id),
+                },
                 role="inspect",
             )
             self._keep_active_pin_on_top()
@@ -1527,6 +1562,10 @@ class VippWidget(QWidget):
 
     def _node_title(self, node_id: str) -> str:
         return self.pipeline.nodes[node_id].title
+
+    def _node_state_dict(self, node_id: str) -> dict | None:
+        state = self.pipeline.output_states.get(node_id)
+        return state.to_dict() if state is not None else None
 
     def _is_vipp_generated_layer(self, layer) -> bool:
         try:

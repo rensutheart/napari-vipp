@@ -74,11 +74,11 @@ class _LayerList(list):
 
 
 class _Viewer:
-    def __init__(self, data=None):
+    def __init__(self, data=None, metadata=None):
         if data is None:
             data = np.zeros((4, 16, 18), dtype=np.float32)
         self.layers = _LayerList(
-            [_Layer(data, "input volume")]
+            [_Layer(data, "input volume", metadata=metadata)]
         )
         self.dims = _Dims()
 
@@ -384,11 +384,83 @@ def test_selected_node_shows_output_metadata(qtbot):
     card_text = widget.graph_view._cards["input"].metadata_label.text()
 
     assert "Shape: 4 x 16 x 18" in inspector_text
-    assert "Axes: ZYX (inferred)" in inspector_text
+    assert "Axes: z(space), y(space), x(space)" in inspector_text
+    assert "Dimensions: z=4, y=16, x=18" in inspector_text
     assert "Z slices: 4" in inspector_text
     assert "Dtype: uint16" in inspector_text
     assert "Bit depth: 16-bit integer" in inspector_text
+    assert "Metadata source: inferred from array shape" in inspector_text
     assert "ZYX 4 x 16 x 18 | uint16" in card_text
+
+
+def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    metadata = {
+        "ome": {
+            "version": "0.5",
+            "multiscales": [
+                {
+                    "axes": [
+                        {"name": "t", "type": "time", "unit": "second"},
+                        {"name": "c", "type": "channel"},
+                        {"name": "z", "type": "space", "unit": "micrometer"},
+                        {"name": "y", "type": "space", "unit": "micrometer"},
+                        {"name": "x", "type": "space", "unit": "micrometer"},
+                    ],
+                    "datasets": [
+                        {
+                            "path": "0",
+                            "coordinateTransformations": [
+                                {"type": "scale", "scale": [1, 1, 0.5, 0.2, 0.2]},
+                                {
+                                    "type": "translation",
+                                    "translation": [0, 0, 10, 0, 0],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    viewer = _Viewer(data, metadata=metadata)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    text = widget.metadata_label.text()
+
+    assert "Axes: t(time), c(channel), z(space), y(space), x(space)" in text
+    assert "Dimensions: t=2, c=3, z=4, y=5, x=6" in text
+    assert "Physical scale: t=1 second, z=0.5 micrometer" in text
+    assert "Origin: t=0 second, z=10 micrometer" in text
+    assert "Channels: 3" in text
+    assert "Timepoints: 2" in text
+    assert "Metadata source: OME-NGFF multiscales" in text
+
+
+def test_select_axis_slice_updates_metadata_axes(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    widget._parameter_widgets["axis"].value_box.setValue(1)
+    widget.run_pipeline()
+    widget._parameter_widgets["index"].value_box.setValue(2)
+    widget.run_pipeline()
+
+    widget.graph_view.select_node(node.id)
+
+    text = widget.metadata_label.text()
+
+    assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
+    assert "Dimensions: t=2, z=4, y=5, x=6" in text
+    assert "Channels: none" in text
+    assert "History: Select Axis Slice: selected c axis (1)[2]" in text
 
 
 def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):

@@ -24,6 +24,7 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    select_axis_slice,
     top_hat,
     triangle_threshold,
     volume_filter,
@@ -57,6 +58,7 @@ def test_vipp_operation_nodes_are_registered():
         "volume_filter",
         "extract_channel",
         "convert_dtype",
+        "select_axis_slice",
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
@@ -115,6 +117,15 @@ def test_contrast_gamma_crop_and_extract_channel():
     assert cropped.shape == (2, 3, 3, 3)
     assert channel.shape == (2, 6, 7)
     assert channel.max() == 128
+
+
+def test_select_axis_slice_removes_requested_axis():
+    data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+
+    selected = select_axis_slice(data, axis=1, index=2)
+
+    assert selected.shape == (2, 4)
+    np.testing.assert_array_equal(selected, data[:, 2, :])
 
 
 def test_contrast_stretch_uses_linear_offset_without_abs():

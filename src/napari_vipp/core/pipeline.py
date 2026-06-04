@@ -7,6 +7,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from napari_vipp.core.metadata import (
+    ImageState,
+    image_state_from_array,
+    transform_image_state,
+)
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
@@ -31,6 +36,7 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    select_axis_slice,
     top_hat,
     triangle_threshold,
     volume_filter,
@@ -228,6 +234,18 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("axis", "Axis", "int", 0, 0, 5, 1),
         ),
         max_intensity_projection,
+    ),
+    OperationSpec(
+        "select_axis_slice",
+        "Select Axis Slice",
+        "Input",
+        "array",
+        "any",
+        (
+            ParameterSpec("axis", "Axis", "int", 0, 0, 5, 1),
+            ParameterSpec("index", "Index", "int", 0, 0, 1024, 1),
+        ),
+        select_axis_slice,
     ),
     OperationSpec(
         "otsu_threshold",
@@ -451,6 +469,7 @@ class PrototypePipeline:
         self.nodes: dict[str, GraphNode] = {}
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
+        self.output_states: dict[str, ImageState | None] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -458,6 +477,7 @@ class PrototypePipeline:
         self.nodes = {node.id: _clone_node(node) for node in PROTOTYPE_NODES}
         self.connections = list(PROTOTYPE_CONNECTIONS)
         self.outputs = {}
+        self.output_states = {}
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -481,6 +501,7 @@ class PrototypePipeline:
         )
         self.nodes[node.id] = node
         self.outputs[node.id] = None
+        self.output_states[node.id] = None
         return node
 
     def connect(self, source_id: str, target_id: str) -> ConnectionResult:
@@ -548,8 +569,20 @@ class PrototypePipeline:
             return None
         return self.outputs.get(sources[0])
 
-    def run(self, input_data) -> dict[str, Any]:
+    def input_state_for_node(self, node_id: str) -> ImageState | None:
+        sources = self._input_sources(node_id)
+        if not sources:
+            return None
+        return self.output_states.get(sources[0])
+
+    def run(
+        self,
+        input_data,
+        input_metadata: dict | None = None,
+        input_name: str = "",
+    ) -> dict[str, Any]:
         self.outputs = {node_id: None for node_id in self.nodes}
+        self.output_states = {node_id: None for node_id in self.nodes}
         remaining = set(self.nodes)
         completed: set[str] = set()
 
@@ -563,24 +596,49 @@ class PrototypePipeline:
                 break
 
             for node_id in runnable:
-                self.outputs[node_id] = self._run_node(node_id, input_data)
+                output, state = self._run_node(
+                    node_id,
+                    input_data,
+                    input_metadata,
+                    input_name,
+                )
+                self.outputs[node_id] = output
+                self.output_states[node_id] = state
                 remaining.remove(node_id)
                 completed.add(node_id)
         return self.outputs
 
-    def _run_node(self, node_id: str, input_data):
+    def _run_node(
+        self,
+        node_id: str,
+        input_data,
+        input_metadata: dict | None,
+        input_name: str,
+    ):
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         if not spec.has_input:
-            return input_data
+            return input_data, image_state_from_array(
+                input_data,
+                layer_metadata=input_metadata,
+                source_name=input_name,
+            )
 
         sources = self._input_sources(node_id)
         if not sources:
-            return None
+            return None, None
         source_output = self.outputs.get(sources[0])
         if source_output is None or spec.function is None:
-            return None
-        return spec.function(source_output, **node.params)
+            return None, None
+
+        output = spec.function(source_output, **node.params)
+        return output, transform_image_state(
+            output,
+            self.output_states.get(sources[0]),
+            operation_id=node.operation_id,
+            operation_title=node.title,
+            params=node.params,
+        )
 
     def _input_sources(self, node_id: str) -> list[str]:
         return [
