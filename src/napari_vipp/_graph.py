@@ -51,6 +51,7 @@ class NodeCard(QFrame):
         self._can_pin = can_pin
         self._selected = False
         self._pinned = False
+        self._preview_enabled = True
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(220)
@@ -110,7 +111,18 @@ class NodeCard(QFrame):
             self.pin_button.setText("Pin")
         self._refresh_style()
 
+    def set_preview_enabled(self, enabled: bool) -> None:
+        self._preview_enabled = enabled
+        self.preview.setVisible(enabled)
+        if not enabled:
+            self.preview.setText("")
+            self.preview.setPixmap(QPixmap())
+        elif self.preview.pixmap() is None:
+            self.preview.setText("No preview")
+
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
+        if not self._preview_enabled:
+            return
         if thumbnail is None:
             self.preview.setText("Preview off")
             self.preview.setPixmap(QPixmap())
@@ -551,6 +563,17 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if proxy is not None:
             proxy.set_output_type(output_type)
+
+    def set_node_preview_enabled(self, node_id: str, enabled: bool) -> None:
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        card.set_preview_enabled(enabled)
+        card.adjustSize()
+        proxy.refresh_ports()
+        for connection in proxy.connections:
+            connection.update_path()
 
     def select_node(self, node_id: str) -> None:
         if node_id in self._cards:

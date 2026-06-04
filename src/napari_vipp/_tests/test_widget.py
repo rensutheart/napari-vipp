@@ -172,6 +172,72 @@ def test_nodes_without_parameters_hide_parameter_group(qtbot):
     assert widget.parameter_group.isHidden()
 
 
+def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    gaussian_card = widget.graph_view._cards["gaussian"]
+    threshold_card = widget.graph_view._cards["threshold"]
+
+    assert widget.thumbnail_checkbox.isChecked()
+    assert not gaussian_card.preview.isHidden()
+    assert not threshold_card.preview.isHidden()
+
+    widget.thumbnail_checkbox.setChecked(False)
+
+    assert "gaussian" in widget._preview_disabled_node_ids
+    assert gaussian_card.preview.isHidden()
+    assert not threshold_card.preview.isHidden()
+
+    calls = []
+
+    def fake_make_preview(data, mode, current_step):
+        calls.append(data)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget._update_thumbnails()
+
+    assert len(calls) == 2
+
+
+def test_node_preview_toggle_is_restored_when_reenabled(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    card = widget.graph_view._cards["gaussian"]
+
+    widget.thumbnail_checkbox.setChecked(False)
+    widget.thumbnail_checkbox.setChecked(True)
+
+    assert "gaussian" not in widget._preview_disabled_node_ids
+    assert not card.preview.isHidden()
+
+
+def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    calls = []
+
+    def fake_make_preview(data, mode, current_step):
+        calls.append(data)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget.preview_mode_combo.setCurrentText("Off")
+
+    assert calls == []
+    assert widget.graph_view._cards["input"].preview.isHidden()
+    assert widget.graph_view._cards["gaussian"].preview.isHidden()
+    assert widget.graph_view._cards["threshold"].preview.isHidden()
+
+
 def test_palette_adds_node_and_connects_branch(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

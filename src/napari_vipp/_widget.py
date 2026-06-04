@@ -188,6 +188,7 @@ class VippWidget(QWidget):
         self._active_pinned_node_id: str | None = None
         self._inspect_layer_name = "VIPP Inspect"
         self._last_input_layer_name: str | None = None
+        self._preview_disabled_node_ids: set[str] = set()
 
         self.layer_combo = QComboBox()
         self.layer_combo.setMinimumWidth(220)
@@ -210,6 +211,8 @@ class VippWidget(QWidget):
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
+        self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
+        self.thumbnail_checkbox.setChecked(True)
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
@@ -257,6 +260,7 @@ class VippWidget(QWidget):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.addWidget(self.selected_title)
+        layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.parameter_group)
 
         actions = QHBoxLayout()
@@ -272,6 +276,9 @@ class VippWidget(QWidget):
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
+        self.thumbnail_checkbox.toggled.connect(
+            self._on_selected_preview_toggled,
+        )
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -311,6 +318,7 @@ class VippWidget(QWidget):
 
     def _reset_graph(self) -> None:
         self.pipeline.reset_starter_graph()
+        self._preview_disabled_node_ids.clear()
         self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
         self._select_node("gaussian")
@@ -368,6 +376,7 @@ class VippWidget(QWidget):
         self._selected_node_id = node_id
         node = self.pipeline.nodes[node_id]
         self.selected_title.setText(node.title)
+        self._sync_preview_ui()
         self._render_parameters(node_id)
         self._sync_pin_ui()
         self._inspect_selected_node()
@@ -501,15 +510,22 @@ class VippWidget(QWidget):
         current_step = (
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
+        previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
-            preview = make_preview(data, mode=mode, current_step=current_step)
-            thumbnail = normalize_thumbnail(preview)
-            self.graph_view.set_thumbnail(node_id, thumbnail)
             self.graph_view.set_node_output_type(
                 node_id,
                 self._node_output_type(node_id),
             )
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
+            preview_enabled = (
+                previews_visible_globally and self._node_preview_enabled(node_id)
+            )
+            self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
+            if not preview_enabled:
+                continue
+            preview = make_preview(data, mode=mode, current_step=current_step)
+            thumbnail = normalize_thumbnail(preview)
+            self.graph_view.set_thumbnail(node_id, thumbnail)
         if (
             self._active_pinned_node_id is not None
             and not self._node_can_pin(self._active_pinned_node_id)
@@ -517,6 +533,18 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         else:
             self._sync_pin_ui()
+
+    def _on_selected_preview_toggled(self, checked: bool) -> None:
+        node_id = self._selected_node_id
+        if checked:
+            self._preview_disabled_node_ids.discard(node_id)
+        else:
+            self._preview_disabled_node_ids.add(node_id)
+        self._update_thumbnails()
+        state = "enabled" if checked else "disabled"
+        self.status_label.setText(
+            f"Thumbnail preview {state} for '{self._node_title(node_id)}'."
+        )
 
     def inspect_node(self, node_id: str) -> None:
         data = self.pipeline.outputs.get(node_id)
@@ -757,6 +785,15 @@ class VippWidget(QWidget):
             self.pin_button.setText("Unpin selected")
         else:
             self.pin_button.setText("Pin selected")
+
+    def _sync_preview_ui(self) -> None:
+        with QSignalBlocker(self.thumbnail_checkbox):
+            self.thumbnail_checkbox.setChecked(
+                self._node_preview_enabled(self._selected_node_id)
+            )
+
+    def _node_preview_enabled(self, node_id: str) -> bool:
+        return node_id not in self._preview_disabled_node_ids
 
     def _node_can_pin(self, node_id: str) -> bool:
         node = self.pipeline.nodes.get(node_id)
