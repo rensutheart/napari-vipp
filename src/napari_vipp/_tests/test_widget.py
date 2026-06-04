@@ -105,6 +105,16 @@ class _Viewer:
         return layer
 
 
+def _palette_item(widget, operation_id):
+    for category_index in range(widget.palette.topLevelItemCount()):
+        category = widget.palette.topLevelItem(category_index)
+        for child_index in range(category.childCount()):
+            item = category.child(child_index)
+            if item.data(0, Qt.UserRole) == operation_id:
+                return item
+    raise AssertionError(f"Palette item not found: {operation_id}")
+
+
 def test_widget_builds_graph_and_inspects_node(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -218,6 +228,33 @@ def test_palette_has_bottom_scroll_slack(qtbot):
     assert spacer.sizeHint(0).height() >= 36
 
 
+def test_palette_search_filters_nodes_fuzzily(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.palette_search.setText("gblr")
+
+    assert not _palette_item(widget, "gaussian_blur").isHidden()
+    assert _palette_item(widget, "median_filter").isHidden()
+    assert widget.palette._no_results_item.isHidden()
+
+    widget.palette_search.clear()
+
+    assert not _palette_item(widget, "median_filter").isHidden()
+
+
+def test_palette_search_shows_no_result_message(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.palette_search.setText("zzzz")
+
+    assert not widget.palette._no_results_item.isHidden()
+    assert _palette_item(widget, "gaussian_blur").isHidden()
+
+
 def test_dock_widget_can_shrink_vertically(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -232,13 +269,13 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    assert not widget.palette.isHidden()
+    assert not widget.palette_panel.isHidden()
     assert not widget.inspector_panel.isHidden()
 
     widget.left_panel_toggle.click()
     widget.right_panel_toggle.click()
 
-    assert widget.palette.isHidden()
+    assert widget.palette_panel.isHidden()
     assert widget.inspector_panel.isHidden()
     assert not widget.left_panel_toggle._expanded
     assert not widget.right_panel_toggle._expanded
@@ -248,7 +285,7 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
     widget.left_panel_toggle.click()
     widget.right_panel_toggle.click()
 
-    assert not widget.palette.isHidden()
+    assert not widget.palette_panel.isHidden()
     assert not widget.inspector_panel.isHidden()
     assert widget.left_panel_toggle._expanded
     assert widget.right_panel_toggle._expanded

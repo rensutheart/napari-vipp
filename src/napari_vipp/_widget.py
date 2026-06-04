@@ -18,6 +18,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -79,14 +80,27 @@ class NodePalette(QTreeWidget):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._category_items: list[QTreeWidgetItem] = []
+        self._operation_items: list[QTreeWidgetItem] = []
         for category, specs in groups.items():
             category_item = QTreeWidgetItem([category])
             category_item.setFlags(category_item.flags() & ~Qt.ItemIsDragEnabled)
             self.addTopLevelItem(category_item)
+            self._category_items.append(category_item)
             for spec in specs:
                 item = QTreeWidgetItem([spec.title])
                 item.setData(0, Qt.UserRole, spec.id)
+                item.setData(
+                    0,
+                    Qt.UserRole + 1,
+                    f"{category} {spec.title} {spec.id}",
+                )
                 category_item.addChild(item)
+                self._operation_items.append(item)
+        self._no_results_item = QTreeWidgetItem(["No matching nodes"])
+        self._no_results_item.setFlags(Qt.NoItemFlags)
+        self._no_results_item.setHidden(True)
+        self.addTopLevelItem(self._no_results_item)
         self._scroll_spacer = QTreeWidgetItem([""])
         self._scroll_spacer.setFlags(Qt.NoItemFlags)
         self._scroll_spacer.setSizeHint(0, QSize(1, 36))
@@ -106,6 +120,23 @@ class NodePalette(QTreeWidget):
         operation_id = item.data(0, Qt.UserRole)
         if operation_id:
             self.operation_requested.emit(str(operation_id))
+
+    def set_filter_text(self, text: str) -> None:
+        query = _normalize_search_text(text)
+        visible_count = 0
+        for category_item in self._category_items:
+            category_visible = False
+            for index in range(category_item.childCount()):
+                item = category_item.child(index)
+                haystack = _normalize_search_text(item.data(0, Qt.UserRole + 1))
+                visible = not query or _fuzzy_match(query, haystack)
+                item.setHidden(not visible)
+                category_visible = category_visible or visible
+                visible_count += int(visible)
+            category_item.setHidden(not category_visible)
+            if category_visible:
+                category_item.setExpanded(True)
+        self._no_results_item.setHidden(not query or visible_count > 0)
 
 
 class ParameterControl(QWidget):
@@ -454,8 +485,12 @@ class VippWidget(QWidget):
         )
         self.status_label.setWordWrap(True)
 
+        self.palette_search = QLineEdit()
+        self.palette_search.setPlaceholderText("Search nodes")
+        self.palette_search.setClearButtonEnabled(True)
         self.palette = NodePalette(grouped_palette_specs())
         self.palette.setMinimumWidth(190)
+        self.palette_panel = self._build_palette_panel()
         self.graph_view = PipelineGraphView()
         self.graph_view.setMinimumHeight(180)
         self.left_panel_toggle = SidePanelToggleButton("left")
@@ -553,7 +588,7 @@ class VippWidget(QWidget):
         root.addLayout(toolbar)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.palette)
+        self.splitter.addWidget(self.palette_panel)
         self.splitter.addWidget(self._build_graph_panel())
         self.splitter.addWidget(self.inspector_panel)
         self.splitter.setStretchFactor(0, 0)
@@ -577,6 +612,16 @@ class VippWidget(QWidget):
         layout.addLayout(panel_controls)
         layout.addWidget(self.graph_view, 1)
         self._sync_side_panel_toggles()
+        return panel
+
+    def _build_palette_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMinimumWidth(190)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(self.palette_search)
+        layout.addWidget(self.palette, 1)
         return panel
 
     def _build_inspector(self) -> QWidget:
@@ -624,6 +669,7 @@ class VippWidget(QWidget):
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
+        self.palette_search.textChanged.connect(self.palette.set_filter_text)
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -650,7 +696,7 @@ class VippWidget(QWidget):
             pass
 
     def _toggle_left_panel(self) -> None:
-        self._set_left_panel_visible(self.palette.isHidden())
+        self._set_left_panel_visible(self.palette_panel.isHidden())
 
     def _toggle_right_panel(self) -> None:
         self._set_right_panel_visible(self.inspector_panel.isHidden())
@@ -664,7 +710,7 @@ class VippWidget(QWidget):
     def _set_side_panel_visible(self, side: str, visible: bool) -> None:
         sizes = self._current_splitter_sizes()
         if side == "left":
-            widget = self.palette
+            widget = self.palette_panel
             index = 0
             if not visible and sizes[index] > 0:
                 self._left_panel_last_width = sizes[index]
@@ -690,13 +736,13 @@ class VippWidget(QWidget):
     def _apply_splitter_panel_sizes(self) -> None:
         current = self._current_splitter_sizes()
         total = max(sum(current), sum(self._default_splitter_sizes))
-        left = 0 if self.palette.isHidden() else self._left_panel_last_width
+        left = 0 if self.palette_panel.isHidden() else self._left_panel_last_width
         right = 0 if self.inspector_panel.isHidden() else self._right_panel_last_width
         middle = max(total - left - right, 320)
         self.splitter.setSizes([left, middle, right])
 
     def _sync_side_panel_toggles(self) -> None:
-        left_visible = not self.palette.isHidden()
+        left_visible = not self.palette_panel.isHidden()
         right_visible = not self.inspector_panel.isHidden()
         self.left_panel_toggle.set_expanded(left_visible)
         self.left_panel_toggle.setToolTip(
@@ -1574,3 +1620,29 @@ def _format_histogram_label(value: float) -> str:
     if abs(value - round(value)) < 1e-9:
         return str(int(round(value)))
     return f"{value:.4g}"
+
+
+def _normalize_search_text(value) -> str:
+    return "".join(
+        character.lower() if character.isalnum() else " "
+        for character in str(value or "")
+    ).strip()
+
+
+def _fuzzy_match(query: str, haystack: str) -> bool:
+    tokens = query.split()
+    if not tokens:
+        return True
+    return all(_fuzzy_token_match(token, haystack) for token in tokens)
+
+
+def _fuzzy_token_match(token: str, haystack: str) -> bool:
+    if token in haystack:
+        return True
+    position = 0
+    for character in token:
+        position = haystack.find(character, position)
+        if position < 0:
+            return False
+        position += 1
+    return True
