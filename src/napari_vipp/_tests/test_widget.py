@@ -201,6 +201,7 @@ def test_histogram_updates_for_selected_node(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    assert widget.histogram_scope_combo.currentText() == "Slice"
     assert not widget.histogram_log_checkbox.isChecked()
     assert widget.histogram_plot._counts.size > 0
 
@@ -210,6 +211,23 @@ def test_histogram_updates_for_selected_node(qtbot):
     widget.graph_view.select_node("threshold")
 
     assert widget.histogram_plot._counts.size == 2
+
+
+def test_histogram_can_switch_between_slice_and_stack(qtbot):
+    data = np.zeros((2, 5, 6), dtype=np.uint8)
+    data[1] = 200
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert widget.histogram_plot._counts.tolist() == [30.0]
+
+    widget.histogram_scope_combo.setCurrentText("Stack")
+
+    assert widget.histogram_plot._counts.size == 256
+    assert widget.histogram_plot._counts.sum() == 60
 
 
 def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):

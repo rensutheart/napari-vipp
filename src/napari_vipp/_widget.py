@@ -312,6 +312,8 @@ class VippWidget(QWidget):
         )
         self.auto_contrast_button = QPushButton("Auto")
         self.histogram_group = QGroupBox("Histogram")
+        self.histogram_scope_combo = QComboBox()
+        self.histogram_scope_combo.addItems(["Slice", "Stack"])
         self.histogram_log_checkbox = QCheckBox("Log scale")
         self.histogram_plot = HistogramPlot()
 
@@ -370,6 +372,10 @@ class VippWidget(QWidget):
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
+        histogram_scope_layout = QHBoxLayout()
+        histogram_scope_layout.addWidget(QLabel("Scope"))
+        histogram_scope_layout.addWidget(self.histogram_scope_combo, 1)
+        histogram_layout.addLayout(histogram_scope_layout)
         histogram_layout.addWidget(self.histogram_log_checkbox)
         histogram_layout.addWidget(self.histogram_plot)
         layout.addWidget(self.histogram_group)
@@ -391,6 +397,7 @@ class VippWidget(QWidget):
             self._on_selected_preview_toggled,
         )
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
+        self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
@@ -758,6 +765,7 @@ class VippWidget(QWidget):
         data = self.pipeline.outputs.get(self._selected_node_id)
         counts = _histogram_counts(
             data,
+            scope=self.histogram_scope_combo.currentText(),
             current_step=(
                 self._current_step() if self.follow_dims_checkbox.isChecked() else None
             ),
@@ -1152,15 +1160,21 @@ def _xy_shape(arr: np.ndarray) -> tuple[int, int]:
     return int(arr.shape[-2]), int(arr.shape[-1])
 
 
-def _histogram_counts(data, current_step=None) -> np.ndarray | None:
+def _histogram_counts(
+    data,
+    scope: str = "Slice",
+    current_step=None,
+) -> np.ndarray | None:
     if data is None:
         return None
 
-    preview = make_preview(data, mode="slice", current_step=current_step)
-    if preview is None:
-        return None
-
-    arr = np.asarray(preview)
+    if scope.lower() == "stack":
+        arr = np.asarray(data)
+    else:
+        preview = make_preview(data, mode="slice", current_step=current_step)
+        if preview is None:
+            return None
+        arr = np.asarray(preview)
     if arr.size == 0:
         return None
     if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
