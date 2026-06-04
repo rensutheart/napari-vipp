@@ -3,6 +3,7 @@ from __future__ import annotations
 from qtpy.QtCore import QPoint, QPointF, Qt
 
 from napari_vipp._graph import PipelineGraphView
+from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.pipeline import PrototypePipeline
 
 
@@ -64,6 +65,16 @@ def test_pin_button_only_shows_for_mask_nodes(qtbot):
     assert not view._cards["input"].pin_button.isVisible()
     assert not view._cards["gaussian"].pin_button.isVisible()
     assert view._cards["threshold"].pin_button.isVisible()
+
+
+def test_graph_cards_use_category_colors(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    gaussian = view._cards["gaussian"]
+
+    assert gaussian._category_color == category_color("Filtering")
+    assert gaussian._category_tint == category_tint("Filtering")
 
 
 def test_dragging_node_keeps_viewport_stationary(qtbot):

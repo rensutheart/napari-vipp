@@ -20,6 +20,8 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+from napari_vipp._theme import category_color, category_tint
+
 OPERATION_MIME = "application/x-napari-vipp-operation"
 
 
@@ -48,6 +50,9 @@ class NodeCard(QFrame):
     ):
         super().__init__(parent)
         self.node_id = node_id
+        self.category = category
+        self._category_color = category_color(category)
+        self._category_tint = category_tint(category)
         self._can_pin = can_pin
         self._selected = False
         self._pinned = False
@@ -57,9 +62,13 @@ class NodeCard(QFrame):
         self.setMinimumWidth(220)
         self.setCursor(Qt.OpenHandCursor)
 
+        self.accent_bar = QFrame()
+        self.accent_bar.setObjectName("NodeAccent")
+        self.accent_bar.setFixedHeight(4)
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-weight: 650;")
         self.category_label = QLabel(category)
+        self.category_label.setObjectName("NodeCategory")
 
         self.preview = ClickablePreview()
         self.preview.setAlignment(Qt.AlignCenter)
@@ -79,6 +88,7 @@ class NodeCard(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
+        layout.addWidget(self.accent_bar)
         layout.addWidget(self.category_label)
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview)
@@ -157,12 +167,28 @@ class NodeCard(QFrame):
             QLabel {{
                 color: #f3f4f6;
             }}
+            QFrame#NodeAccent {{
+                background: {self._category_color};
+                border: none;
+                border-radius: 2px;
+            }}
             QPushButton {{
                 padding: 3px 7px;
             }}
             """
         )
-        self.category_label.setStyleSheet("color: #a5b4fc; font-size: 10px;")
+        self.category_label.setStyleSheet(
+            f"""
+            QLabel#NodeCategory {{
+                background: {self._category_tint};
+                color: {self._category_color};
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: 650;
+                padding: 2px 5px;
+            }}
+            """
+        )
         self.pin_button.setVisible(self._can_pin)
 
 

@@ -4,6 +4,7 @@ import numpy as np
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDockWidget, QWidget
 
+from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
 
@@ -113,6 +114,14 @@ def _palette_item(widget, operation_id):
             if item.data(0, Qt.UserRole) == operation_id:
                 return item
     raise AssertionError(f"Palette item not found: {operation_id}")
+
+
+def _palette_category(widget, category_name):
+    for category_index in range(widget.palette.topLevelItemCount()):
+        item = widget.palette.topLevelItem(category_index)
+        if item.text(0) == category_name:
+            return item
+    raise AssertionError(f"Palette category not found: {category_name}")
 
 
 def test_widget_builds_graph_and_inspects_node(qtbot):
@@ -226,6 +235,19 @@ def test_palette_has_bottom_scroll_slack(qtbot):
     assert widget.palette.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn
     assert spacer.text(0) == ""
     assert spacer.sizeHint(0).height() >= 36
+
+
+def test_palette_uses_category_colors(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    filtering = _palette_category(widget, "Filtering")
+    gaussian = _palette_item(widget, "gaussian_blur")
+
+    assert filtering.foreground(0).color().name() == category_color("Filtering")
+    assert filtering.background(0).color().name() == category_tint("Filtering")
+    assert gaussian.foreground(0).color().name() == category_color("Filtering")
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):

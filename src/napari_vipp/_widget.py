@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from qtpy.QtCore import QMimeData, QRect, QSignalBlocker, QSize, Qt, QTimer, Signal
-from qtpy.QtGui import QColor, QPainter, QPen
+from qtpy.QtGui import QBrush, QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -31,6 +31,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
+from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.pipeline import (
     OperationSpec,
     ParameterSpec,
@@ -85,6 +86,7 @@ class NodePalette(QTreeWidget):
         for category, specs in groups.items():
             category_item = QTreeWidgetItem([category])
             category_item.setFlags(category_item.flags() & ~Qt.ItemIsDragEnabled)
+            self._style_category_item(category_item, category)
             self.addTopLevelItem(category_item)
             self._category_items.append(category_item)
             for spec in specs:
@@ -95,6 +97,7 @@ class NodePalette(QTreeWidget):
                     Qt.UserRole + 1,
                     f"{category} {spec.title} {spec.id}",
                 )
+                self._style_operation_item(item, category)
                 category_item.addChild(item)
                 self._operation_items.append(item)
         self._no_results_item = QTreeWidgetItem(["No matching nodes"])
@@ -106,6 +109,16 @@ class NodePalette(QTreeWidget):
         self._scroll_spacer.setSizeHint(0, QSize(1, 36))
         self.addTopLevelItem(self._scroll_spacer)
         self.expandAll()
+
+    def _style_category_item(self, item: QTreeWidgetItem, category: str) -> None:
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        item.setForeground(0, QBrush(QColor(category_color(category))))
+        item.setBackground(0, QBrush(QColor(category_tint(category))))
+
+    def _style_operation_item(self, item: QTreeWidgetItem, category: str) -> None:
+        item.setForeground(0, QBrush(QColor(category_color(category))))
 
     def mimeData(self, items):  # noqa: N802
         mime = QMimeData()
