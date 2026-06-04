@@ -78,7 +78,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "gaussian_blur",
         "Gaussian Blur",
         "Filtering",
-        "image",
+        "array",
         "image",
         (
             ParameterSpec("sigma", "Sigma", "float", 1.2, 0.0, 12.0, 0.1, 2),
@@ -89,7 +89,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "median_filter",
         "Median Filter",
         "Filtering",
-        "image",
+        "array",
         "image",
         (
             ParameterSpec("size", "Size", "int", 3, 1, 21, 1),
@@ -100,7 +100,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mip",
         "Maximum Projection",
         "Projection",
-        "image",
+        "array",
         "image",
         (
             ParameterSpec("axis", "Axis", "int", 0, 0, 5, 1),
@@ -140,7 +140,7 @@ PROTOTYPE_NODES = [
         "gaussian_blur",
         "Gaussian Blur",
         "Filtering",
-        "image",
+        "array",
         "image",
         {"sigma": 1.2},
     ),
@@ -320,7 +320,11 @@ class PrototypePipeline:
         return False
 
     def _types_compatible(self, output_type: str, input_type: str | None) -> bool:
-        return input_type in (None, "any") or output_type in (input_type, "any")
+        if input_type is None or input_type == "any" or output_type == "any":
+            return True
+        if input_type == "array":
+            return output_type in {"array", "image", "mask"}
+        return output_type == input_type
 
 
 def grouped_palette_specs() -> dict[str, list[OperationSpec]]:

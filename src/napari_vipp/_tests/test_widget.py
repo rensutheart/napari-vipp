@@ -188,7 +188,7 @@ def test_palette_adds_node_and_connects_branch(qtbot):
     assert widget.pipeline.outputs[node.id] is not None
 
 
-def test_incompatible_connection_is_rejected(qtbot):
+def test_mask_output_can_feed_gaussian_blur(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -196,11 +196,36 @@ def test_incompatible_connection_is_rejected(qtbot):
     node = widget.add_node_from_palette("gaussian_blur")
     widget._connect_nodes("threshold", node.id)
 
-    assert ("threshold", node.id) not in {
+    assert ("threshold", node.id) in {
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
     }
-    assert "Cannot connect mask output to image input" in widget.status_label.text()
+    assert widget.pipeline.outputs[node.id] is not None
+    assert widget.pipeline.outputs[node.id].dtype != bool
+    assert widget.graph_view._cards[node.id].pin_button.isHidden()
+
+
+def test_mask_output_can_feed_projection_and_remain_pinnable(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("mip")
+    widget._connect_nodes("threshold", node.id)
+
+    assert ("threshold", node.id) in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget.pipeline.outputs[node.id].dtype == bool
+    assert widget.graph_view._proxies[node.id].output_type == "mask"
+    assert not widget.graph_view._cards[node.id].pin_button.isHidden()
+
+    widget.pin_node(node.id)
+
+    pinned = viewer.layers["VIPP Pinned: Maximum Projection"]
+    assert pinned.metadata["node_id"] == node.id
+    assert pinned.layer_type == "labels"
 
 
 def test_non_mask_nodes_cannot_be_pinned(qtbot):
@@ -367,6 +392,24 @@ def test_inspecting_input_after_mask_resets_inspect_display(qtbot):
     assert input_inspect.blending is None
     assert viewer.layers[-2] is input_inspect
     assert viewer.layers[-1] is pinned
+
+
+def test_inspection_layer_is_replaced_when_dimensionality_changes(qtbot):
+    viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("mip")
+    widget._connect_nodes("gaussian", node.id)
+    projected_inspect = viewer.layers["VIPP Inspect"]
+    assert projected_inspect.data.ndim == 2
+
+    widget.inspect_node("gaussian")
+    stack_inspect = viewer.layers["VIPP Inspect"]
+
+    assert stack_inspect is not projected_inspect
+    assert stack_inspect.data.ndim == 3
+    assert stack_inspect.metadata["display_ndim"] == 3
 
 
 def test_binary_threshold_uses_uint8_slider_range(qtbot):

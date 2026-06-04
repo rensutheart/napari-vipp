@@ -10,6 +10,8 @@ def gaussian_blur(data, sigma: float = 1.0) -> np.ndarray:
     """Apply Gaussian blur while preserving RGB/RGBA channel axes."""
     arr = np.asarray(data)
     sigma = max(float(sigma), 0.0)
+    if arr.dtype == bool:
+        arr = arr.astype(np.float32)
     if sigma == 0:
         return arr.copy()
 

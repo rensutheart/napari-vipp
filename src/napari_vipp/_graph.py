@@ -103,6 +103,13 @@ class NodeCard(QFrame):
         self.pin_button.setText("Unpin" if pinned else "Pin")
         self._refresh_style()
 
+    def set_can_pin(self, can_pin: bool) -> None:
+        self._can_pin = can_pin
+        if not can_pin:
+            self._pinned = False
+            self.pin_button.setText("Pin")
+        self._refresh_style()
+
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
         if thumbnail is None:
             self.preview.setText("Preview off")
@@ -164,6 +171,11 @@ class PortItem(QGraphicsEllipseItem):
         self.setToolTip(f"{kind}: {data_type}")
         self._refresh_style(False)
 
+    def set_data_type(self, data_type: str) -> None:
+        self.data_type = data_type
+        self.setToolTip(f"{self.kind}: {data_type}")
+        self._refresh_style(False)
+
     def hoverEnterEvent(self, event):  # noqa: N802
         self._refresh_style(True)
         super().hoverEnterEvent(event)
@@ -211,6 +223,8 @@ class PortItem(QGraphicsEllipseItem):
         color = "#22c55e"
         if self.data_type == "mask":
             color = "#c084fc"
+        elif self.data_type == "array":
+            color = "#38bdf8"
         elif self.data_type == "any":
             color = "#f59e0b"
         self.setBrush(QColor(color))
@@ -258,6 +272,11 @@ class NodeProxy(QGraphicsProxyWidget):
                     self.node_id, "output", self.output_type, self
                 )
             self.output_port.setPos(rect.right(), rect.center().y())
+
+    def set_output_type(self, output_type: str) -> None:
+        self.output_type = output_type
+        if self.output_port is not None:
+            self.output_port.set_data_type(output_type)
 
     def port_scene_pos(self, kind: str) -> QPointF:
         port = self.output_port if kind == "output" else self.input_port
@@ -522,6 +541,16 @@ class PipelineGraphView(QGraphicsView):
     def set_pinned_node(self, node_id: str | None) -> None:
         for card_id, card in self._cards.items():
             card.set_pinned(card_id == node_id)
+
+    def set_node_can_pin(self, node_id: str, can_pin: bool) -> None:
+        card = self._cards.get(node_id)
+        if card is not None:
+            card.set_can_pin(can_pin)
+
+    def set_node_output_type(self, node_id: str, output_type: str) -> None:
+        proxy = self._proxies.get(node_id)
+        if proxy is not None:
+            proxy.set_output_type(output_type)
 
     def select_node(self, node_id: str) -> None:
         if node_id in self._cards:

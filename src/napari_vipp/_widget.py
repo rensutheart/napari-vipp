@@ -505,6 +505,18 @@ class VippWidget(QWidget):
             preview = make_preview(data, mode=mode, current_step=current_step)
             thumbnail = normalize_thumbnail(preview)
             self.graph_view.set_thumbnail(node_id, thumbnail)
+            self.graph_view.set_node_output_type(
+                node_id,
+                self._node_output_type(node_id),
+            )
+            self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
+        if (
+            self._active_pinned_node_id is not None
+            and not self._node_can_pin(self._active_pinned_node_id)
+        ):
+            self._clear_active_pin(status=False)
+        else:
+            self._sync_pin_ui()
 
     def inspect_node(self, node_id: str) -> None:
         data = self.pipeline.outputs.get(node_id)
@@ -543,16 +555,18 @@ class VippWidget(QWidget):
 
     def _set_active_pin_layer(self, node_id: str, data) -> None:
         title = self._node_title(node_id)
+        display_data = self._display_data(data)
         metadata = {
             "napari_vipp_kind": "pinned",
             "node_id": node_id,
             "data_kind": self._data_kind(data),
             "display_kind": self._display_kind(data, "pinned"),
+            "display_ndim": np.asarray(display_data).ndim,
         }
         layer = self._active_pinned_layer()
-        if (
-            layer is not None
-            and layer.metadata.get("display_kind") != metadata["display_kind"]
+        if layer is not None and self._generated_layer_needs_replacement(
+            layer,
+            metadata,
         ):
             self._remove_layer(layer)
             layer = None
@@ -564,7 +578,7 @@ class VippWidget(QWidget):
                 metadata,
             )
         else:
-            layer.data = self._display_data(data)
+            layer.data = display_data
             layer.metadata.update(metadata)
             layer.name = self._pinned_layer_name(title)
             layer.visible = True
@@ -635,13 +649,14 @@ class VippWidget(QWidget):
         metadata: dict,
         role: str,
     ) -> None:
+        display_data = self._display_data(data)
         metadata = {
             **metadata,
             "data_kind": self._data_kind(data),
             "display_kind": self._display_kind(data, role),
+            "display_ndim": np.asarray(display_data).ndim,
         }
         layer = self._layer_by_name(name)
-        display_data = self._display_data(data)
         if layer is None:
             self._add_image_or_labels(name, data, metadata=metadata)
             return
@@ -673,6 +688,7 @@ class VippWidget(QWidget):
         return (
             layer.metadata.get("display_kind") != metadata["display_kind"]
             or layer.metadata.get("data_kind") != metadata["data_kind"]
+            or layer.metadata.get("display_ndim") != metadata["display_ndim"]
         )
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
@@ -744,7 +760,19 @@ class VippWidget(QWidget):
 
     def _node_can_pin(self, node_id: str) -> bool:
         node = self.pipeline.nodes.get(node_id)
-        return node is not None and node.output_type == "mask"
+        if node is None:
+            return False
+        data = self.pipeline.outputs.get(node_id)
+        if data is not None:
+            return self._data_kind(data) == "mask"
+        return node.output_type == "mask"
+
+    def _node_output_type(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        data = self.pipeline.outputs.get(node_id)
+        if data is not None:
+            return self._data_kind(data)
+        return node.output_type if node is not None else "image"
 
     def _remove_layer(self, layer) -> None:
         try:
