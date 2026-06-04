@@ -214,7 +214,6 @@ class VippWidget(QWidget):
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
 
-        self.inspect_button = QPushButton("Inspect selected")
         self.pin_button = QPushButton("Pin selected")
 
         self._debounce_timer = QTimer(self)
@@ -261,7 +260,6 @@ class VippWidget(QWidget):
         layout.addWidget(self.parameter_group)
 
         actions = QHBoxLayout()
-        actions.addWidget(self.inspect_button)
         actions.addWidget(self.pin_button)
         layout.addLayout(actions)
         layout.addStretch(1)
@@ -273,15 +271,11 @@ class VippWidget(QWidget):
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
-        self.inspect_button.clicked.connect(
-            lambda: self.inspect_node(self._selected_node_id)
-        )
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
         self.graph_view.node_selected.connect(self._select_node)
-        self.graph_view.inspect_requested.connect(self.inspect_node)
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
@@ -376,6 +370,7 @@ class VippWidget(QWidget):
         self.selected_title.setText(node.title)
         self._render_parameters(node_id)
         self._sync_pin_ui()
+        self._inspect_selected_node()
         self._keep_active_pin_on_top()
 
     def _render_parameters(self, node_id: str) -> None:
@@ -494,6 +489,7 @@ class VippWidget(QWidget):
 
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
+        self._inspect_selected_node()
         self._refresh_pinned_layer_if_active()
         self.status_label.setText(
             f"Graph updated from '{layer.name}'. "
@@ -525,7 +521,16 @@ class VippWidget(QWidget):
         self._keep_active_pin_on_top()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
+    def _inspect_selected_node(self) -> None:
+        if self.pipeline.outputs.get(self._selected_node_id) is not None:
+            self.inspect_node(self._selected_node_id)
+
     def pin_node(self, node_id: str) -> None:
+        if not self._node_can_pin(node_id):
+            self.status_label.setText(
+                f"'{self._node_title(node_id)}' does not produce a mask overlay."
+            )
+            return
         if node_id == self._active_pinned_node_id:
             self._clear_active_pin(status=True)
             return
@@ -728,10 +733,18 @@ class VippWidget(QWidget):
 
     def _sync_pin_ui(self) -> None:
         self.graph_view.set_pinned_node(self._active_pinned_node_id)
-        if self._selected_node_id == self._active_pinned_node_id:
+        can_pin = self._node_can_pin(self._selected_node_id)
+        self.pin_button.setVisible(can_pin)
+        if not can_pin:
+            self.pin_button.setText("Pin selected")
+        elif self._selected_node_id == self._active_pinned_node_id:
             self.pin_button.setText("Unpin selected")
         else:
             self.pin_button.setText("Pin selected")
+
+    def _node_can_pin(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        return node is not None and node.output_type == "mask"
 
     def _remove_layer(self, layer) -> None:
         try:

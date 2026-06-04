@@ -35,14 +35,14 @@ def test_graph_node_can_be_dragged_with_mouse(qtbot):
     assert connection.path().elementAt(3).x != path_before
 
 
-def test_thumbnail_click_still_requests_inspection(qtbot):
+def test_clicking_node_selects_it_without_inspect_button(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
     view.show()
     qtbot.waitExposed(view)
 
-    inspected = []
-    view.inspect_requested.connect(inspected.append)
+    selected = []
+    view.node_selected.connect(selected.append)
 
     card = view._cards["gaussian"]
     preview_center = QPointF(card.preview.geometry().center())
@@ -51,7 +51,19 @@ def test_thumbnail_click_still_requests_inspection(qtbot):
     )
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=start)
 
-    assert inspected == ["gaussian"]
+    assert selected[-1] == "gaussian"
+    assert not hasattr(card, "inspect_button")
+
+
+def test_pin_button_only_shows_for_mask_nodes(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    assert not view._cards["input"].pin_button.isVisible()
+    assert not view._cards["gaussian"].pin_button.isVisible()
+    assert view._cards["threshold"].pin_button.isVisible()
 
 
 def test_dragging_node_keeps_viewport_stationary(qtbot):

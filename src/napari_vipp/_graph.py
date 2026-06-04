@@ -36,12 +36,19 @@ class NodeCard(QFrame):
     """Small embedded node UI with a thumbnail and graph actions."""
 
     selected = Signal(str)
-    inspect_requested = Signal(str)
     pin_requested = Signal(str)
 
-    def __init__(self, node_id: str, title: str, category: str, parent=None):
+    def __init__(
+        self,
+        node_id: str,
+        title: str,
+        category: str,
+        can_pin: bool,
+        parent=None,
+    ):
         super().__init__(parent)
         self.node_id = node_id
+        self._can_pin = can_pin
         self._selected = False
         self._pinned = False
         self.setObjectName("NodeCard")
@@ -60,18 +67,12 @@ class NodeCard(QFrame):
         self.preview.setStyleSheet(
             "background: #111827; color: #9ca3af; border-radius: 4px;"
         )
-        self.preview.clicked.connect(lambda: self.inspect_requested.emit(self.node_id))
-
-        self.inspect_button = QPushButton("Inspect")
-        self.inspect_button.clicked.connect(
-            lambda: self.inspect_requested.emit(self.node_id)
-        )
         self.pin_button = QPushButton("Pin")
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
+        self.pin_button.setVisible(can_pin)
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.addWidget(self.inspect_button)
         actions.addWidget(self.pin_button)
         actions.addStretch(1)
 
@@ -143,6 +144,7 @@ class NodeCard(QFrame):
             """
         )
         self.category_label.setStyleSheet("color: #a5b4fc; font-size: 10px;")
+        self.pin_button.setVisible(self._can_pin)
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -296,8 +298,6 @@ class NodeProxy(QGraphicsProxyWidget):
             card = self._card()
             if card is not None:
                 card.setCursor(Qt.OpenHandCursor)
-                if self._press_was_preview and not self._dragging:
-                    card.inspect_requested.emit(card.node_id)
             self._drag_start_scene = None
             self._drag_start_pos = None
             self._dragging = False
@@ -398,7 +398,6 @@ class PipelineGraphView(QGraphicsView):
     """Large pan/zoom graph canvas hosted inside napari."""
 
     node_selected = Signal(str)
-    inspect_requested = Signal(str)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     connection_requested = Signal(str, str)
@@ -456,9 +455,13 @@ class PipelineGraphView(QGraphicsView):
         self.build_graph(nodes, [])
 
     def add_node(self, node, position: QPointF) -> None:
-        card = NodeCard(node.id, node.title, node.category)
+        card = NodeCard(
+            node.id,
+            node.title,
+            node.category,
+            can_pin=node.output_type == "mask",
+        )
         card.selected.connect(self._select_node)
-        card.inspect_requested.connect(self.inspect_requested)
         card.pin_requested.connect(self.pin_requested)
         proxy = NodeProxy(
             node.id,

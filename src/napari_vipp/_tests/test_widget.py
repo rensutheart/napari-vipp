@@ -110,11 +110,22 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert widget.layer_combo.count() == 1
     assert "gaussian" in widget.pipeline.outputs
 
-    widget.inspect_node("gaussian")
-
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "gaussian"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
+
+
+def test_selecting_node_updates_inspection_layer(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    inspect_layer = viewer.layers["VIPP Inspect"]
+    assert inspect_layer.metadata["node_id"] == "input"
+    assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
+    assert widget.pin_button.isHidden()
 
 
 def test_widget_pins_threshold_as_labels(qtbot):
@@ -128,7 +139,7 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
     assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
-    assert widget.pin_button.text() == "Pin selected"
+    assert widget.pin_button.isHidden()
 
 
 def test_pin_toggles_active_node_layer(qtbot):
@@ -146,7 +157,7 @@ def test_pin_toggles_active_node_layer(qtbot):
     ]
     assert pinned_layers == []
     assert widget._active_pinned_node_id is None
-    assert len(viewer.layers) == 1
+    assert len(viewer.layers) == 2
     assert widget.graph_view._cards["threshold"].pin_button.text() == "Pin"
     assert widget.status_label.text() == "Unpinned 'Otsu Threshold'."
 
@@ -192,12 +203,48 @@ def test_incompatible_connection_is_rejected(qtbot):
     assert "Cannot connect mask output to image input" in widget.status_label.text()
 
 
-def test_only_one_node_is_actively_pinned(qtbot):
+def test_non_mask_nodes_cannot_be_pinned(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.pin_node("gaussian")
+
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+    ]
+    assert pinned_layers == []
+    assert widget._active_pinned_node_id is None
+    assert (
+        "'Gaussian Blur' does not produce a mask overlay."
+        in widget.status_label.text()
+    )
+    assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
+
+
+def test_pin_button_visible_only_for_selected_mask_node(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    assert widget.pin_button.isHidden()
+
+    widget.graph_view.select_node("threshold")
+    assert not widget.pin_button.isHidden()
+    assert widget.pin_button.text() == "Pin selected"
+
+
+def test_only_one_mask_node_is_actively_pinned(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    binary = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("gaussian", binary.id)
+    widget.pin_node(binary.id)
     widget.pin_node("threshold")
 
     pinned_layers = [
@@ -209,7 +256,7 @@ def test_only_one_node_is_actively_pinned(qtbot):
     assert pinned_layers[0].metadata["node_id"] == "threshold"
     assert widget._active_pinned_node_id == "threshold"
     assert widget.graph_view._cards["threshold"]._pinned
-    assert not widget.graph_view._cards["gaussian"]._pinned
+    assert not widget.graph_view._cards[binary.id]._pinned
     assert viewer.layers[-1] is pinned_layers[0]
 
 
@@ -225,8 +272,8 @@ def test_selecting_another_node_does_not_clear_pin(qtbot):
     assert widget._active_pinned_node_id == "threshold"
     assert widget.graph_view._cards["threshold"]._pinned
     assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
-    assert widget.graph_view._cards["gaussian"].pin_button.text() == "Pin"
-    assert widget.pin_button.text() == "Pin selected"
+    assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
+    assert widget.pin_button.isHidden()
 
 
 def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
@@ -238,6 +285,7 @@ def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
     widget.pin_node("threshold")
 
     assert widget.pin_button.text() == "Unpin selected"
+    assert not widget.pin_button.isHidden()
 
 
 def test_active_pin_stays_on_top_after_inspect(qtbot):
