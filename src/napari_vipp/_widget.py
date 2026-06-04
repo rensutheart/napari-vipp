@@ -520,6 +520,7 @@ class VippWidget(QWidget):
             self._inspect_layer_name,
             data,
             metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
+            role="inspect",
         )
         self._keep_active_pin_on_top()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
@@ -540,7 +541,8 @@ class VippWidget(QWidget):
         metadata = {
             "napari_vipp_kind": "pinned",
             "node_id": node_id,
-            "display_kind": self._display_kind(data),
+            "data_kind": self._data_kind(data),
+            "display_kind": self._display_kind(data, "pinned"),
         }
         layer = self._active_pinned_layer()
         if (
@@ -593,6 +595,7 @@ class VippWidget(QWidget):
                 self._inspect_layer_name,
                 self.pipeline.outputs[node_id],
                 metadata={"napari_vipp_kind": "inspect", "node_id": node_id},
+                role="inspect",
             )
             self._keep_active_pin_on_top()
 
@@ -620,8 +623,18 @@ class VippWidget(QWidget):
                     return layer
         return None
 
-    def _set_or_add_generated_layer(self, name: str, data, metadata: dict) -> None:
-        metadata = {**metadata, "display_kind": self._display_kind(data)}
+    def _set_or_add_generated_layer(
+        self,
+        name: str,
+        data,
+        metadata: dict,
+        role: str,
+    ) -> None:
+        metadata = {
+            **metadata,
+            "data_kind": self._data_kind(data),
+            "display_kind": self._display_kind(data, role),
+        }
         layer = self._layer_by_name(name)
         display_data = self._display_data(data)
         if layer is None:
@@ -634,15 +647,44 @@ class VippWidget(QWidget):
         layer.data = display_data
         layer.metadata.update(metadata)
         layer.visible = True
+        self._configure_generated_layer(layer, data, metadata)
 
     def _add_image_or_labels(self, name: str, data, metadata: dict):
         display_data = self._display_data(data)
-        if self._display_kind(data) == "labels" and hasattr(self.viewer, "add_labels"):
+        if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             return self.viewer.add_labels(display_data, name=name, metadata=metadata)
-        return self.viewer.add_image(display_data, name=name, metadata=metadata)
+        kwargs = {"name": name, "metadata": metadata}
+        if metadata["data_kind"] == "mask":
+            kwargs.update(
+                {
+                    "blending": "opaque",
+                    "colormap": "gray",
+                    "contrast_limits": (0, 1),
+                }
+            )
+        return self.viewer.add_image(display_data, **kwargs)
 
-    def _display_kind(self, data) -> str:
-        return "labels" if np.asarray(data).dtype == bool else "image"
+    def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
+        if metadata["display_kind"] != "image":
+            return
+        if metadata["data_kind"] == "mask":
+            for attr, value in (
+                ("blending", "opaque"),
+                ("colormap", "gray"),
+                ("contrast_limits", (0, 1)),
+            ):
+                try:
+                    setattr(layer, attr, value)
+                except Exception:
+                    pass
+
+    def _display_kind(self, data, role: str) -> str:
+        if role == "pinned" and self._data_kind(data) == "mask":
+            return "labels"
+        return "image"
+
+    def _data_kind(self, data) -> str:
+        return "mask" if np.asarray(data).dtype == bool else "image"
 
     def _display_data(self, data):
         arr = np.asarray(data)

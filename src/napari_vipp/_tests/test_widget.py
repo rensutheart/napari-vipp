@@ -40,6 +40,9 @@ class _Layer:
         self.name = name
         self.metadata = metadata or {}
         self.layer_type = layer_type
+        self.blending = None
+        self.colormap = None
+        self.contrast_limits = None
         self.visible = True
 
 
@@ -82,6 +85,9 @@ class _Viewer:
             metadata=kwargs.get("metadata"),
             layer_type="image",
         )
+        layer.blending = kwargs.get("blending")
+        layer.colormap = kwargs.get("colormap")
+        layer.contrast_limits = kwargs.get("contrast_limits")
         self.layers.append(layer)
         return layer
 
@@ -247,7 +253,7 @@ def test_active_pin_stays_on_top_after_inspect(qtbot):
     assert viewer.layers[-2].metadata["napari_vipp_kind"] == "inspect"
 
 
-def test_inspect_replaces_image_layer_with_labels_for_mask(qtbot):
+def test_inspect_shows_mask_as_standalone_image(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -260,10 +266,33 @@ def test_inspect_replaces_image_layer_with_labels_for_mask(qtbot):
     widget.inspect_node("threshold")
     second_inspect = viewer.layers["VIPP Inspect"]
 
-    assert second_inspect is not first_inspect
-    assert second_inspect.layer_type == "labels"
-    assert second_inspect.metadata["display_kind"] == "labels"
+    assert second_inspect is first_inspect
+    assert second_inspect.layer_type == "image"
+    assert second_inspect.metadata["display_kind"] == "image"
+    assert second_inspect.metadata["data_kind"] == "mask"
     assert second_inspect.metadata["node_id"] == "threshold"
+    assert second_inspect.contrast_limits == (0, 1)
+    assert second_inspect.blending == "opaque"
+
+
+def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("threshold")
+    widget.pin_node("threshold")
+    widget.inspect_node("threshold")
+
+    inspect = viewer.layers["VIPP Inspect"]
+    pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
+
+    assert inspect.layer_type == "image"
+    assert inspect.metadata["data_kind"] == "mask"
+    assert pinned.layer_type == "labels"
+    assert pinned.metadata["display_kind"] == "labels"
+    assert viewer.layers[-2] is inspect
+    assert viewer.layers[-1] is pinned
 
 
 def test_binary_threshold_uses_uint8_slider_range(qtbot):
