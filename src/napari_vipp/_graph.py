@@ -196,6 +196,8 @@ class PortItem(QGraphicsEllipseItem):
     """Clickable node port used for graph connections."""
 
     radius = 6.0
+    hover_radius = 8.0
+    target_radius = 10.0
 
     def __init__(self, node_id: str, kind: str, data_type: str, parent):
         super().__init__(-self.radius, -self.radius, 2 * self.radius, 2 * self.radius)
@@ -207,19 +209,32 @@ class PortItem(QGraphicsEllipseItem):
         self.setCursor(Qt.CrossCursor)
         self.setAcceptHoverEvents(True)
         self.setToolTip(f"{kind}: {data_type}")
-        self._refresh_style(False)
+        self._hovered = False
+        self._active = False
+        self._drop_state: str | None = None
+        self._refresh_style()
 
     def set_data_type(self, data_type: str) -> None:
         self.data_type = data_type
         self.setToolTip(f"{self.kind}: {data_type}")
-        self._refresh_style(False)
+        self._refresh_style()
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self._refresh_style()
+
+    def set_drop_state(self, state: str | None) -> None:
+        self._drop_state = state
+        self._refresh_style()
 
     def hoverEnterEvent(self, event):  # noqa: N802
-        self._refresh_style(True)
+        self._hovered = True
+        self._refresh_style()
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):  # noqa: N802
-        self._refresh_style(False)
+        self._hovered = False
+        self._refresh_style()
         super().hoverLeaveEvent(event)
 
     def mousePressEvent(self, event):  # noqa: N802
@@ -257,7 +272,7 @@ class PortItem(QGraphicsEllipseItem):
             return
         super().mouseReleaseEvent(event)
 
-    def _refresh_style(self, hovered: bool) -> None:
+    def _refresh_style(self) -> None:
         color = "#22c55e"
         if self.data_type == "mask":
             color = "#c084fc"
@@ -265,8 +280,28 @@ class PortItem(QGraphicsEllipseItem):
             color = "#38bdf8"
         elif self.data_type == "any":
             color = "#f59e0b"
+        radius = self.radius
+        pen_color = "#111827"
+        pen_width = 1.5
+        if self._hovered:
+            radius = self.hover_radius
+            pen_color = "#f9fafb"
+            pen_width = 2.0
+        if self._active:
+            radius = self.target_radius
+            pen_color = "#bfdbfe"
+            pen_width = 2.4
+        if self._drop_state == "compatible":
+            radius = self.target_radius
+            pen_color = "#f9fafb"
+            pen_width = 3.0
+        elif self._drop_state == "incompatible":
+            radius = self.hover_radius
+            pen_color = "#fb7185"
+            pen_width = 2.6
+        self.setRect(-radius, -radius, radius * 2, radius * 2)
         self.setBrush(QColor(color))
-        self.setPen(QPen(QColor("#f9fafb" if hovered else "#111827"), 1.5))
+        self.setPen(QPen(QColor(pen_color), pen_width))
 
 
 class NodeProxy(QGraphicsProxyWidget):
@@ -476,6 +511,7 @@ class PipelineGraphView(QGraphicsView):
         self._connections: list[ConnectionItem] = []
         self._pending_source: PortItem | None = None
         self._pending_wire: PendingConnectionItem | None = None
+        self._highlighted_input_port: PortItem | None = None
         self._connection_dragging = False
         self._panning = False
         self._pan_start = QPoint()
@@ -489,6 +525,7 @@ class PipelineGraphView(QGraphicsView):
         self._connections.clear()
         self._pending_source = None
         self._pending_wire = None
+        self._highlighted_input_port = None
 
         default_positions = {
             "input": QPointF(0, 20),
@@ -610,15 +647,18 @@ class PipelineGraphView(QGraphicsView):
             return
         self._cancel_pending_connection()
         self._pending_source = source_port
+        self._pending_source.set_active(True)
         self._connection_dragging = False
         self._pending_wire = PendingConnectionItem(source_port, scene_pos)
         self.scene.addItem(self._pending_wire)
+        self._update_drop_target_feedback(scene_pos)
 
     def update_pending_connection(self, scene_pos: QPointF, dragging: bool) -> None:
         if self._pending_wire is None:
             return
         self._connection_dragging = self._connection_dragging or dragging
         self._pending_wire.update_end(scene_pos)
+        self._update_drop_target_feedback(scene_pos)
 
     def release_connection(self, scene_pos: QPointF) -> None:
         target = self._input_port_at(scene_pos)
@@ -748,11 +788,39 @@ class PipelineGraphView(QGraphicsView):
                 return item
         return None
 
+    def _update_drop_target_feedback(self, scene_pos: QPointF) -> None:
+        target = self._input_port_at(scene_pos)
+        if target is self._highlighted_input_port:
+            return
+        if self._highlighted_input_port is not None:
+            self._highlighted_input_port.set_drop_state(None)
+        self._highlighted_input_port = target
+        if target is None:
+            return
+        state = "compatible" if self._can_pending_connect_to(target) else "incompatible"
+        target.set_drop_state(state)
+
+    def _can_pending_connect_to(self, target_port: PortItem) -> bool:
+        if self._pending_source is None or target_port.kind != "input":
+            return False
+        if self._pending_source.node_id == target_port.node_id:
+            return False
+        source_proxy = self._proxies.get(self._pending_source.node_id)
+        target_proxy = self._proxies.get(target_port.node_id)
+        if source_proxy is None or target_proxy is None:
+            return False
+        return _types_compatible(source_proxy.output_type, target_proxy.input_type)
+
     def _cancel_pending_connection(self) -> None:
+        if self._pending_source is not None:
+            self._pending_source.set_active(False)
+        if self._highlighted_input_port is not None:
+            self._highlighted_input_port.set_drop_state(None)
         if self._pending_wire is not None:
             self.scene.removeItem(self._pending_wire)
         self._pending_source = None
         self._pending_wire = None
+        self._highlighted_input_port = None
         self._connection_dragging = False
 
     def _connection_exists(self, source_id: str, target_id: str) -> bool:
@@ -771,6 +839,14 @@ def _wire_path(start: QPointF, end: QPointF) -> QPainterPath:
         end,
     )
     return path
+
+
+def _types_compatible(output_type: str, input_type: str | None) -> bool:
+    if input_type is None or input_type == "any" or output_type == "any":
+        return True
+    if input_type == "array":
+        return output_type in {"array", "image", "mask"}
+    return output_type == input_type
 
 
 def _point_from_event(event) -> QPoint:

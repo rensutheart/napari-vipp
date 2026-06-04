@@ -77,6 +77,36 @@ def test_graph_cards_use_category_colors(qtbot):
     assert gaussian._category_tint == category_tint("Filtering")
 
 
+def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    source = view._proxies["input"].output_port
+    target = view._proxies["gaussian"].input_port
+
+    assert source is not None
+    assert target is not None
+    assert source.rect().width() == source.radius * 2
+
+    source.set_active(True)
+
+    assert source.rect().width() == source.target_radius * 2
+
+    source.set_active(False)
+    view.begin_connection(source, source.mapToScene(QPointF(0, 0)))
+    view.update_pending_connection(target.mapToScene(QPointF(0, 0)), dragging=True)
+
+    assert source._active
+    assert source.rect().width() == source.target_radius * 2
+    assert target._drop_state == "compatible"
+    assert target.rect().width() == target.target_radius * 2
+
+    view._cancel_pending_connection()
+
+    assert not source._active
+    assert target._drop_state is None
+
+
 def test_dragging_node_keeps_viewport_stationary(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
