@@ -45,6 +45,19 @@ The graph should also save to a portable JSON or YAML workflow file containing:
 Loading the file in another napari-vipp installation should recreate the same
 graph layout, parameters, and connections.
 
+## Data State Visibility
+
+Each graph stage should make the flowing image state visible, not just the
+preview image. The first metadata pass exposes inferred shape, axes, z/time
+dimensions, RGB/channel status, stored dtype, bit depth, value range, and memory
+size in both compact node cards and the selected-node inspector.
+
+Type conversion should be explicit in the graph. Converter nodes can turn a
+volume into `uint8`, `uint16`, `float32`, or `bool` output using either rescale,
+clip, or preserve-cast behavior. This keeps downstream batch/export workflows
+honest about when a 16-bit image became an 8-bit display-oriented
+representation, or when an intensity image became a logical mask.
+
 ## Legacy VIPP Node Migration
 
 The first Sharratt/VIPP migration pass ports the single-input image-processing

@@ -372,6 +372,50 @@ def test_histogram_can_switch_between_slice_and_stack(qtbot):
     assert widget.histogram_plot._x_max_label == "255"
 
 
+def test_selected_node_shows_output_metadata(qtbot):
+    data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    inspector_text = widget.metadata_label.text()
+    card_text = widget.graph_view._cards["input"].metadata_label.text()
+
+    assert "Shape: 4 x 16 x 18" in inspector_text
+    assert "Axes: ZYX (inferred)" in inspector_text
+    assert "Z slices: 4" in inspector_text
+    assert "Dtype: uint16" in inspector_text
+    assert "Bit depth: 16-bit integer" in inspector_text
+    assert "ZYX 4 x 16 x 18 | uint16" in card_text
+
+
+def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):
+    data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("convert_dtype")
+    widget._connect_nodes("input", node.id)
+
+    assert widget.pipeline.outputs[node.id].dtype == np.uint8
+
+    dtype_control = widget._parameter_widgets["output_dtype"]
+    scaling_control = widget._parameter_widgets["scaling"]
+
+    assert dtype_control.combo.currentText() == "uint8"
+    assert scaling_control.combo.currentText() == "rescale"
+
+    dtype_control.combo.setCurrentText("float32")
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes[node.id].params["output_dtype"] == "float32"
+    assert widget.pipeline.outputs[node.id].dtype == np.float32
+    assert "Dtype: float32" in widget.metadata_label.text()
+
+
 def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)

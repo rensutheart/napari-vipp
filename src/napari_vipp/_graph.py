@@ -77,6 +77,11 @@ class NodeCard(QFrame):
         self.preview.setStyleSheet(
             "background: #111827; color: #9ca3af; border-radius: 4px;"
         )
+        self.metadata_label = QLabel("No output")
+        self.metadata_label.setWordWrap(True)
+        self.metadata_label.setStyleSheet(
+            "color: #cbd5e1; font-size: 10px; padding-top: 2px;"
+        )
         self.pin_button = QPushButton("Pin")
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(can_pin)
@@ -92,6 +97,7 @@ class NodeCard(QFrame):
         layout.addWidget(self.category_label)
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview)
+        layout.addWidget(self.metadata_label)
         layout.addLayout(actions)
         self._refresh_style()
 
@@ -150,6 +156,9 @@ class NodeCard(QFrame):
                 Qt.SmoothTransformation,
             )
         )
+
+    def set_metadata_summary(self, text: str) -> None:
+        self.metadata_label.setText(text)
 
     def _refresh_style(self) -> None:
         border = "#4b5563"
@@ -612,6 +621,17 @@ class PipelineGraphView(QGraphicsView):
         card = self._cards.get(node_id)
         if card is not None:
             card.set_thumbnail(thumbnail)
+
+    def set_node_metadata(self, node_id: str, text: str) -> None:
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        card.set_metadata_summary(text)
+        card.adjustSize()
+        proxy.refresh_ports()
+        for connection in proxy.connections:
+            connection.update_path()
 
     def set_pinned_node(self, node_id: str | None) -> None:
         for card_id, card in self._cards.items():

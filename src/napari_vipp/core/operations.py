@@ -266,6 +266,29 @@ def extract_channel(data, channel: int = 0) -> np.ndarray:
     return arr[..., channel]
 
 
+def convert_dtype(
+    data,
+    output_dtype: str = "uint8",
+    scaling: str = "rescale",
+) -> np.ndarray:
+    """Convert image dtype with an explicit scaling strategy."""
+    arr = np.asarray(data)
+    output_dtype = str(output_dtype).lower()
+    scaling = str(scaling).lower()
+
+    if output_dtype == "bool":
+        if arr.dtype == bool:
+            return arr.copy()
+        return _to_grayscale(arr) > 0
+
+    dtype = _target_dtype(output_dtype)
+    if np.issubdtype(dtype, np.floating):
+        return _convert_to_float(arr, dtype, scaling)
+    if np.issubdtype(dtype, np.integer):
+        return _convert_to_integer(arr, dtype, scaling)
+    return arr.astype(dtype, copy=True)
+
+
 def invert(data) -> np.ndarray:
     """Invert boolean masks or intensity images."""
     arr = np.asarray(data)
@@ -328,6 +351,75 @@ def _to_bool_mask(data) -> np.ndarray:
     if arr.dtype == bool:
         return arr.copy()
     return _to_grayscale(arr) > 0
+
+
+def _target_dtype(name: str) -> np.dtype:
+    choices = {
+        "uint8": np.dtype(np.uint8),
+        "uint16": np.dtype(np.uint16),
+        "float32": np.dtype(np.float32),
+    }
+    return choices.get(name, np.dtype(np.uint8))
+
+
+def _convert_to_float(
+    arr: np.ndarray,
+    dtype: np.dtype,
+    scaling: str,
+) -> np.ndarray:
+    if scaling == "preserve":
+        return arr.astype(dtype, copy=True)
+    values = arr.astype(np.float32, copy=False)
+    if scaling == "clip":
+        return np.nan_to_num(
+            np.clip(values, 0.0, 1.0),
+            nan=0.0,
+            posinf=1.0,
+            neginf=0.0,
+        ).astype(dtype)
+    return _rescale_values(values, 0.0, 1.0).astype(dtype)
+
+
+def _convert_to_integer(
+    arr: np.ndarray,
+    dtype: np.dtype,
+    scaling: str,
+) -> np.ndarray:
+    info = np.iinfo(dtype)
+    values = arr.astype(np.float64, copy=False)
+    if scaling == "preserve":
+        scaled = values
+    elif scaling == "clip":
+        scaled = np.clip(values, info.min, info.max)
+    else:
+        scaled = _rescale_values(values, float(info.min), float(info.max))
+    scaled = np.nan_to_num(
+        scaled,
+        nan=0.0,
+        posinf=float(info.max),
+        neginf=float(info.min),
+    )
+    return np.clip(scaled, info.min, info.max).astype(dtype)
+
+
+def _rescale_values(
+    values: np.ndarray,
+    target_min: float,
+    target_max: float,
+) -> np.ndarray:
+    values = np.asarray(values)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros_like(values, dtype=np.float64)
+
+    source_min = float(finite.min())
+    source_max = float(finite.max())
+    if source_max == source_min:
+        fill = target_max if source_max > 0 else target_min
+        return np.full_like(values, fill, dtype=np.float64)
+
+    scaled = (values.astype(np.float64) - source_min) / (source_max - source_min)
+    return scaled * (target_max - target_min) + target_min
 
 
 def _otsu_value(arr: np.ndarray) -> float:

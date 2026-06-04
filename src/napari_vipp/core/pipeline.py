@@ -16,6 +16,7 @@ from napari_vipp.core.operations import (
     black_hat,
     closing,
     contrast_stretch,
+    convert_dtype,
     crop_stack,
     dilate,
     erode,
@@ -41,11 +42,12 @@ class ParameterSpec:
     name: str
     label: str
     kind: str
-    default: float | int
+    default: float | int | str
     minimum: float | int
     maximum: float | int
     step: float | int
     decimals: int = 0
+    choices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -379,6 +381,36 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("channel", "Channel", "int", 0, 0, 5, 1),
         ),
         extract_channel,
+    ),
+    OperationSpec(
+        "convert_dtype",
+        "Convert Dtype",
+        "Utility",
+        "array",
+        "any",
+        (
+            ParameterSpec(
+                "output_dtype",
+                "Output dtype",
+                "choice",
+                "uint8",
+                0,
+                0,
+                1,
+                choices=("uint8", "uint16", "float32", "bool"),
+            ),
+            ParameterSpec(
+                "scaling",
+                "Scaling",
+                "choice",
+                "rescale",
+                0,
+                0,
+                1,
+                choices=("rescale", "clip", "preserve"),
+            ),
+        ),
+        convert_dtype,
     ),
     OperationSpec("invert", "Invert", "Utility", "any", "any", (), invert),
 )

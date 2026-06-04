@@ -11,6 +11,7 @@ from napari_vipp.core.operations import (
     black_hat,
     closing,
     contrast_stretch,
+    convert_dtype,
     crop_stack,
     dilate,
     erode,
@@ -55,6 +56,7 @@ def test_vipp_operation_nodes_are_registered():
         "fill_holes",
         "volume_filter",
         "extract_channel",
+        "convert_dtype",
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
@@ -121,6 +123,30 @@ def test_contrast_stretch_uses_linear_offset_without_abs():
     stretched = contrast_stretch(data, alpha=10, beta=-50)
 
     assert stretched.tolist() == [0, 50, 150]
+
+
+def test_convert_dtype_rescales_and_preserves_shape():
+    data = np.array([[0, 1000], [500, 250]], dtype=np.uint16)
+
+    converted = convert_dtype(data, output_dtype="uint8", scaling="rescale")
+
+    assert converted.dtype == np.uint8
+    assert converted.shape == data.shape
+    assert converted.min() == 0
+    assert converted.max() == 255
+
+
+def test_convert_dtype_to_bool_and_float():
+    data = np.array([[0, 2], [4, 8]], dtype=np.uint16)
+
+    mask = convert_dtype(data, output_dtype="bool", scaling="rescale")
+    floated = convert_dtype(data, output_dtype="float32", scaling="rescale")
+
+    assert mask.dtype == bool
+    assert mask.tolist() == [[False, True], [True, True]]
+    assert floated.dtype == np.float32
+    np.testing.assert_allclose(floated.min(), 0.0)
+    np.testing.assert_allclose(floated.max(), 1.0)
 
 
 def test_thresholding_operations_return_masks():

@@ -32,6 +32,10 @@ from qtpy.QtWidgets import (
 
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._theme import category_color, category_tint
+from napari_vipp.core.metadata import (
+    format_compact_metadata,
+    format_detailed_metadata,
+)
 from napari_vipp.core.pipeline import (
     OperationSpec,
     ParameterSpec,
@@ -322,6 +326,48 @@ class ParameterControl(QWidget):
         return self.slider.minimum() <= slider_value <= self.slider.maximum()
 
 
+class ChoiceControl(QWidget):
+    """Dropdown control for categorical node parameters."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, spec, value, bounds: ParameterBounds, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self._bounds = bounds
+        self.combo = QComboBox()
+        self.combo.addItems(list(spec.choices))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.combo, 1)
+
+        self.set_bounds(bounds, value, emit=False)
+        self.combo.currentTextChanged.connect(self.valueChanged.emit)
+
+    def value(self):
+        return self.combo.currentText()
+
+    def set_bounds(
+        self,
+        bounds: ParameterBounds,
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        self._bounds = bounds
+        current = self.spec.default if value is None else value
+        current = str(current)
+        if current and self.combo.findText(current) < 0:
+            self.combo.addItem(current)
+        with QSignalBlocker(self.combo):
+            index = self.combo.findText(current)
+            if index < 0:
+                index = 0
+            self.combo.setCurrentIndex(index)
+        if emit:
+            self.valueChanged.emit(self.value())
+
+
 class HistogramPlot(QWidget):
     """Compact histogram display for the selected node output."""
 
@@ -533,6 +579,13 @@ class VippWidget(QWidget):
             ),
         )
         self.auto_contrast_button = QPushButton("Auto")
+        self.metadata_group = QGroupBox("Output Metadata")
+        self.metadata_label = QLabel("No output yet.")
+        self.metadata_label.setWordWrap(True)
+        self.metadata_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.metadata_label.setStyleSheet(
+            "font-family: Consolas, monospace; color: #d1d5db;"
+        )
         self.histogram_group = QGroupBox("Histogram")
         self.histogram_scope_combo = QComboBox()
         self.histogram_scope_combo.addItems(["Slice", "Stack"])
@@ -652,6 +705,9 @@ class VippWidget(QWidget):
         auto_layout.addLayout(auto_form)
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
+        metadata_layout = QVBoxLayout(self.metadata_group)
+        metadata_layout.addWidget(self.metadata_label)
+        layout.addWidget(self.metadata_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
         histogram_scope_layout = QHBoxLayout()
         histogram_scope_layout.addWidget(QLabel("Scope"))
@@ -876,6 +932,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._inspect_selected_node()
         self._keep_active_pin_on_top()
+        self._update_metadata_panel()
         self._update_histogram()
 
     def _render_parameters(self, node_id: str) -> None:
@@ -888,7 +945,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes[node_id]
         for spec in specs:
             bounds = self._parameter_bounds_for(node_id, spec)
-            widget = ParameterControl(spec, node.params.get(spec.name), bounds)
+            control_class = ChoiceControl if spec.kind == "choice" else ParameterControl
+            widget = control_class(spec, node.params.get(spec.name), bounds)
             node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
                 lambda value, name=spec.name: self._on_param_changed(name, value)
@@ -918,6 +976,8 @@ class VippWidget(QWidget):
         return changed
 
     def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
+        if spec.kind == "choice":
+            return ParameterBounds(0, max(len(spec.choices) - 1, 0), 1, 0)
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
@@ -1086,6 +1146,7 @@ class VippWidget(QWidget):
             self._restore_hidden_input_layers()
             self.pipeline.run(None)
             self._update_thumbnails()
+            self._update_metadata_panel()
             self._update_histogram()
             self.status_label.setText("No image layer selected.")
             return
@@ -1105,6 +1166,7 @@ class VippWidget(QWidget):
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()
         self._refresh_pinned_layer_if_active()
+        self._update_metadata_panel()
         self._update_histogram()
         self.status_label.setText(
             f"Graph updated from '{layer.name}'. "
@@ -1113,6 +1175,7 @@ class VippWidget(QWidget):
 
     def _on_dims_changed(self) -> None:
         self._update_thumbnails()
+        self._update_metadata_panel()
         self._update_histogram()
 
     def _update_thumbnails(self) -> None:
@@ -1122,6 +1185,7 @@ class VippWidget(QWidget):
         )
         previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
+            self.graph_view.set_node_metadata(node_id, format_compact_metadata(data))
             self.graph_view.set_node_output_type(
                 node_id,
                 self._node_output_type(node_id),
@@ -1155,6 +1219,10 @@ class VippWidget(QWidget):
         self.status_label.setText(
             f"Thumbnail preview {state} for '{self._node_title(node_id)}'."
         )
+
+    def _update_metadata_panel(self) -> None:
+        data = self.pipeline.outputs.get(self._selected_node_id)
+        self.metadata_label.setText(format_detailed_metadata(data))
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)
