@@ -309,7 +309,7 @@ class VippWidget(QWidget):
     def _add_node_at(self, operation_id: str, position) -> object:
         node = self.pipeline.add_node(operation_id)
         self.graph_view.add_node(node, position)
-        self.graph_view.set_pinned_node(self._active_pinned_node_id)
+        self._sync_pin_ui()
         self.graph_view.select_node(node.id)
         self.run_pipeline()
         self.status_label.setText(f"Added '{node.title}'.")
@@ -317,7 +317,7 @@ class VippWidget(QWidget):
 
     def _reset_graph(self) -> None:
         self.pipeline.reset_starter_graph()
-        self._active_pinned_node_id = None
+        self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
         self._select_node("gaussian")
         self.run_pipeline()
@@ -328,6 +328,7 @@ class VippWidget(QWidget):
             self.pipeline.nodes.values(),
             self.pipeline.connections,
         )
+        self._sync_pin_ui()
 
     def _refresh_and_run(self) -> None:
         self._refresh_layer_choices()
@@ -374,6 +375,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes[node_id]
         self.selected_title.setText(node.title)
         self._render_parameters(node_id)
+        self._sync_pin_ui()
+        self._keep_active_pin_on_top()
 
     def _render_parameters(self, node_id: str) -> None:
         self._clear_parameter_form()
@@ -522,6 +525,9 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def pin_node(self, node_id: str) -> None:
+        if node_id == self._active_pinned_node_id:
+            self._clear_active_pin(status=True)
+            return
         data = self.pipeline.outputs.get(node_id)
         if data is None:
             self.status_label.setText("That node has no output to pin yet.")
@@ -558,7 +564,21 @@ class VippWidget(QWidget):
 
         self._move_layer_to_top(layer)
         self._active_pinned_node_id = node_id
-        self.graph_view.set_pinned_node(node_id)
+        self._sync_pin_ui()
+
+    def _clear_active_pin(self, status: bool) -> None:
+        title = (
+            self._node_title(self._active_pinned_node_id)
+            if self._active_pinned_node_id in self.pipeline.nodes
+            else None
+        )
+        layer = self._active_pinned_layer()
+        if layer is not None:
+            self._remove_layer(layer)
+        self._active_pinned_node_id = None
+        self._sync_pin_ui()
+        if status and title is not None:
+            self.status_label.setText(f"Unpinned '{title}'.")
 
     def _refresh_inspection_layer_if_active(self) -> None:
         layer = self._layer_by_name(self._inspect_layer_name)
@@ -580,8 +600,10 @@ class VippWidget(QWidget):
         if self._active_pinned_node_id is None:
             return
         data = self.pipeline.outputs.get(self._active_pinned_node_id)
-        if data is not None:
-            self._set_active_pin_layer(self._active_pinned_node_id, data)
+        if data is None:
+            self._clear_active_pin(status=False)
+            return
+        self._set_active_pin_layer(self._active_pinned_node_id, data)
 
     def _selected_input_layer(self):
         name = self.layer_combo.currentText()
@@ -641,7 +663,7 @@ class VippWidget(QWidget):
         layers = self.viewer.layers
         try:
             index = list(layers).index(layer)
-            layers.move(index, len(layers) - 1)
+            layers.move(index, len(layers))
             return
         except Exception:
             pass
@@ -655,6 +677,13 @@ class VippWidget(QWidget):
         layer = self._active_pinned_layer()
         if layer is not None:
             self._move_layer_to_top(layer)
+
+    def _sync_pin_ui(self) -> None:
+        self.graph_view.set_pinned_node(self._active_pinned_node_id)
+        if self._selected_node_id == self._active_pinned_node_id:
+            self.pin_button.setText("Unpin selected")
+        else:
+            self.pin_button.setText("Pin selected")
 
     def _remove_layer(self, layer) -> None:
         try:

@@ -57,8 +57,13 @@ class _LayerList(list):
         return super().__getitem__(item)
 
     def move(self, source, target):
+        if source < target:
+            target -= 1
+        if source == target:
+            return False
         layer = self.pop(source)
         self.insert(target, layer)
+        return True
 
 
 class _Viewer:
@@ -116,14 +121,15 @@ def test_widget_pins_threshold_as_labels(qtbot):
     pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
+    assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
+    assert widget.pin_button.text() == "Pin selected"
 
 
-def test_pin_reuses_existing_node_layer(qtbot):
+def test_pin_toggles_active_node_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.pin_node("threshold")
     widget.pin_node("threshold")
     widget.pin_node("threshold")
 
@@ -131,11 +137,12 @@ def test_pin_reuses_existing_node_layer(qtbot):
         layer
         for layer in viewer.layers
         if layer.metadata.get("napari_vipp_kind") == "pinned"
-        and layer.metadata.get("node_id") == "threshold"
     ]
-    assert len(pinned_layers) == 1
-    assert len(viewer.layers) == 2
-    assert widget.status_label.text() == "Pinned 'Otsu Threshold'."
+    assert pinned_layers == []
+    assert widget._active_pinned_node_id is None
+    assert len(viewer.layers) == 1
+    assert widget.graph_view._cards["threshold"].pin_button.text() == "Pin"
+    assert widget.status_label.text() == "Unpinned 'Otsu Threshold'."
 
 
 def test_nodes_without_parameters_hide_parameter_group(qtbot):
@@ -198,6 +205,33 @@ def test_only_one_node_is_actively_pinned(qtbot):
     assert widget.graph_view._cards["threshold"]._pinned
     assert not widget.graph_view._cards["gaussian"]._pinned
     assert viewer.layers[-1] is pinned_layers[0]
+
+
+def test_selecting_another_node_does_not_clear_pin(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("threshold")
+    widget.pin_node("threshold")
+    widget.graph_view.select_node("gaussian")
+
+    assert widget._active_pinned_node_id == "threshold"
+    assert widget.graph_view._cards["threshold"]._pinned
+    assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
+    assert widget.graph_view._cards["gaussian"].pin_button.text() == "Pin"
+    assert widget.pin_button.text() == "Pin selected"
+
+
+def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("threshold")
+    widget.pin_node("threshold")
+
+    assert widget.pin_button.text() == "Unpin selected"
 
 
 def test_active_pin_stays_on_top_after_inspect(qtbot):

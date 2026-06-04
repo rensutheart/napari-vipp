@@ -99,6 +99,7 @@ class NodeCard(QFrame):
 
     def set_pinned(self, pinned: bool) -> None:
         self._pinned = pinned
+        self.pin_button.setText("Unpin" if pinned else "Pin")
         self._refresh_style()
 
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
