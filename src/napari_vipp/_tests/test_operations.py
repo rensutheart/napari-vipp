@@ -115,6 +115,14 @@ def test_contrast_gamma_crop_and_extract_channel():
     assert channel.max() == 128
 
 
+def test_contrast_stretch_uses_linear_offset_without_abs():
+    data = np.array([0, 10, 20], dtype=np.uint8)
+
+    stretched = contrast_stretch(data, alpha=10, beta=-50)
+
+    assert stretched.tolist() == [0, 50, 150]
+
+
 def test_thresholding_operations_return_masks():
     data = np.tile(np.arange(12, dtype=np.uint8), (12, 1))
     data = np.stack([data, data + 20])

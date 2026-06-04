@@ -33,9 +33,9 @@ def crop_stack(
 
 
 def contrast_stretch(data, alpha: float = 3.0, beta: float = 1.0) -> np.ndarray:
-    """Apply the VIPP/OpenCV-style scale-and-offset contrast operation."""
+    """Apply a linear scale-and-offset contrast operation."""
     arr = np.asarray(data)
-    scaled = np.abs(arr.astype(np.float32, copy=False) * float(alpha) + float(beta))
+    scaled = arr.astype(np.float32, copy=False) * float(alpha) + float(beta)
     return np.clip(scaled, 0, 255).astype(np.uint8)
 
 

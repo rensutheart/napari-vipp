@@ -579,3 +579,34 @@ def test_projection_axis_slider_uses_input_dimensionality(qtbot):
     assert control.slider.minimum() == 0
     assert control.slider.maximum() == 3
     assert control.value_box.maximum() == 3
+
+
+def test_auto_contrast_button_updates_scale_and_offset(qtbot):
+    data = np.arange(100, dtype=np.uint8).reshape(10, 10)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.auto_contrast_group.isHidden()
+
+    node = widget.add_node_from_palette("contrast_stretch")
+    widget._connect_nodes("input", node.id)
+
+    assert not widget.auto_contrast_group.isHidden()
+
+    widget.auto_saturation_control.value_box.setValue(0.0)
+    widget.auto_contrast_button.click()
+
+    expected_alpha = 255.0 / 99.0
+    params = widget.pipeline.nodes[node.id].params
+    output = widget.pipeline.outputs[node.id]
+
+    np.testing.assert_allclose(params["alpha"], expected_alpha, atol=0.0001)
+    np.testing.assert_allclose(params["beta"], 0.0, atol=0.0001)
+    np.testing.assert_allclose(
+        widget._parameter_widgets["alpha"].value(),
+        expected_alpha,
+        atol=0.0001,
+    )
+    assert output.min() == 0
+    assert output.max() == 255

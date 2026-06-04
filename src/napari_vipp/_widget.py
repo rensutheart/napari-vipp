@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp.core.pipeline import (
     OperationSpec,
+    ParameterSpec,
     PrototypePipeline,
     grouped_palette_specs,
 )
@@ -45,6 +46,18 @@ class ParameterBounds:
     maximum: float | int
     step: float | int
     decimals: int
+
+
+AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
+    "saturation_percent",
+    "Saturation (%)",
+    "float",
+    0.35,
+    0.0,
+    20.0,
+    0.05,
+    2,
+)
 
 
 class NodePalette(QTreeWidget):
@@ -286,6 +299,18 @@ class VippWidget(QWidget):
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
+        self.auto_contrast_group = QGroupBox("Auto Contrast")
+        self.auto_saturation_control = ParameterControl(
+            AUTO_CONTRAST_SATURATION_SPEC,
+            AUTO_CONTRAST_SATURATION_SPEC.default,
+            ParameterBounds(
+                AUTO_CONTRAST_SATURATION_SPEC.minimum,
+                AUTO_CONTRAST_SATURATION_SPEC.maximum,
+                AUTO_CONTRAST_SATURATION_SPEC.step,
+                AUTO_CONTRAST_SATURATION_SPEC.decimals,
+            ),
+        )
+        self.auto_contrast_button = QPushButton("Auto")
         self.histogram_group = QGroupBox("Histogram")
         self.histogram_log_checkbox = QCheckBox("Log scale")
         self.histogram_plot = HistogramPlot()
@@ -335,6 +360,15 @@ class VippWidget(QWidget):
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.parameter_group)
+        auto_layout = QVBoxLayout(self.auto_contrast_group)
+        auto_form = QFormLayout()
+        auto_form.addRow(
+            AUTO_CONTRAST_SATURATION_SPEC.label,
+            self.auto_saturation_control,
+        )
+        auto_layout.addLayout(auto_form)
+        auto_layout.addWidget(self.auto_contrast_button)
+        layout.addWidget(self.auto_contrast_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
         histogram_layout.addWidget(self.histogram_log_checkbox)
         histogram_layout.addWidget(self.histogram_plot)
@@ -357,6 +391,7 @@ class VippWidget(QWidget):
             self._on_selected_preview_toggled,
         )
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
+        self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -456,6 +491,7 @@ class VippWidget(QWidget):
         self.selected_title.setText(node.title)
         self._sync_preview_ui()
         self._render_parameters(node_id)
+        self._sync_auto_contrast_ui()
         self._sync_pin_ui()
         self._inspect_selected_node()
         self._keep_active_pin_on_top()
@@ -501,6 +537,13 @@ class VippWidget(QWidget):
         return changed
 
     def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id == "contrast_stretch"
+            and spec.name in {"alpha", "beta"}
+        ):
+            return self._contrast_parameter_bounds(node_id, spec)
         if spec.name == "threshold":
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
@@ -512,6 +555,25 @@ class VippWidget(QWidget):
         if spec.name == "block_size":
             return self._block_size_bounds(node_id, spec)
         return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+
+    def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+
+        current = _safe_float(node.params.get(spec.name, spec.default), spec.default)
+        minimum = float(spec.minimum)
+        maximum = float(spec.maximum)
+        if np.isfinite(current):
+            if spec.name == "alpha":
+                maximum = max(maximum, current * 1.25, float(spec.step))
+            else:
+                extent = max(abs(minimum), abs(maximum), abs(current) * 1.25, 1.0)
+                minimum = -extent
+                maximum = extent
+        if minimum == maximum:
+            minimum, maximum = _expanded_bounds(minimum)
+        return _slider_safe_bounds(minimum, maximum, spec.step, spec.decimals)
 
     def _threshold_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -589,6 +651,35 @@ class VippWidget(QWidget):
     def _on_param_changed(self, name: str, value) -> None:
         self.pipeline.set_param(self._selected_node_id, name, value)
         self._debounce_timer.start()
+
+    def _apply_auto_contrast(self) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "contrast_stretch":
+            return
+
+        data = self.pipeline.input_data_for_node(node_id)
+        result = _auto_contrast_scale_offset(
+            data,
+            self.auto_saturation_control.value(),
+        )
+        if result is None:
+            self.status_label.setText(
+                "Auto contrast needs connected input with intensity variation."
+            )
+            return
+
+        alpha, beta, lower, upper = result
+        self.pipeline.set_param(node_id, "alpha", alpha)
+        self.pipeline.set_param(node_id, "beta", beta)
+        self._debounce_timer.stop()
+        self._render_parameters(node_id)
+        self.run_pipeline()
+        saturation = self.auto_saturation_control.value()
+        self.status_label.setText(
+            f"Auto contrast set '{node.title}' to {saturation:.2f}% saturation "
+            f"({lower:.3g} to {upper:.3g})."
+        )
 
     def run_pipeline(self) -> None:
         layer = self._selected_input_layer()
@@ -922,6 +1013,12 @@ class VippWidget(QWidget):
                 self._node_preview_enabled(self._selected_node_id)
             )
 
+    def _sync_auto_contrast_ui(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        self.auto_contrast_group.setVisible(
+            node is not None and node.operation_id == "contrast_stretch"
+        )
+
     def _node_preview_enabled(self, node_id: str) -> bool:
         return node_id not in self._preview_disabled_node_ids
 
@@ -977,6 +1074,69 @@ def _finite_values(arr: np.ndarray) -> np.ndarray:
             + arr[..., 2].astype(np.float32) * 0.114
         )
     return arr[np.isfinite(arr)]
+
+
+def _auto_contrast_scale_offset(
+    data,
+    saturation_percent: float,
+) -> tuple[float, float, float, float] | None:
+    if data is None:
+        return None
+
+    values = _finite_values(np.asarray(data)).ravel()
+    if values.size == 0:
+        return None
+    if values.size > 1_000_000:
+        stride = int(np.ceil(values.size / 1_000_000))
+        values = values[::stride]
+
+    saturation = min(max(float(saturation_percent), 0.0), 100.0)
+    tail_percent = saturation / 2.0
+    lower, upper = np.percentile(
+        values.astype(np.float64, copy=False),
+        [tail_percent, 100.0 - tail_percent],
+    )
+    lower = float(lower)
+    upper = float(upper)
+    if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
+        return None
+
+    alpha = 255.0 / (upper - lower)
+    beta = -lower * alpha
+    if not np.isfinite(alpha) or not np.isfinite(beta):
+        return None
+    return float(alpha), float(beta), lower, upper
+
+
+def _safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _slider_safe_bounds(
+    minimum: float,
+    maximum: float,
+    step: float | int,
+    decimals: int,
+) -> ParameterBounds:
+    maximum_slider_units = 1_000_000_000
+    decimals = int(decimals)
+    extent = max(abs(float(minimum)), abs(float(maximum)), 1.0)
+    while decimals > 0 and extent * (10**decimals) > maximum_slider_units:
+        decimals -= 1
+    if extent > maximum_slider_units:
+        minimum = max(float(minimum), -maximum_slider_units)
+        maximum = min(float(maximum), maximum_slider_units)
+
+    smallest_step = 1.0 if decimals == 0 else 10 ** (-decimals)
+    return ParameterBounds(
+        float(minimum),
+        float(maximum),
+        max(float(step), smallest_step),
+        decimals,
+    )
 
 
 def _expanded_bounds(value: float) -> tuple[float, float]:
