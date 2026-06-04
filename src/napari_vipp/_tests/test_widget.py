@@ -440,6 +440,30 @@ def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
     assert "Metadata source: OME-NGFF multiscales" in text
 
 
+def test_channel_composite_uses_metadata_channel_axis(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    data[:, 0] = 1000
+    data[:, 1] = 2000
+    data[:, 2] = 3000
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("channel_composite")
+    widget._connect_nodes("input", node.id)
+    widget.run_pipeline()
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.nodes[node.id].params["channel_axis"] == 1
+    assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6, 3)
+
+    text = widget.metadata_label.text()
+
+    assert "Kind: RGB image" in text
+    assert "Dimensions: t=2, z=4, y=5, x=6, rgb=3" in text
+    assert "History: Channel Composite: RGB composite from axis 1" in text
+
+
 def test_select_axis_slice_updates_metadata_axes(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     viewer = _Viewer(data, metadata={"axes": "TCZYX"})
@@ -509,7 +533,7 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
 
     calls = []
 
-    def fake_make_preview(data, mode, current_step):
+    def fake_make_preview(data, mode, current_step, state=None):
         calls.append(data)
         return None
 
@@ -541,7 +565,7 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
 
     calls = []
 
-    def fake_make_preview(data, mode, current_step):
+    def fake_make_preview(data, mode, current_step, state=None):
         calls.append(data)
         return None
 

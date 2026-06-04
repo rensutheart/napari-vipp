@@ -964,6 +964,13 @@ class VippWidget(QWidget):
             if widget is None:
                 continue
             previous = node.params.get(spec.name)
+            if spec.name == "channel_axis":
+                preferred = self._preferred_channel_axis(self._selected_node_id)
+                if preferred is not None:
+                    previous = preferred
+                    if node.params.get(spec.name) != preferred:
+                        node.params[spec.name] = preferred
+                        changed = True
             widget.set_bounds(
                 self._parameter_bounds_for(self._selected_node_id, spec),
                 previous,
@@ -991,9 +998,11 @@ class VippWidget(QWidget):
             return self._axis_bounds(node_id, spec)
         if spec.name == "index":
             return self._slice_index_bounds(node_id, spec)
+        if spec.name == "channel_axis":
+            return self._channel_axis_bounds(node_id, spec)
         if spec.name in {"top", "bottom", "left", "right"}:
             return self._crop_bounds(node_id, spec)
-        if spec.name == "channel":
+        if spec.name in {"channel", "red_channel", "green_channel", "blue_channel"}:
             return self._channel_bounds(node_id, spec)
         if spec.name == "block_size":
             return self._block_size_bounds(node_id, spec)
@@ -1099,8 +1108,42 @@ class VippWidget(QWidget):
         if data is None:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         arr = np.asarray(data)
-        maximum = arr.shape[-1] - 1 if arr.ndim >= 3 and arr.shape[-1] in (3, 4) else 0
+        axis = self._selected_channel_axis(node_id, arr)
+        maximum = arr.shape[axis] - 1 if axis is not None else 0
         return ParameterBounds(0, maximum, 1, 0)
+
+    def _channel_axis_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        maximum = max(np.asarray(data).ndim - 1, 0)
+        return ParameterBounds(0, maximum, 1, 0)
+
+    def _selected_channel_axis(self, node_id: str, arr: np.ndarray) -> int | None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and "channel_axis" in node.params:
+            return int(
+                np.clip(int(node.params.get("channel_axis", 0)), 0, arr.ndim - 1)
+            )
+        preferred = self._preferred_channel_axis(node_id)
+        if preferred is not None:
+            return preferred
+        if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+            return arr.ndim - 1
+        if arr.ndim >= 4:
+            return 1 if arr.ndim >= 5 else 0
+        if arr.ndim == 3 and arr.shape[0] <= 16:
+            return 0
+        return None
+
+    def _preferred_channel_axis(self, node_id: str) -> int | None:
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is None:
+            return None
+        for index, axis in enumerate(state.axes):
+            if axis.type == "channel" or axis.name.lower() == "c":
+                return index
+        return None
 
     def _block_size_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
@@ -1122,7 +1165,7 @@ class VippWidget(QWidget):
 
     def _on_param_changed(self, name: str, value) -> None:
         self.pipeline.set_param(self._selected_node_id, name, value)
-        if name == "axis":
+        if name in {"axis", "channel_axis"}:
             self._refresh_selected_parameter_controls()
         self._debounce_timer.start()
 
@@ -1223,7 +1266,12 @@ class VippWidget(QWidget):
             self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
             if not preview_enabled:
                 continue
-            preview = make_preview(data, mode=mode, current_step=current_step)
+            preview = make_preview(
+                data,
+                mode=mode,
+                current_step=current_step,
+                state=self.pipeline.output_states.get(node_id),
+            )
             thumbnail = normalize_thumbnail(preview)
             self.graph_view.set_thumbnail(node_id, thumbnail)
         if (
@@ -1254,6 +1302,7 @@ class VippWidget(QWidget):
         data = self.pipeline.outputs.get(self._selected_node_id)
         counts, x_range = _histogram_summary(
             data,
+            state=self.pipeline.output_states.get(self._selected_node_id),
             scope=self.histogram_scope_combo.currentText(),
             current_step=(
                 self._current_step() if self.follow_dims_checkbox.isChecked() else None
@@ -1667,15 +1716,22 @@ def _xy_shape(arr: np.ndarray) -> tuple[int, int]:
 
 def _histogram_counts(
     data,
+    state=None,
     scope: str = "Slice",
     current_step=None,
 ) -> np.ndarray | None:
-    counts, _x_range = _histogram_summary(data, scope=scope, current_step=current_step)
+    counts, _x_range = _histogram_summary(
+        data,
+        state=state,
+        scope=scope,
+        current_step=current_step,
+    )
     return counts
 
 
 def _histogram_summary(
     data,
+    state=None,
     scope: str = "Slice",
     current_step=None,
 ) -> tuple[np.ndarray | None, tuple[float, float] | None]:
@@ -1685,7 +1741,12 @@ def _histogram_summary(
     if scope.lower() == "stack":
         arr = np.asarray(data)
     else:
-        preview = make_preview(data, mode="slice", current_step=current_step)
+        preview = make_preview(
+            data,
+            mode="slice",
+            current_step=current_step,
+            state=state,
+        )
         if preview is None:
             return None, None
         arr = np.asarray(preview)

@@ -9,6 +9,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    channel_composite,
     closing,
     contrast_stretch,
     convert_dtype,
@@ -57,6 +58,7 @@ def test_vipp_operation_nodes_are_registered():
         "fill_holes",
         "volume_filter",
         "extract_channel",
+        "channel_composite",
         "convert_dtype",
         "select_axis_slice",
     }
@@ -117,6 +119,31 @@ def test_contrast_gamma_crop_and_extract_channel():
     assert cropped.shape == (2, 3, 3, 3)
     assert channel.shape == (2, 6, 7)
     assert channel.max() == 128
+
+
+def test_extract_channel_supports_czyx_stacks():
+    data = np.zeros((3, 2, 5, 6), dtype=np.uint16)
+    data[2] = 42
+
+    channel = extract_channel(data, channel=2)
+
+    assert channel.shape == (2, 5, 6)
+    assert channel.max() == 42
+
+
+def test_channel_composite_creates_last_axis_rgb():
+    data = np.zeros((3, 2, 5, 6), dtype=np.uint16)
+    data[0, :, 1:3, 1:3] = 1000
+    data[1, :, 2:4, 2:4] = 2000
+    data[2, :, 3:5, 3:5] = 3000
+
+    composite = channel_composite(data, channel_axis=0)
+
+    assert composite.shape == (2, 5, 6, 3)
+    assert composite.dtype == np.float32
+    assert composite[..., 0].max() == 1.0
+    assert composite[..., 1].max() == 1.0
+    assert composite[..., 2].max() == 1.0
 
 
 def test_select_axis_slice_removes_requested_axis():

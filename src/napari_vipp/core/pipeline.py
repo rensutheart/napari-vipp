@@ -19,6 +19,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    channel_composite,
     closing,
     contrast_stretch,
     convert_dtype,
@@ -399,6 +400,20 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("channel", "Channel", "int", 0, 0, 5, 1),
         ),
         extract_channel,
+    ),
+    OperationSpec(
+        "channel_composite",
+        "Channel Composite",
+        "Channels",
+        "array",
+        "image",
+        (
+            ParameterSpec("channel_axis", "Channel axis", "int", 0, 0, 5, 1),
+            ParameterSpec("red_channel", "Red", "int", 2, 0, 15, 1),
+            ParameterSpec("green_channel", "Green", "int", 1, 0, 15, 1),
+            ParameterSpec("blue_channel", "Blue", "int", 0, 0, 15, 1),
+        ),
+        channel_composite,
     ),
     OperationSpec(
         "convert_dtype",

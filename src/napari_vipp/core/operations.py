@@ -260,10 +260,61 @@ def volume_filter(data, min_volume: int = 10) -> np.ndarray:
 def extract_channel(data, channel: int = 0) -> np.ndarray:
     """Extract a single channel from a channel-last image or stack."""
     arr = np.asarray(data)
-    if not _has_channel_axis(arr):
+    return _extract_channel(
+        arr,
+        channel=channel,
+        channel_axis=_default_channel_axis(arr),
+    )
+
+
+def channel_composite(
+    data,
+    channel_axis: int = 0,
+    red_channel: int = 2,
+    green_channel: int = 1,
+    blue_channel: int = 0,
+) -> np.ndarray:
+    """Create a channel-last RGB composite from a multi-channel image."""
+    arr = np.asarray(data)
+    if arr.ndim < 3:
+        gray = _to_float_unit(arr)
+        return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
+
+    channel_axis = _normalize_axis(channel_axis, arr.ndim)
+    channels = [
+        _extract_channel(arr, channel=red_channel, channel_axis=channel_axis),
+        _extract_channel(arr, channel=green_channel, channel_axis=channel_axis),
+        _extract_channel(arr, channel=blue_channel, channel_axis=channel_axis),
+    ]
+    return np.stack(
+        [_composite_channel_to_float(channel) for channel in channels],
+        axis=-1,
+    ).astype(np.float32)
+
+
+def extract_channel_at_axis(
+    data,
+    channel: int = 0,
+    channel_axis: int = 0,
+) -> np.ndarray:
+    """Extract a channel from an explicitly selected axis."""
+    return _extract_channel(
+        np.asarray(data),
+        channel=channel,
+        channel_axis=channel_axis,
+    )
+
+
+def _extract_channel(
+    arr: np.ndarray,
+    channel: int = 0,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    if channel_axis is None:
         return arr.copy()
-    channel = int(np.clip(channel, 0, arr.shape[-1] - 1))
-    return arr[..., channel]
+    channel_axis = _normalize_axis(channel_axis, arr.ndim)
+    channel = int(np.clip(channel, 0, arr.shape[channel_axis] - 1))
+    return np.take(arr, channel, axis=channel_axis)
 
 
 def convert_dtype(
@@ -513,6 +564,25 @@ def _is_color_image(arr: np.ndarray) -> bool:
     return arr.ndim == 3 and arr.shape[-1] in RGB_CHANNELS
 
 
+def _default_channel_axis(arr: np.ndarray) -> int | None:
+    if _has_channel_axis(arr):
+        return arr.ndim - 1
+    if arr.ndim >= 4:
+        return 1 if arr.ndim >= 5 else 0
+    if arr.ndim == 3 and arr.shape[0] <= 16:
+        return 0
+    return None
+
+
+def _normalize_axis(axis: int, ndim: int) -> int:
+    if ndim <= 0:
+        return 0
+    axis = int(axis)
+    if axis < 0:
+        axis += ndim
+    return int(np.clip(axis, 0, ndim - 1))
+
+
 def _odd_size(value: int | float, minimum: int = 1, maximum: int | None = None) -> int:
     size = max(int(round(float(value))), minimum)
     if maximum is not None:
@@ -580,3 +650,18 @@ def _scaled_sigma_color(arr: np.ndarray, sigma_color: float) -> float:
     if np.issubdtype(arr.dtype, np.integer):
         return sigma / float(np.iinfo(arr.dtype).max)
     return sigma
+
+
+def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr)
+    if arr.dtype == bool:
+        return arr.astype(np.float32)
+    values = arr.astype(np.float32, copy=False)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros(values.shape, dtype=np.float32)
+    lo = float(finite.min())
+    hi = float(finite.max())
+    if hi <= lo:
+        return np.zeros(values.shape, dtype=np.float32)
+    return np.clip((values - lo) / (hi - lo), 0, 1).astype(np.float32)

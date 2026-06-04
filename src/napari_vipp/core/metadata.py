@@ -438,6 +438,8 @@ def _transformed_axes(
     axes = input_state.axes
     if operation_id == "crop_stack":
         axes = _crop_shifted_axes(axes, params)
+    if operation_id == "channel_composite":
+        return _channel_composite_axes(axes, params)
 
     if arr.ndim == len(axes):
         return axes
@@ -479,6 +481,22 @@ def _crop_shifted_axes(
     return tuple(shifted)
 
 
+def _channel_composite_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    if not axes:
+        return axes
+    channel_index = _clamped_axis(params.get("channel_axis", 0), len(axes))
+    if axes[channel_index].type != "channel":
+        inferred = _channel_axis_index(axes)
+        if inferred is not None:
+            channel_index = inferred
+    return _remove_axis(axes, channel_index) + (
+        AxisMetadata(name="rgb", type="channel"),
+    )
+
+
 def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:
     return replace(axis, translation=axis.translation + pixels * axis.scale)
 
@@ -504,6 +522,11 @@ def _operation_history(
         return f"{operation_title}: selected {axis}[{int(params.get('index', 0))}]"
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
+    if operation_id == "channel_composite":
+        return (
+            f"{operation_title}: RGB composite from axis "
+            f"{int(params.get('channel_axis', 0))}"
+        )
     if operation_id == "crop_stack":
         return (
             f"{operation_title}: cropped top={int(params.get('top', 0))}, "

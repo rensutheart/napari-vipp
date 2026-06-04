@@ -4,10 +4,28 @@ from __future__ import annotations
 
 import numpy as np
 
+from napari_vipp.core.metadata import ImageState
+
 RGB_CHANNELS = (3, 4)
+FLUORESCENCE_COLORS = np.array(
+    [
+        [0.1, 0.35, 1.0],
+        [0.1, 1.0, 0.2],
+        [1.0, 0.15, 0.05],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 1.0],
+    ],
+    dtype=np.float32,
+)
 
 
-def make_preview(data, mode: str = "slice", current_step=None) -> np.ndarray | None:
+def make_preview(
+    data,
+    mode: str = "slice",
+    current_step=None,
+    state: ImageState | None = None,
+) -> np.ndarray | None:
     """Reduce arbitrary image-like data to a 2D or RGB thumbnail source array."""
     if data is None or mode.lower() == "off":
         return None
@@ -17,6 +35,10 @@ def make_preview(data, mode: str = "slice", current_step=None) -> np.ndarray | N
         return None
 
     mode = mode.lower()
+    if state is not None:
+        state_preview = _state_aware_preview(arr, mode, current_step, state)
+        if state_preview is not None:
+            return state_preview
     if mode == "mip":
         return _mip(arr)
     return _slice(arr, current_step=current_step)
@@ -57,6 +79,111 @@ def _slice(arr: np.ndarray, current_step=None) -> np.ndarray:
         index = _axis_index(0, arr.shape[0], current_step)
         arr = arr[index]
     return arr
+
+
+def _state_aware_preview(
+    arr: np.ndarray,
+    mode: str,
+    current_step,
+    state: ImageState,
+) -> np.ndarray | None:
+    if len(state.axes) != arr.ndim:
+        return None
+
+    channel_axis = _axis_index_by_type(state, "channel")
+    y_axis = _axis_index_by_name(state, "y")
+    x_axis = _axis_index_by_name(state, "x")
+    if y_axis is None or x_axis is None:
+        return None
+
+    if channel_axis is not None:
+        reduced = _reduce_to_axes(
+            arr,
+            state,
+            keep_axes={channel_axis, y_axis, x_axis},
+            mode=mode,
+            current_step=current_step,
+        )
+        if reduced.ndim != 3:
+            return None
+        remaining_axes = _remaining_axis_indices(
+            state,
+            keep_axes={channel_axis, y_axis, x_axis},
+        )
+        local_channel = remaining_axes.index(channel_axis)
+        local_y = remaining_axes.index(y_axis)
+        local_x = remaining_axes.index(x_axis)
+        reduced = np.moveaxis(reduced, [local_y, local_x, local_channel], [0, 1, 2])
+        if channel_axis == arr.ndim - 1:
+            return reduced
+        return _fluorescence_composite(reduced)
+
+    reduced = _reduce_to_axes(
+        arr,
+        state,
+        keep_axes={y_axis, x_axis},
+        mode=mode,
+        current_step=current_step,
+    )
+    if reduced.ndim != 2:
+        return None
+    remaining_axes = _remaining_axis_indices(state, keep_axes={y_axis, x_axis})
+    local_y = remaining_axes.index(y_axis)
+    local_x = remaining_axes.index(x_axis)
+    return np.moveaxis(reduced, [local_y, local_x], [0, 1])
+
+
+def _reduce_to_axes(
+    arr: np.ndarray,
+    state: ImageState,
+    *,
+    keep_axes: set[int],
+    mode: str,
+    current_step,
+) -> np.ndarray:
+    result = arr
+    remaining = list(range(arr.ndim))
+    for original_axis in reversed(range(arr.ndim)):
+        if original_axis in keep_axes:
+            continue
+        local_axis = remaining.index(original_axis)
+        axis = state.axes[original_axis]
+        if mode == "mip" and axis.type == "space":
+            result = np.max(result, axis=local_axis)
+        else:
+            index = _axis_index(original_axis, result.shape[local_axis], current_step)
+            result = np.take(result, index, axis=local_axis)
+        remaining.pop(local_axis)
+    return result
+
+
+def _remaining_axis_indices(state: ImageState, *, keep_axes: set[int]) -> list[int]:
+    return [index for index in range(len(state.axes)) if index in keep_axes]
+
+
+def _axis_index_by_type(state: ImageState, axis_type: str) -> int | None:
+    for index, axis in enumerate(state.axes):
+        if axis.type == axis_type:
+            return index
+    return None
+
+
+def _axis_index_by_name(state: ImageState, name: str) -> int | None:
+    for index, axis in enumerate(state.axes):
+        if axis.name.lower() == name:
+            return index
+    return None
+
+
+def _fluorescence_composite(arr: np.ndarray) -> np.ndarray:
+    channels = []
+    for channel in range(arr.shape[-1]):
+        normalized = _normalize_uint8(arr[..., channel]).astype(np.float32) / 255.0
+        color = FLUORESCENCE_COLORS[channel % len(FLUORESCENCE_COLORS)]
+        channels.append(normalized[..., None] * color)
+    if not channels:
+        return np.zeros(arr.shape[:2] + (3,), dtype=np.float32)
+    return np.clip(np.sum(channels, axis=0), 0, 1)
 
 
 def _mip(arr: np.ndarray) -> np.ndarray:
