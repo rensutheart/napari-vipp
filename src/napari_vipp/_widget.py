@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-from qtpy.QtCore import QMimeData, QSignalBlocker, Qt, QTimer, Signal
+from qtpy.QtCore import QMimeData, QSignalBlocker, QSize, Qt, QTimer, Signal
+from qtpy.QtGui import QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -58,6 +59,9 @@ class NodePalette(QTreeWidget):
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragOnly)
         self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.itemDoubleClicked.connect(self._on_item_double_clicked)
         for category, specs in groups.items():
             category_item = QTreeWidgetItem([category])
@@ -67,6 +71,10 @@ class NodePalette(QTreeWidget):
                 item = QTreeWidgetItem([spec.title])
                 item.setData(0, Qt.UserRole, spec.id)
                 category_item.addChild(item)
+        self._scroll_spacer = QTreeWidgetItem([""])
+        self._scroll_spacer.setFlags(Qt.NoItemFlags)
+        self._scroll_spacer.setSizeHint(0, QSize(1, 36))
+        self.addTopLevelItem(self._scroll_spacer)
         self.expandAll()
 
     def mimeData(self, items):  # noqa: N802
@@ -177,6 +185,68 @@ class ParameterControl(QWidget):
         return min(max(value, bounds.minimum), bounds.maximum)
 
 
+class HistogramPlot(QWidget):
+    """Compact histogram display for the selected node output."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._counts = np.array([], dtype=np.float32)
+        self._log_scale = False
+        self.setMinimumHeight(140)
+
+    def set_histogram(self, counts: np.ndarray | None, log_scale: bool) -> None:
+        self._counts = (
+            np.asarray(counts, dtype=np.float32)
+            if counts is not None
+            else np.array([], dtype=np.float32)
+        )
+        self._log_scale = log_scale
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        painter.fillRect(rect, QColor("#111827"))
+        painter.setPen(QPen(QColor("#374151"), 1))
+        painter.drawRect(rect)
+
+        if self._counts.size == 0:
+            painter.setPen(QColor("#9ca3af"))
+            painter.drawText(rect, Qt.AlignCenter, "No data")
+            painter.end()
+            return
+
+        values = self._counts
+        if self._log_scale:
+            values = np.log10(values + 1.0)
+        maximum = float(values.max())
+        if maximum <= 0:
+            painter.end()
+            return
+
+        plot_rect = rect.adjusted(8, 8, -8, -8)
+        width = max(plot_rect.width(), 1)
+        height = max(plot_rect.height(), 1)
+        step = max(int(np.ceil(values.size / width)), 1)
+        reduced = np.array(
+            [values[i : i + step].max() for i in range(0, values.size, step)],
+            dtype=np.float32,
+        )
+
+        painter.setPen(QPen(QColor("#60a5fa"), 1.4))
+        last_x = plot_rect.left()
+        last_y = plot_rect.bottom()
+        for index, value in enumerate(reduced):
+            x = plot_rect.left() + int(index * width / max(reduced.size - 1, 1))
+            y = plot_rect.bottom() - int((float(value) / maximum) * height)
+            painter.drawLine(last_x, last_y, x, y)
+            last_x, last_y = x, y
+        painter.end()
+
+
 class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
@@ -216,6 +286,9 @@ class VippWidget(QWidget):
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
+        self.histogram_group = QGroupBox("Histogram")
+        self.histogram_log_checkbox = QCheckBox("Log scale")
+        self.histogram_plot = HistogramPlot()
 
         self.pin_button = QPushButton("Pin selected")
 
@@ -262,6 +335,10 @@ class VippWidget(QWidget):
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.parameter_group)
+        histogram_layout = QVBoxLayout(self.histogram_group)
+        histogram_layout.addWidget(self.histogram_log_checkbox)
+        histogram_layout.addWidget(self.histogram_plot)
+        layout.addWidget(self.histogram_group)
 
         actions = QHBoxLayout()
         actions.addWidget(self.pin_button)
@@ -279,6 +356,7 @@ class VippWidget(QWidget):
         self.thumbnail_checkbox.toggled.connect(
             self._on_selected_preview_toggled,
         )
+        self.histogram_log_checkbox.toggled.connect(self._update_histogram)
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -299,7 +377,7 @@ class VippWidget(QWidget):
             pass
         try:
             self.viewer.dims.events.current_step.connect(
-                lambda _=None: self._update_thumbnails()
+                lambda _=None: self._on_dims_changed()
             )
         except Exception:
             pass
@@ -381,6 +459,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._inspect_selected_node()
         self._keep_active_pin_on_top()
+        self._update_histogram()
 
     def _render_parameters(self, node_id: str) -> None:
         self._clear_parameter_form()
@@ -516,6 +595,7 @@ class VippWidget(QWidget):
         if layer is None:
             self.pipeline.run(None)
             self._update_thumbnails()
+            self._update_histogram()
             self.status_label.setText("No image layer selected.")
             return
 
@@ -532,10 +612,15 @@ class VippWidget(QWidget):
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()
         self._refresh_pinned_layer_if_active()
+        self._update_histogram()
         self.status_label.setText(
             f"Graph updated from '{layer.name}'. "
             "Connect ports to build alternate paths."
         )
+
+    def _on_dims_changed(self) -> None:
+        self._update_thumbnails()
+        self._update_histogram()
 
     def _update_thumbnails(self) -> None:
         mode = self.preview_mode_combo.currentText()
@@ -576,6 +661,19 @@ class VippWidget(QWidget):
         state = "enabled" if checked else "disabled"
         self.status_label.setText(
             f"Thumbnail preview {state} for '{self._node_title(node_id)}'."
+        )
+
+    def _update_histogram(self) -> None:
+        data = self.pipeline.outputs.get(self._selected_node_id)
+        counts = _histogram_counts(
+            data,
+            current_step=(
+                self._current_step() if self.follow_dims_checkbox.isChecked() else None
+            ),
+        )
+        self.histogram_plot.set_histogram(
+            counts,
+            log_scale=self.histogram_log_checkbox.isChecked(),
         )
 
     def inspect_node(self, node_id: str) -> None:
@@ -892,3 +990,48 @@ def _xy_shape(arr: np.ndarray) -> tuple[int, int]:
     if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
         return int(arr.shape[-3]), int(arr.shape[-2])
     return int(arr.shape[-2]), int(arr.shape[-1])
+
+
+def _histogram_counts(data, current_step=None) -> np.ndarray | None:
+    if data is None:
+        return None
+
+    preview = make_preview(data, mode="slice", current_step=current_step)
+    if preview is None:
+        return None
+
+    arr = np.asarray(preview)
+    if arr.size == 0:
+        return None
+    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+        arr = (
+            arr[..., 0].astype(np.float32) * 0.299
+            + arr[..., 1].astype(np.float32) * 0.587
+            + arr[..., 2].astype(np.float32) * 0.114
+        )
+    if arr.dtype == bool:
+        return np.bincount(arr.ravel().astype(np.uint8), minlength=2)
+
+    values = arr[np.isfinite(arr)].ravel()
+    if values.size == 0:
+        return None
+    if values.size > 500_000:
+        stride = int(np.ceil(values.size / 500_000))
+        values = values[::stride]
+
+    if np.issubdtype(values.dtype, np.integer):
+        finite_min = int(values.min())
+        finite_max = int(values.max())
+        if finite_min == finite_max:
+            return np.array([values.size], dtype=np.int64)
+        if 0 <= finite_min and finite_max <= 255:
+            counts, _edges = np.histogram(values, bins=256, range=(0, 255))
+        else:
+            counts, _edges = np.histogram(values, bins=128)
+    else:
+        finite_min = float(values.min())
+        finite_max = float(values.max())
+        if finite_min == finite_max:
+            return np.array([values.size], dtype=np.int64)
+        counts, _edges = np.histogram(values, bins=128)
+    return counts

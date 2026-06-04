@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from qtpy.QtCore import Qt
 
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
@@ -171,6 +172,35 @@ def test_nodes_without_parameters_hide_parameter_group(qtbot):
     widget._select_node("threshold")
 
     assert widget.parameter_group.isHidden()
+
+
+def test_palette_has_bottom_scroll_slack(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    spacer = widget.palette.topLevelItem(widget.palette.topLevelItemCount() - 1)
+
+    assert widget.palette.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn
+    assert spacer.text(0) == ""
+    assert spacer.sizeHint(0).height() >= 36
+
+
+def test_histogram_updates_for_selected_node(qtbot):
+    data = np.arange(4 * 16 * 18, dtype=np.uint8).reshape(4, 16, 18)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert not widget.histogram_log_checkbox.isChecked()
+    assert widget.histogram_plot._counts.size > 0
+
+    widget.histogram_log_checkbox.setChecked(True)
+    assert widget.histogram_plot._log_scale
+
+    widget.graph_view.select_node("threshold")
+
+    assert widget.histogram_plot._counts.size == 2
 
 
 def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
