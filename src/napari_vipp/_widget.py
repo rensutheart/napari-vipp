@@ -449,11 +449,12 @@ class HistogramPlot(QWidget):
             last_x, last_y = x, y
         if self._x_min_label or self._x_max_label:
             painter.setPen(QColor("#9ca3af"))
-            baseline = rect.bottom() - 3
-            painter.drawText(rect.left() + 8, baseline, self._x_min_label)
-            right_width = painter.fontMetrics().horizontalAdvance(self._x_max_label)
+            metrics = painter.fontMetrics()
+            baseline = min(rect.bottom() - 2, plot_rect.bottom() + metrics.ascent() + 3)
+            painter.drawText(plot_rect.left(), baseline, self._x_min_label)
+            right_width = metrics.horizontalAdvance(self._x_max_label)
             painter.drawText(
-                rect.right() - 8 - right_width,
+                plot_rect.right() - right_width,
                 baseline,
                 self._x_max_label,
             )
