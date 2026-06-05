@@ -521,6 +521,28 @@ def test_histogram_can_switch_between_slice_and_stack(qtbot):
     assert widget.histogram_plot._x_max_label == "255"
 
 
+def test_histogram_separates_multichannel_series(qtbot):
+    data = np.zeros((2, 3, 4, 4, 5), dtype=np.uint8)
+    data[:, 0] = 20
+    data[:, 1] = 100
+    data[:, 2] = 220
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    viewer.dims.current_step = (1, 0, 2, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    series = widget.histogram_plot._series_counts
+    colors = widget.histogram_plot._series_colors
+
+    assert series.shape == (3, 256)
+    assert series.sum(axis=1).tolist() == [20.0, 20.0, 20.0]
+    assert colors[0].blueF() > colors[0].redF()
+    assert colors[1].greenF() > colors[1].redF()
+    assert colors[2].redF() > colors[2].blueF()
+
+
 def test_selected_node_shows_output_metadata(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
     viewer = _Viewer(data)
@@ -538,7 +560,7 @@ def test_selected_node_shows_output_metadata(qtbot):
     assert _metadata_value(widget, "Dtype") == "uint16"
     assert _metadata_value(widget, "Bit depth") == "16-bit integer"
     assert _metadata_value(widget, "Metadata source") == "inferred from array shape"
-    assert "ZYX: Z=4 x Y=16 x X=18 | uint16" in card_text
+    assert "ZYX: 4 x 16 x 18 | uint16" in card_text
     assert "range" not in card_text
 
 

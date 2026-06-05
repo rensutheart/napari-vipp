@@ -657,12 +657,7 @@ def _dimensions_label(state: ImageState) -> str:
 
 
 def _dimensions_compact_label(state: ImageState) -> str:
-    if len(state.axes) != len(state.shape):
-        return _shape_label(state.shape)
-    return " x ".join(
-        f"{axis.name.upper() if len(axis.name) == 1 else axis.name}={size}"
-        for axis, size in zip(state.axes, state.shape, strict=True)
-    )
+    return _shape_label(state.shape)
 
 
 def _scale_label(state: ImageState) -> str:

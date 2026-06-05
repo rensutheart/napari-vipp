@@ -50,7 +50,11 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     grouped_palette_specs,
 )
-from napari_vipp.core.preview import make_preview, normalize_thumbnail
+from napari_vipp.core.preview import (
+    FLUORESCENCE_COLORS,
+    make_preview,
+    normalize_thumbnail,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -382,6 +386,8 @@ class HistogramPlot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._counts = np.array([], dtype=np.float32)
+        self._series_counts = np.empty((0, 0), dtype=np.float32)
+        self._series_colors: list[QColor] = []
         self._log_scale = False
         self._x_min_label = ""
         self._x_max_label = ""
@@ -392,14 +398,26 @@ class HistogramPlot(QWidget):
         counts: np.ndarray | None,
         log_scale: bool,
         x_range: tuple[float, float] | None = None,
+        colors: list[QColor] | None = None,
     ) -> None:
         self._counts = (
             np.asarray(counts, dtype=np.float32)
             if counts is not None
             else np.array([], dtype=np.float32)
         )
+        if self._counts.ndim == 1:
+            self._series_counts = self._counts.reshape(1, -1)
+        elif self._counts.ndim == 2:
+            self._series_counts = self._counts
+            self._counts = self._series_counts.sum(axis=0)
+        else:
+            self._series_counts = np.empty((0, 0), dtype=np.float32)
+            self._counts = np.array([], dtype=np.float32)
+        self._series_colors = colors or _histogram_series_colors(
+            self._series_counts.shape[0]
+        )
         self._log_scale = log_scale
-        if x_range is None or self._counts.size == 0:
+        if x_range is None or self._series_counts.size == 0:
             self._x_min_label = ""
             self._x_max_label = ""
         else:
@@ -422,13 +440,13 @@ class HistogramPlot(QWidget):
         plot_rect = plot_frame.adjusted(10, 8, -8, -10)
         self._draw_axes(painter, plot_rect)
 
-        if self._counts.size == 0:
+        if self._series_counts.size == 0:
             painter.setPen(QColor("#9ca3af"))
             painter.drawText(plot_frame, Qt.AlignCenter, "No data")
             painter.end()
             return
 
-        values = self._counts
+        values = self._series_counts
         if self._log_scale:
             values = np.log10(values + 1.0)
         maximum = float(values.max())
@@ -436,22 +454,7 @@ class HistogramPlot(QWidget):
             painter.end()
             return
 
-        width = max(plot_rect.width(), 1)
-        height = max(plot_rect.height(), 1)
-        step = max(int(np.ceil(values.size / width)), 1)
-        reduced = np.array(
-            [values[i : i + step].max() for i in range(0, values.size, step)],
-            dtype=np.float32,
-        )
-
-        painter.setPen(QPen(QColor("#60a5fa"), 1.4))
-        last_x = plot_rect.left()
-        last_y = plot_rect.bottom()
-        for index, value in enumerate(reduced):
-            x = plot_rect.left() + int(index * width / max(reduced.size - 1, 1))
-            y = plot_rect.bottom() - int((float(value) / maximum) * height)
-            painter.drawLine(last_x, last_y, x, y)
-            last_x, last_y = x, y
+        self._draw_histogram_series(painter, plot_rect, values, maximum)
         if self._x_min_label or self._x_max_label:
             painter.setPen(QColor("#9ca3af"))
             metrics = painter.fontMetrics()
@@ -479,6 +482,36 @@ class HistogramPlot(QWidget):
             plot_rect.left(),
             plot_rect.bottom(),
         )
+
+    def _draw_histogram_series(
+        self,
+        painter: QPainter,
+        plot_rect: QRect,
+        values: np.ndarray,
+        maximum: float,
+    ) -> None:
+        width = max(plot_rect.width(), 1)
+        height = max(plot_rect.height(), 1)
+        step = max(int(np.ceil(values.shape[1] / width)), 1)
+        for series_index, series_values in enumerate(values):
+            reduced = np.array(
+                [
+                    series_values[i : i + step].max()
+                    for i in range(0, series_values.size, step)
+                ],
+                dtype=np.float32,
+            )
+            if reduced.size == 0:
+                continue
+            color = self._series_colors[series_index % len(self._series_colors)]
+            if values.shape[0] > 1:
+                color = QColor(color)
+                color.setAlpha(175)
+            painter.setPen(QPen(color, 1.2))
+            for index, value in enumerate(reduced):
+                x = plot_rect.left() + int(index * width / max(reduced.size - 1, 1))
+                y = plot_rect.bottom() - int((float(value) / maximum) * height)
+                painter.drawLine(x, plot_rect.bottom(), x, y)
 
 
 class SidePanelToggleButton(QToolButton):
@@ -1508,7 +1541,7 @@ class VippWidget(QWidget):
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)
-        counts, x_range = _histogram_summary(
+        counts, x_range, colors = _histogram_summary(
             data,
             state=self.pipeline.output_states.get(self._selected_node_id),
             scope=self.histogram_scope_combo.currentText(),
@@ -1520,6 +1553,7 @@ class VippWidget(QWidget):
             counts,
             log_scale=self.histogram_log_checkbox.isChecked(),
             x_range=x_range,
+            colors=colors,
         )
 
     def inspect_node(self, node_id: str) -> None:
@@ -1928,7 +1962,7 @@ def _histogram_counts(
     scope: str = "Slice",
     current_step=None,
 ) -> np.ndarray | None:
-    counts, _x_range = _histogram_summary(
+    counts, _x_range, _colors = _histogram_summary(
         data,
         state=state,
         scope=scope,
@@ -1942,39 +1976,140 @@ def _histogram_summary(
     state=None,
     scope: str = "Slice",
     current_step=None,
-) -> tuple[np.ndarray | None, tuple[float, float] | None]:
+) -> tuple[np.ndarray | None, tuple[float, float] | None, list[QColor] | None]:
     if data is None:
-        return None, None
+        return None, None, None
 
-    if scope.lower() == "stack":
-        arr = np.asarray(data)
-    else:
-        preview = make_preview(
-            data,
-            mode="slice",
-            current_step=current_step,
-            state=state,
-        )
-        if preview is None:
-            return None, None
-        arr = np.asarray(preview)
+    source = _histogram_source(
+        data,
+        state=state,
+        scope=scope,
+        current_step=current_step,
+    )
+    if source is None:
+        return None, None, None
+
+    arr, channel_axis, channel_axis_name = source
     if arr.size == 0:
-        return None, None
-    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-        arr = (
-            arr[..., 0].astype(np.float32) * 0.299
-            + arr[..., 1].astype(np.float32) * 0.587
-            + arr[..., 2].astype(np.float32) * 0.114
+        return None, None, None
+    if channel_axis is not None:
+        counts, x_range = _multichannel_histogram(arr, channel_axis)
+        if counts is None:
+            return None, None, None
+        colors = _histogram_series_colors(counts.shape[0], channel_axis_name)
+        return counts, x_range, colors
+    counts, x_range = _single_histogram(arr)
+    return counts, x_range, _histogram_series_colors(1)
+
+
+def _histogram_source(
+    data,
+    *,
+    state=None,
+    scope: str = "Slice",
+    current_step=None,
+) -> tuple[np.ndarray, int | None, str] | None:
+    arr = np.asarray(data)
+    channel_axis, channel_axis_name = _histogram_channel_axis(arr, state)
+    if scope.lower() == "stack":
+        return arr, channel_axis, channel_axis_name
+
+    if state is not None:
+        source = _state_histogram_slice(
+            arr,
+            state,
+            channel_axis,
+            current_step=current_step,
         )
+        if source is not None:
+            return source[0], source[1], channel_axis_name
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        current_step=current_step,
+        state=state,
+    )
+    if preview is None:
+        return None
+    arr = np.asarray(preview)
+    channel_axis, channel_axis_name = _histogram_channel_axis(arr, None)
+    return arr, channel_axis, channel_axis_name
+
+
+def _state_histogram_slice(
+    arr: np.ndarray,
+    state,
+    channel_axis: int | None,
+    *,
+    current_step=None,
+) -> tuple[np.ndarray, int | None] | None:
+    if len(state.axes) != arr.ndim:
+        return None
+    y_axis = _metadata_axis_index_by_name(state, "y")
+    x_axis = _metadata_axis_index_by_name(state, "x")
+    if y_axis is None or x_axis is None:
+        return None
+
+    keep_axes = {y_axis, x_axis}
+    if channel_axis is not None:
+        keep_axes.add(channel_axis)
+
+    result = arr
+    remaining = list(range(arr.ndim))
+    for original_axis in reversed(range(arr.ndim)):
+        if original_axis in keep_axes:
+            continue
+        local_axis = remaining.index(original_axis)
+        index = _histogram_axis_index(
+            original_axis,
+            result.shape[local_axis],
+            current_step,
+        )
+        result = np.take(result, index, axis=local_axis)
+        remaining.pop(local_axis)
+
+    if channel_axis is None or channel_axis not in remaining:
+        return result, None
+    return result, remaining.index(channel_axis)
+
+
+def _histogram_channel_axis(arr: np.ndarray, state) -> tuple[int | None, str]:
+    if state is not None and len(getattr(state, "axes", ())) == arr.ndim:
+        for index, axis in enumerate(state.axes):
+            if axis.type == "channel" and arr.shape[index] > 1:
+                return index, axis.name.lower()
+    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+        return arr.ndim - 1, "rgb"
+    return None, ""
+
+
+def _metadata_axis_index_by_name(state, name: str) -> int | None:
+    for index, axis in enumerate(state.axes):
+        if axis.name.lower() == name:
+            return index
+    return None
+
+
+def _histogram_axis_index(axis: int, axis_size: int, current_step=None) -> int:
+    if current_step is None:
+        return axis_size // 2
+    try:
+        step = int(tuple(current_step)[axis])
+    except Exception:
+        step = axis_size // 2
+    return int(np.clip(step, 0, max(axis_size - 1, 0)))
+
+
+def _single_histogram(
+    arr: np.ndarray,
+) -> tuple[np.ndarray | None, tuple[float, float] | None]:
     if arr.dtype == bool:
         return np.bincount(arr.ravel().astype(np.uint8), minlength=2), (0.0, 1.0)
 
-    values = arr[np.isfinite(arr)].ravel()
+    values = _sample_histogram_values(arr)
     if values.size == 0:
         return None, None
-    if values.size > 500_000:
-        stride = int(np.ceil(values.size / 500_000))
-        values = values[::stride]
 
     if np.issubdtype(values.dtype, np.integer):
         finite_min = int(values.min())
@@ -2001,6 +2136,91 @@ def _histogram_summary(
         counts, _edges = np.histogram(values, bins=128)
         x_range = (finite_min, finite_max)
     return counts, x_range
+
+
+def _multichannel_histogram(
+    arr: np.ndarray,
+    channel_axis: int,
+) -> tuple[np.ndarray | None, tuple[float, float] | None]:
+    channel_axis = int(np.clip(channel_axis, 0, arr.ndim - 1))
+    values_by_channel = [
+        _sample_histogram_values(np.take(arr, channel, axis=channel_axis))
+        for channel in range(arr.shape[channel_axis])
+    ]
+    values_by_channel = [values for values in values_by_channel if values.size]
+    if not values_by_channel:
+        return None, None
+
+    if all(values.dtype == bool for values in values_by_channel):
+        counts = [
+            np.bincount(values.astype(np.uint8), minlength=2)
+            for values in values_by_channel
+        ]
+        return np.vstack(counts), (0.0, 1.0)
+
+    if all(np.issubdtype(values.dtype, np.integer) for values in values_by_channel):
+        finite_min = min(int(values.min()) for values in values_by_channel)
+        finite_max = max(int(values.max()) for values in values_by_channel)
+        if finite_min == finite_max:
+            counts = np.array(
+                [[values.size] for values in values_by_channel],
+                dtype=np.int64,
+            )
+            return counts, (float(finite_min), float(finite_max))
+        if 0 <= finite_min and finite_max <= 255:
+            bins = 256
+            hist_range = (0.0, 255.0)
+        else:
+            bins = 128
+            hist_range = (float(finite_min), float(finite_max))
+    else:
+        finite_min = min(float(values.min()) for values in values_by_channel)
+        finite_max = max(float(values.max()) for values in values_by_channel)
+        if finite_min == finite_max:
+            counts = np.array(
+                [[values.size] for values in values_by_channel],
+                dtype=np.int64,
+            )
+            return counts, (finite_min, finite_max)
+        bins = 128
+        hist_range = (finite_min, finite_max)
+
+    counts = [
+        np.histogram(values, bins=bins, range=hist_range)[0]
+        for values in values_by_channel
+    ]
+    return np.vstack(counts), hist_range
+
+
+def _sample_histogram_values(arr: np.ndarray) -> np.ndarray:
+    values = np.asarray(arr).ravel()
+    if values.size == 0:
+        return values
+    values = values[np.isfinite(values)]
+    if values.size > 500_000:
+        stride = int(np.ceil(values.size / 500_000))
+        values = values[::stride]
+    return values
+
+
+def _histogram_series_colors(count: int, channel_axis_name: str = "") -> list[QColor]:
+    if count <= 0:
+        return []
+    if channel_axis_name == "rgb":
+        base = [QColor("#ef4444"), QColor("#22c55e"), QColor("#60a5fa")]
+    elif count > 1:
+        base = [_qcolor_from_unit_rgb(color) for color in FLUORESCENCE_COLORS]
+    else:
+        base = [QColor("#60a5fa")]
+    return [QColor(base[index % len(base)]) for index in range(count)]
+
+
+def _qcolor_from_unit_rgb(color: np.ndarray) -> QColor:
+    return QColor.fromRgbF(
+        float(np.clip(color[0], 0, 1)),
+        float(np.clip(color[1], 0, 1)),
+        float(np.clip(color[2], 0, 1)),
+    )
 
 
 def _format_histogram_label(value: float) -> str:
