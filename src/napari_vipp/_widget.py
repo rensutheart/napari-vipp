@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -550,6 +551,7 @@ class VippWidget(QWidget):
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._dock_chrome_configured = False
+        self._initial_dock_size_applied = False
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -640,6 +642,8 @@ class VippWidget(QWidget):
         super().showEvent(event)
         if not self._dock_chrome_configured:
             QTimer.singleShot(0, self._ensure_dock_widget_chrome)
+        if not self._initial_dock_size_applied:
+            QTimer.singleShot(80, self._apply_initial_dock_size)
 
     def minimumSizeHint(self):  # noqa: N802
         return QSize(420, 120)
@@ -674,10 +678,48 @@ class VippWidget(QWidget):
         except Exception:
             pass
 
+    def _apply_initial_dock_size(self) -> None:
+        if self._initial_dock_size_applied:
+            return
+        dock = self._dock_widget()
+        if dock is None:
+            return
+        try:
+            if dock.isFloating():
+                return
+        except Exception:
+            return
+
+        window = self._dock_main_window(dock)
+        if window is None:
+            return
+
+        target_height = 380
+        target_width = 760
+        try:
+            area = window.dockWidgetArea(dock)
+            if area in (Qt.BottomDockWidgetArea, Qt.TopDockWidgetArea):
+                window.resizeDocks([dock], [target_height], Qt.Vertical)
+            elif area in (Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+                window.resizeDocks([dock], [target_width], Qt.Horizontal)
+            else:
+                return
+            self._initial_dock_size_applied = True
+        except Exception:
+            pass
+
     def _dock_widget(self):
         parent = self.parentWidget()
         while parent is not None:
             if isinstance(parent, QDockWidget):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    def _dock_main_window(self, dock: QDockWidget) -> QMainWindow | None:
+        parent = dock.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QMainWindow):
                 return parent
             parent = parent.parentWidget()
         return None

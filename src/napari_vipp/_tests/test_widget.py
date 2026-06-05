@@ -389,6 +389,41 @@ def test_dock_widget_chrome_is_not_rewritten_after_configured(qtbot):
     assert dock.features() == QDockWidget.NoDockWidgetFeatures
 
 
+def test_initial_bottom_dock_size_is_applied_once(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    window = QMainWindow()
+    dock = QDockWidget()
+    window.resize(1200, 900)
+    qtbot.addWidget(window)
+    qtbot.addWidget(dock)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+
+    widget._apply_initial_dock_size()
+    first_height = dock.height()
+    widget._initial_dock_size_applied = True
+    dock.resize(dock.width(), 120)
+    widget._apply_initial_dock_size()
+
+    assert widget._initial_dock_size_applied
+    assert first_height >= 300
+    assert dock.height() == 120
+
+
+def test_initial_dock_size_is_not_applied_while_floating(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    dock = QDockWidget()
+    qtbot.addWidget(dock)
+    dock.setWidget(widget)
+    dock.setFloating(True)
+
+    widget._apply_initial_dock_size()
+
+    assert not widget._initial_dock_size_applied
+
+
 def test_histogram_updates_for_selected_node(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint8).reshape(4, 16, 18)
     viewer = _Viewer(data)
