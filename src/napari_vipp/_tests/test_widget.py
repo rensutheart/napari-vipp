@@ -648,9 +648,8 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
 
     node = widget.add_node_from_palette("select_axis_slice")
     widget._connect_nodes("input", node.id)
-    widget._parameter_widgets["axis"].value_box.setValue(1)
-    widget.run_pipeline()
-    widget._parameter_widgets["index"].value_box.setValue(2)
+    control = widget._parameter_widgets["axis_slice"]
+    control.set_selection({1: 2})
     widget.run_pipeline()
 
     widget.graph_view.select_node(node.id)
@@ -659,6 +658,29 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "none"
     assert "1. Select Axis Slice: selected c axis (1)[2]" in widget.history_label.text()
+
+
+def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    control = widget._parameter_widgets["axis_slice"]
+    control.set_selection({0: 1, 1: 2})
+    widget.run_pipeline()
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.nodes[node.id].params["axes"] == "0,1"
+    assert widget.pipeline.nodes[node.id].params["indices"] == "1,2"
+    assert widget.pipeline.outputs[node.id].shape == (4, 5, 6)
+    assert _metadata_value(widget, "Dimensions") == "z=4, y=5, x=6"
+    assert (
+        "1. Select Axis Slice: selected t axis (0)[1], c axis (1)[2]"
+        in widget.history_label.text()
+    )
 
 
 def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):

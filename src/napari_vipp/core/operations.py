@@ -362,14 +362,22 @@ def max_intensity_projection(data, axis: int = 0) -> np.ndarray:
     return np.max(arr, axis=axis)
 
 
-def select_axis_slice(data, axis: int = 0, index: int = 0) -> np.ndarray:
-    """Select a single slice from any axis and remove that axis."""
+def select_axis_slice(
+    data,
+    axis: int = 0,
+    index: int = 0,
+    axes: str = "",
+    indices: str = "",
+) -> np.ndarray:
+    """Select one or more axis slices and remove those axes."""
     arr = np.asarray(data)
     if arr.ndim == 0:
         return arr.copy()
-    axis = int(np.clip(int(axis), 0, arr.ndim - 1))
-    index = int(np.clip(int(index), 0, arr.shape[axis] - 1))
-    return np.take(arr, index, axis=axis)
+    selections = _slice_selections(arr, axis, index, axes, indices)
+    result = arr
+    for axis_index, slice_index in sorted(selections.items(), reverse=True):
+        result = np.take(result, slice_index, axis=axis_index)
+    return result
 
 
 def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndarray:
@@ -581,6 +589,51 @@ def _normalize_axis(axis: int, ndim: int) -> int:
     if axis < 0:
         axis += ndim
     return int(np.clip(axis, 0, ndim - 1))
+
+
+def _slice_selections(
+    arr: np.ndarray,
+    axis: int,
+    index: int,
+    axes,
+    indices,
+) -> dict[int, int]:
+    selected_axes = _parse_int_list(axes)
+    selected_indices = _parse_int_list(indices)
+    if not selected_axes:
+        selected_axes = [axis]
+        selected_indices = [index]
+
+    selections: dict[int, int] = {}
+    for position, axis_value in enumerate(selected_axes):
+        axis_index = _normalize_axis(axis_value, arr.ndim)
+        slice_index = (
+            selected_indices[position]
+            if position < len(selected_indices)
+            else 0
+        )
+        selections[axis_index] = int(
+            np.clip(int(slice_index), 0, max(arr.shape[axis_index] - 1, 0))
+        )
+    return selections
+
+
+def _parse_int_list(value) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [value]
+    parsed = []
+    for part in parts:
+        try:
+            parsed.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return parsed
 
 
 def _odd_size(value: int | float, minimum: int = 1, maximum: int | None = None) -> int:

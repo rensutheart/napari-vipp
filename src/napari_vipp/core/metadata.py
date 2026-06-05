@@ -489,7 +489,14 @@ def _transformed_axes(
     if arr.ndim == len(axes):
         return axes
 
-    if operation_id in {"mip", "select_axis_slice"} and arr.ndim == len(axes) - 1:
+    if operation_id == "select_axis_slice":
+        axis_indices = _selected_axis_indices(params, len(axes))
+        if axis_indices and arr.ndim == len(axes) - len(axis_indices):
+            return tuple(
+                axis for index, axis in enumerate(axes) if index not in axis_indices
+            )
+
+    if operation_id == "mip" and arr.ndim == len(axes) - 1:
         axis_index = _clamped_axis(params.get("axis", 0), len(axes))
         return _remove_axis(axes, axis_index)
 
@@ -563,8 +570,12 @@ def _operation_history(
         axis = _axis_label(input_state.axes, params.get("axis", 0))
         return f"{operation_title}: projected {axis}"
     if operation_id == "select_axis_slice":
-        axis = _axis_label(input_state.axes, params.get("axis", 0))
-        return f"{operation_title}: selected {axis}[{int(params.get('index', 0))}]"
+        selections = _selected_axis_index_pairs(input_state.axes, params)
+        selected = ", ".join(
+            f"{_axis_label(input_state.axes, axis)}[{index}]"
+            for axis, index in selections
+        )
+        return f"{operation_title}: selected {selected}"
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "channel_composite":
@@ -592,6 +603,48 @@ def _axis_label(axes: tuple[AxisMetadata, ...], axis_value) -> str:
     axis_index = _clamped_axis(axis_value, len(axes))
     axis = axes[axis_index]
     return f"{axis.name} axis ({axis_index})"
+
+
+def _selected_axis_indices(params: dict[str, Any], ndim: int) -> set[int]:
+    axes = _parse_int_list(params.get("axes"))
+    if not axes:
+        axes = [_clamped_axis(params.get("axis", 0), ndim)]
+    return {_clamped_axis(axis, ndim) for axis in axes}
+
+
+def _selected_axis_index_pairs(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> list[tuple[int, int]]:
+    axis_values = _parse_int_list(params.get("axes"))
+    index_values = _parse_int_list(params.get("indices"))
+    if not axis_values:
+        axis_values = [params.get("axis", 0)]
+        index_values = [params.get("index", 0)]
+    pairs = []
+    for position, axis_value in enumerate(axis_values):
+        axis_index = _clamped_axis(axis_value, len(axes))
+        index = index_values[position] if position < len(index_values) else 0
+        pairs.append((axis_index, int(index)))
+    return sorted(pairs)
+
+
+def _parse_int_list(value) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [value]
+    parsed = []
+    for part in parts:
+        try:
+            parsed.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return parsed
 
 
 def _clamped_axis(value, ndim: int) -> int:
