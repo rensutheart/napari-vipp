@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 CATEGORY_COLORS = {
+    "Image Data": "#38bdf8",
     "Input": "#38bdf8",
     "Contrast": "#f59e0b",
     "Filtering": "#22c55e",
@@ -14,6 +15,7 @@ CATEGORY_COLORS = {
 }
 
 CATEGORY_TINTS = {
+    "Image Data": "#102f3d",
     "Input": "#102f3d",
     "Contrast": "#3a2a10",
     "Filtering": "#12351f",

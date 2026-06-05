@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
 from skimage import filters, restoration
+from skimage import io as skio
 
 RGB_CHANNELS = (3, 4)
 
@@ -349,6 +351,57 @@ def invert(data) -> np.ndarray:
     if finite.size == 0:
         return arr.copy()
     return finite.max() + finite.min() - arr
+
+
+def save_array_output(
+    data,
+    path: str | Path,
+    *,
+    format: str = "auto",
+    overwrite: bool = True,
+) -> Path:
+    """Write an array output to disk using a compact explicit format choice."""
+    if data is None:
+        raise ValueError("No node output is available to save.")
+    raw_path = str(path).strip()
+    if not raw_path:
+        raise ValueError("A save path is required.")
+    output_path = Path(raw_path).expanduser()
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"Output already exists: {output_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    arr = np.asarray(data)
+    selected_format = str(format or "auto").lower()
+    if selected_format == "auto":
+        selected_format = "npy" if output_path.suffix.lower() == ".npy" else "tiff"
+    if selected_format == "npy":
+        np.save(output_path, arr)
+        return output_path
+    if selected_format in {"tif", "tiff"}:
+        writable = arr.astype(np.uint8) if arr.dtype == bool else arr
+        skio.imsave(str(output_path), writable, check_contrast=False)
+        return output_path
+    raise ValueError(f"Unsupported save format: {format}")
+
+
+def save_output(
+    data,
+    enabled: str = "off",
+    path: str = "",
+    format: str = "auto",
+    overwrite: str = "no",
+) -> np.ndarray:
+    """Pipeline node that writes the current output and passes data downstream."""
+    arr = np.asarray(data).copy()
+    if str(enabled).lower() == "on" and str(path).strip():
+        save_array_output(
+            arr,
+            path,
+            format=format,
+            overwrite=str(overwrite).lower() == "yes",
+        )
+    return arr
 
 
 def max_intensity_projection(data, axis: int = 0) -> np.ndarray:

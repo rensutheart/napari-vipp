@@ -207,6 +207,38 @@ def test_widget_prefers_time_lapse_multichannel_sample_input(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=5, c=3, z=4, y=16, x=18"
 
 
+def test_image_source_node_can_select_napari_layer(qtbot):
+    viewer = _Viewer(np.zeros((2, 4, 5), dtype=np.uint8))
+    second = np.ones((3, 6, 7), dtype=np.uint16)
+    viewer.layers.append(_Layer(second, "second layer", metadata={"axes": "ZYX"}))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    control.layer_combo.setCurrentText("second layer")
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes["input"].params["layer_name"] == "second layer"
+    assert widget.pipeline.outputs["input"].shape == second.shape
+    assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
+
+
+def test_image_source_node_can_use_sample_mode(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    control.mode_combo.setCurrentText("sample")
+    control.sample_combo.setCurrentText("VIPP synthetic volume")
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes["input"].params["source_mode"] == "sample"
+    assert widget.pipeline.outputs["input"].shape == (12, 96, 128)
+
+
 def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -300,12 +332,39 @@ def test_palette_uses_category_colors(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    image_data = _palette_category(widget, "Image Data")
+    image_source = _palette_item(widget, "input")
+    assert image_data.foreground(0).color().name() == category_color("Image Data")
+    assert image_data.background(0).color().name() == category_tint("Image Data")
+    assert image_source.foreground(0).color().name() == category_color("Image Data")
+
     filtering = _palette_category(widget, "Filtering")
     gaussian = _palette_item(widget, "gaussian_blur")
 
     assert filtering.foreground(0).color().name() == category_color("Filtering")
     assert filtering.background(0).color().name() == category_tint("Filtering")
     assert gaussian.foreground(0).color().name() == category_color("Filtering")
+
+
+def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    image_data = _palette_category(widget, "Image Data")
+    child_ids = {
+        image_data.child(index).data(0, Qt.UserRole)
+        for index in range(image_data.childCount())
+    }
+
+    assert {
+        "input",
+        "crop_stack",
+        "select_axis_slice",
+        "extract_channel",
+        "channel_composite",
+        "save_output",
+    } <= child_ids
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
@@ -861,10 +920,43 @@ def test_palette_image_operations_can_run(qtbot):
     qtbot.addWidget(widget)
 
     for spec in PALETTE_NODE_LIBRARY:
+        if not spec.has_input:
+            continue
         node = widget.add_node_from_palette(spec.id)
         widget._connect_nodes("input", node.id)
 
         assert widget.pipeline.outputs[node.id] is not None, spec.id
+
+
+def test_save_selected_output_writes_npy(qtbot, tmp_path):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    path = tmp_path / "selected-output.npy"
+
+    saved = widget._save_node_output("gaussian", str(path))
+
+    assert saved == path
+    assert path.exists()
+    np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
+
+
+def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("save_output")
+    widget._connect_nodes("gaussian", node.id)
+    path = tmp_path / "graph-output.npy"
+
+    widget.pipeline.set_param(node.id, "enabled", "on")
+    widget.pipeline.set_param(node.id, "path", str(path))
+    widget.pipeline.set_param(node.id, "format", "npy")
+    widget.pipeline.set_param(node.id, "overwrite", "yes")
+    widget.run_pipeline()
+
+    assert path.exists()
+    np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
 
 
 def test_mask_output_can_feed_gaussian_blur(qtbot):

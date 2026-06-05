@@ -37,6 +37,7 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    save_output,
     select_axis_slice,
     top_hat,
     triangle_threshold,
@@ -72,6 +73,13 @@ class OperationSpec:
         return self.input_type is not None
 
 
+@dataclass(frozen=True)
+class SourcePayload:
+    data: Any
+    metadata: dict | None = None
+    name: str = ""
+
+
 @dataclass
 class GraphNode:
     id: str
@@ -100,12 +108,38 @@ class ConnectionResult:
     removed: tuple[GraphConnection, ...] = ()
 
 
+IMAGE_DATA_CATEGORY = "Image Data"
+
+SOURCE_PARAMETERS = (
+    ParameterSpec(
+        "source_mode",
+        "Source",
+        "choice",
+        "napari layer",
+        0,
+        0,
+        1,
+        choices=("napari layer", "file path", "sample"),
+    ),
+    ParameterSpec("layer_name", "Napari layer", "text", "", 0, 0, 1),
+    ParameterSpec("file_path", "File path", "text", "", 0, 0, 1),
+    ParameterSpec("sample_name", "Sample", "text", "", 0, 0, 1),
+)
+
+
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
-    OperationSpec("input", "Input Layer", "Input", None, "image"),
+    OperationSpec(
+        "input",
+        "Image Source",
+        IMAGE_DATA_CATEGORY,
+        None,
+        "image",
+        SOURCE_PARAMETERS,
+    ),
     OperationSpec(
         "crop_stack",
         "Crop Stack",
-        "Input",
+        IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
@@ -239,7 +273,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "select_axis_slice",
         "Select Axis Slice",
-        "Input",
+        IMAGE_DATA_CATEGORY,
         "array",
         "any",
         (
@@ -393,7 +427,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "extract_channel",
         "Extract Channel",
-        "Channels",
+        IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
@@ -404,7 +438,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "channel_composite",
         "Channel Composite",
-        "Channels",
+        IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
@@ -414,6 +448,47 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("blue_channel", "Blue", "int", 0, 0, 15, 1),
         ),
         channel_composite,
+    ),
+    OperationSpec(
+        "save_output",
+        "Save Image",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "any",
+        (
+            ParameterSpec(
+                "enabled",
+                "Enabled",
+                "choice",
+                "off",
+                0,
+                0,
+                1,
+                choices=("off", "on"),
+            ),
+            ParameterSpec("path", "Path", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "format",
+                "Format",
+                "choice",
+                "auto",
+                0,
+                0,
+                1,
+                choices=("auto", "npy", "tiff"),
+            ),
+            ParameterSpec(
+                "overwrite",
+                "Overwrite",
+                "choice",
+                "no",
+                0,
+                0,
+                1,
+                choices=("no", "yes"),
+            ),
+        ),
+        save_output,
     ),
     OperationSpec(
         "convert_dtype",
@@ -449,10 +524,18 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
 )
 
 NODE_LIBRARY_BY_ID = {spec.id: spec for spec in NODE_LIBRARY}
-PALETTE_NODE_LIBRARY = tuple(spec for spec in NODE_LIBRARY if spec.id != "input")
+PALETTE_NODE_LIBRARY = NODE_LIBRARY
 
 PROTOTYPE_NODES = [
-    GraphNode("input", "input", "Input Layer", "Input", None, "image"),
+    GraphNode(
+        "input",
+        "input",
+        "Image Source",
+        IMAGE_DATA_CATEGORY,
+        None,
+        "image",
+        {param.name: param.default for param in SOURCE_PARAMETERS},
+    ),
     GraphNode(
         "gaussian",
         "gaussian_blur",
@@ -595,6 +678,7 @@ class PrototypePipeline:
         input_data,
         input_metadata: dict | None = None,
         input_name: str = "",
+        source_payloads: dict[str, SourcePayload] | None = None,
     ) -> dict[str, Any]:
         self.outputs = {node_id: None for node_id in self.nodes}
         self.output_states = {node_id: None for node_id in self.nodes}
@@ -616,6 +700,7 @@ class PrototypePipeline:
                     input_data,
                     input_metadata,
                     input_name,
+                    source_payloads or {},
                 )
                 self.outputs[node_id] = output
                 self.output_states[node_id] = state
@@ -629,14 +714,18 @@ class PrototypePipeline:
         input_data,
         input_metadata: dict | None,
         input_name: str,
+        source_payloads: dict[str, SourcePayload],
     ):
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         if not spec.has_input:
-            return input_data, image_state_from_array(
-                input_data,
-                layer_metadata=input_metadata,
-                source_name=input_name,
+            payload = source_payloads.get(node_id)
+            if payload is None:
+                payload = SourcePayload(input_data, input_metadata, input_name)
+            return payload.data, image_state_from_array(
+                payload.data,
+                layer_metadata=payload.metadata,
+                source_name=payload.name,
             )
 
         sources = self._input_sources(node_id)

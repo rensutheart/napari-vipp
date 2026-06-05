@@ -22,6 +22,8 @@ The prototype currently supports:
 - draggable node cards with input/output ports and curved connectors;
 - adding nodes from a categorized, fuzzy-searchable node library;
 - connecting nodes by dragging or click-to-connect from output to input ports;
+- explicit image source nodes for napari layers, files, or bundled samples;
+- quick selected-output saving plus graph-level save nodes;
 - per-node thumbnails with global `Slice`, `MIP`, and `Off` preview modes;
 - optional per-node thumbnail disabling for heavier workflows;
 - selected-node parameter controls in the inspector;
@@ -67,7 +69,7 @@ while preserving the underlying channel axis in the carried metadata.
 When the full sample suite is open, the workflow automatically starts from the
 `VIPP synthetic time-lapse multichannel` layer so the input metadata should read
 as `TCZYX`. The simpler grayscale and `CZYX` examples are still available in the
-input selector.
+toolbar input selector and in the graph-level `Image Source` node.
 
 Open sample data from napari:
 
@@ -79,9 +81,13 @@ File > Open Sample > VIPP synthetic microscopy samples
 
 The current node catalogue includes:
 
-- Input and axis tools:
+- Image Data:
+  - Image Source
   - Crop Stack
   - Select Axis Slice
+  - Extract Channel
+  - Channel Composite
+  - Save Image
 - Contrast:
   - Contrast Stretching
   - Gamma Correction
@@ -109,9 +115,6 @@ The current node catalogue includes:
   - Morphological Gradient
   - Fill Holes
   - Volume Filter
-- Channels:
-  - Extract Channel
-  - Channel Composite
 - Utility:
   - Convert Dtype
   - Invert
@@ -120,6 +123,12 @@ The current node catalogue includes:
 Composite` creates an RGB display-style output from a multi-channel image. True
 multi-output split nodes and true multi-input merge nodes are planned but not
 implemented yet.
+
+`Image Source` can point to an existing napari layer, a local `.npy` or TIFF
+file, or one of the bundled synthetic samples. `Save Image` passes data through
+unchanged while optionally writing the node input to disk when enabled. For quick
+interactive work, the inspector also provides `Save selected output...` for the
+currently selected node.
 
 ## Development
 

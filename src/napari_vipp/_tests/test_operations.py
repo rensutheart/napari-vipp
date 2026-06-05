@@ -25,6 +25,8 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    save_array_output,
+    save_output,
     select_axis_slice,
     top_hat,
     triangle_threshold,
@@ -61,9 +63,49 @@ def test_vipp_operation_nodes_are_registered():
         "channel_composite",
         "convert_dtype",
         "select_axis_slice",
+        "save_output",
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
+
+
+def test_save_output_writes_npy_when_enabled(tmp_path):
+    data = np.arange(6, dtype=np.uint16).reshape(2, 3)
+    path = tmp_path / "node-output.npy"
+
+    result = save_output(
+        data,
+        enabled="on",
+        path=str(path),
+        format="npy",
+        overwrite="yes",
+    )
+
+    assert path.exists()
+    np.testing.assert_array_equal(np.load(path), data)
+    np.testing.assert_array_equal(result, data)
+
+
+def test_save_array_output_respects_overwrite(tmp_path):
+    data = np.zeros((2, 2), dtype=np.uint8)
+    path = tmp_path / "existing.npy"
+    save_array_output(data, path)
+
+    try:
+        save_array_output(data + 1, path, overwrite=False)
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("Expected overwrite=False to reject existing output")
+
+
+def test_save_array_output_rejects_blank_path():
+    try:
+        save_array_output(np.zeros((2, 2), dtype=np.uint8), "")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Expected blank save path to be rejected")
 
 
 def test_slice_wise_filters_preserve_z_independence():

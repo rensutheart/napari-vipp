@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from html import escape
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGroupBox,
@@ -37,8 +39,10 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from skimage import io as skio
 
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
+from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.metadata import (
     MetadataRow,
@@ -46,10 +50,12 @@ from napari_vipp.core.metadata import (
     metadata_history_items,
     metadata_table_rows,
 )
+from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import (
     OperationSpec,
     ParameterSpec,
     PrototypePipeline,
+    SourcePayload,
     grouped_palette_specs,
 )
 from napari_vipp.core.preview import (
@@ -402,6 +408,167 @@ class ChoiceControl(QWidget):
             self.combo.setCurrentIndex(index)
         if emit:
             self.valueChanged.emit(self.value())
+
+
+class TextControl(QWidget):
+    """Single-line text control for path-like and free text parameters."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, spec, value, _bounds: ParameterBounds, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self.edit = QLineEdit()
+        self.edit.setText("" if value is None else str(value))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.edit, 1)
+        self.edit.textChanged.connect(self.valueChanged.emit)
+
+    def value(self):
+        return self.edit.text()
+
+    def set_bounds(
+        self,
+        _bounds: ParameterBounds,
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        current = "" if value is None else str(value)
+        with QSignalBlocker(self.edit):
+            self.edit.setText(current)
+        if emit:
+            self.valueChanged.emit(self.value())
+
+
+class ImageSourceControl(QWidget):
+    """Source selector for explicit graph input nodes."""
+
+    valueChanged = Signal(object)
+
+    def __init__(
+        self,
+        value: dict | None,
+        *,
+        layer_names: list[str],
+        sample_names: list[str],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["napari layer", "file path", "sample"])
+        self.layer_combo = QComboBox()
+        self.sample_combo = QComboBox()
+        self.path_edit = QLineEdit()
+        self.path_button = QPushButton("Browse")
+        self.path_button.setMaximumWidth(72)
+
+        self.layer_row = QWidget()
+        layer_layout = QHBoxLayout(self.layer_row)
+        layer_layout.setContentsMargins(0, 0, 0, 0)
+        layer_layout.addWidget(self.layer_combo, 1)
+
+        self.file_row = QWidget()
+        file_layout = QHBoxLayout(self.file_row)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.addWidget(self.path_edit, 1)
+        file_layout.addWidget(self.path_button)
+
+        self.sample_row = QWidget()
+        sample_layout = QHBoxLayout(self.sample_row)
+        sample_layout.setContentsMargins(0, 0, 0, 0)
+        sample_layout.addWidget(self.sample_combo, 1)
+
+        layout = QFormLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addRow("Source", self.mode_combo)
+        layout.addRow("Layer", self.layer_row)
+        layout.addRow("File", self.file_row)
+        layout.addRow("Sample", self.sample_row)
+
+        self.set_options(layer_names, sample_names, value=value, emit=False)
+
+        self.mode_combo.currentTextChanged.connect(self._on_changed)
+        self.layer_combo.currentTextChanged.connect(self._on_changed)
+        self.sample_combo.currentTextChanged.connect(self._on_changed)
+        self.path_edit.textChanged.connect(self._on_changed)
+        self.path_button.clicked.connect(self._browse_path)
+
+    def value(self) -> dict[str, str]:
+        return {
+            "source_mode": self.mode_combo.currentText(),
+            "layer_name": self.layer_combo.currentText(),
+            "file_path": self.path_edit.text(),
+            "sample_name": self.sample_combo.currentText(),
+        }
+
+    def set_options(
+        self,
+        layer_names: list[str],
+        sample_names: list[str],
+        *,
+        value: dict | None = None,
+        emit: bool = False,
+    ) -> None:
+        current = value or self.value()
+        self._set_combo_items(
+            self.layer_combo,
+            layer_names,
+            str(current.get("layer_name", "")),
+        )
+        self._set_combo_items(
+            self.sample_combo,
+            sample_names,
+            str(current.get("sample_name", "")),
+        )
+        mode = str(current.get("source_mode", "napari layer"))
+        if self.mode_combo.findText(mode) < 0:
+            mode = "napari layer"
+        with QSignalBlocker(self.mode_combo), QSignalBlocker(self.path_edit):
+            self.mode_combo.setCurrentText(mode)
+            self.path_edit.setText(str(current.get("file_path", "")))
+        self._sync_rows()
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def _set_combo_items(
+        self,
+        combo: QComboBox,
+        values: list[str],
+        current: str,
+    ) -> None:
+        with QSignalBlocker(combo):
+            combo.clear()
+            combo.addItem("")
+            for value in values:
+                combo.addItem(value)
+            if current:
+                index = combo.findText(current)
+                if index < 0:
+                    combo.addItem(current)
+                    index = combo.findText(current)
+                combo.setCurrentIndex(index)
+
+    def _browse_path(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Select image source",
+            self.path_edit.text(),
+            "Images and arrays (*.tif *.tiff *.npy);;All files (*.*)",
+        )
+        if path:
+            self.path_edit.setText(path)
+
+    def _on_changed(self, *_args) -> None:
+        self._sync_rows()
+        self.valueChanged.emit(self.value())
+
+    def _sync_rows(self) -> None:
+        mode = self.mode_combo.currentText()
+        self.layer_row.setVisible(mode == "napari layer")
+        self.file_row.setVisible(mode == "file path")
+        self.sample_row.setVisible(mode == "sample")
 
 
 class AxisIntervalSlider(QWidget):
@@ -1105,6 +1272,7 @@ class VippWidget(QWidget):
         self._last_input_layer_name: str | None = None
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
+        self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._dock_chrome_configured = False
         self._initial_dock_size_applied = False
         self.setMinimumSize(0, 0)
@@ -1189,6 +1357,7 @@ class VippWidget(QWidget):
         self.histogram_plot = HistogramPlot()
 
         self.pin_button = QPushButton("Pin selected")
+        self.save_button = QPushButton("Save selected output...")
         self.inspector_panel = self._build_inspector()
 
         self._debounce_timer = QTimer(self)
@@ -1383,6 +1552,7 @@ class VippWidget(QWidget):
 
         actions = QHBoxLayout()
         actions.addWidget(self.pin_button)
+        actions.addWidget(self.save_button)
         layout.addLayout(actions)
         layout.addStretch(1)
         scroll = QScrollArea()
@@ -1407,6 +1577,7 @@ class VippWidget(QWidget):
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
+        self.save_button.clicked.connect(self._save_selected_output_dialog)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
         self.palette_search.textChanged.connect(self.palette.set_filter_text)
@@ -1607,6 +1778,93 @@ class VippWidget(QWidget):
             pass
         return score
 
+    def _available_layer_names(self) -> list[str]:
+        names: list[str] = []
+        for layer in self.viewer.layers:
+            if self._is_vipp_generated_layer(layer):
+                continue
+            if hasattr(layer, "data"):
+                names.append(str(getattr(layer, "name", "")))
+        return names
+
+    def _sample_names(self) -> list[str]:
+        return list(self._sample_payloads().keys())
+
+    def _sample_payloads(self) -> dict[str, SourcePayload]:
+        if self._sample_payload_cache is None:
+            payloads: dict[str, SourcePayload] = {}
+            for data, metadata, _layer_type in make_sample_data():
+                name = str(metadata.get("name", "VIPP sample"))
+                payloads[name] = SourcePayload(
+                    data,
+                    metadata.get("metadata", {}),
+                    name,
+                )
+            self._sample_payload_cache = payloads
+        return self._sample_payload_cache
+
+    def _source_payloads_for_pipeline(
+        self,
+    ) -> tuple[dict[str, SourcePayload], list[object]]:
+        payloads: dict[str, SourcePayload] = {}
+        layers: list[object] = []
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input":
+                continue
+            payload, layer = self._resolve_source_payload(node)
+            if payload is not None:
+                payloads[node_id] = payload
+            if layer is not None:
+                layers.append(layer)
+        return payloads, layers
+
+    def _resolve_source_payload(
+        self,
+        node,
+    ) -> tuple[SourcePayload | None, object | None]:
+        mode = str(node.params.get("source_mode", "napari layer"))
+        if mode == "file path":
+            path = str(node.params.get("file_path", "")).strip()
+            if not path:
+                return None, None
+            data, metadata = self._load_source_file(path)
+            return SourcePayload(data, metadata, Path(path).name), None
+        if mode == "sample":
+            sample_name = str(node.params.get("sample_name", "")).strip()
+            payloads = self._sample_payloads()
+            if not sample_name and payloads:
+                sample_name = next(iter(payloads))
+            return payloads.get(sample_name), None
+
+        layer_name = str(node.params.get("layer_name", "")).strip()
+        if not layer_name:
+            layer_name = self.layer_combo.currentText()
+        layer = self._layer_by_name(layer_name) if layer_name else None
+        if layer is None:
+            return None, None
+        return (
+            SourcePayload(
+                layer.data,
+                getattr(layer, "metadata", None),
+                getattr(layer, "name", ""),
+            ),
+            layer,
+        )
+
+    def _load_source_file(self, path: str) -> tuple[np.ndarray, dict]:
+        source_path = Path(path).expanduser()
+        if not source_path.exists():
+            raise FileNotFoundError(f"Image source not found: {source_path}")
+        if source_path.suffix.lower() == ".npy":
+            data = np.load(source_path)
+        elif source_path.suffix.lower() == ".npz":
+            with np.load(source_path) as loaded:
+                first_key = loaded.files[0]
+                data = loaded[first_key]
+        else:
+            data = skio.imread(str(source_path))
+        return np.asarray(data), {"vipp_source_path": str(source_path)}
+
     def _connect_nodes(self, source_id: str, target_id: str) -> None:
         result = self.pipeline.connect(source_id, target_id)
         if not result.success:
@@ -1644,19 +1902,27 @@ class VippWidget(QWidget):
 
     def _render_parameters(self, node_id: str) -> None:
         self._clear_parameter_form()
+        node = self.pipeline.nodes[node_id]
+        if node.operation_id == "input":
+            self.parameter_group.setHidden(False)
+            self._render_image_source_parameters(node_id)
+            return
         specs = self.pipeline.node_parameter_specs(node_id)
         self.parameter_group.setHidden(not specs)
         if not specs:
             return
-
-        node = self.pipeline.nodes[node_id]
         if node.operation_id == "select_axis_slice":
             self._render_select_axis_slice_parameters(node_id)
             return
 
         for spec in specs:
             bounds = self._parameter_bounds_for(node_id, spec)
-            control_class = ChoiceControl if spec.kind == "choice" else ParameterControl
+            if spec.kind == "choice":
+                control_class = ChoiceControl
+            elif spec.kind == "text":
+                control_class = TextControl
+            else:
+                control_class = ParameterControl
             widget = control_class(spec, node.params.get(spec.name), bounds)
             node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
@@ -1664,6 +1930,35 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+
+    def _render_image_source_parameters(self, node_id: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        control = ImageSourceControl(
+            self._image_source_value(node),
+            layer_names=self._available_layer_names(),
+            sample_names=self._sample_names(),
+        )
+        self._apply_image_source_params(node_id, control.value())
+        control.valueChanged.connect(self._on_image_source_changed)
+        self.parameter_form.addRow(control)
+        self._parameter_widgets["image_source"] = control
+
+    def _image_source_value(self, node) -> dict[str, str]:
+        return {
+            "source_mode": node.params.get("source_mode", "napari layer"),
+            "layer_name": node.params.get("layer_name", ""),
+            "file_path": node.params.get("file_path", ""),
+            "sample_name": node.params.get("sample_name", ""),
+        }
+
+    def _apply_image_source_params(self, node_id: str, value: dict[str, str]) -> None:
+        node = self.pipeline.nodes[node_id]
+        for name in ("source_mode", "layer_name", "file_path", "sample_name"):
+            node.params[name] = value.get(name, "")
+
+    def _on_image_source_changed(self, value: dict[str, str]) -> None:
+        self._apply_image_source_params(self._selected_node_id, value)
+        self._debounce_timer.start()
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -1681,6 +1976,22 @@ class VippWidget(QWidget):
             return False
         changed = False
         node = self.pipeline.nodes[self._selected_node_id]
+        if node.operation_id == "input":
+            widget = self._parameter_widgets.get("image_source")
+            if isinstance(widget, ImageSourceControl):
+                previous = dict(node.params)
+                widget.set_options(
+                    self._available_layer_names(),
+                    self._sample_names(),
+                    value=self._image_source_value(node),
+                    emit=False,
+                )
+                self._apply_image_source_params(
+                    self._selected_node_id,
+                    widget.value(),
+                )
+                changed = previous != node.params
+            return changed
         if node.operation_id == "select_axis_slice":
             widget = self._parameter_widgets.get("axis_slice")
             if isinstance(widget, AxisSliceControl):
@@ -1992,8 +2303,14 @@ class VippWidget(QWidget):
         )
 
     def run_pipeline(self) -> None:
-        layer = self._selected_input_layer()
-        if layer is None:
+        toolbar_layer = self._selected_input_layer()
+        try:
+            source_payloads, source_layers = self._source_payloads_for_pipeline()
+        except Exception as exc:
+            self.status_label.setText(f"Image source error: {exc}")
+            return
+
+        if toolbar_layer is None and not source_payloads:
             self._restore_hidden_input_layers()
             self.pipeline.run(None)
             self._update_thumbnails()
@@ -2002,24 +2319,31 @@ class VippWidget(QWidget):
             self.status_label.setText("No image layer selected.")
             return
 
-        self._last_input_layer_name = layer.name
-        self._restore_hidden_input_layers(except_layer=layer)
+        primary_layer = source_layers[0] if source_layers else toolbar_layer
+        if primary_layer is not None:
+            self._last_input_layer_name = getattr(primary_layer, "name", None)
+        self._restore_hidden_input_layers(except_layer=primary_layer)
+        input_data = getattr(toolbar_layer, "data", None)
+        input_metadata = getattr(toolbar_layer, "metadata", None)
+        input_name = getattr(toolbar_layer, "name", "")
         try:
             self.pipeline.run(
-                layer.data,
-                input_metadata=getattr(layer, "metadata", None),
-                input_name=getattr(layer, "name", ""),
+                input_data,
+                input_metadata=input_metadata,
+                input_name=input_name,
+                source_payloads=source_payloads,
             )
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
             return
         if self._refresh_selected_parameter_controls():
             self.pipeline.run(
-                layer.data,
-                input_metadata=getattr(layer, "metadata", None),
-                input_name=getattr(layer, "name", ""),
+                input_data,
+                input_metadata=input_metadata,
+                input_name=input_name,
+                source_payloads=source_payloads,
             )
-        self._hide_input_layer_for_inspection(layer)
+        self._hide_input_layer_for_inspection(primary_layer)
 
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
@@ -2027,8 +2351,10 @@ class VippWidget(QWidget):
         self._refresh_pinned_layer_if_active()
         self._update_metadata_panel()
         self._update_histogram()
+        source_names = [payload.name for payload in source_payloads.values()]
+        source_label = ", ".join(name for name in source_names if name) or input_name
         self.status_label.setText(
-            f"Graph updated from '{layer.name}'. "
+            f"Graph updated from '{source_label}'. "
             "Connect ports to build alternate paths."
         )
 
@@ -2159,6 +2485,33 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
         )
+
+    def _save_selected_output_dialog(self) -> None:
+        node_id = self._selected_node_id
+        default_name = f"{self._node_title(node_id).replace(' ', '_')}.npy"
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Save selected node output",
+            default_name,
+            "NumPy array (*.npy);;TIFF image (*.tif *.tiff);;All files (*.*)",
+        )
+        if path:
+            self._save_node_output(node_id, path)
+
+    def _save_node_output(self, node_id: str, path: str) -> Path | None:
+        data = self.pipeline.outputs.get(node_id)
+        if data is None:
+            self.status_label.setText("That node has no output to save yet.")
+            return None
+        try:
+            output_path = save_array_output(data, path, overwrite=True)
+        except Exception as exc:
+            self.status_label.setText(f"Save failed: {exc}")
+            return None
+        self.status_label.setText(
+            f"Saved '{self._node_title(node_id)}' to {output_path}."
+        )
+        return output_path
 
     def inspect_node(self, node_id: str) -> None:
         data = self.pipeline.outputs.get(node_id)
