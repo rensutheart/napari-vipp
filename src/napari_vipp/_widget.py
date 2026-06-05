@@ -27,6 +27,8 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -38,7 +40,8 @@ from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.metadata import (
     format_compact_metadata,
-    format_detailed_metadata,
+    metadata_history_items,
+    metadata_table_rows,
 )
 from napari_vipp.core.pipeline import (
     OperationSpec,
@@ -607,12 +610,26 @@ class VippWidget(QWidget):
         )
         self.auto_contrast_button = QPushButton("Auto")
         self.metadata_group = QGroupBox("Output Metadata")
-        self.metadata_label = QLabel("No output yet.")
-        self.metadata_label.setWordWrap(True)
-        self.metadata_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.metadata_label.setStyleSheet(
-            "font-family: Consolas, monospace; color: #d1d5db;"
+        self.metadata_table = QTableWidget(0, 2)
+        self.metadata_table.setHorizontalHeaderLabels(["Field", "Value"])
+        self.metadata_table.verticalHeader().setVisible(False)
+        self.metadata_table.horizontalHeader().setStretchLastSection(True)
+        self.metadata_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.metadata_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.metadata_table.setFocusPolicy(Qt.NoFocus)
+        self.metadata_table.setWordWrap(True)
+        self.metadata_table.setMinimumHeight(260)
+        self.metadata_table.setStyleSheet(
+            "QTableWidget { background: #1f242c; color: #e5e7eb; "
+            "gridline-color: #374151; }"
+            "QHeaderView::section { background: #2b313b; color: #f3f4f6; "
+            "padding: 4px; }"
         )
+        self.history_title = QLabel("History")
+        self.history_title.setStyleSheet("font-weight: 650;")
+        self.history_label = QLabel("No history yet.")
+        self.history_label.setWordWrap(True)
+        self.history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.histogram_group = QGroupBox("Histogram")
         self.histogram_scope_combo = QComboBox()
         self.histogram_scope_combo.addItems(["Slice", "Stack"])
@@ -807,7 +824,9 @@ class VippWidget(QWidget):
         histogram_layout.addWidget(self.histogram_plot)
         layout.addWidget(self.histogram_group)
         metadata_layout = QVBoxLayout(self.metadata_group)
-        metadata_layout.addWidget(self.metadata_label)
+        metadata_layout.addWidget(self.metadata_table)
+        metadata_layout.addWidget(self.history_title)
+        metadata_layout.addWidget(self.history_label)
         layout.addWidget(self.metadata_group)
 
         actions = QHBoxLayout()
@@ -1396,7 +1415,25 @@ class VippWidget(QWidget):
 
     def _update_metadata_panel(self) -> None:
         state = self.pipeline.output_states.get(self._selected_node_id)
-        self.metadata_label.setText(format_detailed_metadata(state))
+        rows = metadata_table_rows(state)
+        self.metadata_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            label_item = QTableWidgetItem(row.label)
+            value_item = QTableWidgetItem(row.value)
+            label_item.setFlags(label_item.flags() & ~Qt.ItemIsEditable)
+            value_item.setFlags(value_item.flags() & ~Qt.ItemIsEditable)
+            self.metadata_table.setItem(row_index, 0, label_item)
+            self.metadata_table.setItem(row_index, 1, value_item)
+        self.metadata_table.resizeRowsToContents()
+        self.metadata_table.resizeColumnToContents(0)
+
+        history = metadata_history_items(state)
+        if history:
+            self.history_label.setText(
+                "\n".join(f"{index}. {entry}" for index, entry in enumerate(history, 1))
+            )
+        else:
+            self.history_label.setText("No history yet.")
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)

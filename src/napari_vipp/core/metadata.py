@@ -123,6 +123,12 @@ class ImageState:
             return None
 
 
+@dataclass(frozen=True)
+class MetadataRow:
+    label: str
+    value: str
+
+
 def image_state_from_array(
     data,
     *,
@@ -213,13 +219,52 @@ def format_compact_metadata(state_or_data) -> str:
     if state is None:
         return "No output"
 
-    first = f"{state.axis_order} {_shape_label(state.shape)} | {state.dtype}"
-    second_parts = [state.kind, state.bit_depth, f"range {state.value_range}"]
-    if state.value_pattern:
-        second_parts.insert(1, state.value_pattern)
+    first = f"{state.axis_order}: {_dimensions_compact_label(state)} | {state.dtype}"
+    second_parts = [state.kind, state.bit_depth]
     if "inferred" in state.metadata_source:
         second_parts.append("axes inferred")
     return first + "\n" + " | ".join(second_parts)
+
+
+def metadata_table_rows(state_or_data) -> list[MetadataRow]:
+    """Return display rows for the selected-node metadata table."""
+    state = _coerce_state(state_or_data)
+    if state is None:
+        return [MetadataRow("Status", "No output yet.")]
+
+    rows = [
+        MetadataRow("Kind", state.kind),
+        MetadataRow("Shape", _shape_label(state.shape)),
+        MetadataRow("Axes", _axes_detail_label(state)),
+        MetadataRow("Dimensions", _dimensions_label(state)),
+        MetadataRow("Physical scale", _scale_label(state)),
+        MetadataRow("Origin", _origin_label(state)),
+        MetadataRow("Channels", _axis_count_label(state, "channel")),
+        MetadataRow("Timepoints", _axis_count_label(state, "time")),
+        MetadataRow("Z slices", _named_axis_count_label(state, "z")),
+        MetadataRow("Dtype", state.dtype),
+        MetadataRow("Bit depth", state.bit_depth),
+        MetadataRow("Value range", state.value_range),
+    ]
+    if state.value_pattern:
+        rows.append(MetadataRow("Value pattern", state.value_pattern))
+    rows.extend(
+        [
+            MetadataRow("Memory", state.memory),
+            MetadataRow("Metadata source", state.metadata_source),
+        ]
+    )
+    if state.source_name:
+        rows.append(MetadataRow("Source", state.source_name))
+    return rows
+
+
+def metadata_history_items(state_or_data) -> list[str]:
+    """Return operation history entries for inspector display."""
+    state = _coerce_state(state_or_data)
+    if state is None:
+        return []
+    return list(state.history)
 
 
 def format_detailed_metadata(state_or_data) -> str:
@@ -607,6 +652,15 @@ def _dimensions_label(state: ImageState) -> str:
         return _shape_label(state.shape)
     return ", ".join(
         f"{axis.name}={size}"
+        for axis, size in zip(state.axes, state.shape, strict=True)
+    )
+
+
+def _dimensions_compact_label(state: ImageState) -> str:
+    if len(state.axes) != len(state.shape):
+        return _shape_label(state.shape)
+    return " x ".join(
+        f"{axis.name.upper() if len(axis.name) == 1 else axis.name}={size}"
         for axis, size in zip(state.axes, state.shape, strict=True)
     )
 

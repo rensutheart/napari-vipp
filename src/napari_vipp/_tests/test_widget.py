@@ -124,6 +124,15 @@ def _palette_category(widget, category_name):
     raise AssertionError(f"Palette category not found: {category_name}")
 
 
+def _metadata_value(widget, label):
+    for row in range(widget.metadata_table.rowCount()):
+        label_item = widget.metadata_table.item(row, 0)
+        value_item = widget.metadata_table.item(row, 1)
+        if label_item is not None and label_item.text() == label:
+            return value_item.text() if value_item is not None else ""
+    raise AssertionError(f"Metadata row not found: {label}")
+
+
 def test_widget_builds_graph_and_inspects_node(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -471,17 +480,17 @@ def test_selected_node_shows_output_metadata(qtbot):
 
     widget.graph_view.select_node("input")
 
-    inspector_text = widget.metadata_label.text()
     card_text = widget.graph_view._cards["input"].metadata_label.text()
 
-    assert "Shape: 4 x 16 x 18" in inspector_text
-    assert "Axes: z(space), y(space), x(space)" in inspector_text
-    assert "Dimensions: z=4, y=16, x=18" in inspector_text
-    assert "Z slices: 4" in inspector_text
-    assert "Dtype: uint16" in inspector_text
-    assert "Bit depth: 16-bit integer" in inspector_text
-    assert "Metadata source: inferred from array shape" in inspector_text
-    assert "ZYX 4 x 16 x 18 | uint16" in card_text
+    assert _metadata_value(widget, "Shape") == "4 x 16 x 18"
+    assert _metadata_value(widget, "Axes") == "z(space), y(space), x(space)"
+    assert _metadata_value(widget, "Dimensions") == "z=4, y=16, x=18"
+    assert _metadata_value(widget, "Z slices") == "4"
+    assert _metadata_value(widget, "Dtype") == "uint16"
+    assert _metadata_value(widget, "Bit depth") == "16-bit integer"
+    assert _metadata_value(widget, "Metadata source") == "inferred from array shape"
+    assert "ZYX: Z=4 x Y=16 x X=18 | uint16" in card_text
+    assert "range" not in card_text
 
 
 def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
@@ -520,15 +529,19 @@ def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
 
     widget.graph_view.select_node("input")
 
-    text = widget.metadata_label.text()
-
-    assert "Axes: t(time), c(channel), z(space), y(space), x(space)" in text
-    assert "Dimensions: t=2, c=3, z=4, y=5, x=6" in text
-    assert "Physical scale: t=1 second, z=0.5 micrometer" in text
-    assert "Origin: t=0 second, z=10 micrometer" in text
-    assert "Channels: 3" in text
-    assert "Timepoints: 2" in text
-    assert "Metadata source: OME-NGFF multiscales" in text
+    assert (
+        _metadata_value(widget, "Axes")
+        == "t(time), c(channel), z(space), y(space), x(space)"
+    )
+    assert _metadata_value(widget, "Dimensions") == "t=2, c=3, z=4, y=5, x=6"
+    assert "t=1 second, z=0.5 micrometer" in _metadata_value(
+        widget,
+        "Physical scale",
+    )
+    assert "z=10 micrometer" in _metadata_value(widget, "Origin")
+    assert _metadata_value(widget, "Channels") == "3"
+    assert _metadata_value(widget, "Timepoints") == "2"
+    assert _metadata_value(widget, "Metadata source") == "OME-NGFF multiscales"
 
 
 def test_channel_composite_uses_metadata_channel_axis(qtbot):
@@ -548,11 +561,12 @@ def test_channel_composite_uses_metadata_channel_axis(qtbot):
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == 1
     assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6, 3)
 
-    text = widget.metadata_label.text()
-
-    assert "Kind: RGB image" in text
-    assert "Dimensions: t=2, z=4, y=5, x=6, rgb=3" in text
-    assert "History: Channel Composite: RGB composite from axis 1" in text
+    assert _metadata_value(widget, "Kind") == "RGB image"
+    assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
+    assert (
+        "1. Channel Composite: RGB composite from axis 1"
+        in widget.history_label.text()
+    )
 
 
 def test_select_axis_slice_updates_metadata_axes(qtbot):
@@ -570,12 +584,10 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
 
     widget.graph_view.select_node(node.id)
 
-    text = widget.metadata_label.text()
-
     assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
-    assert "Dimensions: t=2, z=4, y=5, x=6" in text
-    assert "Channels: none" in text
-    assert "History: Select Axis Slice: selected c axis (1)[2]" in text
+    assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6"
+    assert _metadata_value(widget, "Channels") == "none"
+    assert "1. Select Axis Slice: selected c axis (1)[2]" in widget.history_label.text()
 
 
 def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):
@@ -600,7 +612,7 @@ def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):
 
     assert widget.pipeline.nodes[node.id].params["output_dtype"] == "float32"
     assert widget.pipeline.outputs[node.id].dtype == np.float32
-    assert "Dtype: float32" in widget.metadata_label.text()
+    assert _metadata_value(widget, "Dtype") == "float32"
 
 
 def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
