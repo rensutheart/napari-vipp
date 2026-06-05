@@ -164,6 +164,19 @@ def test_select_axis_slice_can_remove_multiple_axes():
     np.testing.assert_array_equal(selected, data[1, :, 3, :])
 
 
+def test_select_axis_slice_can_retain_axis_ranges():
+    data = np.arange(2 * 3 * 4 * 5, dtype=np.uint16).reshape(2, 3, 4, 5)
+
+    selected = select_axis_slice(
+        data,
+        ranges="0:1:1;2:1:3",
+        range_mode=True,
+    )
+
+    assert selected.shape == (1, 3, 3, 5)
+    np.testing.assert_array_equal(selected, data[1:2, :, 1:4, :])
+
+
 def test_contrast_stretch_uses_linear_offset_without_abs():
     data = np.array([0, 10, 20], dtype=np.uint8)
 

@@ -368,11 +368,15 @@ def select_axis_slice(
     index: int = 0,
     axes: str = "",
     indices: str = "",
+    ranges: str = "",
+    range_mode: bool = False,
 ) -> np.ndarray:
-    """Select one or more axis slices and remove those axes."""
+    """Select one or more axis slices or retained axis ranges."""
     arr = np.asarray(data)
     if arr.ndim == 0:
         return arr.copy()
+    if range_mode:
+        return _axis_range_selection(arr, ranges)
     selections = _slice_selections(arr, axis, index, axes, indices)
     result = arr
     for axis_index, slice_index in sorted(selections.items(), reverse=True):
@@ -616,6 +620,40 @@ def _slice_selections(
             np.clip(int(slice_index), 0, max(arr.shape[axis_index] - 1, 0))
         )
     return selections
+
+
+def _axis_range_selection(arr: np.ndarray, ranges) -> np.ndarray:
+    parsed = _parse_axis_ranges(ranges, arr.shape)
+    if not parsed:
+        return arr.copy()
+    slices = [slice(None)] * arr.ndim
+    for axis, (start, end) in parsed.items():
+        axis_index = _normalize_axis(axis, arr.ndim)
+        maximum = max(arr.shape[axis_index] - 1, 0)
+        start = int(np.clip(start, 0, maximum))
+        end = int(np.clip(end, 0, maximum))
+        if start > end:
+            start, end = end, start
+        slices[axis_index] = slice(start, end + 1)
+    return np.ascontiguousarray(arr[tuple(slices)])
+
+
+def _parse_axis_ranges(value, shape: tuple[int, ...]) -> dict[int, tuple[int, int]]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    ranges: dict[int, tuple[int, int]] = {}
+    for part in value.split(";"):
+        pieces = [piece.strip() for piece in part.split(":")]
+        if len(pieces) != 3:
+            continue
+        try:
+            axis = _normalize_axis(int(pieces[0]), len(shape))
+            start = int(pieces[1])
+            end = int(pieces[2])
+        except ValueError:
+            continue
+        ranges[axis] = (start, end)
+    return ranges
 
 
 def _parse_int_list(value) -> list[int]:

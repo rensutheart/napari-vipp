@@ -17,7 +17,6 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -394,8 +393,145 @@ class ChoiceControl(QWidget):
             self.valueChanged.emit(self.value())
 
 
+class AxisRangeRow(QWidget):
+    """Compact row for selecting a retained range on one axis."""
+
+    valueChanged = Signal()
+
+    def __init__(
+        self,
+        option: AxisSliceOption,
+        *,
+        selected: bool = False,
+        start: int = 0,
+        end: int | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.option = option
+        self._updating = False
+        maximum = max(option.size - 1, 0)
+
+        self.button = QToolButton()
+        self.button.setText(
+            f"{option.title}    {option.axis_type}    size {option.size}"
+        )
+        self.button.setCheckable(True)
+        self.button.setToolTip(
+            f"{option.title}: {option.axis_type} axis, size {option.size}"
+        )
+        self.button.setMinimumHeight(26)
+        self.button.setStyleSheet(
+            "QToolButton { border: 1px solid #4b5563; border-radius: 4px; "
+            "padding: 3px 8px; color: #e5e7eb; background: #1f2937; "
+            "text-align: left; }"
+            "QToolButton:checked { border-color: #60a5fa; "
+            "background: #1d4ed8; }"
+        )
+
+        self.start_slider = QSlider(Qt.Horizontal)
+        self.end_slider = QSlider(Qt.Horizontal)
+        self.start_box = QSpinBox()
+        self.end_box = QSpinBox()
+        for widget in (
+            self.start_slider,
+            self.end_slider,
+            self.start_box,
+            self.end_box,
+        ):
+            widget.setRange(0, maximum)
+        self.start_box.setMinimumWidth(58)
+        self.end_box.setMinimumWidth(58)
+
+        self.range_panel = QWidget()
+        range_layout = QVBoxLayout(self.range_panel)
+        range_layout.setContentsMargins(10, 2, 0, 6)
+        range_layout.setSpacing(3)
+        range_layout.addLayout(
+            self._range_line("Start", self.start_slider, self.start_box)
+        )
+        range_layout.addLayout(self._range_line("End", self.end_slider, self.end_box))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addWidget(self.button)
+        layout.addWidget(self.range_panel)
+
+        self.set_range(start, maximum if end is None else end, emit=False)
+        self.set_selected(selected, emit=False)
+
+        self.button.toggled.connect(self._on_toggled)
+        self.start_slider.valueChanged.connect(self._on_start_changed)
+        self.start_box.valueChanged.connect(self._on_start_changed)
+        self.end_slider.valueChanged.connect(self._on_end_changed)
+        self.end_box.valueChanged.connect(self._on_end_changed)
+
+    def _range_line(self, label: str, slider: QSlider, box: QSpinBox) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        text = QLabel(label)
+        text.setMinimumWidth(34)
+        layout.addWidget(text)
+        layout.addWidget(slider, 1)
+        layout.addWidget(box)
+        return layout
+
+    def selected(self) -> bool:
+        return self.button.isChecked()
+
+    def range_value(self) -> tuple[int, int]:
+        return self.start_box.value(), self.end_box.value()
+
+    def set_selected(self, selected: bool, emit: bool = True) -> None:
+        self._updating = True
+        with QSignalBlocker(self.button):
+            self.button.setChecked(selected)
+        self.range_panel.setVisible(selected)
+        self._updating = False
+        if emit:
+            self.valueChanged.emit()
+
+    def set_range(self, start: int, end: int, emit: bool = True) -> None:
+        maximum = max(self.option.size - 1, 0)
+        start = int(np.clip(start, 0, maximum))
+        end = int(np.clip(end, 0, maximum))
+        if start > end:
+            start, end = end, start
+        self._updating = True
+        with _control_signal_blockers(
+            (self.start_slider, self.start_box, self.end_slider, self.end_box)
+        ):
+            self.start_slider.setValue(start)
+            self.start_box.setValue(start)
+            self.end_slider.setValue(end)
+            self.end_box.setValue(end)
+        self._updating = False
+        if emit:
+            self.valueChanged.emit()
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.range_panel.setVisible(checked)
+        if not self._updating:
+            self.valueChanged.emit()
+
+    def _on_start_changed(self, value: int) -> None:
+        if self._updating:
+            return
+        start = int(value)
+        end = max(self.end_box.value(), start)
+        self.set_range(start, end)
+
+    def _on_end_changed(self, value: int) -> None:
+        if self._updating:
+            return
+        end = int(value)
+        start = min(self.start_box.value(), end)
+        self.set_range(start, end)
+
+
 class AxisSliceControl(QWidget):
-    """Metadata-aware selector for slicing one or more named axes."""
+    """Metadata-aware selector for retaining axis ranges."""
 
     valueChanged = Signal(object)
 
@@ -407,37 +543,34 @@ class AxisSliceControl(QWidget):
     ):
         super().__init__(parent)
         self._options: list[AxisSliceOption] = []
-        self._buttons: dict[int, QToolButton] = {}
-        self._index_controls: dict[int, ParameterControl] = {}
-        self._selected_axes: set[int] = set()
-        self._indices: dict[int, int] = {}
+        self._rows: dict[int, AxisRangeRow] = {}
         self._updating = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self._axis_grid = QGridLayout()
-        self._axis_grid.setHorizontalSpacing(5)
-        self._axis_grid.setVerticalSpacing(5)
-        layout.addLayout(self._axis_grid)
-        self._index_form = QFormLayout()
-        self._index_form.setContentsMargins(0, 2, 0, 0)
-        layout.addLayout(self._index_form)
+        layout.setSpacing(5)
+        self._row_layout = QVBoxLayout()
+        self._row_layout.setContentsMargins(0, 0, 0, 0)
+        self._row_layout.setSpacing(4)
+        layout.addLayout(self._row_layout)
 
         self.set_options(options, value=value, emit=False)
 
-    def value(self) -> dict[str, int | str]:
-        axes = sorted(self._selected_axes)
-        if not axes and self._options:
-            axes = [self._options[0].index]
-        indices = [self._clamped_index(axis) for axis in axes]
-        axis = axes[0] if axes else 0
-        index = indices[0] if indices else 0
+    def value(self) -> dict[str, int | str | bool]:
+        ranges = self._selected_ranges()
+        axes = sorted(ranges)
+        first_axis = axes[0] if axes else 0
+        first_start = ranges[first_axis][0] if axes else 0
         return {
-            "axis": axis,
-            "index": index,
+            "axis": first_axis,
+            "index": first_start,
             "axes": ",".join(str(axis) for axis in axes),
-            "indices": ",".join(str(index) for index in indices),
+            "indices": ",".join(str(ranges[axis][0]) for axis in axes),
+            "ranges": ";".join(
+                f"{axis}:{start}:{end}"
+                for axis, (start, end) in sorted(ranges.items())
+            ),
+            "range_mode": True,
         }
 
     def set_options(
@@ -449,135 +582,71 @@ class AxisSliceControl(QWidget):
         self._updating = True
         self._options = options or [AxisSliceOption(0, "axis 0", "unknown", 1)]
         current = value or self.value()
-        selected = _selected_axes_from_value(current, len(self._options))
+        selected_ranges = _axis_ranges_from_value(current, self._options)
         option_indices = {option.index for option in self._options}
-        selected = {axis for axis in selected if axis in option_indices}
-        if not selected:
-            selected = {self._options[0].index}
-        self._selected_axes = selected
-        self._indices.update(_axis_indices_from_value(current))
-        self._clear_axis_buttons()
-        self._build_axis_buttons()
-        self._sync_button_checks()
-        self._rebuild_index_controls()
+        selected_ranges = {
+            axis: value
+            for axis, value in selected_ranges.items()
+            if axis in option_indices
+        }
+        self._clear_rows()
+        self._build_rows(selected_ranges)
         self._updating = False
         if emit:
             self.valueChanged.emit(self.value())
 
-    def set_selection(self, indices_by_axis: dict[int, int], emit: bool = True) -> None:
+    def set_ranges(
+        self,
+        ranges_by_axis: dict[int, tuple[int, int]],
+        emit: bool = True,
+    ) -> None:
         option_indices = {option.index for option in self._options}
-        selected = {
-            int(axis)
-            for axis in indices_by_axis
+        ranges = {
+            int(axis): value
+            for axis, value in ranges_by_axis.items()
             if int(axis) in option_indices
         }
-        if not selected:
-            selected = {self._options[0].index}
-        self._selected_axes = selected
-        for axis, index in indices_by_axis.items():
-            self._indices[int(axis)] = int(index)
-        self._sync_button_checks()
-        self._rebuild_index_controls()
+        for axis, row in self._rows.items():
+            if axis in ranges:
+                start, end = ranges[axis]
+                row.set_range(start, end, emit=False)
+                row.set_selected(True, emit=False)
+            else:
+                row.set_selected(False, emit=False)
         if emit:
             self.valueChanged.emit(self.value())
 
-    def _build_axis_buttons(self) -> None:
-        for position, option in enumerate(self._options):
-            button = QToolButton()
-            button.setText(f"{option.title}\n{option.axis_type}\n{option.size}")
-            button.setCheckable(True)
-            button.setToolTip(
-                f"{option.title}: {option.axis_type} axis, size {option.size}"
+    def _build_rows(self, selected_ranges: dict[int, tuple[int, int]]) -> None:
+        for option in self._options:
+            start, end = selected_ranges.get(option.index, (0, option.size - 1))
+            row = AxisRangeRow(
+                option,
+                selected=option.index in selected_ranges,
+                start=start,
+                end=end,
             )
-            button.setMinimumWidth(58)
-            button.setStyleSheet(
-                "QToolButton { border: 1px solid #4b5563; border-radius: 4px; "
-                "padding: 4px; color: #e5e7eb; background: #1f2937; }"
-                "QToolButton:checked { border-color: #60a5fa; "
-                "background: #1d4ed8; }"
-            )
-            button.toggled.connect(
-                lambda checked, axis=option.index: self._on_axis_toggled(
-                    axis,
-                    checked,
-                )
-            )
-            row, column = divmod(position, 3)
-            self._axis_grid.addWidget(button, row, column)
-            self._buttons[option.index] = button
+            row.valueChanged.connect(self._emit_value_changed)
+            self._row_layout.addWidget(row)
+            self._rows[option.index] = row
 
-    def _clear_axis_buttons(self) -> None:
-        self._buttons.clear()
-        while self._axis_grid.count():
-            item = self._axis_grid.takeAt(0)
+    def _clear_rows(self) -> None:
+        self._rows.clear()
+        while self._row_layout.count():
+            item = self._row_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
 
-    def _sync_button_checks(self) -> None:
-        with _control_signal_blockers(self._buttons.values()):
-            for axis, button in self._buttons.items():
-                button.setChecked(axis in self._selected_axes)
+    def _selected_ranges(self) -> dict[int, tuple[int, int]]:
+        return {
+            axis: row.range_value()
+            for axis, row in self._rows.items()
+            if row.selected()
+        }
 
-    def _on_axis_toggled(self, axis: int, checked: bool) -> None:
-        if self._updating:
-            return
-        if checked:
-            self._selected_axes.add(axis)
-        elif len(self._selected_axes) <= 1 and axis in self._selected_axes:
-            self._sync_button_checks()
-            return
-        else:
-            self._selected_axes.discard(axis)
-        self._rebuild_index_controls()
-        self.valueChanged.emit(self.value())
-
-    def _rebuild_index_controls(self) -> None:
-        while self._index_form.count():
-            item = self._index_form.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._index_controls.clear()
-
-        for option in self._selected_options():
-            spec = ParameterSpec(
-                f"index_{option.index}",
-                "Index",
-                "int",
-                self._clamped_index(option.index),
-                0,
-                max(option.size - 1, 0),
-                1,
-            )
-            control = ParameterControl(
-                spec,
-                self._clamped_index(option.index),
-                ParameterBounds(0, max(option.size - 1, 0), 1, 0),
-            )
-            control.valueChanged.connect(
-                lambda value, axis=option.index: self._on_index_changed(axis, value)
-            )
-            self._index_form.addRow(f"{option.title} index", control)
-            self._index_controls[option.index] = control
-
-    def _selected_options(self) -> list[AxisSliceOption]:
-        selected = sorted(self._selected_axes)
-        return [option for option in self._options if option.index in selected]
-
-    def _on_index_changed(self, axis: int, value) -> None:
-        if self._updating:
-            return
-        self._indices[axis] = int(value)
-        self.valueChanged.emit(self.value())
-
-    def _clamped_index(self, axis: int) -> int:
-        option = next(
-            (candidate for candidate in self._options if candidate.index == axis),
-            None,
-        )
-        maximum = max(option.size - 1, 0) if option is not None else 0
-        return int(np.clip(self._indices.get(axis, 0), 0, maximum))
+    def _emit_value_changed(self) -> None:
+        if not self._updating:
+            self.valueChanged.emit(self.value())
 
 
 class HistogramPlot(QWidget):
@@ -1465,11 +1534,13 @@ class VippWidget(QWidget):
             "index": params.get("index", 0),
             "axes": params.get("axes", ""),
             "indices": params.get("indices", ""),
+            "ranges": params.get("ranges", ""),
+            "range_mode": params.get("range_mode", True),
         }
 
     def _apply_select_axis_slice_params(self, node_id: str, value: dict) -> None:
         node = self.pipeline.nodes[node_id]
-        for name in ("axis", "index", "axes", "indices"):
+        for name in ("axis", "index", "axes", "indices", "ranges", "range_mode"):
             node.params[name] = value[name]
 
     def _on_select_axis_slice_changed(self, value: dict) -> None:
@@ -2036,8 +2107,12 @@ class VippWidget(QWidget):
     def _display_data(self, data):
         arr = np.asarray(data)
         if arr.dtype == bool:
-            return arr.astype(np.uint8)
-        return data
+            arr = arr.astype(np.uint8)
+        if arr.ndim == 0:
+            return arr.reshape(1, 1)
+        if arr.ndim == 1:
+            return arr.reshape(1, arr.shape[0])
+        return arr
 
     def _active_pinned_layer(self):
         for layer in self.viewer.layers:
@@ -2383,25 +2458,59 @@ def _control_signal_blockers(widgets):
         del blockers
 
 
-def _selected_axes_from_value(value: dict, fallback_count: int) -> set[int]:
-    axes = _parse_int_list(value.get("axes"))
-    if not axes:
-        axes = _parse_int_list(value.get("axis"))
-    if not axes and fallback_count > 0:
-        axes = [0]
-    return {int(axis) for axis in axes}
-
-
-def _axis_indices_from_value(value: dict) -> dict[int, int]:
+def _axis_ranges_from_value(
+    value: dict,
+    options: list[AxisSliceOption],
+) -> dict[int, tuple[int, int]]:
+    option_sizes = {option.index: option.size for option in options}
+    ranges = _parse_axis_ranges(value.get("ranges"), option_sizes)
+    if ranges:
+        return ranges
+    if value.get("range_mode", True):
+        return {}
     axes = _parse_int_list(value.get("axes"))
     indices = _parse_int_list(value.get("indices"))
     if not axes:
         axes = _parse_int_list(value.get("axis"))
         indices = _parse_int_list(value.get("index"))
     return {
-        int(axis): int(indices[position]) if position < len(indices) else 0
+        int(axis): _clamped_range(
+            indices[position] if position < len(indices) else 0,
+            indices[position] if position < len(indices) else 0,
+            option_sizes.get(int(axis), 1),
+        )
         for position, axis in enumerate(axes)
     }
+
+
+def _parse_axis_ranges(
+    value,
+    option_sizes: dict[int, int],
+) -> dict[int, tuple[int, int]]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    ranges: dict[int, tuple[int, int]] = {}
+    for part in value.split(";"):
+        pieces = [piece.strip() for piece in part.split(":")]
+        if len(pieces) != 3:
+            continue
+        try:
+            axis = int(pieces[0])
+            start = int(pieces[1])
+            end = int(pieces[2])
+        except ValueError:
+            continue
+        ranges[axis] = _clamped_range(start, end, option_sizes.get(axis, 1))
+    return ranges
+
+
+def _clamped_range(start: int, end: int, size: int) -> tuple[int, int]:
+    maximum = max(int(size) - 1, 0)
+    start = int(np.clip(start, 0, maximum))
+    end = int(np.clip(end, 0, maximum))
+    if start > end:
+        start, end = end, start
+    return start, end
 
 
 def _parse_int_list(value) -> list[int]:

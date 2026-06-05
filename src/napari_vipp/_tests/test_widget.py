@@ -649,15 +649,22 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     node = widget.add_node_from_palette("select_axis_slice")
     widget._connect_nodes("input", node.id)
     control = widget._parameter_widgets["axis_slice"]
-    control.set_selection({1: 2})
+
+    assert widget.pipeline.outputs[node.id].shape == data.shape
+    assert control.value()["ranges"] == ""
+
+    control.set_ranges({1: (2, 2)})
     widget.run_pipeline()
 
     widget.graph_view.select_node(node.id)
 
-    assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
-    assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6"
-    assert _metadata_value(widget, "Channels") == "none"
-    assert "1. Select Axis Slice: selected c axis (1)[2]" in widget.history_label.text()
+    assert widget.pipeline.outputs[node.id].shape == (2, 1, 4, 5, 6)
+    assert _metadata_value(widget, "Dimensions") == "t=2, c=1, z=4, y=5, x=6"
+    assert _metadata_value(widget, "Channels") == "1"
+    assert (
+        "1. Select Axis Slice: selected c axis (1)[2..2]"
+        in widget.history_label.text()
+    )
 
 
 def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
@@ -669,16 +676,18 @@ def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
     node = widget.add_node_from_palette("select_axis_slice")
     widget._connect_nodes("input", node.id)
     control = widget._parameter_widgets["axis_slice"]
-    control.set_selection({0: 1, 1: 2})
+    control.set_ranges({0: (1, 1), 1: (2, 2)})
     widget.run_pipeline()
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.nodes[node.id].params["axes"] == "0,1"
     assert widget.pipeline.nodes[node.id].params["indices"] == "1,2"
-    assert widget.pipeline.outputs[node.id].shape == (4, 5, 6)
-    assert _metadata_value(widget, "Dimensions") == "z=4, y=5, x=6"
+    assert widget.pipeline.nodes[node.id].params["ranges"] == "0:1:1;1:2:2"
+    assert widget.pipeline.nodes[node.id].params["range_mode"] is True
+    assert widget.pipeline.outputs[node.id].shape == (1, 1, 4, 5, 6)
+    assert _metadata_value(widget, "Dimensions") == "t=1, c=1, z=4, y=5, x=6"
     assert (
-        "1. Select Axis Slice: selected t axis (0)[1], c axis (1)[2]"
+        "1. Select Axis Slice: selected t axis (0)[1..1], c axis (1)[2..2]"
         in widget.history_label.text()
     )
 
@@ -1027,6 +1036,23 @@ def test_inspection_layer_is_replaced_when_dimensionality_changes(qtbot):
     assert stack_inspect is not projected_inspect
     assert stack_inspect.data.ndim == 3
     assert stack_inspect.metadata["display_ndim"] == 3
+
+
+def test_one_dimensional_inspection_data_is_displayed_as_row_image(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.arange(12, dtype=np.uint16),
+        metadata={"napari_vipp_kind": "inspect", "node_id": "manual"},
+        role="inspect",
+    )
+
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.data.shape == (1, 12)
+    assert inspect.metadata["display_ndim"] == 2
 
 
 def test_binary_threshold_uses_uint8_slider_range(qtbot):

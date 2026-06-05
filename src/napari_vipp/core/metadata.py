@@ -486,6 +486,9 @@ def _transformed_axes(
     if operation_id == "channel_composite":
         return _channel_composite_axes(axes, params)
 
+    if operation_id == "select_axis_slice" and params.get("range_mode", False):
+        return _range_shifted_axes(axes, params)
+
     if arr.ndim == len(axes):
         return axes
 
@@ -533,6 +536,19 @@ def _crop_shifted_axes(
     return tuple(shifted)
 
 
+def _range_shifted_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    ranges = _parse_axis_ranges(params.get("ranges"), len(axes))
+    if not ranges:
+        return axes
+    shifted = list(axes)
+    for axis_index, (start, _end) in ranges.items():
+        shifted[axis_index] = _translated_axis(shifted[axis_index], start)
+    return tuple(shifted)
+
+
 def _channel_composite_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
@@ -570,6 +586,15 @@ def _operation_history(
         axis = _axis_label(input_state.axes, params.get("axis", 0))
         return f"{operation_title}: projected {axis}"
     if operation_id == "select_axis_slice":
+        if params.get("range_mode", False):
+            ranges = _parse_axis_ranges(params.get("ranges"), len(input_state.axes))
+            if not ranges:
+                return f"{operation_title}: kept full input range"
+            selected = ", ".join(
+                f"{_axis_label(input_state.axes, axis)}[{start}..{end}]"
+                for axis, (start, end) in sorted(ranges.items())
+            )
+            return f"{operation_title}: selected {selected}"
         selections = _selected_axis_index_pairs(input_state.axes, params)
         selected = ", ".join(
             f"{_axis_label(input_state.axes, axis)}[{index}]"
@@ -610,6 +635,26 @@ def _selected_axis_indices(params: dict[str, Any], ndim: int) -> set[int]:
     if not axes:
         axes = [_clamped_axis(params.get("axis", 0), ndim)]
     return {_clamped_axis(axis, ndim) for axis in axes}
+
+
+def _parse_axis_ranges(value, ndim: int) -> dict[int, tuple[int, int]]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    ranges: dict[int, tuple[int, int]] = {}
+    for part in value.split(";"):
+        pieces = [piece.strip() for piece in part.split(":")]
+        if len(pieces) != 3:
+            continue
+        try:
+            axis = _clamped_axis(int(pieces[0]), ndim)
+            start = int(pieces[1])
+            end = int(pieces[2])
+        except ValueError:
+            continue
+        if start > end:
+            start, end = end, start
+        ranges[axis] = (start, end)
+    return ranges
 
 
 def _selected_axis_index_pairs(
