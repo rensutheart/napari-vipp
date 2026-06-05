@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from html import escape
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -80,6 +81,16 @@ class AxisSliceOption:
     @property
     def title(self) -> str:
         return self.name.upper() if len(self.name) == 1 else self.name
+
+
+def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
+    accent = "#fbbf24" if mode == "remove" else "#93c5fd"
+    return (
+        f"<span style='font-weight: 700; color: {accent};'>"
+        f"{escape(option.title)}</span>"
+        f"<span style='color: #d1d5db;'>&nbsp;({escape(option.axis_type)})</span>"
+        f"<span style='color: #94a3b8;'>&nbsp;-&nbsp;size {int(option.size)}</span>"
+    )
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -522,14 +533,14 @@ class AxisSelectionRow(QWidget):
         self._updating = False
         maximum = max(option.size - 1, 0)
 
-        self.title_label = QLabel(
-            f"{option.title}    {option.axis_type}    size {option.size}"
-        )
+        self.title_label = QLabel()
+        self.title_label.setTextFormat(Qt.RichText)
+        self.title_label.setText(_axis_heading_text(option))
         self.title_label.setToolTip(
             f"{option.title}: {option.axis_type} axis, size {option.size}"
         )
         self.title_label.setMinimumWidth(0)
-        self.title_label.setStyleSheet("color: #e5e7eb;")
+        self.title_label.setStyleSheet("padding: 0 2px;")
 
         self.keep_button = self._mode_button(
             "Keep",
@@ -552,6 +563,7 @@ class AxisSelectionRow(QWidget):
             box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.range_panel = QWidget()
+        self.range_panel.setFixedHeight(58)
         range_layout = QVBoxLayout(self.range_panel)
         range_layout.setContentsMargins(0, 2, 0, 4)
         range_layout.setSpacing(2)
@@ -574,6 +586,7 @@ class AxisSelectionRow(QWidget):
         range_layout.addLayout(range_value_line)
 
         self.remove_panel = QWidget()
+        self.remove_panel.setFixedHeight(58)
         remove_layout = QVBoxLayout(self.remove_panel)
         remove_layout.setContentsMargins(0, 2, 0, 4)
         remove_layout.setSpacing(2)
@@ -602,11 +615,15 @@ class AxisSelectionRow(QWidget):
         header.addStretch(1)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 6)
-        layout.setSpacing(2)
+        layout.setContentsMargins(0, 2, 0, 8)
+        layout.setSpacing(4)
         layout.addLayout(header)
         layout.addWidget(self.range_panel)
         layout.addWidget(self.remove_panel)
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setStyleSheet("color: #334155; background: #334155; max-height: 1px;")
+        layout.addWidget(divider)
 
         self.set_range(start, maximum if end is None else end, emit=False)
         self.set_index(index, emit=False)
@@ -690,10 +707,7 @@ class AxisSelectionRow(QWidget):
         return button
 
     def _refresh_mode_styles(self) -> None:
-        if self.mode() == "remove":
-            self.title_label.setStyleSheet("color: #fbbf24;")
-        else:
-            self.title_label.setStyleSheet("color: #e5e7eb;")
+        self.title_label.setText(_axis_heading_text(self.option, mode=self.mode()))
 
     def _on_range_slider_changed(self, start: int, end: int) -> None:
         if self._updating:
