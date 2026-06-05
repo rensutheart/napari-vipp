@@ -52,6 +52,28 @@ def test_multichannel_state_preview_renders_fluorescence_composite():
     assert thumbnail.shape[-1] == 3
 
 
+def test_time_lapse_multichannel_preview_follows_current_step():
+    data = np.zeros((2, 3, 4, 8, 9), dtype=np.uint16)
+    data[0, 0, 0, 2, 3] = 2000
+    data[1, 0, 3, 5, 6] = 4000
+    state = image_state_from_array(data, layer_metadata={"axes": "TCZYX"})
+
+    first = make_preview(data, mode="slice", current_step=(0, 0, 0, 0, 0), state=state)
+    second = make_preview(
+        data,
+        mode="slice",
+        current_step=(1, 0, 3, 0, 0),
+        state=state,
+    )
+
+    assert first.shape == (8, 9, 3)
+    assert second.shape == (8, 9, 3)
+    assert first[2, 3].sum() > 0
+    assert second[5, 6].sum() > 0
+    assert first[5, 6].sum() == 0
+    assert second[2, 3].sum() == 0
+
+
 def test_rgb_channel_last_state_preview_preserves_color_axis():
     data = np.zeros((4, 12, 14, 3), dtype=np.float32)
     data[:, 2:8, 3:9, 0] = 1.0

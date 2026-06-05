@@ -6,7 +6,7 @@ contributions:
       title: VIPP Workflow
       python_name: napari_vipp._widget:VippWidget
     - id: napari-vipp.sample_data
-      title: VIPP synthetic volume
+      title: VIPP synthetic microscopy samples
       python_name: napari_vipp._sample_data:make_sample_data
   widgets:
     - command: napari-vipp.make_widget
@@ -14,4 +14,4 @@ contributions:
   sample_data:
     - command: napari-vipp.sample_data
       key: vipp_synthetic_volume
-      display_name: VIPP synthetic volume
+      display_name: VIPP synthetic microscopy samples

@@ -64,11 +64,15 @@ The plugin contributes synthetic fluorescence-like sample data:
 The multichannel samples use separate intensity channels, not baked RGB images.
 Graph thumbnails render these as fluorescence-style pseudo-color composites
 while preserving the underlying channel axis in the carried metadata.
+When the full sample suite is open, the workflow automatically starts from the
+`VIPP synthetic time-lapse multichannel` layer so the input metadata should read
+as `TCZYX`. The simpler grayscale and `CZYX` examples are still available in the
+input selector.
 
 Open sample data from napari:
 
 ```text
-File > Open Sample > VIPP synthetic volume
+File > Open Sample > VIPP synthetic microscopy samples
 ```
 
 ## Node Library

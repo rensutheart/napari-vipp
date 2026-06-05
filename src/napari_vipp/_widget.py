@@ -39,6 +39,7 @@ from qtpy.QtWidgets import (
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.metadata import (
+    MetadataRow,
     format_compact_metadata,
     metadata_history_items,
     metadata_table_rows,
@@ -1018,6 +1019,42 @@ class VippWidget(QWidget):
                 index = self.layer_combo.findText(current)
                 if index >= 0:
                     self.layer_combo.setCurrentIndex(index)
+                    return
+            preferred = self._preferred_input_layer_name()
+            if preferred:
+                index = self.layer_combo.findText(preferred)
+                if index >= 0:
+                    self.layer_combo.setCurrentIndex(index)
+
+    def _preferred_input_layer_name(self) -> str | None:
+        fallback: tuple[int, str] | None = None
+        for layer in self.viewer.layers:
+            if self._is_vipp_generated_layer(layer) or not hasattr(layer, "data"):
+                continue
+            metadata = getattr(layer, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            if not metadata.get("napari_vipp_sample"):
+                continue
+            score = self._sample_layer_score(layer, metadata)
+            if metadata.get("napari_vipp_preferred_input"):
+                score += 1000
+            if fallback is None or score > fallback[0]:
+                fallback = (score, str(getattr(layer, "name", "")))
+        return fallback[1] if fallback is not None else None
+
+    def _sample_layer_score(self, layer, metadata: dict) -> int:
+        axis_order = str(metadata.get("vipp_axis_order", "")).upper()
+        score = len(axis_order) * 10
+        if "T" in axis_order:
+            score += 100
+        if "C" in axis_order:
+            score += 50
+        try:
+            score += int(np.asarray(layer.data).ndim)
+        except Exception:
+            pass
+        return score
 
     def _connect_nodes(self, source_id: str, target_id: str) -> None:
         result = self.pipeline.connect(source_id, target_id)
@@ -1416,6 +1453,9 @@ class VippWidget(QWidget):
     def _update_metadata_panel(self) -> None:
         state = self.pipeline.output_states.get(self._selected_node_id)
         rows = metadata_table_rows(state)
+        current_view = self._current_view_label(state)
+        if current_view:
+            rows.insert(4, MetadataRow("Current view", current_view))
         self.metadata_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             label_item = QTableWidgetItem(row.label)
@@ -1434,6 +1474,37 @@ class VippWidget(QWidget):
             )
         else:
             self.history_label.setText("No history yet.")
+
+    def _current_view_label(self, state) -> str:
+        if state is None or not self.follow_dims_checkbox.isChecked():
+            return ""
+        try:
+            current_step = tuple(self._current_step())
+        except Exception:
+            current_step = ()
+        parts = []
+        for axis_index, (axis, size) in enumerate(
+            zip(state.axes, state.shape, strict=False)
+        ):
+            if axis.name.lower() in {"x", "y", "rgb"}:
+                continue
+            if int(size) <= 1:
+                continue
+            step = self._axis_step_label(axis_index, int(size), current_step)
+            parts.append(f"{axis.name}={step}/{int(size) - 1}")
+        return ", ".join(parts)
+
+    def _axis_step_label(
+        self,
+        axis_index: int,
+        axis_size: int,
+        current_step: tuple,
+    ) -> int:
+        try:
+            step = int(current_step[axis_index])
+        except Exception:
+            step = axis_size // 2
+        return int(np.clip(step, 0, max(axis_size - 1, 0)))
 
     def _update_histogram(self) -> None:
         data = self.pipeline.outputs.get(self._selected_node_id)

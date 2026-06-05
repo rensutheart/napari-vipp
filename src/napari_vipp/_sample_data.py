@@ -18,8 +18,10 @@ def make_sample_data():
 
     metadata = {
         "name": "VIPP synthetic volume",
+        "visible": False,
         "metadata": {
             "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
             **_ome_image_metadata("ZYX", data.shape),
         },
     }
@@ -42,8 +44,10 @@ def _multichannel_volume_sample(z, y, x, rng):
     data = (np.stack(channels, axis=0) * 65535).astype(np.uint16)
     metadata = {
         "name": "VIPP synthetic multichannel volume",
+        "visible": False,
         "metadata": {
             "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
             "channel_names": [
                 "DAPI-like nuclei",
                 "FITC-like neurites",
@@ -86,6 +90,7 @@ def _time_lapse_sample(z, y, x, rng):
         "name": "VIPP synthetic time-lapse multichannel",
         "metadata": {
             "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": True,
             "channel_names": [
                 "DAPI-like nuclei",
                 "FITC-like neurites",

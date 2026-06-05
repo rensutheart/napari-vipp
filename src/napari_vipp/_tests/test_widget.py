@@ -177,6 +177,55 @@ def test_switching_input_layers_restores_previous_source(qtbot):
     assert not second.visible
 
 
+def test_widget_prefers_time_lapse_multichannel_sample_input(qtbot):
+    viewer = _Viewer(
+        np.zeros((12, 16, 18), dtype=np.uint8),
+        metadata={"napari_vipp_sample": True, "vipp_axis_order": "ZYX"},
+    )
+    viewer.layers[0].name = "VIPP synthetic volume"
+    rich_data = np.zeros((5, 3, 4, 16, 18), dtype=np.uint16)
+    viewer.layers.append(
+        _Layer(
+            rich_data,
+            "VIPP synthetic time-lapse multichannel",
+            metadata={
+                "napari_vipp_sample": True,
+                "napari_vipp_preferred_input": True,
+                "vipp_axis_order": "TCZYX",
+            },
+        )
+    )
+
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.layer_combo.currentText() == "VIPP synthetic time-lapse multichannel"
+    assert widget.pipeline.outputs["input"].shape == rich_data.shape
+
+    widget.graph_view.select_node("input")
+
+    assert _metadata_value(widget, "Dimensions") == "t=5, c=3, z=4, y=16, x=18"
+
+
+def test_current_view_metadata_follows_napari_dims(qtbot):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    viewer.dims.current_step = (2, 1, 3, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert _metadata_value(widget, "Current view") == "t=2/4, c=1/2, z=3/3"
+
+    viewer.dims.current_step = (4, 0, 1, 0, 0)
+    viewer.dims.events.current_step.emit()
+
+    assert _metadata_value(widget, "Current view") == "t=4/4, c=0/2, z=1/3"
+
+
 def test_selecting_node_updates_inspection_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
