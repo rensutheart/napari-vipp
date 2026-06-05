@@ -15,11 +15,14 @@ from qtpy.QtWidgets import (
     QDockWidget,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -529,6 +532,9 @@ class VippWidget(QWidget):
         self._last_input_layer_name: str | None = None
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
+        self._dock_chrome_configured = False
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
         self.layer_combo = QComboBox()
         self.layer_combo.setMinimumWidth(220)
@@ -549,9 +555,11 @@ class VippWidget(QWidget):
         self.palette_search.setClearButtonEnabled(True)
         self.palette = NodePalette(grouped_palette_specs())
         self.palette.setMinimumWidth(190)
+        self.palette.setMinimumHeight(0)
         self.palette_panel = self._build_palette_panel()
         self.graph_view = PipelineGraphView()
-        self.graph_view.setMinimumHeight(180)
+        self.graph_view.setMinimumHeight(80)
+        self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.left_panel_toggle = SidePanelToggleButton("left")
         self.left_panel_toggle.setObjectName("LeftPanelToggle")
         self.right_panel_toggle = SidePanelToggleButton("right")
@@ -613,21 +621,39 @@ class VippWidget(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        QTimer.singleShot(0, self._ensure_dock_widget_chrome)
+        if not self._dock_chrome_configured:
+            QTimer.singleShot(0, self._ensure_dock_widget_chrome)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(420, 120)
+
+    def sizeHint(self):  # noqa: N802
+        return QSize(1180, 420)
 
     def _ensure_dock_widget_chrome(self) -> None:
         dock = self._dock_widget()
-        if dock is None:
+        if dock is None or self._dock_chrome_configured:
             return
         try:
-            dock.setWindowTitle("VIPP Workflow")
-            dock.setTitleBarWidget(None)
-            dock.setFeatures(
+            if dock.isFloating():
+                return
+        except Exception:
+            return
+        try:
+            desired_features = (
                 QDockWidget.DockWidgetClosable
                 | QDockWidget.DockWidgetMovable
                 | QDockWidget.DockWidgetFloatable
             )
-            dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            if dock.windowTitle() != "VIPP Workflow":
+                dock.setWindowTitle("VIPP Workflow")
+            if dock.titleBarWidget() is not None:
+                dock.setTitleBarWidget(None)
+            if dock.features() != desired_features:
+                dock.setFeatures(desired_features)
+            if dock.allowedAreas() != Qt.AllDockWidgetAreas:
+                dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+            self._dock_chrome_configured = True
         except Exception:
             pass
 
@@ -661,11 +687,15 @@ class VippWidget(QWidget):
         self.splitter.setStretchFactor(1, 5)
         self.splitter.setStretchFactor(2, 1)
         self.splitter.setSizes(self._default_splitter_sizes)
+        self.splitter.setMinimumHeight(0)
+        self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         root.addWidget(self.splitter, 1)
         root.addWidget(self.status_label)
 
     def _build_graph_panel(self) -> QWidget:
         panel = QWidget()
+        panel.setMinimumHeight(0)
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -683,6 +713,8 @@ class VippWidget(QWidget):
     def _build_palette_panel(self) -> QWidget:
         panel = QWidget()
         panel.setMinimumWidth(190)
+        panel.setMinimumHeight(0)
+        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -691,8 +723,9 @@ class VippWidget(QWidget):
         return panel
 
     def _build_inspector(self) -> QWidget:
-        panel = QWidget()
-        layout = QVBoxLayout(panel)
+        content = QWidget()
+        content.setMinimumHeight(0)
+        layout = QVBoxLayout(content)
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.parameter_group)
@@ -721,7 +754,14 @@ class VippWidget(QWidget):
         actions.addWidget(self.pin_button)
         layout.addLayout(actions)
         layout.addStretch(1)
-        return panel
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(content)
+        scroll.setMinimumWidth(230)
+        scroll.setMinimumHeight(0)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
+        return scroll
 
     def _connect_signals(self) -> None:
         self.build_button.clicked.connect(self._reset_graph)

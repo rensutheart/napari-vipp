@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QDockWidget, QWidget
+from qtpy.QtWidgets import QDockWidget, QMainWindow, QScrollArea, QWidget
 
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
@@ -282,8 +282,12 @@ def test_dock_widget_can_shrink_vertically(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    assert widget.graph_view.minimumHeight() <= 180
+    assert widget.minimumSizeHint().height() <= 120
+    assert widget.graph_view.minimumHeight() <= 80
     assert widget.histogram_plot.minimumHeight() <= 80
+    assert widget.splitter.minimumHeight() == 0
+    assert isinstance(widget.inspector_panel, QScrollArea)
+    assert widget.inspector_panel.minimumHeight() == 0
 
 
 def test_side_panels_can_be_collapsed_and_restored(qtbot):
@@ -318,11 +322,14 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
 def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
+    window = QMainWindow()
     dock = QDockWidget()
+    qtbot.addWidget(window)
     qtbot.addWidget(dock)
     dock.setTitleBarWidget(QWidget())
     dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
     dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
 
     widget._ensure_dock_widget_chrome()
 
@@ -331,6 +338,42 @@ def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
     assert dock.features() & QDockWidget.DockWidgetMovable
     assert dock.features() & QDockWidget.DockWidgetFloatable
     assert dock.features() & QDockWidget.DockWidgetClosable
+    assert widget._dock_chrome_configured
+
+
+def test_dock_widget_chrome_is_not_rewritten_while_floating(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    dock = QDockWidget()
+    title_bar = QWidget()
+    qtbot.addWidget(dock)
+    dock.setTitleBarWidget(title_bar)
+    dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+    dock.setWidget(widget)
+    dock.setFloating(True)
+
+    widget._ensure_dock_widget_chrome()
+
+    assert dock.titleBarWidget() is title_bar
+    assert dock.features() == QDockWidget.NoDockWidgetFeatures
+    assert not widget._dock_chrome_configured
+
+
+def test_dock_widget_chrome_is_not_rewritten_after_configured(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    window = QMainWindow()
+    dock = QDockWidget()
+    qtbot.addWidget(window)
+    qtbot.addWidget(dock)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+
+    widget._ensure_dock_widget_chrome()
+    dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+    widget._ensure_dock_widget_chrome()
+
+    assert dock.features() == QDockWidget.NoDockWidgetFeatures
 
 
 def test_histogram_updates_for_selected_node(qtbot):
