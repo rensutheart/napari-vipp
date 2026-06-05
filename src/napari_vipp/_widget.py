@@ -528,11 +528,17 @@ class AxisSelectionRow(QWidget):
         self.title_label.setToolTip(
             f"{option.title}: {option.axis_type} axis, size {option.size}"
         )
-        self.title_label.setMinimumWidth(86)
+        self.title_label.setMinimumWidth(0)
         self.title_label.setStyleSheet("color: #e5e7eb;")
 
-        self.keep_button = self._mode_button("Keep range")
-        self.remove_button = self._mode_button("Remove axis")
+        self.keep_button = self._mode_button(
+            "Keep",
+            "Keep this axis and crop it to the selected range.",
+        )
+        self.remove_button = self._mode_button(
+            "Remove",
+            "Remove this axis by taking one selected index.",
+        )
 
         self.range_slider = AxisIntervalSlider(0, maximum)
         self.start_box = QSpinBox()
@@ -546,33 +552,54 @@ class AxisSelectionRow(QWidget):
             box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         self.range_panel = QWidget()
-        range_layout = QHBoxLayout(self.range_panel)
+        range_layout = QVBoxLayout(self.range_panel)
         range_layout.setContentsMargins(0, 2, 0, 4)
-        range_layout.setSpacing(5)
+        range_layout.setSpacing(2)
+        range_slider_line = QHBoxLayout()
+        range_slider_line.setContentsMargins(0, 0, 0, 0)
+        range_slider_line.setSpacing(5)
         range_label = QLabel("Range")
         range_label.setMinimumWidth(42)
-        range_layout.addWidget(range_label)
-        range_layout.addWidget(self.range_slider, 1)
-        range_layout.addWidget(self.start_box)
-        range_layout.addWidget(QLabel("to"))
-        range_layout.addWidget(self.end_box)
+        range_slider_line.addWidget(range_label)
+        range_slider_line.addWidget(self.range_slider, 1)
+        range_layout.addLayout(range_slider_line)
+        range_value_line = QHBoxLayout()
+        range_value_line.setContentsMargins(42, 0, 0, 0)
+        range_value_line.setSpacing(5)
+        range_value_line.addWidget(QLabel("Start"))
+        range_value_line.addWidget(self.start_box)
+        range_value_line.addWidget(QLabel("End"))
+        range_value_line.addWidget(self.end_box)
+        range_value_line.addStretch(1)
+        range_layout.addLayout(range_value_line)
 
         self.remove_panel = QWidget()
-        remove_layout = QHBoxLayout(self.remove_panel)
+        remove_layout = QVBoxLayout(self.remove_panel)
         remove_layout.setContentsMargins(0, 2, 0, 4)
-        remove_layout.setSpacing(5)
+        remove_layout.setSpacing(2)
+        index_slider_line = QHBoxLayout()
+        index_slider_line.setContentsMargins(0, 0, 0, 0)
+        index_slider_line.setSpacing(5)
         index_label = QLabel("Index")
         index_label.setMinimumWidth(42)
-        remove_layout.addWidget(index_label)
-        remove_layout.addWidget(self.index_slider, 1)
-        remove_layout.addWidget(self.index_box)
+        index_slider_line.addWidget(index_label)
+        index_slider_line.addWidget(self.index_slider, 1)
+        remove_layout.addLayout(index_slider_line)
+        index_value_line = QHBoxLayout()
+        index_value_line.setContentsMargins(42, 0, 0, 0)
+        index_value_line.setSpacing(5)
+        index_value_line.addWidget(QLabel("Index"))
+        index_value_line.addWidget(self.index_box)
+        index_value_line.addStretch(1)
+        remove_layout.addLayout(index_value_line)
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-        header.addWidget(self.title_label, 1)
+        header.addWidget(self.title_label)
         header.addWidget(self.keep_button)
         header.addWidget(self.remove_button)
+        header.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 6)
@@ -647,11 +674,13 @@ class AxisSelectionRow(QWidget):
         if emit:
             self.valueChanged.emit()
 
-    def _mode_button(self, text: str) -> QToolButton:
+    def _mode_button(self, text: str, tooltip: str) -> QToolButton:
         button = QToolButton()
         button.setText(text)
+        button.setToolTip(tooltip)
         button.setCheckable(True)
         button.setMinimumHeight(24)
+        button.setMinimumWidth(58)
         button.setStyleSheet(
             "QToolButton { border: 1px solid #4b5563; border-radius: 4px; "
             "padding: 2px 7px; color: #d1d5db; background: #111827; }"
