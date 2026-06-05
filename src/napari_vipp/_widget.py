@@ -1319,6 +1319,7 @@ class VippWidget(QWidget):
         self.splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         root.addWidget(self.splitter, 1)
         root.addWidget(self.status_label)
+        self._sync_side_panel_toggles()
 
     def _build_graph_panel(self) -> QWidget:
         panel = QWidget()
@@ -1335,7 +1336,6 @@ class VippWidget(QWidget):
         panel_controls.addWidget(self.right_panel_toggle)
         layout.addLayout(panel_controls)
         layout.addWidget(self.graph_view, 1)
-        self._sync_side_panel_toggles()
         return panel
 
     def _build_palette_panel(self) -> QWidget:

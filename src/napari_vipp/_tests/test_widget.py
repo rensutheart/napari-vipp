@@ -368,6 +368,10 @@ def test_side_panels_can_be_collapsed_and_restored(qtbot):
 
     assert not widget.palette_panel.isHidden()
     assert not widget.inspector_panel.isHidden()
+    assert widget.left_panel_toggle._expanded
+    assert widget.right_panel_toggle._expanded
+    assert widget.left_panel_toggle._direction() == -1
+    assert widget.right_panel_toggle._direction() == 1
 
     widget.left_panel_toggle.click()
     widget.right_panel_toggle.click()
