@@ -283,11 +283,24 @@ def test_dock_widget_can_shrink_vertically(qtbot):
     qtbot.addWidget(widget)
 
     assert widget.minimumSizeHint().height() <= 120
+    assert widget.sizeHint().height() >= 560
     assert widget.graph_view.minimumHeight() <= 80
-    assert widget.histogram_plot.minimumHeight() <= 80
+    assert widget.histogram_plot.minimumHeight() >= 120
     assert widget.splitter.minimumHeight() == 0
     assert isinstance(widget.inspector_panel, QScrollArea)
     assert widget.inspector_panel.minimumHeight() == 0
+
+
+def test_inspector_shows_histogram_before_metadata(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    layout = widget.inspector_content.layout()
+
+    assert layout.indexOf(widget.histogram_group) < layout.indexOf(
+        widget.metadata_group
+    )
 
 
 def test_side_panels_can_be_collapsed_and_restored(qtbot):

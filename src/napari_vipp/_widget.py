@@ -380,7 +380,7 @@ class HistogramPlot(QWidget):
         self._log_scale = False
         self._x_min_label = ""
         self._x_max_label = ""
-        self.setMinimumHeight(80)
+        self.setMinimumHeight(120)
 
     def set_histogram(
         self,
@@ -414,6 +414,8 @@ class HistogramPlot(QWidget):
 
         label_height = painter.fontMetrics().height() + 5
         plot_frame = rect.adjusted(0, 0, 0, -label_height)
+        plot_rect = plot_frame.adjusted(10, 8, -8, -10)
+        self._draw_axes(painter, plot_rect)
 
         if self._counts.size == 0:
             painter.setPen(QColor("#9ca3af"))
@@ -429,7 +431,6 @@ class HistogramPlot(QWidget):
             painter.end()
             return
 
-        plot_rect = plot_frame.adjusted(8, 8, -8, -8)
         width = max(plot_rect.width(), 1)
         height = max(plot_rect.height(), 1)
         step = max(int(np.ceil(values.size / width)), 1)
@@ -457,6 +458,21 @@ class HistogramPlot(QWidget):
                 self._x_max_label,
             )
         painter.end()
+
+    def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
+        painter.setPen(QPen(QColor("#64748b"), 1.2))
+        painter.drawLine(
+            plot_rect.left(),
+            plot_rect.bottom(),
+            plot_rect.right(),
+            plot_rect.bottom(),
+        )
+        painter.drawLine(
+            plot_rect.left(),
+            plot_rect.top(),
+            plot_rect.left(),
+            plot_rect.bottom(),
+        )
 
 
 class SidePanelToggleButton(QToolButton):
@@ -628,7 +644,7 @@ class VippWidget(QWidget):
         return QSize(420, 120)
 
     def sizeHint(self):  # noqa: N802
-        return QSize(1180, 420)
+        return QSize(1180, 560)
 
     def _ensure_dock_widget_chrome(self) -> None:
         dock = self._dock_widget()
@@ -725,6 +741,7 @@ class VippWidget(QWidget):
     def _build_inspector(self) -> QWidget:
         content = QWidget()
         content.setMinimumHeight(0)
+        self.inspector_content = content
         layout = QVBoxLayout(content)
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
@@ -738,9 +755,6 @@ class VippWidget(QWidget):
         auto_layout.addLayout(auto_form)
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
-        metadata_layout = QVBoxLayout(self.metadata_group)
-        metadata_layout.addWidget(self.metadata_label)
-        layout.addWidget(self.metadata_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
         histogram_scope_layout = QHBoxLayout()
         histogram_scope_layout.addWidget(QLabel("Scope"))
@@ -749,6 +763,9 @@ class VippWidget(QWidget):
         histogram_layout.addWidget(self.histogram_log_checkbox)
         histogram_layout.addWidget(self.histogram_plot)
         layout.addWidget(self.histogram_group)
+        metadata_layout = QVBoxLayout(self.metadata_group)
+        metadata_layout.addWidget(self.metadata_label)
+        layout.addWidget(self.metadata_group)
 
         actions = QHBoxLayout()
         actions.addWidget(self.pin_button)
