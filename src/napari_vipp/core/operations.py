@@ -370,15 +370,26 @@ def select_axis_slice(
     indices: str = "",
     ranges: str = "",
     range_mode: bool = False,
+    remove_axes: str = "",
+    remove_indices: str = "",
 ) -> np.ndarray:
     """Select one or more axis slices or retained axis ranges."""
     arr = np.asarray(data)
     if arr.ndim == 0:
         return arr.copy()
     if range_mode:
-        return _axis_range_selection(arr, ranges)
-    selections = _slice_selections(arr, axis, index, axes, indices)
-    result = arr
+        result = _axis_range_selection(arr, ranges)
+        selections = _slice_selections(
+            result,
+            0,
+            0,
+            remove_axes,
+            remove_indices,
+            use_default=False,
+        )
+    else:
+        result = arr
+        selections = _slice_selections(arr, axis, index, axes, indices)
     for axis_index, slice_index in sorted(selections.items(), reverse=True):
         result = np.take(result, slice_index, axis=axis_index)
     return result
@@ -601,10 +612,14 @@ def _slice_selections(
     index: int,
     axes,
     indices,
+    *,
+    use_default: bool = True,
 ) -> dict[int, int]:
     selected_axes = _parse_int_list(axes)
     selected_indices = _parse_int_list(indices)
     if not selected_axes:
+        if not use_default:
+            return {}
         selected_axes = [axis]
         selected_indices = [index]
 

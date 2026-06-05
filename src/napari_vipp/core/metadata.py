@@ -487,7 +487,7 @@ def _transformed_axes(
         return _channel_composite_axes(axes, params)
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
-        return _range_shifted_axes(axes, params)
+        return _range_and_removed_axes(axes, params)
 
     if arr.ndim == len(axes):
         return axes
@@ -549,6 +549,22 @@ def _range_shifted_axes(
     return tuple(shifted)
 
 
+def _range_and_removed_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    shifted = _range_shifted_axes(axes, params)
+    removed = _selected_axis_indices(
+        params,
+        len(shifted),
+        axes_key="remove_axes",
+        default_axis=False,
+    )
+    if not removed:
+        return shifted
+    return tuple(axis for index, axis in enumerate(shifted) if index not in removed)
+
+
 def _channel_composite_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
@@ -588,13 +604,29 @@ def _operation_history(
     if operation_id == "select_axis_slice":
         if params.get("range_mode", False):
             ranges = _parse_axis_ranges(params.get("ranges"), len(input_state.axes))
-            if not ranges:
-                return f"{operation_title}: kept full input range"
-            selected = ", ".join(
+            range_text = ", ".join(
                 f"{_axis_label(input_state.axes, axis)}[{start}..{end}]"
                 for axis, (start, end) in sorted(ranges.items())
             )
-            return f"{operation_title}: selected {selected}"
+            removals = _selected_axis_index_pairs(
+                input_state.axes,
+                params,
+                axes_key="remove_axes",
+                indices_key="remove_indices",
+                default_axis=False,
+            )
+            removal_text = ", ".join(
+                f"{_axis_label(input_state.axes, axis)}[{index}]"
+                for axis, index in removals
+            )
+            parts = []
+            if range_text:
+                parts.append(f"kept {range_text}")
+            if removal_text:
+                parts.append(f"removed {removal_text}")
+            if not parts:
+                return f"{operation_title}: kept full input axes"
+            return f"{operation_title}: {'; '.join(parts)}"
         selections = _selected_axis_index_pairs(input_state.axes, params)
         selected = ", ".join(
             f"{_axis_label(input_state.axes, axis)}[{index}]"
@@ -630,9 +662,17 @@ def _axis_label(axes: tuple[AxisMetadata, ...], axis_value) -> str:
     return f"{axis.name} axis ({axis_index})"
 
 
-def _selected_axis_indices(params: dict[str, Any], ndim: int) -> set[int]:
-    axes = _parse_int_list(params.get("axes"))
+def _selected_axis_indices(
+    params: dict[str, Any],
+    ndim: int,
+    *,
+    axes_key: str = "axes",
+    default_axis: bool = True,
+) -> set[int]:
+    axes = _parse_int_list(params.get(axes_key))
     if not axes:
+        if not default_axis:
+            return set()
         axes = [_clamped_axis(params.get("axis", 0), ndim)]
     return {_clamped_axis(axis, ndim) for axis in axes}
 
@@ -660,10 +700,16 @@ def _parse_axis_ranges(value, ndim: int) -> dict[int, tuple[int, int]]:
 def _selected_axis_index_pairs(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
+    *,
+    axes_key: str = "axes",
+    indices_key: str = "indices",
+    default_axis: bool = True,
 ) -> list[tuple[int, int]]:
-    axis_values = _parse_int_list(params.get("axes"))
-    index_values = _parse_int_list(params.get("indices"))
+    axis_values = _parse_int_list(params.get(axes_key))
+    index_values = _parse_int_list(params.get(indices_key))
     if not axis_values:
+        if not default_axis:
+            return []
         axis_values = [params.get("axis", 0)]
         index_values = [params.get("index", 0)]
     pairs = []

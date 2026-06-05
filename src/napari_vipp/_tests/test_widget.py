@@ -662,7 +662,7 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=2, c=1, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "1"
     assert (
-        "1. Select Axis Slice: selected c axis (1)[2..2]"
+        "1. Select Axis Slice: kept c axis (1)[2..2]"
         in widget.history_label.text()
     )
 
@@ -680,14 +680,63 @@ def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
     widget.run_pipeline()
     widget.graph_view.select_node(node.id)
 
-    assert widget.pipeline.nodes[node.id].params["axes"] == "0,1"
-    assert widget.pipeline.nodes[node.id].params["indices"] == "1,2"
+    assert widget.pipeline.nodes[node.id].params["axes"] == ""
+    assert widget.pipeline.nodes[node.id].params["indices"] == ""
     assert widget.pipeline.nodes[node.id].params["ranges"] == "0:1:1;1:2:2"
     assert widget.pipeline.nodes[node.id].params["range_mode"] is True
     assert widget.pipeline.outputs[node.id].shape == (1, 1, 4, 5, 6)
     assert _metadata_value(widget, "Dimensions") == "t=1, c=1, z=4, y=5, x=6"
     assert (
-        "1. Select Axis Slice: selected t axis (0)[1..1], c axis (1)[2..2]"
+        "1. Select Axis Slice: kept t axis (0)[1..1], c axis (1)[2..2]"
+        in widget.history_label.text()
+    )
+
+
+def test_select_axis_slice_can_remove_metadata_axis(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    control = widget._parameter_widgets["axis_slice"]
+    control.set_removed_axes({1: 2})
+    widget.run_pipeline()
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.nodes[node.id].params["remove_axes"] == "1"
+    assert widget.pipeline.nodes[node.id].params["remove_indices"] == "2"
+    assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
+    assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6"
+    assert _metadata_value(widget, "Channels") == "none"
+    assert (
+        "1. Select Axis Slice: removed c axis (1)[2]"
+        in widget.history_label.text()
+    )
+
+
+def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("select_axis_slice")
+    widget._connect_nodes("input", node.id)
+    control = widget._parameter_widgets["axis_slice"]
+    control.set_ranges({0: (1, 1)}, emit=False)
+    control.set_removed_axes({1: 2})
+    widget.run_pipeline()
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.nodes[node.id].params["ranges"] == "0:1:1"
+    assert widget.pipeline.nodes[node.id].params["remove_axes"] == "1"
+    assert widget.pipeline.nodes[node.id].params["remove_indices"] == "2"
+    assert widget.pipeline.outputs[node.id].shape == (1, 4, 5, 6)
+    assert _metadata_value(widget, "Dimensions") == "t=1, z=4, y=5, x=6"
+    assert (
+        "1. Select Axis Slice: kept t axis (0)[1..1]; removed c axis (1)[2]"
         in widget.history_label.text()
     )
 
