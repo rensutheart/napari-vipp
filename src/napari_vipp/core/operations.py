@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage as ndi
 from skimage import filters, restoration
-from skimage import io as skio
+from tifffile import imwrite as tiff_imwrite
 
 RGB_CHANNELS = (3, 4)
 
@@ -359,6 +359,7 @@ def save_array_output(
     *,
     format: str = "auto",
     overwrite: bool = True,
+    image_state=None,
 ) -> Path:
     """Write an array output to disk using a compact explicit format choice."""
     if data is None:
@@ -379,8 +380,13 @@ def save_array_output(
         np.save(output_path, arr)
         return output_path
     if selected_format in {"tif", "tiff"}:
-        writable = arr.astype(np.uint8) if arr.dtype == bool else arr
-        skio.imsave(str(output_path), writable, check_contrast=False)
+        writable, axes = _imagej_tiff_payload(arr, image_state)
+        tiff_imwrite(
+            str(output_path),
+            writable,
+            imagej=True,
+            metadata={"axes": axes},
+        )
         return output_path
     raise ValueError(f"Unsupported save format: {format}")
 
@@ -391,6 +397,7 @@ def save_output(
     path: str = "",
     format: str = "auto",
     overwrite: str = "no",
+    image_state=None,
 ) -> np.ndarray:
     """Pipeline node that writes the current output and passes data downstream."""
     arr = np.asarray(data).copy()
@@ -400,8 +407,93 @@ def save_output(
             path,
             format=format,
             overwrite=str(overwrite).lower() == "yes",
+            image_state=image_state,
         )
     return arr
+
+
+def _imagej_tiff_payload(arr: np.ndarray, image_state) -> tuple[np.ndarray, str]:
+    writable = _tiff_writable_array(arr)
+    axes = _imagej_axes_for(writable, image_state)
+    desired = "TZCYXS"
+    if len(axes) > 1:
+        order = [axes.index(axis) for axis in desired if axis in axes]
+        if order != list(range(len(axes))):
+            writable = np.transpose(writable, order)
+            axes = "".join(axes[index] for index in order)
+    return np.ascontiguousarray(writable), axes
+
+
+def _tiff_writable_array(arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr)
+    if arr.dtype == bool:
+        arr = arr.astype(np.uint8) * np.uint8(255)
+    if arr.ndim == 0:
+        return arr.reshape(1, 1)
+    if arr.ndim == 1:
+        return arr.reshape(1, arr.shape[0])
+    return arr
+
+
+def _imagej_axes_for(arr: np.ndarray, image_state) -> str:
+    labels = _imagej_axis_labels_from_state(image_state, arr.ndim)
+    if labels is None:
+        labels = _fallback_imagej_axes(arr)
+    if len(labels) != arr.ndim or any(label not in "TZCYXS" for label in labels):
+        labels = _fallback_imagej_axes(arr)
+    return labels
+
+
+def _imagej_axis_labels_from_state(image_state, ndim: int) -> str | None:
+    axes = getattr(image_state, "axes", None)
+    if axes is None and isinstance(image_state, dict):
+        axes = image_state.get("axes")
+    if axes is None or len(axes) != ndim:
+        return None
+
+    labels = []
+    for axis in axes:
+        if isinstance(axis, dict):
+            name = str(axis.get("name", "")).lower()
+            axis_type = str(axis.get("type", "")).lower()
+        else:
+            name = str(getattr(axis, "name", "")).lower()
+            axis_type = str(getattr(axis, "type", "")).lower()
+        if name == "t" or axis_type == "time":
+            labels.append("T")
+        elif name == "z":
+            labels.append("Z")
+        elif name in {"c", "channel"}:
+            labels.append("C")
+        elif name == "y":
+            labels.append("Y")
+        elif name == "x":
+            labels.append("X")
+        elif name in {"rgb", "rgba"}:
+            labels.append("S")
+        elif axis_type == "channel":
+            labels.append("C")
+        else:
+            return None
+    return "".join(labels)
+
+
+def _fallback_imagej_axes(arr: np.ndarray) -> str:
+    if arr.ndim == 0:
+        return "YX"
+    if arr.ndim == 1:
+        return "YX"
+    if arr.ndim == 2:
+        return "YX"
+    if arr.ndim == 3 and arr.shape[-1] in RGB_CHANNELS:
+        return "YXS"
+    fallback = {
+        3: "ZYX",
+        4: "ZCYX",
+        5: "TZCYX",
+        6: "TZCYXS",
+    }
+    return fallback.get(arr.ndim, "YX")
 
 
 def max_intensity_projection(data, axis: int = 0) -> np.ndarray:

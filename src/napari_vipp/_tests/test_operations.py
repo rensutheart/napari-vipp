@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import tifffile
 
+from napari_vipp.core.metadata import image_state_from_array
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
@@ -106,6 +108,30 @@ def test_save_array_output_rejects_blank_path():
         pass
     else:
         raise AssertionError("Expected blank save path to be rejected")
+
+
+def test_save_array_output_writes_imagej_hyperstack_and_mask_values(tmp_path):
+    data = np.zeros((5, 3, 12, 8, 9), dtype=bool)
+    data[:, 1, 4:7, 2:5, 3:6] = True
+    state = image_state_from_array(data, layer_metadata={"axes": "TCZYX"})
+    path = tmp_path / "otsu-threshold.tif"
+
+    save_array_output(data, path, format="tiff", image_state=state)
+
+    with tifffile.TiffFile(path) as tif:
+        metadata = tif.imagej_metadata
+        series = tif.series[0]
+        saved = series.asarray()
+
+    assert metadata["hyperstack"] is True
+    assert metadata["frames"] == 5
+    assert metadata["slices"] == 12
+    assert metadata["channels"] == 3
+    assert series.axes == "TZCYX"
+    assert saved.shape == (5, 12, 3, 8, 9)
+    assert set(np.unique(saved)) == {0, 255}
+    expected = np.transpose(data.astype(np.uint8) * 255, (0, 2, 1, 3, 4))
+    np.testing.assert_array_equal(saved, expected)
 
 
 def test_slice_wise_filters_preserve_z_independence():

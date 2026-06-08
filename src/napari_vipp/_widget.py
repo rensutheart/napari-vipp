@@ -2504,7 +2504,12 @@ class VippWidget(QWidget):
             self.status_label.setText("That node has no output to save yet.")
             return None
         try:
-            output_path = save_array_output(data, path, overwrite=True)
+            output_path = save_array_output(
+                data,
+                path,
+                overwrite=True,
+                image_state=self.pipeline.output_states.get(node_id),
+            )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
             return None

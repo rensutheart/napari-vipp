@@ -35,6 +35,7 @@ dependencies = [
     "qtpy>=2.4",
     "scikit-image>=0.21",
     "scipy>=1.10",
+    "tifffile>=2023.8",
 ]
 
 [project.urls]

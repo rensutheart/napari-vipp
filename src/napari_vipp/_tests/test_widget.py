@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import tifffile
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDockWidget, QMainWindow, QScrollArea, QWidget
 
@@ -957,6 +958,34 @@ def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
 
     assert path.exists()
     np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
+
+
+def test_save_image_node_writes_imagej_tiff_with_metadata(qtbot, tmp_path):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=bool)
+    data[:, 1, 2, 1:4, 2:5] = True
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("save_output")
+    widget._connect_nodes("input", node.id)
+    path = tmp_path / "graph-output.tif"
+
+    widget.pipeline.set_param(node.id, "enabled", "on")
+    widget.pipeline.set_param(node.id, "path", str(path))
+    widget.pipeline.set_param(node.id, "format", "tiff")
+    widget.pipeline.set_param(node.id, "overwrite", "yes")
+    widget.run_pipeline()
+
+    with tifffile.TiffFile(path) as tif:
+        metadata = tif.imagej_metadata
+        series = tif.series[0]
+        saved = series.asarray()
+
+    assert metadata["frames"] == 2
+    assert metadata["slices"] == 4
+    assert metadata["channels"] == 3
+    assert series.axes == "TZCYX"
+    assert set(np.unique(saved)) == {0, 255}
 
 
 def test_mask_output_can_feed_gaussian_blur(qtbot):

@@ -735,10 +735,14 @@ class PrototypePipeline:
         if source_output is None or spec.function is None:
             return None, None
 
-        output = spec.function(source_output, **node.params)
+        input_state = self.output_states.get(sources[0])
+        kwargs = dict(node.params)
+        if node.operation_id == "save_output":
+            kwargs["image_state"] = input_state
+        output = spec.function(source_output, **kwargs)
         return output, transform_image_state(
             output,
-            self.output_states.get(sources[0]),
+            input_state,
             operation_id=node.operation_id,
             operation_title=node.title,
             params=node.params,

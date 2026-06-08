@@ -128,7 +128,9 @@ implemented yet.
 file, or one of the bundled synthetic samples. `Save Image` passes data through
 unchanged while optionally writing the node input to disk when enabled. For quick
 interactive work, the inspector also provides `Save selected output...` for the
-currently selected node.
+currently selected node. TIFF output is written in ImageJ hyperstack format when
+axis metadata is available, and binary masks are saved as 8-bit `0`/`255`
+values.
 
 ## Development
 
