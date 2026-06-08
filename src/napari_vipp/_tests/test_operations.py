@@ -7,12 +7,14 @@ from napari_vipp.core.metadata import image_state_from_array
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
+    add_images,
     average_blur,
     bilateral_filter,
     binary_threshold,
     black_hat,
     calculate_weighted_image,
     channel_composite,
+    clip_intensity,
     closing,
     contrast_stretch,
     convert_dtype,
@@ -24,14 +26,22 @@ from napari_vipp.core.operations import (
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    logical_and,
+    logical_or,
+    logical_xor,
+    mask_image,
     median_filter,
     morphological_gradient,
+    normalize_image,
     opening,
     otsu_threshold,
+    ratio_image,
+    rescale_intensity,
     rgb_composite,
     save_array_output,
     save_output,
     select_axis_slice,
+    subtract_images,
     top_hat,
     triangle_threshold,
     volume_filter,
@@ -66,7 +76,17 @@ def test_vipp_operation_nodes_are_registered():
         "extract_channel",
         "channel_composite",
         "calculate_weighted_image",
+        "add_images",
+        "subtract_images",
+        "ratio_image",
+        "mask_image",
+        "logical_and",
+        "logical_or",
+        "logical_xor",
         "rgb_composite",
+        "rescale_intensity",
+        "normalize_image",
+        "clip_intensity",
         "convert_dtype",
         "select_axis_slice",
         "save_output",
@@ -228,6 +248,60 @@ def test_calculate_weighted_image_sums_inputs_with_offset():
 
     assert calculated.dtype == np.float32
     np.testing.assert_array_equal(calculated, np.full((2, 3), 4, dtype=np.float32))
+
+
+def test_intensity_rescale_normalize_and_clip():
+    data = np.arange(6, dtype=np.uint16).reshape(2, 3)
+
+    rescaled = rescale_intensity(data, out_min=0, out_max=255)
+    normalized = normalize_image(data, method="min-max")
+    clipped = clip_intensity(data, minimum=2, maximum=4)
+
+    assert rescaled.dtype == np.float32
+    assert rescaled.min() == 0
+    assert rescaled.max() == 255
+    assert normalized.dtype == np.float32
+    assert normalized.min() == 0
+    assert normalized.max() == 1
+    assert clipped.dtype == data.dtype
+    np.testing.assert_array_equal(clipped, np.array([[2, 2, 2], [3, 4, 4]]))
+
+
+def test_image_math_nodes_add_subtract_ratio_and_mask():
+    first = np.full((2, 3), 10, dtype=np.uint16)
+    second = np.full((2, 3), 2, dtype=np.uint16)
+    mask = np.array([[True, False, True], [False, True, False]])
+
+    added = add_images([first, second])
+    subtracted = subtract_images([first, second])
+    ratio = ratio_image([first, second], epsilon=0)
+    masked = mask_image([first, mask], outside_value=99)
+
+    np.testing.assert_array_equal(added, np.full((2, 3), 12, dtype=np.float32))
+    np.testing.assert_array_equal(subtracted, np.full((2, 3), 8, dtype=np.float32))
+    np.testing.assert_array_equal(ratio, np.full((2, 3), 5, dtype=np.float32))
+    np.testing.assert_array_equal(
+        masked,
+        np.array([[10, 99, 10], [99, 10, 99]], dtype=np.uint16),
+    )
+
+
+def test_logical_nodes_combine_masks():
+    first = np.array([[True, False], [True, False]])
+    second = np.array([[True, True], [False, False]])
+
+    np.testing.assert_array_equal(
+        logical_and([first, second]),
+        np.array([[True, False], [False, False]]),
+    )
+    np.testing.assert_array_equal(
+        logical_or([first, second]),
+        np.array([[True, True], [True, False]]),
+    )
+    np.testing.assert_array_equal(
+        logical_xor([first, second]),
+        np.array([[False, True], [True, False]]),
+    )
 
 
 def test_rgb_composite_creates_last_axis_rgb():

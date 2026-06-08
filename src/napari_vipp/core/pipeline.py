@@ -16,12 +16,14 @@ from napari_vipp.core.metadata import (
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
+    add_images,
     average_blur,
     bilateral_filter,
     binary_threshold,
     black_hat,
     calculate_weighted_image,
     channel_composite,
+    clip_intensity,
     closing,
     contrast_stretch,
     convert_dtype,
@@ -34,14 +36,22 @@ from napari_vipp.core.operations import (
     gaussian_blur,
     gaussian_blur_3d,
     invert,
+    logical_and,
+    logical_or,
+    logical_xor,
+    mask_image,
     max_intensity_projection,
     median_filter,
     morphological_gradient,
+    normalize_image,
     opening,
     otsu_threshold,
+    ratio_image,
+    rescale_intensity,
     rgb_composite,
     save_output,
     select_axis_slice,
+    subtract_images,
     top_hat,
     triangle_threshold,
     volume_filter,
@@ -71,6 +81,7 @@ class OperationSpec:
     parameters: tuple[ParameterSpec, ...] = ()
     function: Callable[..., Any] | None = None
     max_inputs: int | None = 1
+    subcategory: str = ""
 
     @property
     def has_input(self) -> bool:
@@ -114,6 +125,11 @@ class ConnectionResult:
 
 
 IMAGE_DATA_CATEGORY = "Image Data"
+SOURCE_OUTPUT_GROUP = "Source & Output"
+AXES_REGIONS_GROUP = "Axes & Regions"
+CHANNELS_COMPOSITES_GROUP = "Channels & Composites"
+TYPE_SCALING_GROUP = "Type & Scaling"
+MATH_LOGIC_GROUP = "Math & Logic"
 
 SOURCE_PARAMETERS = (
     ParameterSpec(
@@ -140,6 +156,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         None,
         "image",
         SOURCE_PARAMETERS,
+        subcategory=SOURCE_OUTPUT_GROUP,
     ),
     OperationSpec(
         "crop_stack",
@@ -154,6 +171,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("right", "Right", "int", 0, 0, 256, 1),
         ),
         crop_stack,
+        subcategory=AXES_REGIONS_GROUP,
     ),
     OperationSpec(
         "contrast_stretch",
@@ -286,6 +304,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("index", "Index", "int", 0, 0, 1024, 1),
         ),
         select_axis_slice,
+        subcategory=AXES_REGIONS_GROUP,
     ),
     OperationSpec(
         "otsu_threshold",
@@ -439,6 +458,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("channel", "Channel", "int", 0, 0, 5, 1),
         ),
         extract_channel,
+        subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
     OperationSpec(
         "channel_composite",
@@ -450,12 +470,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("input_count", "Input channels", "int", 2, 2, 12, 1),
         ),
         channel_composite,
-        12,
+        max_inputs=12,
+        subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
     OperationSpec(
         "calculate_weighted_image",
         "Calculate New Image",
-        "Image Math",
+        IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
@@ -473,7 +494,120 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         calculate_weighted_image,
-        12,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "add_images",
+        "Add",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+        ),
+        add_images,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "subtract_images",
+        "Subtract",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+        ),
+        subtract_images,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "ratio_image",
+        "Ratio",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 2, 1),
+            ParameterSpec("epsilon", "Epsilon", "float", 1e-6, 0.0, 1.0, 1e-6, 6),
+        ),
+        ratio_image,
+        max_inputs=2,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "mask_image",
+        "Mask Image",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 2, 1),
+            ParameterSpec(
+                "outside_value",
+                "Outside value",
+                "float",
+                0.0,
+                -100000.0,
+                100000.0,
+                1.0,
+                3,
+            ),
+            ParameterSpec(
+                "invert_mask",
+                "Invert mask",
+                "choice",
+                "no",
+                0,
+                0,
+                1,
+                choices=("no", "yes"),
+            ),
+        ),
+        mask_image,
+        max_inputs=2,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "logical_and",
+        "Logical AND",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+        ),
+        logical_and,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "logical_or",
+        "Logical OR",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+        ),
+        logical_or,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
+    OperationSpec(
+        "logical_xor",
+        "Logical XOR",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+        ),
+        logical_xor,
+        max_inputs=12,
+        subcategory=MATH_LOGIC_GROUP,
     ),
     OperationSpec(
         "rgb_composite",
@@ -488,6 +622,110 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("blue_channel", "Blue", "int", 0, 0, 15, 1),
         ),
         rgb_composite,
+        subcategory=CHANNELS_COMPOSITES_GROUP,
+    ),
+    OperationSpec(
+        "rescale_intensity",
+        "Rescale Intensity",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "in_low_percentile",
+                "Low percentile",
+                "float",
+                0.0,
+                0.0,
+                100.0,
+                0.1,
+                2,
+            ),
+            ParameterSpec(
+                "in_high_percentile",
+                "High percentile",
+                "float",
+                100.0,
+                0.0,
+                100.0,
+                0.1,
+                2,
+            ),
+            ParameterSpec(
+                "out_min",
+                "Output min",
+                "float",
+                0.0,
+                -100000.0,
+                100000.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "out_max",
+                "Output max",
+                "float",
+                1.0,
+                -100000.0,
+                100000.0,
+                0.01,
+                3,
+            ),
+        ),
+        rescale_intensity,
+        subcategory=TYPE_SCALING_GROUP,
+    ),
+    OperationSpec(
+        "normalize_image",
+        "Normalize",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "method",
+                "Method",
+                "choice",
+                "min-max",
+                0,
+                0,
+                1,
+                choices=("min-max", "z-score"),
+            ),
+        ),
+        normalize_image,
+        subcategory=TYPE_SCALING_GROUP,
+    ),
+    OperationSpec(
+        "clip_intensity",
+        "Clip",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "minimum",
+                "Minimum",
+                "float",
+                0.0,
+                -100000.0,
+                100000.0,
+                1.0,
+                3,
+            ),
+            ParameterSpec(
+                "maximum",
+                "Maximum",
+                "float",
+                255.0,
+                -100000.0,
+                100000.0,
+                1.0,
+                3,
+            ),
+        ),
+        clip_intensity,
+        subcategory=TYPE_SCALING_GROUP,
     ),
     OperationSpec(
         "save_output",
@@ -529,11 +767,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         save_output,
+        subcategory=SOURCE_OUTPUT_GROUP,
     ),
     OperationSpec(
         "convert_dtype",
         "Convert Dtype",
-        "Utility",
+        IMAGE_DATA_CATEGORY,
         "array",
         "any",
         (
@@ -559,8 +798,18 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         convert_dtype,
+        subcategory=TYPE_SCALING_GROUP,
     ),
-    OperationSpec("invert", "Invert", "Utility", "any", "any", (), invert),
+    OperationSpec(
+        "invert",
+        "Invert",
+        IMAGE_DATA_CATEGORY,
+        "any",
+        "any",
+        (),
+        invert,
+        subcategory=MATH_LOGIC_GROUP,
+    ),
 )
 
 NODE_LIBRARY_BY_ID = {spec.id: spec for spec in NODE_LIBRARY}
@@ -884,10 +1133,11 @@ class PrototypePipeline:
         return output_type == input_type
 
 
-def grouped_palette_specs() -> dict[str, list[OperationSpec]]:
-    groups: dict[str, list[OperationSpec]] = {}
+def grouped_palette_specs() -> dict[str, dict[str, list[OperationSpec]]]:
+    groups: dict[str, dict[str, list[OperationSpec]]] = {}
     for spec in PALETTE_NODE_LIBRARY:
-        groups.setdefault(spec.category, []).append(spec)
+        subcategory = spec.subcategory or ""
+        groups.setdefault(spec.category, {}).setdefault(subcategory, []).append(spec)
     return groups
 
 

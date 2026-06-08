@@ -345,6 +345,145 @@ def rgb_composite(
     ).astype(np.float32)
 
 
+def rescale_intensity(
+    data,
+    in_low_percentile: float = 0.0,
+    in_high_percentile: float = 100.0,
+    out_min: float = 0.0,
+    out_max: float = 1.0,
+) -> np.ndarray:
+    """Rescale intensity from percentile limits to a requested output range."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return arr.astype(np.float32)
+    values = arr[np.isfinite(arr)]
+    if values.size == 0:
+        return np.zeros_like(arr, dtype=np.float32)
+    low_p = float(np.clip(in_low_percentile, 0.0, 100.0))
+    high_p = float(np.clip(in_high_percentile, 0.0, 100.0))
+    if low_p > high_p:
+        low_p, high_p = high_p, low_p
+    low, high = np.percentile(values, [low_p, high_p])
+    if high == low:
+        return np.full_like(arr, float(out_min), dtype=np.float32)
+    scaled = (arr.astype(np.float32, copy=False) - float(low)) / float(high - low)
+    scaled = np.clip(scaled, 0.0, 1.0)
+    return (scaled * (float(out_max) - float(out_min)) + float(out_min)).astype(
+        np.float32,
+    )
+
+
+def normalize_image(
+    data,
+    method: str = "min-max",
+) -> np.ndarray:
+    """Normalize an image to min-max or z-score float output."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return arr.astype(np.float32)
+    values = arr[np.isfinite(arr)].astype(np.float32, copy=False)
+    if values.size == 0:
+        return np.zeros_like(arr, dtype=np.float32)
+    if str(method).lower() == "z-score":
+        mean = float(values.mean())
+        std = float(values.std())
+        if std == 0:
+            return np.zeros_like(arr, dtype=np.float32)
+        return ((arr.astype(np.float32, copy=False) - mean) / std).astype(np.float32)
+    return _rescale_values(arr.astype(np.float32, copy=False), 0.0, 1.0).astype(
+        np.float32,
+    )
+
+
+def clip_intensity(
+    data,
+    minimum: float = 0.0,
+    maximum: float = 255.0,
+) -> np.ndarray:
+    """Clip intensities while preserving the incoming dtype where possible."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return arr.copy()
+    low = float(minimum)
+    high = float(maximum)
+    if low > high:
+        low, high = high, low
+    clipped = np.clip(arr, low, high)
+    if np.issubdtype(arr.dtype, np.integer):
+        return clipped.astype(arr.dtype)
+    return clipped.astype(arr.dtype, copy=False)
+
+
+def add_images(inputs, input_count: int = 2) -> np.ndarray:
+    """Add several same-shaped inputs."""
+    arrays = _matching_input_arrays(inputs, input_count, "Add")
+    result = np.zeros(arrays[0].shape, dtype=np.float32)
+    for array in arrays:
+        result += array.astype(np.float32, copy=False)
+    return result
+
+
+def subtract_images(inputs, input_count: int = 2) -> np.ndarray:
+    """Subtract later same-shaped inputs from the first input."""
+    arrays = _matching_input_arrays(inputs, input_count, "Subtract")
+    result = arrays[0].astype(np.float32, copy=True)
+    for array in arrays[1:]:
+        result -= array.astype(np.float32, copy=False)
+    return result
+
+
+def ratio_image(inputs, input_count: int = 2, epsilon: float = 1e-6) -> np.ndarray:
+    """Divide the first input by the second input with denominator protection."""
+    arrays = _matching_input_arrays(inputs, input_count, "Ratio")
+    numerator = arrays[0].astype(np.float32, copy=False)
+    denominator = arrays[1].astype(np.float32, copy=False)
+    return numerator / (denominator + float(epsilon))
+
+
+def mask_image(
+    inputs,
+    input_count: int = 2,
+    outside_value: float = 0.0,
+    invert_mask: str = "no",
+) -> np.ndarray:
+    """Apply a binary mask to an image, filling outside-mask pixels."""
+    arrays = _matching_input_arrays(inputs, input_count, "Mask Image")
+    image = arrays[0]
+    mask = _to_bool_mask(arrays[1])
+    if str(invert_mask).lower() == "yes":
+        mask = ~mask
+    output = np.asarray(image).copy()
+    output[~mask] = np.asarray(outside_value, dtype=output.dtype)
+    return output
+
+
+def logical_and(inputs, input_count: int = 2) -> np.ndarray:
+    """Logical AND over same-shaped inputs."""
+    masks = [
+        _to_bool_mask(array)
+        for array in _matching_input_arrays(inputs, input_count, "Logical AND")
+    ]
+    return np.logical_and.reduce(masks)
+
+
+def logical_or(inputs, input_count: int = 2) -> np.ndarray:
+    """Logical OR over same-shaped inputs."""
+    masks = [
+        _to_bool_mask(array)
+        for array in _matching_input_arrays(inputs, input_count, "Logical OR")
+    ]
+    return np.logical_or.reduce(masks)
+
+
+def logical_xor(inputs, input_count: int = 2) -> np.ndarray:
+    """Logical XOR over same-shaped inputs."""
+    masks = [
+        _to_bool_mask(array)
+        for array in _matching_input_arrays(inputs, input_count, "Logical XOR")
+    ]
+    return np.logical_xor.reduce(masks)
+
+
 def extract_channel_at_axis(
     data,
     channel: int = 0,
@@ -356,6 +495,22 @@ def extract_channel_at_axis(
         channel=channel,
         channel_axis=channel_axis,
     )
+
+
+def _matching_input_arrays(
+    inputs,
+    input_count: int,
+    operation_name: str,
+) -> list[np.ndarray]:
+    arrays = [np.asarray(item) for item in inputs if item is not None]
+    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
+    arrays = arrays[:input_count]
+    if not arrays:
+        raise ValueError(f"{operation_name} needs at least one connected input.")
+    shape = arrays[0].shape
+    if any(array.shape != shape for array in arrays):
+        raise ValueError(f"{operation_name} inputs must have matching shapes.")
+    return arrays
 
 
 def _extract_channel(

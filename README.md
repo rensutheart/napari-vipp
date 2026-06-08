@@ -82,15 +82,31 @@ File > Open Sample > VIPP synthetic microscopy samples
 The current node catalogue includes:
 
 - Image Data:
-  - Image Source
-  - Crop Stack
-  - Select Axis Slice
-  - Extract Channel
-  - Channel Composite
-  - RGB Composite
-  - Save Image
-- Image Math:
-  - Calculate New Image
+  - Source & Output:
+    - Image Source
+    - Save Image
+  - Axes & Regions:
+    - Crop Stack
+    - Select Axis Slice
+  - Channels & Composites:
+    - Extract Channel
+    - Channel Composite
+    - RGB Composite
+  - Type & Scaling:
+    - Convert Dtype
+    - Rescale Intensity
+    - Normalize
+    - Clip
+  - Math & Logic:
+    - Calculate New Image
+    - Add
+    - Subtract
+    - Ratio
+    - Mask Image
+    - Logical AND
+    - Logical OR
+    - Logical XOR
+    - Invert
 - Contrast:
   - Contrast Stretching
   - Gamma Correction
@@ -118,10 +134,6 @@ The current node catalogue includes:
   - Morphological Gradient
   - Fill Holes
   - Volume Filter
-- Utility:
-  - Convert Dtype
-  - Invert
-
 `Extract Channel` is the current practical split-channel path. `Channel
 Composite` is a multi-input node: set the expected channel/input count, connect
 that many upstream images, and it stacks them into an explicit multichannel

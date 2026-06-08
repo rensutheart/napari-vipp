@@ -108,12 +108,21 @@ class _Viewer:
 
 
 def _palette_item(widget, operation_id):
+    def find_child(item):
+        for child_index in range(item.childCount()):
+            child = item.child(child_index)
+            if child.data(0, Qt.UserRole) == operation_id:
+                return child
+            found = find_child(child)
+            if found is not None:
+                return found
+        return None
+
     for category_index in range(widget.palette.topLevelItemCount()):
         category = widget.palette.topLevelItem(category_index)
-        for child_index in range(category.childCount()):
-            item = category.child(child_index)
-            if item.data(0, Qt.UserRole) == operation_id:
-                return item
+        found = find_child(category)
+        if found is not None:
+            return found
     raise AssertionError(f"Palette item not found: {operation_id}")
 
 
@@ -123,6 +132,14 @@ def _palette_category(widget, category_name):
         if item.text(0) == category_name:
             return item
     raise AssertionError(f"Palette category not found: {category_name}")
+
+
+def _palette_child_by_text(parent, text):
+    for child_index in range(parent.childCount()):
+        child = parent.child(child_index)
+        if child.text(0) == text:
+            return child
+    raise AssertionError(f"Palette child not found: {text}")
 
 
 def _metadata_value(widget, label):
@@ -370,28 +387,38 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     qtbot.addWidget(widget)
 
     image_data = _palette_category(widget, "Image Data")
-    child_ids = {
-        image_data.child(index).data(0, Qt.UserRole)
-        for index in range(image_data.childCount())
+    subgroup_names = {
+        image_data.child(index).text(0) for index in range(image_data.childCount())
     }
 
     assert {
-        "input",
-        "crop_stack",
-        "select_axis_slice",
-        "extract_channel",
-        "channel_composite",
-        "rgb_composite",
-        "save_output",
-    } <= child_ids
+        "Source & Output",
+        "Axes & Regions",
+        "Channels & Composites",
+        "Type & Scaling",
+        "Math & Logic",
+    } <= subgroup_names
 
-    image_math = _palette_category(widget, "Image Math")
-    image_math_child_ids = {
-        image_math.child(index).data(0, Qt.UserRole)
-        for index in range(image_math.childCount())
-    }
+    source_output = _palette_child_by_text(image_data, "Source & Output")
+    axes_regions = _palette_child_by_text(image_data, "Axes & Regions")
+    channels = _palette_child_by_text(image_data, "Channels & Composites")
+    type_scaling = _palette_child_by_text(image_data, "Type & Scaling")
+    math_logic = _palette_child_by_text(image_data, "Math & Logic")
 
-    assert {"calculate_weighted_image"} <= image_math_child_ids
+    assert _palette_child_by_text(source_output, "Image Source")
+    assert _palette_child_by_text(source_output, "Save Image")
+    assert _palette_child_by_text(axes_regions, "Crop Stack")
+    assert _palette_child_by_text(axes_regions, "Select Axis Slice")
+    assert _palette_child_by_text(channels, "Extract Channel")
+    assert _palette_child_by_text(channels, "Channel Composite")
+    assert _palette_child_by_text(channels, "RGB Composite")
+    assert _palette_child_by_text(type_scaling, "Convert Dtype")
+    assert _palette_child_by_text(type_scaling, "Rescale Intensity")
+    assert _palette_child_by_text(type_scaling, "Normalize")
+    assert _palette_child_by_text(type_scaling, "Clip")
+    assert _palette_child_by_text(math_logic, "Calculate New Image")
+    assert _palette_child_by_text(math_logic, "Add")
+    assert _palette_child_by_text(math_logic, "Logical XOR")
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
