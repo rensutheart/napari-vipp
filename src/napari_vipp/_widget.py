@@ -2396,6 +2396,7 @@ class VippWidget(QWidget):
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
         self._sync_channel_composite_graph_ports(node_id)
+        self._update_thumbnails()
         self._debounce_timer.start()
 
     def _sync_channel_composite_graph_ports(self, node_id: str) -> None:
@@ -2451,6 +2452,12 @@ class VippWidget(QWidget):
             for index, color in enumerate(colors[:count])
         ]
         return normalized
+
+    def _node_preview_channel_colors(self, node_id: str) -> list[str] | None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "channel_composite":
+            return None
+        return self._channel_composite_colors(node)
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -2735,6 +2742,7 @@ class VippWidget(QWidget):
                 mode=mode,
                 current_step=current_step,
                 state=self.pipeline.output_states.get(node_id),
+                channel_colors=self._node_preview_channel_colors(node_id),
             )
             thumbnail = normalize_thumbnail(preview)
             self.graph_view.set_thumbnail(node_id, thumbnail)

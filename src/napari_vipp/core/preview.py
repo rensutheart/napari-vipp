@@ -18,6 +18,14 @@ FLUORESCENCE_COLORS = np.array(
     ],
     dtype=np.float32,
 )
+NAMED_CHANNEL_COLORS = {
+    "red": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+    "green": np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    "blue": np.array([0.1, 0.35, 1.0], dtype=np.float32),
+    "magenta": np.array([1.0, 0.0, 1.0], dtype=np.float32),
+    "cyan": np.array([0.0, 1.0, 1.0], dtype=np.float32),
+    "yellow": np.array([1.0, 1.0, 0.0], dtype=np.float32),
+}
 
 
 def make_preview(
@@ -25,6 +33,7 @@ def make_preview(
     mode: str = "slice",
     current_step=None,
     state: ImageState | None = None,
+    channel_colors: str | list[str] | tuple[str, ...] | None = None,
 ) -> np.ndarray | None:
     """Reduce arbitrary image-like data to a 2D or RGB thumbnail source array."""
     if data is None or mode.lower() == "off":
@@ -36,7 +45,13 @@ def make_preview(
 
     mode = mode.lower()
     if state is not None:
-        state_preview = _state_aware_preview(arr, mode, current_step, state)
+        state_preview = _state_aware_preview(
+            arr,
+            mode,
+            current_step,
+            state,
+            channel_colors=channel_colors,
+        )
         if state_preview is not None:
             return state_preview
     if mode == "mip":
@@ -86,6 +101,8 @@ def _state_aware_preview(
     mode: str,
     current_step,
     state: ImageState,
+    *,
+    channel_colors: str | list[str] | tuple[str, ...] | None = None,
 ) -> np.ndarray | None:
     if len(state.axes) != arr.ndim:
         return None
@@ -114,9 +131,9 @@ def _state_aware_preview(
         local_y = remaining_axes.index(y_axis)
         local_x = remaining_axes.index(x_axis)
         reduced = np.moveaxis(reduced, [local_y, local_x, local_channel], [0, 1, 2])
-        if channel_axis == arr.ndim - 1:
+        if channel_axis == arr.ndim - 1 and not channel_colors:
             return reduced
-        return _fluorescence_composite(reduced)
+        return _fluorescence_composite(reduced, channel_colors=channel_colors)
 
     reduced = _reduce_to_axes(
         arr,
@@ -175,15 +192,46 @@ def _axis_index_by_name(state: ImageState, name: str) -> int | None:
     return None
 
 
-def _fluorescence_composite(arr: np.ndarray) -> np.ndarray:
+def _fluorescence_composite(
+    arr: np.ndarray,
+    *,
+    channel_colors: str | list[str] | tuple[str, ...] | None = None,
+) -> np.ndarray:
+    color_table = _channel_color_table(channel_colors, arr.shape[-1])
     channels = []
     for channel in range(arr.shape[-1]):
         normalized = _normalize_uint8(arr[..., channel]).astype(np.float32) / 255.0
-        color = FLUORESCENCE_COLORS[channel % len(FLUORESCENCE_COLORS)]
+        color = color_table[channel]
         channels.append(normalized[..., None] * color)
     if not channels:
         return np.zeros(arr.shape[:2] + (3,), dtype=np.float32)
     return np.clip(np.sum(channels, axis=0), 0, 1)
+
+
+def _channel_color_table(
+    channel_colors: str | list[str] | tuple[str, ...] | None,
+    count: int,
+) -> np.ndarray:
+    names = _channel_color_names(channel_colors)
+    colors = []
+    for channel in range(count):
+        color = None
+        if channel < len(names):
+            color = NAMED_CHANNEL_COLORS.get(names[channel].lower())
+        if color is None:
+            color = FLUORESCENCE_COLORS[channel % len(FLUORESCENCE_COLORS)]
+        colors.append(color)
+    return np.asarray(colors, dtype=np.float32)
+
+
+def _channel_color_names(
+    channel_colors: str | list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    if channel_colors is None:
+        return []
+    if isinstance(channel_colors, str):
+        return [part.strip() for part in channel_colors.split(",") if part.strip()]
+    return [str(part).strip() for part in channel_colors if str(part).strip()]
 
 
 def _mip(arr: np.ndarray) -> np.ndarray:

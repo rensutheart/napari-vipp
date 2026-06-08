@@ -52,6 +52,30 @@ def test_multichannel_state_preview_renders_fluorescence_composite():
     assert thumbnail.shape[-1] == 3
 
 
+def test_multichannel_state_preview_uses_requested_channel_colours():
+    data = np.zeros((2, 8, 9), dtype=np.uint16)
+    data[0, 2:5, 2:5] = 2000
+    data[1, 4:7, 5:8] = 2000
+    state = image_state_from_array(data, layer_metadata={"axes": "CYX"})
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        state=state,
+        channel_colors=["Yellow", "Cyan"],
+    )
+
+    assert preview.shape == (8, 9, 3)
+    yellow_pixel = preview[3, 3]
+    cyan_pixel = preview[5, 6]
+    assert yellow_pixel[0] > 0
+    assert yellow_pixel[1] > 0
+    assert yellow_pixel[2] == 0
+    assert cyan_pixel[0] == 0
+    assert cyan_pixel[1] > 0
+    assert cyan_pixel[2] > 0
+
+
 def test_time_lapse_multichannel_preview_follows_current_step():
     data = np.zeros((2, 3, 4, 8, 9), dtype=np.uint16)
     data[0, 0, 0, 2, 3] = 2000

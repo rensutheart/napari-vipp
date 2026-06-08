@@ -827,6 +827,49 @@ def test_channel_composite_input_count_and_colours_update_ports(qtbot):
     assert ports[2].accent_color == "#eab308"
 
 
+def test_channel_composite_colour_change_refreshes_thumbnail_palette(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    data[:, 0] = 1000
+    data[:, 1] = 2000
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("extract_channel")
+    second = widget.add_node_from_palette("extract_channel")
+    composite = widget.add_node_from_palette("channel_composite")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget.pipeline.set_param(first.id, "channel", 0)
+    widget.pipeline.set_param(second.id, "channel", 1)
+    widget._connect_nodes(first.id, composite.id)
+    widget._connect_nodes(second.id, composite.id)
+    widget.run_pipeline()
+    widget.graph_view.select_node(composite.id)
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+    ):
+        if channel_colors is not None:
+            calls.append(list(channel_colors))
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+
+    widget._on_channel_color_changed(1, "Cyan")
+
+    assert ["Red", "Cyan"] in calls
+
+
 def test_select_axis_slice_updates_metadata_axes(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     viewer = _Viewer(data, metadata={"axes": "TCZYX"})
@@ -974,7 +1017,13 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
 
     calls = []
 
-    def fake_make_preview(data, mode, current_step, state=None):
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+    ):
         calls.append(data)
         return None
 
@@ -1006,7 +1055,13 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
 
     calls = []
 
-    def fake_make_preview(data, mode, current_step, state=None):
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+    ):
         calls.append(data)
         return None
 
