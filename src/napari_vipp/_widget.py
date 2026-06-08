@@ -44,6 +44,7 @@ from skimage import io as skio
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
+from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.metadata import (
     MetadataRow,
     format_compact_metadata,
@@ -63,6 +64,7 @@ from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail,
 )
+from napari_vipp.core.workflow import load_workflow, save_workflow
 
 if TYPE_CHECKING:
     import napari
@@ -109,6 +111,16 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     0.05,
     2,
 )
+
+CHANNEL_COLOR_CHOICES = ("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow")
+CHANNEL_COLOR_HEX = {
+    "red": "#ef4444",
+    "green": "#22c55e",
+    "blue": "#60a5fa",
+    "magenta": "#d946ef",
+    "cyan": "#06b6d4",
+    "yellow": "#eab308",
+}
 
 
 class NodePalette(QTreeWidget):
@@ -1338,6 +1350,9 @@ class VippWidget(QWidget):
 
         self.build_button = QPushButton("Reset graph")
         self.refresh_button = QPushButton("Refresh")
+        self.save_workflow_button = QPushButton("Save workflow...")
+        self.load_workflow_button = QPushButton("Load workflow...")
+        self.export_button = QPushButton("Export Python...")
         self.status_label = QLabel(
             "Select an image layer and build the starter pipeline."
         )
@@ -1525,6 +1540,9 @@ class VippWidget(QWidget):
         toolbar.addWidget(self.follow_dims_checkbox)
         toolbar.addWidget(self.build_button)
         toolbar.addWidget(self.refresh_button)
+        toolbar.addWidget(self.save_workflow_button)
+        toolbar.addWidget(self.load_workflow_button)
+        toolbar.addWidget(self.export_button)
         root.addLayout(toolbar)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -1618,6 +1636,9 @@ class VippWidget(QWidget):
     def _connect_signals(self) -> None:
         self.build_button.clicked.connect(self._reset_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
+        self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
+        self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
+        self.export_button.clicked.connect(self._export_python_dialog)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
@@ -1744,7 +1765,77 @@ class VippWidget(QWidget):
         )
         self._sync_pin_ui()
 
+    def _save_workflow_dialog(self) -> None:
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Save VIPP workflow",
+            "vipp_workflow.json",
+            "VIPP workflow (*.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            positions = self.graph_view.node_positions()
+            saved = save_workflow(path, self.pipeline, positions)
+        except Exception as exc:
+            self.status_label.setText(f"Save failed: {exc}")
+            return
+        self.status_label.setText(f"Workflow saved to {saved.name}.")
+
+    def _load_workflow_dialog(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "Load VIPP workflow",
+            "",
+            "VIPP workflow (*.json);;All files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            workflow = load_workflow(path)
+        except Exception as exc:
+            self.status_label.setText(f"Load failed: {exc}")
+            return
+        self.pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+        self._preview_disabled_node_ids.clear()
+        self._clear_active_pin(status=False)
+        self.graph_view.build_graph(
+            self.pipeline.nodes.values(),
+            self.pipeline.connections,
+            workflow["positions"],
+        )
+        self._sync_pin_ui()
+        self._select_first_available_node()
+        self.run_pipeline()
+        self.status_label.setText(f"Loaded workflow from {Path(path).name}.")
+
+    def _export_python_dialog(self) -> None:
+        path, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export pipeline to Python",
+            "vipp_pipeline.py",
+            "Python script (*.py);;All files (*.*)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".py"):
+            path += ".py"
+        try:
+            code = export_pipeline_to_python(self.pipeline)
+            target = Path(path).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(code, encoding="utf-8")
+        except Exception as exc:
+            self.status_label.setText(f"Export failed: {exc}")
+            return
+        self.status_label.setText(f"Pipeline exported to {target.name}.")
+
     def _refresh_and_run(self) -> None:
+        self._refresh_layer_choices()
+        self.run_pipeline()
+
         self._refresh_layer_choices()
         self.run_pipeline()
 
@@ -1917,8 +2008,13 @@ class VippWidget(QWidget):
             data = skio.imread(str(source_path))
         return np.asarray(data), {"vipp_source_path": str(source_path)}
 
-    def _connect_nodes(self, source_id: str, target_id: str) -> None:
-        result = self.pipeline.connect(source_id, target_id)
+    def _connect_nodes(
+        self,
+        source_id: str,
+        target_id: str,
+        target_port: int | None = None,
+    ) -> None:
+        result = self.pipeline.connect(source_id, target_id, target_port)
         if not result.success:
             self.status_label.setText(result.message)
             return
@@ -1926,16 +2022,34 @@ class VippWidget(QWidget):
             self.graph_view.remove_connection(
                 connection.source_id,
                 connection.target_id,
+                target_port=connection.target_port,
                 notify=False,
             )
-        self.graph_view.add_connection(source_id, target_id)
+        if result.connection is not None:
+            self.graph_view.add_connection(
+                result.connection.source_id,
+                result.connection.target_id,
+                result.connection.target_port,
+            )
         self.run_pipeline()
         self.status_label.setText(result.message)
 
-    def _disconnect_nodes(self, source_id: str, target_id: str) -> None:
-        if self.pipeline.disconnect(source_id, target_id):
+    def _disconnect_nodes(
+        self,
+        source_id: str,
+        target_id: str,
+        target_port: int | None = None,
+    ) -> None:
+        if self.pipeline.disconnect(source_id, target_id, target_port):
             self.run_pipeline()
-            self.status_label.setText(f"Disconnected {source_id} -> {target_id}.")
+            port_text = (
+                ""
+                if target_port is None
+                else f" input {int(target_port) + 1}"
+            )
+            self.status_label.setText(
+                f"Disconnected {source_id} -> {target_id}{port_text}."
+            )
 
     def _delete_node(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
@@ -1999,6 +2113,9 @@ class VippWidget(QWidget):
         if node.operation_id == "select_axis_slice":
             self._render_select_axis_slice_parameters(node_id)
             return
+        if node.operation_id == "channel_composite":
+            self._render_channel_composite_parameters(node_id)
+            return
 
         for spec in specs:
             bounds = self._parameter_bounds_for(node_id, spec)
@@ -2015,6 +2132,52 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+
+    def _render_channel_composite_parameters(self, node_id: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        specs = {
+            spec.name: spec for spec in self.pipeline.node_parameter_specs(node_id)
+        }
+        count_spec = specs["input_count"]
+        count = self._channel_composite_input_count(node)
+        node.params["input_count"] = count
+        node.params["channel_colors"] = ",".join(
+            self._channel_composite_colors(node),
+        )
+
+        count_widget = ParameterControl(
+            count_spec,
+            count,
+            self._parameter_bounds_for(node_id, count_spec),
+        )
+        count_widget.valueChanged.connect(
+            self._on_channel_composite_input_count_changed
+        )
+        self.parameter_form.addRow(count_spec.label, count_widget)
+        self._parameter_widgets["input_count"] = count_widget
+
+        for index, color in enumerate(self._channel_composite_colors(node)):
+            spec = ParameterSpec(
+                f"channel_color_{index}",
+                f"Channel {index + 1} colour",
+                "choice",
+                color,
+                0,
+                0,
+                1,
+                choices=CHANNEL_COLOR_CHOICES,
+            )
+            widget = ChoiceControl(
+                spec,
+                color,
+                ParameterBounds(0, len(CHANNEL_COLOR_CHOICES) - 1, 1, 0),
+            )
+            widget.valueChanged.connect(
+                lambda value, slot=index: self._on_channel_color_changed(slot, value)
+            )
+            self.parameter_form.addRow(spec.label, widget)
+            self._parameter_widgets[spec.name] = widget
+        self._sync_channel_composite_graph_ports(node_id)
 
     def _render_image_source_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -2203,6 +2366,92 @@ class VippWidget(QWidget):
         self._apply_select_axis_slice_params(self._selected_node_id, value)
         self._debounce_timer.start()
 
+    def _on_channel_composite_input_count_changed(self, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "channel_composite":
+            return
+        node.params["input_count"] = int(value)
+        colors = self._channel_composite_colors(node)
+        node.params["channel_colors"] = ",".join(colors)
+        for connection in self.pipeline.trim_invalid_connections(node_id):
+            self.graph_view.remove_connection(
+                connection.source_id,
+                connection.target_id,
+                connection.target_port,
+                notify=False,
+            )
+        self._sync_channel_composite_graph_ports(node_id)
+        self._render_parameters(node_id)
+        self._debounce_timer.start()
+
+    def _on_channel_color_changed(self, slot: int, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "channel_composite":
+            return
+        colors = self._channel_composite_colors(node)
+        if slot >= len(colors):
+            return
+        colors[slot] = str(value)
+        node.params["channel_colors"] = ",".join(colors)
+        self._sync_channel_composite_graph_ports(node_id)
+        self._debounce_timer.start()
+
+    def _sync_channel_composite_graph_ports(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "channel_composite":
+            return
+        colors = self._channel_composite_colors(node)
+        labels = [
+            f"Channel {index + 1}: {color}"
+            for index, color in enumerate(colors)
+        ]
+        graph_colors = [
+            CHANNEL_COLOR_HEX.get(color.lower())
+            for color in colors
+        ]
+        self.graph_view.set_node_input_ports(
+            node_id,
+            len(colors),
+            labels,
+            graph_colors,
+        )
+
+    def _sync_node_input_ports(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or not node.has_input:
+            return
+        if node.operation_id == "channel_composite":
+            self._sync_channel_composite_graph_ports(node_id)
+            return
+        self.graph_view.set_node_input_ports(
+            node_id,
+            self.pipeline.input_port_count(node_id),
+        )
+
+    def _channel_composite_input_count(self, node) -> int:
+        maximum = node.max_inputs if node.max_inputs is not None else 12
+        try:
+            count = int(node.params.get("input_count", 2))
+        except Exception:
+            count = 2
+        return int(np.clip(count, 1, max(int(maximum), 1)))
+
+    def _channel_composite_colors(self, node) -> list[str]:
+        count = self._channel_composite_input_count(node)
+        raw = str(node.params.get("channel_colors", "")).strip()
+        colors = [part.strip().title() for part in raw.split(",") if part.strip()]
+        defaults = list(CHANNEL_COLOR_CHOICES)
+        while len(colors) < count:
+            colors.append(defaults[len(colors) % len(defaults)])
+        valid = {choice.lower(): choice for choice in CHANNEL_COLOR_CHOICES}
+        normalized = [
+            valid.get(color.lower(), defaults[index % len(defaults)])
+            for index, color in enumerate(colors[:count])
+        ]
+        return normalized
+
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
         if node is None:
@@ -2354,6 +2603,17 @@ class VippWidget(QWidget):
 
     def _on_param_changed(self, name: str, value) -> None:
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if name == "input_count":
+            for connection in self.pipeline.trim_invalid_connections(
+                self._selected_node_id
+            ):
+                self.graph_view.remove_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    target_port=connection.target_port,
+                    notify=False,
+                )
+            self._sync_node_input_ports(self._selected_node_id)
         if name in {"axis", "channel_axis"}:
             self._refresh_selected_parameter_controls()
         self._debounce_timer.start()

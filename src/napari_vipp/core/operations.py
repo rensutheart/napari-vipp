@@ -273,6 +273,7 @@ def channel_composite(
     inputs,
     input_count: int = 2,
     channel_axis: int = -1,
+    channel_colors: str = "",
 ) -> np.ndarray:
     """Combine multiple same-shaped inputs into a multichannel image."""
     arrays = [np.asarray(item) for item in inputs if item is not None]

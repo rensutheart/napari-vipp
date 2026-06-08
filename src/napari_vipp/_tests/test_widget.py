@@ -774,6 +774,17 @@ def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
     widget.pipeline.set_param(second.id, "channel", 1)
     widget._connect_nodes(first.id, composite.id)
     widget._connect_nodes(second.id, composite.id)
+
+    composite_ports = widget.graph_view._proxies[composite.id].input_ports
+    assert len(composite_ports) == 2
+    assert composite_ports[0].label == "Channel 1: Red"
+    assert composite_ports[1].label == "Channel 2: Green"
+    assert [
+        connection.target_port
+        for connection in widget.pipeline.connections
+        if connection.target_id == composite.id
+    ] == [0, 1]
+
     widget.run_pipeline()
     widget.graph_view.select_node(composite.id)
 
@@ -792,6 +803,28 @@ def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
         "2. Channel Composite: combined 2 inputs as channels"
         in widget.history_label.text()
     )
+
+
+def test_channel_composite_input_count_and_colours_update_ports(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    composite = widget.add_node_from_palette("channel_composite")
+    widget.graph_view.select_node(composite.id)
+
+    widget._on_channel_composite_input_count_changed(4)
+    widget._on_channel_color_changed(2, "Yellow")
+
+    node = widget.pipeline.nodes[composite.id]
+    ports = widget.graph_view._proxies[composite.id].input_ports
+
+    assert node.params["input_count"] == 4
+    assert node.params["channel_colors"] == "Red,Green,Yellow,Magenta"
+    assert len(ports) == 4
+    assert ports[2].label == "Channel 3: Yellow"
+    assert ports[2].accent_color == "#eab308"
 
 
 def test_select_axis_slice_updates_metadata_axes(qtbot):

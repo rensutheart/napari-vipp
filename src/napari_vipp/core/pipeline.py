@@ -115,6 +115,7 @@ class GraphNode:
 class GraphConnection:
     source_id: str
     target_id: str
+    target_port: int = 0
 
 
 @dataclass(frozen=True)
@@ -122,6 +123,7 @@ class ConnectionResult:
     success: bool
     message: str
     removed: tuple[GraphConnection, ...] = ()
+    connection: GraphConnection | None = None
 
 
 IMAGE_DATA_CATEGORY = "Image Data"
@@ -869,6 +871,48 @@ class PrototypePipeline:
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
 
+    def restore_graph(
+        self,
+        nodes: Iterable[GraphNode],
+        connections: Iterable[GraphConnection],
+    ) -> None:
+        """Replace the current graph with deserialized nodes and connections."""
+        self.nodes = {node.id: _clone_node(node) for node in nodes}
+        valid = set(self.nodes)
+        self.connections = [
+            connection
+            for connection in connections
+            if connection.source_id in valid and connection.target_id in valid
+        ]
+        self.outputs = {node_id: None for node_id in self.nodes}
+        self.output_states = {node_id: None for node_id in self.nodes}
+        self._counters = Counter()
+        for node in self.nodes.values():
+            self._counters[node.operation_id] += 1
+
+    def topological_order(self) -> list[str]:
+        """Return node ids in dependency order (sources first).
+
+        Declaration order is preserved among nodes whose inputs are ready.
+        Any nodes left in a cycle are appended in declaration order so the
+        result always contains every node exactly once.
+        """
+        order: list[str] = []
+        done: set[str] = set()
+        remaining = list(self.nodes)
+        while remaining:
+            progressed = False
+            for node_id in list(remaining):
+                if all(src in done for src in self._input_sources(node_id)):
+                    order.append(node_id)
+                    done.add(node_id)
+                    remaining.remove(node_id)
+                    progressed = True
+            if not progressed:
+                order.extend(remaining)
+                break
+        return order
+
     def add_node(self, operation_id: str) -> GraphNode:
         spec = self.operation_spec(operation_id)
         self._counters[operation_id] += 1
@@ -905,7 +949,12 @@ class PrototypePipeline:
         ]
         return True
 
-    def connect(self, source_id: str, target_id: str) -> ConnectionResult:
+    def connect(
+        self,
+        source_id: str,
+        target_id: str,
+        target_port: int | None = None,
+    ) -> ConnectionResult:
         if source_id not in self.nodes or target_id not in self.nodes:
             return ConnectionResult(False, "Cannot connect missing nodes.")
         if source_id == target_id:
@@ -923,9 +972,6 @@ class PrototypePipeline:
                     f"{target.input_type} input."
                 ),
             )
-        connection = GraphConnection(source_id, target_id)
-        if connection in self.connections:
-            return ConnectionResult(True, "Those nodes are already connected.")
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
@@ -937,22 +983,58 @@ class PrototypePipeline:
         removed: tuple[GraphConnection, ...] = ()
         if self._node_accepts_multiple_inputs(target):
             maximum = self._max_inputs_for(target)
-            if maximum is not None and len(existing_targets) >= maximum:
+            port = self._target_port_for_connection(
+                target,
+                existing_targets,
+                target_port,
+            )
+            if port is None:
                 return ConnectionResult(
                     False,
                     f"That node already has {maximum} connected inputs.",
                 )
+            removed = tuple(
+                existing
+                for existing in existing_targets
+                if existing.target_port == port
+            )
+            self.connections = [
+                existing
+                for existing in self.connections
+                if not (
+                    existing.target_id == target_id
+                    and existing.target_port == port
+                )
+            ]
         else:
+            port = 0
             removed = tuple(existing_targets)
             self.connections = [
                 existing
                 for existing in self.connections
                 if existing.target_id != target_id
             ]
+        connection = GraphConnection(source_id, target_id, port)
+        if connection in self.connections:
+            return ConnectionResult(
+                True,
+                "Those nodes are already connected.",
+                connection=connection,
+            )
         self.connections.append(connection)
-        return ConnectionResult(True, "Connected nodes.", removed)
+        return ConnectionResult(
+            True,
+            "Connected nodes.",
+            removed,
+            connection,
+        )
 
-    def disconnect(self, source_id: str, target_id: str) -> bool:
+    def disconnect(
+        self,
+        source_id: str,
+        target_id: str,
+        target_port: int | None = None,
+    ) -> bool:
         before = len(self.connections)
         self.connections = [
             connection
@@ -960,9 +1042,31 @@ class PrototypePipeline:
             if not (
                 connection.source_id == source_id
                 and connection.target_id == target_id
+                and (
+                    target_port is None
+                    or connection.target_port == int(target_port)
+                )
             )
         ]
         return len(self.connections) != before
+
+    def trim_invalid_connections(self, node_id: str) -> tuple[GraphConnection, ...]:
+        node = self.nodes.get(node_id)
+        if node is None:
+            return ()
+        count = self.input_port_count(node_id)
+        removed = tuple(
+            connection
+            for connection in self.connections
+            if connection.target_id == node_id and connection.target_port >= count
+        )
+        if removed:
+            self.connections = [
+                connection
+                for connection in self.connections
+                if connection not in removed
+            ]
+        return removed
 
     def set_param(self, node_id: str, name: str, value: Any) -> None:
         self.nodes[node_id].params[name] = value
@@ -1046,9 +1150,16 @@ class PrototypePipeline:
             return None, None
         if self._node_accepts_multiple_inputs(node):
             required = self._required_inputs_for(node)
-            if len(sources) < required:
+            input_connections = {
+                connection.target_port: connection
+                for connection in self._input_connections(node_id)
+            }
+            if any(port not in input_connections for port in range(required)):
                 return None, None
-            sources = sources[:required]
+            sources = [
+                input_connections[port].source_id
+                for port in range(required)
+            ]
             source_outputs = [self.outputs.get(source) for source in sources]
             if (
                 any(output is None for output in source_outputs)
@@ -1059,9 +1170,11 @@ class PrototypePipeline:
             input_states = [self.output_states.get(source) for source in sources]
             kwargs = dict(node.params)
             if node.operation_id == "channel_composite":
-                kwargs["channel_axis"] = _default_combined_channel_axis(
+                derived_axis = _default_combined_channel_axis(
                     input_states[0],
                 )
+                kwargs["channel_axis"] = derived_axis
+                node.params["channel_axis"] = derived_axis
             output = spec.function(source_outputs, **kwargs)
             return output, transform_multi_input_image_state(
                 output,
@@ -1091,9 +1204,26 @@ class PrototypePipeline:
     def _input_sources(self, node_id: str) -> list[str]:
         return [
             connection.source_id
-            for connection in self.connections
-            if connection.target_id == node_id
+            for connection in self._input_connections(node_id)
         ]
+
+    def _input_connections(self, node_id: str) -> list[GraphConnection]:
+        return sorted(
+            (
+                connection
+                for connection in self.connections
+                if connection.target_id == node_id
+            ),
+            key=lambda connection: connection.target_port,
+        )
+
+    def input_port_count(self, node_id: str) -> int:
+        node = self.nodes.get(node_id)
+        if node is None or not node.has_input:
+            return 0
+        if self._node_accepts_multiple_inputs(node):
+            return self._required_inputs_for(node)
+        return 1
 
     def _node_accepts_multiple_inputs(self, node: GraphNode) -> bool:
         return node.max_inputs is None or node.max_inputs != 1
@@ -1109,6 +1239,28 @@ class PrototypePipeline:
             requested = max(int(node.params.get("input_count", 1)), 1)
             return min(requested, maximum) if maximum is not None else requested
         return 1
+
+    def _target_port_for_connection(
+        self,
+        target: GraphNode,
+        existing_targets: list[GraphConnection],
+        requested_port: int | None,
+    ) -> int | None:
+        maximum = self._max_inputs_for(target)
+        if requested_port is not None:
+            port = int(requested_port)
+            if port < 0:
+                return None
+            if maximum is not None and port >= maximum:
+                return None
+            return port
+
+        used = {connection.target_port for connection in existing_targets}
+        limit = maximum if maximum is not None else len(used) + 1
+        for port in range(limit):
+            if port not in used:
+                return port
+        return None
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
         downstream = {target_id}
