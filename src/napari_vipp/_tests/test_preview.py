@@ -76,6 +76,31 @@ def test_multichannel_state_preview_uses_requested_channel_colours():
     assert cyan_pixel[2] > 0
 
 
+def test_requested_blue_channel_stays_blue_in_thumbnail():
+    data = np.zeros((2, 8, 9), dtype=np.uint16)
+    data[0, 2:5, 2:5] = 2000
+    data[1, 4:7, 5:8] = 2000
+    state = image_state_from_array(data, layer_metadata={"axes": "CYX"})
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        state=state,
+        channel_colors=["Blue", "Green"],
+    )
+    thumbnail = normalize_thumbnail(preview, size=(9, 8))
+
+    assert thumbnail is not None
+    blue_pixel = thumbnail[3, 3]
+    green_pixel = thumbnail[5, 6]
+    assert blue_pixel[0] == 0
+    assert blue_pixel[1] == 0
+    assert blue_pixel[2] > 0
+    assert green_pixel[0] == 0
+    assert green_pixel[1] > 0
+    assert green_pixel[2] == 0
+
+
 def test_time_lapse_multichannel_preview_follows_current_step():
     data = np.zeros((2, 3, 4, 8, 9), dtype=np.uint16)
     data[0, 0, 0, 2, 3] = 2000

@@ -21,7 +21,7 @@ FLUORESCENCE_COLORS = np.array(
 NAMED_CHANNEL_COLORS = {
     "red": np.array([1.0, 0.0, 0.0], dtype=np.float32),
     "green": np.array([0.0, 1.0, 0.0], dtype=np.float32),
-    "blue": np.array([0.1, 0.35, 1.0], dtype=np.float32),
+    "blue": np.array([0.0, 0.0, 1.0], dtype=np.float32),
     "magenta": np.array([1.0, 0.0, 1.0], dtype=np.float32),
     "cyan": np.array([0.0, 1.0, 1.0], dtype=np.float32),
     "yellow": np.array([1.0, 1.0, 0.0], dtype=np.float32),
@@ -292,6 +292,11 @@ def _normalize_uint8(arr: np.ndarray) -> np.ndarray:
 
 
 def _normalize_rgb(arr: np.ndarray) -> np.ndarray:
+    values = arr.astype(np.float32, copy=False)
+    finite = values[np.isfinite(values)]
+    if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
+        return (np.clip(values, 0, 1)[..., :3] * 255).astype(np.uint8)
+
     channels = [_normalize_uint8(arr[..., i]) for i in range(min(3, arr.shape[-1]))]
     while len(channels) < 3:
         channels.append(channels[-1] if channels else np.zeros(arr.shape[:2], np.uint8))
