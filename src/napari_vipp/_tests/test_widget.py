@@ -381,8 +381,17 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
         "select_axis_slice",
         "extract_channel",
         "channel_composite",
+        "rgb_composite",
         "save_output",
     } <= child_ids
+
+    image_math = _palette_category(widget, "Image Math")
+    image_math_child_ids = {
+        image_math.child(index).data(0, Qt.UserRole)
+        for index in range(image_math.childCount())
+    }
+
+    assert {"calculate_weighted_image"} <= image_math_child_ids
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
@@ -696,7 +705,7 @@ def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
     assert _metadata_value(widget, "Metadata source") == "OME-NGFF multiscales"
 
 
-def test_channel_composite_uses_metadata_channel_axis(qtbot):
+def test_rgb_composite_uses_metadata_channel_axis(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     data[:, 0] = 1000
     data[:, 1] = 2000
@@ -705,7 +714,7 @@ def test_channel_composite_uses_metadata_channel_axis(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    node = widget.add_node_from_palette("channel_composite")
+    node = widget.add_node_from_palette("rgb_composite")
     widget._connect_nodes("input", node.id)
     widget.run_pipeline()
     widget.graph_view.select_node(node.id)
@@ -716,7 +725,44 @@ def test_channel_composite_uses_metadata_channel_axis(qtbot):
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
     assert (
-        "1. Channel Composite: RGB composite from axis 1"
+        "1. RGB Composite: RGB composite from axis 1"
+        in widget.history_label.text()
+    )
+
+
+def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    data[:, 0] = 1000
+    data[:, 1] = 2000
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    first = widget.add_node_from_palette("extract_channel")
+    second = widget.add_node_from_palette("extract_channel")
+    composite = widget.add_node_from_palette("channel_composite")
+    widget._connect_nodes("input", first.id)
+    widget._connect_nodes("input", second.id)
+    widget.pipeline.set_param(first.id, "channel", 0)
+    widget.pipeline.set_param(second.id, "channel", 1)
+    widget._connect_nodes(first.id, composite.id)
+    widget._connect_nodes(second.id, composite.id)
+    widget.run_pipeline()
+    widget.graph_view.select_node(composite.id)
+
+    assert widget.pipeline.outputs[composite.id].shape == (2, 2, 4, 5, 6)
+    assert len(
+        [
+            connection
+            for connection in widget.pipeline.connections
+            if connection.target_id == composite.id
+        ]
+    ) == 2
+    assert _metadata_value(widget, "Kind") == "multi-channel image"
+    assert _metadata_value(widget, "Dimensions") == "t=2, c=2, z=4, y=5, x=6"
+    assert (
+        "1. Extract Channel: selected channel 0\n"
+        "2. Channel Composite: combined 2 inputs as channels"
         in widget.history_label.text()
     )
 
@@ -942,6 +988,9 @@ def test_palette_image_operations_can_run(qtbot):
             continue
         node = widget.add_node_from_palette(spec.id)
         widget._connect_nodes("input", node.id)
+        if spec.max_inputs is None or spec.max_inputs != 1:
+            second_input = widget.add_node_from_palette("input")
+            widget._connect_nodes(second_input.id, node.id)
 
         assert widget.pipeline.outputs[node.id] is not None, spec.id
 

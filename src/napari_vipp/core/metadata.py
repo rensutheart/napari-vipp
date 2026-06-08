@@ -213,6 +213,43 @@ def transform_image_state(
     )
 
 
+def transform_multi_input_image_state(
+    data,
+    input_states: list[ImageState | None],
+    *,
+    operation_id: str,
+    operation_title: str,
+    params: dict[str, Any],
+) -> ImageState | None:
+    """Transform metadata for operations that consume several upstream images."""
+    if data is None:
+        return None
+    states = [state for state in input_states if state is not None]
+    if not states:
+        return image_state_from_array(
+            data,
+            metadata_source=f"inferred after {operation_title}",
+            history=(f"{operation_title}: metadata reconstructed from output shape",),
+        )
+
+    arr = np.asarray(data)
+    first = states[0]
+    axes = _multi_input_axes(first.axes, arr, operation_id=operation_id, params=params)
+    metadata_source = first.metadata_source
+    if len(axes) != arr.ndim:
+        axes = infer_axis_metadata(arr)
+        metadata_source = f"inferred after {operation_title}"
+
+    return image_state_from_array(
+        arr,
+        axes=axes,
+        metadata_source=metadata_source,
+        source_name=first.source_name,
+        history=first.history
+        + (_multi_input_history(states, operation_id, operation_title, params),),
+    )
+
+
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
     state = _coerce_state(state_or_data)
@@ -483,8 +520,8 @@ def _transformed_axes(
     axes = input_state.axes
     if operation_id == "crop_stack":
         axes = _crop_shifted_axes(axes, params)
-    if operation_id == "channel_composite":
-        return _channel_composite_axes(axes, params)
+    if operation_id == "rgb_composite":
+        return _rgb_composite_axes(axes, params)
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
         return _range_and_removed_axes(axes, params)
@@ -565,7 +602,25 @@ def _range_and_removed_axes(
     return tuple(axis for index, axis in enumerate(shifted) if index not in removed)
 
 
-def _channel_composite_axes(
+def _multi_input_axes(
+    first_axes: tuple[AxisMetadata, ...],
+    arr: np.ndarray,
+    *,
+    operation_id: str,
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    if operation_id == "channel_composite":
+        channel_index = _clamped_insert_axis(
+            params.get("channel_axis", 0),
+            len(first_axes),
+        )
+        axes = list(first_axes)
+        axes.insert(channel_index, AxisMetadata(name="c", type="channel"))
+        return tuple(axes)
+    return first_axes if arr.ndim == len(first_axes) else infer_axis_metadata(arr)
+
+
+def _rgb_composite_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
@@ -635,7 +690,7 @@ def _operation_history(
         return f"{operation_title}: selected {selected}"
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
-    if operation_id == "channel_composite":
+    if operation_id == "rgb_composite":
         return (
             f"{operation_title}: RGB composite from axis "
             f"{int(params.get('channel_axis', 0))}"
@@ -652,6 +707,25 @@ def _operation_history(
             f"via {params.get('scaling', 'rescale')}"
         )
     return operation_title
+
+
+def _multi_input_history(
+    states: list[ImageState],
+    operation_id: str,
+    operation_title: str,
+    params: dict[str, Any],
+) -> str:
+    count = len(states)
+    if operation_id == "channel_composite":
+        return f"{operation_title}: combined {count} inputs as channels"
+    if operation_id == "calculate_weighted_image":
+        weights = str(params.get("weights", "")).strip() or "1"
+        offset = _safe_float(params.get("offset"), 0.0)
+        return (
+            f"{operation_title}: weighted {count} inputs "
+            f"(weights {weights}, offset {_format_number(offset)})"
+        )
+    return f"{operation_title}: combined {count} inputs"
 
 
 def _axis_label(axes: tuple[AxisMetadata, ...], axis_value) -> str:
@@ -746,6 +820,14 @@ def _clamped_axis(value, ndim: int) -> int:
     except Exception:
         axis = 0
     return min(max(axis, 0), ndim - 1)
+
+
+def _clamped_insert_axis(value, ndim: int) -> int:
+    try:
+        axis = int(value)
+    except Exception:
+        axis = 0
+    return min(max(axis, 0), ndim)
 
 
 def _channel_axis_index(axes: tuple[AxisMetadata, ...]) -> int | None:

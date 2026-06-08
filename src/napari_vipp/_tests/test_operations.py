@@ -11,6 +11,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    calculate_weighted_image,
     channel_composite,
     closing,
     contrast_stretch,
@@ -27,6 +28,7 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    rgb_composite,
     save_array_output,
     save_output,
     select_axis_slice,
@@ -63,6 +65,8 @@ def test_vipp_operation_nodes_are_registered():
         "volume_filter",
         "extract_channel",
         "channel_composite",
+        "calculate_weighted_image",
+        "rgb_composite",
         "convert_dtype",
         "select_axis_slice",
         "save_output",
@@ -199,13 +203,40 @@ def test_extract_channel_supports_czyx_stacks():
     assert channel.max() == 42
 
 
-def test_channel_composite_creates_last_axis_rgb():
+def test_channel_composite_stacks_multiple_inputs_as_channels():
+    first = np.full((2, 5, 6), 10, dtype=np.uint16)
+    second = np.full((2, 5, 6), 20, dtype=np.uint16)
+
+    composite = channel_composite([first, second], input_count=2, channel_axis=1)
+
+    assert composite.shape == (2, 2, 5, 6)
+    assert composite.dtype == np.uint16
+    np.testing.assert_array_equal(composite[:, 0], first)
+    np.testing.assert_array_equal(composite[:, 1], second)
+
+
+def test_calculate_weighted_image_sums_inputs_with_offset():
+    first = np.full((2, 3), 10, dtype=np.uint16)
+    second = np.full((2, 3), 2, dtype=np.uint16)
+
+    calculated = calculate_weighted_image(
+        [first, second],
+        input_count=2,
+        weights="0.5,-2",
+        offset=3,
+    )
+
+    assert calculated.dtype == np.float32
+    np.testing.assert_array_equal(calculated, np.full((2, 3), 4, dtype=np.float32))
+
+
+def test_rgb_composite_creates_last_axis_rgb():
     data = np.zeros((3, 2, 5, 6), dtype=np.uint16)
     data[0, :, 1:3, 1:3] = 1000
     data[1, :, 2:4, 2:4] = 2000
     data[2, :, 3:5, 3:5] = 3000
 
-    composite = channel_composite(data, channel_axis=0)
+    composite = rgb_composite(data, channel_axis=0)
 
     assert composite.shape == (2, 5, 6, 3)
     assert composite.dtype == np.float32

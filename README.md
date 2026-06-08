@@ -87,7 +87,10 @@ The current node catalogue includes:
   - Select Axis Slice
   - Extract Channel
   - Channel Composite
+  - RGB Composite
   - Save Image
+- Image Math:
+  - Calculate New Image
 - Contrast:
   - Contrast Stretching
   - Gamma Correction
@@ -120,9 +123,12 @@ The current node catalogue includes:
   - Invert
 
 `Extract Channel` is the current practical split-channel path. `Channel
-Composite` creates an RGB display-style output from a multi-channel image. True
-multi-output split nodes and true multi-input merge nodes are planned but not
-implemented yet.
+Composite` is a multi-input node: set the expected channel/input count, connect
+that many upstream images, and it stacks them into an explicit multichannel
+output. `RGB Composite` keeps the older single-input display use case where
+selected channels from one multichannel image are rendered as an RGB image.
+`Calculate New Image` is a multi-input image-math node that applies comma
+separated weights to connected inputs and then adds an offset.
 
 `Image Source` can point to an existing napari layer, a local `.npy` or TIFF
 file, or one of the bundled synthetic samples. `Save Image` passes data through

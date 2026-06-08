@@ -270,6 +270,57 @@ def extract_channel(data, channel: int = 0) -> np.ndarray:
 
 
 def channel_composite(
+    inputs,
+    input_count: int = 2,
+    channel_axis: int = -1,
+) -> np.ndarray:
+    """Combine multiple same-shaped inputs into a multichannel image."""
+    arrays = [np.asarray(item) for item in inputs if item is not None]
+    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
+    arrays = arrays[:input_count]
+    if not arrays:
+        raise ValueError("Channel Composite needs at least one connected input.")
+
+    shape = arrays[0].shape
+    if any(array.shape != shape for array in arrays):
+        raise ValueError("Channel Composite inputs must have matching shapes.")
+
+    axis = int(channel_axis)
+    if axis < 0:
+        axis = 0
+    axis = int(np.clip(axis, 0, arrays[0].ndim))
+    return np.stack(arrays, axis=axis)
+
+
+def calculate_weighted_image(
+    inputs,
+    input_count: int = 2,
+    weights: str = "1,1",
+    offset: float = 0.0,
+) -> np.ndarray:
+    """Create a new float image from weighted same-shaped inputs."""
+    arrays = [np.asarray(item) for item in inputs if item is not None]
+    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
+    arrays = arrays[:input_count]
+    if not arrays:
+        raise ValueError("Image Calculator needs at least one connected input.")
+
+    shape = arrays[0].shape
+    if any(array.shape != shape for array in arrays):
+        raise ValueError("Image Calculator inputs must have matching shapes.")
+
+    parsed_weights = _parse_float_list(weights)
+    if len(parsed_weights) < len(arrays):
+        parsed_weights.extend([1.0] * (len(arrays) - len(parsed_weights)))
+
+    result = np.zeros(shape, dtype=np.float32)
+    for array, weight in zip(arrays, parsed_weights, strict=False):
+        result += array.astype(np.float32, copy=False) * float(weight)
+    result += float(offset)
+    return result
+
+
+def rgb_composite(
     data,
     channel_axis: int = 0,
     red_channel: int = 2,
@@ -829,6 +880,24 @@ def _parse_int_list(value) -> list[int]:
     for part in parts:
         try:
             parsed.append(int(part))
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
+def _parse_float_list(value) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [value]
+    parsed = []
+    for part in parts:
+        try:
+            parsed.append(float(part))
         except (TypeError, ValueError):
             continue
     return parsed

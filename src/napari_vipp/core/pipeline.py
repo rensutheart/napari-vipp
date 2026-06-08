@@ -11,6 +11,7 @@ from napari_vipp.core.metadata import (
     ImageState,
     image_state_from_array,
     transform_image_state,
+    transform_multi_input_image_state,
 )
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
@@ -19,6 +20,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    calculate_weighted_image,
     channel_composite,
     closing,
     contrast_stretch,
@@ -37,6 +39,7 @@ from napari_vipp.core.operations import (
     morphological_gradient,
     opening,
     otsu_threshold,
+    rgb_composite,
     save_output,
     select_axis_slice,
     top_hat,
@@ -67,6 +70,7 @@ class OperationSpec:
     output_type: str
     parameters: tuple[ParameterSpec, ...] = ()
     function: Callable[..., Any] | None = None
+    max_inputs: int | None = 1
 
     @property
     def has_input(self) -> bool:
@@ -89,6 +93,7 @@ class GraphNode:
     input_type: str | None
     output_type: str
     params: dict[str, Any] = field(default_factory=dict)
+    max_inputs: int | None = 1
 
     @property
     def has_input(self) -> bool:
@@ -442,12 +447,47 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
+            ParameterSpec("input_count", "Input channels", "int", 2, 2, 12, 1),
+        ),
+        channel_composite,
+        12,
+    ),
+    OperationSpec(
+        "calculate_weighted_image",
+        "Calculate New Image",
+        "Image Math",
+        "array",
+        "image",
+        (
+            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
+            ParameterSpec("weights", "Weights", "text", "1,1", 0, 0, 1),
+            ParameterSpec(
+                "offset",
+                "Offset",
+                "float",
+                0.0,
+                -100000.0,
+                100000.0,
+                1.0,
+                3,
+            ),
+        ),
+        calculate_weighted_image,
+        12,
+    ),
+    OperationSpec(
+        "rgb_composite",
+        "RGB Composite",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
             ParameterSpec("channel_axis", "Channel axis", "int", 0, 0, 5, 1),
             ParameterSpec("red_channel", "Red", "int", 2, 0, 15, 1),
             ParameterSpec("green_channel", "Green", "int", 1, 0, 15, 1),
             ParameterSpec("blue_channel", "Blue", "int", 0, 0, 15, 1),
         ),
-        channel_composite,
+        rgb_composite,
     ),
     OperationSpec(
         "save_output",
@@ -596,6 +636,7 @@ class PrototypePipeline:
             spec.input_type,
             spec.output_type,
             {param.name: param.default for param in spec.parameters},
+            spec.max_inputs,
         )
         self.nodes[node.id] = node
         self.outputs[node.id] = None
@@ -639,16 +680,26 @@ class PrototypePipeline:
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
-        removed = tuple(
+        existing_targets = [
             existing
             for existing in self.connections
             if existing.target_id == target_id
-        )
-        self.connections = [
-            existing
-            for existing in self.connections
-            if existing.target_id != target_id
         ]
+        removed: tuple[GraphConnection, ...] = ()
+        if self._node_accepts_multiple_inputs(target):
+            maximum = self._max_inputs_for(target)
+            if maximum is not None and len(existing_targets) >= maximum:
+                return ConnectionResult(
+                    False,
+                    f"That node already has {maximum} connected inputs.",
+                )
+        else:
+            removed = tuple(existing_targets)
+            self.connections = [
+                existing
+                for existing in self.connections
+                if existing.target_id != target_id
+            ]
         self.connections.append(connection)
         return ConnectionResult(True, "Connected nodes.", removed)
 
@@ -744,6 +795,33 @@ class PrototypePipeline:
         sources = self._input_sources(node_id)
         if not sources:
             return None, None
+        if self._node_accepts_multiple_inputs(node):
+            required = self._required_inputs_for(node)
+            if len(sources) < required:
+                return None, None
+            sources = sources[:required]
+            source_outputs = [self.outputs.get(source) for source in sources]
+            if (
+                any(output is None for output in source_outputs)
+                or spec.function is None
+            ):
+                return None, None
+
+            input_states = [self.output_states.get(source) for source in sources]
+            kwargs = dict(node.params)
+            if node.operation_id == "channel_composite":
+                kwargs["channel_axis"] = _default_combined_channel_axis(
+                    input_states[0],
+                )
+            output = spec.function(source_outputs, **kwargs)
+            return output, transform_multi_input_image_state(
+                output,
+                input_states,
+                operation_id=node.operation_id,
+                operation_title=node.title,
+                params=kwargs,
+            )
+
         source_output = self.outputs.get(sources[0])
         if source_output is None or spec.function is None:
             return None, None
@@ -767,6 +845,21 @@ class PrototypePipeline:
             for connection in self.connections
             if connection.target_id == node_id
         ]
+
+    def _node_accepts_multiple_inputs(self, node: GraphNode) -> bool:
+        return node.max_inputs is None or node.max_inputs != 1
+
+    def _max_inputs_for(self, node: GraphNode) -> int | None:
+        if node.max_inputs is None:
+            return None
+        return max(int(node.max_inputs), 1)
+
+    def _required_inputs_for(self, node: GraphNode) -> int:
+        if "input_count" in node.params:
+            maximum = self._max_inputs_for(node)
+            requested = max(int(node.params.get("input_count", 1)), 1)
+            return min(requested, maximum) if maximum is not None else requested
+        return 1
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
         downstream = {target_id}
@@ -815,7 +908,17 @@ def _clone_node(node: GraphNode) -> GraphNode:
         node.input_type,
         node.output_type,
         dict(node.params),
+        node.max_inputs,
     )
+
+
+def _default_combined_channel_axis(input_state: ImageState | None) -> int:
+    if input_state is None:
+        return 0
+    for index, axis in enumerate(input_state.axes):
+        if axis.type == "space":
+            return index
+    return 0
 
 
 def connection_pairs(connections: Iterable[GraphConnection]) -> set[tuple[str, str]]:
