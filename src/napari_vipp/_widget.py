@@ -1585,6 +1585,7 @@ class VippWidget(QWidget):
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
         self.graph_view.node_selected.connect(self._select_node)
+        self.graph_view.node_delete_requested.connect(self._delete_node)
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
@@ -1884,6 +1885,39 @@ class VippWidget(QWidget):
         if self.pipeline.disconnect(source_id, target_id):
             self.run_pipeline()
             self.status_label.setText(f"Disconnected {source_id} -> {target_id}.")
+
+    def _delete_node(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        title = node.title
+        if not self.pipeline.remove_node(node_id):
+            return
+        self.graph_view.remove_node(node_id)
+        self._preview_disabled_node_ids.discard(node_id)
+        if self._active_pinned_node_id == node_id:
+            self._clear_active_pin(status=False)
+        if self._selected_node_id == node_id:
+            self._select_first_available_node()
+        self.run_pipeline()
+        self.status_label.setText(f"Deleted '{title}'.")
+
+    def _select_first_available_node(self) -> None:
+        if self.pipeline.nodes:
+            node_id = next(iter(self.pipeline.nodes))
+            self.graph_view.select_node(node_id)
+            return
+        self._selected_node_id = ""
+        self.selected_title.setText("No node selected")
+        self._clear_parameter_form()
+        self.parameter_group.setHidden(True)
+        self.auto_contrast_group.setHidden(True)
+        self.pin_button.setHidden(True)
+        with QSignalBlocker(self.thumbnail_checkbox):
+            self.thumbnail_checkbox.setChecked(False)
+        self.metadata_table.setRowCount(0)
+        self.history_label.setText("No history yet.")
+        self.histogram_plot.set_histogram(None)
 
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:

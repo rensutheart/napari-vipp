@@ -602,6 +602,19 @@ class PrototypePipeline:
         self.output_states[node.id] = None
         return node
 
+    def remove_node(self, node_id: str) -> bool:
+        if node_id not in self.nodes:
+            return False
+        del self.nodes[node_id]
+        self.outputs.pop(node_id, None)
+        self.output_states.pop(node_id, None)
+        self.connections = [
+            connection
+            for connection in self.connections
+            if connection.source_id != node_id and connection.target_id != node_id
+        ]
+        return True
+
     def connect(self, source_id: str, target_id: str) -> ConnectionResult:
         if source_id not in self.nodes or target_id not in self.nodes:
             return ConnectionResult(False, "Cannot connect missing nodes.")

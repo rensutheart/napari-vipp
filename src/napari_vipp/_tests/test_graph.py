@@ -132,3 +132,29 @@ def test_dragging_node_keeps_viewport_stationary(qtbot):
     assert view.horizontalScrollBar().value() == h_scroll_before
     assert view.verticalScrollBar().value() == v_scroll_before
     assert center_delta.manhattanLength() < 0.01
+
+
+def test_delete_key_requests_selected_node_deletion(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    deleted = []
+    view.node_delete_requested.connect(deleted.append)
+    view.select_node("gaussian")
+
+    qtbot.keyClick(view, Qt.Key_Delete)
+
+    assert deleted == ["gaussian"]
+
+
+def test_removing_node_removes_related_connections(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    view.remove_node("gaussian")
+
+    assert "gaussian" not in view._proxies
+    assert "gaussian" not in view._cards
+    assert not view._connections

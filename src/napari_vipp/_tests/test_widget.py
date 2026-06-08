@@ -148,6 +148,23 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert not viewer.layers["input volume"].visible
 
 
+def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+
+    qtbot.keyClick(widget.graph_view, Qt.Key_Delete)
+
+    assert "gaussian" not in widget.pipeline.nodes
+    assert "gaussian" not in widget.graph_view._cards
+    assert all(
+        connection.source_id != "gaussian" and connection.target_id != "gaussian"
+        for connection in widget.pipeline.connections
+    )
+    assert widget._selected_node_id in widget.pipeline.nodes
+
+
 def test_widget_restores_hidden_source_layer_on_close(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

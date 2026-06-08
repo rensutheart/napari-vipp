@@ -499,6 +499,7 @@ class PipelineGraphView(QGraphicsView):
     """Large pan/zoom graph canvas hosted inside napari."""
 
     node_selected = Signal(str)
+    node_delete_requested = Signal(str)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     connection_requested = Signal(str, str)
@@ -590,6 +591,24 @@ class PipelineGraphView(QGraphicsView):
         source.connections.append(item)
         target.connections.append(item)
         self._connections.append(item)
+
+    def remove_node(self, node_id: str) -> None:
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return
+        for connection in list(proxy.connections):
+            self.delete_connection_item(connection, notify=False)
+        if self._pending_source is not None and self._pending_source.node_id == node_id:
+            self._cancel_pending_connection()
+        elif (
+            self._highlighted_input_port is not None
+            and self._highlighted_input_port.node_id == node_id
+        ):
+            self._highlighted_input_port.set_drop_state(None)
+            self._highlighted_input_port = None
+        self._cards.pop(node_id, None)
+        self._proxies.pop(node_id, None)
+        self.scene.removeItem(proxy)
 
     def remove_connection(
         self,
@@ -729,6 +748,23 @@ class PipelineGraphView(QGraphicsView):
 
     def keyPressEvent(self, event):  # noqa: N802
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected_nodes = [
+                item
+                for item in self.scene.selectedItems()
+                if isinstance(item, NodeProxy)
+            ]
+            if not selected_nodes:
+                selected_nodes = [
+                    proxy
+                    for node_id, proxy in self._proxies.items()
+                    if self._cards[node_id]._selected
+                ]
+            for item in selected_nodes:
+                self.node_delete_requested.emit(item.node_id)
+            if selected_nodes:
+                event.accept()
+                return
+
             selected = [
                 item
                 for item in self.scene.selectedItems()
@@ -793,6 +829,9 @@ class PipelineGraphView(QGraphicsView):
     def _select_node(self, node_id: str) -> None:
         for card_id, card in self._cards.items():
             card.set_selected(card_id == node_id)
+            proxy = self._proxies.get(card_id)
+            if proxy is not None:
+                proxy.setSelected(card_id == node_id)
         self.node_selected.emit(node_id)
 
     def _start_panning(self, pos: QPoint) -> None:
