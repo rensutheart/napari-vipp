@@ -942,6 +942,32 @@ def test_save_selected_output_writes_npy(qtbot, tmp_path):
     np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
 
 
+def test_save_selected_output_dialog_defaults_to_tiff(qtbot, monkeypatch, tmp_path):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    captured = {}
+    path = tmp_path / "selected-output.tif"
+
+    def fake_get_save_file_name(_parent, title, default_name, filters):
+        captured["title"] = title
+        captured["default_name"] = default_name
+        captured["filters"] = filters
+        return str(path), "TIFF image (*.tif *.tiff)"
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        fake_get_save_file_name,
+    )
+
+    widget._save_selected_output_dialog()
+
+    assert captured["title"] == "Save selected node output"
+    assert captured["default_name"].endswith(".tif")
+    assert captured["filters"].startswith("TIFF image")
+    assert path.exists()
+
+
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
     viewer = _Viewer()
     widget = VippWidget(viewer)

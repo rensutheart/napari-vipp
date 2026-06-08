@@ -2488,12 +2488,12 @@ class VippWidget(QWidget):
 
     def _save_selected_output_dialog(self) -> None:
         node_id = self._selected_node_id
-        default_name = f"{self._node_title(node_id).replace(' ', '_')}.npy"
+        default_name = f"{self._node_title(node_id).replace(' ', '_')}.tif"
         path, _filter = QFileDialog.getSaveFileName(
             self,
             "Save selected node output",
             default_name,
-            "NumPy array (*.npy);;TIFF image (*.tif *.tiff);;All files (*.*)",
+            "TIFF image (*.tif *.tiff);;NumPy array (*.npy);;All files (*.*)",
         )
         if path:
             self._save_node_output(node_id, path)

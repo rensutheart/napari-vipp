@@ -458,7 +458,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec(
                 "enabled",
-                "Enabled",
+                "Auto-save on update",
                 "choice",
                 "off",
                 0,

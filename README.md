@@ -126,11 +126,12 @@ implemented yet.
 
 `Image Source` can point to an existing napari layer, a local `.npy` or TIFF
 file, or one of the bundled synthetic samples. `Save Image` passes data through
-unchanged while optionally writing the node input to disk when enabled. For quick
-interactive work, the inspector also provides `Save selected output...` for the
-currently selected node. TIFF output is written in ImageJ hyperstack format when
-axis metadata is available, and binary masks are saved as 8-bit `0`/`255`
-values.
+unchanged and, when `Auto-save on update` is set to `on`, writes the node input
+to disk every time the graph recomputes. For quick interactive work, the
+inspector also provides `Save selected output...` for the currently selected
+node; that dialog defaults to TIFF but still allows `.npy`. TIFF output is
+written in ImageJ hyperstack format when axis metadata is available, and binary
+masks are saved as 8-bit `0`/`255` values.
 
 ## Development
 
