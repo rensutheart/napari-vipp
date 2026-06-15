@@ -10,6 +10,14 @@
   until relabeling is requested.
 - Label TIFF saves now preserve 32-bit integer IDs using standard TIFF because
   ImageJ TIFF does not support 32-bit integer label data.
+- Made Split Channels preserve upstream image/mask/label port types so
+  thresholded channels connect directly to label operations.
+- Added a prebuilt Otsu red-channel labeling workflow and manual launch script.
+- Made label-volume filter sliders logarithmic and data-aware, using the largest
+  incoming object while preserving exact numeric entry up to the hard limit.
+- Added an incoming label-volume distribution to the volume-filter inspector,
+  with live minimum and enabled maximum threshold markers plus a log-scale
+  toggle that defaults on.
 - Detached VIPP windows now use standard top-level window controls, including a
   maximize button. Double-clicking the detached title bar toggles maximized
   state instead of re-docking the panel.

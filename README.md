@@ -143,19 +143,28 @@ The current node catalogue includes:
 The label pipeline converts binary masks into integer object IDs. Connected
 components can run over full `ZYX` volumes or independently over `YX` images.
 Volume filtering currently uses pixel/voxel counts, preserves retained IDs, and
-leaves compact renumbering to the explicit `Relabel Sequential` node.
+leaves compact renumbering to the explicit `Relabel Sequential` node. Its
+volume sliders use the largest observed object as their data-aware upper bound
+and a logarithmic scale for useful control across small and large structures;
+the numeric fields still accept exact values up to one billion. Selecting
+`Filter Labels By Volume` also shows the incoming object-volume distribution
+above the regular histogram. Dashed minimum and enabled maximum markers update
+with the filter controls. Its `Log volume axis` toggle is enabled by
+default and can be switched off for a linear distribution.
 
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
 in the image (losslessly, preserving dtype), with the port count following the
-true channel count. `Combine Channels` is the inverse multi-input node: set the
-expected channel/input count, connect that many upstream images, and it stacks
-them into an explicit multichannel output. `Composite → RGB` is a configurable
-display node that maps a multichannel composite to a channel-last RGB image —
-auto-detecting the channel axis by default, with optional manual axis and
-per-plane channel selection. `Calculate New Image` is a multi-input image-math
-node that applies comma separated weights to connected inputs and then adds an
-offset.
+true channel count. Each channel also preserves the semantic type of its input,
+so splitting a threshold mask produces mask ports that connect directly to
+`Label Connected Components`. `Combine Channels` is the inverse multi-input
+node: set the expected channel/input count, connect that many upstream images,
+and it stacks them into an explicit multichannel output. `Composite → RGB` is
+a configurable display node that maps a multichannel composite to a
+channel-last RGB image — auto-detecting the channel axis by default, with
+optional manual axis and per-plane channel selection. `Calculate New Image` is
+a multi-input image-math node that applies comma separated weights to connected
+inputs and then adds an offset.
 
 `Image Source` can point to an existing napari layer, a local `.npy` or TIFF
 file, or one of the bundled synthetic samples. `Save Image` passes data through
@@ -195,6 +204,15 @@ Or launch the local sample app:
 ```bash
 python scripts\launch_vipp_sample.py
 ```
+
+To start directly from the multichannel Otsu-to-label workflow:
+
+```bash
+python scripts\launch_vipp_label_workflow.py
+```
+
+The same graph can be loaded manually from
+`examples/otsu-red-channel-labels.json`.
 
 ## Roadmap
 

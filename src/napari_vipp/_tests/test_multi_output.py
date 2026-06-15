@@ -39,6 +39,24 @@ def test_split_channels_defaults_to_three_output_ports():
     assert [port.label for port in ports] == ["Ch 1", "Ch 2", "Ch 3"]
 
 
+def test_split_channels_preserves_mask_output_type_for_downstream_labels():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    split = pipeline.add_node("split_channels")
+    labels = pipeline.add_node("label_connected_components")
+
+    assert pipeline.connect("threshold", split.id).success
+    assert {
+        port.output_type for port in pipeline.output_ports(split.id)
+    } == {"mask"}
+
+    result = pipeline.connect(split.id, labels.id, source_port=0)
+
+    assert result.success
+    assert result.connection is not None
+    assert result.connection.source_port == 0
+
+
 def test_split_channels_run_produces_lossless_outputs():
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
@@ -188,12 +206,14 @@ def test_graph_view_renders_three_output_ports(qtbot):
         3,
         ["Ch 1", "Ch 2", "Ch 3"],
         ["#ef4444", "#22c55e", "#60a5fa"],
+        ["mask", "mask", "mask"],
     )
 
     proxy = view._proxies[node.id]
     assert len(proxy.output_ports) == 3
     assert [port.port_index for port in proxy.output_ports] == [0, 1, 2]
     assert proxy.output_port_at(1).accent_color == "#22c55e"
+    assert proxy.output_port_at(1).data_type == "mask"
 
 
 def test_graph_view_connects_specific_output_port(qtbot):

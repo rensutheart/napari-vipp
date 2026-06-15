@@ -357,6 +357,103 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert pinned.metadata["data_kind"] == "labels"
 
 
+def test_label_volume_controls_use_observed_object_sizes(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 1:5, 1:5] = 10
+    data[:, 7:11, 7:11] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    filtered = widget.add_node_from_palette("filter_labels_by_volume")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, filtered.id)
+
+    minimum_control = widget._parameter_widgets["min_volume"]
+    maximum_control = widget._parameter_widgets["max_volume"]
+    incoming_labels = widget.pipeline.input_data_for_node(filtered.id)
+    largest_3d = widget._largest_label_volume(incoming_labels, 3)
+
+    assert largest_3d > 0
+    assert minimum_control._bounds.maximum == largest_3d
+    assert maximum_control._bounds.maximum == largest_3d
+    assert minimum_control.slider.minimum() == 0
+    assert minimum_control.slider.maximum() == 1000
+    assert minimum_control.value_box.maximum() == 1_000_000_000
+
+    minimum_control.slider.setValue(500)
+
+    assert 1 <= widget.pipeline.nodes[filtered.id].params["min_volume"] <= 10
+
+    widget.pipeline.set_param(filtered.id, "spatial_mode", "2D YX")
+    widget.run_pipeline()
+    largest_2d = widget._largest_label_volume(incoming_labels, 2)
+
+    assert largest_2d < largest_3d
+    assert minimum_control._bounds.maximum == largest_2d
+    assert maximum_control._bounds.maximum == largest_2d
+
+    minimum_control.value_box.setValue(1_000_000)
+
+    assert minimum_control.value() == 1_000_000
+    assert minimum_control.slider.maximum() == 1000
+    assert minimum_control.slider.value() == 1000
+
+
+def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 1:5, 1:5] = 10
+    data[:, 7:11, 7:11] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    filtered = widget.add_node_from_palette("filter_labels_by_volume")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, filtered.id)
+
+    incoming_labels = widget.pipeline.input_data_for_node(filtered.id)
+    volumes = widget._label_volumes(incoming_labels, 3)
+
+    assert not widget.label_volume_group.isHidden()
+    assert widget.label_volume_log_checkbox.isChecked()
+    assert widget.label_volume_log_checkbox.text() == "Log volume axis"
+    assert widget.label_volume_plot._counts.sum() == volumes.size
+    assert widget.label_volume_plot._x_scale == "log"
+    assert widget.label_volume_plot._x_range == (0.0, float(volumes.max()))
+    assert [
+        (label, value)
+        for label, value, _color in widget.label_volume_plot._markers
+    ] == [("min", 10.0)]
+    assert "objects" in widget.label_volume_summary.text()
+    assert "voxels" in widget.label_volume_summary.text()
+
+    widget.label_volume_log_checkbox.setChecked(False)
+
+    assert widget.label_volume_plot._counts.sum() == volumes.size
+    assert widget.label_volume_plot._x_scale == "linear"
+    assert widget.label_volume_plot._x_range == (0.0, float(volumes.max()))
+
+    widget._parameter_widgets["min_volume"].value_box.setValue(20)
+    widget._parameter_widgets["max_volume"].value_box.setValue(50)
+
+    assert [
+        (label, value)
+        for label, value, _color in widget.label_volume_plot._markers
+    ] == [("min", 20.0), ("max", 50.0)]
+
+    widget._parameter_widgets["max_volume"].value_box.setValue(0)
+
+    assert [
+        (label, value)
+        for label, value, _color in widget.label_volume_plot._markers
+    ] == [("min", 20.0)]
+
+    widget.graph_view.select_node(labels.id)
+
+    assert widget.label_volume_group.isHidden()
+
+
 def test_pin_toggles_active_node_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -516,6 +613,9 @@ def test_inspector_shows_histogram_before_metadata(qtbot):
 
     layout = widget.inspector_content.layout()
 
+    assert layout.indexOf(widget.label_volume_group) < layout.indexOf(
+        widget.histogram_group
+    )
     assert layout.indexOf(widget.histogram_group) < layout.indexOf(
         widget.metadata_group
     )
@@ -866,6 +966,40 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
         "1. Composite \u2192 RGB: mapped channels to RGB"
         in widget.history_label.text()
     )
+
+
+def test_split_threshold_channel_drag_connects_to_label_node(qtbot):
+    data = np.zeros((3, 4, 16, 18), dtype=np.uint16)
+    data[0, :, 3:12, 4:14] = 5000
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    labels = widget.add_node_from_palette("label_connected_components")
+    widget._connect_nodes("threshold", split.id)
+
+    source_port = widget.graph_view._proxies[split.id].output_port_at(0)
+    target_port = widget.graph_view._proxies[labels.id].input_port_at(0)
+
+    assert source_port is not None
+    assert target_port is not None
+    assert source_port.data_type == "mask"
+
+    widget.graph_view.begin_connection(
+        source_port,
+        source_port.mapToScene(QPointF(0, 0)),
+    )
+    widget.graph_view.complete_connection(target_port)
+
+    assert any(
+        connection.source_id == split.id
+        and connection.source_port == 0
+        and connection.target_id == labels.id
+        for connection in widget.pipeline.connections
+    )
+    assert widget.pipeline.outputs[labels.id] is not None
+    assert widget.pipeline.outputs[labels.id].dtype == np.int32
 
 
 def test_combine_channels_accepts_multiple_connected_inputs(qtbot):

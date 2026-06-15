@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from napari_vipp.core.metadata import (
@@ -100,6 +100,7 @@ class OperationSpec:
     subcategory: str = ""
     outputs: tuple[OutputSpec, ...] = ()
     output_factory: Callable[[int], tuple[OutputSpec, ...]] | None = None
+    preserves_input_type: bool = False
 
     @property
     def has_input(self) -> bool:
@@ -750,6 +751,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         split_channels,
         subcategory=CHANNELS_COMPOSITES_GROUP,
         output_factory=_split_channels_outputs,
+        preserves_input_type=True,
     ),
     OperationSpec(
         "composite_to_rgb",
@@ -1268,8 +1270,28 @@ class PrototypePipeline:
             count = len(self.node_outputs.get(node_id, ()))
             if count <= 0:
                 count = DEFAULT_DYNAMIC_OUTPUT_PORTS
-            return spec.output_factory(count)
-        return spec.output_ports
+            ports = spec.output_factory(count)
+        else:
+            ports = spec.output_ports
+        return self._resolved_output_port_types(node_id, ports)
+
+    def _resolved_output_port_types(
+        self,
+        node_id: str,
+        ports: tuple[OutputSpec, ...],
+    ) -> tuple[OutputSpec, ...]:
+        spec = self.operation_spec(self.nodes[node_id].operation_id)
+        if not spec.preserves_input_type:
+            return ports
+        connections = self._input_connections(node_id)
+        if not connections:
+            return ports
+        source = connections[0]
+        source_ports = self.output_ports(source.source_id)
+        if not 0 <= source.source_port < len(source_ports):
+            return ports
+        output_type = source_ports[source.source_port].output_type
+        return tuple(replace(port, output_type=output_type) for port in ports)
 
     def _resolved_output(self, source_id: str, source_port: int):
         outputs = self.node_outputs.get(source_id)
@@ -1459,6 +1481,7 @@ class PrototypePipeline:
             ports: tuple[OutputSpec, ...] = spec.output_factory(len(arrays))
         else:
             ports = spec.output_ports
+        ports = self._resolved_output_port_types(node.id, ports)
         results: list[tuple[Any, ImageState | None]] = []
         for index, port in enumerate(ports):
             data = arrays[index] if index < len(arrays) else None

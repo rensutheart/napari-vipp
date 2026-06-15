@@ -371,6 +371,7 @@ class NodeProxy(QGraphicsProxyWidget):
         self._output_port_count = 1
         self._output_port_labels: list[str] = []
         self._output_port_colors: list[str | None] = []
+        self._output_port_types: list[str] = []
         self.output_ports: list[PortItem] = []
         self._drag_start_scene: QPointF | None = None
         self._drag_start_pos: QPointF | None = None
@@ -439,10 +440,12 @@ class NodeProxy(QGraphicsProxyWidget):
         count: int,
         labels: list[str] | None = None,
         colors: list[str | None] | None = None,
+        data_types: list[str] | None = None,
     ) -> None:
         self._output_port_count = max(int(count), 1)
         self._output_port_labels = labels or []
         self._output_port_colors = colors or []
+        self._output_port_types = data_types or []
         self._ensure_output_ports()
         self.refresh_ports()
         for connection in self.connections:
@@ -592,7 +595,13 @@ class NodeProxy(QGraphicsProxyWidget):
                 if index < len(self._output_port_colors)
                 else None
             )
+            data_type = (
+                self._output_port_types[index]
+                if index < len(self._output_port_types)
+                else self.output_type
+            )
             port.port_index = index
+            port.set_data_type(data_type)
             port.set_label(label, color)
 
     def _press_on_button(self, event) -> bool:
@@ -653,9 +662,15 @@ class ConnectionItem(QGraphicsPathItem):
         if view is not None and action == delete_action:
             view.delete_connection_item(self, notify=True)
         elif view is not None and action == info_action:
+            source_port = self.source.output_port_at(self.source_port)
+            source_type = (
+                source_port.data_type
+                if source_port is not None
+                else self.source.output_type
+            )
             view.status_message.emit(
                 f"Connection {self.source_id} -> {self.target_id}: "
-                f"{self.source.output_type} to {self.target.input_type} "
+                f"{source_type} to {self.target.input_type} "
                 f"input {self.target_port + 1}."
             )
 
@@ -916,11 +931,12 @@ class PipelineGraphView(QGraphicsView):
         count: int,
         labels: list[str] | None = None,
         colors: list[str | None] | None = None,
+        data_types: list[str] | None = None,
     ) -> None:
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
-        proxy.set_output_ports(count, labels, colors)
+        proxy.set_output_ports(count, labels, colors, data_types)
 
     def select_node(self, node_id: str) -> None:
         if node_id in self._cards:

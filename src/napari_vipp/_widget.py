@@ -86,6 +86,9 @@ class ParameterBounds:
     step: float | int
     decimals: int
     expandable: bool = False
+    logarithmic: bool = False
+    entry_minimum: float | int | None = None
+    entry_maximum: float | int | None = None
 
 
 @dataclass(frozen=True)
@@ -320,6 +323,9 @@ class ParameterControl(QWidget):
             bounds.step,
             bounds.decimals,
             expandable=bounds.expandable,
+            logarithmic=bounds.logarithmic,
+            entry_minimum=bounds.entry_minimum,
+            entry_maximum=bounds.entry_maximum,
         )
         self._bounds = bounds
         self._entry_minimum = entry_minimum
@@ -330,19 +336,27 @@ class ParameterControl(QWidget):
             if self._is_integer:
                 self.value_box.setRange(int(entry_minimum), int(entry_maximum))
                 self.value_box.setSingleStep(max(int(bounds.step), 1))
-                self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
-                self.slider.setSingleStep(max(int(bounds.step), 1))
-                self.slider.setValue(int(current))
+                if bounds.logarithmic:
+                    self.slider.setRange(0, 1000)
+                    self.slider.setSingleStep(1)
+                else:
+                    self.slider.setRange(int(bounds.minimum), int(bounds.maximum))
+                    self.slider.setSingleStep(max(int(bounds.step), 1))
+                self.slider.setValue(self._to_slider(current))
                 self.value_box.setValue(int(current))
             else:
                 self.value_box.setDecimals(bounds.decimals)
                 self.value_box.setRange(float(entry_minimum), float(entry_maximum))
                 self.value_box.setSingleStep(float(bounds.step))
-                self.slider.setRange(
-                    self._to_slider(bounds.minimum),
-                    self._to_slider(bounds.maximum),
-                )
-                self.slider.setSingleStep(max(self._to_slider(bounds.step), 1))
+                if bounds.logarithmic:
+                    self.slider.setRange(0, 1000)
+                    self.slider.setSingleStep(1)
+                else:
+                    self.slider.setRange(
+                        self._to_slider(bounds.minimum),
+                        self._to_slider(bounds.maximum),
+                    )
+                    self.slider.setSingleStep(max(self._to_slider(bounds.step), 1))
                 self.slider.setValue(self._to_slider(current))
                 self.value_box.setValue(float(current))
 
@@ -350,7 +364,7 @@ class ParameterControl(QWidget):
             self.valueChanged.emit(self.value())
 
     def _on_slider_changed(self, value: int) -> None:
-        mapped = int(value) if self._is_integer else value / self._scale
+        mapped = self._from_slider(value)
         with QSignalBlocker(self.value_box):
             self.value_box.setValue(mapped)
         self.valueChanged.emit(self.value())
@@ -361,8 +375,7 @@ class ParameterControl(QWidget):
             self.valueChanged.emit(self.value())
             return
         with QSignalBlocker(self.slider):
-            slider_value = int(value) if self._is_integer else self._to_slider(value)
-            self.slider.setValue(slider_value)
+            self.slider.setValue(self._to_slider(value))
         self.valueChanged.emit(self.value())
 
     def _scale_for(self, bounds: ParameterBounds) -> int:
@@ -374,7 +387,26 @@ class ParameterControl(QWidget):
         return max(int(round(1 / step)), 1) if step > 0 else 100
 
     def _to_slider(self, value) -> int:
+        if self._bounds.logarithmic:
+            minimum = float(self._bounds.minimum)
+            span = float(self._bounds.maximum) - minimum
+            if span <= 0:
+                return 0
+            offset = float(np.clip(float(value) - minimum, 0.0, span))
+            fraction = np.log1p(offset) / np.log1p(span)
+            return int(round(fraction * 1000))
+        if self._is_integer:
+            return int(round(float(value)))
         return int(round(float(value) * self._scale))
+
+    def _from_slider(self, value: int):
+        if self._bounds.logarithmic:
+            minimum = float(self._bounds.minimum)
+            span = float(self._bounds.maximum) - minimum
+            fraction = float(np.clip(value, 0, 1000)) / 1000.0
+            mapped = minimum + np.expm1(fraction * np.log1p(max(span, 0.0)))
+            return int(round(mapped)) if self._is_integer else mapped
+        return int(value) if self._is_integer else value / self._scale
 
     def _clamped_value(self, value, minimum, maximum):
         if value is None:
@@ -385,6 +417,18 @@ class ParameterControl(QWidget):
         self,
         bounds: ParameterBounds,
     ) -> tuple[float | int, float | int]:
+        if bounds.entry_minimum is not None or bounds.entry_maximum is not None:
+            minimum = (
+                bounds.minimum
+                if bounds.entry_minimum is None
+                else bounds.entry_minimum
+            )
+            maximum = (
+                bounds.maximum
+                if bounds.entry_maximum is None
+                else bounds.entry_maximum
+            )
+            return minimum, maximum
         if not bounds.expandable:
             return bounds.minimum, bounds.maximum
         minimum = bounds.minimum
@@ -424,6 +468,9 @@ class ParameterControl(QWidget):
                 bounds.step,
                 bounds.decimals,
                 bounds.expandable,
+                bounds.logarithmic,
+                bounds.entry_minimum,
+                bounds.entry_maximum,
             )
         return ParameterBounds(
             minimum,
@@ -431,9 +478,18 @@ class ParameterControl(QWidget):
             bounds.step,
             bounds.decimals,
             bounds.expandable,
+            bounds.logarithmic,
+            bounds.entry_minimum,
+            bounds.entry_maximum,
         )
 
     def _value_in_slider_bounds(self, value) -> bool:
+        if self._bounds.logarithmic:
+            return (
+                float(self._bounds.minimum)
+                <= float(value)
+                <= float(self._bounds.maximum)
+            )
         if self._is_integer:
             return self.slider.minimum() <= int(value) <= self.slider.maximum()
         slider_value = self._to_slider(value)
@@ -1148,6 +1204,9 @@ class HistogramPlot(QWidget):
         self._log_scale = False
         self._x_min_label = ""
         self._x_max_label = ""
+        self._x_range: tuple[float, float] | None = None
+        self._x_scale = "linear"
+        self._markers: list[tuple[str, float, QColor]] = []
         self.setMinimumHeight(120)
 
     def set_histogram(
@@ -1156,6 +1215,8 @@ class HistogramPlot(QWidget):
         log_scale: bool,
         x_range: tuple[float, float] | None = None,
         colors: list[QColor] | None = None,
+        markers: list[tuple[str, float, QColor]] | None = None,
+        x_scale: str = "linear",
     ) -> None:
         self._counts = (
             np.asarray(counts, dtype=np.float32)
@@ -1174,6 +1235,9 @@ class HistogramPlot(QWidget):
             self._series_counts.shape[0]
         )
         self._log_scale = log_scale
+        self._x_range = x_range
+        self._x_scale = x_scale
+        self._markers = markers or []
         if x_range is None or self._series_counts.size == 0:
             self._x_min_label = ""
             self._x_max_label = ""
@@ -1212,6 +1276,7 @@ class HistogramPlot(QWidget):
             return
 
         self._draw_histogram_series(painter, plot_rect, values, maximum)
+        self._draw_markers(painter, plot_rect)
         if self._x_min_label or self._x_max_label:
             painter.setPen(QColor("#9ca3af"))
             metrics = painter.fontMetrics()
@@ -1269,6 +1334,47 @@ class HistogramPlot(QWidget):
                 x = plot_rect.left() + int(index * width / max(reduced.size - 1, 1))
                 y = plot_rect.bottom() - int((float(value) / maximum) * height)
                 painter.drawLine(x, plot_rect.bottom(), x, y)
+
+    def _draw_markers(self, painter: QPainter, plot_rect: QRect) -> None:
+        if not self._markers or self._x_range is None:
+            return
+        metrics = painter.fontMetrics()
+        label_y = plot_rect.top() + metrics.ascent() + 2
+        for index, (label, value, color) in enumerate(self._markers):
+            fraction = self._x_fraction(value)
+            x = plot_rect.left() + int(fraction * max(plot_rect.width(), 1))
+            painter.setPen(QPen(color, 2.0, Qt.DashLine))
+            painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+            text = f"{label} {_format_histogram_label(value)}"
+            text_width = metrics.horizontalAdvance(text)
+            rightmost_text_x = max(
+                plot_rect.left(),
+                plot_rect.right() - text_width,
+            )
+            text_x = int(
+                np.clip(x + 3, plot_rect.left(), rightmost_text_x)
+            )
+            painter.setPen(color)
+            painter.drawText(
+                text_x,
+                label_y + index * (metrics.height() + 1),
+                text,
+            )
+
+    def _x_fraction(self, value: float) -> float:
+        if self._x_range is None:
+            return 0.0
+        minimum, maximum = self._x_range
+        if maximum <= minimum:
+            return 0.0
+        value = float(np.clip(value, minimum, maximum))
+        if self._x_scale == "log":
+            shifted_value = max(value - minimum, 0.0)
+            shifted_maximum = maximum - minimum
+            return float(
+                np.log1p(shifted_value) / np.log1p(max(shifted_maximum, 1.0))
+            )
+        return float((value - minimum) / (maximum - minimum))
 
 
 class SidePanelToggleButton(QToolButton):
@@ -1431,6 +1537,13 @@ class VippWidget(QWidget):
         self.histogram_scope_combo.addItems(["Slice", "Stack"])
         self.histogram_log_checkbox = QCheckBox("Log scale")
         self.histogram_plot = HistogramPlot()
+        self.label_volume_group = QGroupBox("Label Volume Distribution")
+        self.label_volume_summary = QLabel("No labeled objects.")
+        self.label_volume_summary.setWordWrap(True)
+        self.label_volume_log_checkbox = QCheckBox("Log volume axis")
+        self.label_volume_log_checkbox.setChecked(True)
+        self.label_volume_plot = HistogramPlot()
+        self.label_volume_group.setHidden(True)
 
         self.pin_button = QPushButton("Pin selected")
         self.save_button = QPushButton("Save selected output...")
@@ -1687,6 +1800,11 @@ class VippWidget(QWidget):
         auto_layout.addLayout(auto_form)
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
+        label_volume_layout = QVBoxLayout(self.label_volume_group)
+        label_volume_layout.addWidget(self.label_volume_summary)
+        label_volume_layout.addWidget(self.label_volume_log_checkbox)
+        label_volume_layout.addWidget(self.label_volume_plot)
+        layout.addWidget(self.label_volume_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
         histogram_scope_layout = QHBoxLayout()
         histogram_scope_layout.addWidget(QLabel("Scope"))
@@ -1730,6 +1848,9 @@ class VippWidget(QWidget):
         )
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
+        self.label_volume_log_checkbox.toggled.connect(
+            self._update_label_volume_histogram
+        )
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.save_button.clicked.connect(self._save_selected_output_dialog)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
@@ -1878,10 +1999,16 @@ class VippWidget(QWidget):
         if not path:
             return
         try:
-            workflow = load_workflow(path)
+            loaded = self.load_workflow_file(path)
         except Exception as exc:
             self.status_label.setText(f"Load failed: {exc}")
             return
+        self.status_label.setText(f"Loaded workflow from {loaded.name}.")
+
+    def load_workflow_file(self, path: str | Path) -> Path:
+        """Load a workflow file into the widget and recompute the graph."""
+        source = Path(path).expanduser()
+        workflow = load_workflow(source)
         self.pipeline.restore_graph(workflow["nodes"], workflow["connections"])
         self._preview_disabled_node_ids.clear()
         self._clear_active_pin(status=False)
@@ -1894,7 +2021,7 @@ class VippWidget(QWidget):
         self._sync_all_output_ports()
         self._select_first_available_node()
         self.run_pipeline()
-        self.status_label.setText(f"Loaded workflow from {Path(path).name}.")
+        return source
 
     def _export_python_dialog(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -2171,6 +2298,8 @@ class VippWidget(QWidget):
             self.thumbnail_checkbox.setChecked(False)
         self.metadata_table.setRowCount(0)
         self.history_label.setText("No history yet.")
+        self.label_volume_group.setHidden(True)
+        self.label_volume_plot.set_histogram(None, log_scale=False)
         self.histogram_plot.set_histogram(None)
 
     def _select_node(self, node_id: str) -> None:
@@ -2391,6 +2520,12 @@ class VippWidget(QWidget):
             return self._channel_bounds(node_id, spec)
         if spec.name == "block_size":
             return self._block_size_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "filter_labels_by_volume"
+            and spec.name in {"min_volume", "max_volume"}
+        ):
+            return self._label_volume_bounds(node_id, spec)
         return ParameterBounds(
             spec.minimum,
             spec.maximum,
@@ -2532,7 +2667,14 @@ class VippWidget(QWidget):
             self._output_port_color(index, port)
             for index, port in enumerate(ports)
         ]
-        self.graph_view.set_node_output_ports(node_id, len(ports), labels, colors)
+        data_types = [port.output_type for port in ports]
+        self.graph_view.set_node_output_ports(
+            node_id,
+            len(ports),
+            labels,
+            colors,
+            data_types,
+        )
 
     @staticmethod
     def _output_port_color(index: int, port) -> str | None:
@@ -2742,6 +2884,66 @@ class VippWidget(QWidget):
             maximum -= 1
         return ParameterBounds(3, maximum, 2, 0)
 
+    def _label_volume_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        maximum = max(int(spec.default) * 10, 100)
+        if data is not None:
+            arr = np.asarray(data)
+            node = self.pipeline.nodes[node_id]
+            spatial_ndim = int(
+                np.clip(
+                    node.params.get(
+                        "resolved_spatial_ndim",
+                        3 if arr.ndim >= 3 else 2,
+                    ),
+                    1,
+                    max(arr.ndim, 1),
+                )
+            )
+            maximum = max(
+                self._largest_label_volume(arr, spatial_ndim),
+                int(spec.default),
+                1,
+            )
+        return ParameterBounds(
+            0,
+            maximum,
+            1,
+            0,
+            logarithmic=True,
+            entry_minimum=spec.minimum,
+            entry_maximum=spec.maximum,
+        )
+
+    @staticmethod
+    def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
+        volumes = VippWidget._label_volumes(labels, spatial_ndim)
+        return int(volumes.max()) if volumes.size else 0
+
+    @staticmethod
+    def _label_volumes(labels: np.ndarray, spatial_ndim: int) -> np.ndarray:
+        arr = np.asarray(labels)
+        if arr.size == 0:
+            return np.array([], dtype=np.int64)
+        spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+        leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+        blocks = (
+            (arr[index] for index in np.ndindex(leading_shape))
+            if leading_shape
+            else (arr,)
+        )
+        volumes: list[np.ndarray] = []
+        for block in blocks:
+            foreground = np.asarray(block)
+            foreground = foreground[foreground > 0]
+            if foreground.size == 0:
+                continue
+            _labels, counts = np.unique(foreground, return_counts=True)
+            volumes.append(counts.astype(np.int64, copy=False))
+        if not volumes:
+            return np.array([], dtype=np.int64)
+        return np.concatenate(volumes)
+
     def _clear_parameter_form(self) -> None:
         self._parameter_widgets.clear()
         while self.parameter_form.count():
@@ -2765,6 +2967,8 @@ class VippWidget(QWidget):
             self._sync_node_input_ports(self._selected_node_id)
         if name in {"axis", "channel_axis"}:
             self._refresh_selected_parameter_controls()
+        if name in {"min_volume", "max_volume", "spatial_mode"}:
+            self._update_label_volume_histogram()
         self._debounce_timer.start()
 
     def _apply_auto_contrast(self) -> None:
@@ -2966,6 +3170,7 @@ class VippWidget(QWidget):
         return int(np.clip(step, 0, max(axis_size - 1, 0)))
 
     def _update_histogram(self) -> None:
+        self._update_label_volume_histogram()
         data = self.pipeline.outputs.get(self._selected_node_id)
         counts, x_range, colors = _histogram_summary(
             data,
@@ -2981,6 +3186,96 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
         )
+
+    def _update_label_volume_histogram(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        visible = (
+            node is not None
+            and node.operation_id == "filter_labels_by_volume"
+        )
+        self.label_volume_group.setHidden(not visible)
+        if not visible:
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        data = self.pipeline.input_data_for_node(self._selected_node_id)
+        if data is None:
+            self.label_volume_summary.setText("No connected label input.")
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        arr = np.asarray(data)
+        spatial_ndim = self._label_filter_spatial_ndim(
+            self._selected_node_id,
+            arr,
+        )
+        volumes = self._label_volumes(arr, spatial_ndim)
+        if volumes.size == 0:
+            self.label_volume_summary.setText("No labeled objects.")
+            self.label_volume_plot.set_histogram(None, log_scale=False)
+            return
+
+        largest = int(volumes.max())
+        median = float(np.median(volumes))
+        unit = "voxels" if spatial_ndim >= 3 else "pixels"
+        self.label_volume_summary.setText(
+            f"{volumes.size} objects | median {_format_histogram_label(median)} "
+            f"| largest {largest} {unit}"
+        )
+        bin_count = int(np.clip(np.ceil(np.sqrt(volumes.size)) * 2, 8, 64))
+        logarithmic = self.label_volume_log_checkbox.isChecked()
+        if logarithmic:
+            histogram_values = np.log1p(volumes.astype(np.float64))
+            histogram_range = (0.0, float(np.log1p(max(largest, 1))))
+            x_scale = "log"
+        else:
+            histogram_values = volumes.astype(np.float64)
+            histogram_range = (0.0, float(max(largest, 1)))
+            x_scale = "linear"
+        counts, _edges = np.histogram(
+            histogram_values,
+            bins=bin_count,
+            range=histogram_range,
+        )
+        minimum = max(int(node.params.get("min_volume", 0)), 0)
+        maximum = max(int(node.params.get("max_volume", 0)), 0)
+        markers = [("min", float(minimum), QColor("#f59e0b"))]
+        if maximum > 0:
+            markers.append(("max", float(maximum), QColor("#38bdf8")))
+        self.label_volume_plot.set_histogram(
+            counts,
+            log_scale=False,
+            x_range=(0.0, float(max(largest, 1))),
+            colors=[QColor("#f472b6")],
+            markers=markers,
+            x_scale=x_scale,
+        )
+
+    def _label_filter_spatial_ndim(
+        self,
+        node_id: str,
+        data: np.ndarray,
+    ) -> int:
+        node = self.pipeline.nodes[node_id]
+        mode = str(node.params.get("spatial_mode", "Auto from axes")).lower()
+        if mode.startswith("2d"):
+            requested = 2
+        elif mode.startswith("3d"):
+            requested = 3
+        else:
+            state = self.pipeline.input_state_for_node(node_id)
+            spatial_count = (
+                sum(axis.type == "space" for axis in state.axes)
+                if state is not None
+                else 0
+            )
+            if spatial_count >= 3:
+                requested = 3
+            elif spatial_count >= 2:
+                requested = 2
+            else:
+                requested = 3 if data.ndim >= 3 else 2
+        return int(np.clip(requested, 1, max(data.ndim, 1)))
 
     def _save_selected_output_dialog(self) -> None:
         node_id = self._selected_node_id
@@ -3432,6 +3727,9 @@ def _slider_safe_bounds(
     step: float | int,
     decimals: int,
     expandable: bool = False,
+    logarithmic: bool = False,
+    entry_minimum: float | int | None = None,
+    entry_maximum: float | int | None = None,
 ) -> ParameterBounds:
     maximum_slider_units = 1_000_000_000
     decimals = int(decimals)
@@ -3449,6 +3747,9 @@ def _slider_safe_bounds(
         max(float(step), smallest_step),
         decimals,
         expandable,
+        logarithmic,
+        entry_minimum,
+        entry_maximum,
     )
 
 

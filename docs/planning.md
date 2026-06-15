@@ -1,99 +1,197 @@
 # napari-vipp Planning Notes
 
-For the prioritized algorithm and node catalogue discussion, see
-[node-roadmap.md](node-roadmap.md).
+Last reviewed: 2026-06-15
 
-## Manual Graph Editing
+For the prioritized algorithm and node catalogue, see
+[node-roadmap.md](node-roadmap.md). For implementation details, see
+[architecture.md](architecture.md).
 
-The graph should behave like Blender shader nodes, Unreal Blueprints, and the
-original VIPP/Ryven editor:
+## Current Product Direction
 
-- nodes can be freely repositioned on a large pan/zoom canvas;
-- users can create space in the graph and insert nodes between existing stages;
-- ports should be visible on node edges;
-- connections should be made by clicking or dragging from an output port to an
-  input port;
-- invalid connections should be rejected visually;
-- connectors should remain attached while nodes move.
+The graph is the primary work surface. A useful VIPP feature should form part
+of a reproducible bioimage workflow, not merely add another isolated image
+filter.
 
-The first prototype supports moving existing node cards and keeps connector
-curves attached. Dynamic add/remove/connect interactions are the next graph
-editing milestone.
+The target first-class workflow families are:
 
-## Pipeline Export
+- nuclei and cell segmentation;
+- puncta and spot analysis;
+- mitochondrial object and network analysis;
+- pixel-based and object-based colocalization;
+- 2D images and true 3D fluorescence z-stacks.
 
-Once a user has manually built and tuned a pipeline, the system should export
-that pipeline as runnable Python code. The export should be suitable for:
+Registration and deconvolution remain later milestones.
 
-- batch processing over files, timepoints, channels, or positions;
-- sharing by email or repository;
-- including in supplementary material for a paper;
-- running headless without napari when only computation is needed.
+## Implemented Platform Capabilities
 
-The exported code should be generated from the same graph model used by the UI,
-not reverse-engineered from widget state.
+### Manual Graph Editing
 
-## Workflow Save And Load
+The graph currently supports:
 
-The graph should also save to a portable JSON or YAML workflow file containing:
+- a large pan/zoom canvas with movable node cards;
+- node creation from the searchable palette;
+- node and connection deletion;
+- click-to-connect and drag-to-connect wiring;
+- visual compatible/incompatible drop feedback;
+- cycle and port-type rejection;
+- slot-aware multi-input connections;
+- per-port multi-output connections;
+- dynamic Split Channels output counts;
+- connector updates while nodes move;
+- save/load of canvas positions.
 
-- node ids and stable operation ids;
+Remaining graph-editor refinements include automatic insertion when dropping a
+node onto an existing wire, alignment/layout tools, graph annotations, and
+larger-workflow navigation aids.
+
+### Workflow Persistence
+
+Portable JSON workflow persistence is implemented. Version 1 stores:
+
+- stable node and operation ids;
 - parameter values;
-- input/output connections;
-- node positions on the canvas;
-- preview settings;
-- version metadata;
-- optional provenance and notes.
+- source and target node ids;
+- target input slots and source output slots;
+- canvas positions;
+- workflow type and version.
 
-Loading the file in another napari-vipp installation should recreate the same
-graph layout, parameters, and connections.
+Loading derives titles, categories, and port contracts from the installed node
+library. Unknown operations and dangling connections are skipped so a partially
+compatible workflow can still load.
 
-## Data State Visibility
+Not yet stored:
 
-Each graph stage should make the flowing image state visible, not just the
-preview image. The metadata model should be OME-NGFF-inspired: each node output
-carries axis names, axis types, units, scale/origin transforms, shape, dtype,
-value range, and transform history. When an input layer has OME-NGFF
-`multiscales` axes, VIPP should use those directly. When the source is only a
-plain NumPy array, the UI may fall back to inferred axes, but must explicitly
-label that fallback so the user understands that the input axes still need to be
-declared or loaded from a richer source.
+- per-node thumbnail visibility;
+- inspector and histogram UI state;
+- graph notes or annotations;
+- environment/package provenance;
+- YAML format.
 
-Type conversion should be explicit in the graph. Converter nodes can turn a
-volume into `uint8`, `uint16`, `float32`, or `bool` output using either rescale,
-clip, or preserve-cast behavior. This keeps downstream batch/export workflows
-honest about when a 16-bit image became an 8-bit display-oriented
-representation, or when an intensity image became a logical mask.
+Image Source selections, including file paths and napari layer names, are saved
+as ordinary node parameters. File paths are currently literal local paths;
+workflow files do not embed input data, rebase paths, or package assets for
+portable sharing.
 
-Axis subsetting should also be explicit. A generic Select Axis Slice node lets
-users select a single timepoint, channel, z-slice, or other axis index and drops
-that axis from downstream metadata. Future UI work should label these controls
-with axis names rather than only numeric axis indices.
+The checked-in example
+[`examples/otsu-red-channel-labels.json`](../examples/otsu-red-channel-labels.json)
+demonstrates the current format.
 
-## Legacy VIPP Node Migration
+### Python Export And Batch Execution
 
-The first Sharratt/VIPP migration pass ports the single-input image-processing
-nodes into the napari-vipp operation library:
+Python export is implemented from the same graph model used by the UI. The
+generated script:
 
-- contrast stretching, gamma correction, crop, and channel extraction;
-- average blur, median blur, Gaussian blur, Gaussian blur 3D, and bilateral
-  filtering;
-- binary, adaptive mean, adaptive Gaussian, Otsu, and triangle thresholding;
-- dilation, erosion, opening, closing, top hat, black hat, morphological
-  gradient, fill holes, and volume filtering.
+- imports pure functions from `napari_vipp.core.operations`;
+- reconstructs slot-aware multi-input and multi-output routing;
+- exposes `run_pipeline()`;
+- exposes a folder-oriented `batch_process()` helper;
+- provides a command-line entry point;
+- saves terminal graph outputs.
 
-The remaining old VIPP nodes need broader UI/model support before they can be
-represented faithfully:
+The current exporter is headless but still requires the `napari-vipp` Python
+package. It handles array outputs only, and its folder batch helper assumes one
+primary image source. A richer batch UI, environment lock file, embedded
+provenance, table outputs, multiple independently bound sources, and explicit
+iteration over semantic axes remain future work.
 
-- Split Channels and Merge Channels need true multi-output and multi-input
-  graph nodes.
-- Channel Overlap needs at least two image inputs.
-- Histogram and Morphological Properties need non-image result panels/tables.
-- Save Pipeline Output and Batch Process belong with workflow export and batch
-  execution rather than the current single-output preview graph.
+### Data State Visibility
 
-## Suggested Future Artifacts
+Every graph output carries an OME-NGFF-inspired `ImageState` alongside its
+array. The state includes:
 
-- `workflow.json` or `workflow.yaml`: portable GUI workflow.
-- `pipeline.py`: exported runnable script.
-- `batch_config.yaml`: input/output paths and batch dimensions.
+- shape and dtype;
+- semantic axes and axis types;
+- units, scale, and origin where available;
+- image/mask/labels/RGB/multichannel kind;
+- value and bit-depth summaries;
+- source and operation history.
+
+OME-NGFF-like `multiscales` metadata is used when available. Plain arrays fall
+back to inferred axes, and the UI identifies that inference.
+
+Type conversion and axis subsetting are explicit graph operations. The
+`Convert Dtype` node exposes rescale, clip, and preserve-cast behavior.
+`Select Axis Slice` supports retaining ranges and removing one or more axes
+while updating metadata.
+
+### Label Workflow
+
+The first object-cleanup workflow is implemented:
+
+```text
+image
+  -> Gaussian Blur
+  -> Otsu Threshold
+  -> Split Channels
+  -> Label Connected Components
+  -> Filter Labels By Volume
+  -> cleaned labels
+```
+
+Current label support includes:
+
+- a distinct `labels` graph type;
+- napari Labels inspection and pinning;
+- 2D-per-plane and true 3D connected-component labeling;
+- face or full connectivity;
+- minimum and optional maximum pixel/voxel-volume filtering;
+- logarithmic, data-aware volume sliders;
+- an incoming object-volume histogram with threshold markers;
+- sequential relabeling;
+- integer-preserving TIFF and NumPy saving;
+- workflow persistence and Python export.
+
+## Legacy VIPP Migration
+
+The main single-input Sharratt/VIPP operations have been ported, including
+contrast, filtering, thresholding, morphology, cropping, channel extraction,
+and saving.
+
+Broader graph capabilities have also enabled:
+
+- Split Channels and Combine Channels;
+- configurable multichannel-to-RGB display;
+- image arithmetic and logical operations;
+- workflow save/load and Python export;
+- image and label histograms;
+- first-class label cleanup.
+
+Still requiring new platform types or UI:
+
+- Morphological Properties and other measurements require table outputs;
+- spot/peak detection benefits from points outputs;
+- marker-controlled watershed requires named heterogeneous input ports;
+- Channel Overlap and colocalization should produce scalar/table results rather
+  than synthetic images;
+- batch processing needs a dedicated UI beyond exported scripts.
+
+## Immediate Implementation Sequence
+
+The next small, coherent milestone is:
+
+1. `Clear Border Objects` for mask and labels inputs.
+2. `Remove Small Holes` for binary masks.
+3. Calibrated physical area/volume mode using spatial scale metadata.
+4. Kept/removed object counts in the volume-filter summary.
+
+After that, implement touching-object separation:
+
+1. named heterogeneous input ports;
+2. Euclidean Distance Transform;
+3. H-Maxima or local-maxima marker generation;
+4. Marker-Controlled Watershed;
+5. Expand Labels.
+
+The following platform milestone is `table` outputs, `Measure Objects`, and
+`Save Table`.
+
+## Planned Artifacts
+
+| Artifact | Status |
+| --- | --- |
+| `workflow.json` | Implemented |
+| exported `pipeline.py` | Implemented |
+| example label workflow JSON | Implemented |
+| `batch_config.yaml` | Not implemented |
+| measurement CSV/TSV | Blocked on table outputs |
+| environment/provenance manifest | Not implemented |

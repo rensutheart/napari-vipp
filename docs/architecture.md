@@ -1,9 +1,13 @@
 # napari-vipp Architecture Reference
 
 This document is a developer handoff map for the current `napari-vipp`
-prototype. It was reviewed against the live codebase after the slot-aware
-Combine Channels work, workflow persistence, Python export, metadata panels,
-histograms, and channel-colour preview updates.
+prototype.
+
+Last reviewed: 2026-06-15
+
+It reflects the live codebase after slot-aware multi-input and multi-output
+graphs, workflow persistence, Python export, metadata panels, first-class label
+images, label-volume filtering, and detachable-window fixes.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md).
@@ -14,7 +18,7 @@ For product framing and longer-range ideas, see [README.md](../README.md) and
 processing workflow inside a dock widget. The graph is the main work surface:
 users add processing nodes, wire outputs to inputs, tune parameters in the
 inspector, view live thumbnails, inspect full-resolution outputs in napari, and
-pin mask outputs as overlays.
+pin mask or label outputs as overlays.
 
 The implementation deliberately separates a headless core from the Qt/napari
 UI:
@@ -59,8 +63,11 @@ src/napari_vipp/
   _tests/              pytest and pytest-qt tests
 
 scripts/launch_vipp_sample.py
+scripts/launch_vipp_label_workflow.py
+examples/otsu-red-channel-labels.json
 docs/planning.md
 docs/architecture.md
+docs/node-roadmap.md
 ```
 
 ## Core Model
@@ -73,7 +80,7 @@ Important dataclasses:
 | --- | --- |
 | `ParameterSpec` | Declares one parameter: name, label, kind, default, range, step, decimals, and optional choices. |
 | `OutputSpec` | Declares one output port of a node: `name`, `output_type`, and optional display `title`. |
-| `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, `max_inputs`, optional static `outputs` (multi-output ports), and optional `output_factory` (dynamic ports derived from a runtime channel count). |
+| `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, `max_inputs`, optional static `outputs`, optional dynamic `output_factory`, and whether outputs preserve the connected input type. |
 | `GraphNode` | A node instance with a stable id, operation id, resolved display/type fields, mutable `params`, and `max_inputs`. |
 | `GraphConnection` | A directed edge from `source_id` to `target_id`, including the target input slot as `target_port` and the source output slot as `source_port`. |
 | `ConnectionResult` | Returned by `connect()`: success flag, message, created connection, and any replaced/removed connections. |
@@ -100,7 +107,10 @@ Key behaviours:
 - `output_ports(node_id)` returns the node's resolved `OutputSpec`s: the static
   `outputs` when declared, a single default `out` port otherwise, or — for nodes
   with an `output_factory` — one port per channel discovered on the last run
-  (defaulting to three before the node has processed an image).
+  (defaulting to three before the node has processed an image). Type-preserving
+  multi-output nodes such as `split_channels` resolve each port's type from the
+  connected upstream port, allowing a split mask channel to feed mask-only
+  operations.
 - `trim_invalid_output_connections(node_id)` removes downstream edges whose
   stored `source_port` is now outside a dynamic node's current output count.
 - `topological_order()` supports export by returning a source-first order.
@@ -121,6 +131,13 @@ Special execution cases:
 
 - `save_output` receives the upstream `image_state` so TIFF/ImageJ metadata can
   be written where possible.
+- `filter_labels_by_volume` parameter controls derive their slider extent from
+  the largest incoming object under the resolved 2D/3D spatial mode. The
+  logarithmic slider remains practical for wide volume ranges while the spin
+  box retains the operation's full hard limit for exact entry. Its inspector
+  adds an object-volume distribution computed from the unfiltered label input,
+  with live minimum and optional maximum threshold markers. The volume-axis
+  logarithmic toggle defaults on and can switch the bins and markers to linear.
 - `combine_channels` derives its insertion channel axis from upstream metadata,
   stores that `channel_axis` back into `node.params`, and then stacks inputs in
   slot order.
@@ -129,7 +146,8 @@ Special execution cases:
   via `transform_split_output_state`. Ports are either static (declared in
   `OperationSpec.outputs`) or dynamic (built by `OperationSpec.output_factory`
   from the number of returned arrays, e.g. `split_channels` yields one port per
-  channel in the image).
+  channel in the image). Graph `PortItem`s carry their own resolved data types,
+  so drag compatibility can differ from a multi-output node's fallback type.
 
 ## Node Library
 
@@ -228,10 +246,16 @@ underlying output stays a multichannel array with a channel axis. The assigned
 colours affect thumbnails and graph-port presentation; RGB conversion remains a
 separate operation (`Composite → RGB`) when a downstream RGB image is needed.
 
-Histograms live mostly in `_widget.py` through `HistogramPanel` and helper
-functions near the bottom of the file. The inspector supports slice-vs-stack
-histograms and linear-vs-log display. Multichannel histograms are drawn as
-separate series using fluorescence-style colours.
+Histograms live mostly in `_widget.py` through `HistogramPlot` and helper
+functions near the bottom of the file. The general selected-output histogram
+supports slice-vs-stack and linear-vs-log display. Multichannel histograms are
+drawn as separate series using fluorescence-style colours.
+
+When `Filter Labels By Volume` is selected, a second histogram above the
+general histogram shows the object-volume distribution from the unfiltered
+label input. Its `Log volume axis` toggle defaults on, and it draws live
+minimum and enabled maximum threshold markers. Because the distribution uses
+the input labels, it remains stable while the filter removes objects.
 
 ## Graph UI
 
@@ -324,6 +348,8 @@ Quick output saving:
   `.npy`.
 - `save_array_output()` writes TIFF as ImageJ hyperstacks when metadata allows.
 - Binary masks are saved as 8-bit `0`/`255`, not `0`/`1`.
+- Integer label images use standard TIFF rather than ImageJ TIFF so 32-bit IDs
+  are preserved.
 
 Graph-level output:
 
@@ -334,13 +360,21 @@ Workflow persistence:
 
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port` and `source_port`, and canvas positions to JSON.
+- Workflow version 1 does not yet store preview visibility, inspector state,
+  graph notes, environment provenance, or YAML.
+- Image Source paths and layer names are serialized as literal parameters;
+  input files are not embedded and paths are not rebased for portable sharing.
 - Unknown operations are skipped on load.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
+- `VippWidget.load_workflow_file()` provides the non-dialog load path used by
+  the example launcher.
 
 Python export:
 
 - `core/export.py` emits a runnable script with `run_pipeline()`,
   `batch_process()`, image load/save helpers, and an argparse entry point.
+- The generated folder batch helper supplies one primary image source; workflows
+  with additional independent sources require manual binding in the script.
 - Multi-input calls use input sources ordered by `target_port`.
 - Multi-output sources are assigned a list; downstream calls index the right
   port (for example `split_channels_1[1]` for the second channel) using
@@ -378,6 +412,7 @@ Current test split:
 - `test_export.py`: generated Python syntax and execution.
 - `test_multi_output.py`: multi-output ports, `source_port` routing, split
   metadata, and persistence/export of multi-output sources.
+- `test_example_workflow.py`: checked-in label workflow loading and execution.
 
 Useful commands:
 
@@ -386,6 +421,7 @@ python -m npe2 validate src/napari_vipp/napari.yaml
 python -m ruff check .
 python -m pytest -q
 python scripts/launch_vipp_sample.py
+python scripts/launch_vipp_label_workflow.py
 ```
 
 ## Known Gaps And Design Notes
@@ -404,7 +440,11 @@ Implemented now:
 - slice/stack/log histograms;
 - workflow JSON save/load;
 - Python export;
-- ImageJ-oriented TIFF output for saved arrays.
+- ImageJ-oriented TIFF output for images/masks and standard TIFF for integer
+  labels;
+- first-class labels, connected-component labeling, volume filtering,
+  sequential relabeling, and label-volume distribution controls;
+- standard maximize behavior for detached VIPP windows.
 
 Still incomplete or deliberately future-facing:
 
