@@ -304,6 +304,8 @@ class PortItem(QGraphicsEllipseItem):
         color = "#22c55e"
         if self.data_type == "mask":
             color = "#c084fc"
+        elif self.data_type == "labels":
+            color = "#f472b6"
         elif self.data_type == "array":
             color = "#38bdf8"
         elif self.data_type == "any":
@@ -759,7 +761,7 @@ class PipelineGraphView(QGraphicsView):
             node.id,
             node.title,
             node.category,
-            can_pin=node.output_type == "mask",
+            can_pin=node.output_type in {"mask", "labels"},
         )
         card.selected.connect(self._select_node)
         card.pin_requested.connect(self.pin_requested)
@@ -1173,7 +1175,7 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
     if input_type is None or input_type == "any" or output_type == "any":
         return True
     if input_type == "array":
-        return output_type in {"array", "image", "mask"}
+        return output_type in {"array", "image", "mask", "labels"}
     return output_type == input_type
 
 

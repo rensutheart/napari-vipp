@@ -1,5 +1,8 @@
 # napari-vipp Planning Notes
 
+For the prioritized algorithm and node catalogue discussion, see
+[node-roadmap.md](node-roadmap.md).
+
 ## Manual Graph Editing
 
 The graph should behave like Blender shader nodes, Unreal Blueprints, and the

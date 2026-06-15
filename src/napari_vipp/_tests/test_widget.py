@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QDockWidget, QMainWindow, QScrollArea, QWidget
+from qtpy.QtCore import QEvent, QPointF, QSignalBlocker, Qt
+from qtpy.QtGui import QMouseEvent
+from qtpy.QtWidgets import (
+    QApplication,
+    QDockWidget,
+    QMainWindow,
+    QScrollArea,
+    QWidget,
+)
 
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
@@ -320,6 +327,36 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert widget.pin_button.isHidden()
 
 
+def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 1:5, 1:5] = 10
+    data[:, 7:11, 7:11] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    filtered = widget.add_node_from_palette("filter_labels_by_volume")
+    widget.pipeline.set_param(filtered.id, "min_volume", 10)
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, filtered.id)
+
+    widget.inspect_node(filtered.id)
+
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.layer_type == "labels"
+    assert inspect.data.dtype == np.int32
+    assert inspect.metadata["data_kind"] == "labels"
+    assert inspect.metadata["display_kind"] == "labels"
+    assert widget.pipeline.output_states[filtered.id].kind == "label image"
+
+    widget.pin_node(filtered.id)
+
+    pinned = viewer.layers["VIPP Pinned: Filter Labels By Volume"]
+    assert pinned.layer_type == "labels"
+    assert pinned.data.dtype == np.int32
+    assert pinned.metadata["data_kind"] == "labels"
+
+
 def test_pin_toggles_active_node_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -379,6 +416,15 @@ def test_palette_uses_category_colors(qtbot):
     assert filtering.foreground(0).color().name() == category_color("Filtering")
     assert filtering.background(0).color().name() == category_tint("Filtering")
     assert gaussian.foreground(0).color().name() == category_color("Filtering")
+
+    label_operations = _palette_category(widget, "Label Operations")
+    label_node = _palette_item(widget, "label_connected_components")
+    assert label_operations.foreground(0).color().name() == category_color(
+        "Label Operations"
+    )
+    assert label_node.foreground(0).color().name() == category_color(
+        "Label Operations"
+    )
 
 
 def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
@@ -530,22 +576,85 @@ def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
     assert widget._dock_chrome_configured
 
 
-def test_dock_widget_chrome_is_not_rewritten_while_floating(qtbot):
+def test_floating_dock_window_has_standard_maximize_controls(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
+    window = QMainWindow()
     dock = QDockWidget()
     title_bar = QWidget()
-    qtbot.addWidget(dock)
+    qtbot.addWidget(window)
     dock.setTitleBarWidget(title_bar)
     dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
     dock.setWidget(widget)
-    dock.setFloating(True)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
 
+    def reset_floating_flags_like_napari(visible):
+        if visible and dock.isFloating():
+            with QSignalBlocker(dock):
+                dock.setTitleBarWidget(None)
+
+    dock.visibilityChanged.connect(reset_floating_flags_like_napari)
+    QApplication.processEvents()
     widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    QApplication.processEvents()
+    widget._configure_floating_dock_window()
 
-    assert dock.titleBarWidget() is title_bar
-    assert dock.features() == QDockWidget.NoDockWidgetFeatures
-    assert not widget._dock_chrome_configured
+    assert dock.titleBarWidget() is None
+    assert dock.features() & QDockWidget.DockWidgetMovable
+    assert dock.features() & QDockWidget.DockWidgetFloatable
+    assert dock.features() & QDockWidget.DockWidgetClosable
+    assert dock.windowFlags() & Qt.WindowMaximizeButtonHint
+    assert dock.windowFlags() & Qt.WindowMinimizeButtonHint
+    assert dock.windowFlags() & Qt.WindowCloseButtonHint
+    assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
+    assert widget._dock_chrome_configured
+    assert widget._dock_window_behavior_configured
+
+    dock.hide()
+    dock.show()
+    qtbot.waitUntil(
+        lambda: bool(dock.windowFlags() & Qt.WindowMaximizeButtonHint)
+    )
+
+    assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
+
+
+def test_floating_dock_title_double_click_toggles_maximized(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    window = QMainWindow()
+    dock = QDockWidget()
+    qtbot.addWidget(window)
+    dock.setWidget(widget)
+    window.addDockWidget(Qt.BottomDockWidgetArea, dock)
+    window.show()
+    widget._ensure_dock_widget_chrome()
+    dock.setFloating(True)
+    widget._configure_floating_dock_window()
+
+    def double_click_title_bar():
+        event = QMouseEvent(
+            QEvent.NonClientAreaMouseButtonDblClick,
+            QPointF(4, 4),
+            QPointF(4, 4),
+            QPointF(4, 4),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.NoModifier,
+        )
+        QApplication.sendEvent(dock, event)
+
+    double_click_title_bar()
+
+    assert dock.isFloating()
+    assert dock.isMaximized()
+
+    double_click_title_bar()
+
+    assert dock.isFloating()
+    assert not dock.isMaximized()
 
 
 def test_dock_widget_chrome_is_not_rewritten_after_configured(qtbot):
@@ -1099,17 +1208,27 @@ def test_palette_image_operations_can_run(qtbot):
     viewer = _Viewer(data)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    label_source_id = None
 
     for spec in PALETTE_NODE_LIBRARY:
         if not spec.has_input:
             continue
         node = widget.add_node_from_palette(spec.id)
-        widget._connect_nodes("input", node.id)
+        if spec.input_type == "mask":
+            source_id = "threshold"
+        elif spec.input_type == "labels":
+            assert label_source_id is not None
+            source_id = label_source_id
+        else:
+            source_id = "input"
+        widget._connect_nodes(source_id, node.id)
         if spec.max_inputs is None or spec.max_inputs != 1:
             second_input = widget.add_node_from_palette("input")
             widget._connect_nodes(second_input.id, node.id)
 
         assert widget.pipeline.outputs[node.id] is not None, spec.id
+        if spec.output_type == "labels":
+            label_source_id = node.id
 
 
 def test_save_selected_output_writes_npy(qtbot, tmp_path):
@@ -1375,6 +1494,39 @@ def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
     assert pinned.metadata["display_kind"] == "labels"
     assert viewer.layers[-2] is inspect
     assert viewer.layers[-1] is pinned
+
+
+def test_signed_image_inspect_anchors_contrast_at_zero(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    # Signed difference image (e.g. Subtract of masks) with values in {-1, 0, 1}.
+    signed = np.zeros((4, 16, 18), dtype=np.float32)
+    signed[:, 4:8, :] = 1.0
+    signed[:, 0:3, 4:8] = -1.0
+    metadata = {
+        "napari_vipp_kind": "inspect",
+        "node_id": "subtract",
+        "data_kind": widget._data_kind(signed),
+        "display_kind": "image",
+        "display_ndim": signed.ndim,
+    }
+
+    layer = widget._add_image_or_labels("VIPP Inspect", signed, metadata=metadata)
+
+    assert layer.metadata["data_kind"] == "image"
+    assert layer.contrast_limits == (0.0, 1.0)
+
+
+def test_non_negative_image_keeps_default_contrast(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    positive = np.linspace(0, 200, 4 * 16 * 18, dtype=np.float32).reshape(4, 16, 18)
+
+    assert widget._signed_image_contrast_limits(positive) is None
 
 
 def test_inspecting_input_after_mask_resets_inspect_display(qtbot):

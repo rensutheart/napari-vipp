@@ -34,10 +34,12 @@ from napari_vipp.core.operations import (
     erode,
     extract_channel,
     fill_holes,
+    filter_labels_by_volume,
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
     invert,
+    label_connected_components,
     logical_and,
     logical_or,
     logical_xor,
@@ -49,6 +51,7 @@ from napari_vipp.core.operations import (
     opening,
     otsu_threshold,
     ratio_image,
+    relabel_sequential,
     rescale_intensity,
     save_output,
     select_axis_slice,
@@ -164,6 +167,7 @@ AXES_REGIONS_GROUP = "Axes & Regions"
 CHANNELS_COMPOSITES_GROUP = "Channels & Composites"
 TYPE_SCALING_GROUP = "Type & Scaling"
 MATH_LOGIC_GROUP = "Math & Logic"
+LABEL_OPERATIONS_CATEGORY = "Label Operations"
 
 SOURCE_PARAMETERS = (
     ParameterSpec(
@@ -180,6 +184,23 @@ SOURCE_PARAMETERS = (
     ParameterSpec("file_path", "File path", "text", "", 0, 0, 1),
     ParameterSpec("sample_name", "Sample", "text", "", 0, 0, 1),
 )
+
+SPATIAL_MODE_PARAMETER = ParameterSpec(
+    "spatial_mode",
+    "Spatial processing",
+    "choice",
+    "Auto from axes",
+    0,
+    0,
+    1,
+    choices=("Auto from axes", "2D YX", "3D ZYX"),
+)
+
+SPATIAL_LABEL_OPERATIONS = {
+    "label_connected_components",
+    "filter_labels_by_volume",
+    "relabel_sequential",
+}
 
 
 DEFAULT_DYNAMIC_OUTPUT_PORTS = 3
@@ -498,6 +519,65 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("min_volume", "Minimum volume", "int", 10, 1, 5000, 1),
         ),
         volume_filter,
+    ),
+    OperationSpec(
+        "label_connected_components",
+        "Label Connected Components",
+        LABEL_OPERATIONS_CATEGORY,
+        "mask",
+        "labels",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "connectivity",
+                "Connectivity",
+                "choice",
+                "Full connectivity",
+                0,
+                0,
+                1,
+                choices=("Face connected", "Full connectivity"),
+            ),
+        ),
+        label_connected_components,
+    ),
+    OperationSpec(
+        "filter_labels_by_volume",
+        "Filter Labels By Volume",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (
+            ParameterSpec(
+                "min_volume",
+                "Minimum volume (pixels/voxels)",
+                "int",
+                10,
+                0,
+                1_000_000_000,
+                1,
+            ),
+            ParameterSpec(
+                "max_volume",
+                "Maximum volume (0 = none)",
+                "int",
+                0,
+                0,
+                1_000_000_000,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        filter_labels_by_volume,
+    ),
+    OperationSpec(
+        "relabel_sequential",
+        "Relabel Sequential",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (SPATIAL_MODE_PARAMETER,),
+        relabel_sequential,
     ),
     OperationSpec(
         "extract_channel",
@@ -1347,6 +1427,14 @@ class PrototypePipeline:
         kwargs = dict(node.params)
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
+        if node.operation_id in SPATIAL_LABEL_OPERATIONS:
+            resolved_spatial_ndim = _resolved_spatial_ndim(
+                input_state,
+                source_output,
+                kwargs.get("spatial_mode", "Auto from axes"),
+            )
+            kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+            node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
         output = spec.function(source_output, **kwargs)
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
@@ -1468,7 +1556,7 @@ class PrototypePipeline:
         if input_type is None or input_type == "any" or output_type == "any":
             return True
         if input_type == "array":
-            return output_type in {"array", "image", "mask"}
+            return output_type in {"array", "image", "mask", "labels"}
         return output_type == input_type
 
 
@@ -1486,6 +1574,33 @@ def _node_id(operation_id: str, index: int) -> str:
     if operation_id == "otsu_threshold" and index == 1:
         return "threshold"
     return f"{operation_id}_{index}"
+
+
+def _resolved_spatial_ndim(
+    state: ImageState | None,
+    data,
+    spatial_mode,
+) -> int:
+    try:
+        ndim = max(int(getattr(data, "ndim", 0)), 1)
+    except Exception:
+        ndim = 1
+    mode = str(spatial_mode).strip().lower()
+    if mode.startswith("2d"):
+        requested = 2
+    elif mode.startswith("3d"):
+        requested = 3
+    elif state is not None:
+        spatial_count = sum(axis.type == "space" for axis in state.axes)
+        if spatial_count >= 3:
+            requested = 3
+        elif spatial_count >= 2:
+            requested = 2
+        else:
+            requested = 3 if ndim >= 3 else 2
+    else:
+        requested = 3 if ndim >= 3 else 2
+    return min(requested, ndim)
 
 
 def _clone_node(node: GraphNode) -> GraphNode:

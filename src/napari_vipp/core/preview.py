@@ -280,6 +280,14 @@ def _normalize_uint8(arr: np.ndarray) -> np.ndarray:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return np.zeros(values.shape, dtype=np.uint8)
+    # Signed difference images (e.g. Subtract) carry negative values around a
+    # zero background. Stretching from the negative minimum would render that
+    # background as mid-grey and saturate positive features to white. Anchor the
+    # black point at zero so the thumbnail matches the inspector view, where the
+    # zero background renders black.
+    if float(finite.min()) < 0.0:
+        values = np.clip(values, 0.0, None)
+        finite = values[np.isfinite(values)]
     lo = float(np.percentile(finite, 1))
     hi = float(np.percentile(finite, 99))
     if hi <= lo:

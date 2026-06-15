@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage import filters, restoration
+from skimage import filters, restoration, segmentation
 from tifffile import imwrite as tiff_imwrite
 
 RGB_CHANNELS = (3, 4)
@@ -257,6 +257,96 @@ def volume_filter(data, min_volume: int = 10) -> np.ndarray:
     keep = sizes >= max(int(min_volume), 1)
     keep[0] = False
     return keep[labeled]
+
+
+def label_connected_components(
+    data,
+    spatial_mode: str = "Auto from axes",
+    connectivity: str = "Full connectivity",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Assign an integer ID to each connected foreground structure."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
+    structure = ndi.generate_binary_structure(spatial_ndim, rank)
+
+    def label_block(block: np.ndarray) -> np.ndarray:
+        labels, _count = ndi.label(block, structure=structure)
+        return labels.astype(np.int32, copy=False)
+
+    return _apply_spatial_blocks(mask, spatial_ndim, label_block, dtype=np.int32)
+
+
+def filter_labels_by_volume(
+    data,
+    min_volume: int = 10,
+    max_volume: int = 0,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Remove labeled objects outside an inclusive pixel/voxel volume range.
+
+    ``max_volume=0`` disables the upper bound. Retained label IDs are preserved;
+    use :func:`relabel_sequential` when compact IDs are desired.
+    """
+    labels = _validated_labels(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    minimum = max(int(min_volume), 0)
+    maximum = max(int(max_volume), 0)
+
+    def filter_block(block: np.ndarray) -> np.ndarray:
+        values, counts = np.unique(block, return_counts=True)
+        keep = values != 0
+        keep &= counts >= minimum
+        if maximum > 0:
+            keep &= counts <= maximum
+        kept_labels = values[keep]
+        if kept_labels.size == 0:
+            return np.zeros_like(block)
+        return np.where(np.isin(block, kept_labels), block, 0)
+
+    return _apply_spatial_blocks(
+        labels,
+        spatial_ndim,
+        filter_block,
+        dtype=labels.dtype,
+    )
+
+
+def relabel_sequential(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Renumber positive labels to a compact ``1..N`` sequence per frame."""
+    labels = _validated_labels(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    def relabel_block(block: np.ndarray) -> np.ndarray:
+        relabeled, _forward_map, _inverse_map = segmentation.relabel_sequential(
+            block
+        )
+        return np.asarray(relabeled, dtype=labels.dtype)
+
+    return _apply_spatial_blocks(
+        labels,
+        spatial_ndim,
+        relabel_block,
+        dtype=labels.dtype,
+    )
 
 
 def extract_channel(data, channel: int = 0) -> np.ndarray:
@@ -630,6 +720,13 @@ def save_array_output(
         return output_path
     if selected_format in {"tif", "tiff"}:
         writable, axes = _imagej_tiff_payload(arr, image_state)
+        if _is_label_image_state(image_state):
+            tiff_imwrite(
+                str(output_path),
+                writable,
+                metadata={"axes": axes},
+            )
+            return output_path
         tiff_imwrite(
             str(output_path),
             writable,
@@ -671,6 +768,13 @@ def _imagej_tiff_payload(arr: np.ndarray, image_state) -> tuple[np.ndarray, str]
             writable = np.transpose(writable, order)
             axes = "".join(axes[index] for index in order)
     return np.ascontiguousarray(writable), axes
+
+
+def _is_label_image_state(image_state) -> bool:
+    kind = getattr(image_state, "kind", None)
+    if kind is None and isinstance(image_state, dict):
+        kind = image_state.get("kind")
+    return str(kind).lower() == "label image"
 
 
 def _tiff_writable_array(arr: np.ndarray) -> np.ndarray:
@@ -942,6 +1046,51 @@ def _apply_plane_wise(arr: np.ndarray, func: Callable[[np.ndarray], np.ndarray])
             continue
         out[index] = func(arr[index])
     return out
+
+
+def _apply_spatial_blocks(
+    arr: np.ndarray,
+    spatial_ndim: int,
+    func: Callable[[np.ndarray], np.ndarray],
+    *,
+    dtype,
+) -> np.ndarray:
+    """Apply ``func`` independently over leading non-spatial dimensions."""
+    spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+    if arr.ndim <= spatial_ndim:
+        return np.asarray(func(arr), dtype=dtype)
+
+    result = np.empty(arr.shape, dtype=dtype)
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    for index in np.ndindex(leading_shape):
+        result[index] = func(arr[index])
+    return result
+
+
+def _resolved_spatial_ndim(
+    arr: np.ndarray,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+) -> int:
+    mode = str(spatial_mode).strip().lower()
+    if mode.startswith("2d"):
+        requested = 2
+    elif mode.startswith("3d"):
+        requested = 3
+    elif resolved_spatial_ndim is not None:
+        requested = int(resolved_spatial_ndim)
+    else:
+        requested = 3 if arr.ndim >= 3 else 2
+    return int(np.clip(requested, 1, max(arr.ndim, 1)))
+
+
+def _validated_labels(data) -> np.ndarray:
+    labels = np.asarray(data)
+    if labels.dtype == bool or not np.issubdtype(labels.dtype, np.integer):
+        raise ValueError("Label operations require a non-negative integer label image.")
+    if labels.size and int(labels.min()) < 0:
+        raise ValueError("Label operations require non-negative label IDs.")
+    return labels
 
 
 def _xy_structure(arr: np.ndarray, size: int) -> np.ndarray:

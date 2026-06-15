@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import tifffile
 
-from napari_vipp.core.metadata import image_state_from_array
+from napari_vipp.core.metadata import image_state_from_array, transform_image_state
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
@@ -24,9 +24,11 @@ from napari_vipp.core.operations import (
     erode,
     extract_channel,
     fill_holes,
+    filter_labels_by_volume,
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    label_connected_components,
     logical_and,
     logical_or,
     logical_xor,
@@ -37,6 +39,7 @@ from napari_vipp.core.operations import (
     opening,
     otsu_threshold,
     ratio_image,
+    relabel_sequential,
     rescale_intensity,
     save_array_output,
     save_output,
@@ -47,7 +50,7 @@ from napari_vipp.core.operations import (
     triangle_threshold,
     volume_filter,
 )
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 
 
 def test_vipp_operation_nodes_are_registered():
@@ -74,6 +77,9 @@ def test_vipp_operation_nodes_are_registered():
         "morphological_gradient",
         "fill_holes",
         "volume_filter",
+        "label_connected_components",
+        "filter_labels_by_volume",
+        "relabel_sequential",
         "extract_channel",
         "combine_channels",
         "calculate_weighted_image",
@@ -95,6 +101,36 @@ def test_vipp_operation_nodes_are_registered():
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
+
+
+def test_pipeline_runs_mask_to_labels_to_volume_filter_in_3d():
+    data = np.zeros((3, 9, 9), dtype=np.float32)
+    data[:, 1:4, 1:4] = 10
+    data[1, 7, 7] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    filtered = pipeline.add_node("filter_labels_by_volume")
+    relabeled = pipeline.add_node("relabel_sequential")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(filtered.id, "min_volume", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, filtered.id)
+    pipeline.connect(filtered.id, relabeled.id)
+
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "ZYX"},
+        input_name="3D nuclei",
+    )
+
+    assert outputs[labels.id].dtype == np.int32
+    assert set(np.unique(outputs[labels.id])) == {0, 1, 2}
+    assert set(np.unique(outputs[filtered.id])) == {0, 1}
+    assert set(np.unique(outputs[relabeled.id])) == {0, 1}
+    assert pipeline.output_states[labels.id].kind == "label image"
+    assert pipeline.nodes[labels.id].params["resolved_spatial_ndim"] == 3
 
 
 def test_save_output_writes_npy_when_enabled(tmp_path):
@@ -510,3 +546,107 @@ def test_morphology_and_volume_operations_return_masks():
     assert filled[1, 2, 2]
     assert not filtered[0, 0, 0]
     assert filtered[1].any()
+
+
+def test_label_connected_components_respects_2d_connectivity():
+    mask = np.zeros((5, 5), dtype=bool)
+    mask[1, 1] = True
+    mask[2, 2] = True
+
+    face = label_connected_components(
+        mask,
+        spatial_mode="2D YX",
+        connectivity="Face connected",
+    )
+    full = label_connected_components(
+        mask,
+        spatial_mode="2D YX",
+        connectivity="Full connectivity",
+    )
+
+    assert face.dtype == np.int32
+    assert int(face.max()) == 2
+    assert int(full.max()) == 1
+
+
+def test_label_connected_components_processes_true_3d_and_frames_independently():
+    mask = np.zeros((2, 3, 7, 7), dtype=bool)
+    mask[0, :, 1:3, 1:3] = True
+    mask[0, 1, 5, 5] = True
+    mask[1, :, 3:5, 3:5] = True
+
+    labels = label_connected_components(
+        mask,
+        spatial_mode="3D ZYX",
+        connectivity="Full connectivity",
+    )
+
+    assert labels.shape == mask.shape
+    assert set(np.unique(labels[0])) == {0, 1, 2}
+    assert set(np.unique(labels[1])) == {0, 1}
+    assert np.all(labels[0, :, 1:3, 1:3] == 1)
+
+
+def test_filter_labels_by_volume_preserves_ids_and_filters_per_frame():
+    labels = np.zeros((2, 6, 6), dtype=np.int32)
+    labels[0, 0:2, 0:2] = 5
+    labels[0, 4, 4] = 9
+    labels[1, 0, 0] = 5
+    labels[1, 3:5, 2:5] = 20
+
+    filtered = filter_labels_by_volume(
+        labels,
+        min_volume=2,
+        max_volume=5,
+        spatial_mode="2D YX",
+    )
+
+    assert set(np.unique(filtered[0])) == {0, 5}
+    assert set(np.unique(filtered[1])) == {0}
+
+
+def test_relabel_sequential_compacts_ids_per_frame():
+    labels = np.zeros((2, 5, 5), dtype=np.int32)
+    labels[0, 0:2, 0:2] = 5
+    labels[0, 3:5, 3:5] = 20
+    labels[1, 1:4, 1:4] = 20
+
+    relabeled = relabel_sequential(labels, spatial_mode="2D YX")
+
+    assert set(np.unique(relabeled[0])) == {0, 1, 2}
+    assert set(np.unique(relabeled[1])) == {0, 1}
+    assert np.all(relabeled[0, 0:2, 0:2] == 1)
+    assert np.all(relabeled[0, 3:5, 3:5] == 2)
+
+
+def test_label_operations_reject_non_integer_label_images():
+    data = np.array([[0.0, 1.0]], dtype=np.float32)
+
+    try:
+        filter_labels_by_volume(data)
+    except ValueError as exc:
+        assert "integer label image" in str(exc)
+    else:
+        raise AssertionError("Expected float labels to be rejected")
+
+
+def test_save_array_output_preserves_int32_label_ids(tmp_path):
+    labels = np.array([[0, 70_000], [2, 3]], dtype=np.int32)
+    input_state = image_state_from_array(labels, layer_metadata={"axes": "YX"})
+    state = transform_image_state(
+        labels,
+        input_state,
+        operation_id="label_connected_components",
+        operation_title="Label Connected Components",
+        params={},
+    )
+    path = tmp_path / "labels.tif"
+
+    save_array_output(labels, path, image_state=state)
+
+    with tifffile.TiffFile(path) as tif:
+        saved = tif.asarray()
+        assert not tif.is_imagej
+
+    assert saved.dtype == np.int32
+    np.testing.assert_array_equal(saved, labels)

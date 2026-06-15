@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from qtpy.QtCore import QMimeData, QRect, QSignalBlocker, QSize, Qt, QTimer, Signal
+from qtpy.QtCore import (
+    QEvent,
+    QMimeData,
+    QRect,
+    QSignalBlocker,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from qtpy.QtGui import QBrush, QColor, QPainter, QPen
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -1337,6 +1346,7 @@ class VippWidget(QWidget):
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._dock_chrome_configured = False
+        self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
@@ -1442,6 +1452,21 @@ class VippWidget(QWidget):
         self._restore_hidden_input_layers()
         super().closeEvent(event)
 
+    def eventFilter(self, watched, event):  # noqa: N802
+        dock = self._dock_widget()
+        if (
+            watched is dock
+            and event.type() == QEvent.NonClientAreaMouseButtonDblClick
+            and dock.isFloating()
+        ):
+            if dock.isMaximized():
+                dock.showNormal()
+            else:
+                dock.showMaximized()
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
+
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         if not self._dock_chrome_configured:
@@ -1460,11 +1485,11 @@ class VippWidget(QWidget):
         if dock is None or self._dock_chrome_configured:
             return
         try:
-            if dock.isFloating():
-                return
-        except Exception:
-            return
-        try:
+            if not self._dock_window_behavior_configured:
+                dock.installEventFilter(self)
+                dock.topLevelChanged.connect(self._on_dock_top_level_changed)
+                dock.visibilityChanged.connect(self._on_dock_visibility_changed)
+                self._dock_window_behavior_configured = True
             desired_features = (
                 QDockWidget.DockWidgetClosable
                 | QDockWidget.DockWidgetMovable
@@ -1472,13 +1497,70 @@ class VippWidget(QWidget):
             )
             if dock.windowTitle() != "VIPP Workflow":
                 dock.setWindowTitle("VIPP Workflow")
-            if dock.titleBarWidget() is not None:
+            if not dock.isFloating() and dock.titleBarWidget() is not None:
                 dock.setTitleBarWidget(None)
             if dock.features() != desired_features:
                 dock.setFeatures(desired_features)
             if dock.allowedAreas() != Qt.AllDockWidgetAreas:
                 dock.setAllowedAreas(Qt.AllDockWidgetAreas)
             self._dock_chrome_configured = True
+            if dock.isFloating():
+                QTimer.singleShot(0, self._configure_floating_dock_window)
+        except Exception:
+            pass
+
+    def _on_dock_top_level_changed(self, floating: bool) -> None:
+        if floating:
+            QTimer.singleShot(0, self._configure_floating_dock_window)
+        else:
+            QTimer.singleShot(0, self._restore_docked_title_bar)
+
+    def _on_dock_visibility_changed(self, visible: bool) -> None:
+        if visible:
+            QTimer.singleShot(0, self._configure_floating_dock_window)
+
+    def _configure_floating_dock_window(self) -> None:
+        dock = self._dock_widget()
+        if dock is None or not dock.isFloating():
+            return
+        try:
+            if dock.titleBarWidget() is not None:
+                dock.setTitleBarWidget(None)
+
+            flags = dock.windowFlags()
+            desired_flags = (flags & ~Qt.WindowType_Mask) | Qt.Window
+            desired_flags &= ~Qt.FramelessWindowHint
+            desired_flags |= (
+                Qt.WindowTitleHint
+                | Qt.WindowSystemMenuHint
+                | Qt.WindowMinimizeButtonHint
+                | Qt.WindowMaximizeButtonHint
+                | Qt.WindowCloseButtonHint
+            )
+            if desired_flags == flags:
+                return
+
+            geometry = dock.geometry()
+            was_visible = dock.isVisible()
+            was_maximized = dock.isMaximized()
+            with QSignalBlocker(dock):
+                dock.setWindowFlags(desired_flags)
+                dock.setGeometry(geometry)
+                if was_visible:
+                    if was_maximized:
+                        dock.showMaximized()
+                    else:
+                        dock.show()
+        except Exception:
+            pass
+
+    def _restore_docked_title_bar(self) -> None:
+        dock = self._dock_widget()
+        if dock is None or dock.isFloating():
+            return
+        try:
+            if dock.titleBarWidget() is not None:
+                dock.setTitleBarWidget(None)
         except Exception:
             pass
 
@@ -2974,11 +3056,12 @@ class VippWidget(QWidget):
     def _set_active_pin_layer(self, node_id: str, data) -> None:
         title = self._node_title(node_id)
         display_data = self._display_data(data)
+        data_kind = self._data_kind(data, node_id)
         metadata = {
             "napari_vipp_kind": "pinned",
             "node_id": node_id,
-            "data_kind": self._data_kind(data),
-            "display_kind": self._display_kind(data, "pinned"),
+            "data_kind": data_kind,
+            "display_kind": self._display_kind(data_kind, "pinned"),
             "display_ndim": np.asarray(display_data).ndim,
             "vipp_image_state": self._node_state_dict(node_id),
         }
@@ -3073,10 +3156,11 @@ class VippWidget(QWidget):
         role: str,
     ) -> None:
         display_data = self._display_data(data)
+        data_kind = self._data_kind(data, metadata.get("node_id"))
         metadata = {
             **metadata,
-            "data_kind": self._data_kind(data),
-            "display_kind": self._display_kind(data, role),
+            "data_kind": data_kind,
+            "display_kind": self._display_kind(data_kind, role),
             "display_ndim": np.asarray(display_data).ndim,
         }
         layer = self._layer_by_name(name)
@@ -3105,6 +3189,10 @@ class VippWidget(QWidget):
                     "contrast_limits": (0, 1),
                 }
             )
+        else:
+            limits = self._signed_image_contrast_limits(data)
+            if limits is not None:
+                kwargs["contrast_limits"] = limits
         return self.viewer.add_image(display_data, **kwargs)
 
     def _generated_layer_needs_replacement(self, layer, metadata: dict) -> bool:
@@ -3127,13 +3215,52 @@ class VippWidget(QWidget):
                     setattr(layer, attr, value)
                 except Exception:
                     pass
+        else:
+            limits = self._signed_image_contrast_limits(data)
+            if limits is not None:
+                try:
+                    layer.contrast_limits = limits
+                except Exception:
+                    pass
 
-    def _display_kind(self, data, role: str) -> str:
-        if role == "pinned" and self._data_kind(data) == "mask":
+    def _signed_image_contrast_limits(self, data) -> tuple[float, float] | None:
+        """Anchor the display black point at zero for signed images.
+
+        Bioimage intensities are non-negative, but arithmetic nodes such as
+        Subtract can yield negative float values. Letting napari auto-scale from
+        the negative minimum renders the zero background grey. Anchoring the
+        black point at zero keeps the background black and matches the thumbnail.
+        Non-negative images return ``None`` so napari's default contrast is kept.
+        """
+        arr = np.asarray(data)
+        if arr.dtype == bool or arr.size == 0:
+            return None
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0 or float(finite.min()) >= 0.0:
+            return None
+        non_negative = finite[finite >= 0.0]
+        if non_negative.size:
+            high = float(np.percentile(non_negative, 99))
+        else:
+            high = 0.0
+        if high <= 0.0:
+            high = float(finite.max())
+        if high <= 0.0:
+            return None
+        return (0.0, high)
+
+    def _display_kind(self, data_kind: str, role: str) -> str:
+        if data_kind == "labels":
+            return "labels"
+        if role == "pinned" and data_kind == "mask":
             return "labels"
         return "image"
 
-    def _data_kind(self, data) -> str:
+    def _data_kind(self, data, node_id: str | None = None) -> str:
+        if node_id is not None:
+            node = self.pipeline.nodes.get(node_id)
+            if node is not None and node.output_type == "labels":
+                return "labels"
         return "mask" if np.asarray(data).dtype == bool else "image"
 
     def _display_data(self, data):
@@ -3206,14 +3333,16 @@ class VippWidget(QWidget):
             return False
         data = self.pipeline.outputs.get(node_id)
         if data is not None:
-            return self._data_kind(data) == "mask"
-        return node.output_type == "mask"
+            return self._data_kind(data, node_id) in {"mask", "labels"}
+        return node.output_type in {"mask", "labels"}
 
     def _node_output_type(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.output_type == "labels":
+            return "labels"
         data = self.pipeline.outputs.get(node_id)
         if data is not None:
-            return self._data_kind(data)
+            return self._data_kind(data, node_id)
         return node.output_type if node is not None else "image"
 
     def _remove_layer(self, layer) -> None:

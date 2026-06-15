@@ -135,6 +135,16 @@ The current node catalogue includes:
   - Morphological Gradient
   - Fill Holes
   - Volume Filter
+- Label Operations:
+  - Label Connected Components
+  - Filter Labels By Volume
+  - Relabel Sequential
+
+The label pipeline converts binary masks into integer object IDs. Connected
+components can run over full `ZYX` volumes or independently over `YX` images.
+Volume filtering currently uses pixel/voxel counts, preserves retained IDs, and
+leaves compact renumbering to the explicit `Relabel Sequential` node.
+
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
 in the image (losslessly, preserving dtype), with the port count following the

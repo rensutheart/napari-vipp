@@ -16,6 +16,11 @@ CHANNEL_COLLAPSE_OPERATIONS = {
     "adaptive_mean_threshold",
     "adaptive_gaussian_threshold",
 }
+LABEL_OPERATIONS = {
+    "label_connected_components",
+    "filter_labels_by_volume",
+    "relabel_sequential",
+}
 
 
 @dataclass(frozen=True)
@@ -185,11 +190,12 @@ def transform_image_state(
     if data is None:
         return None
     if input_state is None:
-        return image_state_from_array(
+        state = image_state_from_array(
             data,
             metadata_source=f"inferred after {operation_title}",
             history=(f"{operation_title}: metadata reconstructed from output shape",),
         )
+        return _with_operation_kind(state, operation_id)
 
     arr = np.asarray(data)
     axes = _transformed_axes(
@@ -203,7 +209,7 @@ def transform_image_state(
         axes = infer_axis_metadata(arr)
         metadata_source = f"inferred after {operation_title}"
 
-    return image_state_from_array(
+    state = image_state_from_array(
         arr,
         axes=axes,
         metadata_source=metadata_source,
@@ -211,6 +217,7 @@ def transform_image_state(
         history=input_state.history
         + (_operation_history(input_state, operation_id, operation_title, params),),
     )
+    return _with_operation_kind(state, operation_id)
 
 
 def transform_multi_input_image_state(
@@ -893,6 +900,15 @@ def _coerce_state(state_or_data) -> ImageState | None:
     if isinstance(state_or_data, ImageState):
         return state_or_data
     return image_state_from_array(state_or_data)
+
+
+def _with_operation_kind(
+    state: ImageState | None,
+    operation_id: str,
+) -> ImageState | None:
+    if state is not None and operation_id in LABEL_OPERATIONS:
+        return replace(state, kind="label image")
+    return state
 
 
 def _kind_label(arr: np.ndarray, axes: tuple[AxisMetadata, ...]) -> str:

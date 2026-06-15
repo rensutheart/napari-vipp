@@ -54,3 +54,31 @@ def test_export_handles_multi_input_nodes():
     # Multi-input call should pass a list of upstream variables.
     assert "add_images([" in code
     assert "add_images([v_input, v_gaussian]" in code
+
+
+def test_exported_label_volume_pipeline_executes():
+    pipeline = _starter_pipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    filtered = pipeline.add_node("filter_labels_by_volume")
+    relabeled = pipeline.add_node("relabel_sequential")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(filtered.id, "min_volume", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, filtered.id)
+    pipeline.connect(filtered.id, relabeled.id)
+
+    image = np.zeros((3, 9, 9), dtype=np.float32)
+    image[:, 1:4, 1:4] = 10
+    image[1, 7, 7] = 10
+    pipeline.run(image, input_metadata={"axes": "ZYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+
+    assert "label_connected_components(" in code
+    assert "resolved_spatial_ndim=3" in code
+    assert set(np.unique(results[relabeled.id])) == {0, 1}

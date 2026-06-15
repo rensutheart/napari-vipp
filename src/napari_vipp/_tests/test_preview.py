@@ -37,6 +37,23 @@ def test_thumbnail_is_rgb_uint8():
     assert thumb.shape[1] <= 180
 
 
+def test_signed_difference_thumbnail_renders_zero_background_black():
+    # A Subtract of two boolean masks yields a signed difference image with
+    # values in {-1, 0, 1}. The zero background must render black (like the
+    # inspector view) rather than mid-grey.
+    data = np.zeros((20, 20), dtype=np.float32)
+    data[8:12, :] = 1.0  # foreground band
+    data[0:4, 8:12] = -1.0  # negative lobe
+
+    thumb = normalize_thumbnail(data, size=(20, 20))
+
+    assert thumb is not None
+    assert tuple(thumb[15, 2]) == (0, 0, 0)  # zero background -> black
+    assert tuple(thumb[2, 10]) == (0, 0, 0)  # negative lobe -> black
+    assert thumb[10, 2, 0] > 200  # positive band -> bright
+
+
+
 def test_multichannel_state_preview_renders_fluorescence_composite():
     data = np.zeros((3, 4, 12, 14), dtype=np.uint16)
     data[0, :, 2:8, 3:9] = 2000

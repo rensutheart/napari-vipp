@@ -155,6 +155,20 @@ The current high-level groups are:
   thresholding
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Volume Filter
+- `Label Operations`: Label Connected Components, Filter Labels By Volume,
+  Relabel Sequential
+
+`labels` is a first-class graph type for non-negative integer object IDs with
+zero as background. It is distinct from a boolean `mask` and an integer
+intensity `image`. Label outputs inspect and pin as napari Labels layers, retain
+their integer IDs through TIFF/NumPy saving, and connect only to label-aware or
+generic array inputs.
+
+The initial label operations expose `Auto from axes`, `2D YX`, and `3D ZYX`
+spatial modes. Auto mode resolves from carried axis metadata and stores the
+resolved spatial dimensionality for Python export. Leading non-spatial axes are
+processed independently, so `TCZYX` labels are calculated per timepoint and
+channel while each `ZYX` block is treated as one volume.
 
 To add a node:
 
@@ -283,6 +297,17 @@ Most parameter changes go through a 150 ms single-shot debounce timer. Some UI
 changes, such as Combine Channels colour identity, also call
 `_update_thumbnails()` immediately because they affect display but not numeric
 array values.
+
+### Dock Window Integration
+
+Napari hosts plugin widgets inside its `QtViewerDockWidget`, which is a
+`QDockWidget`. Qt normally turns a floating dock into a `Qt.Tool` window without
+maximize controls, and handles a native title-bar double-click by re-docking the
+widget. `VippWidget` installs an event filter on its containing dock and listens
+to `topLevelChanged` so a detached VIPP panel is promoted to a standard
+`Qt.Window` with minimize/maximize/close controls. A floating title-bar
+double-click is intercepted to toggle maximized/normal state while keeping the
+panel detached. Keep this behavior plugin-local; do not patch napari internals.
 
 ## Input, Output, Persistence, And Export
 

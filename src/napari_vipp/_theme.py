@@ -10,6 +10,7 @@ CATEGORY_COLORS = {
     "Projection": "#a78bfa",
     "Segmentation": "#f43f5e",
     "Morphology": "#14b8a6",
+    "Label Operations": "#f472b6",
     "Channels": "#60a5fa",
     "Utility": "#94a3b8",
 }
@@ -22,6 +23,7 @@ CATEGORY_TINTS = {
     "Projection": "#292047",
     "Segmentation": "#3d1720",
     "Morphology": "#10343a",
+    "Label Operations": "#3b1932",
     "Channels": "#172c4a",
     "Utility": "#26303d",
 }
