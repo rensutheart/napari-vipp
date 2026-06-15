@@ -357,6 +357,77 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert pinned.metadata["data_kind"] == "labels"
 
 
+def test_clear_border_node_preserves_label_display_type(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 0:4, 0:4] = 10
+    data[:, 6:10, 6:10] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    cleared = widget.add_node_from_palette("clear_border_objects")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, cleared.id)
+
+    widget.inspect_node(cleared.id)
+
+    inspect = viewer.layers["VIPP Inspect"]
+    assert widget.pipeline.output_ports(cleared.id)[0].output_type == "labels"
+    assert widget.pipeline.output_states[cleared.id].kind == "label image"
+    assert inspect.layer_type == "labels"
+    assert inspect.metadata["data_kind"] == "labels"
+
+
+def test_spatial_mode_hides_3d_for_true_2d_input(qtbot):
+    data = np.zeros((12, 12), dtype=np.float32)
+    data[0:4, 0:4] = 10
+    data[6:10, 6:10] = 10
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    cleared = widget.add_node_from_palette("clear_border_objects")
+    widget._connect_nodes("threshold", cleared.id)
+
+    control = widget._parameter_widgets["spatial_mode"]
+    choices = [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ]
+
+    assert choices == ["Auto from axes", "2D YX"]
+    assert widget.pipeline.nodes[cleared.id].params["spatial_mode"] in choices
+    assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 11
+
+
+def test_spatial_mode_keeps_3d_for_true_z_stack(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 0:4, 0:4] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    cleared = widget.add_node_from_palette("clear_border_objects")
+    widget._connect_nodes("threshold", cleared.id)
+
+    control = widget._parameter_widgets["spatial_mode"]
+    choices = [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ]
+
+    assert choices == ["Auto from axes", "2D YX", "3D ZYX"]
+    assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 2
+
+    control.combo.setCurrentText("2D YX")
+    buffer_control = widget._parameter_widgets["border_buffer"]
+    assert buffer_control._bounds.maximum == 11
+    buffer_control.value_box.setValue(10)
+
+    control.combo.setCurrentText("3D ZYX")
+
+    assert buffer_control._bounds.maximum == 2
+    assert widget.pipeline.nodes[cleared.id].params["border_buffer"] == 2
+
+
 def test_label_volume_controls_use_observed_object_sizes(qtbot):
     data = np.zeros((3, 12, 12), dtype=np.float32)
     data[:, 1:5, 1:5] = 10
@@ -1348,7 +1419,7 @@ def test_palette_image_operations_can_run(qtbot):
         if not spec.has_input:
             continue
         node = widget.add_node_from_palette(spec.id)
-        if spec.input_type == "mask":
+        if spec.input_type in {"mask", "mask_or_labels"}:
             source_id = "threshold"
         elif spec.input_type == "labels":
             assert label_source_id is not None

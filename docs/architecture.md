@@ -174,7 +174,7 @@ The current high-level groups are:
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Volume Filter
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
-  Relabel Sequential
+  Clear Border Objects, Relabel Sequential
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -182,11 +182,23 @@ intensity `image`. Label outputs inspect and pin as napari Labels layers, retain
 their integer IDs through TIFF/NumPy saving, and connect only to label-aware or
 generic array inputs.
 
-The initial label operations expose `Auto from axes`, `2D YX`, and `3D ZYX`
-spatial modes. Auto mode resolves from carried axis metadata and stores the
-resolved spatial dimensionality for Python export. Leading non-spatial axes are
-processed independently, so `TCZYX` labels are calculated per timepoint and
-channel while each `ZYX` block is treated as one volume.
+The spatial label/mask operations expose `Auto from axes`, `2D YX`, and
+`3D ZYX` spatial modes. Auto mode resolves from carried axis metadata and stores
+the resolved spatial dimensionality for Python export. Leading non-spatial axes
+are processed independently, so `TCZYX` labels are calculated per timepoint and
+channel while each `ZYX` block is treated as one volume. When a connected input
+has only two spatial axes, the inspector omits the invalid `3D ZYX` choice.
+
+`Clear Border Objects` accepts only masks or labels, preserves the connected
+semantic output type and retained label IDs, and supports a pixel/voxel border
+buffer.
+
+The current `Fill Holes` morphology node predates this shared spatial contract:
+it calls `scipy.ndimage.binary_fill_holes` on the complete input array, fills
+all enclosed holes, and has no parameters. The planned revision keeps the same
+operation name/id for workflow compatibility while adding a maximum hole size,
+2D-per-slice versus 3D-volume processing, and input-aware hiding of the 3D
+choice for true 2D inputs.
 
 To add a node:
 
@@ -443,7 +455,8 @@ Implemented now:
 - ImageJ-oriented TIFF output for images/masks and standard TIFF for integer
   labels;
 - first-class labels, connected-component labeling, volume filtering,
-  sequential relabeling, and label-volume distribution controls;
+  border-object clearing, sequential relabeling, and label-volume distribution
+  controls;
 - standard maximize behavior for detached VIPP windows.
 
 Still incomplete or deliberately future-facing:

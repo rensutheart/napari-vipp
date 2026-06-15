@@ -23,6 +23,7 @@ from napari_vipp.core.operations import (
     binary_threshold,
     black_hat,
     calculate_weighted_image,
+    clear_border_objects,
     clip_intensity,
     closing,
     combine_channels,
@@ -197,7 +198,8 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     choices=("Auto from axes", "2D YX", "3D ZYX"),
 )
 
-SPATIAL_LABEL_OPERATIONS = {
+SPATIAL_OPERATIONS = {
+    "clear_border_objects",
     "label_connected_components",
     "filter_labels_by_volume",
     "relabel_sequential",
@@ -541,6 +543,27 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         label_connected_components,
+    ),
+    OperationSpec(
+        "clear_border_objects",
+        "Clear Border Objects",
+        LABEL_OPERATIONS_CATEGORY,
+        "mask_or_labels",
+        "mask",
+        (
+            ParameterSpec(
+                "border_buffer",
+                "Border buffer (pixels/voxels)",
+                "int",
+                0,
+                0,
+                10_000,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        clear_border_objects,
+        preserves_input_type=True,
     ),
     OperationSpec(
         "filter_labels_by_volume",
@@ -1449,7 +1472,7 @@ class PrototypePipeline:
         kwargs = dict(node.params)
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
-        if node.operation_id in SPATIAL_LABEL_OPERATIONS:
+        if node.operation_id in SPATIAL_OPERATIONS:
             resolved_spatial_ndim = _resolved_spatial_ndim(
                 input_state,
                 source_output,
@@ -1580,6 +1603,8 @@ class PrototypePipeline:
             return True
         if input_type == "array":
             return output_type in {"array", "image", "mask", "labels"}
+        if input_type == "mask_or_labels":
+            return output_type in {"mask", "labels"}
         return output_type == input_type
 
 

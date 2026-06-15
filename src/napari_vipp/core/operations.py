@@ -247,6 +247,46 @@ def fill_holes(data) -> np.ndarray:
     return ndi.binary_fill_holes(_to_bool_mask(data))
 
 
+def clear_border_objects(
+    data,
+    border_buffer: int = 0,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Remove mask components or labels touching a spatial block boundary."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        objects = arr
+    elif np.issubdtype(arr.dtype, np.integer):
+        objects = _validated_labels(arr)
+    else:
+        raise ValueError(
+            "Clear Border Objects requires a binary mask or integer label image."
+        )
+
+    spatial_ndim = _resolved_spatial_ndim(
+        objects,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    buffer_size = max(int(border_buffer), 0)
+
+    def clear_block(block: np.ndarray) -> np.ndarray:
+        if block.size and any(buffer_size >= size for size in block.shape):
+            raise ValueError(
+                "Border buffer must be smaller than every processed "
+                "spatial dimension."
+            )
+        return segmentation.clear_border(block, buffer_size=buffer_size)
+
+    return _apply_spatial_blocks(
+        objects,
+        spatial_ndim,
+        clear_block,
+        dtype=objects.dtype,
+    )
+
+
 def volume_filter(data, min_volume: int = 10) -> np.ndarray:
     """Remove connected components below a minimum voxel/pixel count."""
     mask = _to_bool_mask(data)

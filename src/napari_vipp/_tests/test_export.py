@@ -82,3 +82,28 @@ def test_exported_label_volume_pipeline_executes():
     assert "label_connected_components(" in code
     assert "resolved_spatial_ndim=3" in code
     assert set(np.unique(results[relabeled.id])) == {0, 1}
+
+
+def test_exported_clear_border_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    cleared = pipeline.add_node("clear_border_objects")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, cleared.id)
+
+    image = np.zeros((3, 9, 9), dtype=np.float32)
+    image[:, 0:3, 0:3] = 10
+    image[1, 4:7, 4:7] = 10
+    pipeline.run(image, input_metadata={"axes": "ZYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+
+    assert "clear_border_objects(" in code
+    assert "resolved_spatial_ndim=3" in code
+    assert set(np.unique(results[cleared.id])) == {0, 2}

@@ -21,6 +21,9 @@ LABEL_OPERATIONS = {
     "filter_labels_by_volume",
     "relabel_sequential",
 }
+KIND_PRESERVING_OPERATIONS = {
+    "clear_border_objects",
+}
 
 
 @dataclass(frozen=True)
@@ -217,6 +220,8 @@ def transform_image_state(
         history=input_state.history
         + (_operation_history(input_state, operation_id, operation_title, params),),
     )
+    if operation_id in KIND_PRESERVING_OPERATIONS:
+        state = replace(state, kind=input_state.kind)
     return _with_operation_kind(state, operation_id)
 
 

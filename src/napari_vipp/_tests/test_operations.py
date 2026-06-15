@@ -13,6 +13,7 @@ from napari_vipp.core.operations import (
     binary_threshold,
     black_hat,
     calculate_weighted_image,
+    clear_border_objects,
     clip_intensity,
     closing,
     combine_channels,
@@ -77,6 +78,7 @@ def test_vipp_operation_nodes_are_registered():
         "morphological_gradient",
         "fill_holes",
         "volume_filter",
+        "clear_border_objects",
         "label_connected_components",
         "filter_labels_by_volume",
         "relabel_sequential",
@@ -567,6 +569,93 @@ def test_label_connected_components_respects_2d_connectivity():
     assert face.dtype == np.int32
     assert int(face.max()) == 2
     assert int(full.max()) == 1
+
+
+def test_clear_border_objects_preserves_label_ids_and_supports_buffer():
+    labels = np.zeros((8, 8), dtype=np.int32)
+    labels[0:2, 1:3] = 5
+    labels[1:3, 4:6] = 9
+    labels[3:5, 3:6] = 20
+
+    cleared = clear_border_objects(
+        labels,
+        spatial_mode="2D YX",
+    )
+    buffered = clear_border_objects(
+        labels,
+        border_buffer=1,
+        spatial_mode="2D YX",
+    )
+
+    assert cleared.dtype == labels.dtype
+    assert set(np.unique(cleared)) == {0, 9, 20}
+    assert set(np.unique(buffered)) == {0, 20}
+
+
+def test_clear_border_objects_distinguishes_2d_slices_from_3d_volume():
+    mask = np.zeros((3, 7, 7), dtype=bool)
+    mask[0, 2:5, 2:5] = True
+
+    slice_wise = clear_border_objects(mask, spatial_mode="2D YX")
+    volumetric = clear_border_objects(mask, spatial_mode="3D ZYX")
+
+    assert slice_wise.dtype == bool
+    assert slice_wise[0].any()
+    assert not volumetric.any()
+
+
+def test_clear_border_objects_rejects_intensity_images():
+    data = np.ones((5, 5), dtype=np.float32)
+
+    try:
+        clear_border_objects(data)
+    except ValueError as exc:
+        assert "binary mask or integer label image" in str(exc)
+    else:
+        raise AssertionError("Expected intensity input to be rejected")
+
+
+def test_clear_border_node_accepts_masks_and_labels_but_not_images():
+    pipeline = PrototypePipeline()
+    clear_mask = pipeline.add_node("clear_border_objects")
+    labels = pipeline.add_node("label_connected_components")
+    clear_labels = pipeline.add_node("clear_border_objects")
+
+    image_result = pipeline.connect("input", clear_mask.id)
+    mask_result = pipeline.connect("threshold", clear_mask.id)
+    labels_result = pipeline.connect("threshold", labels.id)
+    clear_labels_result = pipeline.connect(labels.id, clear_labels.id)
+
+    assert not image_result.success
+    assert mask_result.success
+    assert labels_result.success
+    assert clear_labels_result.success
+    assert pipeline.output_ports(clear_mask.id)[0].output_type == "mask"
+    assert pipeline.output_ports(clear_labels.id)[0].output_type == "labels"
+
+
+def test_clear_border_node_preserves_label_metadata_and_resolved_spatial_mode():
+    data = np.zeros((3, 9, 9), dtype=np.float32)
+    data[:, 0:3, 0:3] = 10
+    data[1, 4:7, 4:7] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    cleared = pipeline.add_node("clear_border_objects")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, cleared.id)
+
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "ZYX"},
+        input_name="3D nuclei",
+    )
+
+    assert set(np.unique(outputs[cleared.id])) == {0, 2}
+    assert pipeline.output_states[cleared.id].kind == "label image"
+    assert pipeline.nodes[cleared.id].params["resolved_spatial_ndim"] == 3
 
 
 def test_label_connected_components_processes_true_3d_and_frames_independently():

@@ -8,6 +8,9 @@
   `Relabel Sequential` nodes. They support explicit 2D/3D spatial processing,
   process leading time/channel dimensions independently, and preserve label IDs
   until relabeling is requested.
+- Added `Clear Border Objects` for binary masks and integer labels. It preserves
+  label IDs, supports slice-wise `YX` and volumetric `ZYX` processing, exposes
+  an optional border buffer, and hides the 3D mode for true 2D inputs.
 - Label TIFF saves now preserve 32-bit integer IDs using standard TIFF because
   ImageJ TIFF does not support 32-bit integer label data.
 - Made Split Channels preserve upstream image/mask/label port types so

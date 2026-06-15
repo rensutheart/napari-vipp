@@ -306,6 +306,8 @@ class PortItem(QGraphicsEllipseItem):
             color = "#c084fc"
         elif self.data_type == "labels":
             color = "#f472b6"
+        elif self.data_type == "mask_or_labels":
+            color = "#f472b6"
         elif self.data_type == "array":
             color = "#38bdf8"
         elif self.data_type == "any":
@@ -1192,6 +1194,8 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
         return True
     if input_type == "array":
         return output_type in {"array", "image", "mask", "labels"}
+    if input_type == "mask_or_labels":
+        return output_type in {"mask", "labels"}
     return output_type == input_type
 
 

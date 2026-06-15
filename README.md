@@ -138,6 +138,7 @@ The current node catalogue includes:
 - Label Operations:
   - Label Connected Components
   - Filter Labels By Volume
+  - Clear Border Objects
   - Relabel Sequential
 
 The label pipeline converts binary masks into integer object IDs. Connected
@@ -151,6 +152,11 @@ the numeric fields still accept exact values up to one billion. Selecting
 above the regular histogram. Dashed minimum and enabled maximum markers update
 with the filter controls. Its `Log volume axis` toggle is enabled by
 default and can be switched off for a linear distribution.
+
+`Clear Border Objects` accepts either a binary mask or integer labels and
+preserves that semantic type. It can remove edge objects independently from
+each `YX` slice or from the complete `ZYX` volume, with an optional border
+buffer. For true 2D inputs, the inspector omits the invalid 3D choice.
 
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel

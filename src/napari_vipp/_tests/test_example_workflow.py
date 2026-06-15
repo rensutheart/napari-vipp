@@ -37,10 +37,14 @@ def test_otsu_red_channel_label_workflow_loads_and_runs():
     )
 
     labels = outputs["label_connected_components_1"]
+    cleared = outputs["clear_border_objects_1"]
     filtered = outputs["filter_labels_by_volume_1"]
     assert labels.shape == data.shape[1:]
     assert labels.dtype == np.int32
     assert labels.max() > 0
+    assert cleared.shape == labels.shape
+    assert cleared.dtype == np.int32
+    assert np.count_nonzero(cleared) <= np.count_nonzero(labels)
     assert filtered.shape == labels.shape
     assert filtered.dtype == np.int32
-    assert np.count_nonzero(filtered) <= np.count_nonzero(labels)
+    assert np.count_nonzero(filtered) <= np.count_nonzero(cleared)

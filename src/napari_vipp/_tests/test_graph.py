@@ -107,6 +107,40 @@ def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
     assert target._drop_state is None
 
 
+def test_clear_border_input_accepts_mask_and_labels_but_rejects_image(qtbot):
+    pipeline = PrototypePipeline()
+    labels = pipeline.add_node("label_connected_components")
+    cleared = pipeline.add_node("clear_border_objects")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+
+    target = view._proxies[cleared.id].input_port
+    assert target is not None
+
+    states = {}
+    for name, source_id in (
+        ("image", "input"),
+        ("mask", "threshold"),
+        ("labels", labels.id),
+    ):
+        source = view._proxies[source_id].output_port
+        assert source is not None
+        view.begin_connection(source, source.mapToScene(QPointF(0, 0)))
+        view.update_pending_connection(
+            target.mapToScene(QPointF(0, 0)),
+            dragging=True,
+        )
+        states[name] = target._drop_state
+        view._cancel_pending_connection()
+
+    assert states == {
+        "image": "incompatible",
+        "mask": "compatible",
+        "labels": "compatible",
+    }
+
+
 def test_dragging_node_keeps_viewport_stationary(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

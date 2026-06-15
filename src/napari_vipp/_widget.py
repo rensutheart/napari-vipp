@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -517,6 +517,22 @@ class ChoiceControl(QWidget):
 
     def value(self):
         return self.combo.currentText()
+
+    def set_choices(
+        self,
+        choices: tuple[str, ...],
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        self.spec = replace(self.spec, choices=tuple(choices))
+        current = self.spec.default if value is None else str(value)
+        with QSignalBlocker(self.combo):
+            self.combo.clear()
+            self.combo.addItems(list(self.spec.choices))
+            index = self.combo.findText(current)
+            self.combo.setCurrentIndex(max(index, 0))
+        if emit:
+            self.valueChanged.emit(self.value())
 
     def set_bounds(
         self,
@@ -2336,6 +2352,7 @@ class VippWidget(QWidget):
             return
 
         for spec in specs:
+            spec = self._effective_parameter_spec(node_id, spec)
             bounds = self._parameter_bounds_for(node_id, spec)
             if spec.kind == "choice":
                 control_class = ChoiceControl
@@ -2477,7 +2494,12 @@ class VippWidget(QWidget):
             widget = self._parameter_widgets.get(spec.name)
             if widget is None:
                 continue
+            spec = self._effective_parameter_spec(self._selected_node_id, spec)
             previous = node.params.get(spec.name)
+            if spec.kind == "choice" and previous not in spec.choices:
+                previous = spec.default
+                node.params[spec.name] = previous
+                changed = True
             if spec.name == "channel_axis":
                 preferred = self._preferred_channel_axis(self._selected_node_id)
                 if preferred is not None:
@@ -2485,16 +2507,38 @@ class VippWidget(QWidget):
                     if node.params.get(spec.name) != preferred:
                         node.params[spec.name] = preferred
                         changed = True
-            widget.set_bounds(
-                self._parameter_bounds_for(self._selected_node_id, spec),
-                previous,
-                emit=False,
-            )
+            bounds = self._parameter_bounds_for(self._selected_node_id, spec)
+            if isinstance(widget, ChoiceControl):
+                widget.set_choices(spec.choices, previous, emit=False)
+            widget.set_bounds(bounds, previous, emit=False)
             current = widget.value()
             if current != previous:
                 node.params[spec.name] = current
                 changed = True
         return changed
+
+    def _effective_parameter_spec(self, node_id: str, spec):
+        if spec.name != "spatial_mode":
+            return spec
+        return replace(
+            spec,
+            choices=self._available_spatial_modes(node_id),
+        )
+
+    def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
+        choices = ("Auto from axes", "2D YX", "3D ZYX")
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is not None:
+            spatial_count = sum(axis.type == "space" for axis in state.axes)
+            if spatial_count >= 3:
+                return choices
+            if spatial_count >= 2:
+                return choices[:2]
+
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return choices
+        return choices if np.asarray(data).ndim >= 3 else choices[:2]
 
     def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
         if spec.kind == "choice":
@@ -2526,6 +2570,12 @@ class VippWidget(QWidget):
             and spec.name in {"min_volume", "max_volume"}
         ):
             return self._label_volume_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "clear_border_objects"
+            and spec.name == "border_buffer"
+        ):
+            return self._clear_border_buffer_bounds(node_id, spec)
         return ParameterBounds(
             spec.minimum,
             spec.maximum,
@@ -2915,6 +2965,22 @@ class VippWidget(QWidget):
             entry_maximum=spec.maximum,
         )
 
+    def _clear_border_buffer_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+            )
+        arr = np.asarray(data)
+        if arr.ndim == 0 or arr.size == 0:
+            return ParameterBounds(0, 0, 1, 0)
+        spatial_ndim = self._label_filter_spatial_ndim(node_id, arr)
+        maximum = max(min(arr.shape[-spatial_ndim:]) - 1, 0)
+        return ParameterBounds(0, maximum, 1, 0)
+
     @staticmethod
     def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
         volumes = VippWidget._label_volumes(labels, spatial_ndim)
@@ -2965,7 +3031,7 @@ class VippWidget(QWidget):
                     notify=False,
                 )
             self._sync_node_input_ports(self._selected_node_id)
-        if name in {"axis", "channel_axis"}:
+        if name in {"axis", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
         if name in {"min_volume", "max_volume", "spatial_mode"}:
             self._update_label_volume_histogram()
@@ -3553,8 +3619,8 @@ class VippWidget(QWidget):
 
     def _data_kind(self, data, node_id: str | None = None) -> str:
         if node_id is not None:
-            node = self.pipeline.nodes.get(node_id)
-            if node is not None and node.output_type == "labels":
+            ports = self.pipeline.output_ports(node_id)
+            if ports and ports[0].output_type == "labels":
                 return "labels"
         return "mask" if np.asarray(data).dtype == bool else "image"
 
@@ -3633,8 +3699,16 @@ class VippWidget(QWidget):
 
     def _node_output_type(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
-        if node is not None and node.output_type == "labels":
-            return "labels"
+        ports = self.pipeline.output_ports(node_id)
+        if (
+            node is not None
+            and ports
+            and (
+                self.pipeline.operation_spec(node.operation_id).preserves_input_type
+                or ports[0].output_type == "labels"
+            )
+        ):
+            return ports[0].output_type
         data = self.pipeline.outputs.get(node_id)
         if data is not None:
             return self._data_kind(data, node_id)

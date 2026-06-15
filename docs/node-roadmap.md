@@ -45,10 +45,12 @@ Implementation status:
 - implemented: Filter Labels By Volume using pixel/voxel counts while
   preserving retained IDs, with a data-aware slider and input-volume
   distribution;
+- implemented: Clear Border Objects for masks and labels, with a border buffer
+  and axis-aware 2D/3D processing;
 - implemented: Relabel Sequential;
-- next node: Clear Border Objects;
-- then: Remove Small Holes, calibrated physical area/volume, and richer
-  property-based label filtering.
+- next: enhance Fill Holes with size-limited and 2D/3D processing, add
+  calibrated physical area/volume, and support richer property-based label
+  filtering.
 
 ## Priority Definitions
 
@@ -115,6 +117,7 @@ cleaned up.
 | Contrast Stretching | It currently performs scale plus offset and converts to `uint8`; true percentile rescaling already exists separately. | Rename to `Linear Scale + Offset`, preserve a sensible dtype, or deprecate it in favor of image math plus `Rescale Intensity`. |
 | Top Hat / Black Hat | These are binary operations, while grayscale white top-hat is a common bioimage background-removal tool. | Rename current nodes `Binary Top Hat` and `Binary Black Hat`; add explicit grayscale morphology later. |
 | Volume Filter | It removes small connected foreground components. The name does not reveal that behavior or connectivity. | Rename to `Remove Small Objects`; expose connectivity and physical-size semantics. |
+| Fill Holes | It fills all holes across the full n-dimensional input and has no spatial-scope or size controls. | Keep the familiar name, add a maximum hole area/volume, and expose input-aware `2D YX` versus `3D ZYX` processing. |
 | Maximum Projection | Axis is numeric and only the maximum reducer is available. | Replace or complement it with an axis-aware `Reduce Axis` node. |
 | 2D filtering behavior | Several nodes infer XY and process other axes plane by plane. | Add an explicit processing scope: `XY per plane` or `spatial volume`. |
 
@@ -200,14 +203,14 @@ Implement the remaining nodes in the order shown by the planned statuses.
 | Implemented | Label Connected Components | mask -> labels | `scipy.ndimage.label` | Converts segmentation masks into distinct objects. |
 | Implemented | Filter Labels By Volume | labels -> labels | NumPy label counts | Removes labels outside minimum and optional maximum pixel/voxel volume. |
 | Implemented | Relabel Sequential | labels -> labels | `skimage.segmentation.relabel_sequential` | Normalizes sparse IDs after filtering. |
-| Next | Clear Border Objects | mask/labels -> same semantic type | `skimage.segmentation.clear_border` | Removes partial objects touching image or ROI boundaries. |
-| Planned 2 | Remove Small Holes | mask -> mask | `skimage.morphology.remove_small_holes` | Complements fill-holes with a size limit. |
-| Planned 3 | Remove Small Objects | mask/labels -> same semantic type | `skimage.morphology.remove_small_objects` | Standard cleanup with clear naming and connectivity. |
-| Planned 4 | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness. |
-| Planned 5 | H-Maxima / Local Maxima Markers | image -> mask or labels | `skimage.morphology.h_maxima` or `local_maxima` | Produces robust watershed seeds. |
-| Planned 6 | Marker-Controlled Watershed | image + labels + optional mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles. |
-| Planned 7 | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap. |
-| Planned 8 | Find Label Boundaries | labels -> mask | `skimage.segmentation.find_boundaries` | Useful for QC, overlays, and boundary measurements. |
+| Implemented | Clear Border Objects | mask/labels -> same semantic type | `skimage.segmentation.clear_border` | Removes partial objects touching image or ROI boundaries. |
+| Next | Enhance Fill Holes | mask -> mask | `scipy.ndimage.binary_fill_holes` and `skimage.morphology.remove_small_holes` | Adds size-limited and explicit slice-wise/volumetric filling without introducing a duplicate node. |
+| Planned 2 | Remove Small Objects | mask/labels -> same semantic type | `skimage.morphology.remove_small_objects` | Standard cleanup with clear naming and connectivity. |
+| Planned 3 | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness. |
+| Planned 4 | H-Maxima / Local Maxima Markers | image -> mask or labels | `skimage.morphology.h_maxima` or `local_maxima` | Produces robust watershed seeds. |
+| Planned 5 | Marker-Controlled Watershed | image + labels + optional mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles. |
+| Planned 6 | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap. |
+| Planned 7 | Find Label Boundaries | labels -> mask | `skimage.segmentation.find_boundaries` | Useful for QC, overlays, and boundary measurements. |
 
 `Volume Filter` can be retained as a workflow-compatible alias while
 `Remove Small Objects` becomes the preferred UI name.
@@ -353,32 +356,28 @@ meaningful in 3D.
 
 ## Next Implementation Recommendation
 
-Implement `Clear Border Objects` next.
+Enhance `Fill Holes` next. `Clear Border Objects` is implemented with the
+planned mask/label type preservation, `Auto`/2D/3D processing, independent
+leading-axis blocks, retained label IDs, and a configurable border buffer.
+Removed/retained object counts remain a possible inspector enhancement.
 
-Why this is the best immediate step:
+After Fill Holes, add calibrated physical area/volume mode. Touching-object
+separation should follow as a coordinated platform milestone because watershed
+needs heterogeneous named input ports.
 
-- it completes a common nuclei/cell cleanup requirement after labeling;
-- partial edge objects bias volume, morphology, and intensity measurements;
-- it is useful in both 2D and 3D;
-- it can preserve label IDs and does not require a new graph data type;
-- it is small enough to implement and validate before the larger watershed or
-  table-output platform work.
+Recommended `Fill Holes` contract:
 
-Recommended contract:
-
-- input: `mask` or `labels`;
-- output: the same semantic type as the input;
+- retain the node name `Fill Holes`;
+- input/output: `mask -> mask`;
+- maximum hole size: `0` fills all enclosed holes for backward compatibility;
+- a positive maximum fills only holes up to that many pixels or voxels;
 - spatial mode: `Auto from axes`, `2D YX`, or `3D ZYX`;
-- process leading time/channel axes independently;
-- remove objects touching the spatial block boundary;
-- optionally support a configurable boundary buffer after the basic node is
-  proven;
-- preserve retained label IDs for label input;
-- expose removed/retained counts in the inspector or metadata history.
-
-Then implement `Remove Small Holes`, followed by calibrated physical
-area/volume mode. Touching-object separation should follow as a coordinated
-platform milestone because watershed needs heterogeneous named input ports.
+- `2D YX` fills each XY slice independently;
+- `3D ZYX` fills cavities in the complete spatial volume;
+- process leading time and channel axes independently;
+- when the connected input has only two spatial axes, omit or disable `3D ZYX`
+  rather than presenting an invalid option;
+- Auto mode resolves to 2D for 2D images and to 3D for true z-stacks.
 
 ## Recommended First Milestone
 
@@ -392,14 +391,14 @@ Completed:
 1. `labels` type and napari Labels inspection.
 2. Label Connected Components.
 3. Filter Labels By Volume.
-4. Relabel Sequential.
+4. Clear Border Objects.
+5. Relabel Sequential.
 
 Remaining:
 
-1. Clear Border Objects.
-2. Remove Small Holes for the pre-label binary-mask path.
-3. Calibrated physical area/volume filtering.
-4. Explicit kept/removed object counts.
+1. Enhance Fill Holes for the pre-label binary-mask path.
+2. Calibrated physical area/volume filtering.
+3. Explicit kept/removed object counts.
 
 The primary pipeline is:
 
@@ -625,7 +624,7 @@ Extract channel
   -> Gaussian blur
   -> Automatic threshold
   -> Remove small objects
-  -> Fill/remove small holes
+  -> Fill Holes, optionally limited by hole area/volume
   -> Distance transform
   -> H-maxima markers
   -> Watershed

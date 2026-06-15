@@ -124,6 +124,7 @@ image
   -> Otsu Threshold
   -> Split Channels
   -> Label Connected Components
+  -> Clear Border Objects
   -> Filter Labels By Volume
   -> cleaned labels
 ```
@@ -135,6 +136,7 @@ Current label support includes:
 - 2D-per-plane and true 3D connected-component labeling;
 - face or full connectivity;
 - minimum and optional maximum pixel/voxel-volume filtering;
+- mask/label-preserving removal of objects touching a spatial boundary;
 - logarithmic, data-aware volume sliders;
 - an incoming object-volume histogram with threshold markers;
 - sequential relabeling;
@@ -169,10 +171,20 @@ Still requiring new platform types or UI:
 
 The next small, coherent milestone is:
 
-1. `Clear Border Objects` for mask and labels inputs.
-2. `Remove Small Holes` for binary masks.
-3. Calibrated physical area/volume mode using spatial scale metadata.
-4. Kept/removed object counts in the volume-filter summary.
+1. Enhance `Fill Holes` with a maximum hole size and axis-aware spatial mode.
+2. Calibrated physical area/volume mode using spatial scale metadata.
+3. Kept/removed object counts in the volume-filter summary.
+
+The enhanced `Fill Holes` contract should preserve the familiar name and the
+existing fill-all behavior while adding:
+
+- maximum hole area/volume in pixels or voxels, with `0` meaning fill all
+  enclosed holes;
+- `Auto from axes`, `2D YX`, and `3D ZYX` processing;
+- slice-wise filling for `2D YX` and volumetric filling for `3D ZYX`;
+- independent processing over leading time and channel axes;
+- removal of the `3D ZYX` choice when the connected input does not contain
+  three spatial axes.
 
 After that, implement touching-object separation:
 
