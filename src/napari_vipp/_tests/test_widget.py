@@ -410,8 +410,9 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(axes_regions, "Crop Stack")
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
     assert _palette_child_by_text(channels, "Extract Channel")
-    assert _palette_child_by_text(channels, "Channel Composite")
-    assert _palette_child_by_text(channels, "RGB Composite")
+    assert _palette_child_by_text(channels, "Combine Channels")
+    assert _palette_child_by_text(channels, "Split Channels")
+    assert _palette_child_by_text(channels, "Composite \u2192 RGB")
     assert _palette_child_by_text(type_scaling, "Convert Dtype")
     assert _palette_child_by_text(type_scaling, "Rescale Intensity")
     assert _palette_child_by_text(type_scaling, "Normalize")
@@ -732,7 +733,7 @@ def test_ome_ngff_axes_metadata_is_displayed_without_guessing(qtbot):
     assert _metadata_value(widget, "Metadata source") == "OME-NGFF multiscales"
 
 
-def test_rgb_composite_uses_metadata_channel_axis(qtbot):
+def test_composite_to_rgb_maps_channel_axis(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     data[:, 0] = 1000
     data[:, 1] = 2000
@@ -741,7 +742,8 @@ def test_rgb_composite_uses_metadata_channel_axis(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    node = widget.add_node_from_palette("rgb_composite")
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget.pipeline.set_param(node.id, "channel_axis", 1)
     widget._connect_nodes("input", node.id)
     widget.run_pipeline()
     widget.graph_view.select_node(node.id)
@@ -752,12 +754,12 @@ def test_rgb_composite_uses_metadata_channel_axis(qtbot):
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
     assert (
-        "1. RGB Composite: RGB composite from axis 1"
+        "1. Composite \u2192 RGB: mapped channels to RGB"
         in widget.history_label.text()
     )
 
 
-def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
+def test_combine_channels_accepts_multiple_connected_inputs(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     data[:, 0] = 1000
     data[:, 1] = 2000
@@ -767,7 +769,7 @@ def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
 
     first = widget.add_node_from_palette("extract_channel")
     second = widget.add_node_from_palette("extract_channel")
-    composite = widget.add_node_from_palette("channel_composite")
+    composite = widget.add_node_from_palette("combine_channels")
     widget._connect_nodes("input", first.id)
     widget._connect_nodes("input", second.id)
     widget.pipeline.set_param(first.id, "channel", 0)
@@ -800,21 +802,21 @@ def test_channel_composite_accepts_multiple_connected_inputs(qtbot):
     assert _metadata_value(widget, "Dimensions") == "t=2, c=2, z=4, y=5, x=6"
     assert (
         "1. Extract Channel: selected channel 0\n"
-        "2. Channel Composite: combined 2 inputs as channels"
+        "2. Combine Channels: combined 2 inputs as channels"
         in widget.history_label.text()
     )
 
 
-def test_channel_composite_input_count_and_colours_update_ports(qtbot):
+def test_combine_channels_input_count_and_colours_update_ports(qtbot):
     data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
     viewer = _Viewer(data, metadata={"axes": "TCZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    composite = widget.add_node_from_palette("channel_composite")
+    composite = widget.add_node_from_palette("combine_channels")
     widget.graph_view.select_node(composite.id)
 
-    widget._on_channel_composite_input_count_changed(4)
+    widget._on_combine_channels_input_count_changed(4)
     widget._on_channel_color_changed(2, "Yellow")
 
     node = widget.pipeline.nodes[composite.id]
@@ -827,7 +829,7 @@ def test_channel_composite_input_count_and_colours_update_ports(qtbot):
     assert ports[2].accent_color == "#eab308"
 
 
-def test_channel_composite_colour_change_refreshes_thumbnail_palette(
+def test_combine_channels_colour_change_refreshes_thumbnail_palette(
     qtbot,
     monkeypatch,
 ):
@@ -840,7 +842,7 @@ def test_channel_composite_colour_change_refreshes_thumbnail_palette(
 
     first = widget.add_node_from_palette("extract_channel")
     second = widget.add_node_from_palette("extract_channel")
-    composite = widget.add_node_from_palette("channel_composite")
+    composite = widget.add_node_from_palette("combine_channels")
     widget._connect_nodes("input", first.id)
     widget._connect_nodes("input", second.id)
     widget.pipeline.set_param(first.id, "channel", 0)

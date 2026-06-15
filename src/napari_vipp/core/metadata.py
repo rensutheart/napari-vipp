@@ -250,6 +250,42 @@ def transform_multi_input_image_state(
     )
 
 
+def transform_split_output_state(
+    data,
+    input_state: ImageState | None,
+    *,
+    operation_id: str,
+    operation_title: str,
+    port_name: str,
+    params: dict[str, Any],
+) -> ImageState | None:
+    """Transform metadata for a single output port of a channel-splitting node."""
+    if data is None:
+        return None
+    label = f"{operation_title} ({port_name})"
+    if input_state is None:
+        return image_state_from_array(
+            data,
+            metadata_source=f"inferred after {label}",
+            history=(f"{label}: metadata reconstructed from output shape",),
+        )
+
+    arr = np.asarray(data)
+    axes = _split_output_axes(input_state.axes, arr.ndim)
+    metadata_source = input_state.metadata_source
+    if len(axes) != arr.ndim:
+        axes = infer_axis_metadata(arr)
+        metadata_source = f"inferred after {label}"
+
+    return image_state_from_array(
+        arr,
+        axes=axes,
+        metadata_source=metadata_source,
+        source_name=input_state.source_name,
+        history=input_state.history + (f"{label}: extracted {port_name}",),
+    )
+
+
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
     state = _coerce_state(state_or_data)
@@ -520,8 +556,8 @@ def _transformed_axes(
     axes = input_state.axes
     if operation_id == "crop_stack":
         axes = _crop_shifted_axes(axes, params)
-    if operation_id == "rgb_composite":
-        return _rgb_composite_axes(axes, params)
+    if operation_id == "composite_to_rgb":
+        return _composite_to_rgb_axes(axes, arr.ndim)
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
         return _range_and_removed_axes(axes, params)
@@ -609,7 +645,7 @@ def _multi_input_axes(
     operation_id: str,
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
-    if operation_id == "channel_composite":
+    if operation_id == "combine_channels":
         channel_index = _clamped_insert_axis(
             params.get("channel_axis", 0),
             len(first_axes),
@@ -620,20 +656,37 @@ def _multi_input_axes(
     return first_axes if arr.ndim == len(first_axes) else infer_axis_metadata(arr)
 
 
-def _rgb_composite_axes(
+def _composite_to_rgb_axes(
     axes: tuple[AxisMetadata, ...],
-    params: dict[str, Any],
+    output_ndim: int,
 ) -> tuple[AxisMetadata, ...]:
-    if not axes:
-        return axes
-    channel_index = _clamped_axis(params.get("channel_axis", 0), len(axes))
-    if axes[channel_index].type != "channel":
-        inferred = _channel_axis_index(axes)
-        if inferred is not None:
-            channel_index = inferred
-    return _remove_axis(axes, channel_index) + (
-        AxisMetadata(name="rgb", type="channel"),
-    )
+    rgb_axis = AxisMetadata(name="rgb", type="channel")
+    leading_count = max(output_ndim - 1, 0)
+    spatial = [axis for axis in axes if axis.type == "space"]
+    leading = spatial[-leading_count:] if leading_count else []
+    if len(leading) == leading_count:
+        return tuple(leading) + (rgb_axis,)
+    # Fall back to a channel-axis removal when spatial axes are insufficient.
+    channel_index = _channel_axis_index(axes)
+    if channel_index is not None:
+        return _remove_axis(axes, channel_index) + (rgb_axis,)
+    return axes + (rgb_axis,)
+
+
+def _split_output_axes(
+    axes: tuple[AxisMetadata, ...],
+    output_ndim: int,
+) -> tuple[AxisMetadata, ...]:
+    """Axes for one channel extracted from a multi-channel image."""
+    spatial = [axis for axis in axes if axis.type == "space"]
+    if len(spatial) >= output_ndim:
+        return tuple(spatial[-output_ndim:])
+    channel_index = _channel_axis_index(axes)
+    if channel_index is not None:
+        reduced = _remove_axis(axes, channel_index)
+        if len(reduced) == output_ndim:
+            return reduced
+    return axes
 
 
 def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:
@@ -690,11 +743,8 @@ def _operation_history(
         return f"{operation_title}: selected {selected}"
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
-    if operation_id == "rgb_composite":
-        return (
-            f"{operation_title}: RGB composite from axis "
-            f"{int(params.get('channel_axis', 0))}"
-        )
+    if operation_id == "composite_to_rgb":
+        return f"{operation_title}: mapped channels to RGB"
     if operation_id == "crop_stack":
         return (
             f"{operation_title}: cropped top={int(params.get('top', 0))}, "
@@ -716,7 +766,7 @@ def _multi_input_history(
     params: dict[str, Any],
 ) -> str:
     count = len(states)
-    if operation_id == "channel_composite":
+    if operation_id == "combine_channels":
         return f"{operation_title}: combined {count} inputs as channels"
     if operation_id == "calculate_weighted_image":
         weights = str(params.get("weights", "")).strip() or "1"

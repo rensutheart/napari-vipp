@@ -13,9 +13,10 @@ from napari_vipp.core.operations import (
     binary_threshold,
     black_hat,
     calculate_weighted_image,
-    channel_composite,
     clip_intensity,
     closing,
+    combine_channels,
+    composite_to_rgb,
     contrast_stretch,
     convert_dtype,
     crop_stack,
@@ -37,10 +38,10 @@ from napari_vipp.core.operations import (
     otsu_threshold,
     ratio_image,
     rescale_intensity,
-    rgb_composite,
     save_array_output,
     save_output,
     select_axis_slice,
+    split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
@@ -74,7 +75,7 @@ def test_vipp_operation_nodes_are_registered():
         "fill_holes",
         "volume_filter",
         "extract_channel",
-        "channel_composite",
+        "combine_channels",
         "calculate_weighted_image",
         "add_images",
         "subtract_images",
@@ -83,7 +84,8 @@ def test_vipp_operation_nodes_are_registered():
         "logical_and",
         "logical_or",
         "logical_xor",
-        "rgb_composite",
+        "composite_to_rgb",
+        "split_channels",
         "rescale_intensity",
         "normalize_image",
         "clip_intensity",
@@ -223,11 +225,11 @@ def test_extract_channel_supports_czyx_stacks():
     assert channel.max() == 42
 
 
-def test_channel_composite_stacks_multiple_inputs_as_channels():
+def test_combine_channels_stacks_multiple_inputs_as_channels():
     first = np.full((2, 5, 6), 10, dtype=np.uint16)
     second = np.full((2, 5, 6), 20, dtype=np.uint16)
 
-    composite = channel_composite([first, second], input_count=2, channel_axis=1)
+    composite = combine_channels([first, second], input_count=2, channel_axis=1)
 
     assert composite.shape == (2, 2, 5, 6)
     assert composite.dtype == np.uint16
@@ -304,19 +306,90 @@ def test_logical_nodes_combine_masks():
     )
 
 
-def test_rgb_composite_creates_last_axis_rgb():
-    data = np.zeros((3, 2, 5, 6), dtype=np.uint16)
-    data[0, :, 1:3, 1:3] = 1000
-    data[1, :, 2:4, 2:4] = 2000
-    data[2, :, 3:5, 3:5] = 3000
+def test_composite_to_rgb_maps_three_channels():
+    data = np.zeros((3, 8, 8), dtype=np.float32)
+    data[0, 0, 0] = 1.0
+    data[1, 1, 1] = 1.0
+    data[2, 2, 2] = 1.0
 
-    composite = rgb_composite(data, channel_axis=0)
+    rgb = composite_to_rgb(data)
 
-    assert composite.shape == (2, 5, 6, 3)
-    assert composite.dtype == np.float32
-    assert composite[..., 0].max() == 1.0
-    assert composite[..., 1].max() == 1.0
-    assert composite[..., 2].max() == 1.0
+    assert rgb.shape == (8, 8, 3)
+    assert rgb.dtype == np.float32
+    # Channel 0 -> red, 1 -> green, 2 -> blue at their respective bright pixels.
+    assert rgb[0, 0, 0] == 1.0
+    assert rgb[1, 1, 1] == 1.0
+    assert rgb[2, 2, 2] == 1.0
+    # The red plane is dark where only the green channel was bright.
+    assert rgb[1, 1, 0] == 0.0
+
+
+def test_composite_to_rgb_single_channel_is_white():
+    data = np.zeros((8, 8), dtype=np.float32)
+    data[3, 3] = 1.0
+
+    rgb = composite_to_rgb(data)
+
+    assert rgb.shape == (8, 8, 3)
+    np.testing.assert_allclose(rgb[..., 0], rgb[..., 1])
+    np.testing.assert_allclose(rgb[..., 1], rgb[..., 2])
+
+
+def test_composite_to_rgb_two_channels_leaves_blue_blank():
+    data = np.zeros((2, 8, 8), dtype=np.float32)
+    data[0, 0, 0] = 1.0
+    data[1, 1, 1] = 1.0
+
+    rgb = composite_to_rgb(data)
+
+    assert rgb.shape == (8, 8, 3)
+    assert rgb[0, 0, 0] == 1.0
+    assert rgb[1, 1, 1] == 1.0
+    assert rgb[..., 2].max() == 0.0
+
+
+def test_composite_to_rgb_accepts_channel_last_rgb():
+    data = (np.random.rand(8, 8, 3) * 255).astype(np.uint8)
+
+    rgb = composite_to_rgb(data)
+
+    assert rgb.shape == (8, 8, 3)
+    assert rgb.dtype == np.float32
+
+
+def test_split_channels_returns_all_channels_losslessly():
+    data = (np.random.rand(8, 8, 3) * 255).astype(np.uint8)
+
+    channels = split_channels(data)
+
+    assert len(channels) == 3
+    for channel in channels:
+        assert channel.shape == (8, 8)
+        assert channel.dtype == np.uint8
+    np.testing.assert_array_equal(channels[0], data[..., 0])
+    np.testing.assert_array_equal(channels[1], data[..., 1])
+    np.testing.assert_array_equal(channels[2], data[..., 2])
+
+
+def test_split_channels_returns_true_channel_count():
+    data = np.zeros((2, 8, 8), dtype=np.uint8)
+    data[0] = 10
+    data[1] = 20
+
+    channels = split_channels(data)
+
+    assert len(channels) == 2
+    assert int(channels[0].max()) == 10
+    assert int(channels[1].max()) == 20
+
+
+def test_split_channels_grayscale_returns_single_output():
+    data = np.full((5, 5), 7, dtype=np.uint8)
+
+    channels = split_channels(data)
+
+    assert len(channels) == 1
+    np.testing.assert_array_equal(channels[0], data)
 
 
 def test_select_axis_slice_removes_requested_axis():

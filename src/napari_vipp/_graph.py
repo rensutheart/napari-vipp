@@ -308,7 +308,7 @@ class PortItem(QGraphicsEllipseItem):
             color = "#38bdf8"
         elif self.data_type == "any":
             color = "#f59e0b"
-        if self.kind == "input" and self.accent_color:
+        if self.accent_color:
             color = self.accent_color
         radius = self.radius
         pen_color = "#111827"
@@ -337,6 +337,8 @@ class PortItem(QGraphicsEllipseItem):
         name = self.kind
         if self.kind == "input":
             name = f"input {self.port_index + 1}"
+        elif self.kind == "output" and self.label:
+            name = "output"
         if self.label:
             name = f"{name}: {self.label}"
         self.setToolTip(f"{name} ({self.data_type})")
@@ -359,12 +361,15 @@ class NodeProxy(QGraphicsProxyWidget):
         self.output_type = output_type
         self.connections: list[ConnectionItem] = []
         self.input_ports: list[PortItem] = []
-        self.output_port: PortItem | None = None
         self._has_input = has_input
         self._has_output = has_output
         self._input_port_count = 1
         self._input_port_labels: list[str] = []
         self._input_port_colors: list[str | None] = []
+        self._output_port_count = 1
+        self._output_port_labels: list[str] = []
+        self._output_port_colors: list[str | None] = []
+        self.output_ports: list[PortItem] = []
         self._drag_start_scene: QPointF | None = None
         self._drag_start_pos: QPointF | None = None
         self._dragging = False
@@ -391,15 +396,27 @@ class NodeProxy(QGraphicsProxyWidget):
                     y = top + step * index
                 port.setPos(rect.left(), y)
         if self._has_output:
-            if self.output_port is None:
-                self.output_port = PortItem(
-                    self.node_id, "output", self.output_type, self
-                )
-            self.output_port.setPos(rect.right(), rect.center().y())
+            self._ensure_output_ports()
+            top = rect.top() + 42
+            bottom = rect.bottom() - 42
+            if bottom <= top:
+                top = rect.top()
+                bottom = rect.bottom()
+            for index, port in enumerate(self.output_ports):
+                if len(self.output_ports) == 1:
+                    y = rect.center().y()
+                else:
+                    step = (bottom - top) / max(len(self.output_ports) - 1, 1)
+                    y = top + step * index
+                port.setPos(rect.right(), y)
 
     @property
     def input_port(self) -> PortItem | None:
         return self.input_ports[0] if self.input_ports else None
+
+    @property
+    def output_port(self) -> PortItem | None:
+        return self.output_ports[0] if self.output_ports else None
 
     def set_input_ports(
         self,
@@ -415,14 +432,28 @@ class NodeProxy(QGraphicsProxyWidget):
         for connection in self.connections:
             connection.update_path()
 
+    def set_output_ports(
+        self,
+        count: int,
+        labels: list[str] | None = None,
+        colors: list[str | None] | None = None,
+    ) -> None:
+        self._output_port_count = max(int(count), 1)
+        self._output_port_labels = labels or []
+        self._output_port_colors = colors or []
+        self._ensure_output_ports()
+        self.refresh_ports()
+        for connection in self.connections:
+            connection.update_path()
+
     def set_output_type(self, output_type: str) -> None:
         self.output_type = output_type
-        if self.output_port is not None:
-            self.output_port.set_data_type(output_type)
+        if self.output_ports and self._output_port_count == 1:
+            self.output_ports[0].set_data_type(output_type)
 
     def port_scene_pos(self, kind: str, port_index: int = 0) -> QPointF:
         if kind == "output":
-            port = self.output_port
+            port = self.output_port_at(port_index)
         else:
             port = self.input_port_at(port_index)
         if port is not None:
@@ -437,6 +468,12 @@ class NodeProxy(QGraphicsProxyWidget):
             return None
         port_index = int(np.clip(port_index, 0, len(self.input_ports) - 1))
         return self.input_ports[port_index]
+
+    def output_port_at(self, port_index: int) -> PortItem | None:
+        if not self.output_ports:
+            return None
+        port_index = int(np.clip(port_index, 0, len(self.output_ports) - 1))
+        return self.output_ports[port_index]
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton and not self._press_on_button(event):
@@ -523,6 +560,39 @@ class NodeProxy(QGraphicsProxyWidget):
             port.port_index = index
             port.set_label(label, color)
 
+    def _ensure_output_ports(self) -> None:
+        if not self._has_output:
+            return
+        while len(self.output_ports) < self._output_port_count:
+            index = len(self.output_ports)
+            self.output_ports.append(
+                PortItem(
+                    self.node_id,
+                    "output",
+                    self.output_type,
+                    self,
+                    port_index=index,
+                )
+            )
+        while len(self.output_ports) > self._output_port_count:
+            port = self.output_ports.pop()
+            if port.scene() is not None:
+                port.scene().removeItem(port)
+            port.setParentItem(None)
+        for index, port in enumerate(self.output_ports):
+            label = (
+                self._output_port_labels[index]
+                if index < len(self._output_port_labels)
+                else ""
+            )
+            color = (
+                self._output_port_colors[index]
+                if index < len(self._output_port_colors)
+                else None
+            )
+            port.port_index = index
+            port.set_label(label, color)
+
     def _press_on_button(self, event) -> bool:
         return self._has_parent_widget_type(event, QPushButton)
 
@@ -542,20 +612,27 @@ class NodeProxy(QGraphicsProxyWidget):
 
 
 class ConnectionItem(QGraphicsPathItem):
-    def __init__(self, source: NodeProxy, target: NodeProxy, target_port: int = 0):
+    def __init__(
+        self,
+        source: NodeProxy,
+        target: NodeProxy,
+        target_port: int = 0,
+        source_port: int = 0,
+    ):
         super().__init__()
         self.source = source
         self.target = target
         self.source_id = source.node_id
         self.target_id = target.node_id
         self.target_port = int(target_port)
+        self.source_port = int(source_port)
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self._refresh_pen()
         self.update_path()
 
     def update_path(self) -> None:
-        start = self.source.port_scene_pos("output")
+        start = self.source.port_scene_pos("output", self.source_port)
         end = self.target.port_scene_pos("input", self.target_port)
         self.setPath(_wire_path(start, end))
 
@@ -606,7 +683,7 @@ class PipelineGraphView(QGraphicsView):
     node_delete_requested = Signal(str)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
-    connection_requested = Signal(str, str, int)
+    connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     status_message = Signal(str)
 
@@ -658,6 +735,7 @@ class PipelineGraphView(QGraphicsView):
                 connection.source_id,
                 connection.target_id,
                 connection.target_port,
+                getattr(connection, "source_port", 0),
             )
 
         graph_rect = self.scene.itemsBoundingRect()
@@ -709,12 +787,13 @@ class PipelineGraphView(QGraphicsView):
         source_id: str,
         target_id: str,
         target_port: int = 0,
+        source_port: int = 0,
     ) -> None:
-        if self._connection_exists(source_id, target_id, target_port):
+        if self._connection_exists(source_id, target_id, target_port, source_port):
             return
         source = self._proxies[source_id]
         target = self._proxies[target_id]
-        item = ConnectionItem(source, target, target_port)
+        item = ConnectionItem(source, target, target_port, source_port)
         self.scene.addItem(item)
         source.connections.append(item)
         target.connections.append(item)
@@ -829,6 +908,18 @@ class PipelineGraphView(QGraphicsView):
             return
         proxy.set_input_ports(count, labels, colors)
 
+    def set_node_output_ports(
+        self,
+        node_id: str,
+        count: int,
+        labels: list[str] | None = None,
+        colors: list[str | None] | None = None,
+    ) -> None:
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return
+        proxy.set_output_ports(count, labels, colors)
+
     def select_node(self, node_id: str) -> None:
         if node_id in self._cards:
             self._select_node(node_id)
@@ -873,6 +964,7 @@ class PipelineGraphView(QGraphicsView):
             source_port.node_id,
             target_port.node_id,
             target_port.port_index,
+            source_port.port_index,
         )
 
     def suggest_node_position(self) -> QPointF:
@@ -1020,11 +1112,12 @@ class PipelineGraphView(QGraphicsView):
             return False
         if self._pending_source.node_id == target_port.node_id:
             return False
-        source_proxy = self._proxies.get(self._pending_source.node_id)
         target_proxy = self._proxies.get(target_port.node_id)
-        if source_proxy is None or target_proxy is None:
+        if target_proxy is None:
             return False
-        return _types_compatible(source_proxy.output_type, target_proxy.input_type)
+        return _types_compatible(
+            self._pending_source.data_type, target_proxy.input_type
+        )
 
     def _cancel_pending_connection(self) -> None:
         if self._pending_source is not None:
@@ -1043,11 +1136,13 @@ class PipelineGraphView(QGraphicsView):
         source_id: str,
         target_id: str,
         target_port: int = 0,
+        source_port: int = 0,
     ) -> bool:
         return any(
             item.source_id == source_id
             and item.target_id == target_id
             and item.target_port == int(target_port)
+            and item.source_port == int(source_port)
             for item in self._connections
         )
 
@@ -1099,7 +1194,7 @@ def _node_input_port_count(node) -> int:
 
 def _node_input_port_labels(node) -> list[str]:
     count = _node_input_port_count(node)
-    if getattr(node, "operation_id", "") == "channel_composite":
+    if getattr(node, "operation_id", "") == "combine_channels":
         colors = _channel_color_names(node)
         return [
             f"Channel {index + 1}: {colors[index]}"
@@ -1109,7 +1204,7 @@ def _node_input_port_labels(node) -> list[str]:
 
 
 def _node_input_port_colors(node) -> list[str | None]:
-    if getattr(node, "operation_id", "") != "channel_composite":
+    if getattr(node, "operation_id", "") != "combine_channels":
         return []
     return [_CHANNEL_COLOR_HEX.get(name.lower()) for name in _channel_color_names(node)]
 

@@ -69,7 +69,7 @@ def test_restore_graph_runs_after_load(tmp_path):
 def test_workflow_preserves_multi_input_target_ports(tmp_path):
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
-    composite = pipeline.add_node("channel_composite")
+    composite = pipeline.add_node("combine_channels")
     pipeline.connect("input", composite.id, target_port=1)
     pipeline.connect("gaussian", composite.id, target_port=0)
 

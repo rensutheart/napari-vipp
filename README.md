@@ -90,8 +90,9 @@ The current node catalogue includes:
     - Select Axis Slice
   - Channels & Composites:
     - Extract Channel
-    - Channel Composite
-    - RGB Composite
+    - Combine Channels
+    - Split Channels
+    - Composite → RGB
   - Type & Scaling:
     - Convert Dtype
     - Rescale Intensity
@@ -134,13 +135,17 @@ The current node catalogue includes:
   - Morphological Gradient
   - Fill Holes
   - Volume Filter
-`Extract Channel` is the current practical split-channel path. `Channel
-Composite` is a multi-input node: set the expected channel/input count, connect
-that many upstream images, and it stacks them into an explicit multichannel
-output. `RGB Composite` keeps the older single-input display use case where
-selected channels from one multichannel image are rendered as an RGB image.
-`Calculate New Image` is a multi-input image-math node that applies comma
-separated weights to connected inputs and then adds an offset.
+`Extract Channel` pulls one selected channel from a multichannel image.
+`Split Channels` is its bulk counterpart: it emits one output port per channel
+in the image (losslessly, preserving dtype), with the port count following the
+true channel count. `Combine Channels` is the inverse multi-input node: set the
+expected channel/input count, connect that many upstream images, and it stacks
+them into an explicit multichannel output. `Composite → RGB` is a configurable
+display node that maps a multichannel composite to a channel-last RGB image —
+auto-detecting the channel axis by default, with optional manual axis and
+per-plane channel selection. `Calculate New Image` is a multi-input image-math
+node that applies comma separated weights to connected inputs and then adds an
+offset.
 
 `Image Source` can point to an existing napari layer, a local `.npy` or TIFF
 file, or one of the bundled synthetic samples. `Save Image` passes data through

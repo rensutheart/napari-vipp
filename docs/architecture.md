@@ -2,7 +2,7 @@
 
 This document is a developer handoff map for the current `napari-vipp`
 prototype. It was reviewed against the live codebase after the slot-aware
-Channel Composite work, workflow persistence, Python export, metadata panels,
+Combine Channels work, workflow persistence, Python export, metadata panels,
 histograms, and channel-colour preview updates.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
@@ -72,9 +72,10 @@ Important dataclasses:
 | Type | Purpose |
 | --- | --- |
 | `ParameterSpec` | Declares one parameter: name, label, kind, default, range, step, decimals, and optional choices. |
-| `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, and `max_inputs`. |
+| `OutputSpec` | Declares one output port of a node: `name`, `output_type`, and optional display `title`. |
+| `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, `max_inputs`, optional static `outputs` (multi-output ports), and optional `output_factory` (dynamic ports derived from a runtime channel count). |
 | `GraphNode` | A node instance with a stable id, operation id, resolved display/type fields, mutable `params`, and `max_inputs`. |
-| `GraphConnection` | A directed edge from `source_id` to `target_id`, including the target input slot as `target_port`. |
+| `GraphConnection` | A directed edge from `source_id` to `target_id`, including the target input slot as `target_port` and the source output slot as `source_port`. |
 | `ConnectionResult` | Returned by `connect()`: success flag, message, created connection, and any replaced/removed connections. |
 | `SourcePayload` | Data, metadata, and name injected into source nodes. |
 
@@ -85,20 +86,32 @@ Key behaviours:
 - `reset_starter_graph()` creates the starter graph:
   `Image Source -> Gaussian Blur -> Otsu Threshold`.
 - `add_node()` creates node instances from `NODE_LIBRARY`.
-- `connect(source_id, target_id, target_port=None)` enforces type
-  compatibility, rejects cycles, respects `max_inputs`, and stores the selected
-  target slot. For multi-input nodes, omitted `target_port` auto-fills the first
-  free slot; connecting to an occupied slot replaces that slot only.
+- `connect(source_id, target_id, target_port=None, source_port=0)` enforces type
+  compatibility (using the chosen source output port's type), rejects cycles,
+  respects `max_inputs`, and stores the selected target and source slots. For
+  multi-input nodes, omitted `target_port` auto-fills the first free slot;
+  connecting to an occupied slot replaces that slot only. `source_port` selects
+  which output of a multi-output node feeds the edge.
 - `disconnect(source_id, target_id, target_port=None)` removes either a specific
   slot connection or all matching source-target connections when no slot is
   supplied.
 - `trim_invalid_connections(node_id)` removes connections whose stored slot is
   now outside the node's current input count.
+- `output_ports(node_id)` returns the node's resolved `OutputSpec`s: the static
+  `outputs` when declared, a single default `out` port otherwise, or — for nodes
+  with an `output_factory` — one port per channel discovered on the last run
+  (defaulting to three before the node has processed an image).
+- `trim_invalid_output_connections(node_id)` removes downstream edges whose
+  stored `source_port` is now outside a dynamic node's current output count.
 - `topological_order()` supports export by returning a source-first order.
 - `restore_graph()` rebuilds the model from workflow JSON.
 
 Execution happens in `run(...)`. It repeatedly runs nodes whose upstream sources
-are complete and stores both `outputs[node_id]` and `output_states[node_id]`.
+are complete. For each node it stores the primary output in `outputs[node_id]`
+and `output_states[node_id]` (the port-0 value, for backward compatibility) plus
+the full per-port lists in `node_outputs[node_id]` and
+`node_output_states[node_id]`. Downstream inputs are resolved by
+`(source_id, source_port)` so a node can pull from any output port of its source.
 Source nodes use `SourcePayload`s or the toolbar-selected napari layer.
 Single-input nodes call their pure operation function with one input. Multi-input
 nodes gather inputs in `target_port` order and require all ports from
@@ -108,9 +121,15 @@ Special execution cases:
 
 - `save_output` receives the upstream `image_state` so TIFF/ImageJ metadata can
   be written where possible.
-- `channel_composite` derives its insertion channel axis from upstream metadata,
+- `combine_channels` derives its insertion channel axis from upstream metadata,
   stores that `channel_axis` back into `node.params`, and then stacks inputs in
   slot order.
+- Multi-output nodes call their function once; it returns a sequence of arrays
+  that `run` splits across the node's ports, building a per-port `ImageState`
+  via `transform_split_output_state`. Ports are either static (declared in
+  `OperationSpec.outputs`) or dynamic (built by `OperationSpec.output_factory`
+  from the number of returned arrays, e.g. `split_channels` yields one port per
+  channel in the image).
 
 ## Node Library
 
@@ -123,7 +142,8 @@ The current high-level groups are:
 - `Image Data`
   - `Source & Output`: Image Source, Save Image
   - `Axes & Regions`: Crop Stack, Select Axis Slice
-  - `Channels & Composites`: Extract Channel, Channel Composite, RGB Composite
+  - `Channels & Composites`: Extract Channel, Combine Channels, Split Channels,
+    Composite → RGB
   - `Type & Scaling`: Convert Dtype, Rescale Intensity, Normalize, Clip
   - `Math & Logic`: Calculate New Image, Add, Subtract, Ratio, Mask Image,
     Logical AND, Logical OR, Logical XOR, Invert
@@ -187,12 +207,12 @@ future OME-Zarr work.
 - `Off`: skip preview generation;
 - state-aware channel handling when `ImageState` is available;
 - pseudo-colour fluorescence composites for multichannel data;
-- Channel Composite display colours from `channel_colors`.
+- Combine Channels display colours from `channel_colors`.
 
-Important nuance: Channel Composite colour assignment is display intent. The
+Important nuance: Combine Channels colour assignment is display intent. The
 underlying output stays a multichannel array with a channel axis. The assigned
 colours affect thumbnails and graph-port presentation; RGB conversion remains a
-separate operation (`RGB Composite`) when a downstream RGB image is needed.
+separate operation (`Composite → RGB`) when a downstream RGB image is needed.
 
 Histograms live mostly in `_widget.py` through `HistogramPanel` and helper
 functions near the bottom of the file. The inspector supports slice-vs-stack
@@ -209,10 +229,10 @@ Main classes:
 | Class | Role |
 | --- | --- |
 | `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, selection, delete-key handling. |
-| `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports. |
+| `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports (one or more output ports for multi-output nodes). |
 | `NodeCard` | Embedded widget with category tint, title, thumbnail, compact metadata, and pin button when applicable. |
-| `PortItem` | Input/output port circle with hover/drop feedback. Multi-input nodes have several input ports. |
-| `ConnectionItem` | Curved wire storing source id, target id, and `target_port`. |
+| `PortItem` | Input/output port circle with hover/drop feedback and optional accent colour/label. Multi-input and multi-output nodes have several ports. |
+| `ConnectionItem` | Curved wire storing source id, target id, `target_port`, and `source_port`. |
 
 Signals to `VippWidget`:
 
@@ -220,13 +240,17 @@ Signals to `VippWidget`:
 - `node_delete_requested(node_id)`
 - `pin_requested(node_id)`
 - `node_create_requested(operation_id, scene_position)`
-- `connection_requested(source_id, target_id, target_port)`
+- `connection_requested(source_id, target_id, target_port, source_port)`
 - `connection_removed(source_id, target_id, target_port)`
 - `status_message(text)`
 
 Slot-aware connections are important. The graph must never treat all wires into
-a multi-input node as one anonymous target. `target_port` is the contract
-between the visual port, the pipeline model, workflow JSON, and Python export.
+a multi-input node as one anonymous target, nor all wires out of a multi-output
+node as one anonymous source. `target_port` and `source_port` are the contract
+between the visual ports, the pipeline model, workflow JSON, and Python export.
+`VippWidget._sync_node_output_ports(node_id)` pushes a node's declared
+`OutputSpec`s (labels and accent colours) onto its `NodeProxy` after the graph is
+built or a node is added.
 
 ## Widget UI
 
@@ -238,7 +262,7 @@ It is currently large because it contains:
 - generic parameter controls;
 - custom `ImageSourceControl`;
 - custom `AxisSliceControl` for keep/remove/range axis subsetting;
-- custom Channel Composite controls for input count and channel colour identity;
+- custom Combine Channels controls for input count and channel colour identity;
 - source resolution from napari layers, files, or samples;
 - graph editing callbacks;
 - pipeline execution and debouncing;
@@ -256,7 +280,7 @@ The main update loop is `run_pipeline()`:
    histogram, and status text.
 
 Most parameter changes go through a 150 ms single-shot debounce timer. Some UI
-changes, such as Channel Composite colour identity, also call
+changes, such as Combine Channels colour identity, also call
 `_update_thumbnails()` immediately because they affect display but not numeric
 array values.
 
@@ -284,7 +308,7 @@ Graph-level output:
 Workflow persistence:
 
 - `core/workflow.py` serializes nodes, params, connections including
-  `target_port`, and canvas positions to JSON.
+  `target_port` and `source_port`, and canvas positions to JSON.
 - Unknown operations are skipped on load.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
 
@@ -293,7 +317,10 @@ Python export:
 - `core/export.py` emits a runnable script with `run_pipeline()`,
   `batch_process()`, image load/save helpers, and an argparse entry point.
 - Multi-input calls use input sources ordered by `target_port`.
-- `channel_composite` exports using stored `channel_axis`; if a composite node
+- Multi-output sources are assigned a list; downstream calls index the right
+  port (for example `split_channels_1[1]` for the second channel) using
+  `source_port`.
+- `combine_channels` exports using stored `channel_axis`; if a composite node
   has not run yet and lacks that derived axis, export emits a NOTE comment.
 
 ## Sample Data
@@ -317,13 +344,15 @@ Current test split:
 - `test_graph.py`: Qt graph canvas behaviour, node movement, ports,
   connection feedback, deletion.
 - `test_preview.py`: slice/MIP/multichannel thumbnail generation, including
-  requested Channel Composite colours.
+  requested Combine Channels colours.
 - `test_sample_data.py`: sample data shapes and metadata hints.
 - `test_widget.py`: pytest-qt tests for widget workflows, metadata, histogram,
-  pinning, source controls, graph interactions, Channel Composite UI, and save
+  pinning, source controls, graph interactions, Combine Channels UI, and save
   actions.
 - `test_workflow.py`: workflow JSON save/load and target-port preservation.
 - `test_export.py`: generated Python syntax and execution.
+- `test_multi_output.py`: multi-output ports, `source_port` routing, split
+  metadata, and persistence/export of multi-output sources.
 
 Useful commands:
 
@@ -341,8 +370,10 @@ Implemented now:
 - large pan/zoom graph with draggable nodes;
 - node add/connect/delete workflows;
 - slot-aware multi-input connections;
+- true multi-output graph nodes with per-port wiring, including dynamic port
+  counts (e.g. `Split Channels` emits one port per channel);
 - Image Data grouping with source, output, channels, conversion, math, and logic
-  nodes;
+  nodes, including the configurable `Composite → RGB` and `Split Channels`;
 - OME-NGFF-inspired metadata propagation;
 - per-node and global preview controls;
 - slice/stack/log histograms;
@@ -352,7 +383,6 @@ Implemented now:
 
 Still incomplete or deliberately future-facing:
 
-- true multi-output graph nodes;
 - non-image outputs such as measurement tables;
 - OME-Zarr/OME-NGFF import/export as first-class IO, beyond internal metadata
   inspiration;

@@ -40,6 +40,7 @@ def serialize_workflow(
                 "source": connection.source_id,
                 "target": connection.target_id,
                 "target_port": connection.target_port,
+                "source_port": connection.source_port,
             }
             for connection in pipeline.connections
         ],
@@ -83,7 +84,18 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
                 target_port = int(raw.get("target_port", 0))
             except (TypeError, ValueError):
                 target_port = 0
-            connections.append(GraphConnection(source, target, max(target_port, 0)))
+            try:
+                source_port = int(raw.get("source_port", 0))
+            except (TypeError, ValueError):
+                source_port = 0
+            connections.append(
+                GraphConnection(
+                    source,
+                    target,
+                    max(target_port, 0),
+                    max(source_port, 0),
+                )
+            )
 
     positions: dict[str, Position] = {}
     raw_positions = data.get("positions") or {}

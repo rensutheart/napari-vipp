@@ -115,20 +115,26 @@ def _build_function_body(
             lines.append(f"{_INDENT}{var} = {_source_param_name(node_id)}")
             continue
 
-        sources = pipeline._input_sources(node_id)
-        if spec.function is None or not sources:
+        connections = pipeline._input_connections(node_id)
+        if spec.function is None or not connections:
             lines.append(f"{_INDENT}{var} = None  # {node.title}: no connected input")
             continue
 
-        call = _build_call(node, spec, sources, var_names)
+        call = _build_call(pipeline, node, spec, connections, var_names)
         lines.append(f"{_INDENT}{var} = {call}")
-        if node.operation_id == "channel_composite":
+        if node.operation_id == "combine_channels":
             if "channel_axis" not in node.params:
                 missing.append(
-                    "channel_composite was exported without a stored channel_axis; "
+                    "combine_channels was exported without a stored channel_axis; "
                     "run the pipeline once in napari to store the metadata-derived "
                     "axis before export."
                 )
+        if spec.is_multi_output and node_id in _terminal_nodes(pipeline, order):
+            missing.append(
+                f"{node.title} ({node_id}) produces multiple outputs but nothing "
+                "consumes them; connect its output ports so the script can route "
+                "each channel."
+            )
 
     returns = ", ".join(
         f"{node_id!r}: {var_names[node_id]}" for node_id in order
@@ -137,7 +143,7 @@ def _build_function_body(
     return lines, _dedupe(missing)
 
 
-def _build_call(node, spec, sources, var_names) -> str:
+def _build_call(pipeline, node, spec, connections, var_names) -> str:
     fn_name = spec.function.__name__
     accepted = list(inspect.signature(spec.function).parameters)
     data_param = accepted[0] if accepted else ""
@@ -150,19 +156,31 @@ def _build_call(node, spec, sources, var_names) -> str:
 
     multi_input = node.max_inputs is None or node.max_inputs != 1
     if multi_input:
-        ordered_sources = _ordered_input_sources(node, sources)
-        inputs = ", ".join(var_names[src] for src in ordered_sources)
+        inputs = ", ".join(
+            _source_ref(pipeline, conn, var_names) for conn in connections
+        )
         first_arg = f"[{inputs}]"
     else:
-        first_arg = var_names[sources[0]]
+        first_arg = _source_ref(pipeline, connections[0], var_names)
 
     if kwargs_text:
         return f"{fn_name}({first_arg}, {kwargs_text})"
     return f"{fn_name}({first_arg})"
 
 
-def _ordered_input_sources(node, sources) -> list[str]:
-    return list(sources)
+def _source_ref(pipeline, connection, var_names) -> str:
+    """Return the variable expression for one input connection.
+
+    Multi-output source nodes assign a list to their variable, so an
+    expression like ``split_channels_1[1]`` selects the requested output port.
+    """
+    var = var_names[connection.source_id]
+    source_node = pipeline.nodes.get(connection.source_id)
+    if source_node is not None:
+        source_spec = NODE_LIBRARY_BY_ID[source_node.operation_id]
+        if source_spec.is_multi_output:
+            return f"{var}[{int(connection.source_port)}]"
+    return var
 
 
 def _build_helpers() -> str:

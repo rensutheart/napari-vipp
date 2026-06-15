@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Renamed the `Channel Composite` node to `Combine Channels` to make it the
+  clear complement of channel splitting; it still stacks its connected inputs
+  into a multichannel image.
+- Added a generic `Split Channels` node that emits one output port per channel
+  in the image (replacing the fixed three-port `Split RGB`). The split is
+  lossless and preserves dtype, and the port count adjusts to the true channel
+  count once the node processes an image (a grayscale image yields a single
+  port). `Combine Channels` and `Split Channels` are inverse operations and sit
+  next to each other in the node palette.
+- Added a single configurable `Composite → RGB` display node (merging the two
+  earlier RGB nodes) that maps a multichannel composite to a channel-last RGB
+  image. By default the channel axis is auto-detected and channels map in order
+  (0→R, 1→G, 2→B; single channel→white); the channel axis and per-plane channel
+  selections can be set explicitly.
+- Added true multi-output support to the graph model, canvas, persistence, and
+  Python export: connections now carry a `source_port`, nodes can declare static
+  `OutputSpec` ports or a dynamic `output_factory`, and downstream wires resolve
+  the selected port (stale wires to removed ports are trimmed automatically).
+
 ## 0.1.0
 
 - Initial napari plugin scaffold.

@@ -1743,6 +1743,7 @@ class VippWidget(QWidget):
     def _add_node_at(self, operation_id: str, position) -> object:
         node = self.pipeline.add_node(operation_id)
         self.graph_view.add_node(node, position)
+        self._sync_node_output_ports(node.id)
         self._sync_pin_ui()
         self.graph_view.select_node(node.id)
         self.run_pipeline()
@@ -1764,6 +1765,7 @@ class VippWidget(QWidget):
             self.pipeline.connections,
         )
         self._sync_pin_ui()
+        self._sync_all_output_ports()
 
     def _save_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -1807,6 +1809,7 @@ class VippWidget(QWidget):
             workflow["positions"],
         )
         self._sync_pin_ui()
+        self._sync_all_output_ports()
         self._select_first_available_node()
         self.run_pipeline()
         self.status_label.setText(f"Loaded workflow from {Path(path).name}.")
@@ -2013,8 +2016,11 @@ class VippWidget(QWidget):
         source_id: str,
         target_id: str,
         target_port: int | None = None,
+        source_port: int = 0,
     ) -> None:
-        result = self.pipeline.connect(source_id, target_id, target_port)
+        result = self.pipeline.connect(
+            source_id, target_id, target_port, source_port
+        )
         if not result.success:
             self.status_label.setText(result.message)
             return
@@ -2030,6 +2036,7 @@ class VippWidget(QWidget):
                 result.connection.source_id,
                 result.connection.target_id,
                 result.connection.target_port,
+                result.connection.source_port,
             )
         self.run_pipeline()
         self.status_label.setText(result.message)
@@ -2113,8 +2120,8 @@ class VippWidget(QWidget):
         if node.operation_id == "select_axis_slice":
             self._render_select_axis_slice_parameters(node_id)
             return
-        if node.operation_id == "channel_composite":
-            self._render_channel_composite_parameters(node_id)
+        if node.operation_id == "combine_channels":
+            self._render_combine_channels_parameters(node_id)
             return
 
         for spec in specs:
@@ -2133,16 +2140,16 @@ class VippWidget(QWidget):
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
 
-    def _render_channel_composite_parameters(self, node_id: str) -> None:
+    def _render_combine_channels_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
         specs = {
             spec.name: spec for spec in self.pipeline.node_parameter_specs(node_id)
         }
         count_spec = specs["input_count"]
-        count = self._channel_composite_input_count(node)
+        count = self._combine_channels_input_count(node)
         node.params["input_count"] = count
         node.params["channel_colors"] = ",".join(
-            self._channel_composite_colors(node),
+            self._combine_channels_colors(node),
         )
 
         count_widget = ParameterControl(
@@ -2151,12 +2158,12 @@ class VippWidget(QWidget):
             self._parameter_bounds_for(node_id, count_spec),
         )
         count_widget.valueChanged.connect(
-            self._on_channel_composite_input_count_changed
+            self._on_combine_channels_input_count_changed
         )
         self.parameter_form.addRow(count_spec.label, count_widget)
         self._parameter_widgets["input_count"] = count_widget
 
-        for index, color in enumerate(self._channel_composite_colors(node)):
+        for index, color in enumerate(self._combine_channels_colors(node)):
             spec = ParameterSpec(
                 f"channel_color_{index}",
                 f"Channel {index + 1} colour",
@@ -2177,7 +2184,7 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
-        self._sync_channel_composite_graph_ports(node_id)
+        self._sync_combine_channels_graph_ports(node_id)
 
     def _render_image_source_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -2366,13 +2373,13 @@ class VippWidget(QWidget):
         self._apply_select_axis_slice_params(self._selected_node_id, value)
         self._debounce_timer.start()
 
-    def _on_channel_composite_input_count_changed(self, value) -> None:
+    def _on_combine_channels_input_count_changed(self, value) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "channel_composite":
+        if node is None or node.operation_id != "combine_channels":
             return
         node.params["input_count"] = int(value)
-        colors = self._channel_composite_colors(node)
+        colors = self._combine_channels_colors(node)
         node.params["channel_colors"] = ",".join(colors)
         for connection in self.pipeline.trim_invalid_connections(node_id):
             self.graph_view.remove_connection(
@@ -2381,29 +2388,29 @@ class VippWidget(QWidget):
                 connection.target_port,
                 notify=False,
             )
-        self._sync_channel_composite_graph_ports(node_id)
+        self._sync_combine_channels_graph_ports(node_id)
         self._render_parameters(node_id)
         self._debounce_timer.start()
 
     def _on_channel_color_changed(self, slot: int, value) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "channel_composite":
+        if node is None or node.operation_id != "combine_channels":
             return
-        colors = self._channel_composite_colors(node)
+        colors = self._combine_channels_colors(node)
         if slot >= len(colors):
             return
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
-        self._sync_channel_composite_graph_ports(node_id)
+        self._sync_combine_channels_graph_ports(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
 
-    def _sync_channel_composite_graph_ports(self, node_id: str) -> None:
+    def _sync_combine_channels_graph_ports(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "channel_composite":
+        if node is None or node.operation_id != "combine_channels":
             return
-        colors = self._channel_composite_colors(node)
+        colors = self._combine_channels_colors(node)
         labels = [
             f"Channel {index + 1}: {color}"
             for index, color in enumerate(colors)
@@ -2423,15 +2430,68 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None or not node.has_input:
             return
-        if node.operation_id == "channel_composite":
-            self._sync_channel_composite_graph_ports(node_id)
+        if node.operation_id == "combine_channels":
+            self._sync_combine_channels_graph_ports(node_id)
             return
         self.graph_view.set_node_input_ports(
             node_id,
             self.pipeline.input_port_count(node_id),
         )
 
-    def _channel_composite_input_count(self, node) -> int:
+    def _sync_node_output_ports(self, node_id: str) -> None:
+        spec = self.pipeline.operation_spec(
+            self.pipeline.nodes[node_id].operation_id
+        )
+        ports = self.pipeline.output_ports(node_id)
+        if not spec.is_multi_output:
+            return
+        labels = [port.label for port in ports]
+        colors = [
+            self._output_port_color(index, port)
+            for index, port in enumerate(ports)
+        ]
+        self.graph_view.set_node_output_ports(node_id, len(ports), labels, colors)
+
+    @staticmethod
+    def _output_port_color(index: int, port) -> str | None:
+        """Pick a hex color for an output port.
+
+        Named color ports (e.g. ``red``) use the matching palette entry;
+        positional ports (e.g. ``channel_3``) cycle through the palette so
+        each Split Channels output is visually distinct.
+        """
+        direct = CHANNEL_COLOR_HEX.get(port.name.lower())
+        if direct is not None:
+            return direct
+        palette = list(CHANNEL_COLOR_HEX.values())
+        return palette[index % len(palette)]
+
+    def _sync_all_output_ports(self) -> None:
+        for node_id in self.pipeline.nodes:
+            self._sync_node_output_ports(node_id)
+
+    def _refresh_dynamic_output_ports(self) -> None:
+        """Resync graph ports for nodes whose output count varies per run.
+
+        Dynamic multi-output nodes (e.g. Split Channels) only know their true
+        channel count after processing an image. Once a run completes, drop any
+        downstream wires bound to ports that no longer exist, then rebuild the
+        node's output ports to match the latest count.
+        """
+        for node_id, node in list(self.pipeline.nodes.items()):
+            spec = self.pipeline.operation_spec(node.operation_id)
+            if spec.output_factory is None:
+                continue
+            for connection in self.pipeline.trim_invalid_output_connections(node_id):
+                self.graph_view.remove_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    connection.target_port,
+                    notify=False,
+                )
+            self._sync_node_output_ports(node_id)
+
+    def _combine_channels_input_count(self, node) -> int:
         maximum = node.max_inputs if node.max_inputs is not None else 12
         try:
             count = int(node.params.get("input_count", 2))
@@ -2439,8 +2499,8 @@ class VippWidget(QWidget):
             count = 2
         return int(np.clip(count, 1, max(int(maximum), 1)))
 
-    def _channel_composite_colors(self, node) -> list[str]:
-        count = self._channel_composite_input_count(node)
+    def _combine_channels_colors(self, node) -> list[str]:
+        count = self._combine_channels_input_count(node)
         raw = str(node.params.get("channel_colors", "")).strip()
         colors = [part.strip().title() for part in raw.split(",") if part.strip()]
         defaults = list(CHANNEL_COLOR_CHOICES)
@@ -2455,9 +2515,9 @@ class VippWidget(QWidget):
 
     def _node_preview_channel_colors(self, node_id: str) -> list[str] | None:
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "channel_composite":
+        if node is None or node.operation_id != "combine_channels":
             return None
-        return self._channel_composite_colors(node)
+        return self._combine_channels_colors(node)
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -2697,6 +2757,7 @@ class VippWidget(QWidget):
             )
         self._hide_input_layer_for_inspection(primary_layer)
 
+        self._refresh_dynamic_output_ports()
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()

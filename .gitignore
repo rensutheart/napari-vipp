@@ -1,4 +1,5 @@
 .venv/
+.venv-macos/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

@@ -12,6 +12,7 @@ from napari_vipp.core.metadata import (
     image_state_from_array,
     transform_image_state,
     transform_multi_input_image_state,
+    transform_split_output_state,
 )
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
@@ -22,9 +23,10 @@ from napari_vipp.core.operations import (
     binary_threshold,
     black_hat,
     calculate_weighted_image,
-    channel_composite,
     clip_intensity,
     closing,
+    combine_channels,
+    composite_to_rgb,
     contrast_stretch,
     convert_dtype,
     crop_stack,
@@ -48,9 +50,9 @@ from napari_vipp.core.operations import (
     otsu_threshold,
     ratio_image,
     rescale_intensity,
-    rgb_composite,
     save_output,
     select_axis_slice,
+    split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
@@ -72,6 +74,17 @@ class ParameterSpec:
 
 
 @dataclass(frozen=True)
+class OutputSpec:
+    name: str
+    output_type: str
+    title: str = ""
+
+    @property
+    def label(self) -> str:
+        return self.title or self.name
+
+
+@dataclass(frozen=True)
 class OperationSpec:
     id: str
     title: str
@@ -82,10 +95,28 @@ class OperationSpec:
     function: Callable[..., Any] | None = None
     max_inputs: int | None = 1
     subcategory: str = ""
+    outputs: tuple[OutputSpec, ...] = ()
+    output_factory: Callable[[int], tuple[OutputSpec, ...]] | None = None
 
     @property
     def has_input(self) -> bool:
         return self.input_type is not None
+
+    @property
+    def is_multi_output(self) -> bool:
+        """Whether this node can produce more than one output port."""
+        return bool(self.outputs) or self.output_factory is not None
+
+    @property
+    def output_ports(self) -> tuple[OutputSpec, ...]:
+        """Return declared static output ports, or a single default port.
+
+        Nodes with a dynamic ``output_factory`` resolve their ports per node
+        instance via ``PrototypePipeline.output_ports`` instead.
+        """
+        if self.outputs:
+            return self.outputs
+        return (OutputSpec("out", self.output_type),)
 
 
 @dataclass(frozen=True)
@@ -116,6 +147,7 @@ class GraphConnection:
     source_id: str
     target_id: str
     target_port: int = 0
+    source_port: int = 0
 
 
 @dataclass(frozen=True)
@@ -148,6 +180,23 @@ SOURCE_PARAMETERS = (
     ParameterSpec("file_path", "File path", "text", "", 0, 0, 1),
     ParameterSpec("sample_name", "Sample", "text", "", 0, 0, 1),
 )
+
+
+DEFAULT_DYNAMIC_OUTPUT_PORTS = 3
+
+
+def _split_channels_outputs(count: int) -> tuple[OutputSpec, ...]:
+    """Build the output ports for a Split Channels node.
+
+    ``count`` is the number of channels discovered when the node last ran; the
+    pipeline supplies the default port count for a node that has not yet
+    processed an image.
+    """
+    count = max(int(count), 1)
+    return tuple(
+        OutputSpec(f"channel_{index + 1}", "image", f"Ch {index + 1}")
+        for index in range(count)
+    )
 
 
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
@@ -463,15 +512,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
     OperationSpec(
-        "channel_composite",
-        "Channel Composite",
+        "combine_channels",
+        "Combine Channels",
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
             ParameterSpec("input_count", "Input channels", "int", 2, 2, 12, 1),
         ),
-        channel_composite,
+        combine_channels,
         max_inputs=12,
         subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
@@ -612,18 +661,35 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=MATH_LOGIC_GROUP,
     ),
     OperationSpec(
-        "rgb_composite",
-        "RGB Composite",
+        "split_channels",
+        "Split Channels",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (),
+        split_channels,
+        subcategory=CHANNELS_COMPOSITES_GROUP,
+        output_factory=_split_channels_outputs,
+    ),
+    OperationSpec(
+        "composite_to_rgb",
+        "Composite \u2192 RGB",
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
         (
-            ParameterSpec("channel_axis", "Channel axis", "int", 0, 0, 5, 1),
-            ParameterSpec("red_channel", "Red", "int", 2, 0, 15, 1),
-            ParameterSpec("green_channel", "Green", "int", 1, 0, 15, 1),
-            ParameterSpec("blue_channel", "Blue", "int", 0, 0, 15, 1),
+            ParameterSpec(
+                "channel_axis", "Channel axis (-1 auto)", "int", -1, -1, 6, 1
+            ),
+            ParameterSpec("red_channel", "Red channel (-1 auto)", "int", -1, -1, 15, 1),
+            ParameterSpec(
+                "green_channel", "Green channel (-1 auto)", "int", -1, -1, 15, 1
+            ),
+            ParameterSpec(
+                "blue_channel", "Blue channel (-1 auto)", "int", -1, -1, 15, 1
+            ),
         ),
-        rgb_composite,
+        composite_to_rgb,
         subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
     OperationSpec(
@@ -859,6 +925,8 @@ class PrototypePipeline:
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
         self.output_states: dict[str, ImageState | None] = {}
+        self.node_outputs: dict[str, list[Any]] = {}
+        self.node_output_states: dict[str, list[ImageState | None]] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -867,6 +935,8 @@ class PrototypePipeline:
         self.connections = list(PROTOTYPE_CONNECTIONS)
         self.outputs = {}
         self.output_states = {}
+        self.node_outputs = {}
+        self.node_output_states = {}
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -886,6 +956,8 @@ class PrototypePipeline:
         ]
         self.outputs = {node_id: None for node_id in self.nodes}
         self.output_states = {node_id: None for node_id in self.nodes}
+        self.node_outputs = {node_id: [] for node_id in self.nodes}
+        self.node_output_states = {node_id: [] for node_id in self.nodes}
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -934,6 +1006,8 @@ class PrototypePipeline:
         self.nodes[node.id] = node
         self.outputs[node.id] = None
         self.output_states[node.id] = None
+        self.node_outputs[node.id] = []
+        self.node_output_states[node.id] = []
         return node
 
     def remove_node(self, node_id: str) -> bool:
@@ -942,6 +1016,8 @@ class PrototypePipeline:
         del self.nodes[node_id]
         self.outputs.pop(node_id, None)
         self.output_states.pop(node_id, None)
+        self.node_outputs.pop(node_id, None)
+        self.node_output_states.pop(node_id, None)
         self.connections = [
             connection
             for connection in self.connections
@@ -954,21 +1030,25 @@ class PrototypePipeline:
         source_id: str,
         target_id: str,
         target_port: int | None = None,
+        source_port: int = 0,
     ) -> ConnectionResult:
         if source_id not in self.nodes or target_id not in self.nodes:
             return ConnectionResult(False, "Cannot connect missing nodes.")
         if source_id == target_id:
             return ConnectionResult(False, "Cannot connect a node to itself.")
 
-        source = self.nodes[source_id]
         target = self.nodes[target_id]
         if not target.has_input:
             return ConnectionResult(False, "That node does not accept an input.")
-        if not self._types_compatible(source.output_type, target.input_type):
+        source_ports = self.output_ports(source_id)
+        if not 0 <= source_port < len(source_ports):
+            return ConnectionResult(False, "That node does not have that output.")
+        source_output_type = source_ports[source_port].output_type
+        if not self._types_compatible(source_output_type, target.input_type):
             return ConnectionResult(
                 False,
                 (
-                    f"Cannot connect {source.output_type} output to "
+                    f"Cannot connect {source_output_type} output to "
                     f"{target.input_type} input."
                 ),
             )
@@ -1014,7 +1094,7 @@ class PrototypePipeline:
                 for existing in self.connections
                 if existing.target_id != target_id
             ]
-        connection = GraphConnection(source_id, target_id, port)
+        connection = GraphConnection(source_id, target_id, port, source_port)
         if connection in self.connections:
             return ConnectionResult(
                 True,
@@ -1068,27 +1148,84 @@ class PrototypePipeline:
             ]
         return removed
 
+    def trim_invalid_output_connections(
+        self, node_id: str
+    ) -> tuple[GraphConnection, ...]:
+        """Drop edges whose source port no longer exists on ``node_id``.
+
+        Used when a dynamic multi-output node (e.g. Split Channels) produces
+        fewer ports than before, so downstream wires to removed ports are
+        cleaned up rather than silently falling back to port 0.
+        """
+        if node_id not in self.nodes:
+            return ()
+        count = len(self.output_ports(node_id))
+        removed = tuple(
+            connection
+            for connection in self.connections
+            if connection.source_id == node_id and connection.source_port >= count
+        )
+        if removed:
+            self.connections = [
+                connection
+                for connection in self.connections
+                if connection not in removed
+            ]
+        return removed
+
     def set_param(self, node_id: str, name: str, value: Any) -> None:
         self.nodes[node_id].params[name] = value
 
     def operation_spec(self, operation_id: str) -> OperationSpec:
         return NODE_LIBRARY_BY_ID[operation_id]
 
+    def output_ports(self, node_id: str) -> tuple[OutputSpec, ...]:
+        node = self.nodes.get(node_id)
+        if node is None:
+            return ()
+        spec = self.operation_spec(node.operation_id)
+        if spec.output_factory is not None:
+            count = len(self.node_outputs.get(node_id, ()))
+            if count <= 0:
+                count = DEFAULT_DYNAMIC_OUTPUT_PORTS
+            return spec.output_factory(count)
+        return spec.output_ports
+
+    def _resolved_output(self, source_id: str, source_port: int):
+        outputs = self.node_outputs.get(source_id)
+        if outputs:
+            if 0 <= source_port < len(outputs):
+                return outputs[source_port]
+            return outputs[0]
+        return self.outputs.get(source_id)
+
+    def _resolved_output_state(
+        self, source_id: str, source_port: int
+    ) -> ImageState | None:
+        states = self.node_output_states.get(source_id)
+        if states:
+            if 0 <= source_port < len(states):
+                return states[source_port]
+            return states[0]
+        return self.output_states.get(source_id)
+
     def node_parameter_specs(self, node_id: str) -> tuple[ParameterSpec, ...]:
         node = self.nodes[node_id]
         return self.operation_spec(node.operation_id).parameters
 
     def input_data_for_node(self, node_id: str):
-        sources = self._input_sources(node_id)
-        if not sources:
+        connections = self._input_connections(node_id)
+        if not connections:
             return None
-        return self.outputs.get(sources[0])
+        primary = connections[0]
+        return self._resolved_output(primary.source_id, primary.source_port)
 
     def input_state_for_node(self, node_id: str) -> ImageState | None:
-        sources = self._input_sources(node_id)
-        if not sources:
+        connections = self._input_connections(node_id)
+        if not connections:
             return None
-        return self.output_states.get(sources[0])
+        primary = connections[0]
+        return self._resolved_output_state(primary.source_id, primary.source_port)
 
     def run(
         self,
@@ -1099,6 +1236,8 @@ class PrototypePipeline:
     ) -> dict[str, Any]:
         self.outputs = {node_id: None for node_id in self.nodes}
         self.output_states = {node_id: None for node_id in self.nodes}
+        self.node_outputs = {node_id: [] for node_id in self.nodes}
+        self.node_output_states = {node_id: [] for node_id in self.nodes}
         remaining = set(self.nodes)
         completed: set[str] = set()
 
@@ -1112,15 +1251,18 @@ class PrototypePipeline:
                 break
 
             for node_id in runnable:
-                output, state = self._run_node(
+                results = self._run_node(
                     node_id,
                     input_data,
                     input_metadata,
                     input_name,
                     source_payloads or {},
                 )
-                self.outputs[node_id] = output
-                self.output_states[node_id] = state
+                self.node_outputs[node_id] = [data for data, _ in results]
+                self.node_output_states[node_id] = [state for _, state in results]
+                primary_output, primary_state = results[0]
+                self.outputs[node_id] = primary_output
+                self.output_states[node_id] = primary_state
                 remaining.remove(node_id)
                 completed.add(node_id)
         return self.outputs
@@ -1132,74 +1274,119 @@ class PrototypePipeline:
         input_metadata: dict | None,
         input_name: str,
         source_payloads: dict[str, SourcePayload],
-    ):
+    ) -> list[tuple[Any, ImageState | None]]:
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
+        port_count = len(self.output_ports(node_id))
         if not spec.has_input:
             payload = source_payloads.get(node_id)
             if payload is None:
                 payload = SourcePayload(input_data, input_metadata, input_name)
-            return payload.data, image_state_from_array(
-                payload.data,
-                layer_metadata=payload.metadata,
-                source_name=payload.name,
-            )
+            return [
+                (
+                    payload.data,
+                    image_state_from_array(
+                        payload.data,
+                        layer_metadata=payload.metadata,
+                        source_name=payload.name,
+                    ),
+                )
+            ]
 
-        sources = self._input_sources(node_id)
-        if not sources:
-            return None, None
+        connections = self._input_connections(node_id)
+        if not connections:
+            return [(None, None)] * port_count
         if self._node_accepts_multiple_inputs(node):
             required = self._required_inputs_for(node)
             input_connections = {
                 connection.target_port: connection
-                for connection in self._input_connections(node_id)
+                for connection in connections
             }
             if any(port not in input_connections for port in range(required)):
-                return None, None
-            sources = [
-                input_connections[port].source_id
-                for port in range(required)
+                return [(None, None)] * port_count
+            ordered = [input_connections[port] for port in range(required)]
+            source_outputs = [
+                self._resolved_output(conn.source_id, conn.source_port)
+                for conn in ordered
             ]
-            source_outputs = [self.outputs.get(source) for source in sources]
             if (
                 any(output is None for output in source_outputs)
                 or spec.function is None
             ):
-                return None, None
+                return [(None, None)] * port_count
 
-            input_states = [self.output_states.get(source) for source in sources]
+            input_states = [
+                self._resolved_output_state(conn.source_id, conn.source_port)
+                for conn in ordered
+            ]
             kwargs = dict(node.params)
-            if node.operation_id == "channel_composite":
+            if node.operation_id == "combine_channels":
                 derived_axis = _default_combined_channel_axis(
                     input_states[0],
                 )
                 kwargs["channel_axis"] = derived_axis
                 node.params["channel_axis"] = derived_axis
             output = spec.function(source_outputs, **kwargs)
-            return output, transform_multi_input_image_state(
+            state = transform_multi_input_image_state(
                 output,
                 input_states,
                 operation_id=node.operation_id,
                 operation_title=node.title,
                 params=kwargs,
             )
+            return [(output, state)]
 
-        source_output = self.outputs.get(sources[0])
+        primary = connections[0]
+        source_output = self._resolved_output(primary.source_id, primary.source_port)
         if source_output is None or spec.function is None:
-            return None, None
+            return [(None, None)] * port_count
 
-        input_state = self.output_states.get(sources[0])
+        input_state = self._resolved_output_state(
+            primary.source_id, primary.source_port
+        )
         kwargs = dict(node.params)
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
         output = spec.function(source_output, **kwargs)
-        return output, transform_image_state(
+        if spec.is_multi_output:
+            return self._split_node_outputs(node, spec, output, input_state)
+        state = transform_image_state(
             output,
             input_state,
             operation_id=node.operation_id,
             operation_title=node.title,
             params=node.params,
         )
+        return [(output, state)]
+
+    def _split_node_outputs(
+        self,
+        node: GraphNode,
+        spec: OperationSpec,
+        outputs_seq: Any,
+        input_state: ImageState | None,
+    ) -> list[tuple[Any, ImageState | None]]:
+        arrays = list(outputs_seq)
+        if spec.output_factory is not None:
+            ports: tuple[OutputSpec, ...] = spec.output_factory(len(arrays))
+        else:
+            ports = spec.output_ports
+        results: list[tuple[Any, ImageState | None]] = []
+        for index, port in enumerate(ports):
+            data = arrays[index] if index < len(arrays) else None
+            if data is None:
+                results.append((None, None))
+                continue
+            state = transform_split_output_state(
+                data,
+                input_state,
+                operation_id=node.operation_id,
+                operation_title=node.title,
+                port_name=port.label,
+                params=node.params,
+            )
+            results.append((data, state))
+        return results
 
     def _input_sources(self, node_id: str) -> list[str]:
         return [

@@ -269,7 +269,7 @@ def extract_channel(data, channel: int = 0) -> np.ndarray:
     )
 
 
-def channel_composite(
+def combine_channels(
     inputs,
     input_count: int = 2,
     channel_axis: int = -1,
@@ -280,11 +280,11 @@ def channel_composite(
     input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
     arrays = arrays[:input_count]
     if not arrays:
-        raise ValueError("Channel Composite needs at least one connected input.")
+        raise ValueError("Combine Channels needs at least one connected input.")
 
     shape = arrays[0].shape
     if any(array.shape != shape for array in arrays):
-        raise ValueError("Channel Composite inputs must have matching shapes.")
+        raise ValueError("Combine Channels inputs must have matching shapes.")
 
     axis = int(channel_axis)
     if axis < 0:
@@ -321,29 +321,71 @@ def calculate_weighted_image(
     return result
 
 
-def rgb_composite(
+def composite_to_rgb(
     data,
-    channel_axis: int = 0,
-    red_channel: int = 2,
-    green_channel: int = 1,
-    blue_channel: int = 0,
+    channel_axis: int = -1,
+    red_channel: int = -1,
+    green_channel: int = -1,
+    blue_channel: int = -1,
 ) -> np.ndarray:
-    """Create a channel-last RGB composite from a multi-channel image."""
+    """Convert a multichannel composite into a channel-last RGB image.
+
+    By default (all parameters ``-1``) the channel axis is detected
+    automatically and channels are mapped in order: the first channel becomes
+    red, the second green, the third blue. A single channel is written to all
+    three (white/grayscale) and extra channels are ignored.
+
+    The mapping is configurable: set ``channel_axis`` to pick the channel axis
+    explicitly, and set ``red_channel``/``green_channel``/``blue_channel`` to
+    choose which channel index feeds each RGB plane. Any selection that is
+    ``-1`` falls back to the positional default, and selections outside the
+    available channel range leave that plane blank.
+    """
     arr = np.asarray(data)
-    if arr.ndim < 3:
-        gray = _to_float_unit(arr)
+    if int(channel_axis) < 0:
+        axis = _default_channel_axis(arr)
+    else:
+        axis = _normalize_axis(int(channel_axis), arr.ndim)
+    if axis is None:
+        gray = _composite_channel_to_float(arr)
         return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
 
-    channel_axis = _normalize_axis(channel_axis, arr.ndim)
-    channels = [
-        _extract_channel(arr, channel=red_channel, channel_axis=channel_axis),
-        _extract_channel(arr, channel=green_channel, channel_axis=channel_axis),
-        _extract_channel(arr, channel=blue_channel, channel_axis=channel_axis),
-    ]
-    return np.stack(
-        [_composite_channel_to_float(channel) for channel in channels],
-        axis=-1,
-    ).astype(np.float32)
+    moved = np.moveaxis(arr, axis, -1)
+    count = moved.shape[-1]
+    if count == 1:
+        gray = _composite_channel_to_float(moved[..., 0])
+        return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
+
+    defaults = (0, 1, 2)
+    selections = (red_channel, green_channel, blue_channel)
+    blank = np.zeros(moved.shape[:-1], dtype=np.float32)
+    channels = []
+    for position, selection in enumerate(selections):
+        index = defaults[position] if int(selection) < 0 else int(selection)
+        if 0 <= index < count:
+            channels.append(_composite_channel_to_float(moved[..., index]))
+        else:
+            channels.append(blank)
+    return np.stack(channels, axis=-1).astype(np.float32)
+
+
+def split_channels(data) -> list[np.ndarray]:
+    """Split a multi-channel image into one output array per channel.
+
+    The channel axis is detected automatically and each output is a single
+    channel with the spatial shape of the input. The number of outputs equals
+    the true number of channels in the image. A grayscale image with no
+    detected channel axis yields a single output.
+    """
+    arr = np.asarray(data)
+    axis = _default_channel_axis(arr)
+    if axis is None:
+        return [arr.copy()]
+
+    moved = np.moveaxis(arr, axis, -1)
+    count = moved.shape[-1]
+    return [moved[..., index].copy() for index in range(count)]
+
 
 
 def rescale_intensity(
