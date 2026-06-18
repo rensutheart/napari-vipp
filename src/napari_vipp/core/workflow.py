@@ -3,12 +3,13 @@
 Serialize a :class:`PrototypePipeline` (nodes, parameters, connections) plus the
 optional canvas node positions to a portable JSON document, and rebuild a graph
 from such a document. Node titles/categories/port types are derived from the
-operation library on load, so files stay small and forward-compatible.
+operation library on load, so files stay compact and use one explicit schema.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -45,8 +46,7 @@ def serialize_workflow(
             for connection in pipeline.connections
         ],
         "positions": {
-            node_id: [float(x), float(y)]
-            for node_id, (x, y) in positions.items()
+            node_id: [float(x), float(y)] for node_id, (x, y) in positions.items()
         },
     }
 
@@ -56,60 +56,76 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
 
     Returns a dict with keys ``nodes`` (list[GraphNode]),
     ``connections`` (list[GraphConnection]), and ``positions``
-    (dict[node_id, (x, y)]). Unknown operations and dangling connections are
-    skipped so partially compatible files still load.
+    (dict[node_id, (x, y)]). Invalid versions, unknown operations, malformed
+    nodes, and dangling connections are rejected with a clear error.
     """
     if not isinstance(data, dict):
         raise ValueError("Workflow file is not a valid object.")
     if data.get("type") != WORKFLOW_TYPE:
         raise ValueError("File is not a napari-vipp workflow.")
+    if data.get("version") != WORKFLOW_VERSION:
+        raise ValueError(
+            f"Unsupported workflow version: {data.get('version')!r}. "
+            f"Expected version {WORKFLOW_VERSION}."
+        )
 
-    nodes: list[GraphNode] = []
-    for raw in data.get("nodes", []):
-        node = _node_from_dict(raw)
-        if node is not None:
-            nodes.append(node)
+    raw_nodes = data.get("nodes")
+    if not isinstance(raw_nodes, list) or not raw_nodes:
+        raise ValueError("Workflow must contain a non-empty nodes list.")
+    nodes = [_node_from_dict(raw, index) for index, raw in enumerate(raw_nodes)]
     if not nodes:
         raise ValueError("Workflow contains no recognised nodes.")
+    node_ids = [node.id for node in nodes]
+    if len(set(node_ids)) != len(node_ids):
+        raise ValueError("Workflow contains duplicate node ids.")
 
-    node_ids = {node.id for node in nodes}
+    node_id_set = set(node_ids)
+    raw_connections = data.get("connections")
+    if not isinstance(raw_connections, list):
+        raise ValueError("Workflow connections must be a list.")
     connections: list[GraphConnection] = []
-    for raw in data.get("connections", []):
+    occupied_inputs: set[tuple[str, int]] = set()
+    for index, raw in enumerate(raw_connections):
         if not isinstance(raw, dict):
-            continue
-        source = str(raw.get("source", ""))
-        target = str(raw.get("target", ""))
-        if source in node_ids and target in node_ids:
-            try:
-                target_port = int(raw.get("target_port", 0))
-            except (TypeError, ValueError):
-                target_port = 0
-            try:
-                source_port = int(raw.get("source_port", 0))
-            except (TypeError, ValueError):
-                source_port = 0
-            connections.append(
-                GraphConnection(
-                    source,
-                    target,
-                    max(target_port, 0),
-                    max(source_port, 0),
-                )
+            raise ValueError(f"Connection {index} must be an object.")
+        source = _required_text(raw, "source", f"connection {index}")
+        target = _required_text(raw, "target", f"connection {index}")
+        if source not in node_id_set or target not in node_id_set:
+            raise ValueError(
+                f"Connection {index} references a missing node: "
+                f"{source!r} -> {target!r}."
             )
+        target_port = _required_non_negative_int(
+            raw, "target_port", f"connection {index}"
+        )
+        source_port = _required_non_negative_int(
+            raw, "source_port", f"connection {index}"
+        )
+        target_slot = (target, target_port)
+        if target_slot in occupied_inputs:
+            raise ValueError(
+                f"Multiple connections target {target!r} input {target_port}."
+            )
+        occupied_inputs.add(target_slot)
+        connections.append(GraphConnection(source, target, target_port, source_port))
 
     positions: dict[str, Position] = {}
-    raw_positions = data.get("positions") or {}
-    if isinstance(raw_positions, dict):
-        for node_id, value in raw_positions.items():
-            if (
-                node_id in node_ids
-                and isinstance(value, (list, tuple))
-                and len(value) == 2
-            ):
-                try:
-                    positions[node_id] = (float(value[0]), float(value[1]))
-                except (TypeError, ValueError):
-                    continue
+    raw_positions = data.get("positions")
+    if not isinstance(raw_positions, dict):
+        raise ValueError("Workflow positions must be an object.")
+    for node_id, value in raw_positions.items():
+        if node_id not in node_id_set:
+            raise ValueError(f"Position references unknown node {node_id!r}.")
+        if not isinstance(value, list) or len(value) != 2:
+            raise ValueError(f"Position for {node_id!r} must contain x and y.")
+        if any(
+            isinstance(coordinate, bool)
+            or not isinstance(coordinate, (int, float))
+            or not math.isfinite(coordinate)
+            for coordinate in value
+        ):
+            raise ValueError(f"Position for {node_id!r} must contain numeric x and y.")
+        positions[node_id] = (float(value[0]), float(value[1]))
 
     return {"nodes": nodes, "connections": connections, "positions": positions}
 
@@ -142,18 +158,23 @@ def _node_to_dict(node: GraphNode) -> dict[str, Any]:
     }
 
 
-def _node_from_dict(raw: Any) -> GraphNode | None:
+def _node_from_dict(raw: Any, index: int) -> GraphNode:
     if not isinstance(raw, dict):
-        return None
-    operation_id = str(raw.get("operation_id", ""))
+        raise ValueError(f"Node {index} must be an object.")
+    operation_id = _required_text(raw, "operation_id", f"node {index}")
     spec = NODE_LIBRARY_BY_ID.get(operation_id)
     if spec is None:
-        return None
-    node_id = str(raw.get("id") or operation_id)
-    params: dict[str, Any] = {param.name: param.default for param in spec.parameters}
+        raise ValueError(f"Node {index} uses unknown operation {operation_id!r}.")
+    node_id = _required_text(raw, "id", f"node {index}")
     saved = raw.get("params")
-    if isinstance(saved, dict):
-        params.update(saved)
+    if not isinstance(saved, dict):
+        raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+    required_params = {param.name for param in spec.parameters}
+    missing_params = required_params - saved.keys()
+    if missing_params:
+        missing = ", ".join(sorted(missing_params))
+        raise ValueError(f"Node {node_id!r} is missing required parameters: {missing}.")
+    params = dict(saved)
     return GraphNode(
         node_id,
         spec.id,
@@ -164,3 +185,23 @@ def _node_from_dict(raw: Any) -> GraphNode | None:
         params,
         spec.max_inputs,
     )
+
+
+def _required_text(data: dict[str, Any], key: str, context: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context.capitalize()} requires non-empty {key!r}.")
+    return value
+
+
+def _required_non_negative_int(
+    data: dict[str, Any],
+    key: str,
+    context: str,
+) -> int:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{context.capitalize()} {key!r} must be an integer.")
+    if value < 0:
+        raise ValueError(f"{context.capitalize()} {key!r} must be non-negative.")
+    return value

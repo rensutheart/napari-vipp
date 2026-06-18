@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
+from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
 
 
@@ -38,6 +39,7 @@ class _LayerEvents:
 class _DimsEvents:
     def __init__(self):
         self.current_step = _Event()
+        self.point = _Event()
 
 
 class _Dims:
@@ -281,6 +283,32 @@ def test_image_source_node_can_use_sample_mode(qtbot):
     assert widget.pipeline.outputs["input"].shape == (12, 96, 128)
 
 
+def test_image_source_node_inspects_and_selects_tiff_series(qtbot, tmp_path):
+    first = np.zeros((5, 6), dtype=np.uint8)
+    second = np.ones((7, 8), dtype=np.uint16)
+    path = tmp_path / "two-series.tif"
+    with tifffile.TiffWriter(path) as tif:
+        tif.write(first, metadata={"axes": "YX"})
+        tif.write(second, metadata={"axes": "YX"})
+
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    control.mode_combo.setCurrentText("file path")
+    control.path_edit.setText(str(path))
+    widget._refresh_image_source_options()
+
+    assert control.series_combo.count() == 2
+    control.series_combo.setCurrentIndex(1)
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes["input"].params["series_index"] == 1
+    assert widget.pipeline.outputs["input"].shape == second.shape
+    assert widget.pipeline.output_states["input"].source.format == "tiff"
+
+
 def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -298,6 +326,50 @@ def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer.dims.events.current_step.emit()
 
     assert _metadata_value(widget, "Current view") == "t=4/4, c=0/2, z=1/3"
+
+
+def test_napari_layer_source_axes_are_right_aligned_to_viewer_dims(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "CZYX"},
+    )
+    viewer.dims.current_step = (0, 0, 2, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    state = widget.pipeline.output_states["input"]
+
+    assert state.axis_order == "CZYX"
+    assert [axis.source_axis for axis in state.axes] == [1, 2, 3, 4]
+    assert _metadata_value(widget, "Current view") == "c=0/2, z=2/3"
+
+
+def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+    ):
+        calls.append(tuple(current_step))
+        return np.zeros((16, 18), dtype=np.uint8)
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    viewer.dims.current_step = (3, 1, 2, 0, 0)
+    viewer.dims.events.point.emit()
+
+    assert calls
+    assert calls[-1] == (3, 1, 2, 0, 0)
 
 
 def test_selecting_node_updates_inspection_layer(qtbot):
@@ -378,7 +450,7 @@ def test_clear_border_node_preserves_label_display_type(qtbot):
     assert inspect.metadata["data_kind"] == "labels"
 
 
-def test_spatial_mode_hides_3d_for_true_2d_input(qtbot):
+def test_clear_border_hides_lateral_choice_for_true_2d_input(qtbot):
     data = np.zeros((12, 12), dtype=np.float32)
     data[0:4, 0:4] = 10
     data[6:10, 6:10] = 10
@@ -388,18 +460,18 @@ def test_spatial_mode_hides_3d_for_true_2d_input(qtbot):
     cleared = widget.add_node_from_palette("clear_border_objects")
     widget._connect_nodes("threshold", cleared.id)
 
-    control = widget._parameter_widgets["spatial_mode"]
+    control = widget._parameter_widgets["boundary_mode"]
     choices = [
         control.combo.itemText(index)
         for index in range(control.combo.count())
     ]
 
-    assert choices == ["Auto from axes", "2D YX"]
-    assert widget.pipeline.nodes[cleared.id].params["spatial_mode"] in choices
+    assert choices == ["All spatial borders"]
+    assert widget.pipeline.nodes[cleared.id].params["boundary_mode"] in choices
     assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 11
 
 
-def test_spatial_mode_keeps_3d_for_true_z_stack(qtbot):
+def test_clear_border_offers_all_or_lateral_boundaries_for_z_stack(qtbot):
     data = np.zeros((3, 12, 12), dtype=np.float32)
     data[:, 0:4, 0:4] = 10
     viewer = _Viewer(data, metadata={"axes": "ZYX"})
@@ -408,24 +480,124 @@ def test_spatial_mode_keeps_3d_for_true_z_stack(qtbot):
     cleared = widget.add_node_from_palette("clear_border_objects")
     widget._connect_nodes("threshold", cleared.id)
 
+    control = widget._parameter_widgets["boundary_mode"]
+    choices = [
+        control.combo.itemText(index)
+        for index in range(control.combo.count())
+    ]
+
+    assert choices == [
+        "All spatial borders",
+        "Lateral borders only (YX)",
+    ]
+    assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 2
+
+    control.combo.setCurrentText("Lateral borders only (YX)")
+    buffer_control = widget._parameter_widgets["border_buffer"]
+    assert buffer_control._bounds.maximum == 11
+    buffer_control.value_box.setValue(10)
+
+    control.combo.setCurrentText("All spatial borders")
+
+    assert buffer_control._bounds.maximum == 2
+    assert widget.pipeline.nodes[cleared.id].params["border_buffer"] == 2
+
+
+def test_fill_holes_uses_contextual_2d_and_3d_controls(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 2:10, 2:10] = 10
+    data[1, 5, 5] = 0
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    filled = widget.add_node_from_palette("fill_holes")
+    widget._connect_nodes("threshold", filled.id)
+
+    mode_control = widget._parameter_widgets["spatial_mode"]
+    size_control = widget._parameter_widgets["max_hole_size"]
+    choices = [
+        mode_control.combo.itemText(index)
+        for index in range(mode_control.combo.count())
+    ]
+    size_label = widget.parameter_form.labelForField(size_control)
+    note = widget._parameter_widgets["fill_holes_scope_note"]
+
+    assert choices == [
+        "Auto from axes",
+        "2D per XY slice (advanced)",
+        "3D ZYX volume",
+    ]
+    assert size_control._bounds.maximum == 3 * 12 * 12
+    assert "volume (voxels)" in size_label.text()
+    assert "Recommended for z-stacks" in note.text()
+
+    mode_control.combo.setCurrentText("2D per XY slice (advanced)")
+
+    assert size_control._bounds.maximum == 12 * 12
+    assert "area (pixels)" in size_label.text()
+    assert "Advanced mode" in note.text()
+    assert "open to background along Z" in note.text()
+
+
+def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
+    data = np.zeros((12, 12), dtype=np.float32)
+    data[2:10, 2:10] = 10
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    filled = widget.add_node_from_palette("fill_holes")
+    widget._connect_nodes("threshold", filled.id)
+
     control = widget._parameter_widgets["spatial_mode"]
     choices = [
         control.combo.itemText(index)
         for index in range(control.combo.count())
     ]
 
-    assert choices == ["Auto from axes", "2D YX", "3D ZYX"]
-    assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 2
+    assert choices == [
+        "Auto from axes",
+        "2D per XY slice (advanced)",
+    ]
+    assert "connected YX image" in widget._parameter_widgets[
+        "fill_holes_scope_note"
+    ].text()
 
-    control.combo.setCurrentText("2D YX")
-    buffer_control = widget._parameter_widgets["border_buffer"]
-    assert buffer_control._bounds.maximum == 11
-    buffer_control.value_box.setValue(10)
 
-    control.combo.setCurrentText("3D ZYX")
+def test_remove_small_objects_uses_observed_sizes_and_contextual_units(qtbot):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 1:5, 1:5] = 10
+    data[1, 8, 8] = 10
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    filtered = widget.add_node_from_palette("remove_small_objects")
+    widget._connect_nodes("threshold", filtered.id)
 
-    assert buffer_control._bounds.maximum == 2
-    assert widget.pipeline.nodes[cleared.id].params["border_buffer"] == 2
+    size_control = widget._parameter_widgets["min_size"]
+    size_label = widget.parameter_form.labelForField(size_control)
+    incoming_mask = widget.pipeline.input_data_for_node(filtered.id)
+    largest_3d = widget._largest_object_size(
+        incoming_mask,
+        3,
+        "Face connected",
+    )
+
+    assert size_control._bounds.maximum == largest_3d
+    assert size_control._bounds.logarithmic
+    assert "volume (voxels)" in size_label.text()
+    assert size_control.value_box.maximum() == 1_000_000_000
+
+    mode_control = widget._parameter_widgets["spatial_mode"]
+    mode_control.combo.setCurrentText("2D YX")
+
+    largest_2d = widget._largest_object_size(
+        incoming_mask,
+        2,
+        "Face connected",
+    )
+    assert size_control._bounds.maximum == largest_2d
+    assert largest_2d < largest_3d
+    assert "area (pixels)" in size_label.text()
 
 
 def test_label_volume_controls_use_observed_object_sizes(qtbot):
@@ -1364,6 +1536,43 @@ def test_node_preview_toggle_is_restored_when_reenabled(qtbot):
     assert not card.preview.isHidden()
 
 
+def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.graph_zoom_slider.minimum() == 40
+    assert widget.graph_zoom_slider.maximum() == 250
+    assert widget.graph_zoom_slider.value() == 100
+    assert widget.graph_zoom_label.text() == "100%"
+    assert widget.graph_zoom_reset_button.isEnabled()
+    assert not widget.graph_zoom_reset_button.icon().isNull()
+
+    widget.graph_zoom_slider.setValue(150)
+
+    assert widget.graph_view.zoom_percent == 150
+    assert widget.graph_zoom_label.text() == "150%"
+
+    qtbot.mouseClick(widget.graph_zoom_reset_button, Qt.LeftButton)
+
+    assert widget.graph_view.zoom_percent == 100
+    assert widget.graph_zoom_slider.value() == 100
+    assert widget.graph_zoom_label.text() == "100%"
+    assert widget.graph_zoom_reset_button.isEnabled()
+
+
+def test_graph_wheel_zoom_can_report_beyond_slider_range(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.set_zoom_percent(400)
+
+    assert widget.graph_view.zoom_percent == 400
+    assert widget.graph_zoom_label.text() == "400%"
+    assert widget.graph_zoom_slider.value() == 250
+
+
 def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -1414,6 +1623,7 @@ def test_palette_image_operations_can_run(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     label_source_id = None
+    table_source_id = None
 
     for spec in PALETTE_NODE_LIBRARY:
         if not spec.has_input:
@@ -1424,16 +1634,24 @@ def test_palette_image_operations_can_run(qtbot):
         elif spec.input_type == "labels":
             assert label_source_id is not None
             source_id = label_source_id
+        elif spec.input_type == "table":
+            assert table_source_id is not None
+            source_id = table_source_id
         else:
             source_id = "input"
         widget._connect_nodes(source_id, node.id)
         if spec.max_inputs is None or spec.max_inputs != 1:
-            second_input = widget.add_node_from_palette("input")
-            widget._connect_nodes(second_input.id, node.id)
+            if spec.input_type == "table":
+                widget._connect_nodes(table_source_id, node.id)
+            else:
+                second_input = widget.add_node_from_palette("input")
+                widget._connect_nodes(second_input.id, node.id)
 
         assert widget.pipeline.outputs[node.id] is not None, spec.id
         if spec.output_type == "labels":
             label_source_id = node.id
+        if spec.output_type == "table":
+            table_source_id = node.id
 
 
 def test_save_selected_output_writes_npy(qtbot, tmp_path):
@@ -1449,7 +1667,41 @@ def test_save_selected_output_writes_npy(qtbot, tmp_path):
     np.testing.assert_array_equal(np.load(path), widget.pipeline.outputs["gaussian"])
 
 
-def test_save_selected_output_dialog_defaults_to_tiff(qtbot, monkeypatch, tmp_path):
+def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
+    image = np.zeros((3, 9, 9), dtype=np.float32)
+    image[:, 1:4, 1:4] = 10
+    image[1, 7, 7] = 10
+    viewer = _Viewer(image, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget.graph_view.select_node(measurements.id)
+    path = tmp_path / "measurements.csv"
+
+    saved = widget._save_node_output(measurements.id, str(path), format="csv")
+
+    assert saved == path
+    assert path.exists()
+    assert widget.table_group.isHidden() is False
+    assert widget.table_preview.rowCount() == 2
+    assert widget.table_preview.columnCount() > 0
+    assert widget.histogram_group.isHidden()
+    assert widget.thumbnail_checkbox.isHidden()
+    widget.graph_view.select_node(labels.id)
+    assert not widget.thumbnail_checkbox.isHidden()
+    assert widget.thumbnail_checkbox.isEnabled()
+    assert "label_id" in path.read_text(encoding="utf-8")
+
+
+def test_save_selected_output_dialog_defaults_to_ome_tiff(
+    qtbot, monkeypatch, tmp_path
+):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -1460,7 +1712,7 @@ def test_save_selected_output_dialog_defaults_to_tiff(qtbot, monkeypatch, tmp_pa
         captured["title"] = title
         captured["default_name"] = default_name
         captured["filters"] = filters
-        return str(path), "TIFF image (*.tif *.tiff)"
+        return str(path), "OME-TIFF (*.ome.tif *.ome.tiff)"
 
     monkeypatch.setattr(
         "napari_vipp._widget.QFileDialog.getSaveFileName",
@@ -1470,8 +1722,8 @@ def test_save_selected_output_dialog_defaults_to_tiff(qtbot, monkeypatch, tmp_pa
     widget._save_selected_output_dialog()
 
     assert captured["title"] == "Save selected node output"
-    assert captured["default_name"].endswith(".tif")
-    assert captured["filters"].startswith("TIFF image")
+    assert captured["default_name"].endswith(".ome.tif")
+    assert captured["filters"].startswith("OME-TIFF")
     assert path.exists()
 
 
@@ -1505,7 +1757,7 @@ def test_save_image_node_writes_imagej_tiff_with_metadata(qtbot, tmp_path):
 
     widget.pipeline.set_param(node.id, "enabled", "on")
     widget.pipeline.set_param(node.id, "path", str(path))
-    widget.pipeline.set_param(node.id, "format", "tiff")
+    widget.pipeline.set_param(node.id, "format", "imagej-tiff")
     widget.pipeline.set_param(node.id, "overwrite", "yes")
     widget.run_pipeline()
 
@@ -1519,6 +1771,46 @@ def test_save_image_node_writes_imagej_tiff_with_metadata(qtbot, tmp_path):
     assert metadata["channels"] == 3
     assert series.axes == "TZCYX"
     assert set(np.unique(saved)) == {0, 255}
+
+
+def test_export_ome_dataset_dialog_writes_reference_and_labels(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    image = np.zeros((4, 8, 9), dtype=np.float32)
+    image[:, 2:6, 3:7] = 10
+    viewer = _Viewer(image, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget.run_pipeline()
+    path = tmp_path / "analysis.ome.zarr"
+
+    def fake_get_save_file_name(_parent, title, default_name, filters):
+        assert title == "Export OME analysis dataset"
+        assert default_name.endswith(".ome.zarr")
+        assert "OME-Zarr 0.4" in filters
+        return str(path), "OME-Zarr 0.4 (*.ome.zarr)"
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        fake_get_save_file_name,
+    )
+
+    widget._export_ome_dataset_dialog()
+    inspection = inspect_image_source(path)
+    loaded_labels = read_image(path, series_index=1)
+
+    assert path.exists()
+    assert [series.kind for series in inspection.series] == ["image", "labels"]
+    assert loaded_labels.image_state.kind == "label image"
+    assert int(loaded_labels.data.compute().max()) == 1
+    assert "1 label output" in widget.status_label.text()
 
 
 def test_mask_output_can_feed_gaussian_blur(qtbot):

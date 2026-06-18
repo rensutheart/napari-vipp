@@ -18,6 +18,8 @@ from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
+    add_metadata_columns,
+    analyze_skeleton,
     average_blur,
     bilateral_filter,
     binary_threshold,
@@ -46,22 +48,27 @@ from napari_vipp.core.operations import (
     logical_xor,
     mask_image,
     max_intensity_projection,
+    measure_objects,
+    measure_objects_with_intensity,
     median_filter,
+    merge_tables,
     morphological_gradient,
     normalize_image,
     opening,
     otsu_threshold,
     ratio_image,
     relabel_sequential,
+    remove_small_objects,
     rescale_intensity,
     save_output,
     select_axis_slice,
+    skeletonize_mask,
     split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
-    volume_filter,
 )
+from napari_vipp.core.tables import TableState, table_state_from_data
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,17 @@ class OutputSpec:
 
 
 @dataclass(frozen=True)
+class InputSpec:
+    name: str
+    input_type: str
+    title: str = ""
+
+    @property
+    def label(self) -> str:
+        return self.title or self.name
+
+
+@dataclass(frozen=True)
 class OperationSpec:
     id: str
     title: str
@@ -101,11 +119,20 @@ class OperationSpec:
     subcategory: str = ""
     outputs: tuple[OutputSpec, ...] = ()
     output_factory: Callable[[int], tuple[OutputSpec, ...]] | None = None
+    inputs: tuple[InputSpec, ...] = ()
     preserves_input_type: bool = False
 
     @property
     def has_input(self) -> bool:
-        return self.input_type is not None
+        return self.input_type is not None or bool(self.inputs)
+
+    @property
+    def input_ports(self) -> tuple[InputSpec, ...]:
+        if self.inputs:
+            return self.inputs
+        if self.input_type is None:
+            return ()
+        return (InputSpec("in", self.input_type, "Input"),)
 
     @property
     def is_multi_output(self) -> bool:
@@ -129,6 +156,7 @@ class SourcePayload:
     data: Any
     metadata: dict | None = None
     name: str = ""
+    image_state: ImageState | None = None
 
 
 @dataclass
@@ -170,6 +198,7 @@ CHANNELS_COMPOSITES_GROUP = "Channels & Composites"
 TYPE_SCALING_GROUP = "Type & Scaling"
 MATH_LOGIC_GROUP = "Math & Logic"
 LABEL_OPERATIONS_CATEGORY = "Label Operations"
+MEASUREMENTS_CATEGORY = "Measurements"
 
 SOURCE_PARAMETERS = (
     ParameterSpec(
@@ -185,6 +214,17 @@ SOURCE_PARAMETERS = (
     ParameterSpec("layer_name", "Napari layer", "text", "", 0, 0, 1),
     ParameterSpec("file_path", "File path", "text", "", 0, 0, 1),
     ParameterSpec("sample_name", "Sample", "text", "", 0, 0, 1),
+    ParameterSpec("series_index", "Series", "int", 0, 0, 100000, 1),
+    ParameterSpec(
+        "binding_mode",
+        "Binding",
+        "choice",
+        "single item",
+        0,
+        0,
+        1,
+        choices=("single item", "collection"),
+    ),
 )
 
 SPATIAL_MODE_PARAMETER = ParameterSpec(
@@ -200,9 +240,14 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
 
 SPATIAL_OPERATIONS = {
     "clear_border_objects",
+    "fill_holes",
     "label_connected_components",
     "filter_labels_by_volume",
+    "analyze_skeleton",
+    "measure_objects",
     "relabel_sequential",
+    "remove_small_objects",
+    "skeletonize",
 }
 
 
@@ -507,21 +552,83 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "fill_holes",
         "Fill Holes",
         "Morphology",
-        "array",
         "mask",
-        (),
+        "mask",
+        (
+            ParameterSpec(
+                "max_hole_size",
+                "Maximum hole size (0 = fill all)",
+                "int",
+                0,
+                0,
+                1_000_000_000,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "connectivity",
+                "Hole connectivity",
+                "choice",
+                "Face connected",
+                0,
+                0,
+                1,
+                choices=("Face connected", "Full connectivity"),
+            ),
+        ),
         fill_holes,
     ),
     OperationSpec(
-        "volume_filter",
-        "Volume Filter",
+        "remove_small_objects",
+        "Remove Small Objects",
         "Morphology",
-        "array",
+        "mask_or_labels",
         "mask",
         (
-            ParameterSpec("min_volume", "Minimum volume", "int", 10, 1, 5000, 1),
+            ParameterSpec(
+                "min_size",
+                "Minimum object size (pixels/voxels)",
+                "int",
+                10,
+                0,
+                1_000_000_000,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "connectivity",
+                "Mask connectivity",
+                "choice",
+                "Face connected",
+                0,
+                0,
+                1,
+                choices=("Face connected", "Full connectivity"),
+            ),
         ),
-        volume_filter,
+        remove_small_objects,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
+        "skeletonize",
+        "Skeletonize",
+        "Morphology",
+        "mask",
+        "mask",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "method",
+                "Method",
+                "choice",
+                "Auto",
+                0,
+                0,
+                1,
+                choices=("Auto", "Lee", "Zhang 2D"),
+            ),
+        ),
+        skeletonize_mask,
     ),
     OperationSpec(
         "label_connected_components",
@@ -560,7 +667,19 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 10_000,
                 1,
             ),
-            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "boundary_mode",
+                "Boundaries",
+                "choice",
+                "All spatial borders",
+                0,
+                0,
+                1,
+                choices=(
+                    "All spatial borders",
+                    "Lateral borders only (YX)",
+                ),
+            ),
         ),
         clear_border_objects,
         preserves_input_type=True,
@@ -602,6 +721,136 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "labels",
         (SPATIAL_MODE_PARAMETER,),
         relabel_sequential,
+    ),
+    OperationSpec(
+        "measure_objects",
+        "Measure Objects",
+        MEASUREMENTS_CATEGORY,
+        "labels",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "measurement_set",
+                "Measurement set",
+                "choice",
+                "Basic morphology",
+                0,
+                0,
+                1,
+                choices=("Basic morphology",),
+            ),
+        ),
+        measure_objects,
+    ),
+    OperationSpec(
+        "measure_objects_intensity",
+        "Measure Objects + Intensity",
+        MEASUREMENTS_CATEGORY,
+        "labels",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "measurement_set",
+                "Measurement set",
+                "choice",
+                "Basic morphology + intensity",
+                0,
+                0,
+                1,
+                choices=("Basic morphology + intensity",),
+            ),
+        ),
+        measure_objects_with_intensity,
+        max_inputs=2,
+        inputs=(
+            InputSpec("labels", "labels", "Labels"),
+            InputSpec("intensity", "image", "Intensity image"),
+        ),
+    ),
+    OperationSpec(
+        "analyze_skeleton",
+        "Analyze Skeleton",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "input_mode",
+                "Input",
+                "choice",
+                "Already skeletonized",
+                0,
+                0,
+                1,
+                choices=("Already skeletonized", "Skeletonize first"),
+            ),
+        ),
+        analyze_skeleton,
+    ),
+    OperationSpec(
+        "merge_tables",
+        "Merge Tables",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "table",
+        (
+            ParameterSpec("input_count", "Input tables", "int", 2, 2, 8, 1),
+            ParameterSpec(
+                "join_mode",
+                "Join mode",
+                "choice",
+                "Left join",
+                0,
+                0,
+                1,
+                choices=("Left join", "Inner join", "Outer join"),
+            ),
+            ParameterSpec(
+                "join_keys",
+                "Join keys (auto or comma-separated)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+        ),
+        merge_tables,
+        max_inputs=8,
+        subcategory="Tables",
+    ),
+    OperationSpec(
+        "add_metadata_columns",
+        "Add Metadata Columns",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "table",
+        (
+            ParameterSpec(
+                "metadata_columns",
+                "Metadata (name=value, ...)",
+                "text",
+                "condition=control",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "overwrite",
+                "Overwrite existing columns",
+                "choice",
+                "no",
+                0,
+                0,
+                1,
+                choices=("no", "yes"),
+            ),
+        ),
+        add_metadata_columns,
+        subcategory="Tables",
     ),
     OperationSpec(
         "extract_channel",
@@ -926,7 +1175,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 0,
                 1,
-                choices=("auto", "npy", "tiff"),
+                choices=(
+                    "auto",
+                    "ome-zarr",
+                    "ome-zarr-0.5",
+                    "ome-tiff",
+                    "imagej-tiff",
+                    "tiff",
+                    "npy",
+                ),
             ),
             ParameterSpec(
                 "overwrite",
@@ -1029,9 +1286,9 @@ class PrototypePipeline:
         self.nodes: dict[str, GraphNode] = {}
         self.connections: list[GraphConnection] = []
         self.outputs: dict[str, Any] = {}
-        self.output_states: dict[str, ImageState | None] = {}
+        self.output_states: dict[str, ImageState | TableState | None] = {}
         self.node_outputs: dict[str, list[Any]] = {}
-        self.node_output_states: dict[str, list[ImageState | None]] = {}
+        self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -1052,17 +1309,26 @@ class PrototypePipeline:
         connections: Iterable[GraphConnection],
     ) -> None:
         """Replace the current graph with deserialized nodes and connections."""
-        self.nodes = {node.id: _clone_node(node) for node in nodes}
+        node_list = list(nodes)
+        self.nodes = {node.id: _clone_node(node) for node in node_list}
+        if len(self.nodes) != len(node_list):
+            raise ValueError("Cannot restore a graph with duplicate node ids.")
         valid = set(self.nodes)
-        self.connections = [
-            connection
-            for connection in connections
-            if connection.source_id in valid and connection.target_id in valid
-        ]
+        self.connections = list(connections)
         self.outputs = {node_id: None for node_id in self.nodes}
         self.output_states = {node_id: None for node_id in self.nodes}
         self.node_outputs = {node_id: [] for node_id in self.nodes}
         self.node_output_states = {node_id: [] for node_id in self.nodes}
+        for connection in self.connections:
+            if (
+                connection.source_id not in valid
+                or connection.target_id not in valid
+            ):
+                raise ValueError(
+                    "Cannot restore a connection that references a missing node: "
+                    f"{connection.source_id!r} -> {connection.target_id!r}."
+                )
+            self._validate_restored_connection(connection)
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -1149,14 +1415,6 @@ class PrototypePipeline:
         if not 0 <= source_port < len(source_ports):
             return ConnectionResult(False, "That node does not have that output.")
         source_output_type = source_ports[source_port].output_type
-        if not self._types_compatible(source_output_type, target.input_type):
-            return ConnectionResult(
-                False,
-                (
-                    f"Cannot connect {source_output_type} output to "
-                    f"{target.input_type} input."
-                ),
-            )
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
@@ -1172,8 +1430,18 @@ class PrototypePipeline:
                 target,
                 existing_targets,
                 target_port,
+                source_output_type,
             )
             if port is None:
+                if target_port is not None:
+                    expected_type = self._input_type_for_port(target, target_port)
+                    return ConnectionResult(
+                        False,
+                        (
+                            f"Cannot connect {source_output_type} output to "
+                            f"{expected_type} input."
+                        ),
+                    )
                 return ConnectionResult(
                     False,
                     f"That node already has {maximum} connected inputs.",
@@ -1193,6 +1461,15 @@ class PrototypePipeline:
             ]
         else:
             port = 0
+            expected_type = self._input_type_for_port(target, port)
+            if not self._types_compatible(source_output_type, expected_type):
+                return ConnectionResult(
+                    False,
+                    (
+                        f"Cannot connect {source_output_type} output to "
+                        f"{expected_type} input."
+                    ),
+                )
             removed = tuple(existing_targets)
             self.connections = [
                 existing
@@ -1281,6 +1558,29 @@ class PrototypePipeline:
     def set_param(self, node_id: str, name: str, value: Any) -> None:
         self.nodes[node_id].params[name] = value
 
+    def _validate_restored_connection(self, connection: GraphConnection) -> None:
+        target = self.nodes[connection.target_id]
+        input_count = self.input_port_count(connection.target_id)
+        if connection.target_port >= input_count:
+            raise ValueError(
+                f"Cannot restore connection to {connection.target_id!r} input "
+                f"{connection.target_port}; node has {input_count} input port(s)."
+            )
+        source_ports = self.output_ports(connection.source_id)
+        if connection.source_port >= len(source_ports):
+            raise ValueError(
+                f"Cannot restore connection from {connection.source_id!r} output "
+                f"{connection.source_port}; node has {len(source_ports)} output "
+                "port(s)."
+            )
+        source_type = source_ports[connection.source_port].output_type
+        target_type = self._input_type_for_port(target, connection.target_port)
+        if not self._types_compatible(source_type, target_type):
+            raise ValueError(
+                f"Cannot restore {source_type} output to {target_type} input: "
+                f"{connection.source_id!r} -> {connection.target_id!r}."
+            )
+
     def operation_spec(self, operation_id: str) -> OperationSpec:
         return NODE_LIBRARY_BY_ID[operation_id]
 
@@ -1297,6 +1597,20 @@ class PrototypePipeline:
         else:
             ports = spec.output_ports
         return self._resolved_output_port_types(node_id, ports)
+
+    def input_ports(self, node_id: str) -> tuple[InputSpec, ...]:
+        node = self.nodes.get(node_id)
+        if node is None or not node.has_input:
+            return ()
+        spec = self.operation_spec(node.operation_id)
+        if spec.inputs:
+            return spec.input_ports
+        count = self.input_port_count(node_id)
+        input_type = node.input_type or "any"
+        return tuple(
+            InputSpec(f"input_{index + 1}", input_type, f"Input {index + 1}")
+            for index in range(count)
+        )
 
     def _resolved_output_port_types(
         self,
@@ -1326,7 +1640,7 @@ class PrototypePipeline:
 
     def _resolved_output_state(
         self, source_id: str, source_port: int
-    ) -> ImageState | None:
+    ) -> ImageState | TableState | None:
         states = self.node_output_states.get(source_id)
         if states:
             if 0 <= source_port < len(states):
@@ -1410,7 +1724,8 @@ class PrototypePipeline:
             return [
                 (
                     payload.data,
-                    image_state_from_array(
+                    payload.image_state
+                    or image_state_from_array(
                         payload.data,
                         layer_metadata=payload.metadata,
                         source_name=payload.name,
@@ -1451,7 +1766,39 @@ class PrototypePipeline:
                 )
                 kwargs["channel_axis"] = derived_axis
                 node.params["channel_axis"] = derived_axis
+            if node.operation_id == "measure_objects_intensity":
+                labels_state = input_states[0]
+                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+                resolved_spatial_ndim = _resolved_spatial_ndim(
+                    labels_state,
+                    source_outputs[0],
+                    spatial_mode,
+                )
+                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+                if isinstance(labels_state, ImageState):
+                    kwargs["axis_names"] = tuple(
+                        axis.name for axis in labels_state.axes
+                    )
+                    kwargs["axis_types"] = tuple(
+                        axis.type for axis in labels_state.axes
+                    )
+                    kwargs["axis_scales"] = tuple(
+                        axis.scale for axis in labels_state.axes
+                    )
+                    kwargs["axis_units"] = tuple(
+                        axis.unit for axis in labels_state.axes
+                    )
+                    kwargs["source_name"] = labels_state.source_name
             output = spec.function(source_outputs, **kwargs)
+            if spec.output_type == "table":
+                history = _table_history(input_states, node.title, output)
+                state = table_state_from_data(
+                    output,
+                    history=history,
+                    source_name=_combined_source_name(input_states),
+                )
+                return [(output, state)]
             state = transform_multi_input_image_state(
                 output,
                 input_states,
@@ -1473,16 +1820,36 @@ class PrototypePipeline:
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
         if node.operation_id in SPATIAL_OPERATIONS:
+            spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+            if node.operation_id == "clear_border_objects":
+                spatial_mode = "Auto from axes"
             resolved_spatial_ndim = _resolved_spatial_ndim(
                 input_state,
                 source_output,
-                kwargs.get("spatial_mode", "Auto from axes"),
+                spatial_mode,
             )
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+        if node.operation_id in {"measure_objects", "analyze_skeleton"} and isinstance(
+            input_state,
+            ImageState,
+        ):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
+            kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
+            kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
+            kwargs["source_name"] = input_state.source_name
         output = spec.function(source_output, **kwargs)
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
+        if spec.output_type == "table":
+            history = _table_history(input_state, node.title, output)
+            state = table_state_from_data(
+                output,
+                history=history,
+                source_name=getattr(input_state, "source_name", ""),
+            )
+            return [(output, state)]
         state = transform_image_state(
             output,
             input_state,
@@ -1542,12 +1909,16 @@ class PrototypePipeline:
         node = self.nodes.get(node_id)
         if node is None or not node.has_input:
             return 0
+        spec = self.operation_spec(node.operation_id)
+        if spec.inputs:
+            return len(spec.inputs)
         if self._node_accepts_multiple_inputs(node):
             return self._required_inputs_for(node)
         return 1
 
     def _node_accepts_multiple_inputs(self, node: GraphNode) -> bool:
-        return node.max_inputs is None or node.max_inputs != 1
+        spec = self.operation_spec(node.operation_id)
+        return bool(spec.inputs) or node.max_inputs is None or node.max_inputs != 1
 
     def _max_inputs_for(self, node: GraphNode) -> int | None:
         if node.max_inputs is None:
@@ -1555,6 +1926,9 @@ class PrototypePipeline:
         return max(int(node.max_inputs), 1)
 
     def _required_inputs_for(self, node: GraphNode) -> int:
+        spec = self.operation_spec(node.operation_id)
+        if spec.inputs:
+            return len(spec.inputs)
         if "input_count" in node.params:
             maximum = self._max_inputs_for(node)
             requested = max(int(node.params.get("input_count", 1)), 1)
@@ -1566,6 +1940,7 @@ class PrototypePipeline:
         target: GraphNode,
         existing_targets: list[GraphConnection],
         requested_port: int | None,
+        source_output_type: str,
     ) -> int | None:
         maximum = self._max_inputs_for(target)
         if requested_port is not None:
@@ -1574,14 +1949,29 @@ class PrototypePipeline:
                 return None
             if maximum is not None and port >= maximum:
                 return None
+            if not self._types_compatible(
+                source_output_type,
+                self._input_type_for_port(target, port),
+            ):
+                return None
             return port
 
         used = {connection.target_port for connection in existing_targets}
         limit = maximum if maximum is not None else len(used) + 1
         for port in range(limit):
-            if port not in used:
+            if port not in used and self._types_compatible(
+                source_output_type,
+                self._input_type_for_port(target, port),
+            ):
                 return port
         return None
+
+    def _input_type_for_port(self, node: GraphNode, port: int | None) -> str | None:
+        spec = self.operation_spec(node.operation_id)
+        port_index = 0 if port is None else int(port)
+        if spec.inputs and 0 <= port_index < len(spec.inputs):
+            return spec.inputs[port_index].input_type
+        return node.input_type
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
         downstream = {target_id}
@@ -1605,7 +1995,56 @@ class PrototypePipeline:
             return output_type in {"array", "image", "mask", "labels"}
         if input_type == "mask_or_labels":
             return output_type in {"mask", "labels"}
+        if input_type == "table":
+            return output_type == "table"
         return output_type == input_type
+
+
+def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]:
+    if isinstance(input_states, (list, tuple)):
+        states = input_states
+    else:
+        states = (input_states,)
+    prior = _combined_history(states)
+    row_count = getattr(table, "row_count", 0)
+    table_kind = str(getattr(table, "table_kind", "")).lower()
+    if "skeleton" in table_kind:
+        noun = "component" if row_count == 1 else "components"
+        action = "analyzed"
+    elif "metadata" in table_kind:
+        noun = "row" if row_count == 1 else "rows"
+        action = "annotated"
+    elif "merge" in table_kind:
+        noun = "row" if row_count == 1 else "rows"
+        action = "merged"
+    else:
+        noun = "object" if row_count == 1 else "objects"
+        action = "measured"
+    return prior + (f"{operation_title}: {action} {row_count} {noun}",)
+
+
+def _combined_history(states) -> tuple[str, ...]:
+    history: list[str] = []
+    seen: set[str] = set()
+    for state in states:
+        for item in tuple(getattr(state, "history", ()) or ()):
+            if item in seen:
+                continue
+            history.append(item)
+            seen.add(item)
+    return tuple(history)
+
+
+def _combined_source_name(states) -> str:
+    names: list[str] = []
+    seen: set[str] = set()
+    for state in states:
+        name = str(getattr(state, "source_name", "") or "").strip()
+        if not name or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return ", ".join(names)
 
 
 def grouped_palette_specs() -> dict[str, dict[str, list[OperationSpec]]]:

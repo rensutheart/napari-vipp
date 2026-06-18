@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
     deserialize_workflow,
@@ -85,11 +86,73 @@ def test_workflow_preserves_multi_input_target_ports(tmp_path):
     assert ports[("gaussian", composite.id)] == 0
 
 
-def test_unknown_operation_is_skipped():
+def test_unknown_operation_is_rejected():
     pipeline = _build_pipeline()
     document = serialize_workflow(pipeline)
-    document["nodes"].append({"id": "ghost", "operation_id": "does_not_exist"})
+    document["nodes"].append(
+        {"id": "ghost", "operation_id": "does_not_exist", "params": {}}
+    )
 
-    workflow = deserialize_workflow(document)
-    ids = {node.id for node in workflow["nodes"]}
-    assert "ghost" not in ids
+    with pytest.raises(ValueError, match="unknown operation"):
+        deserialize_workflow(document)
+
+
+def test_wrong_workflow_version_is_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["version"] = 2
+
+    with pytest.raises(ValueError, match="Unsupported workflow version"):
+        deserialize_workflow(document)
+
+
+def test_dangling_connection_is_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["connections"].append(
+        {
+            "source": "ghost",
+            "target": "threshold",
+            "target_port": 0,
+            "source_port": 0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="references a missing node"):
+        deserialize_workflow(document)
+
+
+def test_missing_node_parameter_is_rejected():
+    document = serialize_workflow(_build_pipeline())
+    gaussian = next(node for node in document["nodes"] if node["id"] == "gaussian")
+    gaussian["params"].pop("sigma")
+
+    with pytest.raises(ValueError, match="missing required parameters: sigma"):
+        deserialize_workflow(document)
+
+
+def test_non_integer_connection_port_is_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["connections"][0]["target_port"] = "0"
+
+    with pytest.raises(ValueError, match="target_port.*must be an integer"):
+        deserialize_workflow(document)
+
+
+def test_restore_graph_rejects_dangling_connection():
+    pipeline = _build_pipeline()
+
+    with pytest.raises(ValueError, match="references a missing node"):
+        pipeline.restore_graph(
+            pipeline.nodes.values(),
+            [GraphConnection("ghost", "threshold", 0, 0)],
+        )
+
+
+def test_restore_graph_rejects_incompatible_typed_input_connection():
+    pipeline = PrototypePipeline()
+    measurements = pipeline.add_node("measure_objects_intensity")
+
+    with pytest.raises(ValueError, match="image output to labels input"):
+        pipeline.restore_graph(
+            pipeline.nodes.values(),
+            [GraphConnection("input", measurements.id, 0, 0)],
+        )

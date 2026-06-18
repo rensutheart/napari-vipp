@@ -71,9 +71,14 @@ def _build_header(pipeline: PrototypePipeline) -> str:
 
 
 def _build_imports(function_names: list[str]) -> str:
-    names = sorted(set(function_names) | {"save_array_output"})
+    names = sorted(set(function_names))
     inner = ",\n".join(f"{_INDENT}{name}" for name in names)
-    return f"from napari_vipp.core.operations import (\n{inner},\n)"
+    operations = f"from napari_vipp.core.operations import (\n{inner},\n)"
+    return (
+        f"{operations}\n"
+        "from napari_vipp.core.io import read_image, write_image\n"
+        "from napari_vipp.core.tables import is_table_data, save_table_output"
+    )
 
 
 def _build_constants(source_ids: list[str], terminal_ids: list[str]) -> str:
@@ -186,19 +191,23 @@ def _source_ref(pipeline, connection, var_names) -> str:
 def _build_helpers() -> str:
     return (
         "def load_image(path):\n"
-        f'{_INDENT}"""Load an array from .npy/.npz or any image file."""\n'
-        f"{_INDENT}path = Path(path)\n"
-        f"{_INDENT}suffix = path.suffix.lower()\n"
-        f'{_INDENT}if suffix == ".npy":\n'
-        f"{_INDENT}{_INDENT}return np.load(path)\n"
-        f'{_INDENT}if suffix == ".npz":\n'
-        f"{_INDENT}{_INDENT}with np.load(path) as data:\n"
-        f"{_INDENT}{_INDENT}{_INDENT}return data[data.files[0]]\n"
-        f"{_INDENT}from skimage import io as skio\n"
-        f"{_INDENT}return np.asarray(skio.imread(str(path)))\n\n\n"
+        f'{_INDENT}"""Load an array through the shared VIPP I/O registry."""\n'
+        f"{_INDENT}return read_image(path).data\n\n\n"
         "def save_image(data, path):\n"
-        f'{_INDENT}"""Write a node output to disk (TIFF unless .npy)."""\n'
-        f"{_INDENT}save_array_output(data, path, overwrite=True)"
+        f'{_INDENT}"""Write an image or table node output."""\n'
+        f"{_INDENT}if is_table_data(data):\n"
+        f"{_INDENT}{_INDENT}save_table_output(\n"
+        f"{_INDENT}{_INDENT}{_INDENT}data,\n"
+        f"{_INDENT}{_INDENT}{_INDENT}_table_output_path(path),\n"
+        f"{_INDENT}{_INDENT}{_INDENT}overwrite=True,\n"
+        f"{_INDENT}{_INDENT})\n"
+        f"{_INDENT}{_INDENT}return\n"
+        f"{_INDENT}write_image(data, path, overwrite=True)\n\n\n"
+        "def _table_output_path(path):\n"
+        f"{_INDENT}path = Path(path)\n"
+        f"{_INDENT}if path.suffix.lower() in {{'.csv', '.tsv'}}:\n"
+        f"{_INDENT}{_INDENT}return path\n"
+        f"{_INDENT}return path.with_suffix('.csv')"
     )
 
 
@@ -220,7 +229,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}save_image(\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f'output_dir / f"{{source_path.stem}}__{{name}}.tif",\n'
+        f'output_dir / f"{{source_path.stem}}__{{name}}.ome.tif",\n'
         f"{_INDENT}{_INDENT}{_INDENT})\n\n\n"
         'if __name__ == "__main__":\n'
         f"{_INDENT}import argparse\n\n"
@@ -252,7 +261,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}save_image(\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f'out_path / f"{{in_path.stem}}__{{name}}.tif",\n'
+        f'out_path / f"{{in_path.stem}}__{{name}}.ome.tif",\n'
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})"
     )
 

@@ -24,6 +24,8 @@ def test_export_produces_valid_python():
     assert "gaussian_blur(" in code
     assert "otsu_threshold(" in code
     assert "sigma=1.2" in code
+    assert "from napari_vipp.core.io import read_image, write_image" in code
+    assert "skimage" not in code
 
 
 def test_exported_run_pipeline_executes():
@@ -54,6 +56,35 @@ def test_export_handles_multi_input_nodes():
     # Multi-input call should pass a list of upstream variables.
     assert "add_images([" in code
     assert "add_images([v_input, v_gaussian]" in code
+
+
+def test_exported_intensity_measurement_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects_intensity")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    pipeline.connect("input", measurements.id)
+
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:3, 1:4] = 10
+    image[4:6, 4:6] = 20
+    pipeline.run(image, input_metadata={"axes": "YX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+    table = results[measurements.id]
+    records = table.records()
+
+    assert "measure_objects_with_intensity(" in code
+    assert table.row_count == 2
+    assert records[0]["intensity_mean"] == 10.0
+    assert records[1]["intensity_mean"] == 20.0
 
 
 def test_exported_label_volume_pipeline_executes():
@@ -107,3 +138,159 @@ def test_exported_clear_border_pipeline_executes():
     assert "clear_border_objects(" in code
     assert "resolved_spatial_ndim=3" in code
     assert set(np.unique(results[cleared.id])) == {0, 2}
+
+
+def test_exported_fill_holes_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    filled = pipeline.add_node("fill_holes")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.set_param(filled.id, "spatial_mode", "3D ZYX volume")
+    pipeline.set_param(filled.id, "max_hole_size", 1)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, filled.id)
+
+    mask = np.ones((3, 7, 7), dtype=bool)
+    mask[1, 3, 3] = False
+    mask[0, 1, 1] = False
+    pipeline.run(mask.astype(np.float32), input_metadata={"axes": "ZYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](mask.astype(np.float32))
+
+    assert "fill_holes(" in code
+    assert "max_hole_size=1" in code
+    assert "resolved_spatial_ndim=3" in code
+    assert results[filled.id][1, 3, 3]
+    assert not results[filled.id][0, 1, 1]
+
+
+def test_exported_remove_small_objects_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    filtered = pipeline.add_node("remove_small_objects")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.set_param(filtered.id, "min_size", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, filtered.id)
+
+    image = np.zeros((3, 9, 9), dtype=np.float32)
+    image[:, 1:4, 1:4] = 1
+    image[1, 7, 7] = 1
+    pipeline.run(image, input_metadata={"axes": "ZYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+
+    assert "remove_small_objects(" in code
+    assert "resolved_spatial_ndim=3" in code
+    assert results[filtered.id][:, 1:4, 1:4].all()
+    assert not results[filtered.id][1, 7, 7]
+
+
+def test_exported_measure_objects_pipeline_executes_and_saves_table(tmp_path):
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+
+    image = np.zeros((3, 9, 9), dtype=np.float32)
+    image[:, 1:4, 1:4] = 1
+    image[1, 7, 7] = 1
+    pipeline.run(image, input_metadata={"axes": "ZYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+    table = results[measurements.id]
+    output_path = tmp_path / "measurements.ome.tif"
+
+    namespace["save_image"](table, output_path)
+
+    assert "measure_objects(" in code
+    assert "from napari_vipp.core.tables import" in code
+    assert table.row_count == 2
+    assert table.columns[:2] == ("label_id", "volume_voxels")
+    csv_path = tmp_path / "measurements.ome.csv"
+    assert csv_path.exists()
+    assert csv_path.read_text(encoding="utf-8").startswith(
+        "label_id,volume_voxels"
+    )
+
+
+def test_exported_merged_table_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    morphology = pipeline.add_node("measure_objects")
+    intensity = pipeline.add_node("measure_objects_intensity")
+    merged = pipeline.add_node("merge_tables")
+    annotated = pipeline.add_node("add_metadata_columns")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(annotated.id, "metadata_columns", "condition=demo")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, morphology.id)
+    pipeline.connect(labels.id, intensity.id, target_port=0)
+    pipeline.connect("input", intensity.id, target_port=1)
+    pipeline.connect(morphology.id, merged.id, target_port=0)
+    pipeline.connect(intensity.id, merged.id, target_port=1)
+    pipeline.connect(merged.id, annotated.id)
+
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:3, 1:4] = 10
+    image[4:6, 4:6] = 20
+    pipeline.run(image, input_metadata={"axes": "YX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+    table = results[annotated.id]
+
+    assert "merge_tables(" in code
+    assert "add_metadata_columns(" in code
+    assert table.row_count == 2
+    assert "intensity_mean" in table.columns
+    assert table.records()[0]["condition"] == "demo"
+
+
+def test_exported_skeleton_analysis_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    skeleton = pipeline.add_node("skeletonize")
+    measurements = pipeline.add_node("analyze_skeleton")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, skeleton.id)
+    pipeline.connect(skeleton.id, measurements.id)
+
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline.run(image, input_metadata={"axes": "YX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+    table = results[measurements.id]
+    record = table.records()[0]
+
+    assert "skeletonize_mask(" in code
+    assert "analyze_skeleton(" in code
+    assert table.row_count == 1
+    assert record["endpoint_voxel_count"] == 4
+    assert record["branch_count"] == 4
+    assert record["graph_node_count"] == 5
+    assert record["graph_edge_count"] == 4
+    assert record["voxel_graph_edge_count"] == 8

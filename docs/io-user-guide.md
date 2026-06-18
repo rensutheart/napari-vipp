@@ -1,0 +1,84 @@
+# Image Import And Export
+
+Last reviewed: 2026-06-15
+
+VIPP uses one headless I/O layer for interactive sources, quick saves, Save
+Image nodes, and exported Python scripts. The explicit format choice matters:
+OME-TIFF, ImageJ TIFF, and conventional TIFF are different formats with
+different metadata and compatibility goals.
+
+## Import
+
+The Image Source node supports napari layers, bundled samples, and local files
+or stores.
+
+Supported file sources:
+
+| Source | Current behavior |
+| --- | --- |
+| OME-TIFF | Reads image series, semantic axes, physical scale, channel names and selected acquisition metadata. |
+| ImageJ TIFF | Reads hyperstack axes, Z spacing, frame interval, unit, and XY resolution where present. |
+| TIFF | Reads independent TIFF series and basic axes. |
+| OME-Zarr 0.4/0.5 | Discovers image groups and label groups, reads multiscale levels lazily, and marks label groups as label images. Level 0 is the analysis image. |
+| NPY/NPZ | Reads one NPY array or a selected NPZ member. |
+
+For multi-series TIFF or multi-image OME-Zarr, select the required item in
+`Series / image`. Time, channel, and Z remain axes inside that item. Use graph
+nodes such as Select Axis Slice to subset them reproducibly.
+
+`Binding: collection` currently records future batch intent and uses the
+selected series as the interactive representative. It does not yet execute a
+batch.
+
+## Export Choices
+
+| Format | Use when |
+| --- | --- |
+| OME-Zarr | The image is large, chunked access matters, or it will later form part of an image-plus-label analysis package. Version 0.4 is the default writer. |
+| OME-TIFF | A portable single processed image with OME-XML metadata is required. This is the default quick-save format. |
+| ImageJ TIFF | Direct ImageJ/Fiji hyperstack behavior is the priority. Binary masks are written as `uint8` values `0` and `255`. |
+| TIFF | Broad TIFF compatibility or preservation of 32-bit integer label IDs is required. |
+| NPY | Exact array exchange is needed and scientific image metadata is not required. |
+
+ImageJ TIFF cannot safely represent 32-bit integer label IDs. Use conventional
+TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
+
+## Export OME Analysis Dataset
+
+`Export OME dataset...` writes one reference image plus every available graph
+label output into a single `.ome.zarr` store:
+
+```text
+/
+  s0                      reference image level 0
+  labels/
+    nuclei/
+      s0                  label image level 0
+    cells/
+      s0
+```
+
+Label outputs are written as OME-Zarr `image-label` groups, retain integer label
+IDs, and include a source relationship back to the reference image. VIPP also
+stores label-node identity and operation history in namespaced provenance.
+
+Version 0.4 is the default export target; 0.5 is available in the export dialog.
+
+## Metadata Policy
+
+VIPP distinguishes current structural metadata, preserved acquisition facts,
+and original source/provenance metadata. Writers emit metadata that remains
+valid for the processed output. They do not restore obsolete source dimensions
+or channels after cropping, projection, splitting, or other transformations.
+
+The selected-node inspector shows the normalized metadata used by the graph.
+Raw OME metadata is retained by the dataset reader for provenance but is not
+presented as editable output metadata.
+
+## Current Limitations
+
+- OME-Zarr pyramid generation and preview-level selection are not exposed.
+- The graph still materializes lazy arrays when an eager processing node or
+  preview requires NumPy data.
+- Plate/well/field browsing, remote URIs, and collection batch execution remain
+  planned work.

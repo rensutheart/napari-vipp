@@ -15,29 +15,21 @@
       }
     },
     {
-      "id": "gaussian",
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {}
+    },
+    {
+      "id": "gaussian_blur_1",
       "operation_id": "gaussian_blur",
       "params": {
         "sigma": 1.2
       }
     },
     {
-      "id": "threshold",
+      "id": "otsu_threshold_1",
       "operation_id": "otsu_threshold",
       "params": {}
-    },
-    {
-      "id": "split_channels_1",
-      "operation_id": "split_channels",
-      "params": {}
-    },
-    {
-      "id": "label_connected_components_1",
-      "operation_id": "label_connected_components",
-      "params": {
-        "spatial_mode": "Auto from axes",
-        "connectivity": "Full connectivity"
-      }
     },
     {
       "id": "fill_holes_1",
@@ -46,6 +38,14 @@
         "max_hole_size": 0,
         "spatial_mode": "Auto from axes",
         "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
       }
     },
     {
@@ -58,35 +58,35 @@
       }
     },
     {
-      "id": "clear_border_objects_1",
-      "operation_id": "clear_border_objects",
+      "id": "measure_objects_intensity_1",
+      "operation_id": "measure_objects_intensity",
       "params": {
-        "border_buffer": 0,
-        "boundary_mode": "All spatial borders"
+        "spatial_mode": "Auto from axes",
+        "measurement_set": "Basic morphology + intensity"
       }
     }
   ],
   "connections": [
     {
       "source": "input",
-      "target": "gaussian",
-      "target_port": 0,
-      "source_port": 0
-    },
-    {
-      "source": "gaussian",
-      "target": "threshold",
-      "target_port": 0,
-      "source_port": 0
-    },
-    {
-      "source": "threshold",
       "target": "split_channels_1",
       "target_port": 0,
       "source_port": 0
     },
     {
       "source": "split_channels_1",
+      "target": "gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_blur_1",
+      "target": "otsu_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_1",
       "target": "fill_holes_1",
       "target_port": 0,
       "source_port": 0
@@ -99,25 +99,31 @@
     },
     {
       "source": "label_connected_components_1",
-      "target": "clear_border_objects_1",
+      "target": "filter_labels_by_volume_1",
       "target_port": 0,
       "source_port": 0
     },
     {
-      "source": "clear_border_objects_1",
-      "target": "filter_labels_by_volume_1",
+      "source": "filter_labels_by_volume_1",
+      "target": "measure_objects_intensity_1",
       "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 1,
       "source_port": 0
     }
   ],
   "positions": {
     "input": [0.0, 20.0],
-    "gaussian": [330.0, 20.0],
-    "threshold": [660.0, 20.0],
-    "split_channels_1": [990.0, 20.0],
+    "split_channels_1": [330.0, 20.0],
+    "gaussian_blur_1": [660.0, 20.0],
+    "otsu_threshold_1": [990.0, 20.0],
     "fill_holes_1": [1320.0, 20.0],
     "label_connected_components_1": [1650.0, 20.0],
-    "clear_border_objects_1": [1980.0, 20.0],
-    "filter_labels_by_volume_1": [2310.0, 20.0]
+    "filter_labels_by_volume_1": [1980.0, 20.0],
+    "measure_objects_intensity_1": [2310.0, 20.0]
   }
 }

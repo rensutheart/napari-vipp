@@ -31,11 +31,16 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Visualization",
 ]
 dependencies = [
+    "dask[array]>=2025.2",
+    "fsspec>=2024.2",
     "numpy>=1.24",
+    "ome-types>=0.6",
+    "ome-zarr>=0.17",
     "qtpy>=2.4",
     "scikit-image>=0.21",
     "scipy>=1.10",
     "tifffile>=2023.8",
+    "zarr>=3.0",
 ]
 
 [project.urls]

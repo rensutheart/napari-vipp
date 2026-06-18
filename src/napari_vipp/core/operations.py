@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from itertools import combinations, product
 from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage import filters, restoration, segmentation
-from tifffile import imwrite as tiff_imwrite
+from skimage import filters, measure, morphology, restoration, segmentation
+
+from napari_vipp.core.io import write_image
+from napari_vipp.core.tables import TableData, table_from_columns
 
 RGB_CHANNELS = (3, 4)
 
@@ -242,18 +246,51 @@ def morphological_gradient(data, size: int = 2) -> np.ndarray:
     )
 
 
-def fill_holes(data) -> np.ndarray:
-    """Fill holes in a binary mask volume."""
-    return ndi.binary_fill_holes(_to_bool_mask(data))
+def fill_holes(
+    data,
+    max_hole_size: int = 0,
+    spatial_mode: str = "Auto from axes",
+    connectivity: str = "Face connected",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Fill enclosed mask holes per XY slice or across a ZYX volume.
+
+    ``max_hole_size=0`` fills every enclosed hole. Positive values fill only
+    holes whose area or volume is at most the requested pixel/voxel count.
+    """
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
+    structure = ndi.generate_binary_structure(spatial_ndim, rank)
+    maximum = max(int(max_hole_size), 0)
+
+    def fill_block(block: np.ndarray) -> np.ndarray:
+        filled = ndi.binary_fill_holes(block, structure=structure)
+        if maximum == 0:
+            return filled
+        holes = filled & ~block
+        hole_labels, count = ndi.label(holes, structure=structure)
+        if count == 0:
+            return block.copy()
+        sizes = np.bincount(hole_labels.ravel())
+        keep = sizes <= maximum
+        keep[0] = False
+        return block | keep[hole_labels]
+
+    return _apply_spatial_blocks(mask, spatial_ndim, fill_block, dtype=bool)
 
 
 def clear_border_objects(
     data,
     border_buffer: int = 0,
-    spatial_mode: str = "Auto from axes",
+    boundary_mode: str = "All spatial borders",
     resolved_spatial_ndim: int | None = None,
 ) -> np.ndarray:
-    """Remove mask components or labels touching a spatial block boundary."""
+    """Remove objects touching all spatial or lateral YX boundaries."""
     arr = np.asarray(data)
     if arr.dtype == bool:
         objects = arr
@@ -266,18 +303,34 @@ def clear_border_objects(
 
     spatial_ndim = _resolved_spatial_ndim(
         objects,
-        spatial_mode,
+        "Auto from axes",
         resolved_spatial_ndim,
     )
     buffer_size = max(int(border_buffer), 0)
+    mode = str(boundary_mode).strip().lower()
 
     def clear_block(block: np.ndarray) -> np.ndarray:
-        if block.size and any(buffer_size >= size for size in block.shape):
+        if mode.startswith("lateral") and block.ndim >= 2:
+            boundary_axes = tuple(range(block.ndim - 2, block.ndim))
+        else:
+            boundary_axes = tuple(range(block.ndim))
+        if block.size and any(
+            buffer_size >= block.shape[axis] for axis in boundary_axes
+        ):
             raise ValueError(
                 "Border buffer must be smaller than every processed "
-                "spatial dimension."
+                "boundary dimension."
             )
-        return segmentation.clear_border(block, buffer_size=buffer_size)
+        valid_region = np.ones(block.shape, dtype=bool)
+        extent = buffer_size + 1
+        for axis in boundary_axes:
+            start = [slice(None)] * block.ndim
+            end = [slice(None)] * block.ndim
+            start[axis] = slice(0, extent)
+            end[axis] = slice(-extent, None)
+            valid_region[tuple(start)] = False
+            valid_region[tuple(end)] = False
+        return segmentation.clear_border(block, mask=valid_region)
 
     return _apply_spatial_blocks(
         objects,
@@ -287,16 +340,56 @@ def clear_border_objects(
     )
 
 
-def volume_filter(data, min_volume: int = 10) -> np.ndarray:
-    """Remove connected components below a minimum voxel/pixel count."""
-    mask = _to_bool_mask(data)
-    labeled, count = ndi.label(mask)
-    if count == 0:
-        return mask.copy()
-    sizes = np.bincount(labeled.ravel())
-    keep = sizes >= max(int(min_volume), 1)
-    keep[0] = False
-    return keep[labeled]
+def remove_small_objects(
+    data,
+    min_size: int = 10,
+    spatial_mode: str = "Auto from axes",
+    connectivity: str = "Face connected",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Remove small mask components or labels within each spatial block."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        objects = arr
+    elif np.issubdtype(arr.dtype, np.integer):
+        objects = _validated_labels(arr)
+    else:
+        raise ValueError(
+            "Remove Small Objects requires a binary mask or integer label image."
+        )
+
+    spatial_ndim = _resolved_spatial_ndim(
+        objects,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
+    structure = ndi.generate_binary_structure(spatial_ndim, rank)
+    minimum = max(int(min_size), 0)
+
+    def filter_block(block: np.ndarray) -> np.ndarray:
+        if block.dtype == bool:
+            labels, count = ndi.label(block, structure=structure)
+            if count == 0 or minimum <= 1:
+                return block.copy()
+            sizes = np.bincount(labels.ravel())
+            keep = sizes >= minimum
+            keep[0] = False
+            return keep[labels]
+
+        values, counts = np.unique(block, return_counts=True)
+        keep = (values != 0) & (counts >= minimum)
+        kept_labels = values[keep]
+        if kept_labels.size == 0:
+            return np.zeros_like(block)
+        return np.where(np.isin(block, kept_labels), block, 0)
+
+    return _apply_spatial_blocks(
+        objects,
+        spatial_ndim,
+        filter_block,
+        dtype=objects.dtype,
+    )
 
 
 def label_connected_components(
@@ -387,6 +480,666 @@ def relabel_sequential(
         relabel_block,
         dtype=labels.dtype,
     )
+
+
+def skeletonize_mask(
+    data,
+    spatial_mode: str = "Auto from axes",
+    method: str = "Auto",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Skeletonize a binary mask per XY plane or across a ZYX volume."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    method_value = _skeletonize_method(method)
+
+    def skeletonize_block(block: np.ndarray) -> np.ndarray:
+        if not np.any(block):
+            return np.zeros_like(block, dtype=bool)
+        if method_value == "zhang" and block.ndim != 2:
+            raise ValueError("Zhang skeletonization is only valid for 2D blocks.")
+        return morphology.skeletonize(block, method=method_value).astype(bool)
+
+    return _apply_spatial_blocks(mask, spatial_ndim, skeletonize_block, dtype=bool)
+
+
+def measure_objects(
+    data,
+    spatial_mode: str = "Auto from axes",
+    measurement_set: str = "Basic morphology",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure labeled objects into a row-per-object table."""
+    labels = _validated_labels(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    axis_names = _measurement_axis_names(labels.ndim, axis_names)
+    axis_types = _measurement_axis_types(labels.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        labels.ndim,
+        spatial_ndim,
+        axis_types,
+    )
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(labels.ndim - spatial_ndim, labels.ndim))
+    labels_for_measure = np.moveaxis(
+        labels,
+        spatial_axes,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(labels.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:],
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: labels.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(labels.ndim - spatial_ndim)),
+    )
+    leading_shape = labels_for_measure.shape[: labels.ndim - spatial_ndim]
+
+    units = _measurement_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    columns = _measurement_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        units,
+    )
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = labels_for_measure[block_index] if leading_shape else labels_for_measure
+        block_columns = _measure_label_block(block, spatial_axis_names, spatial_ndim)
+        row_count = len(block_columns["label_id"])
+        for axis_position, axis_name in enumerate(leading_axis_names):
+            columns[f"{axis_name}_index"].extend(
+                [int(block_index[axis_position])] * row_count
+            )
+        for name, values in block_columns.items():
+            columns[name].extend(values)
+        if units.physical_column:
+            columns[units.physical_column].extend(
+                [
+                    float(value) * units.scale_product
+                    for value in block_columns[units.size_column]
+                ]
+            )
+            columns["physical_unit"].extend([units.unit_label] * row_count)
+
+    return table_from_columns(
+        columns,
+        name="Object measurements",
+        table_kind=str(measurement_set or "Basic morphology"),
+        source_name=source_name,
+        column_units=units.column_units,
+    )
+
+
+def measure_objects_with_intensity(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    measurement_set: str = "Basic morphology + intensity",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure labeled objects and their matching intensity image."""
+    labels_data, intensity_data = _labels_and_intensity_inputs(inputs)
+    labels = _validated_labels(labels_data)
+    intensity = np.asarray(intensity_data)
+    if intensity.shape != labels.shape:
+        raise ValueError(
+            "Intensity-aware measurements require labels and intensity image "
+            "with the same shape."
+        )
+
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    axis_names = _measurement_axis_names(labels.ndim, axis_names)
+    axis_types = _measurement_axis_types(labels.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        labels.ndim,
+        spatial_ndim,
+        axis_types,
+    )
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(labels.ndim - spatial_ndim, labels.ndim))
+    labels_for_measure = np.moveaxis(
+        labels,
+        spatial_axes,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+    )
+    intensity_for_measure = np.moveaxis(
+        intensity,
+        spatial_axes,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(labels.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:],
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: labels.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(labels.ndim - spatial_ndim)),
+    )
+    leading_shape = labels_for_measure.shape[: labels.ndim - spatial_ndim]
+
+    units = _measurement_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    columns = _measurement_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        units,
+        include_intensity=True,
+    )
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = labels_for_measure[block_index] if leading_shape else labels_for_measure
+        intensity_block = (
+            intensity_for_measure[block_index]
+            if leading_shape
+            else intensity_for_measure
+        )
+        block_columns = _measure_label_block(
+            block,
+            spatial_axis_names,
+            spatial_ndim,
+            intensity_block=intensity_block,
+        )
+        row_count = len(block_columns["label_id"])
+        for axis_position, axis_name in enumerate(leading_axis_names):
+            columns[f"{axis_name}_index"].extend(
+                [int(block_index[axis_position])] * row_count
+            )
+        for name, values in block_columns.items():
+            columns[name].extend(values)
+        if units.physical_column:
+            columns[units.physical_column].extend(
+                [
+                    float(value) * units.scale_product
+                    for value in block_columns[units.size_column]
+                ]
+            )
+            columns["physical_unit"].extend([units.unit_label] * row_count)
+
+    table_kind = str(measurement_set or "Basic morphology + intensity")
+    return table_from_columns(
+        columns,
+        name="Object intensity measurements",
+        table_kind=table_kind,
+        source_name=source_name,
+        column_units=units.column_units,
+    )
+
+
+def analyze_skeleton(
+    data,
+    spatial_mode: str = "Auto from axes",
+    input_mode: str = "Already skeletonized",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Analyze skeleton components into a per-component network table."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    axis_names = _measurement_axis_names(mask.ndim, axis_names)
+    axis_types = _measurement_axis_types(mask.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
+    mask_for_analysis = np.moveaxis(
+        mask,
+        spatial_axes,
+        tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(mask.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: mask.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(mask.ndim - spatial_ndim)),
+    )
+    leading_shape = mask_for_analysis.shape[: mask.ndim - spatial_ndim]
+    units = _skeleton_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    columns = _skeleton_empty_columns(leading_axis_names, units)
+    should_skeletonize = str(input_mode).strip().lower().startswith("skeletonize")
+
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = (
+            mask_for_analysis[block_index]
+            if leading_shape
+            else mask_for_analysis
+        )
+        skeleton = (
+            morphology.skeletonize(block).astype(bool)
+            if should_skeletonize
+            else block.astype(bool, copy=False)
+        )
+        block_columns = _analyze_skeleton_block(skeleton, units)
+        row_count = len(block_columns["component_id"])
+        for axis_position, axis_name in enumerate(leading_axis_names):
+            columns[f"{axis_name}_index"].extend(
+                [int(block_index[axis_position])] * row_count
+            )
+        for name, values in block_columns.items():
+            columns[name].extend(values)
+        if units.physical_column:
+            columns["physical_unit"].extend([units.unit_label] * row_count)
+
+    return table_from_columns(
+        columns,
+        name="Skeleton network measurements",
+        table_kind="Skeleton network",
+        source_name=source_name,
+        column_units=units.column_units,
+    )
+
+
+IDENTITY_JOIN_COLUMNS = (
+    "source_name",
+    "sample_id",
+    "sample",
+    "series_index",
+    "series",
+    "t_index",
+    "time_index",
+    "c_index",
+    "channel_index",
+    "z_index",
+    "label_id",
+    "object_id",
+    "component_id",
+)
+
+
+def merge_tables(
+    inputs,
+    input_count: int = 2,
+    join_mode: str = "Left join",
+    join_keys: str = "auto",
+) -> TableData:
+    """Join measurement tables into one analysis-ready table."""
+    tables = _table_inputs(inputs, input_count)
+    key_columns, row_position_join = _table_join_keys(tables, join_keys)
+    mode = _normalized_join_mode(join_mode)
+    records = [table.records() for table in tables]
+    indexes = [
+        _table_record_index(
+            table_records,
+            key_columns,
+            row_position_join,
+            table_number=index + 1,
+        )
+        for index, table_records in enumerate(records)
+    ]
+    orders = [
+        _table_key_order(table_records, key_columns, row_position_join)
+        for table_records in records
+    ]
+    output_keys = _joined_table_keys(mode, indexes, orders)
+    output_columns: list[str] = []
+    output_specs: list[tuple[int | None, str]] = []
+    output_units: dict[str, str] = {}
+    used_columns: set[str] = set()
+
+    if not row_position_join:
+        for column in key_columns:
+            output_columns.append(column)
+            output_specs.append((None, column))
+            used_columns.add(column)
+            unit = _first_table_unit(tables, column)
+            if unit:
+                output_units[column] = unit
+
+    for table_index, table in enumerate(tables):
+        suffix = f"table{table_index + 1}"
+        for column in table.columns:
+            if column in key_columns:
+                continue
+            output_column = _unique_table_column(column, used_columns, suffix)
+            output_columns.append(output_column)
+            output_specs.append((table_index, column))
+            used_columns.add(output_column)
+            unit = table.unit_for(column)
+            if unit:
+                output_units[output_column] = unit
+
+    rows: list[tuple[object, ...]] = []
+    for key in output_keys:
+        values: list[object] = []
+        for table_index, column in output_specs:
+            if table_index is None:
+                record = _first_available_record(indexes, key)
+            else:
+                record = indexes[table_index].get(key)
+            values.append("" if record is None else record.get(column, ""))
+        rows.append(tuple(values))
+
+    return TableData(
+        columns=tuple(output_columns),
+        rows=tuple(rows),
+        name="Merged measurement table",
+        table_kind="Merged measurements",
+        source_name=_merged_table_source_name(tables),
+        column_units=tuple(output_units.items()),
+    )
+
+
+def add_metadata_columns(
+    data,
+    metadata_columns: str = "condition=control",
+    overwrite: str = "no",
+) -> TableData:
+    """Add constant metadata columns to every row of a table."""
+    table = _validated_table(data)
+    additions = _parse_metadata_columns(metadata_columns)
+    if not additions:
+        return TableData(
+            columns=table.columns,
+            rows=table.rows,
+            name=table.name,
+            table_kind=table.table_kind,
+            source_name=table.source_name,
+            column_units=table.column_units,
+        )
+
+    should_overwrite = str(overwrite).strip().lower().startswith("y")
+    columns = list(table.columns)
+    rows = [list(row) for row in table.rows]
+    overwritten: set[str] = set()
+    for column, value in additions:
+        if column in columns:
+            if not should_overwrite:
+                raise ValueError(
+                    f"Metadata column {column!r} already exists. "
+                    "Enable overwrite to replace it."
+                )
+            column_index = columns.index(column)
+            overwritten.add(column)
+            for row in rows:
+                row[column_index] = value
+            continue
+        columns.append(column)
+        for row in rows:
+            row.append(value)
+
+    units = tuple(
+        (column, unit)
+        for column, unit in table.column_units
+        if column in columns and column not in overwritten
+    )
+    return TableData(
+        columns=tuple(columns),
+        rows=tuple(tuple(row) for row in rows),
+        name=table.name or "Annotated table",
+        table_kind=f"{table.table_kind} + metadata",
+        source_name=table.source_name,
+        column_units=units,
+    )
+
+
+def _table_inputs(inputs, input_count: int) -> list[TableData]:
+    if isinstance(inputs, TableData):
+        candidates = [inputs]
+    else:
+        candidates = list(inputs)
+    count = max(int(input_count), 1)
+    tables = [_validated_table(table) for table in candidates[:count]]
+    if len(tables) < count:
+        raise ValueError(f"Expected {count} table input(s), received {len(tables)}.")
+    if not tables:
+        raise ValueError("Merge Tables needs at least one table input.")
+    return tables
+
+
+def _validated_table(value) -> TableData:
+    if not isinstance(value, TableData):
+        raise TypeError("This operation expects VIPP TableData input.")
+    return value
+
+
+def _table_join_keys(
+    tables: Sequence[TableData],
+    join_keys: str,
+) -> tuple[tuple[str, ...], bool]:
+    raw = str(join_keys).strip()
+    if raw and raw.lower() != "auto":
+        keys = tuple(part.strip() for part in raw.split(",") if part.strip())
+        if not keys:
+            raise ValueError("Join keys cannot be blank.")
+        missing = {
+            key
+            for key in keys
+            for table in tables
+            if key not in table.columns
+        }
+        if missing:
+            raise ValueError(
+                "Manual join keys must exist in every table: "
+                + ", ".join(sorted(missing))
+            )
+        return keys, False
+
+    common = set(tables[0].columns)
+    for table in tables[1:]:
+        common &= set(table.columns)
+    keys = tuple(column for column in IDENTITY_JOIN_COLUMNS if column in common)
+    if keys:
+        return keys, False
+    row_counts = {table.row_count for table in tables}
+    if len(row_counts) == 1:
+        return (), True
+    raise ValueError(
+        "Could not infer table join keys. Enter comma-separated join keys, "
+        "or use tables with the same row count for row-position joining."
+    )
+
+
+def _normalized_join_mode(value: str) -> str:
+    text = str(value).strip().lower()
+    if text.startswith("inner"):
+        return "inner"
+    if text.startswith("outer"):
+        return "outer"
+    return "left"
+
+
+def _table_record_index(
+    records: list[dict[str, object]],
+    key_columns: tuple[str, ...],
+    row_position_join: bool,
+    *,
+    table_number: int,
+) -> dict[tuple[object, ...], dict[str, object]]:
+    indexed: dict[tuple[object, ...], dict[str, object]] = {}
+    for row_index, record in enumerate(records):
+        key = (
+            (int(row_index),)
+            if row_position_join
+            else tuple(
+                _hashable_table_key(record.get(column))
+                for column in key_columns
+            )
+        )
+        if key in indexed:
+            labels = ", ".join(
+                f"{column}={record.get(column)!r}" for column in key_columns
+            )
+            raise ValueError(
+                f"Table {table_number} has duplicate rows for join key {labels}."
+            )
+        indexed[key] = record
+    return indexed
+
+
+def _table_key_order(
+    records: list[dict[str, object]],
+    key_columns: tuple[str, ...],
+    row_position_join: bool,
+) -> list[tuple[object, ...]]:
+    if row_position_join:
+        return [(int(index),) for index in range(len(records))]
+    return [
+        tuple(_hashable_table_key(record.get(column)) for column in key_columns)
+        for record in records
+    ]
+
+
+def _joined_table_keys(
+    mode: str,
+    indexes: list[dict[tuple[object, ...], dict[str, object]]],
+    orders: list[list[tuple[object, ...]]],
+) -> list[tuple[object, ...]]:
+    if mode == "inner":
+        return [
+            key
+            for key in orders[0]
+            if all(key in index for index in indexes[1:])
+        ]
+    if mode == "outer":
+        joined: list[tuple[object, ...]] = []
+        seen: set[tuple[object, ...]] = set()
+        for order in orders:
+            for key in order:
+                if key in seen:
+                    continue
+                joined.append(key)
+                seen.add(key)
+        return joined
+    return list(orders[0])
+
+
+def _hashable_table_key(value) -> object:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
+    if isinstance(value, list):
+        return tuple(_hashable_table_key(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(
+            (str(key), _hashable_table_key(item))
+            for key, item in sorted(value.items())
+        )
+    return value
+
+
+def _first_available_record(
+    indexes: list[dict[tuple[object, ...], dict[str, object]]],
+    key: tuple[object, ...],
+) -> dict[str, object] | None:
+    for index in indexes:
+        record = index.get(key)
+        if record is not None:
+            return record
+    return None
+
+
+def _unique_table_column(column: str, used: set[str], suffix: str) -> str:
+    if column not in used:
+        return column
+    base = f"{column}_{suffix}"
+    candidate = base
+    index = 2
+    while candidate in used:
+        candidate = f"{base}_{index}"
+        index += 1
+    return candidate
+
+
+def _first_table_unit(tables: Sequence[TableData], column: str) -> str:
+    for table in tables:
+        unit = table.unit_for(column)
+        if unit:
+            return unit
+    return ""
+
+
+def _merged_table_source_name(tables: Sequence[TableData]) -> str:
+    names: list[str] = []
+    seen: set[str] = set()
+    for table in tables:
+        name = str(table.source_name).strip()
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return ", ".join(names)
+
+
+def _parse_metadata_columns(text: str) -> tuple[tuple[str, str], ...]:
+    cleaned = str(text).replace("\n", ",").replace(";", ",")
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in cleaned.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                "Metadata columns must use name=value entries separated by commas."
+            )
+        name, value = item.split("=", 1)
+        column = "_".join(name.strip().split())
+        if not column:
+            raise ValueError("Metadata column names cannot be blank.")
+        if column in seen:
+            raise ValueError(f"Metadata column {column!r} is listed more than once.")
+        pairs.append((column, value.strip()))
+        seen.add(column)
+    return tuple(pairs)
 
 
 def extract_channel(data, channel: int = 0) -> np.ndarray:
@@ -740,41 +1493,14 @@ def save_array_output(
     overwrite: bool = True,
     image_state=None,
 ) -> Path:
-    """Write an array output to disk using a compact explicit format choice."""
-    if data is None:
-        raise ValueError("No node output is available to save.")
-    raw_path = str(path).strip()
-    if not raw_path:
-        raise ValueError("A save path is required.")
-    output_path = Path(raw_path).expanduser()
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(f"Output already exists: {output_path}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    arr = np.asarray(data)
-    selected_format = str(format or "auto").lower()
-    if selected_format == "auto":
-        selected_format = "npy" if output_path.suffix.lower() == ".npy" else "tiff"
-    if selected_format == "npy":
-        np.save(output_path, arr)
-        return output_path
-    if selected_format in {"tif", "tiff"}:
-        writable, axes = _imagej_tiff_payload(arr, image_state)
-        if _is_label_image_state(image_state):
-            tiff_imwrite(
-                str(output_path),
-                writable,
-                metadata={"axes": axes},
-            )
-            return output_path
-        tiff_imwrite(
-            str(output_path),
-            writable,
-            imagej=True,
-            metadata={"axes": axes},
-        )
-        return output_path
-    raise ValueError(f"Unsupported save format: {format}")
+    """Write an array output through the shared headless I/O registry."""
+    return write_image(
+        data,
+        path,
+        format=format,
+        overwrite=overwrite,
+        image_state=image_state,
+    )
 
 
 def save_output(
@@ -1131,6 +1857,613 @@ def _validated_labels(data) -> np.ndarray:
     if labels.size and int(labels.min()) < 0:
         raise ValueError("Label operations require non-negative label IDs.")
     return labels
+
+
+@dataclass(frozen=True)
+class _MeasurementUnits:
+    size_column: str
+    equivalent_diameter_column: str
+    physical_column: str
+    scale_product: float
+    unit_label: str
+    column_units: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _SkeletonUnits:
+    length_column: str
+    physical_column: str
+    scales: tuple[float, ...]
+    unit_label: str
+    column_units: dict[str, str]
+
+
+def _skeletonize_method(method: str) -> str | None:
+    value = str(method).strip().lower()
+    if value == "auto":
+        return None
+    if value.startswith("lee"):
+        return "lee"
+    if value.startswith("zhang"):
+        return "zhang"
+    return None
+
+
+def _skeleton_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["component_id"] = []
+    columns["component_count_in_block"] = []
+    columns["component_voxel_fraction"] = []
+    columns["skeleton_voxel_count"] = []
+    columns["endpoint_voxel_count"] = []
+    columns["junction_voxel_count"] = []
+    columns["isolated_node_count"] = []
+    columns["branch_count"] = []
+    columns["graph_node_count"] = []
+    columns["graph_edge_count"] = []
+    columns["voxel_graph_edge_count"] = []
+    columns["cycle_count"] = []
+    columns[units.length_column] = []
+    if units.physical_column:
+        columns[units.physical_column] = []
+        columns["physical_unit"] = []
+    return columns
+
+
+def _analyze_skeleton_block(
+    skeleton: np.ndarray,
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    skeleton = np.asarray(skeleton, dtype=bool)
+    ndim = skeleton.ndim
+    structure = ndi.generate_binary_structure(ndim, ndim)
+    component_labels, component_count = ndi.label(skeleton, structure=structure)
+    total_voxel_count = int(np.count_nonzero(skeleton))
+    columns: dict[str, list[object]] = {
+        "component_id": [],
+        "component_count_in_block": [],
+        "component_voxel_fraction": [],
+        "skeleton_voxel_count": [],
+        "endpoint_voxel_count": [],
+        "junction_voxel_count": [],
+        "isolated_node_count": [],
+        "branch_count": [],
+        "graph_node_count": [],
+        "graph_edge_count": [],
+        "voxel_graph_edge_count": [],
+        "cycle_count": [],
+        units.length_column: [],
+    }
+    if units.physical_column:
+        columns[units.physical_column] = []
+
+    for component_id in range(1, component_count + 1):
+        component = component_labels == component_id
+        graph = _skeleton_component_graph(component, units.scales)
+        columns["component_id"].append(component_id)
+        columns["component_count_in_block"].append(int(component_count))
+        columns["component_voxel_fraction"].append(
+            float(graph.voxel_count / total_voxel_count)
+            if total_voxel_count
+            else 0.0
+        )
+        columns["skeleton_voxel_count"].append(graph.voxel_count)
+        columns["endpoint_voxel_count"].append(graph.endpoint_count)
+        columns["junction_voxel_count"].append(graph.junction_count)
+        columns["isolated_node_count"].append(graph.isolated_node_count)
+        columns["branch_count"].append(graph.branch_count)
+        columns["graph_node_count"].append(graph.graph_node_count)
+        columns["graph_edge_count"].append(graph.graph_edge_count)
+        columns["voxel_graph_edge_count"].append(graph.voxel_graph_edge_count)
+        columns["cycle_count"].append(graph.cycle_count)
+        columns[units.length_column].append(graph.pixel_length)
+        if units.physical_column:
+            columns[units.physical_column].append(graph.physical_length)
+    return columns
+
+
+@dataclass(frozen=True)
+class _SkeletonGraphMetrics:
+    voxel_count: int
+    endpoint_count: int
+    junction_count: int
+    isolated_node_count: int
+    branch_count: int
+    graph_node_count: int
+    graph_edge_count: int
+    voxel_graph_edge_count: int
+    cycle_count: int
+    pixel_length: float
+    physical_length: float
+
+
+def _skeleton_component_graph(
+    component: np.ndarray,
+    scales: tuple[float, ...],
+) -> _SkeletonGraphMetrics:
+    coords = np.argwhere(component)
+    voxel_count = int(coords.shape[0])
+    if voxel_count == 0:
+        return _SkeletonGraphMetrics(
+            voxel_count=0,
+            endpoint_count=0,
+            junction_count=0,
+            isolated_node_count=0,
+            branch_count=0,
+            graph_node_count=0,
+            graph_edge_count=0,
+            voxel_graph_edge_count=0,
+            cycle_count=0,
+            pixel_length=0.0,
+            physical_length=0.0,
+        )
+
+    scales = _normalized_spatial_scales(component.ndim, scales)
+    index_by_coord = {
+        tuple(int(value) for value in coord): index
+        for index, coord in enumerate(coords)
+    }
+    adjacency: list[list[int]] = [[] for _ in range(voxel_count)]
+    pixel_length = 0.0
+    physical_length = 0.0
+    voxel_graph_edge_count = 0
+    for index, coord_array in enumerate(coords):
+        coord = tuple(int(value) for value in coord_array)
+        for offset in _half_neighbor_offsets(component.ndim):
+            neighbor = tuple(
+                coord[axis] + offset[axis]
+                for axis in range(component.ndim)
+            )
+            neighbor_index = index_by_coord.get(neighbor)
+            if neighbor_index is None:
+                continue
+            if not _valid_skeleton_edge(component, coord, offset):
+                continue
+            adjacency[index].append(neighbor_index)
+            adjacency[neighbor_index].append(index)
+            voxel_graph_edge_count += 1
+            pixel_length += _offset_length(offset, (1.0,) * component.ndim)
+            physical_length += _offset_length(offset, scales)
+
+    degrees = np.asarray([len(neighbors) for neighbors in adjacency], dtype=np.int32)
+    isolated_node_count = int(np.count_nonzero(degrees == 0))
+    endpoint_count = int(np.count_nonzero(degrees == 1))
+    junction_count = int(np.count_nonzero(degrees >= 3))
+    branch_count = _skeleton_branch_count(adjacency, degrees)
+    graph_node_count = endpoint_count + junction_count + isolated_node_count
+    graph_edge_count = branch_count
+    cycle_count = max(0, int(voxel_graph_edge_count) - voxel_count + 1)
+    return _SkeletonGraphMetrics(
+        voxel_count=voxel_count,
+        endpoint_count=endpoint_count,
+        junction_count=junction_count,
+        isolated_node_count=isolated_node_count,
+        branch_count=branch_count,
+        graph_node_count=graph_node_count,
+        graph_edge_count=graph_edge_count,
+        voxel_graph_edge_count=int(voxel_graph_edge_count),
+        cycle_count=cycle_count,
+        pixel_length=float(pixel_length),
+        physical_length=float(physical_length),
+    )
+
+
+def _skeleton_branch_count(adjacency: list[list[int]], degrees: np.ndarray) -> int:
+    if not adjacency:
+        return 0
+    if len(adjacency) == 1:
+        return 0
+    key_nodes = {index for index, degree in enumerate(degrees) if degree != 2}
+    if not key_nodes:
+        return 1
+
+    visited: set[tuple[int, int]] = set()
+    branches = 0
+    for start in sorted(key_nodes):
+        for neighbor in adjacency[start]:
+            edge = _edge_key(start, neighbor)
+            if edge in visited:
+                continue
+            visited.add(edge)
+            previous = start
+            current = neighbor
+            while current not in key_nodes:
+                next_nodes = [node for node in adjacency[current] if node != previous]
+                if not next_nodes:
+                    break
+                next_node = next_nodes[0]
+                edge = _edge_key(current, next_node)
+                if edge in visited:
+                    break
+                visited.add(edge)
+                previous, current = current, next_node
+            branches += 1
+    return branches
+
+
+def _edge_key(first: int, second: int) -> tuple[int, int]:
+    return (first, second) if first < second else (second, first)
+
+
+def _half_neighbor_offsets(ndim: int) -> tuple[tuple[int, ...], ...]:
+    zero = (0,) * ndim
+    return tuple(
+        offset
+        for offset in product((-1, 0, 1), repeat=ndim)
+        if offset != zero and offset > zero
+    )
+
+
+def _valid_skeleton_edge(
+    component: np.ndarray,
+    coord: tuple[int, ...],
+    offset: tuple[int, ...],
+) -> bool:
+    nonzero_axes = [axis for axis, value in enumerate(offset) if value]
+    if len(nonzero_axes) <= 1:
+        return True
+    # Avoid adding a diagonal shortcut when a lower-order skeleton voxel already
+    # connects the same neighborhood through a face/edge path.
+    for length in range(1, len(nonzero_axes)):
+        for axes in combinations(nonzero_axes, length):
+            intermediate = list(coord)
+            for axis in axes:
+                intermediate[axis] += offset[axis]
+            intermediate_tuple = tuple(intermediate)
+            if _coord_in_bounds(intermediate_tuple, component.shape) and component[
+                intermediate_tuple
+            ]:
+                return False
+    return True
+
+
+def _coord_in_bounds(coord: tuple[int, ...], shape: tuple[int, ...]) -> bool:
+    return all(0 <= value < shape[index] for index, value in enumerate(coord))
+
+
+def _offset_length(offset: tuple[int, ...], scales: tuple[float, ...]) -> float:
+    values = [
+        (float(offset[index]) * float(scales[index])) ** 2
+        for index in range(len(offset))
+    ]
+    return float(np.sqrt(np.sum(values)))
+
+
+def _skeleton_units(
+    spatial_ndim: int,
+    axis_scales: Sequence[float | None],
+    axis_units: Sequence[str | None],
+) -> _SkeletonUnits:
+    length_column = (
+        "skeleton_length_voxels"
+        if spatial_ndim >= 3
+        else "skeleton_length_pixels"
+    )
+    physical_column = "skeleton_length_physical"
+    scales = _normalized_spatial_scales(spatial_ndim, axis_scales)
+    units = [
+        str(value).strip()
+        for value in tuple(axis_units)[-spatial_ndim:]
+        if value not in {None, ""}
+    ]
+    calibrated = any(abs(scale - 1.0) > 1e-12 for scale in scales) or bool(units)
+    unit_label = _physical_unit_label(
+        units,
+        1,
+        "voxel" if spatial_ndim >= 3 else "pixel",
+    )
+    column_units = {
+        "component_count_in_block": "count",
+        "component_voxel_fraction": "fraction",
+        "skeleton_voxel_count": "voxels",
+        "endpoint_voxel_count": "voxels",
+        "junction_voxel_count": "voxels",
+        "isolated_node_count": "count",
+        "branch_count": "count",
+        "graph_node_count": "count",
+        "graph_edge_count": "count",
+        "voxel_graph_edge_count": "count",
+        "cycle_count": "count",
+        length_column: "voxels" if spatial_ndim >= 3 else "pixels",
+    }
+    if calibrated:
+        column_units[physical_column] = unit_label
+        column_units["physical_unit"] = "text"
+    else:
+        physical_column = ""
+        unit_label = ""
+    return _SkeletonUnits(
+        length_column=length_column,
+        physical_column=physical_column,
+        scales=scales,
+        unit_label=unit_label,
+        column_units=column_units,
+    )
+
+
+def _normalized_spatial_scales(
+    spatial_ndim: int,
+    axis_scales: Sequence[float | None],
+) -> tuple[float, ...]:
+    scales = [
+        float(value) if value not in {None, ""} else 1.0
+        for value in tuple(axis_scales)[-spatial_ndim:]
+    ]
+    if len(scales) < spatial_ndim:
+        scales = [1.0] * (spatial_ndim - len(scales)) + scales
+    return tuple(scales)
+
+
+def _measure_label_block(
+    block: np.ndarray,
+    spatial_axis_names: tuple[str, ...],
+    spatial_ndim: int,
+    intensity_block: np.ndarray | None = None,
+) -> dict[str, list[object]]:
+    properties = (
+        "label",
+        "area",
+        "bbox",
+        "centroid",
+        "equivalent_diameter_area",
+        "extent",
+        "euler_number",
+    )
+    raw = measure.regionprops_table(block, properties=properties)
+    units = _measurement_units(spatial_ndim, (), ())
+    result: dict[str, list[object]] = {
+        "label_id": [int(value) for value in raw.get("label", [])],
+        units.size_column: [int(value) for value in raw.get("area", [])],
+    }
+    for axis_index, axis_name in enumerate(spatial_axis_names):
+        result[f"centroid_{axis_name}"] = [
+            float(value) for value in raw.get(f"centroid-{axis_index}", [])
+        ]
+    for axis_index, axis_name in enumerate(spatial_axis_names):
+        result[f"bbox_{axis_name}_min"] = [
+            int(value) for value in raw.get(f"bbox-{axis_index}", [])
+        ]
+    for axis_index, axis_name in enumerate(spatial_axis_names):
+        bbox_index = spatial_ndim + axis_index
+        result[f"bbox_{axis_name}_max"] = [
+            int(value) for value in raw.get(f"bbox-{bbox_index}", [])
+        ]
+    result[units.equivalent_diameter_column] = [
+        float(value) for value in raw.get("equivalent_diameter_area", [])
+    ]
+    result["extent"] = [float(value) for value in raw.get("extent", [])]
+    result["euler_number"] = [
+        int(value) for value in raw.get("euler_number", [])
+    ]
+    if intensity_block is not None:
+        _add_intensity_measurements(result, block, intensity_block)
+    return result
+
+
+def _add_intensity_measurements(
+    result: dict[str, list[object]],
+    labels: np.ndarray,
+    intensity: np.ndarray,
+) -> None:
+    means: list[float] = []
+    minimums: list[float] = []
+    maximums: list[float] = []
+    sums: list[float] = []
+    stds: list[float] = []
+    intensity = np.asarray(intensity)
+    for label_id in result["label_id"]:
+        values = intensity[labels == int(label_id)].astype(np.float64, copy=False)
+        if values.size == 0:
+            means.append(float("nan"))
+            minimums.append(float("nan"))
+            maximums.append(float("nan"))
+            sums.append(0.0)
+            stds.append(float("nan"))
+            continue
+        means.append(float(np.mean(values)))
+        minimums.append(float(np.min(values)))
+        maximums.append(float(np.max(values)))
+        sums.append(float(np.sum(values)))
+        stds.append(float(np.std(values)))
+    result["intensity_mean"] = means
+    result["intensity_min"] = minimums
+    result["intensity_max"] = maximums
+    result["intensity_sum"] = sums
+    result["intensity_std"] = stds
+
+
+def _measurement_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    spatial_axis_names: tuple[str, ...],
+    units: _MeasurementUnits,
+    *,
+    include_intensity: bool = False,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["label_id"] = []
+    columns[units.size_column] = []
+    if units.physical_column:
+        columns[units.physical_column] = []
+        columns["physical_unit"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"centroid_{axis_name}"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"bbox_{axis_name}_min"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"bbox_{axis_name}_max"] = []
+    columns[units.equivalent_diameter_column] = []
+    columns["extent"] = []
+    columns["euler_number"] = []
+    if include_intensity:
+        columns["intensity_mean"] = []
+        columns["intensity_min"] = []
+        columns["intensity_max"] = []
+        columns["intensity_sum"] = []
+        columns["intensity_std"] = []
+    return columns
+
+
+def _measurement_units(
+    spatial_ndim: int,
+    axis_scales: Sequence[float | None],
+    axis_units: Sequence[str | None],
+) -> _MeasurementUnits:
+    if spatial_ndim >= 3:
+        size_column = "volume_voxels"
+        equivalent_column = "equivalent_diameter_voxels"
+        physical_column = "volume_physical"
+        default_unit = "voxel^3"
+    elif spatial_ndim == 2:
+        size_column = "area_pixels"
+        equivalent_column = "equivalent_diameter_pixels"
+        physical_column = "area_physical"
+        default_unit = "pixel^2"
+    else:
+        size_column = "length_pixels"
+        equivalent_column = "equivalent_diameter_pixels"
+        physical_column = "length_physical"
+        default_unit = "pixel"
+
+    scales = [
+        float(value) if value not in {None, ""} else 1.0
+        for value in tuple(axis_scales)[-spatial_ndim:]
+    ]
+    if len(scales) < spatial_ndim:
+        scales = [1.0] * (spatial_ndim - len(scales)) + scales
+    units = [
+        str(value).strip()
+        for value in tuple(axis_units)[-spatial_ndim:]
+        if value not in {None, ""}
+    ]
+    calibrated = any(abs(scale - 1.0) > 1e-12 for scale in scales) or bool(units)
+    scale_product = float(np.prod(scales)) if scales else 1.0
+    unit_label = _physical_unit_label(units, spatial_ndim, default_unit)
+    column_units = {
+        size_column: "voxels" if spatial_ndim >= 3 else "pixels",
+        equivalent_column: "voxels" if spatial_ndim >= 3 else "pixels",
+        "intensity_mean": "intensity",
+        "intensity_min": "intensity",
+        "intensity_max": "intensity",
+        "intensity_sum": "intensity",
+        "intensity_std": "intensity",
+    }
+    if calibrated:
+        column_units[physical_column] = unit_label
+        column_units["physical_unit"] = "text"
+    else:
+        physical_column = ""
+        unit_label = ""
+    return _MeasurementUnits(
+        size_column=size_column,
+        equivalent_diameter_column=equivalent_column,
+        physical_column=physical_column,
+        scale_product=scale_product,
+        unit_label=unit_label,
+        column_units=column_units,
+    )
+
+
+def _labels_and_intensity_inputs(inputs) -> tuple[object, object]:
+    values = list(inputs)
+    if len(values) < 2:
+        raise ValueError(
+            "Intensity-aware measurements require labels and intensity image inputs."
+        )
+    return values[0], values[1]
+
+
+def _physical_unit_label(
+    units: Sequence[str],
+    spatial_ndim: int,
+    default_unit: str,
+) -> str:
+    if not units:
+        return default_unit
+    if len(set(units)) == 1:
+        unit = units[0]
+        return unit if spatial_ndim == 1 else f"{unit}^{spatial_ndim}"
+    return "*".join(units)
+
+
+def _measurement_axis_names(
+    ndim: int,
+    axis_names: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if axis_names is not None and len(axis_names) == ndim:
+        return tuple(
+            str(name).strip().lower() or f"axis_{index}"
+            for index, name in enumerate(axis_names)
+        )
+    return tuple(f"axis_{index}" for index in range(ndim))
+
+
+def _measurement_axis_types(
+    ndim: int,
+    axis_types: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if axis_types is not None and len(axis_types) == ndim:
+        return tuple(str(axis_type).strip().lower() for axis_type in axis_types)
+    return tuple("space" if index >= ndim - 2 else "unknown" for index in range(ndim))
+
+
+def _measurement_spatial_axes(
+    ndim: int,
+    spatial_ndim: int,
+    axis_types: tuple[str, ...],
+) -> tuple[int, ...]:
+    spatial = tuple(
+        index
+        for index, axis_type in enumerate(axis_types)
+        if axis_type == "space"
+    )
+    if len(spatial) >= spatial_ndim:
+        return spatial[-spatial_ndim:]
+    return tuple(range(ndim - spatial_ndim, ndim))
+
+
+def _reordered_axis_values(
+    values: Sequence | None,
+    ndim: int,
+    spatial_axes: tuple[int, ...],
+) -> tuple:
+    if values is None or len(tuple(values)) != ndim:
+        values = tuple(None for _ in range(ndim))
+    values = tuple(values)
+    leading = tuple(values[index] for index in range(ndim) if index not in spatial_axes)
+    spatial = tuple(values[index] for index in spatial_axes)
+    return leading + spatial
+
+
+def _safe_axis_column_names(
+    names: tuple[str, ...],
+    fallback: tuple[str, ...],
+) -> tuple[str, ...]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for index, name in enumerate(names):
+        fallback_name = fallback[index] if index < len(fallback) else f"axis_{index}"
+        candidate = _safe_column_fragment(name or fallback_name)
+        if not candidate:
+            candidate = _safe_column_fragment(fallback_name)
+        if candidate in seen:
+            candidate = f"{candidate}_{index}"
+        seen.add(candidate)
+        cleaned.append(candidate)
+    return tuple(cleaned)
+
+
+def _safe_column_fragment(value: str) -> str:
+    text = str(value).strip().lower()
+    chars = [character if character.isalnum() else "_" for character in text]
+    compact = "_".join(part for part in "".join(chars).split("_") if part)
+    return compact
 
 
 def _xy_structure(arr: np.ndarray, size: int) -> np.ndarray:

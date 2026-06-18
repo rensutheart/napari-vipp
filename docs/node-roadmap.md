@@ -1,7 +1,7 @@
 # Bioimage Node Roadmap
 
 Status: working discussion document  
-Last reviewed: 2026-06-15
+Last reviewed: 2026-06-16
 
 This document prioritizes future VIPP nodes for bioimage analysis. It is not a
 commitment to reproduce every function in OpenCV, scikit-image, or SciPy.
@@ -10,6 +10,10 @@ while preserving image axes, physical scale, data type, and provenance.
 
 The current recommendation is to build a strong classical segmentation and
 measurement workflow before adding a large catalogue of specialized filters.
+MitoMorph-derived feature extraction requirements, including selectable
+measurement families and final per-object table combination for PCA/treatment
+group analysis, are tracked in
+[mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
 ## Confirmed Product Scope
 
@@ -46,11 +50,14 @@ Implementation status:
   preserving retained IDs, with a data-aware slider and input-volume
   distribution;
 - implemented: Clear Border Objects for masks and labels, with a border buffer
-  and axis-aware 2D/3D processing;
+  and all-volume or lateral-only 3D boundaries;
+- implemented: Fill Holes with metadata-aware 2D/3D processing, an advanced
+  per-slice mode, connectivity, and optional maximum hole area/volume;
+- implemented: Remove Small Objects for masks and labels, with type-preserving
+  minimum-size filtering and contextual area/volume controls;
 - implemented: Relabel Sequential;
-- next: enhance Fill Holes with size-limited and 2D/3D processing, add
-  calibrated physical area/volume, and support richer property-based label
-  filtering.
+- next: add calibrated physical area/volume and support richer property-based
+  label filtering.
 
 ## Priority Definitions
 
@@ -94,16 +101,20 @@ VIPP already has useful coverage in these areas:
 - maximum projection;
 - image metadata, thumbnails, intensity histograms, label-volume histograms,
   mask inspection, and label inspection;
-- connected-component labels, pixel/voxel-volume filtering, and sequential
-  relabeling.
+- connected-component labels, pixel/voxel-volume filtering, sequential
+  relabeling, table outputs, basic label-object measurements, skeletonization,
+  and skeleton-network measurement tables.
 
-The remaining object-analysis gap is measurement and difficult segmentation.
-VIPP can now label separated foreground objects and clean them by size, but it
-cannot yet:
+The remaining object-analysis gaps are difficult segmentation, richer
+measurement, skeleton QC outputs, pruning, and property-based filtering. VIPP
+can now label separated foreground objects, clean them by size, measure basic
+label morphology, skeletonize masks, and measure skeleton components with
+generic graph metrics, but it cannot yet:
 
-- remove partial objects at image or ROI borders;
 - separate touching objects with distance markers and watershed;
-- measure morphology or per-object intensity into a table;
+- measure per-object intensity into a table;
+- export explicit branch graphs or visualize endpoints/junctions as QC masks;
+- prune short skeleton branches;
 - filter labels by properties other than pixel/voxel volume;
 - use calibrated physical area/volume as a filter unit.
 
@@ -116,8 +127,6 @@ cleaned up.
 | --- | --- | --- |
 | Contrast Stretching | It currently performs scale plus offset and converts to `uint8`; true percentile rescaling already exists separately. | Rename to `Linear Scale + Offset`, preserve a sensible dtype, or deprecate it in favor of image math plus `Rescale Intensity`. |
 | Top Hat / Black Hat | These are binary operations, while grayscale white top-hat is a common bioimage background-removal tool. | Rename current nodes `Binary Top Hat` and `Binary Black Hat`; add explicit grayscale morphology later. |
-| Volume Filter | It removes small connected foreground components. The name does not reveal that behavior or connectivity. | Rename to `Remove Small Objects`; expose connectivity and physical-size semantics. |
-| Fill Holes | It fills all holes across the full n-dimensional input and has no spatial-scope or size controls. | Keep the familiar name, add a maximum hole area/volume, and expose input-aware `2D YX` versus `3D ZYX` processing. |
 | Maximum Projection | Axis is numeric and only the maximum reducer is available. | Replace or complement it with an axis-aware `Reduce Axis` node. |
 | 2D filtering behavior | Several nodes infer XY and process other axes plane by plane. | Add an explicit processing scope: `XY per plane` or `spatial volume`. |
 
@@ -158,19 +167,21 @@ watershed needs ports such as:
 Add an `InputSpec` equivalent to `OutputSpec`, including name, type, title,
 optional/required state, and stable slot identity.
 
-### Table Outputs: Not Implemented
+### Table Outputs: Implemented
 
-Add a `table` output type before object measurement nodes. A table should have:
+The first `table` output type is implemented through `TableData` and
+`TableState`. It has:
 
 - stable column names and units;
 - one row per object or observation;
 - an inspector table view;
 - CSV/TSV save support;
 - workflow/export support;
-- optional linkage from a `label` column back to the displayed Labels layer.
+- no image thumbnail, histogram, or napari layer inspection behavior.
 
-A dictionary of one-dimensional NumPy arrays is a reasonable headless core
-representation. Pandas should not be required merely to compute measurements.
+Pandas is intentionally not required for core measurement or export. Optional
+linkage from a label column back to a displayed Labels layer remains future UI
+work.
 
 ### Spatial Scope And Units: Partially Implemented
 
@@ -204,20 +215,22 @@ Implement the remaining nodes in the order shown by the planned statuses.
 | Implemented | Filter Labels By Volume | labels -> labels | NumPy label counts | Removes labels outside minimum and optional maximum pixel/voxel volume. |
 | Implemented | Relabel Sequential | labels -> labels | `skimage.segmentation.relabel_sequential` | Normalizes sparse IDs after filtering. |
 | Implemented | Clear Border Objects | mask/labels -> same semantic type | `skimage.segmentation.clear_border` | Removes partial objects touching image or ROI boundaries. |
-| Next | Enhance Fill Holes | mask -> mask | `scipy.ndimage.binary_fill_holes` and `skimage.morphology.remove_small_holes` | Adds size-limited and explicit slice-wise/volumetric filling without introducing a duplicate node. |
-| Planned 2 | Remove Small Objects | mask/labels -> same semantic type | `skimage.morphology.remove_small_objects` | Standard cleanup with clear naming and connectivity. |
-| Planned 3 | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness. |
-| Planned 4 | H-Maxima / Local Maxima Markers | image -> mask or labels | `skimage.morphology.h_maxima` or `local_maxima` | Produces robust watershed seeds. |
-| Planned 5 | Marker-Controlled Watershed | image + labels + optional mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles. |
-| Planned 6 | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap. |
-| Planned 7 | Find Label Boundaries | labels -> mask | `skimage.segmentation.find_boundaries` | Useful for QC, overlays, and boundary measurements. |
-
-`Volume Filter` can be retained as a workflow-compatible alias while
-`Remove Small Objects` becomes the preferred UI name.
+| Implemented | Fill Holes | mask -> mask | `scipy.ndimage.binary_fill_holes` and connected-hole sizing | Fills all or size-limited holes using metadata-aware 2D/3D processing. |
+| Implemented | Remove Small Objects | mask/labels -> same semantic type | SciPy connected components and NumPy label counts | Removes objects below a metadata-aware 2D/3D minimum size while preserving mask/label type. |
+| Planned 1 | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness. |
+| Planned 2 | H-Maxima / Local Maxima Markers | image -> mask or labels | `skimage.morphology.h_maxima` or `local_maxima` | Produces robust watershed seeds. |
+| Planned 3 | Marker-Controlled Watershed | image + labels + optional mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles. |
+| Planned 4 | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap. |
+| Planned 5 | Find Label Boundaries | labels -> mask | `skimage.segmentation.find_boundaries` | Useful for QC, overlays, and boundary measurements. |
 
 `Filter Labels By Volume` is also implemented as the label-preserving cleanup
 operation. It supports both minimum and optional maximum size, a data-aware
 logarithmic slider, and a volume-distribution inspector.
+
+`Remove Small Objects` is the simpler cleanup node when only a minimum cutoff
+is needed or when the input is still a mask. `Filter Labels By Volume` remains
+the labels-only choice when a maximum cutoff or the object-volume distribution
+is needed.
 
 ### What These Segmentation Terms Mean
 
@@ -308,8 +321,9 @@ Add one `Automatic Threshold` node with a method selector:
 - Triangle;
 - Mean.
 
-Keep existing named nodes loadable for workflow compatibility. New workflows
-should use the consolidated node unless a named node improves readability.
+Consolidate the visible threshold catalogue only if the method selector makes
+workflows easier to read than the existing named nodes. There is no requirement
+to preserve superseded operation ids.
 
 Add `Multi-Otsu Classes` separately because its output is not a binary mask. It
 should output an integer class image and optionally one mask output per class.
@@ -331,53 +345,57 @@ z-stack, time-series, and channel reductions.
 
 ### P1E: Object Measurements
 
-This follows table support and label images.
+Basic table support, the first label-only measurement node, named typed input
+slots, the first intensity-aware measurement node, table merge, and metadata
+annotation are implemented.
 
 | Order | Node | Inputs -> Outputs | Suggested backend |
 | --- | --- | --- | --- |
-| 1 | Measure Objects | labels + optional intensity image -> table | `skimage.measure.regionprops_table` |
-| 2 | Filter Labels By Property | labels + table, or labels + intensity -> labels | region properties plus label remapping |
-| 3 | Save Table | table -> table | CSV/TSV writer |
-| 4 | Summarize Measurements | table -> table/scalars | NumPy/SciPy statistics |
+| Implemented | Measure Objects | labels -> table | `skimage.measure.regionprops_table` |
+| Implemented | Measure Objects + Intensity | labels + image -> table | named heterogeneous input ports plus intensity statistics |
+| Implemented | Merge Tables | tables -> table | stable object identity column joins; row-position fallback for equal-length tables |
+| Implemented | Add Metadata Columns | table -> table | constant treatment, replicate, batch, or condition columns |
+| 3 | Extended Region Properties | labels -> table | selectable `regionprops_table` property groups |
+| 4 | 3D Mesh Morphology | labels -> table, optional mesh later | marching cubes plus mesh/convex-hull measurements |
+| 5 | Select Table Columns | table -> table | keep/drop/reorder measurement columns |
+| 7 | Filter Labels By Property | labels + table, or labels + intensity -> labels | region properties plus label remapping |
+| 8 | Save Table | table -> table | CSV/TSV writer |
+| 9 | Summarize Measurements | table -> table/scalars | NumPy/SciPy statistics |
 
-The first `Measure Objects` property set should be intentionally small:
+The implemented first `Measure Objects` property set is intentionally small:
 
 - label ID;
 - pixel/voxel count and physical area/volume;
 - centroid;
 - bounding box;
-- mean, minimum, maximum, sum, and standard deviation of intensity;
 - equivalent diameter;
-- extent and solidity where dimensionally valid.
+- extent;
+- Euler number.
+
+Mean, minimum, maximum, sum, and standard deviation of intensity are implemented
+in `Measure Objects + Intensity`, which accepts separate `Labels` and
+`Intensity image` ports.
 
 Properties such as eccentricity, orientation, perimeter, and Feret diameter
 need dimension-specific UI labels and should not be presented as universally
 meaningful in 3D.
 
+The intended end state is broader than a single measurement node: users should
+be able to compute selected morphology, intensity, mesh, and skeleton feature
+families, merge them into one object-level table, annotate treatments or batch
+metadata, and export the result for PCA or other statistical analysis. See
+[mitomorph-feature-parity.md](mitomorph-feature-parity.md).
+
 ## Next Implementation Recommendation
 
-Enhance `Fill Holes` next. `Clear Border Objects` is implemented with the
-planned mask/label type preservation, `Auto`/2D/3D processing, independent
-leading-axis blocks, retained label IDs, and a configurable border buffer.
-Removed/retained object counts remain a possible inspector enhancement.
-
-After Fill Holes, add calibrated physical area/volume mode. Touching-object
-separation should follow as a coordinated platform milestone because watershed
-needs heterogeneous named input ports.
-
-Recommended `Fill Holes` contract:
-
-- retain the node name `Fill Holes`;
-- input/output: `mask -> mask`;
-- maximum hole size: `0` fills all enclosed holes for backward compatibility;
-- a positive maximum fills only holes up to that many pixels or voxels;
-- spatial mode: `Auto from axes`, `2D YX`, or `3D ZYX`;
-- `2D YX` fills each XY slice independently;
-- `3D ZYX` fills cavities in the complete spatial volume;
-- process leading time and channel axes independently;
-- when the connected input has only two spatial axes, omit or disable `3D ZYX`
-  rather than presenting an invalid option;
-- Auto mode resolves to 2D for 2D images and to 3D for true z-stacks.
+Table outputs, basic object measurement, intensity measurement, table merge,
+metadata annotation, and base skeleton-network measurement are now implemented.
+For the MitoMorph/PCA use case, the next measurement step is selectable
+extended region-property groups, followed by column selection/reordering and
+grouped table summaries. Skeleton QC outputs and pruning remain the next
+network-analysis step: endpoint masks, junction masks, branch labels,
+component-label images, and removal of terminal branches below a selected
+length.
 
 ## Recommended First Milestone
 
@@ -392,13 +410,13 @@ Completed:
 2. Label Connected Components.
 3. Filter Labels By Volume.
 4. Clear Border Objects.
-5. Relabel Sequential.
+5. Fill Holes.
+6. Relabel Sequential.
 
 Remaining:
 
-1. Enhance Fill Holes for the pre-label binary-mask path.
-2. Calibrated physical area/volume filtering.
-3. Explicit kept/removed object counts.
+1. Calibrated physical area/volume filtering.
+2. Explicit kept/removed object counts.
 
 The primary pipeline is:
 
@@ -429,10 +447,9 @@ The inspector already reports the incoming object count, median, and largest
 volume and displays the input volume distribution with live thresholds. It does
 not yet report kept and removed counts separately.
 
-The current `Volume Filter` does not meet this contract: it converts its input
-to a boolean mask, labels internally, removes small components, and returns a
-boolean mask. It should remain loadable for compatibility but should not be the
-long-term object-filter node.
+`Remove Small Objects` covers minimum-size cleanup for masks and labels.
+`Filter Labels By Volume` remains separate because it also supports a maximum
+cutoff and an object-volume distribution for choosing thresholds.
 
 ### Milestone 1B: Split Touching Objects
 
@@ -453,7 +470,9 @@ binary mask
   -> cleaned Labels
 ```
 
-The next milestone should add `table`, `Measure Objects`, and `Save Table`.
+The next milestone should add distance transforms, marker generation, and
+marker-controlled watershed. After named heterogeneous input ports are
+available, extend `Measure Objects` to include intensity measurements.
 
 ## P2: Add After Core Object Analysis
 
@@ -498,7 +517,11 @@ inputs require nearest-neighbor interpolation.
 
 ### Shape And Structure
 
-- skeletonize / skeletonize 3D;
+- implemented: skeletonize / skeletonize 3D;
+- implemented: Analyze Skeleton table for per-component skeleton voxel count,
+  endpoint voxels, junction voxels, isolated nodes, graph node/edge counts,
+  voxel-graph edge count, cycle count, connected-component context, and
+  calibrated length;
 - medial axis;
 - prune short skeleton branches;
 - grayscale erosion, dilation, opening, and closing;
@@ -669,7 +692,19 @@ Extract mitochondrial channel
 ```
 
 This means future mitochondrial support needs both object measurements and
-skeleton/graph measurements; volume filtering alone is not sufficient.
+skeleton/graph measurements; volume filtering alone is not sufficient. The
+generic `Skeletonize` and `Analyze Skeleton` nodes now cover the first shared
+network metrics, including graph edges, isolate counts, and cycle counts in 3D.
+Future mitochondrial-specific work should add validated fragmentation,
+domain-normalized connectedness, branch graph export, and mesh/surface metrics
+only where the biological assumptions are explicit.
+
+The old MitoMorph implementation used `regionprops`, mesh-like surface/volume
+estimates, skeletonization, and graph analysis. Treat that as inspiration for a
+future dedicated mitochondrial measurement family, not as a direct API to copy
+into the generic `Measure Objects` node.
+The higher-level parity target is documented in
+[mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
 ### Colocalization
 
@@ -722,9 +757,7 @@ Still open:
    fragmented-organelle object measurements or connected-network skeleton
    analysis?
 4. Should `Automatic Threshold` consolidate existing threshold nodes in the
-   palette while preserving old operation IDs for saved workflows?
-5. Should `Remove Small Objects` replace `Volume Filter` in the visible palette
-   while retaining the old operation id for workflow compatibility?
+   palette, or do named nodes make workflows easier to scan?
 
 ## Library Direction
 

@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import numpy as np
 from qtpy.QtCore import QPoint, QPointF, Qt, Signal
-from qtpy.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
+from qtpy.QtGui import (
+    QColor,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QTransform,
+)
 from qtpy.QtWidgets import (
     QFrame,
     QGraphicsEllipseItem,
@@ -308,6 +316,8 @@ class PortItem(QGraphicsEllipseItem):
             color = "#f472b6"
         elif self.data_type == "mask_or_labels":
             color = "#f472b6"
+        elif self.data_type == "table":
+            color = "#facc15"
         elif self.data_type == "array":
             color = "#38bdf8"
         elif self.data_type == "any":
@@ -370,6 +380,7 @@ class NodeProxy(QGraphicsProxyWidget):
         self._input_port_count = 1
         self._input_port_labels: list[str] = []
         self._input_port_colors: list[str | None] = []
+        self._input_port_types: list[str] = []
         self._output_port_count = 1
         self._output_port_labels: list[str] = []
         self._output_port_colors: list[str | None] = []
@@ -428,10 +439,12 @@ class NodeProxy(QGraphicsProxyWidget):
         count: int,
         labels: list[str] | None = None,
         colors: list[str | None] | None = None,
+        data_types: list[str] | None = None,
     ) -> None:
         self._input_port_count = max(int(count), 1)
         self._input_port_labels = labels or []
         self._input_port_colors = colors or []
+        self._input_port_types = data_types or []
         self._ensure_input_ports()
         self.refresh_ports()
         for connection in self.connections:
@@ -564,7 +577,13 @@ class NodeProxy(QGraphicsProxyWidget):
                 if index < len(self._input_port_colors)
                 else None
             )
+            data_type = (
+                self._input_port_types[index]
+                if index < len(self._input_port_types)
+                else self.input_type
+            )
             port.port_index = index
+            port.set_data_type(data_type)
             port.set_label(label, color)
 
     def _ensure_output_ports(self) -> None:
@@ -665,14 +684,20 @@ class ConnectionItem(QGraphicsPathItem):
             view.delete_connection_item(self, notify=True)
         elif view is not None and action == info_action:
             source_port = self.source.output_port_at(self.source_port)
+            target_port = self.target.input_port_at(self.target_port)
             source_type = (
                 source_port.data_type
                 if source_port is not None
                 else self.source.output_type
             )
+            target_type = (
+                target_port.data_type
+                if target_port is not None
+                else self.target.input_type
+            )
             view.status_message.emit(
                 f"Connection {self.source_id} -> {self.target_id}: "
-                f"{source_type} to {self.target.input_type} "
+                f"{source_type} to {target_type} "
                 f"input {self.target_port + 1}."
             )
 
@@ -698,6 +723,13 @@ class PendingConnectionItem(QGraphicsPathItem):
 class PipelineGraphView(QGraphicsView):
     """Large pan/zoom graph canvas hosted inside napari."""
 
+    SLIDER_MIN_ZOOM = 40
+    SLIDER_MAX_ZOOM = 250
+    DEFAULT_ZOOM = 100
+    WHEEL_MIN_ZOOM = 20
+    WHEEL_MAX_ZOOM = 400
+    DEFAULT_VISUAL_SCALE = 3.125
+
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
     pin_requested = Signal(str)
@@ -705,6 +737,7 @@ class PipelineGraphView(QGraphicsView):
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     status_message = Signal(str)
+    zoom_changed = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -727,6 +760,8 @@ class PipelineGraphView(QGraphicsView):
         self._pan_start = QPoint()
         self._pan_h_value = 0
         self._pan_v_value = 0
+        self._base_transform = QTransform()
+        self._zoom_percent = float(self.DEFAULT_ZOOM)
 
     def build_graph(self, nodes, connections, positions=None) -> None:
         self.scene.clear()
@@ -761,6 +796,36 @@ class PipelineGraphView(QGraphicsView):
         self.scene.setSceneRect(graph_rect.adjusted(-1600, -1200, 1800, 1200))
         self.resetTransform()
         self.fitInView(graph_rect.adjusted(-80, -80, 120, 80), Qt.KeepAspectRatio)
+        self._base_transform = QTransform(self.transform())
+        self._zoom_percent = float(self.DEFAULT_ZOOM)
+        self._apply_zoom_from_base()
+        self.zoom_changed.emit(self._zoom_percent)
+
+    @property
+    def zoom_percent(self) -> float:
+        return float(self._zoom_percent)
+
+    def set_zoom_percent(self, value: float) -> None:
+        zoom = float(np.clip(value, self.WHEEL_MIN_ZOOM, self.WHEEL_MAX_ZOOM))
+        if abs(zoom - self._zoom_percent) < 0.001:
+            return
+        self._zoom_percent = zoom
+        self._apply_zoom_from_base()
+        self.zoom_changed.emit(self._zoom_percent)
+
+    def reset_zoom(self) -> None:
+        self.set_zoom_percent(float(self.DEFAULT_ZOOM))
+
+    def _apply_zoom_from_base(self) -> None:
+        center = self.mapToScene(self.viewport().rect().center())
+        self.setTransform(QTransform(self._base_transform))
+        factor = (
+            self._zoom_percent
+            / float(self.DEFAULT_ZOOM)
+            * self.DEFAULT_VISUAL_SCALE
+        )
+        self.scale(factor, factor)
+        self.centerOn(center)
 
     def build_demo_graph(self, nodes) -> None:
         self.build_graph(nodes, [])
@@ -796,6 +861,7 @@ class PipelineGraphView(QGraphicsView):
             _node_input_port_count(node),
             _node_input_port_labels(node),
             _node_input_port_colors(node),
+            _node_input_port_types(node),
         )
         proxy.refresh_ports()
         self._cards[node.id] = card
@@ -878,6 +944,12 @@ class PipelineGraphView(QGraphicsView):
         card = self._cards.get(node_id)
         if card is not None:
             card.set_thumbnail(thumbnail)
+            card.update()
+        proxy = self._proxies.get(node_id)
+        if proxy is not None:
+            proxy.update()
+        if self.scene is not None:
+            self.scene.update()
 
     def set_node_metadata(self, node_id: str, text: str) -> None:
         card = self._cards.get(node_id)
@@ -921,11 +993,12 @@ class PipelineGraphView(QGraphicsView):
         count: int,
         labels: list[str] | None = None,
         colors: list[str | None] | None = None,
+        data_types: list[str] | None = None,
     ) -> None:
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
-        proxy.set_input_ports(count, labels, colors)
+        proxy.set_input_ports(count, labels, colors, data_types)
 
     def set_node_output_ports(
         self,
@@ -1047,8 +1120,19 @@ class PipelineGraphView(QGraphicsView):
 
     def wheelEvent(self, event):  # noqa: N802
         if event.modifiers() & Qt.ControlModifier:
-            factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-            self.scale(factor, factor)
+            requested = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+            old_zoom = self._zoom_percent
+            new_zoom = float(
+                np.clip(
+                    old_zoom * requested,
+                    self.WHEEL_MIN_ZOOM,
+                    self.WHEEL_MAX_ZOOM,
+                )
+            )
+            if abs(new_zoom - old_zoom) > 0.001:
+                self._zoom_percent = new_zoom
+                self.scale(new_zoom / old_zoom, new_zoom / old_zoom)
+                self.zoom_changed.emit(self._zoom_percent)
             event.accept()
             return
         super().wheelEvent(event)
@@ -1136,7 +1220,7 @@ class PipelineGraphView(QGraphicsView):
         if target_proxy is None:
             return False
         return _types_compatible(
-            self._pending_source.data_type, target_proxy.input_type
+            self._pending_source.data_type, target_port.data_type
         )
 
     def _cancel_pending_connection(self) -> None:
@@ -1196,6 +1280,8 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
         return output_type in {"array", "image", "mask", "labels"}
     if input_type == "mask_or_labels":
         return output_type in {"mask", "labels"}
+    if input_type == "table":
+        return output_type == "table"
     return output_type == input_type
 
 
@@ -1229,6 +1315,11 @@ def _node_input_port_colors(node) -> list[str | None]:
     if getattr(node, "operation_id", "") != "combine_channels":
         return []
     return [_CHANNEL_COLOR_HEX.get(name.lower()) for name in _channel_color_names(node)]
+
+
+def _node_input_port_types(node) -> list[str]:
+    input_type = getattr(node, "input_type", None) or "any"
+    return [input_type for _index in range(_node_input_port_count(node))]
 
 
 def _channel_color_names(node) -> list[str]:

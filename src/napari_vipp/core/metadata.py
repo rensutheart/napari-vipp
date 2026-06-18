@@ -7,6 +7,12 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core.tables import (
+    TableState,
+    is_table_data,
+    table_state_from_data,
+)
+
 RGB_CHANNELS = (3, 4)
 MAX_METADATA_VALUES = 500_000
 CHANNEL_COLLAPSE_OPERATIONS = {
@@ -35,6 +41,7 @@ class AxisMetadata:
     unit: str | None = None
     scale: float = 1.0
     translation: float = 0.0
+    source_axis: int | None = None
 
     @property
     def short_label(self) -> str:
@@ -49,6 +56,8 @@ class AxisMetadata:
         }
         if self.unit:
             data["unit"] = self.unit
+        if self.source_axis is not None:
+            data["source_axis"] = self.source_axis
         return data
 
     @classmethod
@@ -60,6 +69,119 @@ class AxisMetadata:
             unit=str(data["unit"]) if data.get("unit") else None,
             scale=_safe_float(data.get("scale"), 1.0),
             translation=_safe_float(data.get("translation"), 0.0),
+            source_axis=_optional_int(data.get("source_axis")),
+        )
+
+
+@dataclass(frozen=True)
+class ChannelMetadata:
+    """Normalized metadata for one acquisition channel."""
+
+    name: str = ""
+    color: int | None = None
+    fluor: str = ""
+    excitation_wavelength: float | None = None
+    excitation_wavelength_unit: str = ""
+    emission_wavelength: float | None = None
+    emission_wavelength_unit: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in {
+                "name": self.name,
+                "color": self.color,
+                "fluor": self.fluor,
+                "excitation_wavelength": self.excitation_wavelength,
+                "excitation_wavelength_unit": self.excitation_wavelength_unit,
+                "emission_wavelength": self.emission_wavelength,
+                "emission_wavelength_unit": self.emission_wavelength_unit,
+            }.items()
+            if value not in {"", None}
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> ChannelMetadata:
+        return cls(
+            name=str(data.get("name", "")),
+            color=_optional_int(data.get("color")),
+            fluor=str(data.get("fluor", "")),
+            excitation_wavelength=_optional_float(
+                data.get("excitation_wavelength")
+            ),
+            excitation_wavelength_unit=str(
+                data.get("excitation_wavelength_unit", "")
+            ),
+            emission_wavelength=_optional_float(data.get("emission_wavelength")),
+            emission_wavelength_unit=str(data.get("emission_wavelength_unit", "")),
+        )
+
+
+@dataclass(frozen=True)
+class AcquisitionMetadata:
+    """Acquisition facts that remain meaningful after image processing."""
+
+    description: str = ""
+    acquisition_date: str = ""
+    objective: str = ""
+    instrument: str = ""
+    detector: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in {
+                "description": self.description,
+                "acquisition_date": self.acquisition_date,
+                "objective": self.objective,
+                "instrument": self.instrument,
+                "detector": self.detector,
+            }.items()
+            if value
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> AcquisitionMetadata:
+        return cls(
+            description=str(data.get("description", "")),
+            acquisition_date=str(data.get("acquisition_date", "")),
+            objective=str(data.get("objective", "")),
+            instrument=str(data.get("instrument", "")),
+            detector=str(data.get("detector", "")),
+        )
+
+
+@dataclass(frozen=True)
+class SourceMetadata:
+    """Stable identity and format information for the imported source item."""
+
+    uri: str = ""
+    format: str = ""
+    series_index: int = 0
+    series_name: str = ""
+    source_uuid: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in {
+                "uri": self.uri,
+                "format": self.format,
+                "series_index": self.series_index,
+                "series_name": self.series_name,
+                "source_uuid": self.source_uuid,
+            }.items()
+            if value not in {"", None}
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> SourceMetadata:
+        return cls(
+            uri=str(data.get("uri", "")),
+            format=str(data.get("format", "")),
+            series_index=int(data.get("series_index", 0)),
+            series_name=str(data.get("series_name", "")),
+            source_uuid=str(data.get("source_uuid", "")),
         )
 
 
@@ -78,6 +200,9 @@ class ImageState:
     metadata_source: str
     source_name: str = ""
     history: tuple[str, ...] = ()
+    channels: tuple[ChannelMetadata, ...] = ()
+    acquisition: AcquisitionMetadata = AcquisitionMetadata()
+    source: SourceMetadata = SourceMetadata()
 
     @property
     def axis_order(self) -> str:
@@ -101,6 +226,9 @@ class ImageState:
             "metadata_source": self.metadata_source,
             "source_name": self.source_name,
             "history": list(self.history),
+            "channels": [channel.to_dict() for channel in self.channels],
+            "acquisition": self.acquisition.to_dict(),
+            "source": self.source.to_dict(),
         }
 
     @classmethod
@@ -114,6 +242,24 @@ class ImageState:
                 for axis in axes_data
                 if isinstance(axis, dict)
             )
+            channels_data = data.get("channels", ())
+            channels = tuple(
+                ChannelMetadata.from_dict(channel)
+                for channel in channels_data
+                if isinstance(channel, dict)
+            )
+            acquisition_data = data.get("acquisition")
+            acquisition = (
+                AcquisitionMetadata.from_dict(acquisition_data)
+                if isinstance(acquisition_data, dict)
+                else AcquisitionMetadata()
+            )
+            source_data = data.get("source")
+            source = (
+                SourceMetadata.from_dict(source_data)
+                if isinstance(source_data, dict)
+                else SourceMetadata()
+            )
             return cls(
                 shape=tuple(int(value) for value in data.get("shape", ())),
                 dtype=str(data.get("dtype", "")),
@@ -126,6 +272,9 @@ class ImageState:
                 metadata_source=str(data.get("metadata_source", "VIPP carried state")),
                 source_name=str(data.get("source_name", "")),
                 history=tuple(str(step) for step in data.get("history", ())),
+                channels=channels,
+                acquisition=acquisition,
+                source=source,
             )
         except Exception:
             return None
@@ -145,39 +294,66 @@ def image_state_from_array(
     axes: tuple[AxisMetadata, ...] | None = None,
     metadata_source: str | None = None,
     history: tuple[str, ...] = (),
+    channels: tuple[ChannelMetadata, ...] | None = None,
+    acquisition: AcquisitionMetadata | None = None,
+    source: SourceMetadata | None = None,
 ) -> ImageState | None:
     """Create a carried image state from array data and optional metadata."""
     if data is None:
         return None
 
-    arr = np.asarray(data)
+    assign_default_source_axes = axes is not None and all(
+        axis.source_axis is None for axis in axes
+    )
+    lazy = _is_lazy_array(data)
+    if lazy:
+        shape = tuple(int(size) for size in data.shape)
+        dtype = np.dtype(data.dtype)
+        arr = None
+    else:
+        arr = np.asarray(data)
+        shape = tuple(int(size) for size in arr.shape)
+        dtype = arr.dtype
+    carried_state = _carried_image_state(layer_metadata)
     if axes is None:
         axes, parsed_source, parsed_history = _axes_from_layer_metadata(
             layer_metadata,
-            arr.shape,
+            shape,
         )
+        assign_default_source_axes = parsed_source != "VIPP carried state"
         if parsed_history:
             history = parsed_history + history
         metadata_source = metadata_source or parsed_source
     else:
         metadata_source = metadata_source or "VIPP transformed metadata"
 
-    if len(axes) != arr.ndim:
-        axes = infer_axis_metadata(arr)
+    if len(axes) != len(shape):
+        axes = infer_axis_metadata_from_shape(shape)
+        axes = _with_default_source_axes(axes)
         metadata_source = "inferred from array shape"
+    elif assign_default_source_axes:
+        axes = _with_default_source_axes(axes)
+
+    if carried_state is not None:
+        channels = channels if channels is not None else carried_state.channels
+        acquisition = acquisition or carried_state.acquisition
+        source = source or carried_state.source
 
     return ImageState(
-        shape=tuple(int(size) for size in arr.shape),
-        dtype=arr.dtype.name,
-        kind=_kind_label(arr, axes),
+        shape=shape,
+        dtype=dtype.name,
+        kind=_lazy_kind_label(dtype, shape, axes) if lazy else _kind_label(arr, axes),
         axes=axes,
-        bit_depth=_bit_depth_label(arr.dtype),
-        value_range=_value_range_label(arr),
-        value_pattern=_value_pattern_label(arr),
-        memory=_memory_label(arr.nbytes),
+        bit_depth=_bit_depth_label(dtype),
+        value_range="not computed (lazy)" if lazy else _value_range_label(arr),
+        value_pattern="" if lazy else _value_pattern_label(arr),
+        memory=_memory_label(int(np.prod(shape, dtype=np.int64)) * dtype.itemsize),
         metadata_source=metadata_source or "inferred from array shape",
         source_name=source_name,
         history=history,
+        channels=channels or (),
+        acquisition=acquisition or AcquisitionMetadata(),
+        source=source or SourceMetadata(),
     )
 
 
@@ -219,6 +395,9 @@ def transform_image_state(
         source_name=input_state.source_name,
         history=input_state.history
         + (_operation_history(input_state, operation_id, operation_title, params),),
+        channels=_transformed_channels(input_state, operation_id, params),
+        acquisition=input_state.acquisition,
+        source=input_state.source,
     )
     if operation_id in KIND_PRESERVING_OPERATIONS:
         state = replace(state, kind=input_state.kind)
@@ -259,6 +438,9 @@ def transform_multi_input_image_state(
         source_name=first.source_name,
         history=first.history
         + (_multi_input_history(states, operation_id, operation_title, params),),
+        channels=_multi_input_channels(states, operation_id),
+        acquisition=first.acquisition,
+        source=first.source,
     )
 
 
@@ -295,11 +477,21 @@ def transform_split_output_state(
         metadata_source=metadata_source,
         source_name=input_state.source_name,
         history=input_state.history + (f"{label}: extracted {port_name}",),
+        channels=_split_output_channels(input_state.channels, port_name),
+        acquisition=input_state.acquisition,
+        source=input_state.source,
     )
 
 
 def format_compact_metadata(state_or_data) -> str:
     """Two-line metadata summary suitable for a small graph node."""
+    table_state = _coerce_table_state(state_or_data)
+    if table_state is not None:
+        return (
+            f"TABLE: {table_state.row_count} rows x "
+            f"{table_state.column_count} columns\n{table_state.kind}"
+        )
+
     state = _coerce_state(state_or_data)
     if state is None:
         return "No output"
@@ -313,6 +505,25 @@ def format_compact_metadata(state_or_data) -> str:
 
 def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     """Return display rows for the selected-node metadata table."""
+    table_state = _coerce_table_state(state_or_data)
+    if table_state is not None:
+        rows = [
+            MetadataRow("Kind", table_state.kind),
+            MetadataRow("Rows", str(table_state.row_count)),
+            MetadataRow("Columns", str(table_state.column_count)),
+            MetadataRow("Measurement set", table_state.table_kind),
+            MetadataRow("Column names", ", ".join(table_state.columns) or "none"),
+            MetadataRow("Metadata source", table_state.metadata_source),
+        ]
+        if table_state.column_units:
+            units = ", ".join(
+                f"{column}: {unit}" for column, unit in table_state.column_units
+            )
+            rows.append(MetadataRow("Units", units))
+        if table_state.source_name:
+            rows.append(MetadataRow("Source", table_state.source_name))
+        return rows
+
     state = _coerce_state(state_or_data)
     if state is None:
         return [MetadataRow("Status", "No output yet.")]
@@ -341,11 +552,23 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
     )
     if state.source_name:
         rows.append(MetadataRow("Source", state.source_name))
+    if state.channels:
+        names = [channel.name for channel in state.channels if channel.name]
+        if names:
+            rows.append(MetadataRow("Channel names", ", ".join(names)))
+    if state.source.format:
+        rows.append(MetadataRow("Source format", state.source.format))
+    if state.source.series_name:
+        rows.append(MetadataRow("Source series", state.source.series_name))
     return rows
 
 
 def metadata_history_items(state_or_data) -> list[str]:
     """Return operation history entries for inspector display."""
+    table_state = _coerce_table_state(state_or_data)
+    if table_state is not None:
+        return list(table_state.history)
+
     state = _coerce_state(state_or_data)
     if state is None:
         return []
@@ -354,6 +577,22 @@ def metadata_history_items(state_or_data) -> list[str]:
 
 def format_detailed_metadata(state_or_data) -> str:
     """Multi-line metadata summary for the selected node inspector."""
+    table_state = _coerce_table_state(state_or_data)
+    if table_state is not None:
+        lines = [
+            f"Kind: {table_state.kind}",
+            f"Rows: {table_state.row_count}",
+            f"Columns: {table_state.column_count}",
+            f"Measurement set: {table_state.table_kind}",
+            "Column names: " + (", ".join(table_state.columns) or "none"),
+            f"Metadata source: {table_state.metadata_source}",
+        ]
+        if table_state.source_name:
+            lines.append(f"Source: {table_state.source_name}")
+        if table_state.history:
+            lines.append("History: " + " -> ".join(table_state.history[-4:]))
+        return "\n".join(lines)
+
     state = _coerce_state(state_or_data)
     if state is None:
         return "No output yet."
@@ -475,6 +714,15 @@ def _axes_from_layer_metadata(
     return infer_axis_metadata_from_shape(shape), "inferred from array shape", ()
 
 
+def _carried_image_state(layer_metadata: dict | None) -> ImageState | None:
+    if not isinstance(layer_metadata, dict):
+        return None
+    carried = layer_metadata.get("vipp_image_state")
+    if not isinstance(carried, dict):
+        return None
+    return ImageState.from_dict(carried)
+
+
 def _axes_from_multiscales(value, shape: tuple[int, ...]):
     if not isinstance(value, list) or not value:
         return None
@@ -556,6 +804,22 @@ def _axes_from_value(value, shape: tuple[int, ...]):
                 return None
         return tuple(axes)
     return None
+
+
+def _with_default_source_axes(
+    axes: tuple[AxisMetadata, ...],
+) -> tuple[AxisMetadata, ...]:
+    """Mark source axes so derived arrays can follow napari's global sliders.
+
+    napari's viewer dimensions are shared across all layers. When a VIPP node
+    removes an axis, such as Split Channels removing C from TCZYX, the remaining
+    output axes still need to know their original viewer-axis positions so
+    thumbnails and histograms follow the same Z/T sliders as the inspect layer.
+    """
+    return tuple(
+        axis if axis.source_axis is not None else replace(axis, source_axis=index)
+        for index, axis in enumerate(axes)
+    )
 
 
 def _transformed_axes(
@@ -699,6 +963,47 @@ def _split_output_axes(
         if len(reduced) == output_ndim:
             return reduced
     return axes
+
+
+def _transformed_channels(
+    input_state: ImageState,
+    operation_id: str,
+    params: dict[str, Any],
+) -> tuple[ChannelMetadata, ...]:
+    channels = input_state.channels
+    if operation_id == "extract_channel" and channels:
+        index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
+        return (channels[index],)
+    if operation_id in CHANNEL_COLLAPSE_OPERATIONS:
+        return ()
+    return channels
+
+
+def _multi_input_channels(
+    states: list[ImageState],
+    operation_id: str,
+) -> tuple[ChannelMetadata, ...]:
+    if operation_id != "combine_channels":
+        return states[0].channels
+    channels: list[ChannelMetadata] = []
+    for index, state in enumerate(states):
+        if state.channels:
+            channels.append(state.channels[0])
+        else:
+            channels.append(ChannelMetadata(name=f"Channel {index + 1}"))
+    return tuple(channels)
+
+
+def _split_output_channels(
+    channels: tuple[ChannelMetadata, ...],
+    port_name: str,
+) -> tuple[ChannelMetadata, ...]:
+    if not channels:
+        return ()
+    digits = "".join(character for character in port_name if character.isdigit())
+    index = max(int(digits or "1") - 1, 0)
+    index = min(index, len(channels) - 1)
+    return (channels[index],)
 
 
 def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:
@@ -907,6 +1212,16 @@ def _coerce_state(state_or_data) -> ImageState | None:
     return image_state_from_array(state_or_data)
 
 
+def _coerce_table_state(state_or_data) -> TableState | None:
+    if state_or_data is None:
+        return None
+    if isinstance(state_or_data, TableState):
+        return state_or_data
+    if is_table_data(state_or_data):
+        return table_state_from_data(state_or_data)
+    return None
+
+
 def _with_operation_kind(
     state: ImageState | None,
     operation_id: str,
@@ -1094,6 +1409,33 @@ def _has_channel_axis(arr: np.ndarray) -> bool:
     return arr.ndim >= 3 and arr.shape[-1] in RGB_CHANNELS
 
 
+def _is_lazy_array(data) -> bool:
+    return (
+        not isinstance(data, np.ndarray)
+        and hasattr(data, "shape")
+        and hasattr(data, "dtype")
+        and hasattr(data, "compute")
+    )
+
+
+def _lazy_kind_label(
+    dtype: np.dtype,
+    shape: tuple[int, ...],
+    axes: tuple[AxisMetadata, ...],
+) -> str:
+    if dtype == np.dtype(bool):
+        return "binary mask"
+    channel_axes = [
+        (index, axis) for index, axis in enumerate(axes) if axis.type == "channel"
+    ]
+    if channel_axes:
+        index, axis = channel_axes[-1]
+        if axis.name in {"rgb", "rgba"} or shape[index] in RGB_CHANNELS:
+            return "RGB image"
+        return "multi-channel image"
+    return "intensity image"
+
+
 def _safe_float(value, default: float) -> float:
     try:
         number = float(value)
@@ -1102,3 +1444,21 @@ def _safe_float(value, default: float) -> float:
     if not np.isfinite(number):
         return default
     return number
+
+
+def _optional_float(value) -> float | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

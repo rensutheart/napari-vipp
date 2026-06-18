@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from napari_vipp.core.metadata import image_state_from_array
+from napari_vipp.core.metadata import (
+    image_state_from_array,
+    transform_image_state,
+    transform_split_output_state,
+)
 from napari_vipp.core.operations import gaussian_blur, otsu_threshold
 from napari_vipp.core.preview import make_preview, normalize_thumbnail
 
@@ -138,6 +142,50 @@ def test_time_lapse_multichannel_preview_follows_current_step():
     assert second[5, 6].sum() > 0
     assert first[5, 6].sum() == 0
     assert second[2, 3].sum() == 0
+
+
+def test_split_channel_preview_maps_z_to_source_viewer_axis():
+    source = np.zeros((2, 3, 4, 8, 9), dtype=np.uint16)
+    red = source[:, 0]
+    red[0, 0, 2, 3] = 2000
+    red[0, 3, 5, 6] = 4000
+    source_state = image_state_from_array(source, layer_metadata={"axes": "TCZYX"})
+    split_state = transform_split_output_state(
+        red,
+        source_state,
+        operation_id="split_channels",
+        operation_title="Split Channels",
+        port_name="Ch 1",
+        params={},
+    )
+    mask = red > 0
+    mask_state = transform_image_state(
+        mask,
+        split_state,
+        operation_id="otsu_threshold",
+        operation_title="Otsu Threshold",
+        params={},
+    )
+
+    first = make_preview(
+        mask,
+        mode="slice",
+        current_step=(0, 0, 0, 0, 0),
+        state=mask_state,
+    )
+    second = make_preview(
+        mask,
+        mode="slice",
+        current_step=(0, 0, 3, 0, 0),
+        state=mask_state,
+    )
+
+    assert mask_state.axes[1].name == "z"
+    assert mask_state.axes[1].source_axis == 2
+    assert first[2, 3]
+    assert second[5, 6]
+    assert not first[5, 6]
+    assert not second[2, 3]
 
 
 def test_rgb_channel_last_state_preview_preserves_color_axis():

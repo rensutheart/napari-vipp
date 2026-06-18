@@ -216,6 +216,31 @@ def test_graph_view_renders_three_output_ports(qtbot):
     assert proxy.output_port_at(1).data_type == "mask"
 
 
+def test_graph_view_renders_typed_input_ports(qtbot):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("measure_objects_intensity")
+
+    view = PipelineGraphView()
+    view.resize(980, 520)
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    input_ports = pipeline.input_ports(node.id)
+    view.set_node_input_ports(
+        node.id,
+        len(input_ports),
+        [port.label for port in input_ports],
+        [None for _port in input_ports],
+        [port.input_type for port in input_ports],
+    )
+
+    proxy = view._proxies[node.id]
+    assert [port.label for port in proxy.input_ports] == [
+        "Labels",
+        "Intensity image",
+    ]
+    assert [port.data_type for port in proxy.input_ports] == ["labels", "image"]
+
+
 def test_graph_view_connects_specific_output_port(qtbot):
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()

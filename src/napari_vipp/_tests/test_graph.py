@@ -77,6 +77,27 @@ def test_graph_cards_use_category_colors(qtbot):
     assert gaussian._category_tint == category_tint("Filtering")
 
 
+def test_graph_zoom_can_be_set_and_reset(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    initial = view.transform().m11()
+    fitted = view._base_transform.m11()
+
+    assert initial > fitted
+    assert abs(initial / fitted - PipelineGraphView.DEFAULT_VISUAL_SCALE) < 1e-6
+
+    view.set_zoom_percent(150)
+
+    assert view.zoom_percent == 150
+    assert view.transform().m11() > initial
+
+    view.reset_zoom()
+
+    assert view.zoom_percent == 100
+    assert view.transform().m11() == initial
+
+
 def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

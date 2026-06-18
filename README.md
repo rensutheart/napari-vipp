@@ -19,6 +19,7 @@ The prototype currently supports:
 
 - a napari `npe2` plugin manifest and dock widget;
 - a large pan/zoom Qt graph canvas;
+- toolbar graph zoom controls with a `100%` reset plus Ctrl/trackpad wheel zoom;
 - draggable node cards with input/output ports and curved connectors;
 - adding nodes from a categorized, fuzzy-searchable node library;
 - connecting nodes by dragging or click-to-connect from output to input ports;
@@ -30,7 +31,10 @@ The prototype currently supports:
 - slider plus numeric entry controls with soft range expansion where useful;
 - right-panel histograms with slice/stack and linear/log modes;
 - compact node metadata plus detailed selected-node metadata;
-- OME-NGFF-inspired image state propagation through the graph;
+- normalized axes, channel, acquisition, source, and provenance metadata;
+- OME-TIFF, ImageJ TIFF, conventional TIFF, and OME-Zarr 0.4/0.5 I/O;
+- adaptive image/series selection for multi-image sources;
+- table outputs for object, intensity, skeleton, merged, and annotated results;
 - mask pinning as a napari overlay layer;
 - generated inspect layers for full-resolution napari review.
 
@@ -44,14 +48,18 @@ That state records:
 - units, scale, and origin/translation where available;
 - value range, bit depth, memory estimate, and binary-value hints;
 - source layer and operation history.
+- channel names, fluorophore/wavelength fields where available;
+- acquisition and stable source identity records.
 
 When a napari layer provides OME-NGFF-style `multiscales` metadata, VIPP reads
 the axis definitions and coordinate transforms. When the source is a plain array
 without reliable metadata, VIPP falls back to inferred axes and labels that
 fallback explicitly.
 
-This is currently OME-NGFF-inspired internal metadata propagation, not full
-OME-Zarr import/export yet.
+OME-TIFF metadata and local OME-Zarr 0.4/0.5 images are supported through the
+shared headless I/O layer. OME-Zarr label groups, HCS plate browsing, generated
+pyramids, remote stores, and full operation-level lazy execution remain future
+work. See `docs/io-user-guide.md` for the current format contract.
 
 ## Sample Data
 
@@ -134,12 +142,19 @@ The current node catalogue includes:
   - Black Hat
   - Morphological Gradient
   - Fill Holes
-  - Volume Filter
+  - Remove Small Objects
+  - Skeletonize
 - Label Operations:
   - Label Connected Components
   - Filter Labels By Volume
   - Clear Border Objects
   - Relabel Sequential
+- Measurements:
+  - Measure Objects
+  - Measure Objects + Intensity
+  - Analyze Skeleton
+  - Merge Tables
+  - Add Metadata Columns
 
 The label pipeline converts binary masks into integer object IDs. Connected
 components can run over full `ZYX` volumes or independently over `YX` images.
@@ -154,9 +169,55 @@ with the filter controls. Its `Log volume axis` toggle is enabled by
 default and can be switched off for a linear distribution.
 
 `Clear Border Objects` accepts either a binary mask or integer labels and
-preserves that semantic type. It can remove edge objects independently from
-each `YX` slice or from the complete `ZYX` volume, with an optional border
-buffer. For true 2D inputs, the inspector omits the invalid 3D choice.
+preserves that semantic type. In 3D it can remove objects touching all `ZYX`
+volume boundaries or only the lateral `YX` boundaries, with an optional border
+buffer. Timepoints and channels are processed independently.
+
+`Fill Holes` accepts binary masks and defaults to metadata-aware processing:
+2D images are filled in `YX`, while true z-stacks are filled as complete `ZYX`
+volumes. An advanced 2D-per-slice mode remains available for deliberately
+slice-wise segmentations. A maximum size of `0` fills every enclosed hole;
+positive values fill only holes up to the selected pixel area or voxel volume.
+The inspector hides 3D for true 2D inputs and warns when slice-wise filling is
+selected for a z-stack.
+
+`Remove Small Objects` accepts binary masks or integer labels and preserves the
+connected semantic type. It removes objects below a minimum pixel area or voxel
+volume, supports 2D or 3D processing, and exposes connectivity for mask inputs.
+Its logarithmic size control is bounded by the largest observed input object.
+For labels-only cleanup with both minimum and maximum cutoffs, use
+`Filter Labels By Volume`.
+
+`Measure Objects` accepts a label image and produces a table output instead of
+an image. The first measurement set includes label ID, pixel/voxel area or
+volume, calibrated physical area or volume when spatial scale metadata is
+available, centroid, bounding box, equivalent diameter, extent, and Euler
+number. Table outputs show a row preview in the inspector and can be saved as
+CSV or TSV.
+
+`Measure Objects + Intensity` is the first named multi-input measurement node.
+It has separate `Labels` and `Intensity image` input ports, then outputs the
+basic object morphology columns plus per-label mean, minimum, maximum, sum, and
+standard deviation intensity. The example workflow
+`examples/red-channel-object-intensity-measurements.json` demonstrates this
+pattern.
+
+`Merge Tables` joins two or more table outputs into a single table. In `auto`
+mode it joins on stable identity columns such as `t_index` and `label_id`; when
+no identity columns are shared, equal-length tables can be joined by row
+position. `Add Metadata Columns` appends constant treatment, replicate, batch,
+or condition columns before CSV/TSV export. The example workflow
+`examples/red-channel-merged-measurement-table.json` demonstrates a
+PCA-oriented table assembly path.
+
+`Skeletonize` accepts a binary mask and produces a skeleton mask using
+metadata-aware 2D or 3D processing. `Analyze Skeleton` accepts a skeleton mask
+and outputs a per-component table with skeleton voxel count, endpoint voxels,
+junction voxels, isolated nodes, branch/graph edge counts, voxel-graph edge
+count, cycle count, per-block component count, component voxel fraction, and
+skeleton length in pixel/voxel and physical units when scale metadata is
+available. These nodes are generic and are intended for mitochondria, neurites,
+vessels, fibers, hyphae, and other curvilinear structures.
 
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
@@ -218,18 +279,28 @@ python scripts\launch_vipp_label_workflow.py
 ```
 
 The same graph can be loaded manually from
-`examples/otsu-red-channel-labels.json`.
+`examples/otsu-red-channel-labels.json`. A second review workflow,
+`examples/red-channel-object-intensity-measurements.json`, demonstrates the
+named `Labels` plus `Intensity image` input slots on `Measure Objects +
+Intensity`.
 
 ## Roadmap
 
 Near-term development priorities:
 
 - axis-aware channel selectors that show probe names instead of only numbers;
-- true multi-input and multi-output graph nodes;
-- workflow save/load to JSON or YAML;
-- pipeline export to runnable Python for batch processing;
-- OME-Zarr/OME-NGFF import and export support;
-- richer non-image outputs, such as measurements and morphology tables;
+- calibrated physical area and volume filtering;
+- skeleton QC feature masks, branch labels, and short-branch pruning;
+- distance transforms, marker generation, and marker-controlled watershed;
+- extended region-property measurements, table merge/select/annotate nodes, and
+  property-based label filtering;
+- fluorescence background correction;
+- OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
+- plate/well/field browsing, remote reads, batch execution, and memory-aware
+  lazy execution;
+- richer non-image outputs, including points and scalar summaries;
 - batch execution over files, positions, channels, z-slices, and timepoints.
 
-See `docs/planning.md` for more detailed planning notes.
+See `docs/planning.md` for broader planning, `docs/io-user-guide.md` for current
+I/O behavior, `docs/ome-io-plan.md` for the accepted OME architecture, and
+`docs/research-and-publication.md` for the evidence and publication record.

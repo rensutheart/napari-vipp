@@ -8,6 +8,8 @@ from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
+    add_metadata_columns,
+    analyze_skeleton,
     average_blur,
     bilateral_filter,
     binary_threshold,
@@ -34,24 +36,29 @@ from napari_vipp.core.operations import (
     logical_or,
     logical_xor,
     mask_image,
+    measure_objects,
+    measure_objects_with_intensity,
     median_filter,
+    merge_tables,
     morphological_gradient,
     normalize_image,
     opening,
     otsu_threshold,
     ratio_image,
     relabel_sequential,
+    remove_small_objects,
     rescale_intensity,
     save_array_output,
     save_output,
     select_axis_slice,
+    skeletonize_mask,
     split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
-    volume_filter,
 )
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
+from napari_vipp.core.tables import save_table_output, table_from_columns
 
 
 def test_vipp_operation_nodes_are_registered():
@@ -77,7 +84,7 @@ def test_vipp_operation_nodes_are_registered():
         "black_hat",
         "morphological_gradient",
         "fill_holes",
-        "volume_filter",
+        "remove_small_objects",
         "clear_border_objects",
         "label_connected_components",
         "filter_labels_by_volume",
@@ -89,6 +96,12 @@ def test_vipp_operation_nodes_are_registered():
         "subtract_images",
         "ratio_image",
         "mask_image",
+        "measure_objects",
+        "measure_objects_intensity",
+        "skeletonize",
+        "analyze_skeleton",
+        "merge_tables",
+        "add_metadata_columns",
         "logical_and",
         "logical_or",
         "logical_xor",
@@ -105,7 +118,7 @@ def test_vipp_operation_nodes_are_registered():
     assert expected <= set(NODE_LIBRARY_BY_ID)
 
 
-def test_pipeline_runs_mask_to_labels_to_volume_filter_in_3d():
+def test_pipeline_runs_mask_to_labels_to_label_volume_filter_in_3d():
     data = np.zeros((3, 9, 9), dtype=np.float32)
     data[:, 1:4, 1:4] = 10
     data[1, 7, 7] = 10
@@ -133,6 +146,358 @@ def test_pipeline_runs_mask_to_labels_to_volume_filter_in_3d():
     assert set(np.unique(outputs[relabeled.id])) == {0, 1}
     assert pipeline.output_states[labels.id].kind == "label image"
     assert pipeline.nodes[labels.id].params["resolved_spatial_ndim"] == 3
+
+
+def test_measure_objects_reports_3d_objects_with_physical_volume():
+    labels = np.zeros((2, 3, 6, 7), dtype=np.int32)
+    labels[0, :, 1:3, 2:5] = 1
+    labels[1, 1, 3:5, 1:3] = 2
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=3,
+        axis_names=("t", "z", "y", "x"),
+        axis_types=("time", "space", "space", "space"),
+        axis_scales=(1.0, 0.5, 0.2, 0.2),
+        axis_units=("second", "micrometer", "micrometer", "micrometer"),
+    )
+
+    assert table.columns[:5] == (
+        "t_index",
+        "label_id",
+        "volume_voxels",
+        "volume_physical",
+        "physical_unit",
+    )
+    assert table.row_count == 2
+    records = table.records()
+    assert records[0]["t_index"] == 0
+    assert records[0]["label_id"] == 1
+    assert records[0]["volume_voxels"] == 18
+    assert np.isclose(records[0]["volume_physical"], 0.36)
+    assert records[0]["physical_unit"] == "micrometer^3"
+    assert records[1]["t_index"] == 1
+    assert records[1]["volume_voxels"] == 4
+
+
+def test_measure_objects_with_intensity_reports_per_label_values():
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 1:4] = 1
+    labels[3:5, 4:6] = 2
+    intensity = np.arange(labels.size, dtype=np.float32).reshape(labels.shape)
+
+    table = measure_objects_with_intensity(
+        [labels, intensity],
+        resolved_spatial_ndim=2,
+    )
+    records = table.records()
+
+    assert table.row_count == 2
+    assert "intensity_mean" in table.columns
+    assert "intensity_sum" in table.columns
+    assert records[0]["label_id"] == 1
+    assert np.isclose(records[0]["intensity_mean"], intensity[labels == 1].mean())
+    assert np.isclose(records[0]["intensity_sum"], intensity[labels == 1].sum())
+    assert records[1]["label_id"] == 2
+    assert records[1]["intensity_min"] == float(intensity[labels == 2].min())
+    assert records[1]["intensity_max"] == float(intensity[labels == 2].max())
+
+
+def test_merge_tables_joins_on_identity_columns_and_suffixes_duplicates():
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 1:4] = 1
+    labels[3:5, 4:6] = 2
+    intensity = np.arange(labels.size, dtype=np.float32).reshape(labels.shape)
+    morphology = measure_objects(labels, resolved_spatial_ndim=2)
+    intensity_table = measure_objects_with_intensity(
+        [labels, intensity],
+        resolved_spatial_ndim=2,
+    )
+
+    merged = merge_tables(
+        [morphology, intensity_table],
+        input_count=2,
+        join_mode="Left join",
+        join_keys="auto",
+    )
+    records = merged.records()
+
+    assert merged.row_count == 2
+    assert merged.columns[:2] == ("label_id", "area_pixels")
+    assert "area_pixels_table2" in merged.columns
+    assert "intensity_mean" in merged.columns
+    assert records[0]["label_id"] == 1
+    assert records[0]["intensity_sum"] == float(intensity[labels == 1].sum())
+    assert records[1]["label_id"] == 2
+
+
+def test_merge_tables_can_join_equal_length_tables_by_row_position():
+    first = table_from_columns(
+        {"volume": [10, 20]},
+        table_kind="synthetic measurements",
+    )
+    second = table_from_columns(
+        {"condition": ["control", "treated"]},
+        table_kind="sample metadata",
+    )
+
+    merged = merge_tables(
+        [first, second],
+        input_count=2,
+        join_mode="Inner join",
+        join_keys="",
+    )
+
+    assert merged.row_count == first.row_count
+    assert merged.records()[0]["condition"] == "control"
+
+
+def test_add_metadata_columns_appends_constant_values_and_blocks_collisions():
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 1:4] = 1
+    table = measure_objects(labels, resolved_spatial_ndim=2)
+
+    annotated = add_metadata_columns(
+        table,
+        metadata_columns="condition=control, replicate=1",
+    )
+    records = annotated.records()
+
+    assert annotated.columns[-2:] == ("condition", "replicate")
+    assert records[0]["condition"] == "control"
+    assert records[0]["replicate"] == "1"
+    try:
+        add_metadata_columns(annotated, metadata_columns="condition=drug")
+    except ValueError as exc:
+        assert "already exists" in str(exc)
+    else:
+        raise AssertionError("Expected duplicate metadata column to be rejected")
+
+
+def test_pipeline_measure_objects_creates_table_state():
+    data = np.zeros((3, 9, 9), dtype=np.float32)
+    data[:, 1:4, 1:4] = 10
+    data[1, 7, 7] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "ZYX"})
+    table = outputs[measurements.id]
+    state = pipeline.output_states[measurements.id]
+
+    assert table.row_count == 2
+    assert state.kind == "measurement table"
+    assert state.row_count == 2
+    assert "volume_voxels" in state.columns
+    assert state.history[-1] == "Measure Objects: measured 2 objects"
+
+
+def test_pipeline_measure_objects_with_intensity_uses_named_input_ports():
+    data = np.zeros((7, 7), dtype=np.float32)
+    data[1:3, 1:4] = 10
+    data[4:6, 4:6] = 20
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects_intensity")
+    pipeline.set_param(threshold.id, "threshold", 5)
+
+    assert [port.name for port in pipeline.input_ports(measurements.id)] == [
+        "labels",
+        "intensity",
+    ]
+    assert [port.input_type for port in pipeline.input_ports(measurements.id)] == [
+        "labels",
+        "image",
+    ]
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    label_result = pipeline.connect(labels.id, measurements.id)
+    intensity_result = pipeline.connect("input", measurements.id)
+    bad_result = pipeline.connect("input", measurements.id, target_port=0)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "YX"})
+    table = outputs[measurements.id]
+    records = table.records()
+
+    assert label_result.success
+    assert label_result.connection.target_port == 0
+    assert intensity_result.success
+    assert intensity_result.connection.target_port == 1
+    assert not bad_result.success
+    assert table.row_count == 2
+    assert records[0]["intensity_mean"] == 10.0
+    assert records[1]["intensity_mean"] == 20.0
+    assert pipeline.output_states[measurements.id].history[-1] == (
+        "Measure Objects + Intensity: measured 2 objects"
+    )
+
+
+def test_pipeline_merges_and_annotates_measurement_tables():
+    data = np.zeros((7, 7), dtype=np.float32)
+    data[1:3, 1:4] = 10
+    data[4:6, 4:6] = 20
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    morphology = pipeline.add_node("measure_objects")
+    intensity = pipeline.add_node("measure_objects_intensity")
+    merged = pipeline.add_node("merge_tables")
+    annotated = pipeline.add_node("add_metadata_columns")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(annotated.id, "metadata_columns", "condition=demo")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, morphology.id)
+    pipeline.connect(labels.id, intensity.id, target_port=0)
+    pipeline.connect("input", intensity.id, target_port=1)
+    pipeline.connect(morphology.id, merged.id, target_port=0)
+    pipeline.connect(intensity.id, merged.id, target_port=1)
+    pipeline.connect(merged.id, annotated.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "YX"})
+    table = outputs[annotated.id]
+    state = pipeline.output_states[annotated.id]
+
+    assert table.row_count == 2
+    assert "intensity_mean" in table.columns
+    assert table.records()[0]["condition"] == "demo"
+    assert state.history[-2] == "Merge Tables: merged 2 rows"
+    assert state.history[-1] == "Add Metadata Columns: annotated 2 rows"
+
+
+def test_save_table_output_writes_csv(tmp_path):
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 2:5] = 1
+    table = measure_objects(labels, resolved_spatial_ndim=2)
+    path = tmp_path / "measurements.csv"
+
+    saved = save_table_output(table, path)
+
+    assert saved == path
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("label_id,area_pixels")
+    assert "\n1,6," in text
+
+
+def test_skeletonize_mask_reduces_binary_objects_to_skeleton():
+    mask = np.zeros((7, 7), dtype=bool)
+    mask[2:5, 1:6] = True
+
+    skeleton = skeletonize_mask(mask, resolved_spatial_ndim=2)
+
+    assert skeleton.dtype == bool
+    assert skeleton.sum() < mask.sum()
+    assert skeleton.any()
+
+
+def test_analyze_skeleton_reports_plus_shape_topology():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    table = analyze_skeleton(skeleton, resolved_spatial_ndim=2)
+    record = table.records()[0]
+
+    assert table.row_count == 1
+    assert record["component_count_in_block"] == 1
+    assert record["component_voxel_fraction"] == 1.0
+    assert record["skeleton_voxel_count"] == 9
+    assert record["endpoint_voxel_count"] == 4
+    assert record["junction_voxel_count"] == 1
+    assert record["isolated_node_count"] == 0
+    assert record["branch_count"] == 4
+    assert record["graph_node_count"] == 5
+    assert record["graph_edge_count"] == 4
+    assert record["voxel_graph_edge_count"] == 8
+    assert record["cycle_count"] == 0
+    assert record["skeleton_length_pixels"] == 8.0
+
+
+def test_analyze_skeleton_reports_isolated_components():
+    skeleton = np.zeros((5, 5), dtype=bool)
+    skeleton[1, 1] = True
+    skeleton[3, 3] = True
+
+    table = analyze_skeleton(skeleton, resolved_spatial_ndim=2)
+    records = table.records()
+
+    assert table.row_count == 2
+    assert {record["component_id"] for record in records} == {1, 2}
+    assert all(record["component_count_in_block"] == 2 for record in records)
+    assert all(record["component_voxel_fraction"] == 0.5 for record in records)
+    assert all(record["skeleton_voxel_count"] == 1 for record in records)
+    assert all(record["isolated_node_count"] == 1 for record in records)
+    assert all(record["graph_node_count"] == 1 for record in records)
+    assert all(record["graph_edge_count"] == 0 for record in records)
+    assert all(record["voxel_graph_edge_count"] == 0 for record in records)
+    assert all(record["cycle_count"] == 0 for record in records)
+
+
+def test_analyze_skeleton_reports_3d_network_graph_edges():
+    skeleton = np.zeros((5, 5, 5), dtype=bool)
+    skeleton[1:4, 2, 2] = True
+
+    table = analyze_skeleton(skeleton, resolved_spatial_ndim=3)
+    record = table.records()[0]
+
+    assert table.row_count == 1
+    assert record["skeleton_voxel_count"] == 3
+    assert record["endpoint_voxel_count"] == 2
+    assert record["junction_voxel_count"] == 0
+    assert record["isolated_node_count"] == 0
+    assert record["graph_node_count"] == 2
+    assert record["graph_edge_count"] == 1
+    assert record["voxel_graph_edge_count"] == 2
+    assert record["cycle_count"] == 0
+    assert record["skeleton_length_voxels"] == 2.0
+
+
+def test_analyze_skeleton_uses_axis_scale_for_physical_length():
+    skeleton = np.zeros((1, 5, 5), dtype=bool)
+    skeleton[0, 1:4, 2] = True
+
+    table = analyze_skeleton(
+        skeleton,
+        resolved_spatial_ndim=2,
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(2.0, 0.5, 0.5),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+    )
+    record = table.records()[0]
+
+    assert record["z_index"] == 0
+    assert record["skeleton_length_pixels"] == 2.0
+    assert record["skeleton_length_physical"] == 1.0
+    assert record["physical_unit"] == "micrometer"
+
+
+def test_pipeline_skeleton_analysis_creates_table_state():
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    measurements = pipeline.add_node("analyze_skeleton")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, measurements.id)
+
+    outputs = pipeline.run(image, input_metadata={"axes": "YX"})
+    table = outputs[measurements.id]
+    state = pipeline.output_states[measurements.id]
+
+    assert table.row_count == 1
+    assert state.kind == "measurement table"
+    assert "branch_count" in state.columns
+    assert state.history[-1] == "Analyze Skeleton: analyzed 1 component"
 
 
 def test_save_output_writes_npy_when_enabled(tmp_path):
@@ -180,7 +545,7 @@ def test_save_array_output_writes_imagej_hyperstack_and_mask_values(tmp_path):
     state = image_state_from_array(data, layer_metadata={"axes": "TCZYX"})
     path = tmp_path / "otsu-threshold.tif"
 
-    save_array_output(data, path, format="tiff", image_state=state)
+    save_array_output(data, path, format="imagej-tiff", image_state=state)
 
     with tifffile.TiffFile(path) as tif:
         metadata = tif.imagej_metadata
@@ -526,7 +891,7 @@ def test_thresholding_operations_return_masks():
         assert mask.any()
 
 
-def test_morphology_and_volume_operations_return_masks():
+def test_morphology_and_small_object_operations_return_masks():
     mask = np.zeros((3, 9, 9), dtype=bool)
     mask[1, 4, 4] = True
     mask[1, 2:7, 2:7] = True
@@ -536,7 +901,11 @@ def test_morphology_and_volume_operations_return_masks():
     closed_cavity = np.ones((3, 5, 5), dtype=bool)
     closed_cavity[1, 2, 2] = False
     filled = fill_holes(closed_cavity)
-    filtered = volume_filter(mask, min_volume=5)
+    filtered = remove_small_objects(
+        mask,
+        min_size=5,
+        spatial_mode="3D ZYX",
+    )
 
     assert dilate(mask, size=3, iterations=1).sum() > mask.sum()
     assert erode(filled, size=3, iterations=1).sum() < filled.sum()
@@ -548,6 +917,74 @@ def test_morphology_and_volume_operations_return_masks():
     assert filled[1, 2, 2]
     assert not filtered[0, 0, 0]
     assert filtered[1].any()
+
+
+def test_fill_holes_supports_size_limited_2d_filling():
+    mask = np.ones((9, 9), dtype=bool)
+    mask[2, 2] = False
+    mask[5:7, 5:7] = False
+
+    limited = fill_holes(
+        mask,
+        max_hole_size=1,
+        spatial_mode="2D per XY slice (advanced)",
+    )
+    filled_all = fill_holes(
+        mask,
+        max_hole_size=0,
+        spatial_mode="2D per XY slice (advanced)",
+    )
+
+    assert limited[2, 2]
+    assert not limited[5:7, 5:7].any()
+    assert filled_all.all()
+
+
+def test_fill_holes_distinguishes_2d_slices_from_3d_volume():
+    mask = np.ones((3, 7, 7), dtype=bool)
+    mask[0, 3, 3] = False
+
+    slice_wise = fill_holes(
+        mask,
+        spatial_mode="2D per XY slice (advanced)",
+    )
+    volumetric = fill_holes(
+        mask,
+        spatial_mode="3D ZYX volume",
+    )
+
+    assert slice_wise[0, 3, 3]
+    assert not volumetric[0, 3, 3]
+
+
+def test_fill_holes_processes_leading_frames_independently():
+    mask = np.ones((2, 3, 7, 7), dtype=bool)
+    mask[0, 1, 3, 3] = False
+    mask[1, 0, 3, 3] = False
+
+    filled = fill_holes(mask, spatial_mode="3D ZYX volume")
+
+    assert filled[0, 1, 3, 3]
+    assert not filled[1, 0, 3, 3]
+
+
+def test_fill_holes_node_uses_metadata_for_auto_spatial_mode():
+    mask = np.ones((2, 3, 7, 7), dtype=bool)
+    mask[:, 1, 3, 3] = False
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    filled = pipeline.add_node("fill_holes")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, filled.id)
+
+    outputs = pipeline.run(
+        mask.astype(np.float32),
+        input_metadata={"axes": "TZYX"},
+    )
+
+    assert outputs[filled.id].all()
+    assert pipeline.nodes[filled.id].params["resolved_spatial_ndim"] == 3
 
 
 def test_label_connected_components_respects_2d_connectivity():
@@ -579,12 +1016,12 @@ def test_clear_border_objects_preserves_label_ids_and_supports_buffer():
 
     cleared = clear_border_objects(
         labels,
-        spatial_mode="2D YX",
+        resolved_spatial_ndim=2,
     )
     buffered = clear_border_objects(
         labels,
         border_buffer=1,
-        spatial_mode="2D YX",
+        resolved_spatial_ndim=2,
     )
 
     assert cleared.dtype == labels.dtype
@@ -592,16 +1029,25 @@ def test_clear_border_objects_preserves_label_ids_and_supports_buffer():
     assert set(np.unique(buffered)) == {0, 20}
 
 
-def test_clear_border_objects_distinguishes_2d_slices_from_3d_volume():
-    mask = np.zeros((3, 7, 7), dtype=bool)
-    mask[0, 2:5, 2:5] = True
+def test_clear_border_objects_supports_all_or_lateral_3d_boundaries():
+    labels = np.zeros((3, 8, 8), dtype=np.int32)
+    labels[0, 3:5, 3:5] = 5
+    labels[1, 0:2, 3:5] = 9
+    labels[1, 3:5, 3:5] = 20
 
-    slice_wise = clear_border_objects(mask, spatial_mode="2D YX")
-    volumetric = clear_border_objects(mask, spatial_mode="3D ZYX")
+    all_borders = clear_border_objects(
+        labels,
+        boundary_mode="All spatial borders",
+        resolved_spatial_ndim=3,
+    )
+    lateral = clear_border_objects(
+        labels,
+        boundary_mode="Lateral borders only (YX)",
+        resolved_spatial_ndim=3,
+    )
 
-    assert slice_wise.dtype == bool
-    assert slice_wise[0].any()
-    assert not volumetric.any()
+    assert set(np.unique(all_borders)) == {0, 20}
+    assert set(np.unique(lateral)) == {0, 5, 20}
 
 
 def test_clear_border_objects_rejects_intensity_images():
@@ -656,6 +1102,43 @@ def test_clear_border_node_preserves_label_metadata_and_resolved_spatial_mode():
     assert set(np.unique(outputs[cleared.id])) == {0, 2}
     assert pipeline.output_states[cleared.id].kind == "label image"
     assert pipeline.nodes[cleared.id].params["resolved_spatial_ndim"] == 3
+
+
+def test_remove_small_objects_preserves_labels_and_processes_frames():
+    labels = np.zeros((2, 6, 6), dtype=np.int32)
+    labels[0, 0:2, 0:2] = 5
+    labels[0, 4, 4] = 9
+    labels[1, 0, 0] = 5
+    labels[1, 3:5, 2:5] = 20
+
+    filtered = remove_small_objects(
+        labels,
+        min_size=2,
+        spatial_mode="2D YX",
+    )
+
+    assert filtered.dtype == labels.dtype
+    assert set(np.unique(filtered[0])) == {0, 5}
+    assert set(np.unique(filtered[1])) == {0, 20}
+
+
+def test_remove_small_objects_node_accepts_masks_and_labels_not_images():
+    pipeline = PrototypePipeline()
+    mask_filter = pipeline.add_node("remove_small_objects")
+    labels = pipeline.add_node("label_connected_components")
+    label_filter = pipeline.add_node("remove_small_objects")
+
+    image_result = pipeline.connect("input", mask_filter.id)
+    mask_result = pipeline.connect("threshold", mask_filter.id)
+    labels_result = pipeline.connect("threshold", labels.id)
+    label_result = pipeline.connect(labels.id, label_filter.id)
+
+    assert not image_result.success
+    assert mask_result.success
+    assert labels_result.success
+    assert label_result.success
+    assert pipeline.output_ports(mask_filter.id)[0].output_type == "mask"
+    assert pipeline.output_ports(label_filter.id)[0].output_type == "labels"
 
 
 def test_label_connected_components_processes_true_3d_and_frames_independently():

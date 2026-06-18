@@ -1,10 +1,16 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-06-15
+Last reviewed: 2026-06-16
 
 For the prioritized algorithm and node catalogue, see
 [node-roadmap.md](node-roadmap.md). For implementation details, see
-[architecture.md](architecture.md).
+[architecture.md](architecture.md). The proposed first-class OME import/export
+architecture is in [ome-io-plan.md](ome-io-plan.md). Current user-facing format
+behavior is in [io-user-guide.md](io-user-guide.md), and research evidence is
+tracked in [research-and-publication.md](research-and-publication.md).
+MitoMorph-derived high-dimensional feature extraction and table-combination
+requirements are tracked in
+[mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
 ## Current Product Direction
 
@@ -56,8 +62,9 @@ Portable JSON workflow persistence is implemented. Version 1 stores:
 - workflow type and version.
 
 Loading derives titles, categories, and port contracts from the installed node
-library. Unknown operations and dangling connections are skipped so a partially
-compatible workflow can still load.
+library. The loader accepts only the current workflow type and version and
+rejects unknown operations, malformed nodes, duplicate ids, invalid positions,
+and dangling or multiply occupied connections with a clear error.
 
 Not yet stored:
 
@@ -89,15 +96,15 @@ generated script:
 - saves terminal graph outputs.
 
 The current exporter is headless but still requires the `napari-vipp` Python
-package. It handles array outputs only, and its folder batch helper assumes one
-primary image source. A richer batch UI, environment lock file, embedded
-provenance, table outputs, multiple independently bound sources, and explicit
+package. It handles image-like and table outputs, but its folder batch helper
+assumes one primary image source. A richer batch UI, environment lock file,
+embedded provenance, multiple independently bound sources, and explicit
 iteration over semantic axes remain future work.
 
 ### Data State Visibility
 
 Every graph output carries an OME-NGFF-inspired `ImageState` alongside its
-array. The state includes:
+array or a `TableState` alongside table outputs. Image state includes:
 
 - shape and dtype;
 - semantic axes and axis types;
@@ -105,6 +112,11 @@ array. The state includes:
 - image/mask/labels/RGB/multichannel kind;
 - value and bit-depth summaries;
 - source and operation history.
+
+Table state includes row count, column count, stable column names, column units
+where known, source, measurement set, and operation history. Table outputs are
+shown in the inspector, hidden from image thumbnails/histograms, and can be
+saved as CSV or TSV.
 
 OME-NGFF-like `multiscales` metadata is used when available. Plain arrays fall
 back to inferred axes, and the UI identifies that inference.
@@ -123,6 +135,7 @@ image
   -> Gaussian Blur
   -> Otsu Threshold
   -> Split Channels
+  -> Fill Holes
   -> Label Connected Components
   -> Clear Border Objects
   -> Filter Labels By Volume
@@ -135,6 +148,9 @@ Current label support includes:
 - napari Labels inspection and pinning;
 - 2D-per-plane and true 3D connected-component labeling;
 - face or full connectivity;
+- metadata-aware, size-limited 2D/3D hole filling for masks;
+- mask/label-preserving minimum-size filtering with configurable connectivity
+  for mask inputs;
 - minimum and optional maximum pixel/voxel-volume filtering;
 - mask/label-preserving removal of objects touching a spatial boundary;
 - logarithmic, data-aware volume sliders;
@@ -143,7 +159,7 @@ Current label support includes:
 - integer-preserving TIFF and NumPy saving;
 - workflow persistence and Python export.
 
-## Legacy VIPP Migration
+## Current Node Coverage
 
 The main single-input Sharratt/VIPP operations have been ported, including
 contrast, filtering, thresholding, morphology, cropping, channel extraction,
@@ -156,35 +172,108 @@ Broader graph capabilities have also enabled:
 - image arithmetic and logical operations;
 - workflow save/load and Python export;
 - image and label histograms;
-- first-class label cleanup.
+- first-class label cleanup;
+- first-class table outputs and label-object measurements;
+- generic skeletonization and skeleton-network measurement tables.
 
 Still requiring new platform types or UI:
 
-- Morphological Properties and other measurements require table outputs;
 - spot/peak detection benefits from points outputs;
 - marker-controlled watershed requires named heterogeneous input ports;
-- Channel Overlap and colocalization should produce scalar/table results rather
-  than synthetic images;
+- intensity-aware object measurements, Channel Overlap, and colocalization
+  require named heterogeneous input ports or scalar/table contracts;
 - batch processing needs a dedicated UI beyond exported scripts.
 
 ## Immediate Implementation Sequence
 
-The next small, coherent milestone is:
+## Deferred TODOs From Recent Decisions
 
-1. Enhance `Fill Holes` with a maximum hole size and axis-aware spatial mode.
-2. Calibrated physical area/volume mode using spatial scale metadata.
-3. Kept/removed object counts in the volume-filter summary.
+These items were deliberately deferred while implementing table outputs,
+`Measure Objects`, OME I/O, table merge/annotation, and label cleanup. Keep
+them visible so future implementation work does not have to infer old
+discussion context:
 
-The enhanced `Fill Holes` contract should preserve the familiar name and the
-existing fill-all behavior while adding:
+1. **Named heterogeneous input ports**
+   Implemented for graph execution, visual ports, workflow JSON, and Python
+   export. Nodes can declare explicit named inputs such as `labels`, `image`,
+   `mask`, and `table`, and the first user-facing example is
+   `Measure Objects + Intensity`.
 
-- maximum hole area/volume in pixels or voxels, with `0` meaning fill all
-  enclosed holes;
-- `Auto from axes`, `2D YX`, and `3D ZYX` processing;
-- slice-wise filling for `2D YX` and volumetric filling for `3D ZYX`;
-- independent processing over leading time and channel axes;
-- removal of the `3D ZYX` choice when the connected input does not contain
-  three spatial axes.
+2. **Intensity-aware object measurements**
+   Implemented as `Measure Objects + Intensity`, with separate `Labels` and
+   `Intensity image` ports and per-label mean, minimum, maximum, sum, and
+   standard deviation intensity measurements.
+
+3. **Table merge and metadata annotation**
+   Implemented as `Merge Tables` and `Add Metadata Columns`. The merge node
+   joins table branches by shared stable identity columns such as `t_index` and
+   `label_id`, or by row position when no identity key exists and row counts
+   match. Remaining table work is column selection/reordering, grouped
+   summaries, and richer sample metadata import for batch processing.
+
+4. **Property-based label filtering**
+   Add `Filter Labels By Property` for measurements such as physical volume,
+   intensity, eccentricity, branch count, or other table-derived properties.
+   This should preserve label IDs unless an explicit relabeling step is used.
+
+5. **Skeleton/network analysis**
+   Base `Skeletonize` and `Analyze Skeleton` nodes are implemented. Remaining
+   work is richer branch tracing, tortuosity, explicit graph export, and
+   validation on benchmark curvilinear structures. The generic analyzer already
+   reports endpoint, junction, isolate, graph edge, voxel-graph edge, cycle,
+   and connected-component context metrics for 2D and 3D skeletons. These nodes
+   should apply beyond mitochondria to neurites, vessels, fibers, hyphae, and
+   other curvilinear structures.
+
+6. **Skeleton QC outputs**
+   Add endpoint masks, junction masks, branch labels, connected
+   skeleton-component labels, and short-branch pruning so users can verify how
+   table metrics were produced.
+
+7. **Touching-object separation**
+   Add Euclidean distance transform, H-maxima/local maxima marker generation,
+   and marker-controlled watershed. These should wait for named heterogeneous
+   inputs because watershed needs at least image/elevation, markers, and
+   optional mask inputs.
+
+8. **Mitochondrial-specific measurements**
+   Treat the old MitoMorph code as inspiration for future specialist nodes:
+   mesh/surface estimates, convexity, branch length distributions,
+   domain-normalized connectivity, and network fragmentation. Do not force
+   these assumptions into the generic `Measure Objects` node. The larger goal
+   is broad selectable feature extraction for downstream PCA/treatment-group
+   analysis; see [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
+
+9. **Batch execution UI**
+   Python export exists, but a real collection-batch UI still needs stable item
+   identities, output templates, source collections, and per-item provenance.
+
+The first OME I/O foundation is implemented:
+
+1. shared headless reader/writer registry and normalized dataset metadata;
+2. OME-TIFF, ImageJ TIFF, and conventional TIFF import/export;
+3. local OME-Zarr 0.4/0.5 image import/export with lazy Dask reads;
+4. OME-Zarr label-group import/export via image-plus-label analysis packages;
+5. adaptive image/series selection and stored collection-binding intent.
+
+The next platform work is:
+
+1. generated pyramids and preview-resolution selection;
+2. label colors and label-property tables in OME-Zarr;
+3. collection batch execution with stable item identities and output templates;
+4. plate/well/field browsing and anonymous HTTP reads;
+5. operation capability declarations and memory-aware lazy materialization.
+
+See [ome-io-plan.md](ome-io-plan.md) for the accepted decisions and status.
+
+The next measurement-focused milestone is:
+
+1. selectable extended region-property groups;
+2. table column selection/reordering and grouped summaries;
+3. 3D mesh morphology as an opt-in expensive measurement family.
+
+The next network-analysis milestone remains skeleton endpoint/junction QC masks,
+branch labels, and short-branch pruning.
 
 After that, implement touching-object separation:
 
@@ -194,8 +283,9 @@ After that, implement touching-object separation:
 4. Marker-Controlled Watershed;
 5. Expand Labels.
 
-The following platform milestone is `table` outputs, `Measure Objects`, and
-`Save Table`.
+Table outputs and basic `Measure Objects` are implemented. A dedicated `Save
+Table` graph node is not yet required because selected table outputs and
+exported scripts already write CSV/TSV.
 
 ## Planned Artifacts
 
@@ -205,5 +295,5 @@ The following platform milestone is `table` outputs, `Measure Objects`, and
 | exported `pipeline.py` | Implemented |
 | example label workflow JSON | Implemented |
 | `batch_config.yaml` | Not implemented |
-| measurement CSV/TSV | Blocked on table outputs |
+| measurement CSV/TSV | Implemented |
 | environment/provenance manifest | Not implemented |

@@ -168,7 +168,8 @@ def _reduce_to_axes(
         if mode == "mip" and axis.type == "space":
             result = np.max(result, axis=local_axis)
         else:
-            index = _axis_index(original_axis, result.shape[local_axis], current_step)
+            step_axis = _current_step_axis(state, original_axis, current_step)
+            index = _axis_index(step_axis, result.shape[local_axis], current_step)
             result = np.take(result, index, axis=local_axis)
         remaining.pop(local_axis)
     return result
@@ -190,6 +191,27 @@ def _axis_index_by_name(state: ImageState, name: str) -> int | None:
         if axis.name.lower() == name:
             return index
     return None
+
+
+def _current_step_axis(
+    state: ImageState,
+    axis_index: int,
+    current_step,
+) -> int:
+    """Map a derived output axis back to the viewer axis that controls it."""
+    try:
+        current_ndim = len(tuple(current_step))
+    except Exception:
+        current_ndim = 0
+    if current_ndim <= len(state.axes):
+        return axis_index
+    try:
+        source_axis = state.axes[axis_index].source_axis
+    except Exception:
+        source_axis = None
+    if source_axis is None:
+        return axis_index
+    return int(source_axis)
 
 
 def _fluorescence_composite(

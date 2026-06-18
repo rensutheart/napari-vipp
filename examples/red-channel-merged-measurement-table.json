@@ -1,0 +1,181 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "napari layer",
+        "layer_name": "VIPP synthetic multichannel volume",
+        "file_path": "",
+        "sample_name": "",
+        "series_index": 0,
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {}
+    },
+    {
+      "id": "gaussian_blur_1",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2
+      }
+    },
+    {
+      "id": "otsu_threshold_1",
+      "operation_id": "otsu_threshold",
+      "params": {}
+    },
+    {
+      "id": "fill_holes_1",
+      "operation_id": "fill_holes",
+      "params": {
+        "max_hole_size": 0,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "filter_labels_by_volume_1",
+      "operation_id": "filter_labels_by_volume",
+      "params": {
+        "min_volume": 10,
+        "max_volume": 0,
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "measurement_set": "Basic morphology"
+      }
+    },
+    {
+      "id": "measure_objects_intensity_1",
+      "operation_id": "measure_objects_intensity",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "measurement_set": "Basic morphology + intensity"
+      }
+    },
+    {
+      "id": "merge_tables_1",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "auto"
+      }
+    },
+    {
+      "id": "add_metadata_columns_1",
+      "operation_id": "add_metadata_columns",
+      "params": {
+        "metadata_columns": "condition=example, replicate=1",
+        "overwrite": "no"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "gaussian_blur_1",
+      "target": "otsu_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_1",
+      "target": "fill_holes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "fill_holes_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "filter_labels_by_volume_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_labels_by_volume_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_labels_by_volume_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "merge_tables_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_intensity_1",
+      "target": "merge_tables_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "merge_tables_1",
+      "target": "add_metadata_columns_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 20.0],
+    "split_channels_1": [330.0, 20.0],
+    "gaussian_blur_1": [660.0, 20.0],
+    "otsu_threshold_1": [990.0, 20.0],
+    "fill_holes_1": [1320.0, 20.0],
+    "label_connected_components_1": [1650.0, 20.0],
+    "filter_labels_by_volume_1": [1980.0, 20.0],
+    "measure_objects_1": [2310.0, -170.0],
+    "measure_objects_intensity_1": [2310.0, 210.0],
+    "merge_tables_1": [2640.0, 20.0],
+    "add_metadata_columns_1": [2970.0, 20.0]
+  }
+}

@@ -40,6 +40,7 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -48,15 +49,23 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from skimage import io as skio
+from scipy import ndimage as ndi
 
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.io import (
+    AnalysisLabel,
+    SourceInspection,
+    inspect_image_source,
+    read_image,
+    write_ome_zarr_analysis_dataset,
+)
 from napari_vipp.core.metadata import (
     MetadataRow,
     format_compact_metadata,
+    image_state_from_array,
     metadata_history_items,
     metadata_table_rows,
 )
@@ -73,6 +82,7 @@ from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail,
 )
+from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import load_workflow, save_workflow
 
 if TYPE_CHECKING:
@@ -597,6 +607,8 @@ class ImageSourceControl(QWidget):
         *,
         layer_names: list[str],
         sample_names: list[str],
+        series_options: list[tuple[int, str]] | None = None,
+        source_summary: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -605,8 +617,16 @@ class ImageSourceControl(QWidget):
         self.layer_combo = QComboBox()
         self.sample_combo = QComboBox()
         self.path_edit = QLineEdit()
-        self.path_button = QPushButton("Browse")
-        self.path_button.setMaximumWidth(72)
+        self.path_button = QPushButton("File...")
+        self.path_button.setMaximumWidth(64)
+        self.zarr_button = QPushButton("Zarr...")
+        self.zarr_button.setMaximumWidth(64)
+        self.series_combo = QComboBox()
+        self.binding_combo = QComboBox()
+        self.binding_combo.addItems(["single item", "collection"])
+        self.source_summary = QLabel()
+        self.source_summary.setWordWrap(True)
+        self.source_summary.setStyleSheet("color: #94a3b8;")
 
         self.layer_row = QWidget()
         layer_layout = QHBoxLayout(self.layer_row)
@@ -618,33 +638,54 @@ class ImageSourceControl(QWidget):
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.addWidget(self.path_edit, 1)
         file_layout.addWidget(self.path_button)
+        file_layout.addWidget(self.zarr_button)
 
         self.sample_row = QWidget()
         sample_layout = QHBoxLayout(self.sample_row)
         sample_layout.setContentsMargins(0, 0, 0, 0)
         sample_layout.addWidget(self.sample_combo, 1)
 
+        self.series_row = QWidget()
+        series_layout = QHBoxLayout(self.series_row)
+        series_layout.setContentsMargins(0, 0, 0, 0)
+        series_layout.addWidget(self.series_combo, 1)
+
         layout = QFormLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addRow("Source", self.mode_combo)
         layout.addRow("Layer", self.layer_row)
         layout.addRow("File", self.file_row)
+        layout.addRow("Series / image", self.series_row)
+        layout.addRow("Binding", self.binding_combo)
         layout.addRow("Sample", self.sample_row)
+        layout.addRow(self.source_summary)
 
-        self.set_options(layer_names, sample_names, value=value, emit=False)
+        self.set_options(
+            layer_names,
+            sample_names,
+            series_options=series_options,
+            source_summary=source_summary,
+            value=value,
+            emit=False,
+        )
 
         self.mode_combo.currentTextChanged.connect(self._on_changed)
         self.layer_combo.currentTextChanged.connect(self._on_changed)
         self.sample_combo.currentTextChanged.connect(self._on_changed)
         self.path_edit.textChanged.connect(self._on_changed)
+        self.series_combo.currentIndexChanged.connect(self._on_changed)
+        self.binding_combo.currentTextChanged.connect(self._on_changed)
         self.path_button.clicked.connect(self._browse_path)
+        self.zarr_button.clicked.connect(self._browse_zarr_path)
 
-    def value(self) -> dict[str, str]:
+    def value(self) -> dict[str, object]:
         return {
             "source_mode": self.mode_combo.currentText(),
             "layer_name": self.layer_combo.currentText(),
             "file_path": self.path_edit.text(),
             "sample_name": self.sample_combo.currentText(),
+            "series_index": int(self.series_combo.currentData() or 0),
+            "binding_mode": self.binding_combo.currentText(),
         }
 
     def set_options(
@@ -652,6 +693,8 @@ class ImageSourceControl(QWidget):
         layer_names: list[str],
         sample_names: list[str],
         *,
+        series_options: list[tuple[int, str]] | None = None,
+        source_summary: str = "",
         value: dict | None = None,
         emit: bool = False,
     ) -> None:
@@ -672,6 +715,16 @@ class ImageSourceControl(QWidget):
         with QSignalBlocker(self.mode_combo), QSignalBlocker(self.path_edit):
             self.mode_combo.setCurrentText(mode)
             self.path_edit.setText(str(current.get("file_path", "")))
+        self._set_series_items(
+            series_options or [],
+            int(current.get("series_index", 0) or 0),
+        )
+        binding = str(current.get("binding_mode", "single item"))
+        if self.binding_combo.findText(binding) < 0:
+            binding = "single item"
+        with QSignalBlocker(self.binding_combo):
+            self.binding_combo.setCurrentText(binding)
+        self.source_summary.setText(source_summary)
         self._sync_rows()
         if emit:
             self.valueChanged.emit(self.value())
@@ -694,12 +747,37 @@ class ImageSourceControl(QWidget):
                     index = combo.findText(current)
                 combo.setCurrentIndex(index)
 
+    def _set_series_items(
+        self,
+        values: list[tuple[int, str]],
+        current: int,
+    ) -> None:
+        with QSignalBlocker(self.series_combo):
+            self.series_combo.clear()
+            if not values:
+                self.series_combo.addItem("Series 1", 0)
+            else:
+                for index, label in values:
+                    self.series_combo.addItem(label, index)
+            selected = self.series_combo.findData(current)
+            self.series_combo.setCurrentIndex(max(selected, 0))
+
     def _browse_path(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "Select image source",
             self.path_edit.text(),
-            "Images and arrays (*.tif *.tiff *.npy);;All files (*.*)",
+            "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.npy *.npz);;"
+            "All files (*.*)",
+        )
+        if path:
+            self.path_edit.setText(path)
+
+    def _browse_zarr_path(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select OME-Zarr source",
+            self.path_edit.text(),
         )
         if path:
             self.path_edit.setText(path)
@@ -712,6 +790,10 @@ class ImageSourceControl(QWidget):
         mode = self.mode_combo.currentText()
         self.layer_row.setVisible(mode == "napari layer")
         self.file_row.setVisible(mode == "file path")
+        file_mode = mode == "file path"
+        self.series_row.setVisible(file_mode and self.series_combo.count() > 1)
+        self.binding_combo.setVisible(file_mode)
+        self.source_summary.setVisible(file_mode and bool(self.source_summary.text()))
         self.sample_row.setVisible(mode == "sample")
 
 
@@ -1467,6 +1549,9 @@ class VippWidget(QWidget):
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
+        self._source_inspection_cache: dict[
+            str, tuple[int, SourceInspection]
+        ] = {}
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
@@ -1479,12 +1564,36 @@ class VippWidget(QWidget):
         self.preview_mode_combo.addItems(["Slice", "MIP", "Off"])
         self.follow_dims_checkbox = QCheckBox("Follow napari dims")
         self.follow_dims_checkbox.setChecked(True)
+        self.graph_zoom_slider = QSlider(Qt.Horizontal)
+        self.graph_zoom_slider.setRange(
+            PipelineGraphView.SLIDER_MIN_ZOOM,
+            PipelineGraphView.SLIDER_MAX_ZOOM,
+        )
+        self.graph_zoom_slider.setValue(PipelineGraphView.DEFAULT_ZOOM)
+        self.graph_zoom_slider.setSingleStep(5)
+        self.graph_zoom_slider.setPageStep(20)
+        self.graph_zoom_slider.setTickInterval(20)
+        self.graph_zoom_slider.setTickPosition(QSlider.TicksBelow)
+        self.graph_zoom_slider.setFixedWidth(120)
+        self.graph_zoom_slider.setToolTip(
+            "Scale graph cards from 40% to 250%. 100% is the calibrated default. "
+            "Ctrl/trackpad wheel zoom can go beyond this slider range."
+        )
+        self.graph_zoom_label = QLabel("100%")
+        self.graph_zoom_label.setMinimumWidth(44)
+        self.graph_zoom_reset_button = QToolButton()
+        self.graph_zoom_reset_button.setIcon(
+            self.style().standardIcon(QStyle.SP_BrowserReload)
+        )
+        self.graph_zoom_reset_button.setFixedWidth(26)
+        self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
         self.build_button = QPushButton("Reset graph")
         self.refresh_button = QPushButton("Refresh")
         self.save_workflow_button = QPushButton("Save workflow...")
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
+        self.export_ome_button = QPushButton("Export OME dataset...")
         self.status_label = QLabel(
             "Select an image layer and build the starter pipeline."
         )
@@ -1528,6 +1637,22 @@ class VippWidget(QWidget):
         )
         self.auto_contrast_button = QPushButton("Auto")
         self.metadata_group = QGroupBox("Output Metadata")
+        self.table_group = QGroupBox("Table Preview")
+        self.table_summary = QLabel("No table output.")
+        self.table_summary.setWordWrap(True)
+        self.table_preview = QTableWidget(0, 0)
+        self.table_preview.verticalHeader().setVisible(False)
+        self.table_preview.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_preview.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table_preview.setFocusPolicy(Qt.NoFocus)
+        self.table_preview.setMinimumHeight(180)
+        self.table_preview.setStyleSheet(
+            "QTableWidget { background: #1f242c; color: #e5e7eb; "
+            "gridline-color: #374151; }"
+            "QHeaderView::section { background: #2b313b; color: #f3f4f6; "
+            "padding: 4px; }"
+        )
+        self.table_group.setHidden(True)
         self.metadata_table = QTableWidget(0, 2)
         self.metadata_table.setHorizontalHeaderLabels(["Field", "Value"])
         self.metadata_table.verticalHeader().setVisible(False)
@@ -1749,11 +1874,16 @@ class VippWidget(QWidget):
         toolbar.addWidget(QLabel("Preview"))
         toolbar.addWidget(self.preview_mode_combo)
         toolbar.addWidget(self.follow_dims_checkbox)
+        toolbar.addWidget(QLabel("Zoom"))
+        toolbar.addWidget(self.graph_zoom_slider)
+        toolbar.addWidget(self.graph_zoom_reset_button)
+        toolbar.addWidget(self.graph_zoom_label)
         toolbar.addWidget(self.build_button)
         toolbar.addWidget(self.refresh_button)
         toolbar.addWidget(self.save_workflow_button)
         toolbar.addWidget(self.load_workflow_button)
         toolbar.addWidget(self.export_button)
+        toolbar.addWidget(self.export_ome_button)
         root.addLayout(toolbar)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -1829,6 +1959,10 @@ class VippWidget(QWidget):
         histogram_layout.addWidget(self.histogram_log_checkbox)
         histogram_layout.addWidget(self.histogram_plot)
         layout.addWidget(self.histogram_group)
+        table_layout = QVBoxLayout(self.table_group)
+        table_layout.addWidget(self.table_summary)
+        table_layout.addWidget(self.table_preview)
+        layout.addWidget(self.table_group)
         metadata_layout = QVBoxLayout(self.metadata_group)
         metadata_layout.addWidget(self.metadata_table)
         metadata_layout.addWidget(self.history_title)
@@ -1855,9 +1989,12 @@ class VippWidget(QWidget):
         self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
         self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
         self.export_button.clicked.connect(self._export_python_dialog)
+        self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
+        self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
+        self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
         self.thumbnail_checkbox.toggled.connect(
             self._on_selected_preview_toggled,
@@ -1881,6 +2018,7 @@ class VippWidget(QWidget):
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.status_message.connect(self.status_label.setText)
+        self.graph_view.zoom_changed.connect(self._sync_graph_zoom_controls)
 
         try:
             self.viewer.layers.events.inserted.connect(
@@ -1892,9 +2030,8 @@ class VippWidget(QWidget):
         except Exception:
             pass
         try:
-            self.viewer.dims.events.current_step.connect(
-                lambda _=None: self._on_dims_changed()
-            )
+            self.viewer.dims.events.current_step.connect(self._on_dims_changed)
+            self.viewer.dims.events.point.connect(self._on_dims_changed)
         except Exception:
             pass
 
@@ -1903,6 +2040,25 @@ class VippWidget(QWidget):
 
     def _toggle_right_panel(self) -> None:
         self._set_right_panel_visible(self.inspector_panel.isHidden())
+
+    def _on_graph_zoom_slider_changed(self, value: int) -> None:
+        self.graph_view.set_zoom_percent(float(value))
+
+    def _reset_graph_zoom(self) -> None:
+        self.graph_view.reset_zoom()
+
+    def _sync_graph_zoom_controls(self, value: float) -> None:
+        percent = int(round(float(value)))
+        self.graph_zoom_label.setText(f"{percent}%")
+        clipped = int(
+            np.clip(
+                percent,
+                PipelineGraphView.SLIDER_MIN_ZOOM,
+                PipelineGraphView.SLIDER_MAX_ZOOM,
+            )
+        )
+        with QSignalBlocker(self.graph_zoom_slider):
+            self.graph_zoom_slider.setValue(clipped)
 
     def _set_left_panel_visible(self, visible: bool) -> None:
         self._set_side_panel_visible("left", visible)
@@ -1962,6 +2118,7 @@ class VippWidget(QWidget):
     def _add_node_at(self, operation_id: str, position) -> object:
         node = self.pipeline.add_node(operation_id)
         self.graph_view.add_node(node, position)
+        self._sync_node_input_ports(node.id)
         self._sync_node_output_ports(node.id)
         self._sync_pin_ui()
         self.graph_view.select_node(node.id)
@@ -1984,6 +2141,7 @@ class VippWidget(QWidget):
             self.pipeline.connections,
         )
         self._sync_pin_ui()
+        self._sync_all_input_ports()
         self._sync_all_output_ports()
 
     def _save_workflow_dialog(self) -> None:
@@ -2034,6 +2192,7 @@ class VippWidget(QWidget):
             workflow["positions"],
         )
         self._sync_pin_ui()
+        self._sync_all_input_ports()
         self._sync_all_output_ports()
         self._select_first_available_node()
         self.run_pipeline()
@@ -2059,6 +2218,91 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Export failed: {exc}")
             return
         self.status_label.setText(f"Pipeline exported to {target.name}.")
+
+    def _export_ome_dataset_dialog(self) -> None:
+        reference_id = self._default_analysis_reference_node()
+        labels = self._analysis_label_outputs()
+        if reference_id is None:
+            self.status_label.setText(
+                "OME dataset export needs a reference image output."
+            )
+            return
+        if not labels:
+            self.status_label.setText(
+                "OME dataset export needs at least one label output."
+            )
+            return
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export OME analysis dataset",
+            "vipp_analysis.ome.zarr",
+            "OME-Zarr 0.4 (*.ome.zarr);;OME-Zarr 0.5 (*.ome.zarr)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".zarr"):
+            path += ".ome.zarr"
+        version = "0.5" if selected_filter.startswith("OME-Zarr 0.5") else "0.4"
+        try:
+            output_path = write_ome_zarr_analysis_dataset(
+                self.pipeline.outputs[reference_id],
+                Path(path).expanduser(),
+                labels=tuple(labels),
+                version=version,
+                image_state=self.pipeline.output_states.get(reference_id),
+            )
+        except Exception as exc:
+            self.status_label.setText(f"OME dataset export failed: {exc}")
+            return
+        self.status_label.setText(
+            f"Exported OME analysis dataset with {len(labels)} label output(s) "
+            f"to {output_path.name}."
+        )
+
+    def _default_analysis_reference_node(self) -> str | None:
+        if (
+            self.pipeline.outputs.get("input") is not None
+            and self._data_kind(self.pipeline.outputs["input"], "input") == "image"
+        ):
+            return "input"
+        for node_id in self.pipeline.topological_order():
+            data = self.pipeline.outputs.get(node_id)
+            if data is not None and self._data_kind(data, node_id) == "image":
+                return node_id
+        return None
+
+    def _analysis_label_outputs(self) -> list[AnalysisLabel]:
+        labels: list[AnalysisLabel] = []
+        used_names: set[str] = set()
+        for node_id in self.pipeline.topological_order():
+            data = self.pipeline.outputs.get(node_id)
+            if data is None or self._data_kind(data, node_id) != "labels":
+                continue
+            name = self._unique_export_label_name(self._node_title(node_id), used_names)
+            labels.append(
+                AnalysisLabel(
+                    name=name,
+                    data=data,
+                    image_state=self.pipeline.output_states.get(node_id),
+                    source_node_id=node_id,
+                )
+            )
+        return labels
+
+    @staticmethod
+    def _unique_export_label_name(name: str, used_names: set[str]) -> str:
+        base = "".join(
+            character if character.isalnum() else "_"
+            for character in name.strip().lower()
+        ).strip("_")
+        base = base or "labels"
+        candidate = base
+        suffix = 2
+        while candidate in used_names:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        used_names.add(candidate)
+        return candidate
 
     def _refresh_and_run(self) -> None:
         self._refresh_layer_choices()
@@ -2198,8 +2442,19 @@ class VippWidget(QWidget):
             path = str(node.params.get("file_path", "")).strip()
             if not path:
                 return None, None
-            data, metadata = self._load_source_file(path)
-            return SourcePayload(data, metadata, Path(path).name), None
+            dataset = read_image(
+                path,
+                series_index=int(node.params.get("series_index", 0)),
+            )
+            return (
+                SourcePayload(
+                    dataset.data,
+                    {"vipp_source_path": str(Path(path).expanduser())},
+                    dataset.selected_series.name,
+                    dataset.image_state,
+                ),
+                None,
+            )
         if mode == "sample":
             sample_name = str(node.params.get("sample_name", "")).strip()
             payloads = self._sample_payloads()
@@ -2213,28 +2468,57 @@ class VippWidget(QWidget):
         layer = self._layer_by_name(layer_name) if layer_name else None
         if layer is None:
             return None, None
+        data = layer.data
+        metadata = getattr(layer, "metadata", None)
+        name = getattr(layer, "name", "")
         return (
             SourcePayload(
-                layer.data,
-                getattr(layer, "metadata", None),
-                getattr(layer, "name", ""),
+                data,
+                metadata,
+                name,
+                self._viewer_aligned_image_state(data, metadata, str(name)),
             ),
             layer,
         )
 
-    def _load_source_file(self, path: str) -> tuple[np.ndarray, dict]:
+    def _viewer_aligned_image_state(
+        self,
+        data,
+        metadata,
+        name: str,
+    ):
+        state = image_state_from_array(
+            data,
+            layer_metadata=metadata,
+            source_name=name,
+        )
+        if state is None:
+            return None
+        current_step = self._current_step()
+        if current_step is None:
+            return state
+        viewer_ndim = len(tuple(current_step))
+        offset = max(viewer_ndim - len(state.axes), 0)
+        if offset == 0:
+            return state
+        axes = tuple(
+            replace(axis, source_axis=index + offset)
+            for index, axis in enumerate(state.axes)
+        )
+        return replace(state, axes=axes)
+
+    def _inspect_source_file(self, path: str) -> SourceInspection | None:
         source_path = Path(path).expanduser()
         if not source_path.exists():
-            raise FileNotFoundError(f"Image source not found: {source_path}")
-        if source_path.suffix.lower() == ".npy":
-            data = np.load(source_path)
-        elif source_path.suffix.lower() == ".npz":
-            with np.load(source_path) as loaded:
-                first_key = loaded.files[0]
-                data = loaded[first_key]
-        else:
-            data = skio.imread(str(source_path))
-        return np.asarray(data), {"vipp_source_path": str(source_path)}
+            return None
+        cache_key = str(source_path.resolve())
+        modified = source_path.stat().st_mtime_ns
+        cached = self._source_inspection_cache.get(cache_key)
+        if cached is not None and cached[0] == modified:
+            return cached[1]
+        inspection = inspect_image_source(source_path)
+        self._source_inspection_cache[cache_key] = (modified, inspection)
+        return inspection
 
     def _connect_nodes(
         self,
@@ -2313,6 +2597,9 @@ class VippWidget(QWidget):
         with QSignalBlocker(self.thumbnail_checkbox):
             self.thumbnail_checkbox.setChecked(False)
         self.metadata_table.setRowCount(0)
+        self.table_group.setHidden(True)
+        self.table_preview.setRowCount(0)
+        self.table_preview.setColumnCount(0)
         self.history_label.setText("No history yet.")
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
@@ -2367,6 +2654,12 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+        if node.operation_id == "fill_holes":
+            note = QLabel()
+            note.setWordWrap(True)
+            self.parameter_form.addRow(note)
+            self._parameter_widgets["fill_holes_scope_note"] = note
+            self._update_fill_holes_scope_note()
 
     def _render_combine_channels_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -2416,32 +2709,107 @@ class VippWidget(QWidget):
 
     def _render_image_source_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
+        inspection = self._source_inspection_for_node(node)
         control = ImageSourceControl(
             self._image_source_value(node),
             layer_names=self._available_layer_names(),
             sample_names=self._sample_names(),
+            series_options=self._source_series_options(inspection),
+            source_summary=self._source_summary(inspection, node),
         )
         self._apply_image_source_params(node_id, control.value())
         control.valueChanged.connect(self._on_image_source_changed)
         self.parameter_form.addRow(control)
         self._parameter_widgets["image_source"] = control
 
-    def _image_source_value(self, node) -> dict[str, str]:
+    def _image_source_value(self, node) -> dict[str, object]:
         return {
             "source_mode": node.params.get("source_mode", "napari layer"),
             "layer_name": node.params.get("layer_name", ""),
             "file_path": node.params.get("file_path", ""),
             "sample_name": node.params.get("sample_name", ""),
+            "series_index": node.params.get("series_index", 0),
+            "binding_mode": node.params.get("binding_mode", "single item"),
         }
 
-    def _apply_image_source_params(self, node_id: str, value: dict[str, str]) -> None:
+    def _apply_image_source_params(
+        self,
+        node_id: str,
+        value: dict[str, object],
+    ) -> None:
         node = self.pipeline.nodes[node_id]
-        for name in ("source_mode", "layer_name", "file_path", "sample_name"):
+        for name in (
+            "source_mode",
+            "layer_name",
+            "file_path",
+            "sample_name",
+            "series_index",
+            "binding_mode",
+        ):
             node.params[name] = value.get(name, "")
 
-    def _on_image_source_changed(self, value: dict[str, str]) -> None:
+    def _on_image_source_changed(self, value: dict[str, object]) -> None:
+        node = self.pipeline.nodes[self._selected_node_id]
+        previous_path = str(node.params.get("file_path", ""))
+        previous_binding = str(node.params.get("binding_mode", "single item"))
         self._apply_image_source_params(self._selected_node_id, value)
+        if (
+            str(value.get("file_path", "")) != previous_path
+            or str(value.get("binding_mode", "")) != previous_binding
+        ):
+            QTimer.singleShot(0, self._refresh_image_source_options)
         self._debounce_timer.start()
+
+    def _refresh_image_source_options(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        control = self._parameter_widgets.get("image_source")
+        if node is None or not isinstance(control, ImageSourceControl):
+            return
+        inspection = self._source_inspection_for_node(node)
+        control.set_options(
+            self._available_layer_names(),
+            self._sample_names(),
+            series_options=self._source_series_options(inspection),
+            source_summary=self._source_summary(inspection, node),
+            value=self._image_source_value(node),
+            emit=False,
+        )
+        self._apply_image_source_params(self._selected_node_id, control.value())
+
+    def _source_inspection_for_node(self, node) -> SourceInspection | None:
+        if str(node.params.get("source_mode", "")) != "file path":
+            return None
+        path = str(node.params.get("file_path", "")).strip()
+        if not path:
+            return None
+        try:
+            return self._inspect_source_file(path)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _source_series_options(
+        inspection: SourceInspection | None,
+    ) -> list[tuple[int, str]]:
+        if inspection is None:
+            return []
+        return [(series.index, series.label) for series in inspection.series]
+
+    @staticmethod
+    def _source_summary(inspection: SourceInspection | None, node) -> str:
+        if inspection is None:
+            return ""
+        mode = str(node.params.get("binding_mode", "single item"))
+        prefix = (
+            "Collection binding; the selected series is the interactive "
+            "representative. "
+            if mode == "collection"
+            else ""
+        )
+        return (
+            f"{prefix}{inspection.format}; "
+            f"{len(inspection.series)} image series discovered."
+        )
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -2466,6 +2834,13 @@ class VippWidget(QWidget):
                 widget.set_options(
                     self._available_layer_names(),
                     self._sample_names(),
+                    series_options=self._source_series_options(
+                        self._source_inspection_for_node(node)
+                    ),
+                    source_summary=self._source_summary(
+                        self._source_inspection_for_node(node),
+                        node,
+                    ),
                     value=self._image_source_value(node),
                     emit=False,
                 )
@@ -2511,34 +2886,91 @@ class VippWidget(QWidget):
             if isinstance(widget, ChoiceControl):
                 widget.set_choices(spec.choices, previous, emit=False)
             widget.set_bounds(bounds, previous, emit=False)
+            label = self.parameter_form.labelForField(widget)
+            if isinstance(label, QLabel):
+                label.setText(spec.label)
             current = widget.value()
             if current != previous:
                 node.params[spec.name] = current
                 changed = True
+        if node.operation_id == "fill_holes":
+            self._update_fill_holes_scope_note()
         return changed
 
     def _effective_parameter_spec(self, node_id: str, spec):
-        if spec.name != "spatial_mode":
-            return spec
-        return replace(
-            spec,
-            choices=self._available_spatial_modes(node_id),
-        )
+        node = self.pipeline.nodes.get(node_id)
+        if spec.name == "spatial_mode":
+            return replace(
+                spec,
+                choices=self._available_spatial_modes(node_id),
+            )
+        if (
+            node is not None
+            and node.operation_id == "clear_border_objects"
+            and spec.name == "boundary_mode"
+        ):
+            return replace(
+                spec,
+                choices=self._available_clear_border_modes(node_id),
+            )
+        if (
+            node is not None
+            and node.operation_id == "fill_holes"
+            and spec.name == "max_hole_size"
+        ):
+            spatial_ndim = self._selected_spatial_ndim(node_id)
+            unit = "volume (voxels)" if spatial_ndim >= 3 else "area (pixels)"
+            return replace(
+                spec,
+                label=f"Maximum hole {unit} (0 = fill all)",
+            )
+        if (
+            node is not None
+            and node.operation_id == "remove_small_objects"
+            and spec.name == "min_size"
+        ):
+            spatial_ndim = self._selected_spatial_ndim(node_id)
+            unit = "volume (voxels)" if spatial_ndim >= 3 else "area (pixels)"
+            return replace(spec, label=f"Minimum object {unit}")
+        return spec
 
     def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
-        choices = ("Auto from axes", "2D YX", "3D ZYX")
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "fill_holes":
+            choices = (
+                "Auto from axes",
+                "2D per XY slice (advanced)",
+                "3D ZYX volume",
+            )
+        else:
+            choices = ("Auto from axes", "2D YX", "3D ZYX")
+        if self._input_spatial_count(node_id) >= 3:
+            return choices
+        return choices[:2]
+
+    def _available_clear_border_modes(self, node_id: str) -> tuple[str, ...]:
+        choices = (
+            "All spatial borders",
+            "Lateral borders only (YX)",
+        )
+        return choices if self._input_spatial_count(node_id) >= 3 else choices[:1]
+
+    def _input_spatial_count(self, node_id: str) -> int:
         state = self.pipeline.input_state_for_node(node_id)
         if state is not None:
             spatial_count = sum(axis.type == "space" for axis in state.axes)
-            if spatial_count >= 3:
-                return choices
-            if spatial_count >= 2:
-                return choices[:2]
-
+            if spatial_count:
+                return spatial_count
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
-            return choices
-        return choices if np.asarray(data).ndim >= 3 else choices[:2]
+            return 3
+        return min(max(np.asarray(data).ndim, 1), 3)
+
+    def _selected_spatial_ndim(self, node_id: str) -> int:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return 3 if self._input_spatial_count(node_id) >= 3 else 2
+        return self._label_filter_spatial_ndim(node_id, np.asarray(data))
 
     def _parameter_bounds_for(self, node_id: str, spec) -> ParameterBounds:
         if spec.kind == "choice":
@@ -2576,6 +3008,18 @@ class VippWidget(QWidget):
             and spec.name == "border_buffer"
         ):
             return self._clear_border_buffer_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "fill_holes"
+            and spec.name == "max_hole_size"
+        ):
+            return self._fill_hole_size_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "remove_small_objects"
+            and spec.name == "min_size"
+        ):
+            return self._remove_small_object_bounds(node_id, spec)
         return ParameterBounds(
             spec.minimum,
             spec.maximum,
@@ -2691,6 +3135,7 @@ class VippWidget(QWidget):
             len(colors),
             labels,
             graph_colors,
+            [node.input_type or "array"] * len(colors),
         )
 
     def _sync_node_input_ports(self, node_id: str) -> None:
@@ -2700,9 +3145,13 @@ class VippWidget(QWidget):
         if node.operation_id == "combine_channels":
             self._sync_combine_channels_graph_ports(node_id)
             return
+        input_ports = self.pipeline.input_ports(node_id)
         self.graph_view.set_node_input_ports(
             node_id,
-            self.pipeline.input_port_count(node_id),
+            len(input_ports),
+            [port.label for port in input_ports],
+            [None for _port in input_ports],
+            [port.input_type for port in input_ports],
         )
 
     def _sync_node_output_ports(self, node_id: str) -> None:
@@ -2743,6 +3192,10 @@ class VippWidget(QWidget):
     def _sync_all_output_ports(self) -> None:
         for node_id in self.pipeline.nodes:
             self._sync_node_output_ports(node_id)
+
+    def _sync_all_input_ports(self) -> None:
+        for node_id in self.pipeline.nodes:
+            self._sync_node_input_ports(node_id)
 
     def _refresh_dynamic_output_ports(self) -> None:
         """Resync graph ports for nodes whose output count varies per run.
@@ -2977,9 +3430,95 @@ class VippWidget(QWidget):
         arr = np.asarray(data)
         if arr.ndim == 0 or arr.size == 0:
             return ParameterBounds(0, 0, 1, 0)
-        spatial_ndim = self._label_filter_spatial_ndim(node_id, arr)
-        maximum = max(min(arr.shape[-spatial_ndim:]) - 1, 0)
+        spatial_ndim = self._selected_spatial_ndim(node_id)
+        node = self.pipeline.nodes[node_id]
+        mode = str(node.params.get("boundary_mode", "")).lower()
+        boundary_ndim = 2 if mode.startswith("lateral") else spatial_ndim
+        maximum = max(min(arr.shape[-boundary_ndim:]) - 1, 0)
         return ParameterBounds(0, maximum, 1, 0)
+
+    def _fill_hole_size_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        maximum = max(int(spec.default), 1)
+        if data is not None:
+            arr = np.asarray(data)
+            spatial_ndim = self._selected_spatial_ndim(node_id)
+            maximum = max(int(np.prod(arr.shape[-spatial_ndim:])), 1)
+        return ParameterBounds(
+            0,
+            maximum,
+            1,
+            0,
+            logarithmic=True,
+            entry_minimum=spec.minimum,
+            entry_maximum=spec.maximum,
+        )
+
+    def _remove_small_object_bounds(
+        self,
+        node_id: str,
+        spec,
+    ) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        maximum = max(int(spec.default) * 10, 100)
+        if data is not None:
+            arr = np.asarray(data)
+            spatial_ndim = self._selected_spatial_ndim(node_id)
+            connectivity = str(
+                self.pipeline.nodes[node_id].params.get(
+                    "connectivity",
+                    "Face connected",
+                )
+            )
+            maximum = max(
+                self._largest_object_size(arr, spatial_ndim, connectivity),
+                int(spec.default),
+                1,
+            )
+        return ParameterBounds(
+            0,
+            maximum,
+            1,
+            0,
+            logarithmic=True,
+            entry_minimum=spec.minimum,
+            entry_maximum=spec.maximum,
+        )
+
+    @staticmethod
+    def _largest_object_size(
+        objects: np.ndarray,
+        spatial_ndim: int,
+        connectivity: str,
+    ) -> int:
+        arr = np.asarray(objects)
+        if arr.size == 0:
+            return 0
+        if arr.dtype != bool:
+            return VippWidget._largest_label_volume(arr, spatial_ndim)
+
+        spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+        rank = (
+            1
+            if str(connectivity).lower().startswith("face")
+            else spatial_ndim
+        )
+        structure = ndi.generate_binary_structure(spatial_ndim, rank)
+        leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+        blocks = (
+            (arr[index] for index in np.ndindex(leading_shape))
+            if leading_shape
+            else (arr,)
+        )
+        largest = 0
+        for block in blocks:
+            labels, count = ndi.label(block, structure=structure)
+            if count:
+                largest = max(
+                    largest,
+                    int(np.bincount(labels.ravel())[1:].max()),
+                )
+        return largest
 
     @staticmethod
     def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
@@ -3031,11 +3570,37 @@ class VippWidget(QWidget):
                     notify=False,
                 )
             self._sync_node_input_ports(self._selected_node_id)
-        if name in {"axis", "channel_axis", "spatial_mode"}:
+        if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
+        if name == "spatial_mode":
+            self._update_fill_holes_scope_note()
         if name in {"min_volume", "max_volume", "spatial_mode"}:
             self._update_label_volume_histogram()
         self._debounce_timer.start()
+
+    def _update_fill_holes_scope_note(self) -> None:
+        note = self._parameter_widgets.get("fill_holes_scope_note")
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if not isinstance(note, QLabel) or node is None:
+            return
+        mode = str(node.params.get("spatial_mode", "Auto from axes")).lower()
+        if self._input_spatial_count(node.id) < 3:
+            text = "Holes are evaluated in the connected YX image."
+            color = "#94a3b8"
+        elif mode.startswith("2d"):
+            text = (
+                "Advanced mode: each XY slice is filled independently. "
+                "A region that is open to background along Z can still be filled."
+            )
+            color = "#f59e0b"
+        else:
+            text = (
+                "Recommended for z-stacks: holes are enclosed cavities in the "
+                "complete ZYX volume."
+            )
+            color = "#94a3b8"
+        note.setText(text)
+        note.setStyleSheet(f"color: {color};")
 
     def _apply_auto_contrast(self) -> None:
         node_id = self._selected_node_id
@@ -3123,7 +3688,7 @@ class VippWidget(QWidget):
             "Connect ports to build alternate paths."
         )
 
-    def _on_dims_changed(self) -> None:
+    def _on_dims_changed(self, _event=None) -> None:
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
@@ -3149,6 +3714,7 @@ class VippWidget(QWidget):
             )
             self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
             if not preview_enabled:
+                self.graph_view.set_thumbnail(node_id, None)
                 continue
             preview = make_preview(
                 data,
@@ -3203,9 +3769,14 @@ class VippWidget(QWidget):
             )
         else:
             self.history_label.setText("No history yet.")
+        self._update_table_preview()
 
     def _current_view_label(self, state) -> str:
-        if state is None or not self.follow_dims_checkbox.isChecked():
+        if (
+            state is None
+            or not hasattr(state, "axes")
+            or not self.follow_dims_checkbox.isChecked()
+        ):
             return ""
         try:
             current_step = tuple(self._current_step())
@@ -3219,7 +3790,7 @@ class VippWidget(QWidget):
                 continue
             if int(size) <= 1:
                 continue
-            step = self._axis_step_label(axis_index, int(size), current_step)
+            step = self._axis_step_label(axis_index, int(size), current_step, state)
             parts.append(f"{axis.name}={step}/{int(size) - 1}")
         return ", ".join(parts)
 
@@ -3228,7 +3799,9 @@ class VippWidget(QWidget):
         axis_index: int,
         axis_size: int,
         current_step: tuple,
+        state,
     ) -> int:
+        axis_index = _metadata_current_step_axis(state, axis_index, current_step)
         try:
             step = int(current_step[axis_index])
         except Exception:
@@ -3238,6 +3811,11 @@ class VippWidget(QWidget):
     def _update_histogram(self) -> None:
         self._update_label_volume_histogram()
         data = self.pipeline.outputs.get(self._selected_node_id)
+        if is_table_data(data):
+            self.histogram_group.setHidden(True)
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            return
+        self.histogram_group.setHidden(False)
         counts, x_range, colors = _histogram_summary(
             data,
             state=self.pipeline.output_states.get(self._selected_node_id),
@@ -3252,6 +3830,37 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
         )
+
+    def _update_table_preview(self) -> None:
+        data = self.pipeline.outputs.get(self._selected_node_id)
+        if not is_table_data(data):
+            self.table_group.setHidden(True)
+            self.table_preview.setRowCount(0)
+            self.table_preview.setColumnCount(0)
+            self.table_summary.setText("No table output.")
+            return
+
+        self.table_group.setHidden(False)
+        row_limit = 200
+        shown_rows = min(data.row_count, row_limit)
+        self.table_summary.setText(
+            f"{data.row_count} rows x {data.column_count} columns"
+            + (f" (showing first {shown_rows})" if data.row_count > row_limit else "")
+        )
+        self.table_preview.setColumnCount(data.column_count)
+        self.table_preview.setRowCount(shown_rows)
+        headers = [
+            f"{column}\n({unit})" if (unit := data.unit_for(column)) else column
+            for column in data.columns
+        ]
+        self.table_preview.setHorizontalHeaderLabels(headers)
+        for row_index, row in enumerate(data.rows[:shown_rows]):
+            for column_index, value in enumerate(row):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.table_preview.setItem(row_index, column_index, item)
+        self.table_preview.resizeColumnsToContents()
+        self.table_preview.resizeRowsToContents()
 
     def _update_label_volume_histogram(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -3345,28 +3954,76 @@ class VippWidget(QWidget):
 
     def _save_selected_output_dialog(self) -> None:
         node_id = self._selected_node_id
-        default_name = f"{self._node_title(node_id).replace(' ', '_')}.tif"
-        path, _filter = QFileDialog.getSaveFileName(
+        if is_table_data(self.pipeline.outputs.get(node_id)):
+            default_name = f"{self._node_title(node_id).replace(' ', '_')}.csv"
+            path, selected_filter = QFileDialog.getSaveFileName(
+                self,
+                "Save selected table output",
+                default_name,
+                "CSV table (*.csv);;TSV table (*.tsv);;All files (*.*)",
+            )
+            if path:
+                format = "tsv" if selected_filter.startswith("TSV") else "csv"
+                self._save_node_output(node_id, path, format=format)
+            return
+
+        default_name = f"{self._node_title(node_id).replace(' ', '_')}.ome.tif"
+        path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save selected node output",
             default_name,
-            "TIFF image (*.tif *.tiff);;NumPy array (*.npy);;All files (*.*)",
+            "OME-TIFF (*.ome.tif *.ome.tiff);;"
+            "OME-Zarr (*.ome.zarr);;"
+            "ImageJ TIFF (*.tif *.tiff);;"
+            "TIFF (*.tif *.tiff);;"
+            "NumPy array (*.npy);;"
+            "All files (*.*)",
         )
         if path:
-            self._save_node_output(node_id, path)
+            selected_format = {
+                "OME-TIFF": "ome-tiff",
+                "OME-Zarr": "ome-zarr",
+                "ImageJ TIFF": "imagej-tiff",
+                "TIFF": "tiff",
+                "NumPy array": "npy",
+            }
+            format = next(
+                (
+                    value
+                    for label, value in selected_format.items()
+                    if selected_filter.startswith(label)
+                ),
+                "auto",
+            )
+            self._save_node_output(node_id, path, format=format)
 
-    def _save_node_output(self, node_id: str, path: str) -> Path | None:
+    def _save_node_output(
+        self,
+        node_id: str,
+        path: str,
+        *,
+        format: str = "auto",
+    ) -> Path | None:
         data = self.pipeline.outputs.get(node_id)
         if data is None:
             self.status_label.setText("That node has no output to save yet.")
             return None
         try:
-            output_path = save_array_output(
-                data,
-                path,
-                overwrite=True,
-                image_state=self.pipeline.output_states.get(node_id),
-            )
+            if is_table_data(data):
+                output_path = save_table_output(
+                    data,
+                    path,
+                    format=format,
+                    overwrite=True,
+                )
+            else:
+                output_path = save_array_output(
+                    data,
+                    path,
+                    format=format,
+                    overwrite=True,
+                    image_state=self.pipeline.output_states.get(node_id),
+                )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
             return None
@@ -3379,6 +4036,11 @@ class VippWidget(QWidget):
         data = self.pipeline.outputs.get(node_id)
         if data is None:
             self.status_label.setText("That node has no output to inspect yet.")
+            return
+        if is_table_data(data):
+            self.status_label.setText(
+                f"'{self._node_title(node_id)}' is shown in the table inspector."
+            )
             return
         title = self._node_title(node_id)
         self._set_or_add_generated_layer(
@@ -3395,7 +4057,8 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def _inspect_selected_node(self) -> None:
-        if self.pipeline.outputs.get(self._selected_node_id) is not None:
+        data = self.pipeline.outputs.get(self._selected_node_id)
+        if data is not None and not is_table_data(data):
             self.inspect_node(self._selected_node_id)
 
     def pin_node(self, node_id: str) -> None:
@@ -3473,6 +4136,8 @@ class VippWidget(QWidget):
             node_id in self.pipeline.outputs
             and self.pipeline.outputs[node_id] is not None
         ):
+            if is_table_data(self.pipeline.outputs[node_id]):
+                return
             self._set_or_add_generated_layer(
                 self._inspect_layer_name,
                 self.pipeline.outputs[node_id],
@@ -3618,13 +4283,21 @@ class VippWidget(QWidget):
         return "image"
 
     def _data_kind(self, data, node_id: str | None = None) -> str:
+        if is_table_data(data):
+            return "table"
         if node_id is not None:
             ports = self.pipeline.output_ports(node_id)
+            if ports and ports[0].output_type == "table":
+                return "table"
             if ports and ports[0].output_type == "labels":
                 return "labels"
         return "mask" if np.asarray(data).dtype == bool else "image"
 
     def _display_data(self, data):
+        if is_table_data(data):
+            raise ValueError(
+                "Table outputs cannot be displayed as napari image layers."
+            )
         arr = np.asarray(data)
         if arr.dtype == bool:
             arr = arr.astype(np.uint8)
@@ -3674,9 +4347,12 @@ class VippWidget(QWidget):
             self.pin_button.setText("Pin selected")
 
     def _sync_preview_ui(self) -> None:
+        previewable = self._node_output_type(self._selected_node_id) != "table"
+        self.thumbnail_checkbox.setVisible(previewable)
+        self.thumbnail_checkbox.setEnabled(previewable)
         with QSignalBlocker(self.thumbnail_checkbox):
             self.thumbnail_checkbox.setChecked(
-                self._node_preview_enabled(self._selected_node_id)
+                previewable and self._node_preview_enabled(self._selected_node_id)
             )
 
     def _sync_auto_contrast_ui(self) -> None:
@@ -3686,6 +4362,8 @@ class VippWidget(QWidget):
         )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
+        if self._node_output_type(node_id) == "table":
+            return False
         return node_id not in self._preview_disabled_node_ids
 
     def _node_can_pin(self, node_id: str) -> bool:
@@ -3945,8 +4623,13 @@ def _state_histogram_slice(
         if original_axis in keep_axes:
             continue
         local_axis = remaining.index(original_axis)
-        index = _histogram_axis_index(
+        step_axis = _metadata_current_step_axis(
+            state,
             original_axis,
+            current_step,
+        )
+        index = _histogram_axis_index(
+            step_axis,
             result.shape[local_axis],
             current_step,
         )
@@ -3973,6 +4656,23 @@ def _metadata_axis_index_by_name(state, name: str) -> int | None:
         if axis.name.lower() == name:
             return index
     return None
+
+
+def _metadata_current_step_axis(state, axis_index: int, current_step=None) -> int:
+    try:
+        current_ndim = len(tuple(current_step))
+    except Exception:
+        current_ndim = 0
+    axes = tuple(getattr(state, "axes", ()))
+    if current_ndim <= len(axes):
+        return axis_index
+    try:
+        source_axis = axes[axis_index].source_axis
+    except Exception:
+        source_axis = None
+    if source_axis is None:
+        return axis_index
+    return int(source_axis)
 
 
 def _histogram_axis_index(axis: int, axis_size: int, current_step=None) -> int:
