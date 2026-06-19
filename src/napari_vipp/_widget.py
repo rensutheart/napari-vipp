@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
@@ -19,7 +20,17 @@ from qtpy.QtCore import (
     QTimer,
     Signal,
 )
-from qtpy.QtGui import QBrush, QColor, QPainter, QPen
+from qtpy.QtGui import (
+    QAction,
+    QBrush,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -40,7 +51,6 @@ from qtpy.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
-    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -83,7 +93,12 @@ from napari_vipp.core.preview import (
     normalize_thumbnail,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
-from napari_vipp.core.workflow import load_workflow, save_workflow
+from napari_vipp.core.workflow import (
+    deserialize_workflow,
+    load_workflow,
+    save_workflow,
+    serialize_workflow,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -113,6 +128,25 @@ class AxisSliceOption:
         return self.name.upper() if len(self.name) == 1 else self.name
 
 
+@dataclass(frozen=True)
+class WorkflowHistorySnapshot:
+    workflow: dict
+    selected_node_id: str
+    preview_disabled_node_ids: tuple[str, ...] = ()
+    active_pinned_node_id: str | None = None
+
+
+RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
+RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
+RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
+CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
+INPUT_HISTOGRAM_OPERATIONS = {
+    "binary_threshold",
+    "clip_intensity",
+    "rescale_intensity",
+}
+
+
 def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
     accent = "#fbbf24" if mode == "remove" else "#93c5fd"
     return (
@@ -121,6 +155,68 @@ def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
         f"<span style='color: #d1d5db;'>&nbsp;({escape(option.axis_type)})</span>"
         f"<span style='color: #94a3b8;'>&nbsp;-&nbsp;size {int(option.size)}</span>"
     )
+
+
+def _toolbar_icon(kind: str) -> QIcon:
+    icon = QIcon()
+    icon.addPixmap(
+        _toolbar_icon_pixmap(kind, "#d1d5db"),
+        QIcon.Normal,
+        QIcon.Off,
+    )
+    icon.addPixmap(
+        _toolbar_icon_pixmap(kind, "#64748b"),
+        QIcon.Disabled,
+        QIcon.Off,
+    )
+    return icon
+
+
+def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
+    size = 24
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+
+    pen = QPen(QColor(foreground), 2.2)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    path = QPainterPath()
+    arrow = QPainterPath()
+    if kind == "redo":
+        path.moveTo(16, 8)
+        path.cubicTo(13, 5.5, 5, 6.5, 5, 13)
+        path.cubicTo(5, 18, 9.5, 20, 16, 20)
+        arrow.moveTo(20.5, 8)
+        arrow.lineTo(15, 4)
+        arrow.lineTo(15, 12)
+        arrow.closeSubpath()
+    elif kind == "reset":
+        path.moveTo(18.5, 8)
+        path.cubicTo(15.8, 4.5, 9.8, 3.8, 6.5, 8)
+        path.cubicTo(3.2, 12.2, 5.6, 19.5, 12.5, 19.5)
+        path.cubicTo(16, 19.5, 18.8, 17.4, 19.8, 14.4)
+        arrow.moveTo(20.4, 7.3)
+        arrow.lineTo(15, 7.1)
+        arrow.lineTo(18.4, 11.7)
+        arrow.closeSubpath()
+    else:
+        path.moveTo(8, 8)
+        path.cubicTo(11, 5.5, 19, 6.5, 19, 13)
+        path.cubicTo(19, 18, 14.5, 20, 8, 20)
+        arrow.moveTo(3.5, 8)
+        arrow.lineTo(9, 4)
+        arrow.lineTo(9, 12)
+        arrow.closeSubpath()
+    painter.drawPath(path)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(foreground))
+    painter.drawPath(arrow)
+    painter.end()
+    return pixmap
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -1538,6 +1634,8 @@ class SidePanelToggleButton(QToolButton):
 class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
+    HISTORY_LIMIT = 80
+
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
@@ -1555,6 +1653,13 @@ class VippWidget(QWidget):
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
+        self._undo_stack: list[WorkflowHistorySnapshot] = []
+        self._redo_stack: list[WorkflowHistorySnapshot] = []
+        self._restoring_history = False
+        self._pending_parameter_undo_key: tuple[str, str] | None = None
+        self._clip_auto_input_ranges: dict[str, tuple[float, float]] = {}
+        self._rescale_auto_input_cutoffs: dict[str, tuple[float, float]] = {}
+        self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -1582,14 +1687,39 @@ class VippWidget(QWidget):
         self.graph_zoom_label = QLabel("100%")
         self.graph_zoom_label.setMinimumWidth(44)
         self.graph_zoom_reset_button = QToolButton()
-        self.graph_zoom_reset_button.setIcon(
-            self.style().standardIcon(QStyle.SP_BrowserReload)
-        )
-        self.graph_zoom_reset_button.setFixedWidth(26)
+        self.graph_zoom_reset_button.setIcon(_toolbar_icon("reset"))
+        self.graph_zoom_reset_button.setIconSize(QSize(18, 18))
+        self.graph_zoom_reset_button.setFixedSize(24, 24)
         self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
         self.build_button = QPushButton("Reset graph")
         self.refresh_button = QPushButton("Refresh")
+        self.undo_action = QAction(
+            _toolbar_icon("undo"),
+            "Undo",
+            self,
+        )
+        self.undo_action.setShortcuts(QKeySequence.keyBindings(QKeySequence.Undo))
+        self.undo_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.undo_action.setToolTip("Undo last workflow edit")
+        self.redo_action = QAction(
+            _toolbar_icon("redo"),
+            "Redo",
+            self,
+        )
+        self.redo_action.setShortcuts(QKeySequence.keyBindings(QKeySequence.Redo))
+        self.redo_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+        self.redo_action.setToolTip("Redo last undone workflow edit")
+        self.undo_button = QToolButton()
+        self.undo_button.setDefaultAction(self.undo_action)
+        self.undo_button.setIconSize(QSize(18, 18))
+        self.undo_button.setFixedSize(24, 24)
+        self.redo_button = QToolButton()
+        self.redo_button.setDefaultAction(self.redo_action)
+        self.redo_button.setIconSize(QSize(18, 18))
+        self.redo_button.setFixedSize(24, 24)
+        self.addAction(self.undo_action)
+        self.addAction(self.redo_action)
         self.save_workflow_button = QPushButton("Save workflow...")
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
@@ -1673,11 +1803,15 @@ class VippWidget(QWidget):
         self.history_label = QLabel("No history yet.")
         self.history_label.setWordWrap(True)
         self.history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.histogram_group = QGroupBox("Histogram")
+        self.histogram_group = QGroupBox("Output Histogram")
         self.histogram_scope_combo = QComboBox()
         self.histogram_scope_combo.addItems(["Slice", "Stack"])
         self.histogram_log_checkbox = QCheckBox("Log scale")
         self.histogram_plot = HistogramPlot()
+        self.rescale_input_histogram_group = QGroupBox("Input Histogram")
+        self.rescale_input_histogram_log_checkbox = QCheckBox("Log scale")
+        self.rescale_input_histogram_plot = HistogramPlot()
+        self.rescale_input_histogram_group.setHidden(True)
         self.label_volume_group = QGroupBox("Label Volume Distribution")
         self.label_volume_summary = QLabel("No labeled objects.")
         self.label_volume_summary.setWordWrap(True)
@@ -1701,6 +1835,7 @@ class VippWidget(QWidget):
         self._build_graph_from_pipeline()
         self._select_node(self._selected_node_id)
         self.run_pipeline()
+        self._sync_history_actions()
 
     def closeEvent(self, event):  # noqa: N802
         self._restore_hidden_input_layers()
@@ -1869,6 +2004,8 @@ class VippWidget(QWidget):
         root.setContentsMargins(6, 6, 6, 6)
 
         toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(4)
         toolbar.addWidget(QLabel("Input"))
         toolbar.addWidget(self.layer_combo, 1)
         toolbar.addWidget(QLabel("Preview"))
@@ -1880,6 +2017,8 @@ class VippWidget(QWidget):
         toolbar.addWidget(self.graph_zoom_label)
         toolbar.addWidget(self.build_button)
         toolbar.addWidget(self.refresh_button)
+        toolbar.addWidget(self.undo_button)
+        toolbar.addWidget(self.redo_button)
         toolbar.addWidget(self.save_workflow_button)
         toolbar.addWidget(self.load_workflow_button)
         toolbar.addWidget(self.export_button)
@@ -1951,11 +2090,21 @@ class VippWidget(QWidget):
         label_volume_layout.addWidget(self.label_volume_log_checkbox)
         label_volume_layout.addWidget(self.label_volume_plot)
         layout.addWidget(self.label_volume_group)
+        rescale_input_histogram_layout = QVBoxLayout(
+            self.rescale_input_histogram_group
+        )
+        rescale_input_histogram_layout.addWidget(
+            self.rescale_input_histogram_log_checkbox
+        )
+        rescale_input_histogram_layout.addWidget(self.rescale_input_histogram_plot)
+        layout.addWidget(self.rescale_input_histogram_group)
         histogram_layout = QVBoxLayout(self.histogram_group)
-        histogram_scope_layout = QHBoxLayout()
+        self.histogram_scope_row = QWidget()
+        histogram_scope_layout = QHBoxLayout(self.histogram_scope_row)
+        histogram_scope_layout.setContentsMargins(0, 0, 0, 0)
         histogram_scope_layout.addWidget(QLabel("Scope"))
         histogram_scope_layout.addWidget(self.histogram_scope_combo, 1)
-        histogram_layout.addLayout(histogram_scope_layout)
+        histogram_layout.addWidget(self.histogram_scope_row)
         histogram_layout.addWidget(self.histogram_log_checkbox)
         histogram_layout.addWidget(self.histogram_plot)
         layout.addWidget(self.histogram_group)
@@ -1986,6 +2135,8 @@ class VippWidget(QWidget):
     def _connect_signals(self) -> None:
         self.build_button.clicked.connect(self._reset_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
+        self.undo_action.triggered.connect(self.undo)
+        self.redo_action.triggered.connect(self.redo)
         self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
         self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
         self.export_button.clicked.connect(self._export_python_dialog)
@@ -2001,6 +2152,9 @@ class VippWidget(QWidget):
         )
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
+        self.rescale_input_histogram_log_checkbox.toggled.connect(
+            self._update_histogram
+        )
         self.label_volume_log_checkbox.toggled.connect(
             self._update_label_volume_histogram
         )
@@ -2014,6 +2168,7 @@ class VippWidget(QWidget):
         self.graph_view.node_create_requested.connect(self._add_node_at)
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_delete_requested.connect(self._delete_node)
+        self.graph_view.node_moved.connect(self._on_node_moved)
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
@@ -2034,6 +2189,7 @@ class VippWidget(QWidget):
             self.viewer.dims.events.point.connect(self._on_dims_changed)
         except Exception:
             pass
+        self._debounce_timer.timeout.connect(self._finish_parameter_history_group)
 
     def _toggle_left_panel(self) -> None:
         self._set_left_panel_visible(self.palette_panel.isHidden())
@@ -2059,6 +2215,152 @@ class VippWidget(QWidget):
         )
         with QSignalBlocker(self.graph_zoom_slider):
             self.graph_zoom_slider.setValue(clipped)
+
+    def undo(self) -> None:
+        """Restore the previous workflow graph snapshot."""
+        self._finish_parameter_history_group()
+        if not self._undo_stack:
+            return
+        current = self._current_history_snapshot()
+        snapshot = self._undo_stack.pop()
+        self._redo_stack.append(current)
+        self._restore_history_snapshot(snapshot)
+        self._sync_history_actions()
+        self.status_label.setText("Undid last workflow edit.")
+
+    def redo(self) -> None:
+        """Reapply the most recently undone workflow graph snapshot."""
+        self._finish_parameter_history_group()
+        if not self._redo_stack:
+            return
+        current = self._current_history_snapshot()
+        snapshot = self._redo_stack.pop()
+        self._undo_stack.append(current)
+        if len(self._undo_stack) > self.HISTORY_LIMIT:
+            del self._undo_stack[: len(self._undo_stack) - self.HISTORY_LIMIT]
+        self._restore_history_snapshot(snapshot)
+        self._sync_history_actions()
+        self.status_label.setText("Redid workflow edit.")
+
+    def _current_history_snapshot(
+        self,
+        positions: dict[str, tuple[float, float]] | None = None,
+    ) -> WorkflowHistorySnapshot:
+        if positions is None:
+            positions = self.graph_view.node_positions()
+        valid_node_ids = set(self.pipeline.nodes)
+        active_pin = (
+            self._active_pinned_node_id
+            if self._active_pinned_node_id in valid_node_ids
+            else None
+        )
+        return WorkflowHistorySnapshot(
+            workflow=deepcopy(serialize_workflow(self.pipeline, positions)),
+            selected_node_id=(
+                self._selected_node_id
+                if self._selected_node_id in valid_node_ids
+                else ""
+            ),
+            preview_disabled_node_ids=tuple(
+                sorted(self._preview_disabled_node_ids & valid_node_ids)
+            ),
+            active_pinned_node_id=active_pin,
+        )
+
+    def _push_undo_snapshot(
+        self,
+        snapshot: WorkflowHistorySnapshot | None = None,
+    ) -> None:
+        if self._restoring_history:
+            return
+        snapshot = snapshot or self._current_history_snapshot()
+        if self._undo_stack and self._undo_stack[-1] == snapshot:
+            return
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > self.HISTORY_LIMIT:
+            del self._undo_stack[: len(self._undo_stack) - self.HISTORY_LIMIT]
+        self._redo_stack.clear()
+        self._sync_history_actions()
+
+    def _push_undo_if_changed(self, before: WorkflowHistorySnapshot) -> None:
+        if before != self._current_history_snapshot():
+            self._push_undo_snapshot(before)
+
+    def _record_parameter_undo(self, node_id: str, name: str) -> None:
+        key = (node_id, name)
+        if self._pending_parameter_undo_key == key:
+            return
+        self._push_undo_snapshot()
+        self._pending_parameter_undo_key = key
+
+    def _finish_parameter_history_group(self) -> None:
+        self._pending_parameter_undo_key = None
+
+    def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+        self._restoring_history = True
+        self._debounce_timer.stop()
+        try:
+            workflow = self._deserialize_history_workflow(snapshot.workflow)
+            pinned_layer = self._active_pinned_layer()
+            if pinned_layer is not None:
+                self._remove_layer(pinned_layer)
+            self.pipeline.restore_graph(
+                workflow["nodes"],
+                workflow["connections"],
+            )
+            valid_node_ids = set(self.pipeline.nodes)
+            self._preview_disabled_node_ids = set(
+                snapshot.preview_disabled_node_ids
+            ) & valid_node_ids
+            self._active_pinned_node_id = (
+                snapshot.active_pinned_node_id
+                if snapshot.active_pinned_node_id in valid_node_ids
+                else None
+            )
+            selected = (
+                snapshot.selected_node_id
+                if snapshot.selected_node_id in valid_node_ids
+                else ""
+            )
+            self._selected_node_id = selected
+            self.graph_view.build_graph(
+                self.pipeline.nodes.values(),
+                self.pipeline.connections,
+                workflow["positions"],
+                preserve_view=True,
+            )
+            self._sync_all_input_ports()
+            self._sync_all_output_ports()
+            self._sync_pin_ui()
+            self.run_pipeline()
+            if selected:
+                self.graph_view.select_node(selected)
+            else:
+                self._select_first_available_node()
+        finally:
+            self._restoring_history = False
+
+    @staticmethod
+    def _deserialize_history_workflow(workflow: dict) -> dict[str, object]:
+        if workflow.get("type") == "napari-vipp-workflow" and not workflow.get(
+            "nodes",
+        ):
+            return {"nodes": [], "connections": [], "positions": {}}
+        return deserialize_workflow(deepcopy(workflow))
+
+    def _sync_history_actions(self) -> None:
+        undo_enabled = bool(self._undo_stack)
+        redo_enabled = bool(self._redo_stack)
+        self.undo_action.setEnabled(undo_enabled)
+        self.redo_action.setEnabled(redo_enabled)
+        undo_shortcut = QKeySequence(QKeySequence.Undo).toString(
+            QKeySequence.NativeText
+        )
+        redo_shortcut = QKeySequence(QKeySequence.Redo).toString(
+            QKeySequence.NativeText
+        )
+        self.undo_action.setToolTip(f"Undo last workflow edit ({undo_shortcut})")
+        self.redo_action.setToolTip(f"Redo workflow edit ({redo_shortcut})")
 
     def _set_left_panel_visible(self, visible: bool) -> None:
         self._set_side_panel_visible("left", visible)
@@ -2116,6 +2418,8 @@ class VippWidget(QWidget):
         return self._add_node_at(operation_id, self.graph_view.suggest_node_position())
 
     def _add_node_at(self, operation_id: str, position) -> object:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         node = self.pipeline.add_node(operation_id)
         self.graph_view.add_node(node, position)
         self._sync_node_input_ports(node.id)
@@ -2123,16 +2427,23 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self.graph_view.select_node(node.id)
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
         return node
 
     def _reset_graph(self) -> None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         self.pipeline.reset_starter_graph()
         self._preview_disabled_node_ids.clear()
+        self._clip_auto_input_ranges.clear()
+        self._rescale_auto_input_cutoffs.clear()
+        self._rescale_auto_output_ranges.clear()
         self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
         self._select_node("gaussian")
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         self.status_label.setText("Starter graph restored.")
 
     def _build_graph_from_pipeline(self) -> None:
@@ -2181,10 +2492,15 @@ class VippWidget(QWidget):
 
     def load_workflow_file(self, path: str | Path) -> Path:
         """Load a workflow file into the widget and recompute the graph."""
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         source = Path(path).expanduser()
         workflow = load_workflow(source)
         self.pipeline.restore_graph(workflow["nodes"], workflow["connections"])
         self._preview_disabled_node_ids.clear()
+        self._clip_auto_input_ranges.clear()
+        self._rescale_auto_input_cutoffs.clear()
+        self._rescale_auto_output_ranges.clear()
         self._clear_active_pin(status=False)
         self.graph_view.build_graph(
             self.pipeline.nodes.values(),
@@ -2196,6 +2512,7 @@ class VippWidget(QWidget):
         self._sync_all_output_ports()
         self._select_first_available_node()
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         return source
 
     def _export_python_dialog(self) -> None:
@@ -2451,7 +2768,7 @@ class VippWidget(QWidget):
                     dataset.data,
                     {"vipp_source_path": str(Path(path).expanduser())},
                     dataset.selected_series.name,
-                    dataset.image_state,
+                    self._viewer_aligned_state(dataset.image_state),
                 ),
                 None,
             )
@@ -2460,7 +2777,10 @@ class VippWidget(QWidget):
             payloads = self._sample_payloads()
             if not sample_name and payloads:
                 sample_name = next(iter(payloads))
-            return payloads.get(sample_name), None
+            payload = payloads.get(sample_name)
+            if payload is None:
+                return None, None
+            return self._viewer_aligned_source_payload(payload), None
 
         layer_name = str(node.params.get("layer_name", "")).strip()
         if not layer_name:
@@ -2481,6 +2801,22 @@ class VippWidget(QWidget):
             layer,
         )
 
+    def _viewer_aligned_source_payload(
+        self,
+        payload: SourcePayload,
+    ) -> SourcePayload:
+        state = payload.image_state or image_state_from_array(
+            payload.data,
+            layer_metadata=payload.metadata,
+            source_name=payload.name,
+        )
+        return SourcePayload(
+            payload.data,
+            payload.metadata,
+            payload.name,
+            self._viewer_aligned_state(state),
+        )
+
     def _viewer_aligned_image_state(
         self,
         data,
@@ -2492,6 +2828,9 @@ class VippWidget(QWidget):
             layer_metadata=metadata,
             source_name=name,
         )
+        return self._viewer_aligned_state(state)
+
+    def _viewer_aligned_state(self, state):
         if state is None:
             return None
         current_step = self._current_step()
@@ -2527,6 +2866,8 @@ class VippWidget(QWidget):
         target_port: int | None = None,
         source_port: int = 0,
     ) -> None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         result = self.pipeline.connect(
             source_id, target_id, target_port, source_port
         )
@@ -2548,6 +2889,7 @@ class VippWidget(QWidget):
                 result.connection.source_port,
             )
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         self.status_label.setText(result.message)
 
     def _disconnect_nodes(
@@ -2556,8 +2898,11 @@ class VippWidget(QWidget):
         target_id: str,
         target_port: int | None = None,
     ) -> None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         if self.pipeline.disconnect(source_id, target_id, target_port):
             self.run_pipeline()
+            self._push_undo_if_changed(before)
             port_text = (
                 ""
                 if target_port is None
@@ -2571,17 +2916,32 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         title = node.title
         if not self.pipeline.remove_node(node_id):
             return
         self.graph_view.remove_node(node_id)
         self._preview_disabled_node_ids.discard(node_id)
+        self._clip_auto_input_ranges.pop(node_id, None)
+        self._rescale_auto_input_cutoffs.pop(node_id, None)
+        self._rescale_auto_output_ranges.pop(node_id, None)
         if self._active_pinned_node_id == node_id:
             self._clear_active_pin(status=False)
         if self._selected_node_id == node_id:
             self._select_first_available_node()
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         self.status_label.setText(f"Deleted '{title}'.")
+
+    def _on_node_moved(self, node_id: str, old_pos, _new_pos) -> None:
+        if node_id not in self.pipeline.nodes:
+            return
+        self._finish_parameter_history_group()
+        positions = self.graph_view.node_positions()
+        positions[node_id] = (float(old_pos.x()), float(old_pos.y()))
+        self._push_undo_snapshot(self._current_history_snapshot(positions))
+        self.status_label.setText(f"Moved '{self._node_title(node_id)}'.")
 
     def _select_first_available_node(self) -> None:
         if self.pipeline.nodes:
@@ -2596,6 +2956,9 @@ class VippWidget(QWidget):
         self.pin_button.setHidden(True)
         with QSignalBlocker(self.thumbnail_checkbox):
             self.thumbnail_checkbox.setChecked(False)
+        self._clear_empty_inspector()
+
+    def _clear_empty_inspector(self) -> None:
         self.metadata_table.setRowCount(0)
         self.table_group.setHidden(True)
         self.table_preview.setRowCount(0)
@@ -2603,7 +2966,11 @@ class VippWidget(QWidget):
         self.history_label.setText("No history yet.")
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
-        self.histogram_plot.set_histogram(None)
+        self.rescale_input_histogram_group.setHidden(True)
+        self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+        self.histogram_group.setTitle("Output Histogram")
+        self.histogram_scope_row.setHidden(True)
+        self.histogram_plot.set_histogram(None, log_scale=False)
 
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
@@ -2638,6 +3005,9 @@ class VippWidget(QWidget):
             self._render_combine_channels_parameters(node_id)
             return
 
+        self._sync_clip_intensity_defaults(node_id)
+        self._sync_rescale_input_cutoff_defaults(node_id)
+        self._sync_rescale_output_range_defaults(node_id)
         for spec in specs:
             spec = self._effective_parameter_spec(node_id, spec)
             bounds = self._parameter_bounds_for(node_id, spec)
@@ -2750,6 +3120,9 @@ class VippWidget(QWidget):
 
     def _on_image_source_changed(self, value: dict[str, object]) -> None:
         node = self.pipeline.nodes[self._selected_node_id]
+        if self._image_source_value(node) == value:
+            return
+        self._record_parameter_undo(self._selected_node_id, "image_source")
         previous_path = str(node.params.get("file_path", ""))
         previous_binding = str(node.params.get("binding_mode", "single item"))
         self._apply_image_source_params(self._selected_node_id, value)
@@ -2865,6 +3238,12 @@ class VippWidget(QWidget):
                 )
                 changed = previous != node.params
             return changed
+        if self._sync_rescale_output_range_defaults(self._selected_node_id):
+            changed = True
+        if self._sync_clip_intensity_defaults(self._selected_node_id):
+            changed = True
+        if self._sync_rescale_input_cutoff_defaults(self._selected_node_id):
+            changed = True
         for spec in self.pipeline.node_parameter_specs(self._selected_node_id):
             widget = self._parameter_widgets.get(spec.name)
             if widget is None:
@@ -2982,6 +3361,24 @@ class VippWidget(QWidget):
             and spec.name in {"alpha", "beta"}
         ):
             return self._contrast_parameter_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "rescale_intensity"
+            and spec.name in RESCALE_VALUE_PARAMETERS
+        ):
+            return self._rescale_input_value_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "clip_intensity"
+            and spec.name in CLIP_CUTOFF_PARAMETERS
+        ):
+            return self._intensity_input_value_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "rescale_intensity"
+            and spec.name in {"out_min", "out_max"}
+        ):
+            return self._rescale_output_bounds(node_id, spec)
         if spec.name == "threshold":
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
@@ -3081,6 +3478,10 @@ class VippWidget(QWidget):
             node.params[name] = value[name]
 
     def _on_select_axis_slice_changed(self, value: dict) -> None:
+        node = self.pipeline.nodes[self._selected_node_id]
+        if self._select_axis_slice_value(node) == value:
+            return
+        self._record_parameter_undo(self._selected_node_id, "axis_slice")
         self._apply_select_axis_slice_params(self._selected_node_id, value)
         self._debounce_timer.start()
 
@@ -3089,6 +3490,9 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "combine_channels":
             return
+        if int(node.params.get("input_count", 2)) == int(value):
+            return
+        self._record_parameter_undo(node_id, "input_count")
         node.params["input_count"] = int(value)
         colors = self._combine_channels_colors(node)
         node.params["channel_colors"] = ",".join(colors)
@@ -3111,6 +3515,9 @@ class VippWidget(QWidget):
         colors = self._combine_channels_colors(node)
         if slot >= len(colors):
             return
+        if colors[slot] == str(value):
+            return
+        self._record_parameter_undo(node_id, f"channel_color_{slot}")
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
         self._sync_combine_channels_graph_ports(node_id)
@@ -3274,6 +3681,301 @@ class VippWidget(QWidget):
             maximum,
             spec.step,
             spec.decimals,
+            expandable=True,
+        )
+
+    def _sync_all_rescale_output_range_defaults(self) -> bool:
+        changed = False
+        for node_id in tuple(self.pipeline.nodes):
+            changed = self._sync_rescale_output_range_defaults(node_id) or changed
+        return changed
+
+    def _sync_all_rescale_input_cutoff_defaults(self) -> bool:
+        changed = False
+        for node_id in tuple(self.pipeline.nodes):
+            changed = self._sync_rescale_input_cutoff_defaults(node_id) or changed
+        return changed
+
+    def _sync_all_clip_intensity_defaults(self) -> bool:
+        changed = False
+        for node_id in tuple(self.pipeline.nodes):
+            changed = self._sync_clip_intensity_defaults(node_id) or changed
+        return changed
+
+    def _sync_clip_intensity_defaults(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "clip_intensity":
+            return False
+        values = self._rescale_input_values(node_id)
+        if values.size == 0:
+            return False
+
+        minimum = float(values.min())
+        maximum = float(values.max())
+        current = (
+            _safe_float(node.params.get("minimum"), 0.0),
+            _safe_float(node.params.get("maximum"), 255.0),
+        )
+        if current[0] > current[1]:
+            current = (current[1], current[0])
+        previous_auto = self._clip_auto_input_ranges.get(node_id, (0.0, 255.0))
+        self._clip_auto_input_ranges[node_id] = (minimum, maximum)
+        if not _ranges_close(current, previous_auto):
+            return False
+        if _ranges_close(current, (minimum, maximum)):
+            return False
+        node.params["minimum"] = minimum
+        node.params["maximum"] = maximum
+        return True
+
+    def _sync_rescale_input_cutoff_defaults(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_intensity":
+            return False
+        values = self._rescale_input_values(node_id)
+        if values.size == 0:
+            return False
+
+        low_p, high_p = _rescale_percentile_pair(node.params)
+        low_value, high_value = _percentile_cutoff_values(values, low_p, high_p)
+        current = _rescale_value_pair(node.params)
+        previous_auto = self._rescale_auto_input_cutoffs.get(node_id)
+        has_values = (
+            "in_low_value" in node.params
+            and "in_high_value" in node.params
+        )
+        should_update = (
+            not has_values
+            or (
+                previous_auto is None
+                and _ranges_close(current, (0.0, 1.0))
+                and not _ranges_close((low_value, high_value), (0.0, 1.0))
+            )
+            or (
+                previous_auto is not None
+                and _ranges_close(current, previous_auto)
+            )
+        )
+        self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
+        if not should_update:
+            return False
+        if _ranges_close(current, (low_value, high_value)):
+            return False
+        node.params["in_low_value"] = low_value
+        node.params["in_high_value"] = high_value
+        return True
+
+    def _sync_rescale_cutoff_parameters(
+        self,
+        node_id: str,
+        driver: str,
+    ) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_intensity":
+            return False
+        values = self._rescale_input_values(node_id)
+        if values.size == 0:
+            return False
+
+        changed = False
+        if driver in RESCALE_PERCENTILE_PARAMETERS:
+            low_p, high_p = _rescale_percentile_pair(node.params)
+            low_value, high_value = _percentile_cutoff_values(values, low_p, high_p)
+            changed = self._set_node_param_if_changed(
+                node_id,
+                "in_low_value",
+                low_value,
+            )
+            changed = (
+                self._set_node_param_if_changed(
+                    node_id,
+                    "in_high_value",
+                    high_value,
+                )
+                or changed
+            )
+            self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
+            return changed
+
+        low_value, high_value = _rescale_value_pair(node.params)
+        if low_value > high_value:
+            low_value, high_value = high_value, low_value
+            changed = self._set_node_param_if_changed(
+                node_id,
+                "in_low_value",
+                low_value,
+            )
+            changed = (
+                self._set_node_param_if_changed(
+                    node_id,
+                    "in_high_value",
+                    high_value,
+                )
+                or changed
+            )
+        low_p, high_p = _percentiles_for_cutoff_values(
+            values,
+            low_value,
+            high_value,
+        )
+        changed = (
+            self._set_node_param_if_changed(
+                node_id,
+                "in_low_percentile",
+                low_p,
+            )
+            or changed
+        )
+        changed = (
+            self._set_node_param_if_changed(
+                node_id,
+                "in_high_percentile",
+                high_p,
+            )
+            or changed
+        )
+        self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
+        return changed
+
+    def _set_node_param_if_changed(
+        self,
+        node_id: str,
+        name: str,
+        value,
+    ) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False
+        current = node.params.get(name)
+        if isinstance(value, float) or isinstance(current, float):
+            if np.isclose(
+                _safe_float(current, np.nan),
+                _safe_float(value, np.nan),
+                rtol=0.0,
+                atol=1e-9,
+            ):
+                return False
+        elif current == value:
+            return False
+        node.params[name] = value
+        return True
+
+    def _refresh_rescale_cutoff_widgets(self, node_id: str) -> None:
+        for name in RESCALE_CUTOFF_PARAMETERS:
+            widget = self._parameter_widgets.get(name)
+            if widget is None or name not in self.pipeline.nodes[node_id].params:
+                continue
+            spec = self._parameter_spec_by_name(node_id, name)
+            if spec is None:
+                continue
+            spec = self._effective_parameter_spec(node_id, spec)
+            widget.set_bounds(
+                self._parameter_bounds_for(node_id, spec),
+                self.pipeline.nodes[node_id].params[name],
+                emit=False,
+            )
+
+    def _parameter_spec_by_name(self, node_id: str, name: str):
+        for spec in self.pipeline.node_parameter_specs(node_id):
+            if spec.name == name:
+                return spec
+        return None
+
+    def _rescale_input_values(self, node_id: str) -> np.ndarray:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return np.array([], dtype=np.float64)
+        return _rescale_reference_values(data)
+
+    def _rescale_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
+        return self._intensity_input_value_bounds(node_id, spec)
+
+    def _intensity_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
+        values = self._rescale_input_values(node_id)
+        if values.size == 0:
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+                expandable=True,
+            )
+
+        data = self.pipeline.input_data_for_node(node_id)
+        dtype = np.asarray(data).dtype
+        if dtype == np.dtype(bool):
+            return ParameterBounds(0, 1, 1, 0)
+        if dtype == np.dtype(np.uint8):
+            return ParameterBounds(0.0, 255.0, 0.1, 2, expandable=True)
+
+        minimum = float(values.min())
+        maximum = float(values.max())
+        if minimum == maximum:
+            minimum, maximum = _expanded_bounds(minimum)
+        if np.issubdtype(dtype, np.integer):
+            step = max((maximum - minimum) / 500.0, 1.0)
+            return _slider_safe_bounds(
+                minimum,
+                maximum,
+                step,
+                2,
+                expandable=True,
+            )
+
+        span = maximum - minimum
+        step = max(span / 500.0, 1e-6)
+        decimals = 4 if 0.0 <= minimum and maximum <= 1.0 else 3
+        return _slider_safe_bounds(
+            minimum,
+            maximum,
+            step,
+            decimals,
+            expandable=True,
+        )
+
+    def _sync_rescale_output_range_defaults(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_intensity":
+            return False
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return False
+
+        default_min, default_max, _step, _decimals = _rescale_dtype_output_range(
+            np.asarray(data).dtype
+        )
+        current = (
+            _safe_float(node.params.get("out_min"), 0.0),
+            _safe_float(node.params.get("out_max"), 1.0),
+        )
+        previous_auto = self._rescale_auto_output_ranges.get(node_id, (0.0, 1.0))
+        self._rescale_auto_output_ranges[node_id] = (default_min, default_max)
+        if not _ranges_close(current, previous_auto):
+            return False
+        if _ranges_close(current, (default_min, default_max)):
+            return False
+        node.params["out_min"] = default_min
+        node.params["out_max"] = default_max
+        return True
+
+    def _rescale_output_bounds(self, node_id: str, spec) -> ParameterBounds:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+                expandable=True,
+            )
+        minimum, maximum, step, decimals = _rescale_dtype_output_range(
+            np.asarray(data).dtype
+        )
+        return ParameterBounds(
+            minimum,
+            maximum,
+            step,
+            decimals,
             expandable=True,
         )
 
@@ -3558,6 +4260,10 @@ class VippWidget(QWidget):
                 widget.deleteLater()
 
     def _on_param_changed(self, name: str, value) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or node.params.get(name) == value:
+            return
+        self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
         if name == "input_count":
             for connection in self.pipeline.trim_invalid_connections(
@@ -3576,6 +4282,27 @@ class VippWidget(QWidget):
             self._update_fill_holes_scope_note()
         if name in {"min_volume", "max_volume", "spatial_mode"}:
             self._update_label_volume_histogram()
+        if (
+            node.operation_id == "rescale_intensity"
+            and name in RESCALE_CUTOFF_PARAMETERS
+        ):
+            if self._sync_rescale_cutoff_parameters(self._selected_node_id, name):
+                self._refresh_rescale_cutoff_widgets(self._selected_node_id)
+            self._update_rescale_input_histogram(
+                self._selected_node_id,
+                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+            )
+        if (
+            (
+                node.operation_id == "clip_intensity"
+                and name in CLIP_CUTOFF_PARAMETERS
+            )
+            or (node.operation_id == "binary_threshold" and name == "threshold")
+        ):
+            self._update_rescale_input_histogram(
+                self._selected_node_id,
+                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+            )
         self._debounce_timer.start()
 
     def _update_fill_holes_scope_note(self) -> None:
@@ -3620,11 +4347,17 @@ class VippWidget(QWidget):
             return
 
         alpha, beta, lower, upper = result
+        if node.params.get("alpha") == alpha and node.params.get("beta") == beta:
+            self.status_label.setText("Auto contrast is already up to date.")
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         self.pipeline.set_param(node_id, "alpha", alpha)
         self.pipeline.set_param(node_id, "beta", beta)
         self._debounce_timer.stop()
         self._render_parameters(node_id)
         self.run_pipeline()
+        self._push_undo_if_changed(before)
         saturation = self.auto_saturation_control.value()
         self.status_label.setText(
             f"Auto contrast set '{node.title}' to {saturation:.2f}% saturation "
@@ -3665,6 +4398,27 @@ class VippWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
             return
+        if self._sync_all_clip_intensity_defaults():
+            self.pipeline.run(
+                input_data,
+                input_metadata=input_metadata,
+                input_name=input_name,
+                source_payloads=source_payloads,
+            )
+        if self._sync_all_rescale_input_cutoff_defaults():
+            self.pipeline.run(
+                input_data,
+                input_metadata=input_metadata,
+                input_name=input_name,
+                source_payloads=source_payloads,
+            )
+        if self._sync_all_rescale_output_range_defaults():
+            self.pipeline.run(
+                input_data,
+                input_metadata=input_metadata,
+                input_name=input_name,
+                source_payloads=source_payloads,
+            )
         if self._refresh_selected_parameter_controls():
             self.pipeline.run(
                 input_data,
@@ -3735,17 +4489,25 @@ class VippWidget(QWidget):
 
     def _on_selected_preview_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id
+        if self._node_preview_enabled(node_id) == bool(checked):
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         if checked:
             self._preview_disabled_node_ids.discard(node_id)
         else:
             self._preview_disabled_node_ids.add(node_id)
         self._update_thumbnails()
+        self._push_undo_if_changed(before)
         state = "enabled" if checked else "disabled"
         self.status_label.setText(
             f"Thumbnail preview {state} for '{self._node_title(node_id)}'."
         )
 
     def _update_metadata_panel(self) -> None:
+        if self._selected_node_id not in self.pipeline.nodes:
+            self._clear_empty_inspector()
+            return
         state = self.pipeline.output_states.get(self._selected_node_id)
         rows = metadata_table_rows(state)
         current_view = self._current_view_label(state)
@@ -3810,25 +4572,81 @@ class VippWidget(QWidget):
 
     def _update_histogram(self) -> None:
         self._update_label_volume_histogram()
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None:
+            self.rescale_input_histogram_group.setHidden(True)
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            return
         data = self.pipeline.outputs.get(self._selected_node_id)
         if is_table_data(data):
+            self.rescale_input_histogram_group.setHidden(True)
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_group.setHidden(True)
             self.histogram_plot.set_histogram(None, log_scale=False)
             return
+        current_step = (
+            self._current_step() if self.follow_dims_checkbox.isChecked() else None
+        )
+        self._update_rescale_input_histogram(node.id, current_step)
         self.histogram_group.setHidden(False)
+        self.histogram_group.setTitle("Output Histogram")
+        state = self.pipeline.output_states.get(self._selected_node_id)
+        scope_available = _histogram_has_stack_scope(data, state)
+        self.histogram_scope_row.setHidden(not scope_available)
+        scope = self.histogram_scope_combo.currentText() if scope_available else "Slice"
         counts, x_range, colors = _histogram_summary(
             data,
-            state=self.pipeline.output_states.get(self._selected_node_id),
-            scope=self.histogram_scope_combo.currentText(),
-            current_step=(
-                self._current_step() if self.follow_dims_checkbox.isChecked() else None
-            ),
+            state=state,
+            scope=scope,
+            current_step=current_step,
         )
         self.histogram_plot.set_histogram(
             counts,
             log_scale=self.histogram_log_checkbox.isChecked(),
             x_range=x_range,
             colors=colors,
+        )
+
+    def _update_rescale_input_histogram(
+        self,
+        node_id: str,
+        current_step,
+    ) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
+        self.rescale_input_histogram_group.setHidden(not visible)
+        if not visible:
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            return
+
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None or is_table_data(data):
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            return
+
+        state = self.pipeline.input_state_for_node(node_id)
+        scope = self.histogram_scope_combo.currentText()
+        counts, x_range, colors = _histogram_summary(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+        )
+        markers = _input_histogram_markers(
+            node.operation_id,
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            params=node.params,
+        )
+        self.rescale_input_histogram_plot.set_histogram(
+            counts,
+            log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
+            x_range=x_range,
+            colors=colors,
+            markers=markers,
         )
 
     def _update_table_preview(self) -> None:
@@ -4067,14 +4885,18 @@ class VippWidget(QWidget):
                 f"'{self._node_title(node_id)}' does not produce a mask overlay."
             )
             return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
         if node_id == self._active_pinned_node_id:
             self._clear_active_pin(status=True)
+            self._push_undo_if_changed(before)
             return
         data = self.pipeline.outputs.get(node_id)
         if data is None:
             self.status_label.setText("That node has no output to pin yet.")
             return
         self._set_active_pin_layer(node_id, data)
+        self._push_undo_if_changed(before)
         self.status_label.setText(f"Pinned '{self._node_title(node_id)}'.")
 
     def _set_active_pin_layer(self, node_id: str, data) -> None:
@@ -4473,6 +5295,30 @@ def _safe_float(value, default: float) -> float:
         return float(default)
 
 
+def _rescale_dtype_output_range(
+    dtype: np.dtype,
+) -> tuple[float, float, float, int]:
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(bool):
+        return 0.0, 1.0, 1.0, 0
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        return 0.0, float(info.max), 1.0, 0
+    if np.issubdtype(dtype, np.floating):
+        return 0.0, 1.0, 0.01, 3
+    return 0.0, 1.0, 0.01, 3
+
+
+def _ranges_close(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> bool:
+    return bool(
+        np.isclose(first[0], second[0], rtol=0.0, atol=1e-9)
+        and np.isclose(first[1], second[1], rtol=0.0, atol=1e-9)
+    )
+
+
 def _slider_safe_bounds(
     minimum: float,
     maximum: float,
@@ -4562,6 +5408,172 @@ def _histogram_summary(
         return counts, x_range, colors
     counts, x_range = _single_histogram(arr)
     return counts, x_range, _histogram_series_colors(1)
+
+
+def _histogram_has_stack_scope(data, state=None) -> bool:
+    if data is None:
+        return False
+    arr = np.asarray(data)
+    if arr.ndim <= 2:
+        return False
+    axes = tuple(getattr(state, "axes", ()))
+    if len(axes) == arr.ndim:
+        for axis, size in zip(axes, arr.shape, strict=False):
+            name = str(axis.name).lower()
+            if int(size) <= 1:
+                continue
+            if name in {"x", "y", "rgb"} or axis.type == "channel":
+                continue
+            return True
+        return False
+    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+        return False
+    return True
+
+
+def _input_histogram_markers(
+    operation_id: str,
+    data,
+    *,
+    state=None,
+    scope: str = "Slice",
+    current_step=None,
+    params: dict | None = None,
+) -> list[tuple[str, float, QColor]]:
+    if operation_id == "rescale_intensity":
+        return _rescale_percentile_markers(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            params=params,
+        )
+    if operation_id == "clip_intensity":
+        low = _safe_float((params or {}).get("minimum"), 0.0)
+        high = _safe_float((params or {}).get("maximum"), 255.0)
+        if low > high:
+            low, high = high, low
+        markers = [("min", float(low), QColor("#f59e0b"))]
+        if not np.isclose(low, high):
+            markers.append(("max", float(high), QColor("#38bdf8")))
+        return markers
+    if operation_id == "binary_threshold":
+        threshold = _safe_float((params or {}).get("threshold"), 0.0)
+        return [("threshold", float(threshold), QColor("#f59e0b"))]
+    return []
+
+
+def _rescale_percentile_markers(
+    data,
+    *,
+    state=None,
+    scope: str = "Slice",
+    current_step=None,
+    params: dict | None = None,
+) -> list[tuple[str, float, QColor]]:
+    if params is not None and {
+        "in_low_value",
+        "in_high_value",
+    } <= set(params):
+        low, high = _rescale_value_pair(params)
+        markers = [("low", float(low), QColor("#f59e0b"))]
+        if not np.isclose(low, high):
+            markers.append(("high", float(high), QColor("#22c55e")))
+        return markers
+
+    source = _histogram_source(
+        data,
+        state=state,
+        scope=scope,
+        current_step=current_step,
+    )
+    if source is None:
+        return []
+    values = _sample_histogram_values(source[0])
+    if values.size == 0:
+        return []
+    low_p, high_p = _rescale_percentile_pair(params or {})
+    low, high = _percentile_cutoff_values(values, low_p, high_p)
+    markers = [("low", float(low), QColor("#f59e0b"))]
+    if not np.isclose(low, high):
+        markers.append(("high", float(high), QColor("#22c55e")))
+    return markers
+
+
+def _rescale_reference_values(data) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.size == 0:
+        return np.array([], dtype=np.float64)
+    values = arr.ravel()
+    try:
+        values = values[np.isfinite(values)]
+    except TypeError:
+        return np.array([], dtype=np.float64)
+    if values.size > 500_000:
+        stride = int(np.ceil(values.size / 500_000))
+        values = values[::stride]
+    return values.astype(np.float64, copy=False)
+
+
+def _rescale_percentile_pair(params: dict) -> tuple[float, float]:
+    low = _safe_float(params.get("in_low_percentile"), 0.0)
+    high = _safe_float(params.get("in_high_percentile"), 100.0)
+    low = float(np.clip(low, 0.0, 100.0))
+    high = float(np.clip(high, 0.0, 100.0))
+    if low > high:
+        low, high = high, low
+    return low, high
+
+
+def _rescale_value_pair(params: dict) -> tuple[float, float]:
+    low = _safe_float(params.get("in_low_value"), 0.0)
+    high = _safe_float(params.get("in_high_value"), 1.0)
+    if low > high:
+        low, high = high, low
+    return low, high
+
+
+def _percentile_cutoff_values(
+    values: np.ndarray,
+    low_percentile: float,
+    high_percentile: float,
+) -> tuple[float, float]:
+    if values.size == 0:
+        return 0.0, 1.0
+    low, high = np.percentile(
+        values.astype(np.float64, copy=False),
+        [low_percentile, high_percentile],
+    )
+    return float(low), float(high)
+
+
+def _percentiles_for_cutoff_values(
+    values: np.ndarray,
+    low_value: float,
+    high_value: float,
+) -> tuple[float, float]:
+    if values.size <= 1:
+        return 0.0, 100.0
+    sorted_values = np.sort(values.astype(np.float64, copy=False))
+    low = _percentile_for_cutoff_value(sorted_values, low_value)
+    high = _percentile_for_cutoff_value(sorted_values, high_value)
+    if low > high:
+        low, high = high, low
+    return low, high
+
+
+def _percentile_for_cutoff_value(
+    sorted_values: np.ndarray,
+    value: float,
+) -> float:
+    if sorted_values.size <= 1:
+        return 0.0
+    if value <= sorted_values[0]:
+        return 0.0
+    if value >= sorted_values[-1]:
+        return 100.0
+    index = int(np.searchsorted(sorted_values, float(value), side="left"))
+    return float(np.clip((index / (sorted_values.size - 1)) * 100.0, 0.0, 100.0))
 
 
 def _histogram_source(

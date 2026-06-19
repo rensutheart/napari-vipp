@@ -6,10 +6,10 @@
       "id": "input",
       "operation_id": "input",
       "params": {
-        "source_mode": "napari layer",
-        "layer_name": "VIPP synthetic multichannel volume",
+        "source_mode": "sample",
+        "layer_name": "",
         "file_path": "",
-        "sample_name": "",
+        "sample_name": "VIPP synthetic multichannel volume",
         "series_index": 0,
         "binding_mode": "single item"
       }

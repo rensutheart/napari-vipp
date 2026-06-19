@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import napari
 
-from napari_vipp._sample_data import make_sample_data
 from napari_vipp._widget import VippWidget
 
 
 def main() -> None:
     viewer = napari.Viewer()
-    for data, metadata, layer_type in make_sample_data():
-        add = getattr(viewer, f"add_{layer_type}")
-        add(data, **metadata)
+    widget = VippWidget(viewer)
+    widget.pipeline.nodes["input"].params.update(
+        {
+            "source_mode": "sample",
+            "sample_name": "VIPP synthetic volume",
+        }
+    )
+    widget.run_pipeline()
+    widget.graph_view.select_node("input")
     viewer.window.add_dock_widget(
-        VippWidget(viewer),
+        widget,
         area="bottom",
         name="VIPP Workflow",
     )

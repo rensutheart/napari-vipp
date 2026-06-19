@@ -6,16 +6,11 @@ from pathlib import Path
 
 import napari
 
-from napari_vipp._sample_data import make_sample_data
 from napari_vipp._widget import VippWidget
 
 
 def main() -> None:
     viewer = napari.Viewer()
-    for data, metadata, layer_type in make_sample_data():
-        add = getattr(viewer, f"add_{layer_type}")
-        add(data, **metadata)
-
     widget = VippWidget(viewer)
     viewer.window.add_dock_widget(
         widget,

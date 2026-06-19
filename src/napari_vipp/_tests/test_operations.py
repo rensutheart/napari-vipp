@@ -662,9 +662,21 @@ def test_intensity_rescale_normalize_and_clip():
     normalized = normalize_image(data, method="min-max")
     clipped = clip_intensity(data, minimum=2, maximum=4)
 
-    assert rescaled.dtype == np.float32
+    assert rescaled.dtype == data.dtype
     assert rescaled.min() == 0
     assert rescaled.max() == 255
+    value_rescaled = rescale_intensity(
+        data,
+        in_low_value=2,
+        in_high_value=4,
+        out_min=0,
+        out_max=10,
+    )
+    np.testing.assert_array_equal(
+        value_rescaled,
+        np.array([[0, 0, 0], [5, 10, 10]], dtype=np.uint16),
+    )
+    assert rescale_intensity(data.astype(np.float32)).dtype == np.float32
     assert normalized.dtype == np.float32
     assert normalized.min() == 0
     assert normalized.max() == 1

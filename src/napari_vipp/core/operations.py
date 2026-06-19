@@ -1277,26 +1277,63 @@ def rescale_intensity(
     in_high_percentile: float = 100.0,
     out_min: float = 0.0,
     out_max: float = 1.0,
+    in_low_value: float | None = None,
+    in_high_value: float | None = None,
 ) -> np.ndarray:
-    """Rescale intensity from percentile limits to a requested output range."""
+    """Rescale intensity from input cutoffs to a requested output range."""
     arr = np.asarray(data)
     if arr.dtype == bool:
-        return arr.astype(np.float32)
+        return arr.copy()
     values = arr[np.isfinite(arr)]
     if values.size == 0:
-        return np.zeros_like(arr, dtype=np.float32)
-    low_p = float(np.clip(in_low_percentile, 0.0, 100.0))
-    high_p = float(np.clip(in_high_percentile, 0.0, 100.0))
-    if low_p > high_p:
-        low_p, high_p = high_p, low_p
-    low, high = np.percentile(values, [low_p, high_p])
+        return np.zeros_like(arr)
+    value_cutoffs = _rescale_value_cutoffs(in_low_value, in_high_value)
+    if value_cutoffs is None:
+        low_p = float(np.clip(in_low_percentile, 0.0, 100.0))
+        high_p = float(np.clip(in_high_percentile, 0.0, 100.0))
+        if low_p > high_p:
+            low_p, high_p = high_p, low_p
+        low, high = np.percentile(values, [low_p, high_p])
+    else:
+        low, high = value_cutoffs
     if high == low:
-        return np.full_like(arr, float(out_min), dtype=np.float32)
-    scaled = (arr.astype(np.float32, copy=False) - float(low)) / float(high - low)
+        return _cast_rescaled_intensity(
+            np.full(arr.shape, float(out_min), dtype=np.float64),
+            arr.dtype,
+        )
+    scaled = (arr.astype(np.float64, copy=False) - float(low)) / float(high - low)
     scaled = np.clip(scaled, 0.0, 1.0)
-    return (scaled * (float(out_max) - float(out_min)) + float(out_min)).astype(
-        np.float32,
-    )
+    output = scaled * (float(out_max) - float(out_min)) + float(out_min)
+    return _cast_rescaled_intensity(output, arr.dtype)
+
+
+def _rescale_value_cutoffs(low, high) -> tuple[float, float] | None:
+    if low is None or high is None:
+        return None
+    try:
+        low = float(low)
+        high = float(high)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(low) or not np.isfinite(high):
+        return None
+    if low > high:
+        low, high = high, low
+    return low, high
+
+
+def _cast_rescaled_intensity(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    dtype = np.dtype(dtype)
+    if dtype == np.dtype(bool):
+        return values.astype(bool)
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        rounded = np.rint(values)
+        clipped = np.clip(rounded, info.min, info.max)
+        return clipped.astype(dtype)
+    if np.issubdtype(dtype, np.floating):
+        return values.astype(dtype, copy=False)
+    return values.astype(dtype, copy=False)
 
 
 def normalize_image(

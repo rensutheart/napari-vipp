@@ -1054,6 +1054,26 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec(
+                "in_low_value",
+                "Low value",
+                "float",
+                0.0,
+                -100000.0,
+                100000.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "in_high_value",
+                "High value",
+                "float",
+                1.0,
+                -100000.0,
+                100000.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
                 "in_low_percentile",
                 "Low percentile",
                 "float",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import QPoint, QPointF, Qt, Signal
+from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from qtpy.QtGui import (
     QColor,
     QImage,
@@ -522,6 +522,17 @@ class NodeProxy(QGraphicsProxyWidget):
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if self._drag_start_scene is not None and event.button() == Qt.LeftButton:
+            start_pos = self._drag_start_pos
+            end_pos = QPointF(self.pos())
+            moved = (
+                self._dragging
+                and start_pos is not None
+                and (
+                    abs(end_pos.x() - start_pos.x())
+                    + abs(end_pos.y() - start_pos.y())
+                )
+                > 0.001
+            )
             card = self._card()
             if card is not None:
                 card.setCursor(Qt.OpenHandCursor)
@@ -529,6 +540,10 @@ class NodeProxy(QGraphicsProxyWidget):
             self._drag_start_pos = None
             self._dragging = False
             self._press_was_preview = False
+            if moved:
+                view = _view_for_scene(self.scene())
+                if view is not None:
+                    view.node_moved.emit(self.node_id, start_pos, end_pos)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -732,6 +747,7 @@ class PipelineGraphView(QGraphicsView):
 
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
+    node_moved = Signal(str, object, object)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     connection_requested = Signal(str, str, int, int)
@@ -763,7 +779,18 @@ class PipelineGraphView(QGraphicsView):
         self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
 
-    def build_graph(self, nodes, connections, positions=None) -> None:
+    def build_graph(
+        self,
+        nodes,
+        connections,
+        positions=None,
+        *,
+        preserve_view: bool = False,
+    ) -> None:
+        preserved_center = self.mapToScene(self.viewport().rect().center())
+        preserved_transform = QTransform(self.transform())
+        preserved_base_transform = QTransform(self._base_transform)
+        preserved_zoom = float(self._zoom_percent)
         self.scene.clear()
         self._proxies.clear()
         self._cards.clear()
@@ -793,7 +820,22 @@ class PipelineGraphView(QGraphicsView):
             )
 
         graph_rect = self.scene.itemsBoundingRect()
-        self.scene.setSceneRect(graph_rect.adjusted(-1600, -1200, 1800, 1200))
+        scene_rect = graph_rect.adjusted(-1600, -1200, 1800, 1200)
+        if preserve_view:
+            center_rect = QRectF(preserved_center, preserved_center).adjusted(
+                -120,
+                -120,
+                120,
+                120,
+            )
+            scene_rect = scene_rect.united(center_rect)
+        self.scene.setSceneRect(scene_rect)
+        if preserve_view:
+            self.setTransform(preserved_transform)
+            self._base_transform = preserved_base_transform
+            self._zoom_percent = preserved_zoom
+            self.centerOn(preserved_center)
+            return
         self.resetTransform()
         self.fitInView(graph_rect.adjusted(-80, -80, 120, 80), Qt.KeepAspectRatio)
         self._base_transform = QTransform(self.transform())

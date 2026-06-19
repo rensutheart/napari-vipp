@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import tifffile
 from qtpy.QtCore import QEvent, QPointF, QSignalBlocker, Qt
-from qtpy.QtGui import QMouseEvent
+from qtpy.QtGui import QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -15,7 +15,8 @@ from qtpy.QtWidgets import (
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.io import inspect_image_source, read_image
-from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY
+from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY, SourcePayload
+from napari_vipp.core.preview import make_preview
 
 
 class _Event:
@@ -160,6 +161,10 @@ def _metadata_value(widget, label):
     raise AssertionError(f"Metadata row not found: {label}")
 
 
+def _graph_view_center(view):
+    return view.mapToScene(view.viewport().rect().center())
+
+
 def test_widget_builds_graph_and_inspects_node(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -189,6 +194,93 @@ def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
         for connection in widget.pipeline.connections
     )
     assert widget._selected_node_id in widget.pipeline.nodes
+
+
+def test_deleting_all_nodes_leaves_empty_inspector_without_error(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    for node_id in list(widget.pipeline.nodes):
+        widget._delete_node(node_id)
+
+    assert widget.pipeline.nodes == {}
+    assert widget._selected_node_id == ""
+    assert widget.selected_title.text() == "No node selected"
+    assert widget.parameter_group.isHidden()
+    assert widget.metadata_table.rowCount() == 0
+    assert widget.history_label.text() == "No history yet."
+
+
+def test_undo_redo_restores_deleted_node_and_connections(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    widget.graph_view.resize(800, 420)
+    widget.graph_view.set_zoom_percent(150)
+    widget.graph_view.centerOn(QPointF(240, 90))
+    zoom_before = widget.graph_view.zoom_percent
+    transform_before = widget.graph_view.transform()
+    center_before = _graph_view_center(widget.graph_view)
+
+    assert (
+        widget.undo_action.shortcut().matches(QKeySequence(QKeySequence.Undo))
+        == QKeySequence.ExactMatch
+    )
+    assert (
+        widget.redo_action.shortcut().matches(QKeySequence(QKeySequence.Redo))
+        == QKeySequence.ExactMatch
+    )
+    assert not widget.undo_action.isEnabled()
+
+    qtbot.keyClick(widget.graph_view, Qt.Key_Delete)
+
+    assert "gaussian" not in widget.pipeline.nodes
+    assert widget.undo_action.isEnabled()
+    widget.undo()
+
+    center_after = _graph_view_center(widget.graph_view)
+    assert widget.graph_view.zoom_percent == zoom_before
+    assert widget.graph_view.transform() == transform_before
+    assert abs(center_after.x() - center_before.x()) <= 1.0
+    assert abs(center_after.y() - center_before.y()) <= 1.0
+    assert "gaussian" in widget.pipeline.nodes
+    assert "gaussian" in widget.graph_view._cards
+    assert ("input", "gaussian") in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert ("gaussian", "threshold") in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget._selected_node_id == "gaussian"
+    assert widget.redo_action.isEnabled()
+
+    widget.redo()
+
+    assert "gaussian" not in widget.pipeline.nodes
+    assert "gaussian" not in widget.graph_view._cards
+
+
+def test_undo_restores_moved_node_position(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    proxy = widget.graph_view._proxies["gaussian"]
+    old_pos = QPointF(proxy.pos())
+    new_pos = old_pos + QPointF(120, 45)
+
+    proxy.setPos(new_pos)
+    widget._on_node_moved("gaussian", old_pos, new_pos)
+
+    assert proxy.pos() == new_pos
+    assert widget.undo_action.isEnabled()
+    widget.undo()
+
+    restored = widget.graph_view._proxies["gaussian"].pos()
+    assert restored == old_pos
 
 
 def test_widget_restores_hidden_source_layer_on_close(qtbot):
@@ -342,6 +434,50 @@ def test_napari_layer_source_axes_are_right_aligned_to_viewer_dims(qtbot):
     assert state.axis_order == "CZYX"
     assert [axis.source_axis for axis in state.axes] == [1, 2, 3, 4]
     assert _metadata_value(widget, "Current view") == "c=0/2, z=2/3"
+
+
+def test_sample_source_axes_are_right_aligned_to_viewer_dims(qtbot):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 8, 9), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    viewer.dims.current_step = (4, 2, 0, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    sample = np.zeros((4, 8, 9), dtype=np.uint8)
+    sample[0, 2, 3] = 100
+    sample[3, 5, 6] = 200
+    widget._sample_payload_cache = {
+        "tiny zyx": SourcePayload(sample, {"axes": "ZYX"}, "tiny zyx")
+    }
+    widget.pipeline.nodes["input"].params.update(
+        {"source_mode": "sample", "sample_name": "tiny zyx"}
+    )
+    widget.run_pipeline()
+    widget.graph_view.select_node("input")
+
+    state = widget.pipeline.output_states["input"]
+    assert [axis.source_axis for axis in state.axes] == [2, 3, 4]
+    assert _metadata_value(widget, "Current view") == "z=0/3"
+
+    first = make_preview(
+        sample,
+        mode="slice",
+        current_step=(4, 2, 0, 0, 0),
+        state=state,
+    )
+    second = make_preview(
+        sample,
+        mode="slice",
+        current_step=(0, 0, 3, 0, 0),
+        state=state,
+    )
+
+    assert first[2, 3] > 0
+    assert first[5, 6] == 0
+    assert second[5, 6] > 0
+    assert second[2, 3] == 0
 
 
 def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
@@ -1058,6 +1194,8 @@ def test_histogram_updates_for_selected_node(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    assert widget.histogram_group.title() == "Output Histogram"
+    assert not widget.histogram_scope_row.isHidden()
     assert widget.histogram_scope_combo.currentText() == "Slice"
     assert not widget.histogram_log_checkbox.isChecked()
     assert widget.histogram_plot._counts.size > 0
@@ -1070,6 +1208,19 @@ def test_histogram_updates_for_selected_node(qtbot):
     assert widget.histogram_plot._counts.size == 2
 
 
+def test_histogram_scope_is_hidden_for_2d_outputs(qtbot):
+    data = np.arange(16 * 18, dtype=np.uint8).reshape(16, 18)
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert widget.histogram_group.title() == "Output Histogram"
+    assert widget.histogram_scope_row.isHidden()
+    assert widget.histogram_plot._counts.sum() == data.size
+
+
 def test_histogram_can_switch_between_slice_and_stack(qtbot):
     data = np.zeros((2, 5, 6), dtype=np.uint8)
     data[1] = 200
@@ -1079,6 +1230,7 @@ def test_histogram_can_switch_between_slice_and_stack(qtbot):
 
     widget.graph_view.select_node("input")
 
+    assert not widget.histogram_scope_row.isHidden()
     assert widget.histogram_plot._counts.tolist() == [30.0]
     assert widget.histogram_plot._x_min_label == "0"
     assert widget.histogram_plot._x_max_label == "0"
@@ -1111,6 +1263,141 @@ def test_histogram_separates_multichannel_series(qtbot):
     assert colors[0].blueF() > colors[0].redF()
     assert colors[1].greenF() > colors[1].redF()
     assert colors[2].redF() > colors[2].blueF()
+
+
+def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
+    data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.outputs[node.id].dtype == np.uint8
+    assert widget.pipeline.nodes[node.id].params["out_min"] == 0.0
+    assert widget.pipeline.nodes[node.id].params["out_max"] == 255.0
+    assert widget.pipeline.nodes[node.id].params["in_low_value"] == 0.0
+    assert widget.pipeline.nodes[node.id].params["in_high_value"] == 255.0
+    assert list(widget._parameter_widgets)[:4] == [
+        "in_low_value",
+        "in_high_value",
+        "in_low_percentile",
+        "in_high_percentile",
+    ]
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.histogram_group.title() == "Output Histogram"
+    assert widget.rescale_input_histogram_plot._counts.size == 256
+    assert widget.histogram_plot._counts.size == 256
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("low", 0.0), ("high", 255.0)]
+
+    widget.rescale_input_histogram_log_checkbox.setChecked(True)
+
+    assert widget.rescale_input_histogram_plot._log_scale
+
+    widget.graph_view.select_node("input")
+
+    assert widget.rescale_input_histogram_group.isHidden()
+    assert widget.histogram_group.title() == "Output Histogram"
+
+
+def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
+    data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    widget._parameter_widgets["in_low_percentile"].value_box.setValue(25.0)
+
+    assert np.isclose(
+        widget.pipeline.nodes[node.id].params["in_low_value"],
+        63.75,
+    )
+    assert np.isclose(
+        widget._parameter_widgets["in_low_value"].value(),
+        63.75,
+    )
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ][0] == ("low", 63.75)
+
+    widget._parameter_widgets["in_high_value"].value_box.setValue(127.5)
+
+    assert np.isclose(
+        widget.pipeline.nodes[node.id].params["in_high_percentile"],
+        50.19607843137255,
+    )
+    assert np.isclose(
+        widget._parameter_widgets["in_high_percentile"].value(),
+        50.2,
+    )
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ][1] == ("high", 127.5)
+
+
+def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbot):
+    data = np.arange(100, dtype=np.uint16).reshape(1, 10, 10)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("clip_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.outputs[node.id].dtype == np.uint16
+    assert widget.pipeline.nodes[node.id].params["minimum"] == 0.0
+    assert widget.pipeline.nodes[node.id].params["maximum"] == 99.0
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.histogram_group.title() == "Output Histogram"
+    assert widget.rescale_input_histogram_plot._counts.sum() == 100.0
+    assert widget.histogram_plot._counts.sum() == 100.0
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("min", 0.0), ("max", 99.0)]
+    assert np.isclose(widget._parameter_widgets["minimum"]._bounds.minimum, 0.0)
+    assert np.isclose(widget._parameter_widgets["maximum"]._bounds.maximum, 99.0)
+
+    widget._parameter_widgets["minimum"].value_box.setValue(25.0)
+
+    assert widget.pipeline.nodes[node.id].params["minimum"] == 25.0
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ][0] == ("min", 25.0)
+
+
+def test_binary_threshold_shows_input_histogram_marker(qtbot):
+    data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.histogram_group.title() == "Output Histogram"
+
+    widget._parameter_widgets["threshold"].value_box.setValue(128.0)
+
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("threshold", 128.0)]
 
 
 def test_selected_node_shows_output_metadata(qtbot):
