@@ -3,26 +3,32 @@ from __future__ import annotations
 import numpy as np
 import tifffile
 
-from napari_vipp.core.metadata import image_state_from_array, transform_image_state
+from napari_vipp.core.metadata import (
+    image_state_from_array,
+    transform_image_state,
+    transform_multi_input_image_state,
+)
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
     add_metadata_columns,
     analyze_skeleton,
+    assign_channel_colors,
     average_blur,
     bilateral_filter,
     binary_threshold,
     black_hat,
     calculate_weighted_image,
+    canny_edges,
     clear_border_objects,
     clip_intensity,
     closing,
     combine_channels,
     composite_to_rgb,
-    contrast_stretch,
     convert_dtype,
     crop_stack,
+    difference_of_gaussians_filter,
     dilate,
     erode,
     extract_channel,
@@ -31,7 +37,12 @@ from napari_vipp.core.operations import (
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    hysteresis_threshold,
+    isodata_threshold,
     label_connected_components,
+    laplace_filter,
+    li_threshold,
+    linear_scale_offset,
     logical_and,
     logical_or,
     logical_xor,
@@ -40,22 +51,30 @@ from napari_vipp.core.operations import (
     measure_objects_with_intensity,
     median_filter,
     merge_tables,
+    minimum_threshold,
     morphological_gradient,
+    niblack_threshold,
+    non_local_means_filter,
     normalize_image,
     opening,
     otsu_threshold,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
+    reorder_axes,
     rescale_intensity,
+    sauvola_threshold,
     save_array_output,
     save_output,
     select_axis_slice,
     skeletonize_mask,
+    sobel_filter,
     split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
+    unsharp_mask_filter,
+    yen_threshold,
 )
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 from napari_vipp.core.tables import save_table_output, table_from_columns
@@ -64,18 +83,31 @@ from napari_vipp.core.tables import save_table_output, table_from_columns
 def test_vipp_operation_nodes_are_registered():
     expected = {
         "crop_stack",
-        "contrast_stretch",
+        "linear_scale_offset",
         "gamma_correction",
         "average_blur",
         "gaussian_blur",
         "gaussian_blur_3d",
         "median_filter",
         "bilateral_filter",
+        "non_local_means_filter",
+        "difference_of_gaussians",
+        "unsharp_mask",
+        "sobel_filter",
+        "laplace_filter",
         "binary_threshold",
+        "hysteresis_threshold",
+        "canny_edges",
         "adaptive_mean_threshold",
         "adaptive_gaussian_threshold",
+        "sauvola_threshold",
+        "niblack_threshold",
         "otsu_threshold",
         "triangle_threshold",
+        "li_threshold",
+        "yen_threshold",
+        "isodata_threshold",
+        "minimum_threshold",
         "dilate",
         "erode",
         "opening",
@@ -100,6 +132,7 @@ def test_vipp_operation_nodes_are_registered():
         "measure_objects_intensity",
         "skeletonize",
         "analyze_skeleton",
+        "assign_channel_colors",
         "merge_tables",
         "add_metadata_columns",
         "logical_and",
@@ -112,6 +145,7 @@ def test_vipp_operation_nodes_are_registered():
         "clip_intensity",
         "convert_dtype",
         "select_axis_slice",
+        "reorder_axes",
         "save_output",
     }
 
@@ -600,12 +634,90 @@ def test_bilateral_filter_preserves_shape():
     assert result.dtype == np.float32
 
 
-def test_contrast_gamma_crop_and_extract_channel():
+def test_additional_filter_nodes_preserve_shape():
+    data = np.zeros((2, 16, 16), dtype=np.float32)
+    data[:, 5:11, 5:11] = 1.0
+
+    dog = difference_of_gaussians_filter(data, low_sigma=1.0, high_sigma=3.0)
+    unsharp = unsharp_mask_filter(data, radius=1.0, amount=1.0)
+    nlm = non_local_means_filter(
+        data,
+        patch_size=3,
+        patch_distance=2,
+        h=0.05,
+    )
+    sobel = sobel_filter(data)
+    laplace = laplace_filter(data, kernel_size=3)
+
+    for result in (dog, unsharp, nlm, sobel, laplace):
+        assert result.shape == data.shape
+        assert result.dtype == np.float32
+
+    assert dog.max() > 0
+    assert sobel.max() > 0
+    assert not np.allclose(laplace, 0)
+
+
+def test_additional_global_thresholds_return_masks():
+    data = np.zeros((2, 16, 16), dtype=np.float32)
+    data[:, 3:8, 3:8] = 0.4
+    data[:, 9:14, 9:14] = 1.0
+
+    masks = [
+        li_threshold(data),
+        yen_threshold(data),
+        isodata_threshold(data),
+        minimum_threshold(data),
+    ]
+
+    for mask in masks:
+        assert mask.shape == data.shape
+        assert mask.dtype == bool
+
+
+def test_additional_local_thresholds_return_masks():
+    y = np.linspace(0.0, 1.0, 16, dtype=np.float32)
+    data = np.tile(y[:, None], (1, 16))
+    data[5:11, 5:11] += 0.6
+    stack = np.stack([data, data * 0.8])
+
+    sauvola = sauvola_threshold(stack, window_size=5, k=0.2)
+    niblack = niblack_threshold(stack, window_size=5, k=0.2)
+
+    for mask in (sauvola, niblack):
+        assert mask.shape == stack.shape
+        assert mask.dtype == bool
+        assert mask.any()
+
+
+def test_edge_segmentation_operations_return_masks():
+    data = np.zeros((3, 32, 32), dtype=np.float32)
+    data[:, 8:24, 8:24] = 1.0
+    data[:, 12:20, 12:20] = 0.5
+
+    canny = canny_edges(data, sigma=1.0, low_quantile=0.05, high_quantile=0.2)
+    hysteresis = hysteresis_threshold(
+        data,
+        low_threshold=0.4,
+        high_threshold=0.8,
+        spatial_mode="3D ZYX",
+    )
+
+    for mask in (canny, hysteresis):
+        assert mask.shape == data.shape
+        assert mask.dtype == bool
+        assert mask.any()
+
+    assert not canny[:, 16, 16].any()
+    assert hysteresis[:, 16, 16].all()
+
+
+def test_linear_scale_gamma_crop_and_extract_channel():
     data = np.zeros((2, 6, 7, 3), dtype=np.uint8)
     data[..., 1] = 64
     data[:, 2:5, 1:6, 2] = 128
 
-    stretched = contrast_stretch(data, alpha=2, beta=1)
+    stretched = linear_scale_offset(data, alpha=2, beta=1)
     gamma = gamma_correction(data, gamma=0.5)
     cropped = crop_stack(data, top=1, bottom=2, left=1, right=3)
     channel = extract_channel(data, channel=2)
@@ -616,6 +728,18 @@ def test_contrast_gamma_crop_and_extract_channel():
     assert cropped.shape == (2, 3, 3, 3)
     assert channel.shape == (2, 6, 7)
     assert channel.max() == 128
+
+
+def test_reorder_axes_accepts_named_and_numeric_orders():
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+
+    named = reorder_axes(data, order="TZYXC", axis_names=("t", "c", "z", "y", "x"))
+    numeric = reorder_axes(data, order="0,2,3,4,1")
+    invalid = reorder_axes(data, order="ZYX")
+
+    assert named.shape == (2, 4, 5, 6, 3)
+    assert numeric.shape == (2, 4, 5, 6, 3)
+    assert invalid.shape == data.shape
 
 
 def test_extract_channel_supports_czyx_stacks():
@@ -731,12 +855,25 @@ def test_composite_to_rgb_maps_three_channels():
 
     assert rgb.shape == (8, 8, 3)
     assert rgb.dtype == np.float32
-    # Channel 0 -> red, 1 -> green, 2 -> blue at their respective bright pixels.
-    assert rgb[0, 0, 0] == 1.0
+    # Fluorescence stacks match thumbnail order: channel 0 blue, 1 green, 2 red.
+    assert rgb[2, 2, 0] == 1.0
     assert rgb[1, 1, 1] == 1.0
-    assert rgb[2, 2, 2] == 1.0
-    # The red plane is dark where only the green channel was bright.
-    assert rgb[1, 1, 0] == 0.0
+    assert rgb[0, 0, 2] == 1.0
+    assert rgb[0, 0, 0] == 0.0
+
+
+def test_composite_to_rgb_constant_nonzero_channels_are_visible():
+    data = np.zeros((3, 4, 5), dtype=np.uint16)
+    data[0] = 1000
+    data[1] = 2000
+    data[2] = 3000
+
+    rgb = composite_to_rgb(data, channel_axis=0, red_channel=0, green_channel=1)
+
+    assert rgb.shape == (4, 5, 3)
+    assert rgb[..., 0].max() == 1.0
+    assert rgb[..., 1].max() == 1.0
+    assert rgb[..., 2].max() == 1.0
 
 
 def test_composite_to_rgb_single_channel_is_white():
@@ -750,7 +887,7 @@ def test_composite_to_rgb_single_channel_is_white():
     np.testing.assert_allclose(rgb[..., 1], rgb[..., 2])
 
 
-def test_composite_to_rgb_two_channels_leaves_blue_blank():
+def test_composite_to_rgb_two_channels_uses_fluorescence_order():
     data = np.zeros((2, 8, 8), dtype=np.float32)
     data[0, 0, 0] = 1.0
     data[1, 1, 1] = 1.0
@@ -758,18 +895,96 @@ def test_composite_to_rgb_two_channels_leaves_blue_blank():
     rgb = composite_to_rgb(data)
 
     assert rgb.shape == (8, 8, 3)
-    assert rgb[0, 0, 0] == 1.0
+    assert rgb[0, 0, 2] == 1.0
     assert rgb[1, 1, 1] == 1.0
-    assert rgb[..., 2].max() == 0.0
+    assert rgb[..., 0].max() == 0.0
 
 
 def test_composite_to_rgb_accepts_channel_last_rgb():
-    data = (np.random.rand(8, 8, 3) * 255).astype(np.uint8)
+    data = np.zeros((8, 8, 3), dtype=np.uint8)
+    data[0, 0, 0] = 255
+    data[1, 1, 1] = 255
+    data[2, 2, 2] = 255
 
     rgb = composite_to_rgb(data)
 
     assert rgb.shape == (8, 8, 3)
     assert rgb.dtype == np.float32
+    assert rgb[0, 0, 0] == 1.0
+    assert rgb[1, 1, 1] == 1.0
+    assert rgb[2, 2, 2] == 1.0
+
+
+def test_composite_to_rgb_channel_last_c_axis_can_use_fluorescence_order():
+    data = np.zeros((8, 8, 3), dtype=np.uint8)
+    data[0, 0, 0] = 255
+    data[1, 1, 1] = 255
+    data[2, 2, 2] = 255
+
+    rgb = composite_to_rgb(data, channel_axis=2, channel_axis_semantics="c")
+
+    assert rgb[2, 2, 0] == 1.0
+    assert rgb[1, 1, 1] == 1.0
+    assert rgb[0, 0, 2] == 1.0
+
+
+def test_composite_to_rgb_auto_blends_named_channel_colours():
+    data = np.zeros((2, 8, 8), dtype=np.float32)
+    data[0, 2, 2] = 1.0
+    data[1, 5, 5] = 1.0
+
+    rgb = composite_to_rgb(data, channel_colors="Yellow,Cyan")
+
+    assert rgb[2, 2, 0] == 1.0
+    assert rgb[2, 2, 1] == 1.0
+    assert rgb[2, 2, 2] == 0.0
+    assert rgb[5, 5, 0] == 0.0
+    assert rgb[5, 5, 1] == 1.0
+    assert rgb[5, 5, 2] == 1.0
+
+
+def test_assign_channel_colors_passes_data_through():
+    data = np.arange(3 * 4 * 5, dtype=np.uint16).reshape(3, 4, 5)
+
+    output = assign_channel_colors(data, channel_colors="Yellow,Cyan,Magenta")
+
+    np.testing.assert_array_equal(output, data)
+
+
+def test_assign_channel_colors_updates_carried_metadata():
+    data = np.zeros((2, 4, 5), dtype=np.uint16)
+    input_state = image_state_from_array(data, layer_metadata={"axes": "CYX"})
+    output = assign_channel_colors(data, channel_colors="Yellow,Cyan")
+
+    state = transform_image_state(
+        output,
+        input_state,
+        operation_id="assign_channel_colors",
+        operation_title="Assign Channel Colors",
+        params={"channel_colors": "Yellow,Cyan"},
+    )
+
+    assert state.channels[0].color == 0xFFFF00
+    assert state.channels[1].color == 0x00FFFF
+
+
+def test_combine_channels_colours_become_carried_metadata():
+    first = np.ones((4, 5), dtype=np.uint16)
+    second = np.ones((4, 5), dtype=np.uint16) * 2
+    first_state = image_state_from_array(first, layer_metadata={"axes": "YX"})
+    second_state = image_state_from_array(second, layer_metadata={"axes": "YX"})
+    output = combine_channels([first, second], input_count=2, channel_axis=0)
+
+    state = transform_multi_input_image_state(
+        output,
+        [first_state, second_state],
+        operation_id="combine_channels",
+        operation_title="Combine Channels",
+        params={"channel_axis": 0, "channel_colors": "Yellow,Cyan"},
+    )
+
+    assert state.channels[0].color == 0xFFFF00
+    assert state.channels[1].color == 0x00FFFF
 
 
 def test_split_channels_returns_all_channels_losslessly():
@@ -784,6 +999,20 @@ def test_split_channels_returns_all_channels_losslessly():
     np.testing.assert_array_equal(channels[0], data[..., 0])
     np.testing.assert_array_equal(channels[1], data[..., 1])
     np.testing.assert_array_equal(channels[2], data[..., 2])
+
+
+def test_split_channels_preview_channel_does_not_change_outputs():
+    data = np.zeros((3, 4, 5), dtype=np.uint8)
+    data[0] = 10
+    data[1] = 20
+    data[2] = 30
+
+    channels = split_channels(data, preview_channel=2)
+
+    assert len(channels) == 3
+    assert int(channels[0].max()) == 10
+    assert int(channels[1].max()) == 20
+    assert int(channels[2].max()) == 30
 
 
 def test_split_channels_returns_true_channel_count():
@@ -853,10 +1082,10 @@ def test_select_axis_slice_can_retain_ranges_and_remove_axes():
     np.testing.assert_array_equal(selected, data[:, 2, 1:4, :])
 
 
-def test_contrast_stretch_uses_linear_offset_without_abs():
+def test_linear_scale_offset_uses_linear_offset_without_abs():
     data = np.array([0, 10, 20], dtype=np.uint8)
 
-    stretched = contrast_stretch(data, alpha=10, beta=-50)
+    stretched = linear_scale_offset(data, alpha=10, beta=-50)
 
     assert stretched.tolist() == [0, 50, 150]
 
@@ -901,6 +1130,22 @@ def test_thresholding_operations_return_masks():
         assert mask.dtype == bool
         assert mask.shape == data.shape
         assert mask.any()
+
+
+def test_global_threshold_scope_can_use_stack_or_slice_histogram():
+    data = np.zeros((2, 10, 10), dtype=np.float32)
+    data[0, :, 5:] = 10.0
+    data[1, :, :5] = 100.0
+    data[1, :, 5:] = 110.0
+
+    stack_mask = otsu_threshold(data, threshold_scope="Stack histogram")
+    slice_mask = otsu_threshold(data, threshold_scope="Slice histogram")
+
+    assert stack_mask.shape == data.shape
+    assert slice_mask.shape == data.shape
+    assert stack_mask.dtype == bool
+    assert slice_mask.dtype == bool
+    assert not np.array_equal(stack_mask, slice_mask)
 
 
 def test_morphology_and_small_object_operations_return_masks():

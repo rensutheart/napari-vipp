@@ -25,11 +25,13 @@ The prototype currently supports:
 - connecting nodes by dragging or click-to-connect from output to input ports;
 - explicit image source nodes for napari layers, files, or bundled samples;
 - quick selected-output saving plus graph-level save nodes;
-- per-node thumbnails with global `Slice`, `MIP`, and `Off` preview modes;
+- per-node thumbnails with global show/hide, `Slice`/`MIP` preview modes,
+  contrast modes (`Percentile`, `Min-max`, `Raw`), and monochrome colormaps;
 - optional per-node thumbnail disabling for heavier workflows;
 - selected-node parameter controls in the inspector;
 - slider plus numeric entry controls with soft range expansion where useful;
-- right-panel histograms with slice/stack and linear/log modes;
+- right-panel output histograms plus cutoff-node input histograms with
+  slice/stack and linear/log modes;
 - compact node metadata plus detailed selected-node metadata;
 - normalized axes, channel, acquisition, source, and provenance metadata;
 - OME-TIFF, ImageJ TIFF, conventional TIFF, and OME-Zarr 0.4/0.5 I/O;
@@ -96,16 +98,14 @@ The current node catalogue includes:
   - Axes & Regions:
     - Crop Stack
     - Select Axis Slice
+    - Reorder Axes
   - Channels & Composites:
     - Extract Channel
     - Combine Channels
     - Split Channels
     - Composite → RGB
-  - Type & Scaling:
+  - Utilities:
     - Convert Dtype
-    - Rescale Intensity
-    - Normalize
-    - Clip
   - Math & Logic:
     - Calculate New Image
     - Add
@@ -116,23 +116,43 @@ The current node catalogue includes:
     - Logical OR
     - Logical XOR
     - Invert
-- Contrast:
-  - Contrast Stretching
+- Intensity & Contrast:
+  - Linear Scale + Offset
   - Gamma Correction
+  - Rescale Intensity
+  - Normalize
+  - Clip
 - Filtering:
-  - Average Blur
-  - Gaussian Blur
-  - Gaussian Blur 3D
-  - Median Filter
-  - Bilateral Filtering
+  - Smoothing & Denoising:
+    - Average Blur
+    - Gaussian Blur
+    - Gaussian Blur 3D
+    - Median Filter
+    - Bilateral Filtering
+    - Non-Local Means
+  - Edge & Detail:
+    - Difference of Gaussians
+    - Unsharp Mask
+    - Sobel Edges
+    - Canny Edges
+    - Laplace Filter
 - Projection:
   - Maximum Projection
 - Segmentation:
-  - Otsu Threshold
-  - Triangle Threshold
-  - Binary Threshold
-  - Adaptive Mean Threshold
-  - Adaptive Gaussian Threshold
+  - Global Thresholds:
+    - Otsu Threshold
+    - Triangle Threshold
+    - Li Threshold
+    - Yen Threshold
+    - Isodata Threshold
+    - Minimum Threshold
+    - Binary Threshold
+    - Hysteresis Threshold
+  - Local Thresholds:
+    - Adaptive Mean Threshold
+    - Adaptive Gaussian Threshold
+    - Sauvola Threshold
+    - Niblack Threshold
 - Morphology:
   - Dilation
   - Erosion
@@ -155,6 +175,13 @@ The current node catalogue includes:
   - Analyze Skeleton
   - Merge Tables
   - Add Metadata Columns
+
+Histogram-based automatic threshold nodes show `Threshold uses` on stack inputs.
+`Stack histogram` computes one cutoff from the whole grayscale input and applies
+it to the full image; `Slice histogram` computes a separate cutoff per displayed
+plane while still producing a full-stack mask. The control is hidden for 2D
+inputs. These nodes also show the input histogram used for threshold selection
+with a live marker at the chosen threshold.
 
 The label pipeline converts binary masks into integer object IDs. Connected
 components can run over full `ZYX` volumes or independently over `YX` images.
@@ -226,15 +253,21 @@ true channel count. Each channel also preserves the semantic type of its input,
 so splitting a threshold mask produces mask ports that connect directly to
 `Label Connected Components`. `Combine Channels` is the inverse multi-input
 node: set the expected channel/input count, connect that many upstream images,
-and it stacks them into an explicit multichannel output. `Composite → RGB` is
-a configurable display node that maps a multichannel composite to a
-channel-last RGB image — auto-detecting the channel axis by default, with
-optional manual axis and per-plane channel selection. `Calculate New Image` is
-a multi-input image-math node that applies comma separated weights to connected
-inputs and then adds an offset.
+and it stacks them into an explicit multichannel output. Channel pseudo-colours
+are carried as metadata from OME sources, Image Source overrides, Combine
+Channels, or the `Assign Channel Colors` pass-through node. `Composite → RGB`
+maps a multichannel composite to a channel-last RGB image. Auto mode preserves
+true RGB/RGBA inputs, and otherwise blends all channels by their carried
+pseudo-colours, so yellow contributes to red and green and cyan contributes to
+green and blue. Manual red/green/blue selectors remain available for forced
+single-channel plane mapping. `Calculate New Image` is a multi-input image-math
+node that applies comma separated weights to connected inputs and then adds an
+offset.
 
-`Image Source` can point to an existing napari layer, a local `.npy` or TIFF
-file, or one of the bundled synthetic samples. `Save Image` passes data through
+`Image Source` can point to an existing napari layer, a local `.npy`, TIFF, or
+OME-Zarr source, or one of the bundled synthetic samples. The design decision is
+that future source-level pixel size and unit overrides should repair missing or
+incorrect input calibration before analysis. `Save Image` passes data through
 unchanged and, when `Auto-save on update` is set to `on`, writes the node input
 to disk every time the graph recomputes. For quick interactive work, the
 inspector also provides `Save selected output...` for the currently selected

@@ -3,7 +3,7 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-06-20
 
 It reflects the live codebase after slot-aware multi-input and multi-output
 graphs, workflow persistence, Python export, metadata panels, first-class label
@@ -181,18 +181,51 @@ The current high-level groups are:
 
 - `Image Data`
   - `Source & Output`: Image Source, Save Image
-  - `Axes & Regions`: Crop Stack, Select Axis Slice
+  - `Axes & Regions`: Crop Stack, Select Axis Slice, Reorder Axes
   - `Channels & Composites`: Extract Channel, Combine Channels, Split Channels,
     Composite → RGB
-  - `Type & Scaling`: Convert Dtype, Rescale Intensity, Normalize, Clip
+  - `Utilities`: Convert Dtype
   - `Math & Logic`: Calculate New Image, Add, Subtract, Ratio, Mask Image,
     Logical AND, Logical OR, Logical XOR, Invert
-- `Contrast`: Contrast Stretching, Gamma Correction
-- `Filtering`: Average Blur, Gaussian Blur, Gaussian Blur 3D, Median Filter,
-  Bilateral Filtering
+- `Intensity & Contrast`: Linear Scale + Offset, Gamma Correction, Rescale
+  Intensity, Normalize, Clip
+- `Filtering`
+  - `Smoothing & Denoising`: Average Blur, Gaussian Blur, Gaussian Blur 3D,
+    Median Filter, Bilateral Filtering, Non-Local Means
+  - `Edge & Detail`: Difference of Gaussians, Unsharp Mask, Sobel Edges,
+    Canny Edges, Laplace Filter
 - `Projection`: Maximum Projection
-- `Segmentation`: Otsu, Triangle, Binary, Adaptive Mean, Adaptive Gaussian
-  thresholding
+- `Segmentation`
+  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary,
+    Hysteresis thresholding
+  - `Local Thresholds`: Adaptive Mean, Adaptive Gaussian, Sauvola, Niblack
+    thresholding
+
+Histogram-based global threshold nodes default to
+`Threshold uses = Stack histogram`, meaning one cutoff is computed from the
+whole grayscale input and applied to the full image. On stack inputs the
+inspector exposes `Slice histogram` for per-plane cutoff calculation; that still
+produces a full-stack mask, it only changes which histogram is used to compute
+each cutoff. On 2D inputs the control is hidden because stack versus slice is
+not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
+this control. Global automatic threshold nodes also show the selected input
+histogram with a marker at the computed cutoff.
+
+`Hysteresis Threshold` uses raw low/high intensity thresholds and displays those
+markers on its input histogram. Its spatial processing mode controls whether
+connectivity is evaluated per `YX` plane or over a full `ZYX` volume. It lives
+with the other thresholding nodes because it is a double-threshold mask
+operation. Canny Edges uses quantile thresholds by default, returns an edge mask,
+and lives with `Filtering > Edge & Detail` alongside Sobel/Laplace-style edge
+operations.
+
+Any node that intentionally processes a stack slice-wise must set
+`OperationSpec.stack_processing_note`. The inspector shows that note only when
+the connected input has a stack-like spatial axis. This is the general UI rule
+for present and future XY-only filters, local thresholds, edge detectors, and
+morphology operations: users must be told that the node works in the current
+`YX` plane and that `Reorder Axes` should be used first when a different plane
+or slice axis is intended.
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
@@ -321,6 +354,12 @@ Source metadata comes from, in order of preference:
 3. explicit layer axis hints such as `axes`, `axis_order`, or `vipp_axis_order`;
 4. inferred axes from shape, explicitly labelled as inferred.
 
+Planned calibration overrides belong on `Image Source`, not as a separate
+standalone utility node. They should let users repair pixel/voxel size and unit
+metadata when a file or napari layer lacks reliable calibration. Future
+axis-scaling or resampling nodes must then update `AxisMetadata.scale`,
+translation, and units as part of ordinary metadata propagation.
+
 The inspector uses `metadata_table_rows()` and `metadata_history_items()`. Node
 cards use `format_compact_metadata()`. Metadata is useful for UI labels,
 parameter bounds, preview slicing, histogram slicing, and all shared writers.
@@ -355,6 +394,13 @@ than the node output. This matters for workflows like `TCZYX -> Split Channels
 -> TZYX`: the derived local `z` axis is output axis 1, but it is still
 controlled by the original viewer Z slider at source axis 2.
 
+`Reorder Axes` transposes the array and then reinterprets spatial axis names by
+output position. This makes downstream nodes treat a Y/Z swap like a rotated
+volume: the moved original Z data can become the effective Y axis, and
+state-aware thumbnails keep following napari slice sliders. Channel and time
+axes still move with their data, and physical scale/unit metadata follows the
+moved data axis.
+
 Napari also right-aligns layers with fewer dimensions than the current viewer.
 For example, a `CZYX` layer displayed in a 5D viewer is controlled by global
 sliders 1, 2, 3, and 4. Napari-layer source payloads therefore rewrite
@@ -362,15 +408,40 @@ sliders 1, 2, 3, and 4. Napari-layer source payloads therefore rewrite
 both `dims.events.current_step` and `dims.events.point`, using a bound method
 instead of an anonymous callback so the subscription remains alive.
 
-Important nuance: Combine Channels colour assignment is display intent. The
-underlying output stays a multichannel array with a channel axis. The assigned
-colours affect thumbnails and graph-port presentation; RGB conversion remains a
-separate operation (`Composite → RGB`) when a downstream RGB image is needed.
+Important nuance: channel pseudo-colour is carried metadata, not pixel data.
+OME source colours, Image Source overrides, Combine Channels choices, and the
+`Assign Channel Colors` node all write `ChannelMetadata.color`. The underlying
+output stays a multichannel array with a channel axis until `Composite → RGB`
+is used. In auto mode, `Composite → RGB` preserves declared or unlabelled
+channel-last RGB/RGBA images as true RGB, but ordinary fluorescence channel
+stacks are blended by carried pseudo-colours. A yellow channel therefore writes
+to red and green, while a cyan channel writes to green and blue. Manual
+red/green/blue selectors still force single-channel RGB plane mapping. Split
+Channels exposes a `Thumbnail channel` inspector parameter that chooses which
+output port appears on the node card; it does not alter the generated channel
+outputs or downstream port wiring.
+
+Toolbar thumbnail controls are global display settings. `Thumbnails` gates all
+node-card thumbnail generation, while the selected-node inspector checkbox
+still acts as a per-node opt-out when global thumbnails are enabled. `Preview`
+chooses the thumbnail reduction (`Slice`, `MIP`, or `Off`). `Contrast` chooses
+how scalar thumbnail intensities are mapped to display: `Percentile` uses the
+current robust 1st/99th percentile stretch, `Min-max` uses the displayed data
+minimum and maximum, and `Raw` uses dtype/range display without adaptive
+stretching. For `uint16`, raw mode maps 0..65535 to 0..255, so dim microscopy
+signals may appear dark by design. The toolbar `Mono` dropdown controls the
+colormap used for monochrome thumbnails only. These controls are display
+settings, not metadata, and do not alter graph outputs or histogram values.
 
 Histograms live mostly in `_widget.py` through `HistogramPlot` and helper
 functions near the bottom of the file. The general selected-output histogram
 supports slice-vs-stack and linear-vs-log display. Multichannel histograms are
 drawn as separate series using fluorescence-style colours.
+
+Cutoff-style nodes listed in `INPUT_HISTOGRAM_OPERATIONS` also show an
+`Input Histogram` above the general output histogram. It has its own
+`Histogram uses` slice/stack selector, hidden when the connected input has no
+meaningful stack axis, and its markers are driven by the node parameters.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
@@ -400,16 +471,26 @@ Main classes:
 
 | Class | Role |
 | --- | --- |
-| `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, selection, delete-key handling. |
+| `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, selection, delete-key handling, and node context menus. |
 | `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports (one or more output ports for multi-output nodes). |
-| `NodeCard` | Embedded widget with category tint, title, thumbnail, compact metadata, and pin button when applicable. |
+| `NodeCard` | Embedded widget with category tint, title, thumbnail, and compact metadata. Pin state is represented by card styling; Pin/Unpin actions live in the inspector and node context menu. |
 | `PortItem` | Input/output port circle with hover/drop feedback and optional accent colour/label. Multi-input and multi-output nodes have several ports. |
 | `ConnectionItem` | Curved wire storing source id, target id, `target_port`, and `source_port`. |
+
+Right-clicking a node opens a context menu with Delete, Inspect Code, Duplicate
+Node, and, for mask/label-producing nodes, Pin or Unpin. Duplicate Node copies
+the node operation and current parameter values into an unconnected node near
+the original; it does not infer connections. Inspect Code opens a read-only
+dialog containing node metadata, connected input references, a single-node call
+shape, and the pure operation function source when available, with lightweight
+Python syntax highlighting.
 
 Signals to `VippWidget`:
 
 - `node_selected(node_id)`
 - `node_delete_requested(node_id)`
+- `node_duplicate_requested(node_id)`
+- `node_code_requested(node_id)`
 - `pin_requested(node_id)`
 - `node_create_requested(operation_id, scene_position)`
 - `connection_requested(source_id, target_id, target_port, source_port)`
@@ -437,6 +518,8 @@ It is currently large because it contains:
 - generic parameter controls;
 - custom `ImageSourceControl`;
 - custom `AxisSliceControl` for keep/remove/range axis subsetting;
+- custom `ReorderAxesControl` for drag-reordering output axes while storing a
+  compact workflow order string;
 - custom Combine Channels controls for input count and channel colour identity;
 - source resolution from napari layers, files, or samples;
 - graph editing callbacks;
@@ -476,8 +559,11 @@ Input is represented both by the toolbar input selector and by explicit
 graph-level Image Source nodes. Image Source supports:
 
 - existing napari layer;
-- file path (`.npy`, `.npz`, TIFF and other `skimage.io.imread`-readable files);
-- bundled synthetic sample.
+- file path (`.npy`, `.npz`, OME-TIFF/ImageJ/conventional TIFF, and OME-Zarr
+  stores);
+- bundled synthetic sample;
+- adaptive file/store inspection with a series or image selector when multiple
+  items are available.
 
 Quick output saving:
 
@@ -572,8 +658,9 @@ Implemented now:
 - slot-aware multi-input connections;
 - true multi-output graph nodes with per-port wiring, including dynamic port
   counts (e.g. `Split Channels` emits one port per channel);
-- Image Data grouping with source, output, channels, conversion, math, and logic
-  nodes, including the configurable `Composite → RGB` and `Split Channels`;
+- Image Data grouping with source, output, axis/region, channel/composite,
+  utility, math, and logic nodes, including `Reorder Axes`, `Assign Channel
+  Colors`, configurable `Composite → RGB`, and `Split Channels`;
 - OME-NGFF-inspired metadata propagation;
 - per-node and global preview controls;
 - slice/stack/log histograms;

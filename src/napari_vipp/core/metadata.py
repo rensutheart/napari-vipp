@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core.channel_colors import channel_color_int, channel_color_names
 from napari_vipp.core.tables import (
     TableState,
     is_table_data,
@@ -18,9 +19,17 @@ MAX_METADATA_VALUES = 500_000
 CHANNEL_COLLAPSE_OPERATIONS = {
     "otsu_threshold",
     "triangle_threshold",
+    "li_threshold",
+    "yen_threshold",
+    "isodata_threshold",
+    "minimum_threshold",
     "binary_threshold",
+    "hysteresis_threshold",
+    "canny_edges",
     "adaptive_mean_threshold",
     "adaptive_gaussian_threshold",
+    "sauvola_threshold",
+    "niblack_threshold",
 }
 LABEL_OPERATIONS = {
     "label_connected_components",
@@ -438,7 +447,7 @@ def transform_multi_input_image_state(
         source_name=first.source_name,
         history=first.history
         + (_multi_input_history(states, operation_id, operation_title, params),),
-        channels=_multi_input_channels(states, operation_id),
+        channels=_multi_input_channels(states, operation_id, params),
         acquisition=first.acquisition,
         source=first.source,
     )
@@ -832,6 +841,8 @@ def _transformed_axes(
     axes = input_state.axes
     if operation_id == "crop_stack":
         axes = _crop_shifted_axes(axes, params)
+    if operation_id == "reorder_axes":
+        return _reordered_axes(axes, params, arr.ndim)
     if operation_id == "composite_to_rgb":
         return _composite_to_rgb_axes(axes, arr.ndim)
 
@@ -914,6 +925,48 @@ def _range_and_removed_axes(
     return tuple(axis for index, axis in enumerate(shifted) if index not in removed)
 
 
+def _reordered_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+    output_ndim: int,
+) -> tuple[AxisMetadata, ...]:
+    if len(axes) != output_ndim:
+        return axes
+    if not _axis_order_tokens(params.get("order", "")):
+        return axes
+    indices = _axis_order_indices(
+        params.get("order", ""),
+        len(axes),
+        [axis.name for axis in axes],
+    )
+    if indices is None:
+        return axes
+    ordered = [axes[index] for index in indices]
+    spatial_output_positions = [
+        output_index
+        for output_index, input_index in enumerate(indices)
+        if axes[input_index].type == "space"
+    ]
+    spatial_semantics = [axis for axis in axes if axis.type == "space"]
+    if len(spatial_output_positions) == len(spatial_semantics):
+        for output_index, semantic_axis in zip(
+            spatial_output_positions,
+            spatial_semantics,
+            strict=False,
+        ):
+            moved_axis = ordered[output_index]
+            ordered[output_index] = replace(
+                moved_axis,
+                name=semantic_axis.name,
+                type=semantic_axis.type,
+                source_axis=output_index,
+            )
+    return tuple(
+        replace(axis, source_axis=output_index)
+        for output_index, axis in enumerate(ordered)
+    )
+
+
 def _multi_input_axes(
     first_axes: tuple[AxisMetadata, ...],
     arr: np.ndarray,
@@ -974,6 +1027,8 @@ def _transformed_channels(
     if operation_id == "extract_channel" and channels:
         index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
         return (channels[index],)
+    if operation_id == "assign_channel_colors":
+        return _channels_with_colors(channels, params.get("channel_colors", ""))
     if operation_id in CHANNEL_COLLAPSE_OPERATIONS:
         return ()
     return channels
@@ -982,6 +1037,7 @@ def _transformed_channels(
 def _multi_input_channels(
     states: list[ImageState],
     operation_id: str,
+    params: dict[str, Any],
 ) -> tuple[ChannelMetadata, ...]:
     if operation_id != "combine_channels":
         return states[0].channels
@@ -991,7 +1047,48 @@ def _multi_input_channels(
             channels.append(state.channels[0])
         else:
             channels.append(ChannelMetadata(name=f"Channel {index + 1}"))
-    return tuple(channels)
+    return _channels_with_colors(tuple(channels), params.get("channel_colors", ""))
+
+
+def with_channel_colors(
+    state: ImageState | None,
+    channel_colors: str | list[str] | tuple[str, ...],
+) -> ImageState | None:
+    if state is None:
+        return None
+    colors = channel_color_names(channel_colors)
+    if not colors:
+        return state
+    count = max(_state_channel_count(state), len(colors), len(state.channels))
+    channels = _channels_with_colors(state.channels, colors, count=count)
+    return replace(state, channels=channels)
+
+
+def _channels_with_colors(
+    channels: tuple[ChannelMetadata, ...],
+    channel_colors: str | list[str] | tuple[str, ...],
+    *,
+    count: int | None = None,
+) -> tuple[ChannelMetadata, ...]:
+    colors = channel_color_names(channel_colors)
+    if not colors:
+        return channels
+    target_count = max(count or 0, len(colors), len(channels))
+    updated = list(channels[:target_count])
+    while len(updated) < target_count:
+        updated.append(ChannelMetadata(name=f"Channel {len(updated) + 1}"))
+    for index, color_name in enumerate(colors[:target_count]):
+        color = channel_color_int(color_name)
+        if color is not None:
+            updated[index] = replace(updated[index], color=color)
+    return tuple(updated)
+
+
+def _state_channel_count(state: ImageState) -> int:
+    channel_index = _channel_axis_index(state.axes)
+    if channel_index is None or channel_index >= len(state.shape):
+        return len(state.channels)
+    return int(state.shape[channel_index])
 
 
 def _split_output_channels(
@@ -1058,6 +1155,29 @@ def _operation_history(
             for axis, index in selections
         )
         return f"{operation_title}: selected {selected}"
+    if operation_id == "reorder_axes":
+        if not str(params.get("order", "")).strip():
+            return f"{operation_title}: kept input order"
+        indices = _axis_order_indices(
+            params.get("order", ""),
+            len(input_state.axes),
+            [axis.name for axis in input_state.axes],
+        )
+        if indices is None:
+            return f"{operation_title}: kept input order"
+        data_order = "".join(input_state.axes[index].short_label for index in indices)
+        effective_axes = _reordered_axes(
+            input_state.axes,
+            params,
+            len(input_state.axes),
+        )
+        effective_order = "".join(axis.short_label for axis in effective_axes)
+        if effective_order != data_order:
+            return (
+                f"{operation_title}: transposed data to {data_order}; "
+                f"effective axes {effective_order}"
+            )
+        return f"{operation_title}: reordered axes to {data_order}"
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "composite_to_rgb":
@@ -1177,6 +1297,79 @@ def _parse_int_list(value) -> list[int]:
         except (TypeError, ValueError):
             continue
     return parsed
+
+
+def _axis_order_indices(
+    order,
+    ndim: int,
+    axis_names: list[str],
+) -> tuple[int, ...] | None:
+    if ndim <= 1:
+        return tuple(range(ndim))
+    tokens = _axis_order_tokens(order)
+    if not tokens:
+        return tuple(range(ndim))
+    if len(tokens) != ndim:
+        return None
+
+    indices = _numeric_axis_order(tokens, ndim)
+    if indices is not None:
+        return indices
+    return _named_axis_order(tokens, ndim, axis_names)
+
+
+def _axis_order_tokens(order) -> list[str]:
+    if order is None:
+        return []
+    if isinstance(order, (list, tuple)):
+        return [str(part).strip() for part in order if str(part).strip()]
+    text = str(order).strip()
+    if not text:
+        return []
+    if any(separator in text for separator in (",", ";", " ")):
+        normalized = text.replace(";", ",").replace(" ", ",")
+        return [part.strip() for part in normalized.split(",") if part.strip()]
+    return list(text)
+
+
+def _numeric_axis_order(tokens: list[str], ndim: int) -> tuple[int, ...] | None:
+    indices: list[int] = []
+    try:
+        for token in tokens:
+            axis = int(token)
+            if axis < 0:
+                axis += ndim
+            indices.append(axis)
+    except ValueError:
+        return None
+    if sorted(indices) != list(range(ndim)):
+        return None
+    return tuple(indices)
+
+
+def _named_axis_order(
+    tokens: list[str],
+    ndim: int,
+    axis_names: list[str],
+) -> tuple[int, ...] | None:
+    names = [str(name).strip().lower() for name in axis_names]
+    if len(names) != ndim:
+        return None
+    indices: list[int] = []
+    used: set[int] = set()
+    for token in tokens:
+        target = str(token).strip().lower()
+        matches = [
+            index
+            for index, name in enumerate(names)
+            if name == target and index not in used
+        ]
+        if not matches:
+            return None
+        index = matches[0]
+        indices.append(index)
+        used.add(index)
+    return tuple(indices)
 
 
 def _clamped_axis(value, ndim: int) -> int:

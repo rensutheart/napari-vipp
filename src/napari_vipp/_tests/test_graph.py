@@ -56,7 +56,7 @@ def test_clicking_node_selects_it_without_inspect_button(qtbot):
     assert not hasattr(card, "inspect_button")
 
 
-def test_pin_button_only_shows_for_mask_nodes(qtbot):
+def test_pin_button_is_not_shown_on_node_cards(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
     view.show()
@@ -64,7 +64,49 @@ def test_pin_button_only_shows_for_mask_nodes(qtbot):
 
     assert not view._cards["input"].pin_button.isVisible()
     assert not view._cards["gaussian"].pin_button.isVisible()
-    assert view._cards["threshold"].pin_button.isVisible()
+    assert not view._cards["threshold"].pin_button.isVisible()
+    assert view._cards["threshold"]._can_pin
+
+
+def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    labels = []
+
+    def fake_exec(menu, _pos):
+        labels[:] = [
+            action.text()
+            for action in menu.actions()
+            if not action.isSeparator()
+        ]
+        return next(action for action in menu.actions() if action.text() == "Delete")
+
+    deleted = []
+    view.node_delete_requested.connect(deleted.append)
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._show_node_context_menu("threshold", QPoint(0, 0))
+
+    assert labels == ["Delete", "Inspect Code", "Duplicate Node", "Pin"]
+    assert deleted == ["threshold"]
+
+
+def test_node_context_menu_uses_unpin_label_for_pinned_nodes(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.set_pinned_node("threshold")
+
+    def fake_exec(menu, _pos):
+        return next(action for action in menu.actions() if action.text() == "Unpin")
+
+    pinned = []
+    view.pin_requested.connect(pinned.append)
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._show_node_context_menu("threshold", QPoint(0, 0))
+
+    assert pinned == ["threshold"]
 
 
 def test_graph_cards_use_category_colors(qtbot):

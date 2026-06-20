@@ -37,6 +37,8 @@ The graph currently supports:
 - a large pan/zoom canvas with movable node cards;
 - node creation from the searchable palette;
 - node and connection deletion;
+- node right-click menus for deletion, code inspection, duplication, and
+  contextual Pin/Unpin;
 - click-to-connect and drag-to-connect wiring;
 - visual compatible/incompatible drop feedback;
 - cycle and port-type rejection;
@@ -124,7 +126,12 @@ back to inferred axes, and the UI identifies that inference.
 Type conversion and axis subsetting are explicit graph operations. The
 `Convert Dtype` node exposes rescale, clip, and preserve-cast behavior.
 `Select Axis Slice` supports retaining ranges and removing one or more axes
-while updating metadata.
+while updating metadata. `Reorder Axes` uses a draggable axis list in the
+inspector and serializes to a compact axis-order string. It transposes the
+data, then reinterprets spatial axis names by output position so downstream
+nodes treat the result as a rotated/reoriented volume. Physical scale and units
+follow the moved data axis, while channel and time metadata stay attached to
+their data.
 
 ### Label Workflow
 

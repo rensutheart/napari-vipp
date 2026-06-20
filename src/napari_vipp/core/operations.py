@@ -9,8 +9,9 @@ from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage import filters, measure, morphology, restoration, segmentation
+from skimage import feature, filters, measure, morphology, restoration, segmentation
 
+from napari_vipp.core.channel_colors import channel_color_table
 from napari_vipp.core.io import write_image
 from napari_vipp.core.tables import TableData, table_from_columns
 
@@ -38,7 +39,20 @@ def crop_stack(
     return np.ascontiguousarray(arr[tuple(slices)])
 
 
-def contrast_stretch(data, alpha: float = 3.0, beta: float = 1.0) -> np.ndarray:
+def reorder_axes(
+    data,
+    order: str = "",
+    axis_names: Sequence[str] = (),
+) -> np.ndarray:
+    """Transpose an array to a full output axis order."""
+    arr = np.asarray(data)
+    indices = _axis_order_indices(order, arr.ndim, axis_names)
+    if indices is None:
+        return arr.copy()
+    return np.ascontiguousarray(np.transpose(arr, indices))
+
+
+def linear_scale_offset(data, alpha: float = 3.0, beta: float = 1.0) -> np.ndarray:
     """Apply a linear scale-and-offset contrast operation."""
     arr = np.asarray(data)
     scaled = arr.astype(np.float32, copy=False) * float(alpha) + float(beta)
@@ -85,8 +99,10 @@ def gaussian_blur_3d(
     sigma_z: float = 2.0,
     sigma_y: float = 2.0,
     sigma_x: float = 2.0,
+    lock_xy: bool = True,
 ) -> np.ndarray:
     """Apply Gaussian blur across the z/y/x volume axes."""
+    del lock_xy  # UI convenience flag; sigma_y/sigma_x carry the actual values.
     arr = _float_if_bool(np.asarray(data))
     spatial_axes = _spatial_axes(arr)
     if not spatial_axes:
@@ -144,26 +160,207 @@ def bilateral_filter(
     return _apply_plane_wise(arr, filter_plane)
 
 
-def otsu_threshold(data) -> np.ndarray:
-    """Return a binary mask from a slice-wise Otsu threshold."""
+def difference_of_gaussians_filter(
+    data,
+    low_sigma: float = 1.0,
+    high_sigma: float = 3.0,
+) -> np.ndarray:
+    """Enhance structures between two Gaussian blur scales slice-wise."""
+    arr = _float_if_bool(np.asarray(data)).astype(np.float32, copy=False)
+    low_sigma = max(float(low_sigma), 0.0)
+    high_sigma = max(float(high_sigma), low_sigma + 1e-6)
+    low = gaussian_blur(arr, sigma=low_sigma)
+    high = gaussian_blur(arr, sigma=high_sigma)
+    return low.astype(np.float32, copy=False) - high.astype(np.float32, copy=False)
+
+
+def unsharp_mask_filter(
+    data,
+    radius: float = 1.0,
+    amount: float = 1.0,
+) -> np.ndarray:
+    """Sharpen image detail using skimage's unsharp mask per plane."""
+    arr = np.asarray(data)
+    radius = max(float(radius), 0.0)
+    amount = max(float(amount), 0.0)
+
+    def sharpen_plane(plane: np.ndarray) -> np.ndarray:
+        plane_float = _to_float_unit(plane)
+        channel_axis = -1 if _has_channel_axis(plane_float) else None
+        return filters.unsharp_mask(
+            plane_float,
+            radius=radius,
+            amount=amount,
+            channel_axis=channel_axis,
+            preserve_range=False,
+        ).astype(np.float32)
+
+    return _apply_plane_wise(arr, sharpen_plane)
+
+
+def non_local_means_filter(
+    data,
+    patch_size: int = 5,
+    patch_distance: int = 6,
+    h: float = 0.08,
+    fast_mode: bool = True,
+) -> np.ndarray:
+    """Denoise image planes using skimage non-local means."""
+    arr = np.asarray(data)
+    patch_size = _odd_size(patch_size, minimum=3)
+    patch_distance = max(int(patch_distance), 1)
+    h = max(float(h), 0.0)
+
+    def denoise_plane(plane: np.ndarray) -> np.ndarray:
+        plane_float = _to_float_unit(plane)
+        channel_axis = -1 if _has_channel_axis(plane_float) else None
+        return restoration.denoise_nl_means(
+            plane_float,
+            patch_size=patch_size,
+            patch_distance=patch_distance,
+            h=h,
+            fast_mode=bool(fast_mode),
+            channel_axis=channel_axis,
+        ).astype(np.float32)
+
+    return _apply_plane_wise(arr, denoise_plane)
+
+
+def sobel_filter(data) -> np.ndarray:
+    """Return the slice-wise Sobel edge magnitude of a grayscale image."""
     arr = _to_grayscale(np.asarray(data))
-    return _global_threshold(arr, _otsu_value)
+    return _apply_plane_wise(
+        arr,
+        lambda plane: filters.sobel(plane.astype(np.float32, copy=False)),
+    ).astype(np.float32)
 
 
-def triangle_threshold(data) -> np.ndarray:
-    """Return a binary mask from a slice-wise triangle threshold."""
+def laplace_filter(data, kernel_size: int = 3) -> np.ndarray:
+    """Return a slice-wise Laplace edge/detail response."""
     arr = _to_grayscale(np.asarray(data))
+    kernel_size = _odd_size(kernel_size, minimum=3)
+    return _apply_plane_wise(
+        arr,
+        lambda plane: filters.laplace(
+            plane.astype(np.float32, copy=False),
+            ksize=kernel_size,
+        ),
+    ).astype(np.float32)
 
-    def threshold(plane: np.ndarray) -> float:
-        values = plane[np.isfinite(plane)]
-        if values.size == 0 or values.min() == values.max():
-            return float(values.mean()) if values.size else 0.0
-        try:
-            return float(filters.threshold_triangle(values))
-        except Exception:
-            return float(values.mean())
 
-    return _global_threshold(arr, threshold)
+def canny_edges(
+    data,
+    sigma: float = 1.0,
+    low_quantile: float = 0.1,
+    high_quantile: float = 0.2,
+) -> np.ndarray:
+    """Return a slice-wise Canny edge mask."""
+    arr = _to_grayscale(np.asarray(data))
+    low, high = _ordered_threshold_pair(low_quantile, high_quantile)
+    low = float(np.clip(low, 0.0, 1.0))
+    high = float(np.clip(high, 0.0, 1.0))
+    sigma = max(float(sigma), 0.0)
+
+    def canny_plane(plane: np.ndarray) -> np.ndarray:
+        values = plane.astype(np.float32, copy=False)
+        return feature.canny(
+            values,
+            sigma=sigma,
+            low_threshold=low,
+            high_threshold=high,
+            use_quantiles=True,
+        ).astype(bool)
+
+    return _apply_plane_wise(arr, canny_plane).astype(bool)
+
+
+def hysteresis_threshold(
+    data,
+    low_threshold: float = 0.25,
+    high_threshold: float = 0.7,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Return a binary mask from connected low/high intensity thresholds."""
+    arr = _to_grayscale(np.asarray(data))
+    low, high = _ordered_threshold_pair(low_threshold, high_threshold)
+    spatial_ndim = _resolved_spatial_ndim(
+        arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    def threshold_block(block: np.ndarray) -> np.ndarray:
+        values = block.astype(np.float32, copy=False)
+        return filters.apply_hysteresis_threshold(values, low, high).astype(bool)
+
+    return _apply_spatial_blocks(
+        arr,
+        spatial_ndim,
+        threshold_block,
+        dtype=bool,
+    )
+
+
+def otsu_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from an Otsu threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(arr, _otsu_value, threshold_scope=threshold_scope)
+
+
+def triangle_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from a triangle threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(arr, _triangle_value, threshold_scope=threshold_scope)
+
+
+def li_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from a Li threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(
+        arr,
+        lambda plane: _safe_threshold(plane, filters.threshold_li),
+        threshold_scope=threshold_scope,
+    )
+
+
+def yen_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from a Yen threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(
+        arr,
+        lambda plane: _safe_threshold(plane, filters.threshold_yen),
+        threshold_scope=threshold_scope,
+    )
+
+
+def isodata_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from an Isodata threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(
+        arr,
+        lambda plane: _safe_threshold(plane, filters.threshold_isodata),
+        threshold_scope=threshold_scope,
+    )
+
+
+def minimum_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+    """Return a binary mask from a minimum threshold."""
+    arr = _to_grayscale(np.asarray(data))
+    return _global_threshold(
+        arr,
+        lambda plane: _safe_threshold(plane, filters.threshold_minimum),
+        threshold_scope=threshold_scope,
+    )
+
+
+def automatic_threshold_value(data, operation_id: str) -> float | None:
+    """Return the scalar threshold value used by a global threshold operation."""
+    threshold_func = _automatic_threshold_function(operation_id)
+    if threshold_func is None:
+        return None
+    arr = _to_grayscale(np.asarray(data))
+    return float(threshold_func(arr))
 
 
 def binary_threshold(data, threshold: float = 0.5) -> np.ndarray:
@@ -188,6 +385,50 @@ def adaptive_gaussian_threshold(
 ) -> np.ndarray:
     """Return a binary mask using local Gaussian thresholding."""
     return _adaptive_threshold(data, block_size=block_size, c=c, method="gaussian")
+
+
+def sauvola_threshold(
+    data,
+    window_size: int = 15,
+    k: float = 0.2,
+    dynamic_range: float = 0.0,
+) -> np.ndarray:
+    """Return a binary mask using local Sauvola thresholding."""
+    arr = _to_grayscale(np.asarray(data))
+
+    def threshold_plane(plane: np.ndarray) -> np.ndarray:
+        window = _odd_size(window_size, minimum=3, maximum=min(plane.shape[-2:]))
+        if window < 3:
+            return plane > float(np.mean(plane))
+        values = plane.astype(np.float32, copy=False)
+        r = float(dynamic_range)
+        if r <= 0.0:
+            finite = values[np.isfinite(values)]
+            r = float(np.ptp(finite) / 2.0) if finite.size else 1.0
+            r = max(r, 1e-6)
+        local = filters.threshold_sauvola(values, window_size=window, k=float(k), r=r)
+        return values > local
+
+    return _apply_plane_wise(arr, threshold_plane).astype(bool)
+
+
+def niblack_threshold(
+    data,
+    window_size: int = 15,
+    k: float = 0.2,
+) -> np.ndarray:
+    """Return a binary mask using local Niblack thresholding."""
+    arr = _to_grayscale(np.asarray(data))
+
+    def threshold_plane(plane: np.ndarray) -> np.ndarray:
+        window = _odd_size(window_size, minimum=3, maximum=min(plane.shape[-2:]))
+        if window < 3:
+            return plane > float(np.mean(plane))
+        values = plane.astype(np.float32, copy=False)
+        local = filters.threshold_niblack(values, window_size=window, k=float(k))
+        return values > local
+
+    return _apply_plane_wise(arr, threshold_plane).astype(bool)
 
 
 def dilate(data, size: int = 10, iterations: int = 1) -> np.ndarray:
@@ -1176,6 +1417,11 @@ def combine_channels(
     return np.stack(arrays, axis=axis)
 
 
+def assign_channel_colors(data, channel_colors: str = "") -> np.ndarray:
+    """Pass image data through while updating carried channel colour metadata."""
+    return np.asarray(data).copy()
+
+
 def calculate_weighted_image(
     inputs,
     input_count: int = 2,
@@ -1210,12 +1456,15 @@ def composite_to_rgb(
     red_channel: int = -1,
     green_channel: int = -1,
     blue_channel: int = -1,
+    channel_axis_semantics: str = "",
+    channel_colors: str | list[int | str] | tuple[int | str, ...] = "",
 ) -> np.ndarray:
     """Convert a multichannel composite into a channel-last RGB image.
 
-    By default (all parameters ``-1``) the channel axis is detected
-    automatically and channels are mapped in order: the first channel becomes
-    red, the second green, the third blue. A single channel is written to all
+    By default (all parameters ``-1``) the channel axis is detected automatically.
+    True channel-last RGB/RGBA inputs keep RGB order. Other multichannel inputs
+    use VIPP's fluorescence display order so channel 0 maps to blue, channel 1
+    maps to green, and channel 2 maps to red. A single channel is written to all
     three (white/grayscale) and extra channels are ignored.
 
     The mapping is configurable: set ``channel_axis`` to pick the channel axis
@@ -1239,7 +1488,25 @@ def composite_to_rgb(
         gray = _composite_channel_to_float(moved[..., 0])
         return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
 
-    defaults = (0, 1, 2)
+    manual_mapping = any(
+        int(selection) >= 0 for selection in (red_channel, green_channel, blue_channel)
+    )
+    true_rgb = _is_true_rgb_channel_axis(
+        arr,
+        axis,
+        count,
+        channel_axis_semantics=channel_axis_semantics,
+    )
+    if not manual_mapping and not true_rgb:
+        color_table = channel_color_table(channel_colors, count)
+        return _composite_to_rgb_by_color_table(moved, color_table)
+
+    defaults = _default_rgb_channel_indices(
+        arr,
+        axis,
+        count,
+        channel_axis_semantics=channel_axis_semantics,
+    )
     selections = (red_channel, green_channel, blue_channel)
     blank = np.zeros(moved.shape[:-1], dtype=np.float32)
     channels = []
@@ -1252,13 +1519,16 @@ def composite_to_rgb(
     return np.stack(channels, axis=-1).astype(np.float32)
 
 
-def split_channels(data) -> list[np.ndarray]:
+def split_channels(data, preview_channel: int = 0) -> list[np.ndarray]:
     """Split a multi-channel image into one output array per channel.
 
     The channel axis is detected automatically and each output is a single
     channel with the spatial shape of the input. The number of outputs equals
     the true number of channels in the image. A grayscale image with no
     detected channel axis yields a single output.
+
+    ``preview_channel`` is a UI-only hint used by the graph thumbnail and does
+    not affect the returned channel outputs.
     """
     arr = np.asarray(data)
     axis = _default_channel_axis(arr)
@@ -1717,7 +1987,12 @@ def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndar
 def _global_threshold(
     arr: np.ndarray,
     threshold_func: Callable[[np.ndarray], float],
+    *,
+    threshold_scope: str = "Stack histogram",
 ) -> np.ndarray:
+    if str(threshold_scope).strip().lower().startswith("stack"):
+        return arr > threshold_func(arr)
+
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         return plane > threshold_func(plane)
 
@@ -1826,6 +2101,62 @@ def _otsu_value(arr: np.ndarray) -> float:
     if variance12.size == 0:
         return float(values.mean())
     return float(centers[:-1][np.argmax(variance12)])
+
+
+def _triangle_value(arr: np.ndarray) -> float:
+    return _safe_threshold(arr, filters.threshold_triangle)
+
+
+def _ordered_threshold_pair(low, high) -> tuple[float, float]:
+    try:
+        low_value = float(low)
+    except Exception:
+        low_value = 0.0
+    try:
+        high_value = float(high)
+    except Exception:
+        high_value = low_value
+    if not np.isfinite(low_value):
+        low_value = 0.0
+    if not np.isfinite(high_value):
+        high_value = low_value
+    if high_value < low_value:
+        low_value, high_value = high_value, low_value
+    return low_value, high_value
+
+
+def _safe_threshold(
+    arr: np.ndarray,
+    threshold_func: Callable[[np.ndarray], float],
+) -> float:
+    values = arr[np.isfinite(arr)].astype(np.float64, copy=False)
+    if values.size == 0:
+        return 0.0
+    if values.min() == values.max():
+        return float(values.min())
+    try:
+        return float(threshold_func(values))
+    except Exception:
+        return float(values.mean())
+
+
+def _automatic_threshold_function(
+    operation_id: str,
+) -> Callable[[np.ndarray], float] | None:
+    return {
+        "otsu_threshold": _otsu_value,
+        "triangle_threshold": _triangle_value,
+        "li_threshold": lambda arr: _safe_threshold(arr, filters.threshold_li),
+        "yen_threshold": lambda arr: _safe_threshold(arr, filters.threshold_yen),
+        "isodata_threshold": lambda arr: _safe_threshold(
+            arr,
+            filters.threshold_isodata,
+        ),
+        "minimum_threshold": lambda arr: _safe_threshold(
+            arr,
+            filters.threshold_minimum,
+        ),
+    }.get(str(operation_id))
 
 
 def _apply_plane_wise(arr: np.ndarray, func: Callable[[np.ndarray], np.ndarray]):
@@ -2642,6 +2973,79 @@ def _parse_int_list(value) -> list[int]:
     return parsed
 
 
+def _axis_order_indices(
+    order,
+    ndim: int,
+    axis_names: Sequence[str] = (),
+) -> tuple[int, ...] | None:
+    if ndim <= 1:
+        return tuple(range(ndim))
+    tokens = _axis_order_tokens(order)
+    if not tokens:
+        return tuple(range(ndim))
+    if len(tokens) != ndim:
+        return None
+
+    indices = _numeric_axis_order(tokens, ndim)
+    if indices is not None:
+        return indices
+    return _named_axis_order(tokens, ndim, axis_names)
+
+
+def _axis_order_tokens(order) -> list[str]:
+    if order is None:
+        return []
+    if isinstance(order, (list, tuple)):
+        return [str(part).strip() for part in order if str(part).strip()]
+    text = str(order).strip()
+    if not text:
+        return []
+    if any(separator in text for separator in (",", ";", " ")):
+        normalized = text.replace(";", ",").replace(" ", ",")
+        return [part.strip() for part in normalized.split(",") if part.strip()]
+    return list(text)
+
+
+def _numeric_axis_order(tokens: Sequence[str], ndim: int) -> tuple[int, ...] | None:
+    indices: list[int] = []
+    try:
+        for token in tokens:
+            axis = int(token)
+            if axis < 0:
+                axis += ndim
+            indices.append(axis)
+    except ValueError:
+        return None
+    if sorted(indices) != list(range(ndim)):
+        return None
+    return tuple(indices)
+
+
+def _named_axis_order(
+    tokens: Sequence[str],
+    ndim: int,
+    axis_names: Sequence[str],
+) -> tuple[int, ...] | None:
+    names = [str(name).strip().lower() for name in axis_names]
+    if len(names) != ndim:
+        return None
+    indices: list[int] = []
+    used: set[int] = set()
+    for token in tokens:
+        target = str(token).strip().lower()
+        matches = [
+            index
+            for index, name in enumerate(names)
+            if name == target and index not in used
+        ]
+        if not matches:
+            return None
+        index = matches[0]
+        indices.append(index)
+        used.add(index)
+    return tuple(indices)
+
+
 def _parse_float_list(value) -> list[float]:
     if value is None:
         return []
@@ -2737,8 +3141,63 @@ def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return np.zeros(values.shape, dtype=np.float32)
-    lo = float(finite.min())
-    hi = float(finite.max())
+    lo, hi = np.percentile(finite.astype(np.float64, copy=False), [1.0, 99.0])
+    lo = float(lo)
+    hi = float(hi)
     if hi <= lo:
+        lo = float(finite.min())
+        hi = float(finite.max())
+    if hi <= lo:
+        if hi > 0.0:
+            return np.ones(values.shape, dtype=np.float32)
         return np.zeros(values.shape, dtype=np.float32)
     return np.clip((values - lo) / (hi - lo), 0, 1).astype(np.float32)
+
+
+def _default_rgb_channel_indices(
+    arr: np.ndarray,
+    channel_axis: int,
+    count: int,
+    *,
+    channel_axis_semantics: str = "",
+) -> tuple[int, int, int]:
+    if _is_true_rgb_channel_axis(
+        arr,
+        channel_axis,
+        count,
+        channel_axis_semantics=channel_axis_semantics,
+    ):
+        return (0, 1, 2)
+    if count >= 3:
+        return (2, 1, 0)
+    if count == 2:
+        return (-1, 1, 0)
+    return (0, 0, 0)
+
+
+def _is_true_rgb_channel_axis(
+    arr: np.ndarray,
+    channel_axis: int,
+    count: int,
+    *,
+    channel_axis_semantics: str = "",
+) -> bool:
+    semantic = str(channel_axis_semantics or "").lower()
+    is_declared_rgb = semantic in {"rgb", "rgba"}
+    is_unlabelled_channel_last_rgb = (
+        not semantic
+        and channel_axis == arr.ndim - 1
+        and count in RGB_CHANNELS
+    )
+    return bool(is_declared_rgb or is_unlabelled_channel_last_rgb)
+
+
+def _composite_to_rgb_by_color_table(
+    moved: np.ndarray,
+    color_table: np.ndarray,
+) -> np.ndarray:
+    rgb = np.zeros(moved.shape[:-1] + (3,), dtype=np.float32)
+    for channel in range(moved.shape[-1]):
+        normalized = _composite_channel_to_float(moved[..., channel])
+        rgb += normalized[..., None] * color_table[channel, :3]
+    return np.clip(rgb, 0, 1).astype(np.float32)

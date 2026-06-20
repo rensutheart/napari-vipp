@@ -125,7 +125,7 @@ cleaned up.
 
 | Current node | Issue | Recommended direction |
 | --- | --- | --- |
-| Contrast Stretching | It currently performs scale plus offset and converts to `uint8`; true percentile rescaling already exists separately. | Rename to `Linear Scale + Offset`, preserve a sensible dtype, or deprecate it in favor of image math plus `Rescale Intensity`. |
+| Linear Scale + Offset | This renamed node is explicit about its alpha/beta math, but it still clips to `uint8`. | Decide whether it should preserve dtype or be replaced by image math plus `Rescale Intensity` for most workflows. |
 | Top Hat / Black Hat | These are binary operations, while grayscale white top-hat is a common bioimage background-removal tool. | Rename current nodes `Binary Top Hat` and `Binary Black Hat`; add explicit grayscale morphology later. |
 | Maximum Projection | Axis is numeric and only the maximum reducer is available. | Replace or complement it with an axis-aware `Reduce Axis` node. |
 | 2D filtering behavior | Several nodes infer XY and process other axes plane by plane. | Add an explicit processing scope: `XY per plane` or `spatial volume`. |
@@ -301,9 +301,9 @@ ordinary connected-component labeling.
 | 1 | Rolling-Ball Background | image -> background image | `skimage.restoration.rolling_ball` | High value for uneven fluorescence background. Default to per-plane processing; warn that large 3D radii are expensive. |
 | 2 | Subtract Background | image + background -> image | Existing subtraction or a named wrapper | Keeping the background visible makes the workflow auditable. |
 | 3 | Grayscale White Top-Hat | image -> image | `scipy.ndimage.white_tophat` | Faster approximate background suppression for bright objects. |
-| 4 | Difference of Gaussians | image -> image | `skimage.filters.difference_of_gaussians` | Enhances puncta and structures within a size band. |
+| 4 | Difference of Gaussians | image -> image | `scipy.ndimage.gaussian_filter`-based slice-wise DoG | Implemented as an `Edge & Detail` filtering node; enhances puncta and structures within a size band. |
 | 5 | Laplacian of Gaussian | image -> image | `scipy.ndimage.gaussian_laplace` | Useful for blob enhancement and marker generation. |
-| 6 | Unsharp Mask | image -> image | `skimage.filters.unsharp_mask` | General sharpening; useful but less central than background correction. |
+| 6 | Unsharp Mask | image -> image | `skimage.filters.unsharp_mask` | Implemented as an `Edge & Detail` filtering node for general sharpening. |
 
 Rolling-ball background estimation should probably remain separate from
 subtraction. This exposes the estimated background and allows users to inspect,
@@ -312,24 +312,38 @@ save, or reuse it. A later convenience node may return both `background` and
 
 ### P1C: Thresholding Without Node Explosion
 
-Add one `Automatic Threshold` node with a method selector:
+Implemented named global threshold nodes:
 
 - Otsu;
 - Li;
 - Yen;
 - Isodata;
 - Triangle;
-- Mean.
+- Minimum;
+- fixed Binary threshold.
 
-Consolidate the visible threshold catalogue only if the method selector makes
-workflows easier to read than the existing named nodes. There is no requirement
-to preserve superseded operation ids.
+For now these remain separate graph nodes because the algorithm is visible on
+the node card. Consolidate them into an `Automatic Threshold` node with a method
+selector only if the named catalogue becomes harder to scan than explicit.
+
+Implemented edge/threshold nodes inspired by MitoMorph:
+
+- Hysteresis Threshold, based on the older MitoMorph
+  `apply_hysteresis_threshold(stack, low, high)` workflow. It exposes raw
+  low/high cutoffs, input-histogram markers, and metadata-aware 2D/3D spatial
+  processing. It is grouped with global threshold segmentation nodes because it
+  is a double-threshold mask operation.
+- Canny Edges, matching the MitoMorph use of Canny as a slice-wise edge mask
+  generator. It uses quantile thresholds by default so the node is less brittle
+  across uint8, uint16, and normalized float images. It is grouped with
+  `Filtering > Edge & Detail` alongside Sobel and Laplace-style edge operators.
 
 Add `Multi-Otsu Classes` separately because its output is not a binary mask. It
 should output an integer class image and optionally one mask output per class.
 
-Sauvola and Niblack thresholding are useful for uneven brightfield or document-
-like images, but are P2 unless histology and brightfield become primary targets.
+Sauvola and Niblack thresholding are now available under
+`Segmentation > Local Thresholds` for uneven brightfield, histology-like, or
+other locally varying images.
 
 ### P1D: Axis Reduction
 
@@ -588,8 +602,8 @@ They should not make the core plugin installation heavy.
 The following are common in general computer-vision libraries but are not good
 early priorities for a bioimage workflow composer:
 
-- many separate edge operators such as Sobel, Scharr, Prewitt, Roberts, and
-  Canny;
+- many separate edge operators beyond the implemented Sobel and Canny nodes,
+  such as Scharr, Prewitt, and Roberts;
 - Hough line and circle transforms;
 - contour hierarchy operations;
 - polygon approximation and rotated boxes;
@@ -602,23 +616,29 @@ early priorities for a bioimage workflow composer:
 - duplicate OpenCV versions of operations already provided well by SciPy or
   scikit-image.
 
-One gradient-magnitude node may be useful for watershed or QC, but implementing
-every edge detector would add palette noise without completing a bioimage
-workflow.
+Keep additional edge detectors selective. Sobel and Canny are now available for
+QC, watershed support, and MitoMorph parity, but implementing every edge
+detector would add palette noise without completing a bioimage workflow.
+
+Slice-wise stack processing is now a required UX disclosure. Present and future
+nodes that process only the current `YX` plane on stacks should set
+`OperationSpec.stack_processing_note`, so the inspector warns users to use
+`Reorder Axes` first when another plane or slice axis is intended.
 
 ## Suggested Palette Structure
 
 ```text
 Image Data
   Source & Output
-  Axes & Geometry
+  Axes & Regions
   Channels & Composites
-  Type & Scaling
+  Utilities
   Math & Logic
+
+Intensity & Contrast
 
 Enhancement
   Background Correction
-  Contrast
   Denoising
   Sharpening & Features
 

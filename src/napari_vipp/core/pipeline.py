@@ -13,6 +13,7 @@ from napari_vipp.core.metadata import (
     transform_image_state,
     transform_multi_input_image_state,
     transform_split_output_state,
+    with_channel_colors,
 )
 from napari_vipp.core.operations import (
     adaptive_gaussian_threshold,
@@ -20,19 +21,21 @@ from napari_vipp.core.operations import (
     add_images,
     add_metadata_columns,
     analyze_skeleton,
+    assign_channel_colors,
     average_blur,
     bilateral_filter,
     binary_threshold,
     black_hat,
     calculate_weighted_image,
+    canny_edges,
     clear_border_objects,
     clip_intensity,
     closing,
     combine_channels,
     composite_to_rgb,
-    contrast_stretch,
     convert_dtype,
     crop_stack,
+    difference_of_gaussians_filter,
     dilate,
     erode,
     extract_channel,
@@ -41,8 +44,13 @@ from napari_vipp.core.operations import (
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    hysteresis_threshold,
     invert,
+    isodata_threshold,
     label_connected_components,
+    laplace_filter,
+    li_threshold,
+    linear_scale_offset,
     logical_and,
     logical_or,
     logical_xor,
@@ -52,21 +60,29 @@ from napari_vipp.core.operations import (
     measure_objects_with_intensity,
     median_filter,
     merge_tables,
+    minimum_threshold,
     morphological_gradient,
+    niblack_threshold,
+    non_local_means_filter,
     normalize_image,
     opening,
     otsu_threshold,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
+    reorder_axes,
     rescale_intensity,
+    sauvola_threshold,
     save_output,
     select_axis_slice,
     skeletonize_mask,
+    sobel_filter,
     split_channels,
     subtract_images,
     top_hat,
     triangle_threshold,
+    unsharp_mask_filter,
+    yen_threshold,
 )
 from napari_vipp.core.tables import TableState, table_state_from_data
 
@@ -76,7 +92,7 @@ class ParameterSpec:
     name: str
     label: str
     kind: str
-    default: float | int | str
+    default: float | int | str | bool
     minimum: float | int
     maximum: float | int
     step: float | int
@@ -121,6 +137,7 @@ class OperationSpec:
     output_factory: Callable[[int], tuple[OutputSpec, ...]] | None = None
     inputs: tuple[InputSpec, ...] = ()
     preserves_input_type: bool = False
+    stack_processing_note: str = ""
 
     @property
     def has_input(self) -> bool:
@@ -192,13 +209,33 @@ class ConnectionResult:
 
 
 IMAGE_DATA_CATEGORY = "Image Data"
+INTENSITY_CONTRAST_CATEGORY = "Intensity & Contrast"
 SOURCE_OUTPUT_GROUP = "Source & Output"
 AXES_REGIONS_GROUP = "Axes & Regions"
 CHANNELS_COMPOSITES_GROUP = "Channels & Composites"
-TYPE_SCALING_GROUP = "Type & Scaling"
+UTILITIES_GROUP = "Utilities"
 MATH_LOGIC_GROUP = "Math & Logic"
 LABEL_OPERATIONS_CATEGORY = "Label Operations"
 MEASUREMENTS_CATEGORY = "Measurements"
+FILTERING_CATEGORY = "Filtering"
+SEGMENTATION_CATEGORY = "Segmentation"
+SMOOTHING_DENOISING_GROUP = "Smoothing & Denoising"
+EDGE_DETAIL_GROUP = "Edge & Detail"
+GLOBAL_THRESHOLDS_GROUP = "Global Thresholds"
+LOCAL_THRESHOLDS_GROUP = "Local Thresholds"
+SLICE_WISE_STACK_NOTICE = (
+    "Stack notice: this node processes each YX slice independently and does not "
+    "use 3D neighborhoods. If another plane should be processed, use Reorder "
+    "Axes first so the intended plane is YX."
+)
+GLOBAL_THRESHOLD_OPERATIONS = {
+    "otsu_threshold",
+    "triangle_threshold",
+    "li_threshold",
+    "yen_threshold",
+    "isodata_threshold",
+    "minimum_threshold",
+}
 
 SOURCE_PARAMETERS = (
     ParameterSpec(
@@ -215,6 +252,7 @@ SOURCE_PARAMETERS = (
     ParameterSpec("file_path", "File path", "text", "", 0, 0, 1),
     ParameterSpec("sample_name", "Sample", "text", "", 0, 0, 1),
     ParameterSpec("series_index", "Series", "int", 0, 0, 100000, 1),
+    ParameterSpec("channel_colors", "Channel colours", "text", "", 0, 0, 1),
     ParameterSpec(
         "binding_mode",
         "Binding",
@@ -238,9 +276,21 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     choices=("Auto from axes", "2D YX", "3D ZYX"),
 )
 
+THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
+    "threshold_scope",
+    "Threshold uses",
+    "choice",
+    "Stack histogram",
+    0,
+    0,
+    1,
+    choices=("Stack histogram", "Slice histogram"),
+)
+
 SPATIAL_OPERATIONS = {
     "clear_border_objects",
     "fill_holes",
+    "hysteresis_threshold",
     "label_connected_components",
     "filter_labels_by_volume",
     "analyze_skeleton",
@@ -294,9 +344,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=AXES_REGIONS_GROUP,
     ),
     OperationSpec(
-        "contrast_stretch",
-        "Contrast Stretching",
-        "Contrast",
+        "linear_scale_offset",
+        "Linear Scale + Offset",
+        INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
         (
@@ -312,12 +362,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 2,
             ),
         ),
-        contrast_stretch,
+        linear_scale_offset,
     ),
     OperationSpec(
         "gamma_correction",
         "Gamma Correction",
-        "Contrast",
+        INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
         (
@@ -328,53 +378,61 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "average_blur",
         "Average Blur",
-        "Filtering",
+        FILTERING_CATEGORY,
         "array",
         "image",
         (
             ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 1),
         ),
         average_blur,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "gaussian_blur",
         "Gaussian Blur",
-        "Filtering",
+        FILTERING_CATEGORY,
         "array",
         "image",
         (
             ParameterSpec("sigma", "Sigma", "float", 1.2, 0.0, 12.0, 0.1, 2),
         ),
         gaussian_blur,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "gaussian_blur_3d",
         "Gaussian Blur 3D",
-        "Filtering",
+        FILTERING_CATEGORY,
         "array",
         "image",
         (
             ParameterSpec("sigma_z", "Sigma Z", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("sigma_y", "Sigma Y", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("sigma_x", "Sigma X", "float", 2.0, 0.0, 12.0, 0.1, 2),
+            ParameterSpec("lock_xy", "Lock X/Y sigma", "bool", True, 0, 1, 1),
         ),
         gaussian_blur_3d,
+        subcategory=SMOOTHING_DENOISING_GROUP,
     ),
     OperationSpec(
         "median_filter",
         "Median Filter",
-        "Filtering",
+        FILTERING_CATEGORY,
         "array",
         "image",
         (
             ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 2),
         ),
         median_filter,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "bilateral_filter",
         "Bilateral Filtering",
-        "Filtering",
+        FILTERING_CATEGORY,
         "array",
         "image",
         (
@@ -401,6 +459,109 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         bilateral_filter,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "non_local_means_filter",
+        "Non-Local Means",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("patch_size", "Patch size", "int", 5, 3, 15, 2),
+            ParameterSpec("patch_distance", "Patch distance", "int", 6, 1, 20, 1),
+            ParameterSpec("h", "Filter strength", "float", 0.08, 0.0, 1.0, 0.01, 3),
+            ParameterSpec("fast_mode", "Fast mode", "bool", True, 0, 1, 1),
+        ),
+        non_local_means_filter,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "difference_of_gaussians",
+        "Difference of Gaussians",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("low_sigma", "Low sigma", "float", 1.0, 0.0, 50.0, 0.1, 2),
+            ParameterSpec("high_sigma", "High sigma", "float", 3.0, 0.0, 50.0, 0.1, 2),
+        ),
+        difference_of_gaussians_filter,
+        subcategory=EDGE_DETAIL_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "unsharp_mask",
+        "Unsharp Mask",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("radius", "Radius", "float", 1.0, 0.0, 50.0, 0.1, 2),
+            ParameterSpec("amount", "Amount", "float", 1.0, 0.0, 10.0, 0.1, 2),
+        ),
+        unsharp_mask_filter,
+        subcategory=EDGE_DETAIL_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "sobel_filter",
+        "Sobel Edges",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (),
+        sobel_filter,
+        subcategory=EDGE_DETAIL_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "canny_edges",
+        "Canny Edges",
+        FILTERING_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("sigma", "Sigma", "float", 1.0, 0.0, 12.0, 0.1, 2),
+            ParameterSpec(
+                "low_quantile",
+                "Low quantile",
+                "float",
+                0.1,
+                0.0,
+                1.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "high_quantile",
+                "High quantile",
+                "float",
+                0.2,
+                0.0,
+                1.0,
+                0.01,
+                3,
+            ),
+        ),
+        canny_edges,
+        subcategory=EDGE_DETAIL_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "laplace_filter",
+        "Laplace Filter",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("kernel_size", "Kernel size", "int", 3, 3, 15, 2),
+        ),
+        laplace_filter,
+        subcategory=EDGE_DETAIL_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "mip",
@@ -427,38 +588,134 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=AXES_REGIONS_GROUP,
     ),
     OperationSpec(
+        "reorder_axes",
+        "Reorder Axes",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "any",
+        (
+            ParameterSpec(
+                "order",
+                "Output axis order",
+                "text",
+                "",
+                0,
+                0,
+                1,
+            ),
+        ),
+        reorder_axes,
+        subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
         "otsu_threshold",
         "Otsu Threshold",
-        "Segmentation",
+        SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (),
+        (THRESHOLD_SCOPE_PARAMETER,),
         otsu_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
     OperationSpec(
         "triangle_threshold",
         "Triangle Threshold",
-        "Segmentation",
+        SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (),
+        (THRESHOLD_SCOPE_PARAMETER,),
         triangle_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "li_threshold",
+        "Li Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (THRESHOLD_SCOPE_PARAMETER,),
+        li_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "yen_threshold",
+        "Yen Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (THRESHOLD_SCOPE_PARAMETER,),
+        yen_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "isodata_threshold",
+        "Isodata Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (THRESHOLD_SCOPE_PARAMETER,),
+        isodata_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "minimum_threshold",
+        "Minimum Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (THRESHOLD_SCOPE_PARAMETER,),
+        minimum_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
     OperationSpec(
         "binary_threshold",
         "Binary Threshold",
-        "Segmentation",
+        SEGMENTATION_CATEGORY,
         "array",
         "mask",
         (
             ParameterSpec("threshold", "Threshold", "float", 0.5, 0.0, 1.0, 0.01, 3),
         ),
         binary_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "hysteresis_threshold",
+        "Hysteresis Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec(
+                "low_threshold",
+                "Low threshold",
+                "float",
+                0.25,
+                0.0,
+                1.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "high_threshold",
+                "High threshold",
+                "float",
+                0.7,
+                0.0,
+                1.0,
+                0.01,
+                3,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        hysteresis_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
     OperationSpec(
         "adaptive_mean_threshold",
         "Adaptive Mean Threshold",
-        "Segmentation",
+        SEGMENTATION_CATEGORY,
         "array",
         "mask",
         (
@@ -466,11 +723,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
         ),
         adaptive_mean_threshold,
+        subcategory=LOCAL_THRESHOLDS_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "adaptive_gaussian_threshold",
         "Adaptive Gaussian Threshold",
-        "Segmentation",
+        SEGMENTATION_CATEGORY,
         "array",
         "mask",
         (
@@ -478,6 +737,46 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
         ),
         adaptive_gaussian_threshold,
+        subcategory=LOCAL_THRESHOLDS_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "sauvola_threshold",
+        "Sauvola Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("window_size", "Window size", "int", 15, 3, 151, 2),
+            ParameterSpec("k", "k", "float", 0.2, -2.0, 2.0, 0.01, 3),
+            ParameterSpec(
+                "dynamic_range",
+                "Dynamic range (0 auto)",
+                "float",
+                0.0,
+                0.0,
+                1_000_000.0,
+                0.1,
+                3,
+            ),
+        ),
+        sauvola_threshold,
+        subcategory=LOCAL_THRESHOLDS_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "niblack_threshold",
+        "Niblack Threshold",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec("window_size", "Window size", "int", 15, 3, 151, 2),
+            ParameterSpec("k", "k", "float", 0.2, -2.0, 2.0, 0.01, 3),
+        ),
+        niblack_threshold,
+        subcategory=LOCAL_THRESHOLDS_GROUP,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "dilate",
@@ -490,6 +789,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("iterations", "Iterations", "int", 1, 1, 25, 1),
         ),
         dilate,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "erode",
@@ -502,6 +802,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("iterations", "Iterations", "int", 1, 1, 25, 1),
         ),
         erode,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "opening",
@@ -511,6 +812,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         opening,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "closing",
@@ -520,6 +822,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         closing,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "top_hat",
@@ -529,6 +832,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         top_hat,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "black_hat",
@@ -538,6 +842,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         black_hat,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "morphological_gradient",
@@ -547,6 +852,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (ParameterSpec("size", "Kernel size", "int", 2, 1, 101, 1),),
         morphological_gradient,
+        stack_processing_note=SLICE_WISE_STACK_NOTICE,
     ),
     OperationSpec(
         "fill_holes",
@@ -1019,7 +1325,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
-        (),
+        (
+            ParameterSpec(
+                "preview_channel",
+                "Thumbnail channel",
+                "int",
+                0,
+                0,
+                15,
+                1,
+            ),
+        ),
         split_channels,
         subcategory=CHANNELS_COMPOSITES_GROUP,
         output_factory=_split_channels_outputs,
@@ -1047,9 +1363,30 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
     OperationSpec(
+        "assign_channel_colors",
+        "Assign Channel Colors",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "channel_colors",
+                "Channel colours",
+                "text",
+                "",
+                0,
+                0,
+                1,
+            ),
+        ),
+        assign_channel_colors,
+        subcategory=CHANNELS_COMPOSITES_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
         "rescale_intensity",
         "Rescale Intensity",
-        IMAGE_DATA_CATEGORY,
+        INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
         (
@@ -1115,12 +1452,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         rescale_intensity,
-        subcategory=TYPE_SCALING_GROUP,
     ),
     OperationSpec(
         "normalize_image",
         "Normalize",
-        IMAGE_DATA_CATEGORY,
+        INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
         (
@@ -1136,12 +1472,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         normalize_image,
-        subcategory=TYPE_SCALING_GROUP,
     ),
     OperationSpec(
         "clip_intensity",
         "Clip",
-        IMAGE_DATA_CATEGORY,
+        INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
         (
@@ -1167,7 +1502,6 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         clip_intensity,
-        subcategory=TYPE_SCALING_GROUP,
     ),
     OperationSpec(
         "save_output",
@@ -1248,7 +1582,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         convert_dtype,
-        subcategory=TYPE_SCALING_GROUP,
+        subcategory=UTILITIES_GROUP,
     ),
     OperationSpec(
         "invert",
@@ -1291,6 +1625,7 @@ PROTOTYPE_NODES = [
         "Segmentation",
         "image",
         "mask",
+        {"threshold_scope": "Stack histogram"},
     ),
 ]
 PROTOTYPE_CONNECTIONS = [
@@ -1741,15 +2076,16 @@ class PrototypePipeline:
             payload = source_payloads.get(node_id)
             if payload is None:
                 payload = SourcePayload(input_data, input_metadata, input_name)
+            state = payload.image_state or image_state_from_array(
+                payload.data,
+                layer_metadata=payload.metadata,
+                source_name=payload.name,
+            )
+            state = with_channel_colors(state, node.params.get("channel_colors", ""))
             return [
                 (
                     payload.data,
-                    payload.image_state
-                    or image_state_from_array(
-                        payload.data,
-                        layer_metadata=payload.metadata,
-                        source_name=payload.name,
-                    ),
+                    state,
                 )
             ]
 
@@ -1859,6 +2195,33 @@ class PrototypePipeline:
             kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
             kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
             kwargs["source_name"] = input_state.source_name
+        if node.operation_id == "reorder_axes" and isinstance(input_state, ImageState):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+        if node.operation_id == "composite_to_rgb" and isinstance(
+            input_state,
+            ImageState,
+        ):
+            try:
+                requested_channel_axis = int(kwargs.get("channel_axis", -1))
+            except Exception:
+                requested_channel_axis = -1
+            if requested_channel_axis < 0:
+                channel_axis = _image_state_channel_axis(input_state)
+                if channel_axis is not None:
+                    kwargs["channel_axis"] = channel_axis
+            try:
+                resolved_channel_axis = int(kwargs.get("channel_axis", -1))
+            except Exception:
+                resolved_channel_axis = -1
+            if 0 <= resolved_channel_axis < len(input_state.axes):
+                kwargs["channel_axis_semantics"] = input_state.axes[
+                    resolved_channel_axis
+                ].name
+            if input_state.channels:
+                kwargs["channel_colors"] = tuple(
+                    channel.color if channel.color is not None else ""
+                    for channel in input_state.channels
+                )
         output = spec.function(source_output, **kwargs)
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
@@ -2130,6 +2493,13 @@ def _default_combined_channel_axis(input_state: ImageState | None) -> int:
         if axis.type == "space":
             return index
     return 0
+
+
+def _image_state_channel_axis(input_state: ImageState) -> int | None:
+    for index, axis in enumerate(input_state.axes):
+        if axis.type == "channel" or axis.name.lower() == "c":
+            return index
+    return None
 
 
 def connection_pairs(connections: Iterable[GraphConnection]) -> set[tuple[str, str]]:

@@ -145,7 +145,10 @@ def write_ome_zarr(
         name=state.source_name if state and state.source_name else path.stem,
         omero=omero_metadata,
     )
-    add_metadata(str(path), {"vipp": _vipp_metadata(state)}, fmt=fmt)
+    metadata = {"vipp": _vipp_metadata(state)}
+    if omero_metadata.get("channels"):
+        metadata["omero"] = omero_metadata
+    add_metadata(str(path), metadata, fmt=fmt)
     return path
 
 
@@ -273,12 +276,24 @@ def _node_channels(node, root_attrs: Any) -> tuple[ChannelMetadata, ...]:
     root_metadata = _normalised_root_metadata(root_attrs)
     omero = root_metadata.get("omero", {})
     channel_records = omero.get("channels", ()) if isinstance(omero, dict) else ()
-    return tuple(
+    channels = tuple(
         ChannelMetadata(
             name=str(channel.get("label", "")),
             color=_parse_channel_color(channel.get("color")),
         )
         for channel in channel_records
+        if isinstance(channel, dict)
+    )
+    if channels:
+        return channels
+
+    vipp = root_metadata.get("vipp", {})
+    vipp_channel_records = (
+        vipp.get("channels", ()) if isinstance(vipp, dict) else ()
+    )
+    return tuple(
+        ChannelMetadata.from_dict(channel)
+        for channel in vipp_channel_records
         if isinstance(channel, dict)
     )
 
@@ -433,6 +448,7 @@ def _vipp_metadata(state: ImageState | None) -> dict[str, Any]:
     return {
         "software": "napari-vipp",
         "history": list(state.history),
+        "channels": [channel.to_dict() for channel in state.channels],
         "source": state.source.to_dict(),
         "acquisition": state.acquisition.to_dict(),
         "metadata_source": state.metadata_source,

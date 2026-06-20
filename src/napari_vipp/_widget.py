@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import inspect as py_inspect
+import re
+import textwrap
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -13,6 +16,7 @@ import numpy as np
 from qtpy.QtCore import (
     QEvent,
     QMimeData,
+    QPointF,
     QRect,
     QSignalBlocker,
     QSize,
@@ -24,17 +28,22 @@ from qtpy.QtGui import (
     QAction,
     QBrush,
     QColor,
+    QFont,
     QIcon,
     QKeySequence,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
+    QSyntaxHighlighter,
+    QTextCharFormat,
 )
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
@@ -44,7 +53,10 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -64,6 +76,12 @@ from scipy import ndimage as ndi
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
+from napari_vipp.core.channel_colors import (
+    CHANNEL_COLOR_CHOICES,
+    CHANNEL_COLOR_HEX,
+    FLUORESCENCE_COLORS,
+    channel_color_labels_from_metadata,
+)
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.io import (
     AnalysisLabel,
@@ -79,8 +97,9 @@ from napari_vipp.core.metadata import (
     metadata_history_items,
     metadata_table_rows,
 )
-from napari_vipp.core.operations import save_array_output
+from napari_vipp.core.operations import automatic_threshold_value, save_array_output
 from napari_vipp.core.pipeline import (
+    GLOBAL_THRESHOLD_OPERATIONS,
     OperationSpec,
     ParameterSpec,
     PrototypePipeline,
@@ -88,9 +107,10 @@ from napari_vipp.core.pipeline import (
     grouped_palette_specs,
 )
 from napari_vipp.core.preview import (
-    FLUORESCENCE_COLORS,
+    MONOCHROME_COLORMAPS,
+    THUMBNAIL_CONTRAST_MODES,
     make_preview,
-    normalize_thumbnail,
+    normalize_thumbnail_with_colormap,
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
@@ -143,8 +163,9 @@ CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
 INPUT_HISTOGRAM_OPERATIONS = {
     "binary_threshold",
     "clip_intensity",
+    "hysteresis_threshold",
     "rescale_intensity",
-}
+} | GLOBAL_THRESHOLD_OPERATIONS
 
 
 def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
@@ -219,6 +240,14 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
     return pixmap
 
 
+def _toolbar_separator() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.VLine)
+    line.setFrameShadow(QFrame.Sunken)
+    line.setFixedWidth(12)
+    return line
+
+
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     "saturation_percent",
     "Saturation (%)",
@@ -229,17 +258,6 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     0.05,
     2,
 )
-
-CHANNEL_COLOR_CHOICES = ("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow")
-CHANNEL_COLOR_HEX = {
-    "red": "#ef4444",
-    "green": "#22c55e",
-    "blue": "#60a5fa",
-    "magenta": "#d946ef",
-    "cyan": "#06b6d4",
-    "yellow": "#eab308",
-}
-
 
 class NodePalette(QTreeWidget):
     """Small categorized operation palette for adding nodes."""
@@ -688,6 +706,39 @@ class TextControl(QWidget):
         current = "" if value is None else str(value)
         with QSignalBlocker(self.edit):
             self.edit.setText(current)
+        if emit:
+            self.valueChanged.emit(self.value())
+
+
+class BoolControl(QWidget):
+    """Checkbox control for boolean node parameters."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, spec, value, _bounds: ParameterBounds, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self.checkbox = QCheckBox()
+        self.checkbox.setChecked(bool(spec.default if value is None else value))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.checkbox)
+        layout.addStretch(1)
+        self.checkbox.toggled.connect(self.valueChanged.emit)
+
+    def value(self):
+        return self.checkbox.isChecked()
+
+    def set_bounds(
+        self,
+        _bounds: ParameterBounds,
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        current = self.spec.default if value is None else value
+        with QSignalBlocker(self.checkbox):
+            self.checkbox.setChecked(bool(current))
         if emit:
             self.valueChanged.emit(self.value())
 
@@ -1387,6 +1438,337 @@ class AxisSliceControl(QWidget):
             self.valueChanged.emit(self.value())
 
 
+class AxisOrderListWidget(QListWidget):
+    """QListWidget that emits after a drag/drop reorder."""
+
+    orderChanged = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drag_row = -1
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(self._event_pos(event))
+            self._drag_row = self.row(item) if item is not None else -1
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if event.buttons() & Qt.LeftButton and self._drag_row >= 0:
+            item = self.itemAt(self._event_pos(event))
+            target = self.row(item) if item is not None else -1
+            if target >= 0 and target != self._drag_row:
+                moved = self.takeItem(self._drag_row)
+                self.insertItem(target, moved)
+                self.setCurrentRow(target)
+                self._drag_row = target
+                self.orderChanged.emit()
+                event.accept()
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_row = -1
+        super().mouseReleaseEvent(event)
+
+    def dropEvent(self, event) -> None:
+        super().dropEvent(event)
+        self.orderChanged.emit()
+
+    @staticmethod
+    def _event_pos(event):
+        if hasattr(event, "position"):
+            return event.position().toPoint()
+        return event.pos()
+
+
+class ReorderAxesControl(QWidget):
+    """Drag-reorder control for transposing image axes."""
+
+    valueChanged = Signal(object)
+
+    def __init__(
+        self,
+        options: list[AxisSliceOption],
+        value: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._options: list[AxisSliceOption] = []
+        self._updating = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(7)
+
+        title = QLabel("Output axis order")
+        title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(title)
+
+        hint = QLabel("Drag axes up or down. The top item becomes axis 0.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #94a3b8;")
+        layout.addWidget(hint)
+
+        warning = QLabel(
+            "This transposes the data and redefines spatial axes for downstream "
+            "nodes. Treat it like rotating a volume: physical scale follows the "
+            "moved data axis."
+        )
+        warning.setWordWrap(True)
+        warning.setStyleSheet("color: #fbbf24;")
+        layout.addWidget(warning)
+
+        self.list_widget = AxisOrderListWidget()
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.orderChanged.connect(self._emit_value_changed)
+        self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
+        layout.addWidget(self.list_widget)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        self.move_up_button = QPushButton("Move up")
+        self.move_down_button = QPushButton("Move down")
+        self.reset_button = QPushButton("Reset")
+        button_row.addWidget(self.move_up_button)
+        button_row.addWidget(self.move_down_button)
+        button_row.addWidget(self.reset_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.serialized_label = QLabel()
+        self.serialized_label.setStyleSheet("color: #64748b;")
+        layout.addWidget(self.serialized_label)
+
+        self.move_up_button.clicked.connect(lambda: self._move_selected(-1))
+        self.move_down_button.clicked.connect(lambda: self._move_selected(1))
+        self.reset_button.clicked.connect(self.reset_order)
+
+        self.set_options(options, value=value, emit=False)
+
+    def value(self) -> str:
+        ordered = self._ordered_options()
+        if [option.index for option in ordered] == [
+            option.index for option in self._options
+        ]:
+            return ""
+        return _axis_order_value(ordered)
+
+    def set_options(
+        self,
+        options: list[AxisSliceOption],
+        value: str = "",
+        emit: bool = False,
+    ) -> None:
+        self._updating = True
+        self._options = options or [AxisSliceOption(0, "axis 0", "unknown", 1)]
+        self._build_items(_axis_options_from_order(value, self._options))
+        self._updating = False
+        self._sync_button_state()
+        self._sync_serialized_label()
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def set_order(self, order, emit: bool = True) -> None:
+        self._updating = True
+        self._build_items(_axis_options_from_order(order, self._options))
+        self._updating = False
+        self._sync_button_state()
+        self._sync_serialized_label()
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def reset_order(self) -> None:
+        self.set_order([option.index for option in self._options])
+
+    def _build_items(self, ordered: list[AxisSliceOption]) -> None:
+        with QSignalBlocker(self.list_widget):
+            self.list_widget.clear()
+            for option in ordered:
+                item = QListWidgetItem(_axis_order_item_text(option))
+                item.setData(Qt.UserRole, int(option.index))
+                item.setSizeHint(QSize(160, 28))
+                item.setToolTip(
+                    f"{option.title}: {option.axis_type} axis, size {option.size}"
+                )
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemIsDragEnabled
+                    | Qt.ItemIsDropEnabled
+                    | Qt.ItemIsSelectable
+                    | Qt.ItemIsEnabled
+                )
+                self.list_widget.addItem(item)
+            if self.list_widget.count():
+                self.list_widget.setCurrentRow(0)
+        height = 28 * max(self.list_widget.count(), 1) + 8
+        self.list_widget.setMinimumHeight(min(max(height, 92), 220))
+
+    def _ordered_options(self) -> list[AxisSliceOption]:
+        by_index = {option.index: option for option in self._options}
+        ordered: list[AxisSliceOption] = []
+        for row in range(self.list_widget.count()):
+            index = self.list_widget.item(row).data(Qt.UserRole)
+            option = by_index.get(int(index))
+            if option is not None:
+                ordered.append(option)
+        return ordered
+
+    def _move_selected(self, delta: int) -> None:
+        row = self.list_widget.currentRow()
+        target = row + int(delta)
+        if row < 0 or target < 0 or target >= self.list_widget.count():
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(target, item)
+        self.list_widget.setCurrentRow(target)
+        self._emit_value_changed()
+
+    def _emit_value_changed(self) -> None:
+        self._sync_button_state()
+        self._sync_serialized_label()
+        if not self._updating:
+            self.valueChanged.emit(self.value())
+
+    def _sync_button_state(self) -> None:
+        row = self.list_widget.currentRow()
+        count = self.list_widget.count()
+        self.move_up_button.setEnabled(count > 1 and row > 0)
+        self.move_down_button.setEnabled(count > 1 and 0 <= row < count - 1)
+        self.reset_button.setEnabled(bool(self.value()))
+
+    def _sync_serialized_label(self) -> None:
+        value = self.value()
+        if value:
+            self.serialized_label.setText(f"Workflow value: {value}")
+        else:
+            self.serialized_label.setText("Workflow value: input order")
+
+
+class PythonSyntaxHighlighter(QSyntaxHighlighter):
+    """Small Python syntax highlighter for node-code inspection dialogs."""
+
+    _KEYWORDS = (
+        "False",
+        "None",
+        "True",
+        "and",
+        "as",
+        "assert",
+        "break",
+        "class",
+        "continue",
+        "def",
+        "del",
+        "elif",
+        "else",
+        "except",
+        "finally",
+        "for",
+        "from",
+        "global",
+        "if",
+        "import",
+        "in",
+        "is",
+        "lambda",
+        "nonlocal",
+        "not",
+        "or",
+        "pass",
+        "raise",
+        "return",
+        "try",
+        "while",
+        "with",
+        "yield",
+    )
+    _BUILTINS = (
+        "bool",
+        "dict",
+        "float",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "np",
+        "range",
+        "repr",
+        "set",
+        "str",
+        "tuple",
+    )
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._rules: list[tuple[re.Pattern[str], QTextCharFormat]] = []
+        self._add_rule(
+            rf"\b({'|'.join(self._KEYWORDS)})\b",
+            "#60a5fa",
+            bold=True,
+        )
+        self._add_rule(rf"\b({'|'.join(self._BUILTINS)})\b", "#c084fc")
+        self._add_rule(r"\b[A-Za-z_]\w*(?=\()", "#fbbf24")
+        self._add_rule(r"\b\d+(\.\d+)?\b", "#fca5a5")
+        self._string_format = self._format("#86efac")
+        self._comment_format = self._format("#94a3b8", italic=True)
+
+    def highlightBlock(self, text: str) -> None:  # noqa: N802
+        for pattern, text_format in self._rules:
+            for match in pattern.finditer(text):
+                self.setFormat(
+                    match.start(),
+                    match.end() - match.start(),
+                    text_format,
+                )
+        for match in re.finditer(r"(['\"])(?:\\.|(?!\1).)*\1", text):
+            self.setFormat(
+                match.start(),
+                match.end() - match.start(),
+                self._string_format,
+            )
+        comment_start = text.find("#")
+        if comment_start >= 0:
+            self.setFormat(
+                comment_start,
+                len(text) - comment_start,
+                self._comment_format,
+            )
+
+    def _add_rule(
+        self,
+        pattern: str,
+        color: str,
+        *,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> None:
+        self._rules.append((re.compile(pattern), self._format(color, bold, italic)))
+
+    @staticmethod
+    def _format(
+        color: str,
+        bold: bool = False,
+        italic: bool = False,
+    ) -> QTextCharFormat:
+        text_format = QTextCharFormat()
+        text_format.setForeground(QColor(color))
+        if bold:
+            text_format.setFontWeight(QFont.Bold)
+        if italic:
+            text_format.setFontItalic(True)
+        return text_format
+
+
 class HistogramPlot(QWidget):
     """Compact histogram display for the selected node output."""
 
@@ -1660,13 +2042,20 @@ class VippWidget(QWidget):
         self._clip_auto_input_ranges: dict[str, tuple[float, float]] = {}
         self._rescale_auto_input_cutoffs: dict[str, tuple[float, float]] = {}
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
+        self._code_dialogs: list[QDialog] = []
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
         self.layer_combo = QComboBox()
         self.layer_combo.setMinimumWidth(220)
+        self.global_thumbnail_checkbox = QCheckBox("Thumbnails")
+        self.global_thumbnail_checkbox.setChecked(True)
         self.preview_mode_combo = QComboBox()
         self.preview_mode_combo.addItems(["Slice", "MIP", "Off"])
+        self.thumbnail_contrast_combo = QComboBox()
+        self.thumbnail_contrast_combo.addItems(THUMBNAIL_CONTRAST_MODES)
+        self.thumbnail_colormap_combo = QComboBox()
+        self.thumbnail_colormap_combo.addItems(MONOCHROME_COLORMAPS)
         self.follow_dims_checkbox = QCheckBox("Follow napari dims")
         self.follow_dims_checkbox.setChecked(True)
         self.graph_zoom_slider = QSlider(Qt.Horizontal)
@@ -1809,6 +2198,10 @@ class VippWidget(QWidget):
         self.histogram_log_checkbox = QCheckBox("Log scale")
         self.histogram_plot = HistogramPlot()
         self.rescale_input_histogram_group = QGroupBox("Input Histogram")
+        self.rescale_input_histogram_scope_combo = QComboBox()
+        self.rescale_input_histogram_scope_combo.addItems(
+            ["Slice histogram", "Stack histogram"]
+        )
         self.rescale_input_histogram_log_checkbox = QCheckBox("Log scale")
         self.rescale_input_histogram_plot = HistogramPlot()
         self.rescale_input_histogram_group.setHidden(True)
@@ -2003,27 +2396,41 @@ class VippWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
 
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(4)
-        toolbar.addWidget(QLabel("Input"))
-        toolbar.addWidget(self.layer_combo, 1)
-        toolbar.addWidget(QLabel("Preview"))
-        toolbar.addWidget(self.preview_mode_combo)
-        toolbar.addWidget(self.follow_dims_checkbox)
-        toolbar.addWidget(QLabel("Zoom"))
-        toolbar.addWidget(self.graph_zoom_slider)
-        toolbar.addWidget(self.graph_zoom_reset_button)
-        toolbar.addWidget(self.graph_zoom_label)
-        toolbar.addWidget(self.build_button)
-        toolbar.addWidget(self.refresh_button)
-        toolbar.addWidget(self.undo_button)
-        toolbar.addWidget(self.redo_button)
-        toolbar.addWidget(self.save_workflow_button)
-        toolbar.addWidget(self.load_workflow_button)
-        toolbar.addWidget(self.export_button)
-        toolbar.addWidget(self.export_ome_button)
-        root.addLayout(toolbar)
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(4)
+        input_row.addWidget(QLabel("Input"))
+        input_row.addWidget(self.layer_combo, 1)
+        input_row.addWidget(_toolbar_separator())
+        input_row.addWidget(self.global_thumbnail_checkbox)
+        input_row.addWidget(QLabel("Preview"))
+        input_row.addWidget(self.preview_mode_combo)
+        input_row.addWidget(QLabel("Contrast"))
+        input_row.addWidget(self.thumbnail_contrast_combo)
+        input_row.addWidget(QLabel("Mono"))
+        input_row.addWidget(self.thumbnail_colormap_combo)
+        input_row.addWidget(self.follow_dims_checkbox)
+        input_row.addWidget(_toolbar_separator())
+        input_row.addWidget(QLabel("Zoom"))
+        input_row.addWidget(self.graph_zoom_slider)
+        input_row.addWidget(self.graph_zoom_reset_button)
+        input_row.addWidget(self.graph_zoom_label)
+        input_row.addWidget(_toolbar_separator())
+        input_row.addWidget(self.build_button)
+        input_row.addWidget(self.refresh_button)
+        input_row.addWidget(self.undo_button)
+        input_row.addWidget(self.redo_button)
+        root.addLayout(input_row)
+
+        workflow_row = QHBoxLayout()
+        workflow_row.setContentsMargins(0, 0, 0, 0)
+        workflow_row.setSpacing(4)
+        workflow_row.addWidget(self.save_workflow_button)
+        workflow_row.addWidget(self.load_workflow_button)
+        workflow_row.addWidget(self.export_button)
+        workflow_row.addWidget(self.export_ome_button)
+        workflow_row.addStretch(1)
+        root.addLayout(workflow_row)
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.addWidget(self.palette_panel)
@@ -2093,6 +2500,19 @@ class VippWidget(QWidget):
         rescale_input_histogram_layout = QVBoxLayout(
             self.rescale_input_histogram_group
         )
+        self.rescale_input_histogram_scope_row = QWidget()
+        rescale_input_histogram_scope_layout = QHBoxLayout(
+            self.rescale_input_histogram_scope_row
+        )
+        rescale_input_histogram_scope_layout.setContentsMargins(0, 0, 0, 0)
+        rescale_input_histogram_scope_layout.addWidget(QLabel("Histogram uses"))
+        rescale_input_histogram_scope_layout.addWidget(
+            self.rescale_input_histogram_scope_combo,
+            1,
+        )
+        rescale_input_histogram_layout.addWidget(
+            self.rescale_input_histogram_scope_row
+        )
         rescale_input_histogram_layout.addWidget(
             self.rescale_input_histogram_log_checkbox
         )
@@ -2142,7 +2562,12 @@ class VippWidget(QWidget):
         self.export_button.clicked.connect(self._export_python_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
+        self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
+        self.thumbnail_contrast_combo.currentTextChanged.connect(
+            self._update_thumbnails,
+        )
+        self.thumbnail_colormap_combo.currentTextChanged.connect(self._update_thumbnails)
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
@@ -2152,6 +2577,9 @@ class VippWidget(QWidget):
         )
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
+        self.rescale_input_histogram_scope_combo.currentTextChanged.connect(
+            self._update_histogram
+        )
         self.rescale_input_histogram_log_checkbox.toggled.connect(
             self._update_histogram
         )
@@ -2168,6 +2596,8 @@ class VippWidget(QWidget):
         self.graph_view.node_create_requested.connect(self._add_node_at)
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_delete_requested.connect(self._delete_node)
+        self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
+        self.graph_view.node_code_requested.connect(self._inspect_node_code)
         self.graph_view.node_moved.connect(self._on_node_moved)
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
@@ -2430,6 +2860,151 @@ class VippWidget(QWidget):
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
         return node
+
+    def _duplicate_node(self, node_id: str) -> None:
+        original = self.pipeline.nodes.get(node_id)
+        if original is None:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        clone = self.pipeline.add_node(original.operation_id)
+        clone.params = deepcopy(original.params)
+        source_pos = self.graph_view.node_position(node_id)
+        position = (
+            source_pos + QPointF(42, 42)
+            if source_pos is not None
+            else self.graph_view.suggest_node_position()
+        )
+        self.graph_view.add_node(clone, position)
+        self._sync_node_input_ports(clone.id)
+        self._sync_node_output_ports(clone.id)
+        self._sync_pin_ui()
+        self.graph_view.select_node(clone.id)
+        self.run_pipeline()
+        self._push_undo_if_changed(before)
+        self.status_label.setText(
+            f"Duplicated '{original.title}' as '{clone.title}'."
+        )
+
+    def _inspect_node_code(self, node_id: str) -> None:
+        if node_id not in self.pipeline.nodes:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"VIPP node code: {self._node_title(node_id)}")
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        layout = QVBoxLayout(dialog)
+        editor = QPlainTextEdit()
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        editor.setPlainText(self._node_code_text(node_id))
+        editor.setStyleSheet(
+            "font-family: Menlo, Monaco, Consolas, monospace; "
+            "font-size: 12px;"
+        )
+        editor._vipp_python_highlighter = PythonSyntaxHighlighter(editor.document())
+        layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.clicked.connect(lambda _button: dialog.accept())
+        layout.addWidget(buttons)
+        dialog.resize(900, 700)
+        dialog.finished.connect(
+            lambda _result, ref=dialog: self._forget_code_dialog(ref)
+        )
+        self._code_dialogs.append(dialog)
+        dialog.show()
+        self.status_label.setText(
+            f"Opened code for '{self._node_title(node_id)}'."
+        )
+
+    def _forget_code_dialog(self, dialog: QDialog) -> None:
+        if dialog in self._code_dialogs:
+            self._code_dialogs.remove(dialog)
+
+    def _node_code_text(self, node_id: str) -> str:
+        node = self.pipeline.nodes[node_id]
+        spec = self.pipeline.operation_spec(node.operation_id)
+        lines = [
+            f"# VIPP node: {node.title}",
+            f"# Node id: {node.id}",
+            f"# Operation id: {node.operation_id}",
+            f"# Category: {node.category}",
+            "",
+        ]
+        if node.params:
+            lines.append("params = {")
+            for key, value in node.params.items():
+                lines.append(f"    {key!r}: {value!r},")
+            lines.append("}")
+            lines.append("")
+        else:
+            lines.extend(["params = {}", ""])
+
+        connections = self.pipeline._input_connections(node_id)
+        if connections:
+            lines.append("# Connected inputs")
+            for index, connection in enumerate(connections, start=1):
+                lines.append(
+                    f"# {index}. {connection.source_id} output "
+                    f"{connection.source_port} -> input {connection.target_port}"
+                )
+            lines.append("")
+
+        function = spec.function
+        if function is None:
+            lines.append(
+                "# This node is handled by the VIPP runtime and does not map "
+                "to a single pure operation function."
+            )
+            return "\n".join(lines).rstrip() + "\n"
+
+        signature = py_inspect.signature(function)
+        accepted = list(signature.parameters)
+        first_arg = self._node_code_first_arg(node, connections)
+        kwargs = {
+            key: value
+            for key, value in node.params.items()
+            if key in accepted and (not accepted or key != accepted[0])
+        }
+        kwargs_text = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
+        call_args = first_arg
+        if kwargs_text:
+            call_args = f"{first_arg}, {kwargs_text}"
+
+        lines.extend(
+            [
+                f"from {function.__module__} import {function.__name__}",
+                "",
+                "# Single-node call shape",
+                f"output = {function.__name__}({call_args})",
+                "",
+                "# Operation function source",
+            ]
+        )
+        try:
+            lines.append(textwrap.dedent(py_inspect.getsource(function)).rstrip())
+        except OSError:
+            lines.append("# Source is not available for this operation function.")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _node_code_first_arg(self, node, connections) -> str:
+        if not connections:
+            if node.max_inputs is None or node.max_inputs != 1:
+                return "[]"
+            return "input_data"
+        if node.max_inputs is None or node.max_inputs != 1:
+            refs = [
+                self._node_code_source_ref(connection)
+                for connection in connections
+            ]
+            return f"[{', '.join(refs)}]"
+        return self._node_code_source_ref(connections[0])
+
+    @staticmethod
+    def _node_code_source_ref(connection) -> str:
+        ref = f"{connection.source_id}_output"
+        if int(getattr(connection, "source_port", 0)) != 0:
+            ref = f"{ref}[{int(connection.source_port)}]"
+        return ref
 
     def _reset_graph(self) -> None:
         self._finish_parameter_history_group()
@@ -2967,6 +3542,7 @@ class VippWidget(QWidget):
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
         self.rescale_input_histogram_group.setHidden(True)
+        self.rescale_input_histogram_scope_row.setHidden(True)
         self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
         self.histogram_group.setTitle("Output Histogram")
         self.histogram_scope_row.setHidden(True)
@@ -2995,26 +3571,41 @@ class VippWidget(QWidget):
             self._render_image_source_parameters(node_id)
             return
         specs = self.pipeline.node_parameter_specs(node_id)
-        self.parameter_group.setHidden(not specs)
+        stack_note = self._stack_processing_note(node_id)
+        self.parameter_group.setHidden(not specs and not stack_note)
         if not specs:
+            if stack_note:
+                self._add_operation_note(stack_note)
+                self.parameter_group.setHidden(False)
             return
         if node.operation_id == "select_axis_slice":
             self._render_select_axis_slice_parameters(node_id)
             return
+        if node.operation_id == "reorder_axes":
+            self._render_reorder_axes_parameters(node_id)
+            return
         if node.operation_id == "combine_channels":
             self._render_combine_channels_parameters(node_id)
+            return
+        if node.operation_id == "assign_channel_colors":
+            self._render_assign_channel_colors_parameters(node_id)
             return
 
         self._sync_clip_intensity_defaults(node_id)
         self._sync_rescale_input_cutoff_defaults(node_id)
         self._sync_rescale_output_range_defaults(node_id)
+        rendered = False
         for spec in specs:
+            if self._parameter_spec_hidden(node_id, spec):
+                continue
             spec = self._effective_parameter_spec(node_id, spec)
             bounds = self._parameter_bounds_for(node_id, spec)
             if spec.kind == "choice":
                 control_class = ChoiceControl
             elif spec.kind == "text":
                 control_class = TextControl
+            elif spec.kind == "bool":
+                control_class = BoolControl
             else:
                 control_class = ParameterControl
             widget = control_class(spec, node.params.get(spec.name), bounds)
@@ -3024,12 +3615,41 @@ class VippWidget(QWidget):
             )
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+            rendered = True
         if node.operation_id == "fill_holes":
             note = QLabel()
             note.setWordWrap(True)
             self.parameter_form.addRow(note)
             self._parameter_widgets["fill_holes_scope_note"] = note
             self._update_fill_holes_scope_note()
+            rendered = True
+        if stack_note:
+            self._add_operation_note(stack_note)
+            rendered = True
+        self.parameter_group.setHidden(not rendered)
+
+    def _add_operation_note(self, text: str) -> None:
+        note = QLabel(text)
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #f59e0b;")
+        self.parameter_form.addRow(note)
+        self._parameter_widgets["operation_notice"] = note
+
+    def _stack_processing_note(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ""
+        spec = self.pipeline.operation_spec(node.operation_id)
+        if not spec.stack_processing_note:
+            return ""
+        if (
+            self.pipeline.input_state_for_node(node_id) is None
+            and self.pipeline.input_data_for_node(node_id) is None
+        ):
+            return ""
+        if self._input_spatial_count(node_id) < 3:
+            return ""
+        return spec.stack_processing_note
 
     def _render_combine_channels_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -3091,6 +3711,11 @@ class VippWidget(QWidget):
         control.valueChanged.connect(self._on_image_source_changed)
         self.parameter_form.addRow(control)
         self._parameter_widgets["image_source"] = control
+        self._render_channel_color_controls(node_id)
+
+    def _render_assign_channel_colors_parameters(self, node_id: str) -> None:
+        self.parameter_group.setHidden(False)
+        self._render_channel_color_controls(node_id)
 
     def _image_source_value(self, node) -> dict[str, object]:
         return {
@@ -3117,6 +3742,121 @@ class VippWidget(QWidget):
             "binding_mode",
         ):
             node.params[name] = value.get(name, "")
+
+    def _render_channel_color_controls(self, node_id: str) -> None:
+        count = self._channel_color_control_count(node_id)
+        if count <= 0:
+            note = QLabel("No channel axis detected for colour assignment.")
+            note.setWordWrap(True)
+            note.setStyleSheet("color: #94a3b8;")
+            self.parameter_form.addRow(note)
+            return
+        state = self._channel_color_reference_state(node_id)
+        colors = self._node_channel_color_choices(node_id, count, state)
+        labels = self._channel_color_control_labels(count, state)
+        for index, color in enumerate(colors):
+            spec = ParameterSpec(
+                f"channel_color_{index}",
+                f"{labels[index]} colour",
+                "choice",
+                color,
+                0,
+                0,
+                1,
+                choices=CHANNEL_COLOR_CHOICES,
+            )
+            widget = ChoiceControl(
+                spec,
+                color,
+                ParameterBounds(0, len(CHANNEL_COLOR_CHOICES) - 1, 1, 0),
+            )
+            widget.valueChanged.connect(
+                lambda value, slot=index: self._on_metadata_channel_color_changed(
+                    slot,
+                    value,
+                )
+            )
+            self.parameter_form.addRow(spec.label, widget)
+            self._parameter_widgets[spec.name] = widget
+
+    def _channel_color_control_count(self, node_id: str) -> int:
+        state = self._channel_color_reference_state(node_id)
+        if state is not None:
+            for index, axis in enumerate(state.axes):
+                if (axis.type == "channel" or axis.name.lower() == "c") and (
+                    axis.name.lower() not in {"rgb", "rgba"}
+                ):
+                    return int(state.shape[index])
+        data = (
+            self.pipeline.outputs.get(node_id)
+            if self.pipeline.nodes[node_id].operation_id == "input"
+            else self.pipeline.input_data_for_node(node_id)
+        )
+        if data is None:
+            return 0
+        axis = self._selected_channel_axis(node_id, np.asarray(data))
+        if axis is None:
+            return 0
+        return int(np.asarray(data).shape[axis])
+
+    def _channel_color_reference_state(self, node_id: str):
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return None
+        if node.operation_id == "input":
+            return self.pipeline.output_states.get(node_id)
+        return self.pipeline.input_state_for_node(node_id)
+
+    def _node_channel_color_choices(self, node_id: str, count: int, state) -> list[str]:
+        node = self.pipeline.nodes[node_id]
+        raw = str(node.params.get("channel_colors", "")).strip()
+        if raw:
+            colors = [part.strip().title() for part in raw.split(",") if part.strip()]
+            defaults = self._metadata_or_default_channel_colors(state, count)
+            while len(colors) < count:
+                colors.append(defaults[len(colors)])
+        else:
+            colors = self._metadata_or_default_channel_colors(state, count)
+        valid = {choice.lower(): choice for choice in CHANNEL_COLOR_CHOICES}
+        fallback = self._metadata_or_default_channel_colors(state, count)
+        return [
+            valid.get(str(color).lower(), fallback[index])
+            for index, color in enumerate(colors[:count])
+        ]
+
+    def _metadata_or_default_channel_colors(self, state, count: int) -> list[str]:
+        metadata_colors = ()
+        if state is not None:
+            metadata_colors = tuple(channel.color for channel in state.channels)
+        return channel_color_labels_from_metadata(metadata_colors, count)
+
+    def _channel_color_control_labels(self, count: int, state) -> list[str]:
+        labels: list[str] = []
+        channels = tuple(getattr(state, "channels", ())) if state is not None else ()
+        for index in range(count):
+            label = ""
+            if index < len(channels):
+                label = str(getattr(channels[index], "name", "")).strip()
+            labels.append(label or f"Channel {index + 1}")
+        return labels
+
+    def _on_metadata_channel_color_changed(self, slot: int, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id not in {"input", "assign_channel_colors"}:
+            return
+        count = self._channel_color_control_count(node_id)
+        if slot >= count:
+            return
+        state = self._channel_color_reference_state(node_id)
+        colors = self._node_channel_color_choices(node_id, count, state)
+        if colors[slot] == str(value):
+            return
+        self._record_parameter_undo(node_id, f"channel_color_{slot}")
+        colors[slot] = str(value)
+        node.params["channel_colors"] = ",".join(colors)
+        self._update_thumbnails()
+        self._debounce_timer.start()
 
     def _on_image_source_changed(self, value: dict[str, object]) -> None:
         node = self.pipeline.nodes[self._selected_node_id]
@@ -3195,6 +3935,17 @@ class VippWidget(QWidget):
         self.parameter_form.addRow(control)
         self._parameter_widgets["axis_slice"] = control
 
+    def _render_reorder_axes_parameters(self, node_id: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        control = ReorderAxesControl(
+            self._axis_slice_options_for(node_id),
+            str(node.params.get("order", "")),
+        )
+        self._apply_reorder_axes_params(node_id, control.value())
+        control.valueChanged.connect(self._on_reorder_axes_changed)
+        self.parameter_form.addRow(control)
+        self._parameter_widgets["order"] = control
+
     def _refresh_selected_parameter_controls(self) -> bool:
         if self._selected_node_id not in self.pipeline.nodes:
             return False
@@ -3238,6 +3989,21 @@ class VippWidget(QWidget):
                 )
                 changed = previous != node.params
             return changed
+        if node.operation_id == "reorder_axes":
+            widget = self._parameter_widgets.get("order")
+            if isinstance(widget, ReorderAxesControl):
+                previous = dict(node.params)
+                widget.set_options(
+                    self._axis_slice_options_for(self._selected_node_id),
+                    str(node.params.get("order", "")),
+                    emit=False,
+                )
+                self._apply_reorder_axes_params(
+                    self._selected_node_id,
+                    widget.value(),
+                )
+                changed = previous != node.params
+            return changed
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
             changed = True
         if self._sync_clip_intensity_defaults(self._selected_node_id):
@@ -3254,13 +4020,6 @@ class VippWidget(QWidget):
                 previous = spec.default
                 node.params[spec.name] = previous
                 changed = True
-            if spec.name == "channel_axis":
-                preferred = self._preferred_channel_axis(self._selected_node_id)
-                if preferred is not None:
-                    previous = preferred
-                    if node.params.get(spec.name) != preferred:
-                        node.params[spec.name] = preferred
-                        changed = True
             bounds = self._parameter_bounds_for(self._selected_node_id, spec)
             if isinstance(widget, ChoiceControl):
                 widget.set_choices(spec.choices, previous, emit=False)
@@ -3274,7 +4033,26 @@ class VippWidget(QWidget):
                 changed = True
         if node.operation_id == "fill_holes":
             self._update_fill_holes_scope_note()
+        if node.operation_id == "gaussian_blur_3d":
+            changed = self._sync_gaussian_blur_3d_xy_lock(
+                self._selected_node_id,
+                source_name="sigma_y",
+            ) or changed
         return changed
+
+    def _parameter_spec_hidden(self, node_id: str, spec) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
+            and spec.name == "threshold_scope"
+        ):
+            data = self.pipeline.input_data_for_node(node_id)
+            if data is None:
+                return False
+            state = self.pipeline.input_state_for_node(node_id)
+            return not _histogram_has_stack_scope(data, state)
+        return False
 
     def _effective_parameter_spec(self, node_id: str, spec):
         node = self.pipeline.nodes.get(node_id)
@@ -3357,7 +4135,13 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
-            and node.operation_id == "contrast_stretch"
+            and node.operation_id == "split_channels"
+            and spec.name == "preview_channel"
+        ):
+            return self._channel_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "linear_scale_offset"
             and spec.name in {"alpha", "beta"}
         ):
             return self._contrast_parameter_bounds(node_id, spec)
@@ -3379,7 +4163,7 @@ class VippWidget(QWidget):
             and spec.name in {"out_min", "out_max"}
         ):
             return self._rescale_output_bounds(node_id, spec)
-        if spec.name == "threshold":
+        if spec.name in {"threshold", "low_threshold", "high_threshold"}:
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
             return self._axis_bounds(node_id, spec)
@@ -3483,6 +4267,17 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, "axis_slice")
         self._apply_select_axis_slice_params(self._selected_node_id, value)
+        self._debounce_timer.start()
+
+    def _apply_reorder_axes_params(self, node_id: str, value: str) -> None:
+        self.pipeline.nodes[node_id].params["order"] = str(value)
+
+    def _on_reorder_axes_changed(self, value: str) -> None:
+        node = self.pipeline.nodes[self._selected_node_id]
+        if str(node.params.get("order", "")) == str(value):
+            return
+        self._record_parameter_undo(self._selected_node_id, "order")
+        self._apply_reorder_axes_params(self._selected_node_id, value)
         self._debounce_timer.start()
 
     def _on_combine_channels_input_count_changed(self, value) -> None:
@@ -3652,6 +4447,26 @@ class VippWidget(QWidget):
         if node is None or node.operation_id != "combine_channels":
             return None
         return self._combine_channels_colors(node)
+
+    def _thumbnail_payload_for_node(self, node_id: str, data):
+        state = self.pipeline.output_states.get(node_id)
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "split_channels":
+            return data, state
+        outputs = self.pipeline.node_outputs.get(node_id) or []
+        if not outputs:
+            return data, state
+        states = self.pipeline.node_output_states.get(node_id) or []
+        try:
+            index = int(node.params.get("preview_channel", 0))
+        except Exception:
+            index = 0
+        index = int(np.clip(index, 0, len(outputs) - 1))
+        selected = outputs[index]
+        if selected is None:
+            return data, state
+        selected_state = states[index] if 0 <= index < len(states) else state
+        return selected, selected_state
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -3860,6 +4675,36 @@ class VippWidget(QWidget):
         node.params[name] = value
         return True
 
+    def _sync_gaussian_blur_3d_xy_lock(
+        self,
+        node_id: str,
+        *,
+        source_name: str,
+    ) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "gaussian_blur_3d":
+            return False
+        if not bool(node.params.get("lock_xy", True)):
+            return False
+        if source_name not in {"sigma_y", "sigma_x"}:
+            source_name = "sigma_y"
+        target_name = "sigma_x" if source_name == "sigma_y" else "sigma_y"
+        value = node.params.get(source_name)
+        if value is None:
+            return False
+        changed = self._set_node_param_if_changed(node_id, target_name, value)
+        if changed:
+            widget = self._parameter_widgets.get(target_name)
+            spec = self._parameter_spec_by_name(node_id, target_name)
+            if widget is not None and spec is not None:
+                spec = self._effective_parameter_spec(node_id, spec)
+                widget.set_bounds(
+                    self._parameter_bounds_for(node_id, spec),
+                    value,
+                    emit=False,
+                )
+        return changed
+
     def _refresh_rescale_cutoff_widgets(self, node_id: str) -> None:
         for name in RESCALE_CUTOFF_PARAMETERS:
             widget = self._parameter_widgets.get(name)
@@ -4044,21 +4889,24 @@ class VippWidget(QWidget):
         arr = np.asarray(data)
         axis = self._selected_channel_axis(node_id, arr)
         maximum = arr.shape[axis] - 1 if axis is not None else 0
-        return ParameterBounds(0, maximum, 1, 0)
+        return ParameterBounds(spec.minimum, max(maximum, spec.minimum), 1, 0)
 
     def _channel_axis_bounds(self, node_id: str, spec) -> ParameterBounds:
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         maximum = max(np.asarray(data).ndim - 1, 0)
-        return ParameterBounds(0, maximum, 1, 0)
+        return ParameterBounds(spec.minimum, max(maximum, spec.minimum), 1, 0)
 
     def _selected_channel_axis(self, node_id: str, arr: np.ndarray) -> int | None:
         node = self.pipeline.nodes.get(node_id)
         if node is not None and "channel_axis" in node.params:
-            return int(
-                np.clip(int(node.params.get("channel_axis", 0)), 0, arr.ndim - 1)
-            )
+            try:
+                stored = int(node.params.get("channel_axis", -1))
+            except Exception:
+                stored = -1
+            if stored >= 0:
+                return int(np.clip(stored, 0, arr.ndim - 1))
         preferred = self._preferred_channel_axis(node_id)
         if preferred is not None:
             return preferred
@@ -4265,6 +5113,17 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if node.operation_id == "gaussian_blur_3d":
+            if name == "lock_xy" and bool(value):
+                self._sync_gaussian_blur_3d_xy_lock(
+                    self._selected_node_id,
+                    source_name="sigma_y",
+                )
+            elif name in {"sigma_y", "sigma_x"}:
+                self._sync_gaussian_blur_3d_xy_lock(
+                    self._selected_node_id,
+                    source_name=name,
+                )
         if name == "input_count":
             for connection in self.pipeline.trim_invalid_connections(
                 self._selected_node_id
@@ -4298,6 +5157,14 @@ class VippWidget(QWidget):
                 and name in CLIP_CUTOFF_PARAMETERS
             )
             or (node.operation_id == "binary_threshold" and name == "threshold")
+            or (
+                node.operation_id == "hysteresis_threshold"
+                and name in {"low_threshold", "high_threshold"}
+            )
+            or (
+                node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
+                and name == "threshold_scope"
+            )
         ):
             self._update_rescale_input_histogram(
                 self._selected_node_id,
@@ -4332,7 +5199,7 @@ class VippWidget(QWidget):
     def _apply_auto_contrast(self) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "contrast_stretch":
+        if node is None or node.operation_id != "linear_scale_offset":
             return
 
         data = self.pipeline.input_data_for_node(node_id)
@@ -4452,16 +5319,17 @@ class VippWidget(QWidget):
         current_step = (
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
-        previews_visible_globally = mode.lower() != "off"
+        contrast_mode = self.thumbnail_contrast_combo.currentText()
+        previews_visible_globally = (
+            self.global_thumbnail_checkbox.isChecked() and mode.lower() != "off"
+        )
         for node_id, data in self.pipeline.outputs.items():
+            node_output_type = self._node_output_type(node_id)
             self.graph_view.set_node_metadata(
                 node_id,
                 format_compact_metadata(self.pipeline.output_states.get(node_id)),
             )
-            self.graph_view.set_node_output_type(
-                node_id,
-                self._node_output_type(node_id),
-            )
+            self.graph_view.set_node_output_type(node_id, node_output_type)
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
             preview_enabled = (
                 previews_visible_globally and self._node_preview_enabled(node_id)
@@ -4470,14 +5338,24 @@ class VippWidget(QWidget):
             if not preview_enabled:
                 self.graph_view.set_thumbnail(node_id, None)
                 continue
-            preview = make_preview(
+            preview_data, preview_state = self._thumbnail_payload_for_node(
+                node_id,
                 data,
+            )
+            preview = make_preview(
+                preview_data,
                 mode=mode,
                 current_step=current_step,
-                state=self.pipeline.output_states.get(node_id),
+                state=preview_state,
                 channel_colors=self._node_preview_channel_colors(node_id),
+                contrast_mode=contrast_mode,
             )
-            thumbnail = normalize_thumbnail(preview)
+            thumbnail = normalize_thumbnail_with_colormap(
+                preview,
+                colormap=self.thumbnail_colormap_combo.currentText(),
+                contrast_mode=contrast_mode,
+                data_kind=node_output_type,
+            )
             self.graph_view.set_thumbnail(node_id, thumbnail)
         if (
             self._active_pinned_node_id is not None
@@ -4575,12 +5453,14 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None:
             self.rescale_input_histogram_group.setHidden(True)
+            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_plot.set_histogram(None, log_scale=False)
             return
         data = self.pipeline.outputs.get(self._selected_node_id)
         if is_table_data(data):
             self.rescale_input_histogram_group.setHidden(True)
+            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_group.setHidden(True)
             self.histogram_plot.set_histogram(None, log_scale=False)
@@ -4617,16 +5497,35 @@ class VippWidget(QWidget):
         visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
         self.rescale_input_histogram_group.setHidden(not visible)
         if not visible:
+            self.rescale_input_histogram_group.setTitle("Input Histogram")
+            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             return
 
         data = self.pipeline.input_data_for_node(node_id)
         if data is None or is_table_data(data):
+            self.rescale_input_histogram_group.setTitle("Input Histogram")
+            self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             return
 
         state = self.pipeline.input_state_for_node(node_id)
-        scope = self.histogram_scope_combo.currentText()
+        scope_available = _histogram_has_stack_scope(data, state)
+        if node.operation_id in GLOBAL_THRESHOLD_OPERATIONS:
+            scope = str(node.params.get("threshold_scope", "Stack histogram"))
+            scope_label = _threshold_histogram_scope_label(scope)
+            self.rescale_input_histogram_group.setTitle(
+                f"Input Histogram ({scope_label})"
+            )
+            self.rescale_input_histogram_scope_row.setHidden(True)
+        else:
+            self.rescale_input_histogram_group.setTitle("Input Histogram")
+            self.rescale_input_histogram_scope_row.setHidden(not scope_available)
+            scope = (
+                self.rescale_input_histogram_scope_combo.currentText()
+                if scope_available
+                else "Slice"
+            )
         counts, x_range, colors = _histogram_summary(
             data,
             state=state,
@@ -4909,6 +5808,7 @@ class VippWidget(QWidget):
             "data_kind": data_kind,
             "display_kind": self._display_kind(data_kind, "pinned"),
             "display_ndim": np.asarray(display_data).ndim,
+            "display_rgb": self._display_rgb(data, node_id),
             "vipp_image_state": self._node_state_dict(node_id),
         }
         layer = self._active_pinned_layer()
@@ -5010,6 +5910,7 @@ class VippWidget(QWidget):
             "data_kind": data_kind,
             "display_kind": self._display_kind(data_kind, role),
             "display_ndim": np.asarray(display_data).ndim,
+            "display_rgb": self._display_rgb(data, metadata.get("node_id")),
         }
         layer = self._layer_by_name(name)
         if layer is None:
@@ -5029,6 +5930,8 @@ class VippWidget(QWidget):
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             return self.viewer.add_labels(display_data, name=name, metadata=metadata)
         kwargs = {"name": name, "metadata": metadata}
+        if metadata.get("display_rgb"):
+            kwargs["rgb"] = True
         if metadata["data_kind"] == "mask":
             kwargs.update(
                 {
@@ -5048,6 +5951,8 @@ class VippWidget(QWidget):
             layer.metadata.get("display_kind") != metadata["display_kind"]
             or layer.metadata.get("data_kind") != metadata["data_kind"]
             or layer.metadata.get("display_ndim") != metadata["display_ndim"]
+            or bool(layer.metadata.get("display_rgb"))
+            != bool(metadata.get("display_rgb"))
         )
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
@@ -5115,6 +6020,16 @@ class VippWidget(QWidget):
                 return "labels"
         return "mask" if np.asarray(data).dtype == bool else "image"
 
+    def _display_rgb(self, data, node_id: str | None = None) -> bool:
+        if data is None or is_table_data(data):
+            return False
+        arr = np.asarray(data)
+        if arr.ndim < 3 or arr.shape[-1] not in (3, 4):
+            return False
+        state = self.pipeline.output_states.get(node_id) if node_id else None
+        kind = str(getattr(state, "kind", "")).lower()
+        return kind in {"rgb image", "rgba image"}
+
     def _display_data(self, data):
         if is_table_data(data):
             raise ValueError(
@@ -5180,7 +6095,7 @@ class VippWidget(QWidget):
     def _sync_auto_contrast_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
         self.auto_contrast_group.setVisible(
-            node is not None and node.operation_id == "contrast_stretch"
+            node is not None and node.operation_id == "linear_scale_offset"
         )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
@@ -5224,10 +6139,55 @@ class VippWidget(QWidget):
         return f"VIPP Pinned: {title}"
 
     def _current_step(self):
+        raw_step = self._raw_current_step()
+        if raw_step is None:
+            return None
+        return self._canonical_current_step(raw_step)
+
+    def _raw_current_step(self):
         try:
             return tuple(self.viewer.dims.current_step)
         except Exception:
             return None
+
+    def _canonical_current_step(self, current_step: tuple) -> tuple:
+        layer = self._layer_by_name(self._inspect_layer_name)
+        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
+        if not isinstance(metadata, dict):
+            return current_step
+        node_id = metadata.get("node_id")
+        state = self.pipeline.output_states.get(node_id)
+        axes = tuple(getattr(state, "axes", ()))
+        if not axes:
+            return current_step
+        display_axis_indices = [
+            index
+            for index, axis in enumerate(axes)
+            if not _state_axis_hidden_from_napari_dims(axis, metadata)
+        ]
+        if not display_axis_indices:
+            return current_step
+        offset = max(len(current_step) - len(display_axis_indices), 0)
+        source_axes = [
+            int(axis.source_axis)
+            for axis in axes
+            if getattr(axis, "source_axis", None) is not None
+        ]
+        if not source_axes:
+            return current_step
+        canonical = [0] * (max(source_axes) + 1)
+        for display_position, state_axis_index in enumerate(display_axis_indices):
+            current_index = offset + display_position
+            if current_index < 0 or current_index >= len(current_step):
+                continue
+            axis = axes[state_axis_index]
+            source_axis = getattr(axis, "source_axis", None)
+            if source_axis is None:
+                continue
+            source_axis = int(source_axis)
+            if 0 <= source_axis < len(canonical):
+                canonical[source_axis] = int(current_step[current_index])
+        return tuple(canonical)
 
     def _node_title(self, node_id: str) -> str:
         return self.pipeline.nodes[node_id].title
@@ -5460,7 +6420,37 @@ def _input_histogram_markers(
     if operation_id == "binary_threshold":
         threshold = _safe_float((params or {}).get("threshold"), 0.0)
         return [("threshold", float(threshold), QColor("#f59e0b"))]
+    if operation_id == "hysteresis_threshold":
+        low = _safe_float((params or {}).get("low_threshold"), 0.0)
+        high = _safe_float((params or {}).get("high_threshold"), low)
+        if low > high:
+            low, high = high, low
+        markers = [("low", float(low), QColor("#f59e0b"))]
+        if not np.isclose(low, high):
+            markers.append(("high", float(high), QColor("#38bdf8")))
+        return markers
+    if operation_id in GLOBAL_THRESHOLD_OPERATIONS:
+        source = _histogram_source(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+        )
+        if source is None:
+            return []
+        value = automatic_threshold_value(source[0], operation_id)
+        if value is None or not np.isfinite(value):
+            return []
+        return [("threshold", float(value), QColor("#f59e0b"))]
     return []
+
+
+def _threshold_histogram_scope_label(scope: str) -> str:
+    return (
+        "Stack histogram"
+        if str(scope).strip().lower().startswith("stack")
+        else "Slice histogram"
+    )
 
 
 def _rescale_percentile_markers(
@@ -5585,7 +6575,7 @@ def _histogram_source(
 ) -> tuple[np.ndarray, int | None, str] | None:
     arr = np.asarray(data)
     channel_axis, channel_axis_name = _histogram_channel_axis(arr, state)
-    if scope.lower() == "stack":
+    if str(scope).strip().lower().startswith("stack"):
         return arr, channel_axis, channel_axis_name
 
     if state is not None:
@@ -5676,15 +6666,19 @@ def _metadata_current_step_axis(state, axis_index: int, current_step=None) -> in
     except Exception:
         current_ndim = 0
     axes = tuple(getattr(state, "axes", ()))
-    if current_ndim <= len(axes):
-        return axis_index
     try:
         source_axis = axes[axis_index].source_axis
     except Exception:
         source_axis = None
-    if source_axis is None:
-        return axis_index
-    return int(source_axis)
+    if source_axis is not None and 0 <= int(source_axis) < current_ndim:
+        return int(source_axis)
+    return axis_index
+
+
+def _state_axis_hidden_from_napari_dims(axis, metadata: dict) -> bool:
+    if not bool(metadata.get("display_rgb")):
+        return False
+    return str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
 
 
 def _histogram_axis_index(axis: int, axis_size: int, current_step=None) -> int:
@@ -5704,6 +6698,99 @@ def _control_signal_blockers(widgets):
         yield
     finally:
         del blockers
+
+
+def _axis_order_item_text(option: AxisSliceOption) -> str:
+    return f"{option.title}    {option.axis_type} axis, size {int(option.size)}"
+
+
+def _axis_order_value(ordered: list[AxisSliceOption]) -> str:
+    names = [str(option.name).strip() for option in ordered]
+    normalized = [name.lower() for name in names]
+    if (
+        all(len(name) == 1 for name in names)
+        and len(set(normalized)) == len(normalized)
+    ):
+        return "".join(name.upper() for name in names)
+    if (
+        all(name and not any(char in name for char in ",; ") for name in names)
+        and len(set(normalized)) == len(normalized)
+    ):
+        return ",".join(names)
+    return ",".join(str(option.index) for option in ordered)
+
+
+def _axis_options_from_order(
+    order,
+    options: list[AxisSliceOption],
+) -> list[AxisSliceOption]:
+    if not options:
+        return []
+    tokens = _axis_order_tokens(order)
+    if not tokens:
+        return list(options)
+    if len(tokens) != len(options):
+        return list(options)
+
+    by_index = {option.index: option for option in options}
+    numeric = _numeric_axis_order(tokens, set(by_index))
+    if numeric is not None:
+        return [by_index[index] for index in numeric]
+
+    named = _named_axis_order(tokens, options)
+    if named is not None:
+        return named
+    return list(options)
+
+
+def _axis_order_tokens(order) -> list[str]:
+    if order is None:
+        return []
+    if isinstance(order, (list, tuple)):
+        return [str(part).strip() for part in order if str(part).strip()]
+    text = str(order).strip()
+    if not text:
+        return []
+    if any(separator in text for separator in (",", ";", " ")):
+        normalized = text.replace(";", ",").replace(" ", ",")
+        return [part.strip() for part in normalized.split(",") if part.strip()]
+    return list(text)
+
+
+def _numeric_axis_order(
+    tokens: list[str],
+    valid_indices: set[int],
+) -> list[int] | None:
+    indices: list[int] = []
+    try:
+        for token in tokens:
+            indices.append(int(token))
+    except ValueError:
+        return None
+    if set(indices) != valid_indices or len(set(indices)) != len(indices):
+        return None
+    return indices
+
+
+def _named_axis_order(
+    tokens: list[str],
+    options: list[AxisSliceOption],
+) -> list[AxisSliceOption] | None:
+    used: set[int] = set()
+    ordered: list[AxisSliceOption] = []
+    for token in tokens:
+        target = str(token).strip().lower()
+        matches = [
+            option
+            for option in options
+            if option.name.lower() == target and option.index not in used
+        ]
+        if not matches:
+            return None
+        option = matches[0]
+        ordered.append(option)
+        used.add(option.index)
+    return ordered
 
 
 def _axis_slice_state_from_value(

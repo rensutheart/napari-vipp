@@ -10,6 +10,8 @@
   writes calibrated hyperstacks; conventional TIFF preserves 32-bit label IDs.
 - Added local OME-Zarr 0.4/0.5 image import/export with lazy Dask-backed reads,
   semantic axes, scale, channel names, and namespaced VIPP provenance.
+- OME-Zarr export now explicitly stores channel/display metadata so channel
+  names round-trip across current `ome-zarr` writer behavior.
 - Added graph-aware Export OME Analysis Dataset for a reference image plus
   OME-Zarr `image-label` groups, preserving integer label IDs and label-node
   provenance.
@@ -29,6 +31,58 @@
   axes, such as `Split Channels` removing C from `TCZYX`. Napari-layer sources
   now also right-align their axes to the current viewer dimensions, and thumbnail
   refreshes listen to durable dims callbacks.
+- Added independent slice-vs-stack selectors for input histograms on
+  cutoff nodes such as `Rescale Intensity`, `Clip`, and `Binary Threshold`.
+- Reorganized the palette so intensity remapping nodes live under `Intensity &
+  Contrast`, `Convert Dtype` is the first `Image Data > Utilities` node, and
+  alpha/beta contrast now uses the `linear_scale_offset` operation and appears
+  as `Linear Scale + Offset`.
+- Expanded filtering and segmentation nodes with filtering subgroups for
+  smoothing/denoising versus edge/detail operations, and segmentation subgroups
+  for global versus local thresholding. Added Li, Yen, Isodata, Minimum,
+  Sauvola, and Niblack threshold nodes plus Difference of Gaussians, Unsharp
+  Mask, Sobel, Laplace, and Non-Local Means filtering nodes.
+- Added `Hysteresis Threshold` under global threshold segmentation and
+  `Canny Edges` under `Filtering > Edge & Detail`. Hysteresis exposes low/high
+  input-histogram markers and 2D/3D spatial processing; Canny runs slice-wise
+  with quantile thresholds.
+- Added a reusable stack-processing notice for slice-wise nodes. XY-only
+  filters, local thresholds, edge detectors, and XY morphology now warn on stack
+  inputs that they process each `YX` slice independently and suggest
+  `Reorder Axes` when another plane is intended.
+- Global automatic threshold nodes now expose `Threshold uses` on stack inputs,
+  defaulting to `Stack histogram` with an optional `Slice histogram` mode. The
+  control changes how the cutoff is computed, not whether the output is a stack,
+  and the input histogram now shows a live marker at the chosen threshold.
+- Added `Reorder Axes`, which transposes arrays from a draggable axis-order
+  list and reinterprets spatial metadata by output position so downstream
+  nodes treat the result as a reoriented volume. Its graph thumbnail remains
+  state-aware and follows napari slice sliders after the transpose.
+- Added node right-click context menus with Delete, Inspect Code, Duplicate
+  Node, and contextual Pin/Unpin actions. Node-card pin buttons were removed;
+  pinning remains available from the inspector and context menu. Inspect Code
+  now uses lightweight Python syntax highlighting.
+- Channel pseudo-colours are now carried through `ChannelMetadata.color`.
+  Image Source exposes channel colour controls when a channel axis is known,
+  Combine Channels writes its colour choices into metadata, and the new
+  `Assign Channel Colors` node can reassign colours mid-workflow without
+  changing pixel data.
+- Composite → RGB auto mode now blends source channels by carried
+  pseudo-colours, so yellow/cyan/magenta channels contribute to the appropriate
+  RGB planes. Manual red/green/blue channel selectors still force explicit
+  single-channel plane mapping.
+- Added a toolbar `Mono` colormap selector for monochrome graph thumbnails,
+  including gray, perceptual-style maps, and common fluorescence colours.
+- Added global thumbnail display controls: a `Thumbnails` show/hide checkbox
+  and a `Contrast` selector with `Percentile`, `Min-max`, and `Raw` modes.
+  Per-node thumbnail disabling remains available as an additional opt-out.
+- Composite → RGB auto-mapping now matches graph thumbnail fluorescence colour
+  order for ordinary channel stacks while preserving true RGB/RGBA inputs, uses
+  robust per-channel contrast for display-like RGB output, and keeps time/Z
+  slider mapping aligned with the source image.
+- Split Channels now has an inspector `Thumbnail channel` control for choosing
+  which output port is shown on the node card without changing the actual
+  channel outputs or downstream wiring.
 - Added first-class table outputs, CSV/TSV table saving, table metadata
   summaries, generated-script table export, and an inspector table preview.
 - Table-only nodes now hide the per-node thumbnail toggle instead of showing a
@@ -97,6 +151,15 @@
   image. By default the channel axis is auto-detected and channels map in order
   (0→R, 1→G, 2→B; single channel→white); the channel axis and per-plane channel
   selections can be set explicitly.
+- Fixed `Composite → RGB` controls so `-1 auto` remains selectable, auto channel
+  detection uses carried axis metadata such as `CZYX`, and constant nonzero
+  channels render visibly instead of becoming black. Generated RGB outputs are
+  now added to napari with `rgb=True` so the RGB axis is not mistaken for a
+  spatial/data slider.
+- VIPP now maps napari slider positions back into canonical source-axis
+  coordinates before updating thumbnails, histograms, and current-view labels.
+  This keeps Z stepping linked between CZYX source images and ZYX RGB outputs
+  even though napari exposes different slider counts for those layers.
 - Added true multi-output support to the graph model, canvas, persistence, and
   Python export: connections now carry a `source_port`, nodes can declare static
   `OutputSpec` ports or a dynamic `output_factory`, and downstream wires resolve

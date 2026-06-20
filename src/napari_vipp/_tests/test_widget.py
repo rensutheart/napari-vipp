@@ -8,6 +8,7 @@ from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
     QMainWindow,
+    QPlainTextEdit,
     QScrollArea,
     QWidget,
 )
@@ -59,6 +60,7 @@ class _Layer:
         self.colormap = None
         self.contrast_limits = None
         self.visible = True
+        self.rgb = False
 
 
 class _LayerList(list):
@@ -103,6 +105,7 @@ class _Viewer:
         layer.blending = kwargs.get("blending")
         layer.colormap = kwargs.get("colormap")
         layer.contrast_limits = kwargs.get("contrast_limits")
+        layer.rgb = bool(kwargs.get("rgb", False))
         self.layers.append(layer)
         return layer
 
@@ -210,6 +213,47 @@ def test_deleting_all_nodes_leaves_empty_inspector_without_error(qtbot):
     assert widget.parameter_group.isHidden()
     assert widget.metadata_table.rowCount() == 0
     assert widget.history_label.text() == "No history yet."
+
+
+def test_duplicate_node_copies_parameters_without_connections(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("gaussian", "sigma", 3.5)
+    before_ids = set(widget.pipeline.nodes)
+
+    widget._duplicate_node("gaussian")
+
+    new_ids = set(widget.pipeline.nodes) - before_ids
+    assert len(new_ids) == 1
+    clone_id = new_ids.pop()
+    clone = widget.pipeline.nodes[clone_id]
+    assert clone.operation_id == "gaussian_blur"
+    assert clone.params["sigma"] == 3.5
+    assert not any(
+        connection.source_id == clone_id or connection.target_id == clone_id
+        for connection in widget.pipeline.connections
+    )
+    assert widget._selected_node_id == clone_id
+
+
+def test_node_code_text_includes_call_and_source(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    code = widget._node_code_text("gaussian")
+
+    assert "from napari_vipp.core.operations import gaussian_blur" in code
+    assert "output = gaussian_blur(input_output" in code
+    assert "def gaussian_blur" in code
+
+    widget._inspect_node_code("gaussian")
+    dialog = widget._code_dialogs[-1]
+    editor = dialog.findChild(QPlainTextEdit)
+    assert editor is not None
+    assert hasattr(editor, "_vipp_python_highlighter")
+    dialog.close()
 
 
 def test_undo_redo_restores_deleted_node_and_connections(qtbot):
@@ -496,6 +540,7 @@ def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
         current_step,
         state=None,
         channel_colors=None,
+        contrast_mode="Percentile",
     ):
         calls.append(tuple(current_step))
         return np.zeros((16, 18), dtype=np.uint8)
@@ -531,7 +576,8 @@ def test_widget_pins_threshold_as_labels(qtbot):
     pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
-    assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
+    assert widget.graph_view._cards["threshold"]._pinned
+    assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert widget.pin_button.isHidden()
 
 
@@ -849,18 +895,62 @@ def test_pin_toggles_active_node_layer(qtbot):
     assert pinned_layers == []
     assert widget._active_pinned_node_id is None
     assert len(viewer.layers) == 2
-    assert widget.graph_view._cards["threshold"].pin_button.text() == "Pin"
+    assert not widget.graph_view._cards["threshold"]._pinned
+    assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert widget.status_label.text() == "Unpinned 'Otsu Threshold'."
 
 
 def test_nodes_without_parameters_hide_parameter_group(qtbot):
-    viewer = _Viewer()
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32), metadata={"axes": "YX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget._select_node("threshold")
+    node = widget.add_node_from_palette("sobel_filter")
+    widget._select_node(node.id)
 
     assert widget.parameter_group.isHidden()
+
+
+def test_slice_wise_stack_node_shows_axis_notice(qtbot):
+    viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("canny_edges")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    notice = widget._parameter_widgets["operation_notice"]
+
+    assert not widget.parameter_group.isHidden()
+    assert "processes each YX slice independently" in notice.text()
+    assert "Reorder Axes" in notice.text()
+
+
+def test_slice_wise_stack_notice_can_be_only_parameter_content(qtbot):
+    viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("sobel_filter")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert not widget.parameter_group.isHidden()
+    assert set(widget._parameter_widgets) == {"operation_notice"}
+
+
+def test_slice_wise_notice_hides_for_2d_input(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32), metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("canny_edges")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "operation_notice" not in widget._parameter_widgets
+    assert not widget.parameter_group.isHidden()
 
 
 def test_palette_has_bottom_scroll_slack(qtbot):
@@ -917,31 +1007,144 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
         "Source & Output",
         "Axes & Regions",
         "Channels & Composites",
-        "Type & Scaling",
+        "Utilities",
         "Math & Logic",
     } <= subgroup_names
 
     source_output = _palette_child_by_text(image_data, "Source & Output")
     axes_regions = _palette_child_by_text(image_data, "Axes & Regions")
     channels = _palette_child_by_text(image_data, "Channels & Composites")
-    type_scaling = _palette_child_by_text(image_data, "Type & Scaling")
+    utilities = _palette_child_by_text(image_data, "Utilities")
     math_logic = _palette_child_by_text(image_data, "Math & Logic")
+    intensity = _palette_category(widget, "Intensity & Contrast")
 
     assert _palette_child_by_text(source_output, "Image Source")
     assert _palette_child_by_text(source_output, "Save Image")
     assert _palette_child_by_text(axes_regions, "Crop Stack")
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
+    assert _palette_child_by_text(axes_regions, "Reorder Axes")
     assert _palette_child_by_text(channels, "Extract Channel")
     assert _palette_child_by_text(channels, "Combine Channels")
     assert _palette_child_by_text(channels, "Split Channels")
     assert _palette_child_by_text(channels, "Composite \u2192 RGB")
-    assert _palette_child_by_text(type_scaling, "Convert Dtype")
-    assert _palette_child_by_text(type_scaling, "Rescale Intensity")
-    assert _palette_child_by_text(type_scaling, "Normalize")
-    assert _palette_child_by_text(type_scaling, "Clip")
+    assert _palette_child_by_text(utilities, "Convert Dtype")
+    assert _palette_child_by_text(intensity, "Rescale Intensity")
+    assert _palette_child_by_text(intensity, "Normalize")
+    assert _palette_child_by_text(intensity, "Clip")
+    assert _palette_child_by_text(intensity, "Linear Scale + Offset")
+    assert _palette_child_by_text(intensity, "Gamma Correction")
     assert _palette_child_by_text(math_logic, "Calculate New Image")
     assert _palette_child_by_text(math_logic, "Add")
     assert _palette_child_by_text(math_logic, "Logical XOR")
+
+
+def test_filtering_and_segmentation_categories_are_grouped(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    filtering = _palette_category(widget, "Filtering")
+    filtering_subgroups = {
+        filtering.child(index).text(0) for index in range(filtering.childCount())
+    }
+    assert {"Smoothing & Denoising", "Edge & Detail"} <= filtering_subgroups
+
+    smoothing = _palette_child_by_text(filtering, "Smoothing & Denoising")
+    edge_detail = _palette_child_by_text(filtering, "Edge & Detail")
+    assert _palette_child_by_text(smoothing, "Gaussian Blur")
+    assert _palette_child_by_text(smoothing, "Non-Local Means")
+    assert _palette_child_by_text(edge_detail, "Difference of Gaussians")
+    assert _palette_child_by_text(edge_detail, "Sobel Edges")
+    assert _palette_child_by_text(edge_detail, "Canny Edges")
+
+    segmentation = _palette_category(widget, "Segmentation")
+    segmentation_subgroups = {
+        segmentation.child(index).text(0)
+        for index in range(segmentation.childCount())
+    }
+    assert {"Global Thresholds", "Local Thresholds"} <= segmentation_subgroups
+    assert "Edge-Based" not in segmentation_subgroups
+
+    global_thresholds = _palette_child_by_text(segmentation, "Global Thresholds")
+    local_thresholds = _palette_child_by_text(segmentation, "Local Thresholds")
+    assert _palette_child_by_text(global_thresholds, "Otsu Threshold")
+    assert _palette_child_by_text(global_thresholds, "Li Threshold")
+    assert _palette_child_by_text(global_thresholds, "Hysteresis Threshold")
+    assert _palette_child_by_text(local_thresholds, "Adaptive Gaussian Threshold")
+    assert _palette_child_by_text(local_thresholds, "Sauvola Threshold")
+
+
+def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("li_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "threshold_scope" not in widget._parameter_widgets
+    assert widget.parameter_group.isHidden()
+
+
+def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("li_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "threshold_scope" in widget._parameter_widgets
+    assert not widget.parameter_group.isHidden()
+    control = widget._parameter_widgets["threshold_scope"]
+    label = widget.parameter_form.labelForField(control)
+    assert label.text() == "Threshold uses"
+    assert control.combo.itemText(0) == "Stack histogram"
+    assert control.combo.itemText(1) == "Slice histogram"
+    assert widget.pipeline.nodes[node.id].params["threshold_scope"] == (
+        "Stack histogram"
+    )
+
+
+def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
+    data = np.zeros((2, 10, 10), dtype=np.float32)
+    data[0, :, 5:] = 10.0
+    data[1, :, :5] = 100.0
+    data[1, :, 5:] = 110.0
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.rescale_input_histogram_scope_row.isHidden()
+    assert widget.rescale_input_histogram_group.title() == (
+        "Input Histogram (Stack histogram)"
+    )
+    stack_markers = {
+        label: value
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    }
+    assert "threshold" in stack_markers
+
+    widget._parameter_widgets["threshold_scope"].combo.setCurrentText(
+        "Slice histogram"
+    )
+
+    assert widget.rescale_input_histogram_group.title() == (
+        "Input Histogram (Slice histogram)"
+    )
+    slice_markers = {
+        label: value
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    }
+    assert "threshold" in slice_markers
+    assert not np.isclose(stack_markers["threshold"], slice_markers["threshold"])
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
@@ -1287,6 +1490,7 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
         "in_high_percentile",
     ]
     assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.rescale_input_histogram_scope_row.isHidden()
     assert widget.histogram_group.title() == "Output Histogram"
     assert widget.rescale_input_histogram_plot._counts.size == 256
     assert widget.histogram_plot._counts.size == 256
@@ -1303,6 +1507,33 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
 
     assert widget.rescale_input_histogram_group.isHidden()
     assert widget.histogram_group.title() == "Output Histogram"
+
+
+def test_input_histogram_scope_switches_between_slice_and_stack(qtbot):
+    data = np.zeros((2, 10, 10), dtype=np.uint8)
+    data[1] = 255
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert not widget.rescale_input_histogram_scope_row.isHidden()
+    assert widget.rescale_input_histogram_scope_combo.currentText() == (
+        "Slice histogram"
+    )
+    assert widget.histogram_scope_combo.currentText() == "Slice"
+    assert widget.rescale_input_histogram_plot._counts.sum() == 100.0
+    assert widget.histogram_plot._counts.sum() == 100.0
+
+    widget.rescale_input_histogram_scope_combo.setCurrentText("Stack histogram")
+
+    assert widget.rescale_input_histogram_plot._counts.sum() == 200.0
+    assert widget.histogram_scope_combo.currentText() == "Slice"
+    assert widget.histogram_plot._counts.sum() == 100.0
 
 
 def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
@@ -1400,6 +1631,25 @@ def test_binary_threshold_shows_input_histogram_marker(qtbot):
     ] == [("threshold", 128.0)]
 
 
+def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
+    viewer = _Viewer(np.arange(256, dtype=np.uint8).reshape(16, 16))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("hysteresis_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    widget._parameter_widgets["low_threshold"].value_box.setValue(64.0)
+    widget._parameter_widgets["high_threshold"].value_box.setValue(192.0)
+
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("low", 64.0), ("high", 192.0)]
+
+
 def test_selected_node_shows_output_metadata(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
     viewer = _Viewer(data)
@@ -1492,10 +1742,197 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
 
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.rgb
+    assert inspect.metadata["display_rgb"] is True
+    assert inspect.data.shape == (2, 4, 5, 6, 3)
     assert (
         "1. Composite \u2192 RGB: mapped channels to RGB"
         in widget.history_label.text()
     )
+
+
+def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
+    data = np.zeros((3, 12, 16, 18), dtype=np.uint16)
+    data[0] = 1000
+    data[1] = 2000
+    data[2] = 3000
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    channel_axis = widget._parameter_widgets["channel_axis"]
+    red_channel = widget._parameter_widgets["red_channel"]
+    assert channel_axis.slider.minimum() == -1
+    assert channel_axis.value_box.minimum() == -1
+    assert red_channel.slider.minimum() == -1
+    assert red_channel.value_box.minimum() == -1
+    assert widget.pipeline.nodes[node.id].params["channel_axis"] == -1
+    assert widget.pipeline.outputs[node.id].shape == (12, 16, 18, 3)
+    assert widget.pipeline.outputs[node.id].max() == 1.0
+    assert _metadata_value(widget, "Dimensions") == "z=12, y=16, x=18, rgb=3"
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.rgb
+    assert inspect.metadata["display_rgb"] is True
+
+    channel_axis.value_box.setValue(0)
+    red_channel.value_box.setValue(0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes[node.id].params["channel_axis"] == 0
+    assert widget.pipeline.nodes[node.id].params["red_channel"] == 0
+    assert widget.pipeline.outputs[node.id].max() == 1.0
+
+
+def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
+    data = np.zeros((3, 12, 16, 18), dtype=np.uint16)
+    for z_index in range(data.shape[1]):
+        data[:, z_index, z_index % data.shape[2], z_index % data.shape[3]] = 1000
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    viewer.dims.current_step = (5, 0, 0)
+    current_step = widget._current_step()
+    assert current_step == (0, 5, 0, 0)
+    input_first = make_preview(
+        widget.pipeline.outputs["input"],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states["input"],
+    )
+    rgb_first = make_preview(
+        widget.pipeline.outputs[node.id],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states[node.id],
+    )
+
+    viewer.dims.current_step = (9, 0, 0)
+    current_step = widget._current_step()
+    assert current_step == (0, 9, 0, 0)
+    input_second = make_preview(
+        widget.pipeline.outputs["input"],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states["input"],
+    )
+    rgb_second = make_preview(
+        widget.pipeline.outputs[node.id],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states[node.id],
+    )
+
+    assert not np.array_equal(input_first, input_second)
+    assert not np.array_equal(rgb_first, rgb_second)
+
+    widget.graph_view.select_node("input")
+    viewer.dims.current_step = (0, 7, 0, 0)
+    assert widget._current_step() == (0, 7, 0, 0)
+
+
+def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
+    data = np.zeros((5, 3, 12, 16, 18), dtype=np.uint16)
+    for time_index in range(data.shape[0]):
+        for z_index in range(data.shape[2]):
+            y_index = (time_index + z_index) % data.shape[3]
+            x_index = (2 * time_index + z_index) % data.shape[4]
+            data[time_index, :, z_index, y_index, x_index] = 1000
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    viewer.dims.current_step = (3, 5, 0, 0)
+    current_step = widget._current_step()
+    assert current_step == (3, 0, 5, 0, 0)
+    input_first = make_preview(
+        widget.pipeline.outputs["input"],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states["input"],
+    )
+    rgb_first = make_preview(
+        widget.pipeline.outputs[node.id],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states[node.id],
+    )
+
+    viewer.dims.current_step = (1, 9, 0, 0)
+    current_step = widget._current_step()
+    assert current_step == (1, 0, 9, 0, 0)
+    input_second = make_preview(
+        widget.pipeline.outputs["input"],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states["input"],
+    )
+    rgb_second = make_preview(
+        widget.pipeline.outputs[node.id],
+        mode="slice",
+        current_step=current_step,
+        state=widget.pipeline.output_states[node.id],
+    )
+
+    assert not np.array_equal(input_first, input_second)
+    assert not np.array_equal(rgb_first, rgb_second)
+
+    widget.graph_view.select_node("input")
+    viewer.dims.current_step = (4, 0, 7, 0, 0)
+    assert widget._current_step() == (4, 0, 7, 0, 0)
+
+
+def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
+    data = np.zeros((3, 2, 4, 5), dtype=np.uint16)
+    data[0] = 10
+    data[1] = 20
+    data[2] = 30
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    widget._connect_nodes("input", split.id)
+    widget.run_pipeline()
+    widget.graph_view.select_node(split.id)
+
+    control = widget._parameter_widgets["preview_channel"]
+    assert control.slider.minimum() == 0
+    assert control.slider.maximum() == 2
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+    ):
+        arr = np.asarray(data)
+        calls.append((tuple(arr.shape), int(arr.max())))
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget.pipeline.set_param(split.id, "preview_channel", 2)
+    widget._update_thumbnails()
+
+    assert ((2, 4, 5), 30) in calls
 
 
 def test_split_threshold_channel_drag_connects_to_label_node(qtbot):
@@ -1633,6 +2070,7 @@ def test_combine_channels_colour_change_refreshes_thumbnail_palette(
         current_step,
         state=None,
         channel_colors=None,
+        contrast_mode="Percentile",
     ):
         if channel_colors is not None:
             calls.append(list(channel_colors))
@@ -1746,6 +2184,146 @@ def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
     )
 
 
+def test_reorder_axes_updates_metadata_axes(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("reorder_axes")
+    widget._connect_nodes("input", node.id)
+    control = widget._parameter_widgets["order"]
+    assert [
+        control.list_widget.item(row).data(Qt.UserRole)
+        for row in range(control.list_widget.count())
+    ] == [0, 1, 2, 3, 4]
+
+    control.set_order("TZYXC")
+    widget.run_pipeline()
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.nodes[node.id].params["order"] == "TZYXC"
+    assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6, 3)
+    assert _metadata_value(widget, "Axes") == (
+        "t(time), z(space), y(space), x(space), c(channel)"
+    )
+    assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, c=3"
+    assert "1. Reorder Axes: reordered axes to TZYXC" in widget.history_label.text()
+
+    control.reset_order()
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes[node.id].params["order"] == ""
+    assert widget.pipeline.outputs[node.id].shape == data.shape
+
+
+def test_reorder_axes_list_drag_changes_order(qtbot):
+    data = np.zeros((2, 3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("reorder_axes")
+    widget._connect_nodes("input", node.id)
+    control = widget._parameter_widgets["order"]
+    control.show()
+    qtbot.waitExposed(control)
+    axis_list = control.list_widget
+    first = axis_list.visualItemRect(axis_list.item(0)).center()
+    third = axis_list.visualItemRect(axis_list.item(2)).center()
+
+    qtbot.mousePress(axis_list.viewport(), Qt.LeftButton, pos=first)
+    qtbot.mouseMove(axis_list.viewport(), pos=third)
+    qtbot.mouseRelease(axis_list.viewport(), Qt.LeftButton, pos=third)
+
+    order = [
+        axis_list.item(row).data(Qt.UserRole)
+        for row in range(axis_list.count())
+    ]
+    assert order == [1, 2, 0, 3, 4]
+    assert widget.pipeline.nodes[node.id].params["order"] == "CZTYX"
+
+
+def test_reorder_axes_reinterprets_spatial_axes_downstream(qtbot):
+    data = np.zeros((3, 12, 96, 128), dtype=np.uint16)
+    for y_index in range(data.shape[2]):
+        data[:, :, y_index, y_index % data.shape[3]] = 100
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    reorder = widget.add_node_from_palette("reorder_axes")
+    crop = widget.add_node_from_palette("crop_stack")
+    widget._connect_nodes("input", reorder.id)
+    widget._connect_nodes(reorder.id, crop.id)
+    widget.pipeline.set_param(reorder.id, "order", "CYZX")
+    widget.pipeline.set_param(crop.id, "top", 1)
+    widget.pipeline.set_param(crop.id, "bottom", 2)
+    widget.pipeline.set_param(crop.id, "left", 3)
+    widget.pipeline.set_param(crop.id, "right", 4)
+    widget.run_pipeline()
+
+    reorder_state = widget.pipeline.output_states[reorder.id]
+    crop_state = widget.pipeline.output_states[crop.id]
+
+    assert widget.pipeline.outputs[reorder.id].shape == (3, 96, 12, 128)
+    assert reorder_state.axis_order == "CZYX"
+    assert [axis.source_axis for axis in reorder_state.axes] == [0, 1, 2, 3]
+    assert "effective axes CZYX" in reorder_state.history[-1]
+    assert widget.pipeline.outputs[crop.id].shape == (3, 96, 9, 121)
+    assert crop_state.axis_order == "CZYX"
+
+    first = make_preview(
+        widget.pipeline.outputs[reorder.id],
+        mode="slice",
+        current_step=(0, 0, 0, 0),
+        state=reorder_state,
+    )
+    second = make_preview(
+        widget.pipeline.outputs[reorder.id],
+        mode="slice",
+        current_step=(0, 10, 0, 0),
+        state=reorder_state,
+    )
+    assert not np.array_equal(first, second)
+
+
+def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
+    data = np.zeros((3, 12, 96, 128), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    viewer.dims.current_step = (0, 7, 4, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("reorder_axes")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "order", "CYZX")
+    widget.run_pipeline()
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+    ):
+        calls.append((tuple(data.shape), current_step, state))
+        return np.zeros((5, 6), dtype=np.uint8)
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget._update_thumbnails()
+
+    reorder_shape = tuple(widget.pipeline.outputs[node.id].shape)
+    reorder_calls = [
+        call for call in calls if call[0] == reorder_shape
+    ]
+    assert reorder_calls
+    assert reorder_calls[-1][1] == (0, 7, 4, 0)
+    assert reorder_calls[-1][2].axis_order == "CZYX"
+
+
 def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
     viewer = _Viewer(data)
@@ -1798,6 +2376,7 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
         current_step,
         state=None,
         channel_colors=None,
+        contrast_mode="Percentile",
     ):
         calls.append(data)
         return None
@@ -1860,6 +2439,41 @@ def test_graph_wheel_zoom_can_report_beyond_slider_range(qtbot):
     assert widget.graph_zoom_slider.value() == 250
 
 
+def test_gaussian_blur_3d_can_lock_xy_sigma(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("gaussian_blur_3d")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    lock = widget._parameter_widgets["lock_xy"]
+    sigma_y = widget._parameter_widgets["sigma_y"]
+    sigma_x = widget._parameter_widgets["sigma_x"]
+
+    assert lock.checkbox.isChecked()
+
+    sigma_y.value_box.setValue(3.4)
+
+    assert widget.pipeline.nodes[node.id].params["sigma_y"] == 3.4
+    assert widget.pipeline.nodes[node.id].params["sigma_x"] == 3.4
+    assert sigma_x.value() == 3.4
+
+    sigma_x.value_box.setValue(1.6)
+
+    assert widget.pipeline.nodes[node.id].params["sigma_x"] == 1.6
+    assert widget.pipeline.nodes[node.id].params["sigma_y"] == 1.6
+    assert sigma_y.value() == 1.6
+
+    lock.checkbox.setChecked(False)
+    sigma_y.value_box.setValue(4.2)
+
+    assert widget.pipeline.nodes[node.id].params["lock_xy"] is False
+    assert widget.pipeline.nodes[node.id].params["sigma_y"] == 4.2
+    assert widget.pipeline.nodes[node.id].params["sigma_x"] == 1.6
+
+
 def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -1873,6 +2487,7 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
         current_step,
         state=None,
         channel_colors=None,
+        contrast_mode="Percentile",
     ):
         calls.append(data)
         return None
@@ -1884,6 +2499,100 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
     assert widget.graph_view._cards["input"].preview.isHidden()
     assert widget.graph_view._cards["gaussian"].preview.isHidden()
     assert widget.graph_view._cards["threshold"].preview.isHidden()
+
+
+def test_global_thumbnail_checkbox_skips_thumbnail_generation(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+    ):
+        calls.append(data)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget.global_thumbnail_checkbox.setChecked(False)
+
+    assert calls == []
+    assert widget.graph_view._cards["input"].preview.isHidden()
+    assert widget.graph_view._cards["gaussian"].preview.isHidden()
+    assert widget.graph_view._cards["threshold"].preview.isHidden()
+
+
+def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+    ):
+        calls.append(contrast_mode)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget.thumbnail_contrast_combo.setCurrentText("Raw")
+
+    assert calls
+    assert set(calls) == {"Raw"}
+
+
+def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    labels = widget.add_node_from_palette("label_connected_components")
+    widget._connect_nodes("threshold", labels.id)
+
+    calls = []
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+    ):
+        return np.zeros((4, 4), dtype=np.uint8)
+
+    def fake_normalize_thumbnail(
+        data,
+        size=(180, 110),
+        *,
+        colormap="Gray",
+        contrast_mode="Percentile",
+        data_kind="image",
+    ):
+        calls.append(data_kind)
+        return None
+
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    monkeypatch.setattr(
+        "napari_vipp._widget.normalize_thumbnail_with_colormap",
+        fake_normalize_thumbnail,
+    )
+
+    widget.thumbnail_contrast_combo.setCurrentText("Raw")
+
+    assert "labels" in calls
 
 
 def test_palette_adds_node_and_connects_branch(qtbot):
@@ -2131,7 +2840,8 @@ def test_mask_output_can_feed_projection_and_remain_pinnable(qtbot):
     }
     assert widget.pipeline.outputs[node.id].dtype == bool
     assert widget.graph_view._proxies[node.id].output_type == "mask"
-    assert not widget.graph_view._cards[node.id].pin_button.isHidden()
+    assert widget.graph_view._cards[node.id]._can_pin
+    assert widget.graph_view._cards[node.id].pin_button.isHidden()
 
     widget.pin_node(node.id)
 
@@ -2208,7 +2918,7 @@ def test_selecting_another_node_does_not_clear_pin(qtbot):
 
     assert widget._active_pinned_node_id == "threshold"
     assert widget.graph_view._cards["threshold"]._pinned
-    assert widget.graph_view._cards["threshold"].pin_button.text() == "Unpin"
+    assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
     assert widget.pin_button.isHidden()
 
@@ -2467,7 +3177,7 @@ def test_auto_contrast_button_updates_scale_and_offset(qtbot):
 
     assert widget.auto_contrast_group.isHidden()
 
-    node = widget.add_node_from_palette("contrast_stretch")
+    node = widget.add_node_from_palette("linear_scale_offset")
     widget._connect_nodes("input", node.id)
 
     assert not widget.auto_contrast_group.isHidden()

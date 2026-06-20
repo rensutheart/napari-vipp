@@ -11,6 +11,7 @@
         "file_path": "",
         "sample_name": "VIPP synthetic multichannel volume",
         "series_index": 0,
+        "channel_colors": "",
         "binding_mode": "single item"
       }
     },
@@ -24,12 +25,16 @@
     {
       "id": "threshold",
       "operation_id": "otsu_threshold",
-      "params": {}
+      "params": {
+        "threshold_scope": "Stack histogram"
+      }
     },
     {
       "id": "split_channels_1",
       "operation_id": "split_channels",
-      "params": {}
+      "params": {
+        "preview_channel": 0
+      }
     },
     {
       "id": "label_connected_components_1",

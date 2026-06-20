@@ -21,7 +21,6 @@ from qtpy.QtWidgets import (
     QGraphicsProxyWidget,
     QGraphicsScene,
     QGraphicsView,
-    QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
@@ -90,14 +89,9 @@ class NodeCard(QFrame):
         self.metadata_label.setStyleSheet(
             "color: #cbd5e1; font-size: 10px; padding-top: 2px;"
         )
-        self.pin_button = QPushButton("Pin")
+        self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
-        self.pin_button.setVisible(can_pin)
-
-        actions = QHBoxLayout()
-        actions.setContentsMargins(0, 0, 0, 0)
-        actions.addWidget(self.pin_button)
-        actions.addStretch(1)
+        self.pin_button.setVisible(False)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
@@ -106,7 +100,6 @@ class NodeCard(QFrame):
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview)
         layout.addWidget(self.metadata_label)
-        layout.addLayout(actions)
         self._refresh_style()
 
     def mousePressEvent(self, event):  # noqa: N802
@@ -206,7 +199,7 @@ class NodeCard(QFrame):
             }}
             """
         )
-        self.pin_button.setVisible(self._can_pin)
+        self.pin_button.setVisible(False)
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -747,6 +740,8 @@ class PipelineGraphView(QGraphicsView):
 
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
+    node_duplicate_requested = Signal(str)
+    node_code_requested = Signal(str)
     node_moved = Signal(str, object, object)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
@@ -879,6 +874,10 @@ class PipelineGraphView(QGraphicsView):
             pos = proxy.pos()
             positions[node_id] = (float(pos.x()), float(pos.y()))
         return positions
+
+    def node_position(self, node_id: str) -> QPointF | None:
+        proxy = self._proxies.get(node_id)
+        return QPointF(proxy.pos()) if proxy is not None else None
 
     def add_node(self, node, position: QPointF) -> None:
         card = NodeCard(
@@ -1182,6 +1181,16 @@ class PipelineGraphView(QGraphicsView):
     def mousePressEvent(self, event):  # noqa: N802
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
+        if event.button() == Qt.RightButton:
+            node_id = self._node_id_at_view_pos(pos)
+            if node_id is not None:
+                self._select_node(node_id)
+                self._show_node_context_menu(node_id, _global_pos_from_event(event))
+                event.accept()
+                return
+            if not background_click:
+                super().mousePressEvent(event)
+                return
         if (
             self._pending_source is not None
             and event.button() == Qt.LeftButton
@@ -1227,6 +1236,38 @@ class PipelineGraphView(QGraphicsView):
             if proxy is not None:
                 proxy.setSelected(card_id == node_id)
         self.node_selected.emit(node_id)
+
+    def _node_id_at_view_pos(self, pos: QPoint) -> str | None:
+        scene_pos = self.mapToScene(pos)
+        for item in self.scene.items(scene_pos):
+            current = item
+            while current is not None:
+                if isinstance(current, NodeProxy):
+                    return current.node_id
+                current = current.parentItem()
+        return None
+
+    def _show_node_context_menu(self, node_id: str, global_pos: QPoint) -> None:
+        card = self._cards.get(node_id)
+        if card is None:
+            return
+        menu = QMenu(self)
+        delete_action = menu.addAction("Delete")
+        code_action = menu.addAction("Inspect Code")
+        duplicate_action = menu.addAction("Duplicate Node")
+        pin_action = None
+        if card._can_pin:
+            menu.addSeparator()
+            pin_action = menu.addAction("Unpin" if card._pinned else "Pin")
+        action = _exec_menu(menu, global_pos)
+        if action == delete_action:
+            self.node_delete_requested.emit(node_id)
+        elif action == code_action:
+            self.node_code_requested.emit(node_id)
+        elif action == duplicate_action:
+            self.node_duplicate_requested.emit(node_id)
+        elif pin_action is not None and action == pin_action:
+            self.pin_requested.emit(node_id)
 
     def _start_panning(self, pos: QPoint) -> None:
         self._panning = True
@@ -1387,6 +1428,12 @@ _CHANNEL_COLOR_HEX = {
 def _point_from_event(event) -> QPoint:
     pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
     return pos.toPoint() if hasattr(pos, "toPoint") else pos
+
+
+def _global_pos_from_event(event) -> QPoint:
+    if hasattr(event, "globalPosition"):
+        return event.globalPosition().toPoint()
+    return event.globalPos()
 
 
 def _view_for_scene(scene) -> PipelineGraphView | None:

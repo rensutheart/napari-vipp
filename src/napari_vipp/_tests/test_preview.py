@@ -3,12 +3,17 @@ from __future__ import annotations
 import numpy as np
 
 from napari_vipp.core.metadata import (
+    ChannelMetadata,
     image_state_from_array,
     transform_image_state,
     transform_split_output_state,
 )
 from napari_vipp.core.operations import gaussian_blur, otsu_threshold
-from napari_vipp.core.preview import make_preview, normalize_thumbnail
+from napari_vipp.core.preview import (
+    make_preview,
+    normalize_thumbnail,
+    normalize_thumbnail_with_colormap,
+)
 
 
 def test_slice_preview_reduces_3d_to_2d():
@@ -41,6 +46,30 @@ def test_thumbnail_is_rgb_uint8():
     assert thumb.shape[1] <= 180
 
 
+def test_thumbnail_contrast_modes_include_minmax_and_raw():
+    data = np.asarray([[1000, 2000]], dtype=np.uint16)
+
+    raw = normalize_thumbnail_with_colormap(
+        data,
+        size=(2, 1),
+        colormap="Gray",
+        contrast_mode="Raw",
+    )
+    minmax = normalize_thumbnail_with_colormap(
+        data,
+        size=(2, 1),
+        colormap="Gray",
+        contrast_mode="Min-max",
+    )
+
+    assert raw is not None
+    assert minmax is not None
+    assert raw[0, 0, 0] < 10
+    assert raw[0, 1, 0] < 10
+    assert minmax[0, 0, 0] == 0
+    assert minmax[0, 1, 0] == 255
+
+
 def test_signed_difference_thumbnail_renders_zero_background_black():
     # A Subtract of two boolean masks yields a signed difference image with
     # values in {-1, 0, 1}. The zero background must render black (like the
@@ -56,6 +85,25 @@ def test_signed_difference_thumbnail_renders_zero_background_black():
     assert tuple(thumb[2, 10]) == (0, 0, 0)  # negative lobe -> black
     assert thumb[10, 2, 0] > 200  # positive band -> bright
 
+
+def test_label_thumbnail_ignores_raw_int32_scaling():
+    labels = np.zeros((8, 9), dtype=np.int32)
+    labels[2:5, 2:5] = 1
+    labels[5:7, 5:8] = 2
+
+    thumb = normalize_thumbnail_with_colormap(
+        labels,
+        size=(9, 8),
+        colormap="Gray",
+        contrast_mode="Raw",
+        data_kind="labels",
+    )
+
+    assert thumb is not None
+    assert tuple(thumb[0, 0]) == (0, 0, 0)
+    assert thumb[3, 3].sum() > 0
+    assert thumb[6, 6].sum() > 0
+    assert not np.array_equal(thumb[3, 3], thumb[6, 6])
 
 
 def test_multichannel_state_preview_renders_fluorescence_composite():
@@ -95,6 +143,47 @@ def test_multichannel_state_preview_uses_requested_channel_colours():
     assert cyan_pixel[0] == 0
     assert cyan_pixel[1] > 0
     assert cyan_pixel[2] > 0
+
+
+def test_multichannel_state_preview_uses_metadata_channel_colours():
+    data = np.zeros((2, 8, 9), dtype=np.uint16)
+    data[0, 2:5, 2:5] = 2000
+    data[1, 4:7, 5:8] = 2000
+    state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "CYX"},
+        channels=(
+            ChannelMetadata(name="first", color=0xFFFF00),
+            ChannelMetadata(name="second", color=0x00FFFF),
+        ),
+    )
+
+    preview = make_preview(data, mode="slice", state=state)
+
+    assert preview.shape == (8, 9, 3)
+    yellow_pixel = preview[3, 3]
+    cyan_pixel = preview[5, 6]
+    assert yellow_pixel[0] > 0
+    assert yellow_pixel[1] > 0
+    assert yellow_pixel[2] == 0
+    assert cyan_pixel[0] == 0
+    assert cyan_pixel[1] > 0
+    assert cyan_pixel[2] > 0
+
+
+def test_monochrome_thumbnail_colormap_changes_single_channel_colour():
+    data = np.zeros((8, 9), dtype=np.uint16)
+    data[2:5, 2:5] = 2000
+
+    gray = normalize_thumbnail_with_colormap(data, size=(9, 8), colormap="Gray")
+    green = normalize_thumbnail_with_colormap(data, size=(9, 8), colormap="Green")
+
+    assert gray is not None
+    assert green is not None
+    assert gray[3, 3, 0] == gray[3, 3, 1] == gray[3, 3, 2]
+    assert green[3, 3, 0] == 0
+    assert green[3, 3, 1] > 0
+    assert green[3, 3, 2] == 0
 
 
 def test_requested_blue_channel_stays_blue_in_thumbnail():
