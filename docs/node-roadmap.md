@@ -103,7 +103,9 @@ VIPP already has useful coverage in these areas:
   Means, and other filtering/detail nodes;
 - binary erosion, dilation, opening, closing, fill holes, and small-component
   removal;
-- maximum projection;
+- maximum projection, general axis-aware projection, and orthogonal projection;
+- metadata calibration repair with `Set Pixel Size / Units`;
+- X/Y/Z scale-factor resampling with `Rescale Axes`;
 - image metadata, thumbnails, intensity histograms, label-volume histograms,
   image/mask/label inspection, and image/mask/label pinning;
 - connected-component labels, pixel/voxel-volume filtering, sequential
@@ -133,7 +135,7 @@ cleaned up.
 | --- | --- | --- |
 | Linear Scale + Offset | Dtype preservation is implemented, but users may still confuse it with contrast stretching. | Keep the explicit math name; use `Rescale Intensity` when the desired output range is the main control. |
 | Top Hat / Black Hat | These are binary operations, while grayscale white top-hat is a common bioimage background-removal tool. | Rename current nodes `Binary Top Hat` and `Binary Black Hat`; add explicit grayscale morphology later. |
-| Maximum Projection | Axis is numeric and only the maximum reducer is available. | Replace or complement it with an axis-aware `Reduce Axis` node. |
+| Maximum Projection | Axis is numeric and only the maximum reducer is available. | Keep as a quick MIP shortcut; prefer `Project Image` for semantic axes and reducer choice. |
 | 2D filtering behavior | Several nodes infer XY and process other axes plane by plane. | Add an explicit processing scope: `XY per plane` or `spatial volume`. |
 
 ## P0: Platform Foundations
@@ -356,17 +358,26 @@ Sauvola and Niblack thresholding are now available under
 `Segmentation > Local Thresholds` for uneven brightfield, histology-like, or
 other locally varying images.
 
-### P1D: Axis Reduction
+### P1D: Projection And Axis Reduction
 
-Add a `Reduce Axis` node with:
+Implemented:
 
-- axis selected by semantic name;
-- method: maximum, minimum, mean, sum, median, or standard deviation;
-- keep/remove reduced axis;
-- output metadata with the reduced axis handled correctly.
+- `Project Image`: contextual axis dropdown with automatic Z projection,
+  explicit detected-axis choices, an all-non-YX-spatial shortcut, canonical
+  internal axis values such as `auto`, `axis:2`, `name:z`, and
+  `non_yx_spatial`, and common reducer methods: maximum, minimum, mean, sum,
+  median, and standard deviation;
+- `Orthogonal Projection`: XY/XZ/YZ montage projection for 3D volumes while
+  preserving non-spatial axes such as time and channel;
+- projection metadata updates so downstream nodes see the reduced or replaced
+  axes.
 
-This replaces a family of nearly identical projection nodes and supports common
-z-stack, time-series, and channel reductions.
+Deferred polish:
+
+- add a richer multi-axis picker if workflows need arbitrary axis combinations
+  beyond the common single-axis and all-non-YX-spatial cases;
+- optionally add a keep-reduced-axis mode if downstream workflows need
+  singleton axes instead of removed axes.
 
 ### P1E: Object Measurements
 
@@ -547,8 +558,20 @@ be designed before exposing several registration algorithms.
 
 ### Geometry And Sampling
 
+Implemented:
+
+- `Set Pixel Size / Units`: metadata-only calibration repair for X/Y pixel size,
+  optional Z step size, and physical units;
+- `Rescale Axes`: pixel-grid resampling by X/Y/Z scale factors, optional X/Y
+  aspect-ratio locking, nearest/linear/cubic/spline interpolation, intensity
+  downsampling anti-aliasing, nearest-neighbor preservation for masks/labels,
+  and inverse physical-scale metadata updates;
+- `Orthogonal Projection` uses calibrated Z/Y/X spacing for physically scaled
+  XY/XZ/YZ montages when spacing metadata is available.
+
+Deferred:
+
 - resample to target pixel/voxel spacing;
-- resize by shape or scale;
 - pad/crop to a target shape;
 - flip and rotate by right angles;
 - arbitrary rotation;

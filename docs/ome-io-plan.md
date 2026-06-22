@@ -328,8 +328,8 @@ After inspecting a source, the node may add:
 - field/site selector;
 - OME-Zarr image-group or label-group selector;
 - advanced resolution-level selector;
-- pixel/voxel size and unit overrides for sources with missing or incorrect
-  calibration;
+- calibration summary plus a recommended path to `Set Pixel Size / Units` for
+  sources with missing or incorrect pixel/voxel size metadata;
 - source summary showing axes, shape, scale, channels, and estimated memory.
 
 Controls that do not apply to a source should remain hidden.
@@ -499,10 +499,12 @@ Accepted on 2026-06-15:
    Design paths as URIs. Add anonymous HTTP reads before credential UI or
    remote writes.
 6. **Metadata editing**
-   Preserve and inspect metadata first. Pixel/voxel size and unit correction
-   belongs on Image Source as an input-calibration override. More general
-   metadata editing can come later. Future resampling or axis-scaling nodes must
-   update scale, translation, and units automatically when they change geometry.
+   Preserve and inspect metadata first. Pixel/voxel size and unit correction is
+   now handled by `Set Pixel Size / Units` as an explicit calibration-repair
+   node. `Rescale Axes` now updates physical scale metadata when it changes the
+   sampled pixel grid. More general metadata editing can come later. Future
+   resampling or axis-scaling nodes must update scale, translation, and units
+   automatically when they change geometry.
 
 No decision is needed about retaining ImageJ TIFF: it should remain a supported,
 explicit export target alongside OME-TIFF and OME-Zarr.

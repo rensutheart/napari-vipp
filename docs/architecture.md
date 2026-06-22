@@ -199,7 +199,10 @@ The current high-level groups are:
     Median Filter, Bilateral Filtering, Non-Local Means
   - `Edge & Detail`: Difference of Gaussians, Unsharp Mask, Sobel Edges,
     Canny Edges, Laplace Filter
-- `Projection`: Maximum Projection
+- `Projection`: Maximum Projection, Project Image, Orthogonal Projection
+  - `Project Image` presents a contextual dropdown built from the current input
+    axes, including automatic Z projection, explicit axis choices, and an
+    all-non-YX-spatial option for stack-style reductions.
 - `Segmentation`
   - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary,
     Hysteresis thresholding
@@ -392,11 +395,15 @@ Source metadata comes from, in order of preference:
 3. explicit layer axis hints such as `axes`, `axis_order`, or `vipp_axis_order`;
 4. inferred axes from shape, explicitly labelled as inferred.
 
-Planned calibration overrides belong on `Image Source`, not as a separate
-standalone utility node. They should let users repair pixel/voxel size and unit
-metadata when a file or napari layer lacks reliable calibration. Future
-axis-scaling or resampling nodes must then update `AxisMetadata.scale`,
-translation, and units as part of ordinary metadata propagation.
+`Set Pixel Size / Units` is the explicit calibration repair node for files or
+napari layers that lack reliable physical metadata. It updates X/Y pixel size,
+optional Z step size, and the shared physical unit in carried `AxisMetadata`
+without changing pixel values. `Rescale Axes` changes the pixel grid along
+X/Y/Z by scale factors, optionally locks X/Y aspect ratio, supports nearest,
+linear, cubic, and spline interpolation, and updates `AxisMetadata.scale`
+inversely to the requested scale factor. `Orthogonal Projection` uses
+calibrated Z/Y/X spacing to size its XZ and YZ panels, so anisotropic z-stacks
+display with physical proportions.
 
 The inspector uses `metadata_table_rows()` and `metadata_history_items()`. Node
 cards use `format_compact_metadata()`. Metadata is useful for UI labels,

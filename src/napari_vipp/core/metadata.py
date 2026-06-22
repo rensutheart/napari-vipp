@@ -38,7 +38,9 @@ LABEL_OPERATIONS = {
     "relabel_sequential",
 }
 KIND_PRESERVING_OPERATIONS = {
+    "rescale_axes",
     "clear_border_objects",
+    "set_pixel_size",
 }
 
 
@@ -847,6 +849,12 @@ def _transformed_axes(
         return _reordered_axes(axes, params, arr.ndim)
     if operation_id == "composite_to_rgb":
         return _composite_to_rgb_axes(axes, arr.ndim)
+    if operation_id == "orthogonal_projection":
+        return _orthogonal_projection_axes(axes, arr.ndim, params)
+    if operation_id == "set_pixel_size":
+        return _pixel_sized_axes(axes, params)
+    if operation_id == "rescale_axes":
+        return _rescaled_axes(axes, params)
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
         return _range_and_removed_axes(axes, params)
@@ -864,6 +872,13 @@ def _transformed_axes(
     if operation_id == "mip" and arr.ndim == len(axes) - 1:
         axis_index = _clamped_axis(params.get("axis", 0), len(axes))
         return _remove_axis(axes, axis_index)
+
+    if operation_id == "project_image":
+        projected_axes = _projection_axis_indices_from_params(axes, params)
+        if projected_axes and arr.ndim == len(axes) - len(projected_axes):
+            return tuple(
+                axis for index, axis in enumerate(axes) if index not in projected_axes
+            )
 
     if operation_id == "extract_channel" and arr.ndim == len(axes) - 1:
         channel_index = _channel_axis_index(axes)
@@ -1031,6 +1046,11 @@ def _transformed_channels(
         return (channels[index],)
     if operation_id == "assign_channel_colors":
         return _channels_with_colors(channels, params.get("channel_colors", ""))
+    if operation_id == "project_image":
+        channel_index = _channel_axis_index(input_state.axes)
+        projected_axes = _projection_axis_indices_from_params(input_state.axes, params)
+        if channel_index is not None and channel_index in projected_axes:
+            return ()
     if operation_id in CHANNEL_COLLAPSE_OPERATIONS:
         return ()
     return channels
@@ -1116,6 +1136,300 @@ def _remove_axis(
     return tuple(axis for index, axis in enumerate(axes) if index != axis_index)
 
 
+def _orthogonal_projection_axes(
+    axes: tuple[AxisMetadata, ...],
+    output_ndim: int,
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    spatial_axes = _orthogonal_projection_spatial_axes(axes)
+    if len(spatial_axes) < 3 or output_ndim != len(axes) - 1:
+        return axes
+
+    scale, unit = _orthogonal_montage_axis_scale(axes, params)
+    montage_axes = (
+        AxisMetadata(name="y", type="space", unit=unit, scale=scale),
+        AxisMetadata(name="x", type="space", unit=unit, scale=scale),
+    )
+    first_spatial_axis = min(spatial_axes)
+    spatial_set = set(spatial_axes)
+    result: list[AxisMetadata] = []
+    inserted = False
+    for index, axis in enumerate(axes):
+        if index in spatial_set:
+            if not inserted and index == first_spatial_axis:
+                result.extend(montage_axes)
+                inserted = True
+            continue
+        result.append(axis)
+    if not inserted:
+        result.extend(montage_axes)
+    return tuple(result) if len(result) == output_ndim else axes
+
+
+def _orthogonal_projection_spatial_axes(
+    axes: tuple[AxisMetadata, ...],
+) -> tuple[int, ...]:
+    names = [axis.name.lower() for axis in axes]
+    named = [names.index(name) for name in ("z", "y", "x") if name in names]
+    if len(named) == 3:
+        return tuple(named)
+    spatial_axes = [index for index, axis in enumerate(axes) if axis.type == "space"]
+    if len(spatial_axes) >= 3:
+        return tuple(spatial_axes[-3:])
+    return ()
+
+
+def _pixel_sized_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    spatial_axes = [index for index, axis in enumerate(axes) if axis.type == "space"]
+    if not spatial_axes:
+        return axes
+
+    axis_roles: dict[int, str] = {}
+    for index in spatial_axes:
+        name = axes[index].name.lower()
+        if name in {"x", "y", "z"}:
+            axis_roles[index] = name
+    if len(spatial_axes) >= 1:
+        axis_roles.setdefault(spatial_axes[-1], "x")
+    if len(spatial_axes) >= 2:
+        axis_roles.setdefault(spatial_axes[-2], "y")
+    if len(spatial_axes) >= 3:
+        axis_roles.setdefault(spatial_axes[-3], "z")
+
+    unit = _metadata_unit(params.get("unit", "micrometer"))
+    sizes = {
+        "x": _positive_float(params.get("x_size"), 1.0),
+        "y": _positive_float(params.get("y_size"), 1.0),
+        "z": _positive_float(params.get("z_size"), 1.0),
+    }
+    return tuple(
+        replace(axis, scale=sizes[axis_roles[index]], unit=unit)
+        if index in axis_roles
+        else axis
+        for index, axis in enumerate(axes)
+    )
+
+
+def _rescaled_axes(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    axis_map = _xyz_axis_map_for_metadata(axes)
+    if not axis_map:
+        return axes
+    x_scale = _positive_float(params.get("x_scale"), 1.0)
+    y_scale = x_scale if bool(params.get("lock_xy", True)) else _positive_float(
+        params.get("y_scale"),
+        1.0,
+    )
+    z_scale = _positive_float(params.get("z_scale"), 1.0)
+    scale_by_role = {"x": x_scale, "y": y_scale, "z": z_scale}
+    axis_scale_factors = {
+        axis_index: scale_by_role[role]
+        for role, axis_index in axis_map.items()
+        if role in scale_by_role
+    }
+    return tuple(
+        replace(axis, scale=axis.scale / axis_scale_factors[index])
+        if index in axis_scale_factors and axis_scale_factors[index] > 0
+        else axis
+        for index, axis in enumerate(axes)
+    )
+
+
+def _xyz_axis_map_for_metadata(
+    axes: tuple[AxisMetadata, ...],
+) -> dict[str, int]:
+    names = [axis.name.lower() for axis in axes]
+    axis_map = {
+        name: names.index(name)
+        for name in ("x", "y", "z")
+        if name in names
+    }
+    spatial_axes = [index for index, axis in enumerate(axes) if axis.type == "space"]
+    if spatial_axes:
+        axis_map.setdefault("x", spatial_axes[-1])
+    if len(spatial_axes) >= 2:
+        axis_map.setdefault("y", spatial_axes[-2])
+    if len(spatial_axes) >= 3:
+        axis_map.setdefault("z", spatial_axes[-3])
+    return axis_map
+
+
+def _orthogonal_montage_axis_scale(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> tuple[float, str | None]:
+    if not bool(params.get("use_physical_scale", True)):
+        return 1.0, None
+    spatial_axes = _orthogonal_projection_spatial_axes(axes)
+    if len(spatial_axes) < 3:
+        return 1.0, None
+
+    spatial = [axes[index] for index in spatial_axes[-3:]]
+    units = [_normalized_physical_unit(axis.unit) for axis in spatial]
+    if len(set(units)) == 1:
+        values = [_positive_float(axis.scale, 1.0) for axis in spatial]
+        return min(values), _metadata_unit(units[0])
+
+    converted: list[float] = []
+    for axis, unit in zip(spatial, units, strict=True):
+        factor = _unit_to_micrometer_factor(unit)
+        if factor is None:
+            return 1.0, None
+        converted.append(_positive_float(axis.scale, 1.0) * factor)
+    return min(converted), "micrometer"
+
+
+def _metadata_unit(unit) -> str | None:
+    normalized = _normalized_physical_unit(unit)
+    return normalized or None
+
+
+def _normalized_physical_unit(unit) -> str:
+    text = str(unit or "").strip().lower()
+    aliases = {
+        "µm": "micrometer",
+        "um": "micrometer",
+        "micron": "micrometer",
+        "microns": "micrometer",
+        "micrometre": "micrometer",
+        "micrometres": "micrometer",
+        "micrometers": "micrometer",
+        "nm": "nanometer",
+        "nanometre": "nanometer",
+        "nanometres": "nanometer",
+        "nanometers": "nanometer",
+        "mm": "millimeter",
+        "millimetre": "millimeter",
+        "millimetres": "millimeter",
+        "millimeters": "millimeter",
+        "m": "meter",
+        "metre": "meter",
+        "metres": "meter",
+        "meters": "meter",
+        "px": "pixel",
+        "pixels": "pixel",
+    }
+    return aliases.get(text, text)
+
+
+def _unit_to_micrometer_factor(unit: str) -> float | None:
+    return {
+        "nanometer": 0.001,
+        "micrometer": 1.0,
+        "millimeter": 1000.0,
+        "meter": 1_000_000.0,
+    }.get(unit)
+
+
+def _positive_float(value, default: float) -> float:
+    try:
+        result = float(value)
+    except Exception:
+        return default
+    if result <= 0 or not np.isfinite(result):
+        return default
+    return result
+
+
+def _projection_axis_indices_from_params(
+    axes: tuple[AxisMetadata, ...],
+    params: dict[str, Any],
+) -> set[int]:
+    ndim = len(axes)
+    tokens = _projection_axis_tokens(params.get("axes", "auto"))
+    if not tokens or _projection_tokens_request_auto(tokens):
+        return set(_auto_projection_axis_indices(axes))
+    if _projection_tokens_request_non_yx_spatial(tokens):
+        spatial_axes = [
+            index for index, axis in enumerate(axes) if axis.type == "space"
+        ]
+        return set(spatial_axes[:-2]) if len(spatial_axes) > 2 else set()
+
+    aliases = {
+        "time": "t",
+        "channel": "c",
+        "channels": "c",
+        "rgb": "rgb",
+        "rgba": "rgba",
+    }
+    axis_names = [axis.name.lower() for axis in axes]
+    axis_types = [axis.type.lower() for axis in axes]
+    indices: set[int] = set()
+    for token in tokens:
+        if token.startswith("axis:"):
+            try:
+                axis_index = int(token.removeprefix("axis:"))
+            except ValueError:
+                continue
+            indices.add(_clamped_axis(axis_index, ndim))
+            continue
+        if not token.startswith("name:"):
+            continue
+        token = token.removeprefix("name:")
+        name = aliases.get(token, token)
+        if name in axis_names:
+            indices.add(axis_names.index(name))
+        elif name == "t" and "time" in axis_types:
+            indices.add(axis_types.index("time"))
+        elif name in {"c", "rgb", "rgba"} and "channel" in axis_types:
+            indices.add(axis_types.index("channel"))
+    return indices
+
+
+def _projection_axis_tokens(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = (value,)
+    return [
+        token
+        for token in (_projection_axis_token(part) for part in values)
+        if token
+    ]
+
+
+def _projection_axis_token(value) -> str:
+    if isinstance(value, (int, np.integer)):
+        return f"axis:{int(value)}"
+    text = str(value).strip().lower()
+    if text in {"", "auto", "non_yx_spatial"}:
+        return text
+    if text.startswith(("axis:", "name:")):
+        return text
+    return ""
+
+
+def _projection_tokens_request_auto(tokens: tuple[str, ...] | list[str]) -> bool:
+    text = " ".join(tokens).strip().lower()
+    return text in {"", "auto"}
+
+
+def _projection_tokens_request_non_yx_spatial(
+    tokens: tuple[str, ...] | list[str],
+) -> bool:
+    text = " ".join(tokens).strip().lower()
+    return text == "non_yx_spatial"
+
+
+def _auto_projection_axis_indices(
+    axes: tuple[AxisMetadata, ...],
+) -> tuple[int, ...]:
+    names = [axis.name.lower() for axis in axes]
+    if "z" in names:
+        return (names.index("z"),)
+    spatial_axes = [index for index, axis in enumerate(axes) if axis.type == "space"]
+    if len(spatial_axes) >= 3:
+        return (spatial_axes[-3],)
+    return ()
+
+
 def _operation_history(
     input_state: ImageState,
     operation_id: str,
@@ -1125,6 +1439,38 @@ def _operation_history(
     if operation_id == "mip":
         axis = _axis_label(input_state.axes, params.get("axis", 0))
         return f"{operation_title}: projected {axis}"
+    if operation_id == "project_image":
+        method = str(params.get("method", "Maximum")).lower()
+        projected_axes = _projection_axis_indices_from_params(input_state.axes, params)
+        if projected_axes:
+            axes = ", ".join(
+                _axis_label(input_state.axes, index) for index in sorted(projected_axes)
+            )
+            return f"{operation_title}: {method} projected {axes}"
+        return f"{operation_title}: {method} projection did not reduce axes"
+    if operation_id == "orthogonal_projection":
+        method = str(params.get("method", "Maximum")).lower()
+        return f"{operation_title}: {method} XY/XZ/YZ montage"
+    if operation_id == "set_pixel_size":
+        unit = _metadata_unit(params.get("unit", "micrometer")) or "pixel"
+        return (
+            f"{operation_title}: x={_format_number(params.get('x_size', 1.0))}, "
+            f"y={_format_number(params.get('y_size', 1.0))}, "
+            f"z={_format_number(params.get('z_size', 1.0))} {unit}"
+        )
+    if operation_id == "rescale_axes":
+        x_scale = _format_number(params.get("x_scale", 1.0))
+        y_scale = _format_number(
+            params.get("x_scale", 1.0)
+            if bool(params.get("lock_xy", True))
+            else params.get("y_scale", 1.0)
+        )
+        z_scale = _format_number(params.get("z_scale", 1.0))
+        interpolation = params.get("interpolation", "Auto")
+        return (
+            f"{operation_title}: x={x_scale}, y={y_scale}, z={z_scale} "
+            f"via {interpolation}"
+        )
     if operation_id == "select_axis_slice":
         if params.get("range_mode", False):
             ranges = _parse_axis_ranges(params.get("ranges"), len(input_state.axes))

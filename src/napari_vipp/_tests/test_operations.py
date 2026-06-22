@@ -58,17 +58,21 @@ from napari_vipp.core.operations import (
     non_local_means_filter,
     normalize_image,
     opening,
+    orthogonal_projection,
     otsu_threshold,
+    project_image,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
     reorder_axes,
+    rescale_axes,
     rescale_intensity,
     sauvola_threshold,
     save_array_output,
     save_output,
     select_axis_slice,
     select_table_columns,
+    set_pixel_size,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -150,6 +154,10 @@ def test_vipp_operation_nodes_are_registered():
         "convert_dtype",
         "select_axis_slice",
         "reorder_axes",
+        "set_pixel_size",
+        "rescale_axes",
+        "project_image",
+        "orthogonal_projection",
         "save_output",
     }
 
@@ -1038,6 +1046,269 @@ def test_reorder_axes_accepts_named_and_numeric_orders():
     assert named.shape == (2, 4, 5, 6, 3)
     assert numeric.shape == (2, 4, 5, 6, 3)
     assert invalid.shape == data.shape
+
+
+def test_project_image_uses_canonical_axes_and_projection_methods():
+    data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+
+    projected = project_image(
+        data,
+        axes="axis:0",
+        method="Mean",
+        axis_names=("z", "y", "x"),
+    )
+    reduced = project_image(data, axes=(0, 1), method="Maximum")
+    named_projected = project_image(
+        data,
+        axes="name:z",
+        method="Maximum",
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+    )
+    auto_projected = project_image(
+        data,
+        axes="auto",
+        method="Maximum",
+        axis_names=("z", "y", "x"),
+    )
+
+    assert projected.shape == (3, 4)
+    assert projected.dtype == np.float32
+    np.testing.assert_allclose(projected, data.mean(axis=0))
+    np.testing.assert_array_equal(named_projected, data.max(axis=0))
+    np.testing.assert_array_equal(auto_projected, data.max(axis=0))
+    assert reduced.shape == (4,)
+    assert reduced.dtype == data.dtype
+    np.testing.assert_array_equal(reduced, data.max(axis=(0, 1)))
+
+
+def test_project_image_auto_detects_z_axis_from_common_czyx_shape():
+    data = np.zeros((3, 2, 4, 5), dtype=np.uint16)
+    data[:, 1] = 7
+
+    projected = project_image(data, axes="auto", method="Maximum")
+
+    assert projected.shape == (3, 4, 5)
+    assert projected.max() == 7
+
+
+def test_orthogonal_projection_builds_xy_xz_yz_montage():
+    data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+
+    projected = orthogonal_projection(
+        data,
+        method="Maximum",
+        axis_names=("z", "y", "x"),
+    )
+
+    assert projected.shape == (5, 6)
+    np.testing.assert_array_equal(projected[:3, :4], data.max(axis=0))
+    np.testing.assert_array_equal(projected[3:, :4], data.max(axis=1))
+    np.testing.assert_array_equal(projected[:3, 4:], data.max(axis=2).T)
+
+
+def test_orthogonal_projection_uses_physical_z_spacing():
+    data = np.arange(2 * 3 * 4, dtype=np.uint16).reshape(2, 3, 4)
+
+    scaled = orthogonal_projection(
+        data,
+        method="Maximum",
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(2.0, 1.0, 1.0),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+    )
+    unscaled = orthogonal_projection(
+        data,
+        method="Maximum",
+        use_physical_scale=False,
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(2.0, 1.0, 1.0),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+    )
+
+    assert scaled.shape == (7, 8)
+    assert unscaled.shape == (5, 6)
+
+
+def test_projection_metadata_updates_axes():
+    data = np.zeros((2, 3, 4), dtype=np.uint16)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+
+    projected_state = transform_image_state(
+        project_image(data, axes="axis:0", axis_names=("z", "y", "x")),
+        state,
+        operation_id="project_image",
+        operation_title="Project Image",
+        params={"axes": "axis:0", "method": "Maximum"},
+    )
+    orthogonal_state = transform_image_state(
+        orthogonal_projection(data, axis_names=("z", "y", "x")),
+        state,
+        operation_id="orthogonal_projection",
+        operation_title="Orthogonal Projection",
+        params={"method": "Maximum"},
+    )
+
+    assert [axis.name for axis in projected_state.axes] == ["y", "x"]
+    assert [axis.name for axis in orthogonal_state.axes] == ["y", "x"]
+    assert orthogonal_state.shape == (5, 6)
+
+
+def test_set_pixel_size_updates_spatial_axis_metadata_and_pipeline_projection():
+    data = np.zeros((2, 3, 5), dtype=np.uint16)
+    state = image_state_from_array(data)
+    calibrated = set_pixel_size(
+        data,
+        x_size=0.5,
+        y_size=0.5,
+        z_size=2.0,
+        unit="micrometer",
+    )
+    calibrated_state = transform_image_state(
+        calibrated,
+        state,
+        operation_id="set_pixel_size",
+        operation_title="Set Pixel Size / Units",
+        params={
+            "x_size": 0.5,
+            "y_size": 0.5,
+            "z_size": 2.0,
+            "unit": "micrometer",
+        },
+    )
+
+    assert [axis.name for axis in calibrated_state.axes] == ["z", "y", "x"]
+    assert [axis.scale for axis in calibrated_state.axes] == [2.0, 0.5, 0.5]
+    assert [axis.unit for axis in calibrated_state.axes] == [
+        "micrometer",
+        "micrometer",
+        "micrometer",
+    ]
+
+    pipeline = PrototypePipeline()
+    pixel_size = pipeline.add_node("set_pixel_size")
+    projection = pipeline.add_node("orthogonal_projection")
+    pipeline.set_param(pixel_size.id, "x_size", 0.5)
+    pipeline.set_param(pixel_size.id, "y_size", 0.5)
+    pipeline.set_param(pixel_size.id, "z_size", 2.0)
+    pipeline.connect("input", pixel_size.id)
+    pipeline.connect(pixel_size.id, projection.id)
+    pipeline.run(data)
+
+    assert pipeline.outputs[projection.id].shape == (11, 13)
+    assert [axis.scale for axis in pipeline.output_states[projection.id].axes] == [
+        0.5,
+        0.5,
+    ]
+
+
+def test_rescale_axes_updates_shape_dtype_and_physical_scale_metadata():
+    data = np.arange(2 * 3 * 5, dtype=np.uint16).reshape(2, 3, 5)
+    state = image_state_from_array(data)
+
+    scaled = rescale_axes(
+        data,
+        x_scale=2.0,
+        y_scale=0.5,
+        z_scale=1.5,
+        lock_xy=False,
+        interpolation="Nearest neighbor",
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+    )
+    scaled_state = transform_image_state(
+        scaled,
+        state,
+        operation_id="rescale_axes",
+        operation_title="Rescale Axes",
+        params={
+            "x_scale": 2.0,
+            "y_scale": 0.5,
+            "z_scale": 1.5,
+            "lock_xy": False,
+            "interpolation": "Nearest neighbor",
+        },
+    )
+
+    assert scaled.shape == (3, 2, 10)
+    assert scaled.dtype == data.dtype
+    assert [axis.name for axis in scaled_state.axes] == ["z", "y", "x"]
+    assert [axis.scale for axis in scaled_state.axes] == [
+        1.0 / 1.5,
+        2.0,
+        0.5,
+    ]
+
+
+def test_rescale_axes_z_scale_only_changes_semantic_z_dimension_in_pipeline():
+    data = np.zeros((3, 12, 96, 128), dtype=np.uint16)
+    pipeline = PrototypePipeline()
+    rescale = pipeline.add_node("rescale_axes")
+    pipeline.connect("input", rescale.id)
+    pipeline.set_param(rescale.id, "x_scale", 1.0)
+    pipeline.set_param(rescale.id, "y_scale", 1.0)
+    pipeline.set_param(rescale.id, "z_scale", 2.0)
+    pipeline.set_param(rescale.id, "lock_xy", True)
+
+    pipeline.run(data, input_metadata={"axes": "CZYX"})
+    state = pipeline.output_states[rescale.id]
+
+    assert pipeline.outputs[rescale.id].shape == (3, 24, 96, 128)
+    assert state is not None
+    assert state.shape == (3, 24, 96, 128)
+    assert state.axis_order == "CZYX"
+    assert {axis.name: axis.scale for axis in state.axes} == {
+        "c": 1.0,
+        "z": 0.5,
+        "y": 1.0,
+        "x": 1.0,
+    }
+
+
+def test_rescale_axes_uses_current_reordered_spatial_semantics():
+    data = np.zeros((3, 12, 96, 128), dtype=np.uint16)
+    pipeline = PrototypePipeline()
+    reorder = pipeline.add_node("reorder_axes")
+    rescale = pipeline.add_node("rescale_axes")
+    pipeline.connect("input", reorder.id)
+    pipeline.connect(reorder.id, rescale.id)
+    pipeline.set_param(reorder.id, "order", "CYZX")
+    pipeline.set_param(rescale.id, "x_scale", 1.0)
+    pipeline.set_param(rescale.id, "y_scale", 1.0)
+    pipeline.set_param(rescale.id, "z_scale", 2.0)
+    pipeline.set_param(rescale.id, "lock_xy", True)
+
+    pipeline.run(data, input_metadata={"axes": "CZYX"})
+    reorder_state = pipeline.output_states[reorder.id]
+    rescale_state = pipeline.output_states[rescale.id]
+
+    assert pipeline.outputs[reorder.id].shape == (3, 96, 12, 128)
+    assert reorder_state is not None
+    assert reorder_state.axis_order == "CZYX"
+    assert [axis.name for axis in reorder_state.axes] == ["c", "z", "y", "x"]
+    assert pipeline.outputs[rescale.id].shape == (3, 192, 12, 128)
+    assert rescale_state is not None
+    assert rescale_state.axis_order == "CZYX"
+
+
+def test_rescale_axes_auto_uses_nearest_for_masks_and_labels():
+    mask = np.array([[False, True], [True, False]], dtype=bool)
+    labels = np.array([[0, 1], [2, 0]], dtype=np.int32)
+
+    scaled_mask = rescale_axes(mask, x_scale=2.0, y_scale=2.0)
+    scaled_labels = rescale_axes(
+        labels,
+        x_scale=2.0,
+        y_scale=2.0,
+        input_kind="label image",
+    )
+
+    assert scaled_mask.dtype == bool
+    assert scaled_mask.shape == (4, 4)
+    assert scaled_labels.dtype == labels.dtype
+    assert set(np.unique(scaled_labels)) == {0, 1, 2}
 
 
 def test_extract_channel_supports_czyx_stacks():

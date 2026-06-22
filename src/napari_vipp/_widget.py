@@ -621,6 +621,62 @@ class ParameterControl(QWidget):
         return self.slider.minimum() <= slider_value <= self.slider.maximum()
 
 
+class NumericEntryControl(QWidget):
+    """Numeric entry without a slider for parameters where sliders are misleading."""
+
+    valueChanged = Signal(object)
+
+    def __init__(self, spec, value, bounds: ParameterBounds, parent=None):
+        super().__init__(parent)
+        self.spec = spec
+        self._is_integer = spec.kind == "int"
+        if self._is_integer:
+            self.value_box = QSpinBox()
+        else:
+            self.value_box = QDoubleSpinBox()
+            self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setMinimumWidth(100)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.value_box, 1)
+
+        self.set_bounds(bounds, value, emit=False)
+        self.value_box.valueChanged.connect(self.valueChanged.emit)
+
+    def value(self):
+        return self.value_box.value()
+
+    def set_bounds(
+        self,
+        bounds: ParameterBounds,
+        value=None,
+        emit: bool = False,
+    ) -> None:
+        minimum = (
+            bounds.minimum if bounds.entry_minimum is None else bounds.entry_minimum
+        )
+        maximum = (
+            bounds.maximum if bounds.entry_maximum is None else bounds.entry_maximum
+        )
+        current = minimum if value is None else value
+        if self._is_integer:
+            current = int(np.clip(int(current), int(minimum), int(maximum)))
+            with QSignalBlocker(self.value_box):
+                self.value_box.setRange(int(minimum), int(maximum))
+                self.value_box.setSingleStep(max(int(bounds.step), 1))
+                self.value_box.setValue(current)
+        else:
+            current = float(np.clip(float(current), float(minimum), float(maximum)))
+            with QSignalBlocker(self.value_box):
+                self.value_box.setDecimals(bounds.decimals)
+                self.value_box.setRange(float(minimum), float(maximum))
+                self.value_box.setSingleStep(float(bounds.step))
+                self.value_box.setValue(current)
+        if emit:
+            self.valueChanged.emit(self.value())
+
+
 class ChoiceControl(QWidget):
     """Dropdown control for categorical node parameters."""
 
@@ -631,30 +687,57 @@ class ChoiceControl(QWidget):
         self.spec = spec
         self._bounds = bounds
         self.combo = QComboBox()
-        self.combo.addItems(list(spec.choices))
+        self._set_combo_items(spec.choices, spec.choice_labels)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.combo, 1)
 
         self.set_bounds(bounds, value, emit=False)
-        self.combo.currentTextChanged.connect(self.valueChanged.emit)
+        self.combo.currentIndexChanged.connect(self._emit_current_value)
 
     def value(self):
-        return self.combo.currentText()
+        value = self.combo.currentData()
+        return self.combo.currentText() if value is None else value
+
+    def _emit_current_value(self, _index: int) -> None:
+        self.valueChanged.emit(self.value())
+
+    def _set_combo_items(
+        self,
+        choices: tuple[str, ...],
+        choice_labels: tuple[str, ...] = (),
+    ) -> None:
+        labels = self._choice_labels(choices, choice_labels)
+        self.combo.clear()
+        for value, label in zip(choices, labels, strict=True):
+            self.combo.addItem(label, value)
+
+    @staticmethod
+    def _choice_labels(
+        choices: tuple[str, ...],
+        choice_labels: tuple[str, ...] = (),
+    ) -> tuple[str, ...]:
+        if len(choice_labels) == len(choices):
+            return tuple(str(label) for label in choice_labels)
+        return tuple(str(choice) for choice in choices)
 
     def set_choices(
         self,
         choices: tuple[str, ...],
         value=None,
         emit: bool = False,
+        choice_labels: tuple[str, ...] = (),
     ) -> None:
-        self.spec = replace(self.spec, choices=tuple(choices))
+        self.spec = replace(
+            self.spec,
+            choices=tuple(choices),
+            choice_labels=tuple(choice_labels),
+        )
         current = self.spec.default if value is None else str(value)
         with QSignalBlocker(self.combo):
-            self.combo.clear()
-            self.combo.addItems(list(self.spec.choices))
-            index = self.combo.findText(current)
+            self._set_combo_items(self.spec.choices, self.spec.choice_labels)
+            index = self.combo.findData(current)
             self.combo.setCurrentIndex(max(index, 0))
         if emit:
             self.valueChanged.emit(self.value())
@@ -668,10 +751,8 @@ class ChoiceControl(QWidget):
         self._bounds = bounds
         current = self.spec.default if value is None else value
         current = str(current)
-        if current and self.combo.findText(current) < 0:
-            self.combo.addItem(current)
         with QSignalBlocker(self.combo):
-            index = self.combo.findText(current)
+            index = self.combo.findData(current)
             if index < 0:
                 index = 0
             self.combo.setCurrentIndex(index)
@@ -3616,7 +3697,9 @@ class VippWidget(QWidget):
                 continue
             spec = self._effective_parameter_spec(node_id, spec)
             bounds = self._parameter_bounds_for(node_id, spec)
-            if spec.kind == "choice":
+            if self._parameter_uses_numeric_entry_only(node_id, spec):
+                control_class = NumericEntryControl
+            elif spec.kind == "choice":
                 control_class = ChoiceControl
             elif spec.kind == "text":
                 control_class = TextControl
@@ -4038,7 +4121,12 @@ class VippWidget(QWidget):
                 changed = True
             bounds = self._parameter_bounds_for(self._selected_node_id, spec)
             if isinstance(widget, ChoiceControl):
-                widget.set_choices(spec.choices, previous, emit=False)
+                widget.set_choices(
+                    spec.choices,
+                    previous,
+                    emit=False,
+                    choice_labels=spec.choice_labels,
+                )
             widget.set_bounds(bounds, previous, emit=False)
             label = self.parameter_form.labelForField(widget)
             if isinstance(label, QLabel):
@@ -4053,6 +4141,11 @@ class VippWidget(QWidget):
             changed = self._sync_gaussian_blur_3d_xy_lock(
                 self._selected_node_id,
                 source_name="sigma_y",
+            ) or changed
+        if node.operation_id == "rescale_axes":
+            changed = self._sync_rescale_axes_xy_lock(
+                self._selected_node_id,
+                source_name="x_scale",
             ) or changed
         return changed
 
@@ -4074,7 +4167,27 @@ class VippWidget(QWidget):
             and spec.name == "include_2d_boundary_descriptors"
         ):
             return self._input_spatial_count(node_id) >= 3
+        if (
+            node is not None
+            and node.operation_id == "set_pixel_size"
+            and spec.name == "z_size"
+        ):
+            return self._input_spatial_count(node_id) < 3
+        if (
+            node is not None
+            and node.operation_id == "rescale_axes"
+            and spec.name == "z_scale"
+        ):
+            return self._input_spatial_count(node_id) < 3
         return False
+
+    def _parameter_uses_numeric_entry_only(self, node_id: str, spec) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        return (
+            node is not None
+            and node.operation_id == "set_pixel_size"
+            and spec.name in {"x_size", "y_size", "z_size"}
+        )
 
     def _effective_parameter_spec(self, node_id: str, spec):
         node = self.pipeline.nodes.get(node_id)
@@ -4111,7 +4224,103 @@ class VippWidget(QWidget):
             spatial_ndim = self._selected_spatial_ndim(node_id)
             unit = "volume (voxels)" if spatial_ndim >= 3 else "area (pixels)"
             return replace(spec, label=f"Minimum object {unit}")
+        if (
+            node is not None
+            and node.operation_id == "rescale_axes"
+            and spec.name in {"x_scale", "y_scale", "z_scale"}
+        ):
+            return replace(
+                spec,
+                label=self._rescale_axis_scale_label(node_id, spec),
+            )
+        if (
+            node is not None
+            and node.operation_id == "project_image"
+            and spec.name == "axes"
+        ):
+            choices, choice_labels = self._available_project_axis_choices(node_id)
+            return replace(
+                spec,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
         return spec
+
+    def _available_project_axis_choices(
+        self,
+        node_id: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        choices = ["auto"]
+        labels = ["Auto (Z if present)"]
+        options = self._axis_slice_options_for(node_id)
+        if options:
+            for option in options:
+                choices.append(f"axis:{option.index}")
+                labels.append(self._project_axis_choice_label(option))
+        spatial_options = [
+            option for option in options if option.axis_type.lower() == "space"
+        ]
+        if len(spatial_options) > 2:
+            choices.append("non_yx_spatial")
+            labels.append("All non-YX spatial axes")
+        deduplicated: dict[str, str] = {}
+        for value, label in zip(choices, labels, strict=True):
+            deduplicated.setdefault(value, label)
+        return tuple(deduplicated), tuple(deduplicated.values())
+
+    @staticmethod
+    def _project_axis_choice_label(option: AxisSliceOption) -> str:
+        title = option.title
+        if title.lower().startswith("axis "):
+            return f"{title} (size {option.size})"
+        detail = f"{option.axis_type}, size {option.size}"
+        return f"{title} axis ({detail})"
+
+    def _rescale_axis_scale_label(self, node_id: str, spec) -> str:
+        role = spec.name.split("_", maxsplit=1)[0]
+        option = self._rescale_axis_options_by_role(node_id).get(role)
+        if option is None:
+            return spec.label
+        node = self.pipeline.nodes.get(node_id)
+        scale = self._rescale_axis_scale_value(node, role)
+        target_size = max(int(round(option.size * scale)), 1)
+        suffix = ""
+        if role == "y" and node is not None and bool(node.params.get("lock_xy", True)):
+            suffix = "; locked to X"
+        return (
+            f"{role.upper()} scale factor "
+            f"({option.title} axis, {option.size} -> {target_size}{suffix})"
+        )
+
+    def _rescale_axis_scale_value(self, node, role: str) -> float:
+        if node is None:
+            return 1.0
+        if role == "x":
+            return _positive_scale_float(node.params.get("x_scale"), 1.0)
+        if role == "y" and bool(node.params.get("lock_xy", True)):
+            return _positive_scale_float(node.params.get("x_scale"), 1.0)
+        return _positive_scale_float(node.params.get(f"{role}_scale"), 1.0)
+
+    def _rescale_axis_options_by_role(
+        self,
+        node_id: str,
+    ) -> dict[str, AxisSliceOption]:
+        options = self._axis_slice_options_for(node_id)
+        role_map: dict[str, AxisSliceOption] = {}
+        for option in options:
+            name = option.name.strip().lower()
+            if name in {"x", "y", "z"}:
+                role_map[name] = option
+        spatial_options = [
+            option for option in options if option.axis_type.lower() == "space"
+        ]
+        if spatial_options:
+            role_map.setdefault("x", spatial_options[-1])
+        if len(spatial_options) >= 2:
+            role_map.setdefault("y", spatial_options[-2])
+        if len(spatial_options) >= 3:
+            role_map.setdefault("z", spatial_options[-3])
+        return role_map
 
     def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
         node = self.pipeline.nodes.get(node_id)
@@ -4727,6 +4936,36 @@ class VippWidget(QWidget):
                 )
         return changed
 
+    def _sync_rescale_axes_xy_lock(
+        self,
+        node_id: str,
+        *,
+        source_name: str,
+    ) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_axes":
+            return False
+        if not bool(node.params.get("lock_xy", True)):
+            return False
+        if source_name not in {"x_scale", "y_scale"}:
+            source_name = "x_scale"
+        target_name = "y_scale" if source_name == "x_scale" else "x_scale"
+        value = node.params.get(source_name)
+        if value is None:
+            return False
+        changed = self._set_node_param_if_changed(node_id, target_name, value)
+        if changed:
+            widget = self._parameter_widgets.get(target_name)
+            spec = self._parameter_spec_by_name(node_id, target_name)
+            if widget is not None and spec is not None:
+                spec = self._effective_parameter_spec(node_id, spec)
+                widget.set_bounds(
+                    self._parameter_bounds_for(node_id, spec),
+                    value,
+                    emit=False,
+                )
+        return changed
+
     def _refresh_rescale_cutoff_widgets(self, node_id: str) -> None:
         for name in RESCALE_CUTOFF_PARAMETERS:
             widget = self._parameter_widgets.get(name)
@@ -5146,6 +5385,19 @@ class VippWidget(QWidget):
                     self._selected_node_id,
                     source_name=name,
                 )
+        if node.operation_id == "rescale_axes":
+            if name == "lock_xy" and bool(value):
+                self._sync_rescale_axes_xy_lock(
+                    self._selected_node_id,
+                    source_name="x_scale",
+                )
+            elif name in {"x_scale", "y_scale"}:
+                self._sync_rescale_axes_xy_lock(
+                    self._selected_node_id,
+                    source_name=name,
+                )
+            if name in {"x_scale", "y_scale", "z_scale", "lock_xy"}:
+                self._refresh_selected_parameter_controls()
         if name == "input_count":
             for connection in self.pipeline.trim_invalid_connections(
                 self._selected_node_id
@@ -5875,6 +6127,7 @@ class VippWidget(QWidget):
             "data_kind": data_kind,
             "display_kind": self._display_kind(data_kind, "pinned"),
             "display_ndim": np.asarray(display_data).ndim,
+            "display_shape": tuple(np.asarray(display_data).shape),
             "display_rgb": self._display_rgb(data, node_id),
             "vipp_image_state": self._node_state_dict(node_id),
         }
@@ -5977,6 +6230,7 @@ class VippWidget(QWidget):
             "data_kind": data_kind,
             "display_kind": self._display_kind(data_kind, role),
             "display_ndim": np.asarray(display_data).ndim,
+            "display_shape": tuple(np.asarray(display_data).shape),
             "display_rgb": self._display_rgb(data, metadata.get("node_id")),
         }
         layer = self._layer_by_name(name)
@@ -6018,6 +6272,8 @@ class VippWidget(QWidget):
             layer.metadata.get("display_kind") != metadata["display_kind"]
             or layer.metadata.get("data_kind") != metadata["data_kind"]
             or layer.metadata.get("display_ndim") != metadata["display_ndim"]
+            or tuple(layer.metadata.get("display_shape", ()))
+            != tuple(metadata["display_shape"])
             or bool(layer.metadata.get("display_rgb"))
             != bool(metadata.get("display_rgb"))
         )
@@ -6281,6 +6537,16 @@ def _finite_values(arr: np.ndarray) -> np.ndarray:
             + arr[..., 2].astype(np.float32) * 0.114
         )
     return arr[np.isfinite(arr)]
+
+
+def _positive_scale_float(value, default: float) -> float:
+    try:
+        result = float(value)
+    except Exception:
+        return default
+    if result <= 0 or not np.isfinite(result):
+        return default
+    return result
 
 
 def _auto_contrast_scale_offset(

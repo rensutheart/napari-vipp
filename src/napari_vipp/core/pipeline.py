@@ -67,16 +67,20 @@ from napari_vipp.core.operations import (
     non_local_means_filter,
     normalize_image,
     opening,
+    orthogonal_projection,
     otsu_threshold,
+    project_image,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
     reorder_axes,
+    rescale_axes,
     rescale_intensity,
     sauvola_threshold,
     save_output,
     select_axis_slice,
     select_table_columns,
+    set_pixel_size,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -100,6 +104,7 @@ class ParameterSpec:
     step: float | int
     decimals: int = 0
     choices: tuple[str, ...] = ()
+    choice_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -578,6 +583,86 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         max_intensity_projection,
     ),
     OperationSpec(
+        "project_image",
+        "Project Image",
+        "Projection",
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "axes",
+                "Project axis / axes",
+                "choice",
+                "auto",
+                0,
+                0,
+                1,
+                choices=(
+                    "auto",
+                    "non_yx_spatial",
+                ),
+                choice_labels=(
+                    "Auto (Z if present)",
+                    "All non-YX spatial axes",
+                ),
+            ),
+            ParameterSpec(
+                "method",
+                "Projection method",
+                "choice",
+                "Maximum",
+                0,
+                0,
+                1,
+                choices=(
+                    "Maximum",
+                    "Mean",
+                    "Minimum",
+                    "Median",
+                    "Sum",
+                    "Standard deviation",
+                ),
+            ),
+        ),
+        project_image,
+    ),
+    OperationSpec(
+        "orthogonal_projection",
+        "Orthogonal Projection",
+        "Projection",
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "method",
+                "Projection method",
+                "choice",
+                "Maximum",
+                0,
+                0,
+                1,
+                choices=(
+                    "Maximum",
+                    "Mean",
+                    "Minimum",
+                    "Median",
+                    "Sum",
+                    "Standard deviation",
+                ),
+            ),
+            ParameterSpec(
+                "use_physical_scale",
+                "Use physical pixel size",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        orthogonal_projection,
+    ),
+    OperationSpec(
         "select_axis_slice",
         "Select Axis Slice",
         IMAGE_DATA_CATEGORY,
@@ -608,6 +693,142 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         reorder_axes,
+        subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
+        "set_pixel_size",
+        "Set Pixel Size / Units",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "x_size",
+                "X pixel size",
+                "float",
+                1.0,
+                0.0001,
+                10000.0,
+                0.01,
+                4,
+            ),
+            ParameterSpec(
+                "y_size",
+                "Y pixel size",
+                "float",
+                1.0,
+                0.0001,
+                10000.0,
+                0.01,
+                4,
+            ),
+            ParameterSpec(
+                "z_size",
+                "Z step size",
+                "float",
+                1.0,
+                0.0001,
+                10000.0,
+                0.01,
+                4,
+            ),
+            ParameterSpec(
+                "unit",
+                "Unit",
+                "choice",
+                "micrometer",
+                0,
+                0,
+                1,
+                choices=(
+                    "micrometer",
+                    "nanometer",
+                    "millimeter",
+                    "meter",
+                    "pixel",
+                ),
+            ),
+        ),
+        set_pixel_size,
+        subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
+        "rescale_axes",
+        "Rescale Axes",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "x_scale",
+                "X scale factor",
+                "float",
+                1.0,
+                0.01,
+                20.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "y_scale",
+                "Y scale factor",
+                "float",
+                1.0,
+                0.01,
+                20.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "z_scale",
+                "Z scale factor",
+                "float",
+                1.0,
+                0.01,
+                20.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "lock_xy",
+                "Lock X/Y aspect ratio",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "interpolation",
+                "Interpolation",
+                "choice",
+                "Auto",
+                0,
+                0,
+                1,
+                choices=(
+                    "Auto",
+                    "Nearest neighbor",
+                    "Linear (bilinear/trilinear)",
+                    "Cubic (bicubic/tricubic)",
+                    "Quadratic spline",
+                    "Quartic spline",
+                    "Quintic spline",
+                ),
+            ),
+            ParameterSpec(
+                "anti_aliasing",
+                "Anti-alias downsampling",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        rescale_axes,
         subcategory=AXES_REGIONS_GROUP,
         preserves_input_type=True,
     ),
@@ -2388,6 +2609,18 @@ class PrototypePipeline:
             kwargs["source_name"] = input_state.source_name
         if node.operation_id == "reorder_axes" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+        if (
+            node.operation_id
+            in {"project_image", "orthogonal_projection", "rescale_axes"}
+            and isinstance(input_state, ImageState)
+        ):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
+            if node.operation_id == "orthogonal_projection":
+                kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
+                kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
+            if node.operation_id == "rescale_axes":
+                kwargs["input_kind"] = input_state.kind
         if node.operation_id == "composite_to_rgb" and isinstance(
             input_state,
             ImageState,

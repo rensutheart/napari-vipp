@@ -100,6 +100,8 @@ The current node catalogue includes:
     - Crop Stack
     - Select Axis Slice
     - Reorder Axes
+    - Set Pixel Size / Units
+    - Rescale Axes
   - Channels & Composites:
     - Extract Channel
     - Combine Channels
@@ -139,6 +141,8 @@ The current node catalogue includes:
     - Laplace Filter
 - Projection:
   - Maximum Projection
+  - Project Image (axis-aware dropdown plus multiple projection methods)
+  - Orthogonal Projection
 - Segmentation:
   - Global Thresholds:
     - Otsu Threshold
@@ -287,11 +291,17 @@ the image.
 
 `Image Source` can point to an existing napari layer, a local `.npy`, TIFF,
 OME-Zarr, or common raster source such as PNG/JPEG/BMP/GIF/WebP, or one of the
-bundled synthetic samples. The design decision is
-that future source-level pixel size and unit overrides should repair missing or
-incorrect input calibration before analysis. `Save Image` passes data through
-unchanged and, when `Auto-save on update` is set to `on`, writes the node input
-to disk every time the graph recomputes. For quick interactive work, the
+bundled synthetic samples. `Set Pixel Size / Units` repairs missing or incorrect
+input calibration by setting X/Y pixel size, optional Z step size, and the
+shared physical unit carried in downstream metadata. Scale-aware nodes such as
+`Orthogonal Projection` use this metadata to preserve physical proportions for
+anisotropic z-stacks. `Rescale Axes` changes the sampled pixel grid along X/Y/Z
+with optional X/Y aspect-ratio locking, nearest-neighbor through spline
+interpolation choices, and anti-aliasing for intensity-image downsampling; it
+updates physical scale metadata inversely to the requested scale factors.
+`Save Image` passes data through unchanged and, when `Auto-save on update` is
+set to `on`, writes the node input to disk every time the graph recomputes. For
+quick interactive work, the
 inspector also provides `Save selected output...` for the currently selected
 node; that dialog defaults to TIFF but also allows `.npy` and PNG/JPEG-style
 formats when the selected output is 2D. TIFF output is written in ImageJ

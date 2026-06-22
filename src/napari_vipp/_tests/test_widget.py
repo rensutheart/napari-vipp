@@ -1053,6 +1053,8 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(axes_regions, "Crop Stack")
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
     assert _palette_child_by_text(axes_regions, "Reorder Axes")
+    assert _palette_child_by_text(axes_regions, "Set Pixel Size / Units")
+    assert _palette_child_by_text(axes_regions, "Rescale Axes")
     assert _palette_child_by_text(channels, "Extract Channel")
     assert _palette_child_by_text(channels, "Combine Channels")
     assert _palette_child_by_text(channels, "Split Channels")
@@ -1066,6 +1068,152 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(math_logic, "Calculate New Image")
     assert _palette_child_by_text(math_logic, "Add")
     assert _palette_child_by_text(math_logic, "Logical XOR")
+
+
+def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("set_pixel_size")
+    widget._connect_nodes("input", node.id)
+
+    x_control = widget._parameter_widgets["x_size"]
+    y_control = widget._parameter_widgets["y_size"]
+    z_control = widget._parameter_widgets["z_size"]
+
+    assert not hasattr(x_control, "slider")
+    assert not hasattr(y_control, "slider")
+    assert not hasattr(z_control, "slider")
+
+    x_control.value_box.setValue(0.25)
+
+    assert widget.pipeline.nodes[node.id].params["x_size"] == 0.25
+
+
+def test_rescale_axes_can_lock_xy_scale(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    lock = widget._parameter_widgets["lock_xy"]
+    x_scale = widget._parameter_widgets["x_scale"]
+    y_scale = widget._parameter_widgets["y_scale"]
+    z_scale = widget._parameter_widgets["z_scale"]
+
+    assert lock.checkbox.isChecked()
+    assert z_scale is not None
+
+    x_scale.value_box.setValue(2.5)
+
+    assert widget.pipeline.nodes[node.id].params["x_scale"] == 2.5
+    assert widget.pipeline.nodes[node.id].params["y_scale"] == 2.5
+    assert y_scale.value() == 2.5
+
+    y_scale.value_box.setValue(0.75)
+
+    assert widget.pipeline.nodes[node.id].params["y_scale"] == 0.75
+    assert widget.pipeline.nodes[node.id].params["x_scale"] == 0.75
+    assert x_scale.value() == 0.75
+
+    lock.checkbox.setChecked(False)
+    x_scale.value_box.setValue(1.25)
+
+    assert widget.pipeline.nodes[node.id].params["lock_xy"] is False
+    assert widget.pipeline.nodes[node.id].params["x_scale"] == 1.25
+    assert widget.pipeline.nodes[node.id].params["y_scale"] == 0.75
+
+
+def test_rescale_axes_labels_show_mapped_axis_sizes(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 12, 96, 128), dtype=np.float32),
+        metadata={"axes": "CZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    z_control = widget._parameter_widgets["z_scale"]
+    z_control.value_box.setValue(2.0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    label = widget.parameter_form.labelForField(z_control)
+    assert label.text() == "Z scale factor (Z axis, 12 -> 24)"
+    assert widget.pipeline.outputs[node.id].shape == (3, 24, 96, 128)
+    assert _metadata_value(widget, "Dimensions") == "c=3, z=24, y=96, x=128"
+
+
+def test_rescale_axes_labels_follow_reordered_spatial_semantics(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 12, 96, 128), dtype=np.float32),
+        metadata={"axes": "CZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    reorder = widget.add_node_from_palette("reorder_axes")
+    rescale = widget.add_node_from_palette("rescale_axes")
+    widget.pipeline.set_param(reorder.id, "order", "CYZX")
+    widget._connect_nodes("input", reorder.id)
+    widget._connect_nodes(reorder.id, rescale.id)
+    widget.graph_view.select_node(rescale.id)
+
+    z_control = widget._parameter_widgets["z_scale"]
+    z_control.value_box.setValue(2.0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline()
+
+    label = widget.parameter_form.labelForField(z_control)
+    assert label.text() == "Z scale factor (Z axis, 96 -> 192)"
+    assert widget.pipeline.outputs[rescale.id].shape == (3, 192, 12, 128)
+    assert _metadata_value(widget, "Dimensions") == "c=3, z=192, y=12, x=128"
+
+
+def test_project_image_uses_contextual_axis_dropdown(qtbot):
+    data = np.zeros((2, 3, 4, 16, 18), dtype=np.float32)
+    viewer = _Viewer(data, metadata={"axes": "TCZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("project_image")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["axes"]
+    choices = [
+        control.combo.itemText(index) for index in range(control.combo.count())
+    ]
+    values = [
+        control.combo.itemData(index) for index in range(control.combo.count())
+    ]
+
+    assert choices[0] == "Auto (Z if present)"
+    assert "T axis (time, size 2)" in choices
+    assert "C axis (channel, size 3)" in choices
+    assert "Z axis (space, size 4)" in choices
+    assert "Y axis (space, size 16)" in choices
+    assert "X axis (space, size 18)" in choices
+    assert "All non-YX spatial axes" in choices
+    assert values == [
+        "auto",
+        "axis:0",
+        "axis:1",
+        "axis:2",
+        "axis:3",
+        "axis:4",
+        "non_yx_spatial",
+    ]
+
+    control.combo.setCurrentText("Z axis (space, size 4)")
+
+    assert widget.pipeline.nodes[node.id].params["axes"] == "axis:2"
 
 
 def test_filtering_and_segmentation_categories_are_grouped(qtbot):
@@ -1086,6 +1234,11 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     assert _palette_child_by_text(edge_detail, "Difference of Gaussians")
     assert _palette_child_by_text(edge_detail, "Sobel Edges")
     assert _palette_child_by_text(edge_detail, "Canny Edges")
+
+    projection = _palette_category(widget, "Projection")
+    assert _palette_child_by_text(projection, "Maximum Projection")
+    assert _palette_child_by_text(projection, "Project Image")
+    assert _palette_child_by_text(projection, "Orthogonal Projection")
 
     segmentation = _palette_category(widget, "Segmentation")
     segmentation_subgroups = {
@@ -3258,6 +3411,32 @@ def test_inspection_layer_is_replaced_when_dimensionality_changes(qtbot):
     assert stack_inspect is not projected_inspect
     assert stack_inspect.data.ndim == 3
     assert stack_inspect.metadata["display_ndim"] == 3
+
+
+def test_inspection_layer_is_replaced_when_shape_changes(qtbot):
+    viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.zeros((4, 16, 18), dtype=np.float32),
+        metadata={"napari_vipp_kind": "inspect", "node_id": "manual"},
+        role="inspect",
+    )
+    first_inspect = viewer.layers["VIPP Inspect"]
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.zeros((8, 16, 18), dtype=np.float32),
+        metadata={"napari_vipp_kind": "inspect", "node_id": "manual"},
+        role="inspect",
+    )
+    second_inspect = viewer.layers["VIPP Inspect"]
+
+    assert second_inspect is not first_inspect
+    assert second_inspect.data.shape == (8, 16, 18)
+    assert second_inspect.metadata["display_shape"] == (8, 16, 18)
 
 
 def test_one_dimensional_inspection_data_is_displayed_as_row_image(qtbot):

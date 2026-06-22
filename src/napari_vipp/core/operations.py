@@ -9,7 +9,15 @@ from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage import feature, filters, measure, morphology, restoration, segmentation
+from skimage import (
+    feature,
+    filters,
+    measure,
+    morphology,
+    restoration,
+    segmentation,
+    transform,
+)
 
 from napari_vipp.core.channel_colors import channel_color_table
 from napari_vipp.core.io import write_image
@@ -2352,6 +2360,161 @@ def max_intensity_projection(data, axis: int = 0) -> np.ndarray:
     return np.max(arr, axis=axis)
 
 
+def project_image(
+    data,
+    axes: str = "auto",
+    method: str = "Maximum",
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> np.ndarray:
+    """Project an image over one or more selected axes."""
+    arr = np.asarray(data)
+    axis_indices = _projection_axis_indices(
+        arr.ndim,
+        axes,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        shape=arr.shape,
+    )
+    if not axis_indices:
+        return arr.copy()
+    return _project_array(arr, axis_indices, method)
+
+
+def orthogonal_projection(
+    data,
+    method: str = "Maximum",
+    use_physical_scale: bool = True,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    axis_scales: Sequence[float] = (),
+    axis_units: Sequence[str | None] = (),
+) -> np.ndarray:
+    """Build an XY/XZ/YZ orthogonal projection montage from a 3D volume."""
+    arr = np.asarray(data)
+    spatial_axes = _orthogonal_spatial_axis_indices(
+        arr.ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        shape=arr.shape,
+    )
+    if len(spatial_axes) < 3:
+        return arr.copy()
+
+    z_axis, y_axis, x_axis = spatial_axes[-3:]
+    non_spatial_axes = [axis for axis in range(arr.ndim) if axis not in spatial_axes]
+    processing_order = non_spatial_axes + [z_axis, y_axis, x_axis]
+    moved = np.transpose(arr, processing_order)
+    leading_shape = moved.shape[:-3]
+    z_size, y_size, x_size = moved.shape[-3:]
+    display_scales = _orthogonal_display_scales(
+        spatial_axes[-3:],
+        use_physical_scale=use_physical_scale,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    display_z, display_y, display_x = _orthogonal_display_sizes(
+        (z_size, y_size, x_size),
+        display_scales,
+    )
+    flat = moved.reshape((-1, z_size, y_size, x_size))
+
+    montages = [
+        _orthogonal_projection_block(block, method, (display_z, display_y, display_x))
+        for block in flat
+    ]
+    montage = np.stack(montages, axis=0).reshape(
+        leading_shape + (display_y + display_z, display_x + display_z)
+    )
+
+    temp_labels = non_spatial_axes + [-2, -1]
+    desired_labels: list[int] = []
+    inserted_montage_axes = False
+    spatial_set = set(spatial_axes)
+    first_spatial_axis = min(spatial_axes)
+    for axis in range(arr.ndim):
+        if axis in spatial_set:
+            if not inserted_montage_axes and axis == first_spatial_axis:
+                desired_labels.extend([-2, -1])
+                inserted_montage_axes = True
+            continue
+        desired_labels.append(axis)
+    if not inserted_montage_axes:
+        desired_labels.extend([-2, -1])
+
+    transpose_order = [temp_labels.index(label) for label in desired_labels]
+    return np.ascontiguousarray(np.transpose(montage, transpose_order))
+
+
+def set_pixel_size(
+    data,
+    x_size: float = 1.0,
+    y_size: float = 1.0,
+    z_size: float = 1.0,
+    unit: str = "micrometer",
+) -> np.ndarray:
+    """Pass image data through while updating carried pixel-size metadata."""
+    del x_size, y_size, z_size, unit
+    return np.asarray(data)
+
+
+def rescale_axes(
+    data,
+    x_scale: float = 1.0,
+    y_scale: float = 1.0,
+    z_scale: float = 1.0,
+    lock_xy: bool = True,
+    interpolation: str = "Auto",
+    anti_aliasing: bool = True,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    input_kind: str = "",
+) -> np.ndarray:
+    """Resample spatial X/Y/Z axes by scale factors."""
+    arr = np.asarray(data)
+    if arr.ndim == 0:
+        return arr.copy()
+    x_scale = _positive_float(x_scale, 1.0)
+    y_scale = x_scale if bool(lock_xy) else _positive_float(y_scale, 1.0)
+    z_scale = _positive_float(z_scale, 1.0)
+
+    axis_map = _xyz_axis_indices(
+        arr.ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        shape=arr.shape,
+    )
+    scale_by_axis = {axis_map["x"]: x_scale}
+    if "y" in axis_map:
+        scale_by_axis[axis_map["y"]] = y_scale
+    if "z" in axis_map:
+        scale_by_axis[axis_map["z"]] = z_scale
+    output_shape = tuple(
+        max(int(round(size * scale_by_axis.get(axis, 1.0))), 1)
+        for axis, size in enumerate(arr.shape)
+    )
+    if output_shape == arr.shape:
+        return arr.copy()
+
+    semantic = _rescale_semantic_kind(arr, input_kind)
+    order = _resize_order(interpolation, semantic)
+    anti_alias = (
+        bool(anti_aliasing)
+        and order > 0
+        and semantic == "image"
+        and any(output_shape[axis] < arr.shape[axis] for axis in range(arr.ndim))
+    )
+    resized = transform.resize(
+        arr,
+        output_shape,
+        order=order,
+        mode="edge",
+        preserve_range=True,
+        anti_aliasing=anti_alias,
+    )
+    return _restore_rescaled_axes_dtype(resized, arr, semantic)
+
+
 def select_axis_slice(
     data,
     axis: int = 0,
@@ -3566,6 +3729,527 @@ def _parse_int_list(value) -> list[int]:
         except (TypeError, ValueError):
             continue
     return parsed
+
+
+def _project_array(
+    arr: np.ndarray,
+    axis_indices: Sequence[int],
+    method: str,
+) -> np.ndarray:
+    axes = tuple(sorted({int(axis) for axis in axis_indices}))
+    if not axes:
+        return arr.copy()
+    reducer = _projection_reducer(method)
+    result = reducer(arr, axis=axes)
+    return _projection_result_dtype(result, arr, method)
+
+
+def _projection_reducer(method: str) -> Callable:
+    normalized = _normalized_projection_method(method)
+    reducers: dict[str, Callable] = {
+        "maximum": np.max,
+        "max": np.max,
+        "mean": np.mean,
+        "average": np.mean,
+        "minimum": np.min,
+        "min": np.min,
+        "median": np.median,
+        "sum": np.sum,
+        "standard deviation": np.std,
+        "std": np.std,
+        "std dev": np.std,
+    }
+    return reducers.get(normalized, np.max)
+
+
+def _projection_result_dtype(
+    result: np.ndarray,
+    original: np.ndarray,
+    method: str,
+) -> np.ndarray:
+    normalized = _normalized_projection_method(method)
+    if normalized in {"maximum", "max", "minimum", "min"}:
+        return np.ascontiguousarray(result.astype(original.dtype, copy=False))
+    if np.issubdtype(original.dtype, np.floating):
+        return np.ascontiguousarray(result.astype(original.dtype, copy=False))
+    return np.ascontiguousarray(result.astype(np.float32, copy=False))
+
+
+def _normalized_projection_method(method: str) -> str:
+    return str(method or "Maximum").strip().lower().replace("_", " ")
+
+
+def _projection_axis_indices(
+    ndim: int,
+    axes,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> tuple[int, ...]:
+    if ndim <= 2:
+        return ()
+    tokens = _projection_axis_tokens(axes)
+    if not tokens or _tokens_request_auto_projection(tokens):
+        return _auto_projection_axis_indices(
+            ndim,
+            axis_names=axis_names,
+            axis_types=axis_types,
+            shape=shape,
+        )
+    if _tokens_request_non_yx_spatial_projection(tokens):
+        return _non_yx_spatial_axis_indices(
+            ndim,
+            axis_names=axis_names,
+            axis_types=axis_types,
+            shape=shape,
+        )
+
+    names = _normalized_axis_names(ndim, axis_names, shape)
+    types = [str(axis_type).strip().lower() for axis_type in axis_types]
+    parsed: list[int] = []
+    for token in tokens:
+        index = _projection_axis_index_from_token(token, ndim, names, types)
+        if index is not None and index not in parsed:
+            parsed.append(index)
+    return tuple(parsed)
+
+
+def _projection_axis_tokens(axes) -> list[str]:
+    if axes is None:
+        return []
+    if isinstance(axes, (list, tuple)):
+        values = axes
+    else:
+        values = (axes,)
+    return [
+        token
+        for token in (_projection_axis_token(value) for value in values)
+        if token
+    ]
+
+
+def _projection_axis_token(value) -> str:
+    if isinstance(value, (int, np.integer)):
+        return f"axis:{int(value)}"
+    text = str(value).strip().lower()
+    if text in {"", "auto", "non_yx_spatial"}:
+        return text
+    if text.startswith(("axis:", "name:")):
+        return text
+    return ""
+
+
+def _tokens_request_auto_projection(tokens: Sequence[str]) -> bool:
+    text = " ".join(tokens).strip().lower()
+    return text in {"", "auto"}
+
+
+def _tokens_request_non_yx_spatial_projection(tokens: Sequence[str]) -> bool:
+    text = " ".join(tokens).strip().lower()
+    return text == "non_yx_spatial"
+
+
+def _projection_axis_index_from_token(
+    token: str,
+    ndim: int,
+    axis_names: Sequence[str],
+    axis_types: Sequence[str],
+) -> int | None:
+    normalized = token.strip().lower()
+    if not normalized:
+        return None
+    if normalized.startswith("axis:"):
+        try:
+            return _normalize_axis(int(normalized.removeprefix("axis:")), ndim)
+        except ValueError:
+            return None
+    if not normalized.startswith("name:"):
+        return None
+    normalized = normalized.removeprefix("name:")
+
+    aliases = {
+        "time": "t",
+        "channel": "c",
+        "channels": "c",
+        "sample": "s",
+        "rgb": "rgb",
+        "rgba": "rgba",
+    }
+    name = aliases.get(normalized, normalized)
+    for index, axis_name in enumerate(axis_names[:ndim]):
+        if axis_name == name:
+            return index
+    if name == "t":
+        for index, axis_type in enumerate(axis_types[:ndim]):
+            if axis_type == "time":
+                return index
+    if name in {"c", "rgb", "rgba"}:
+        for index, axis_type in enumerate(axis_types[:ndim]):
+            if axis_type == "channel":
+                return index
+    return None
+
+
+def _auto_projection_axis_indices(
+    ndim: int,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> tuple[int, ...]:
+    names = _normalized_axis_names(ndim, axis_names, shape)
+    if "z" in names:
+        return (names.index("z"),)
+    spatial_axes = _metadata_spatial_axis_indices(
+        ndim,
+        axis_types=axis_types,
+        axis_names=names,
+    )
+    if len(spatial_axes) >= 3:
+        return (spatial_axes[-3],)
+    fallback = _fallback_projection_spatial_indices(ndim, shape)
+    if len(fallback) >= 3:
+        return (fallback[-3],)
+    return ()
+
+
+def _non_yx_spatial_axis_indices(
+    ndim: int,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> tuple[int, ...]:
+    names = _normalized_axis_names(ndim, axis_names, shape)
+    spatial_axes = _metadata_spatial_axis_indices(
+        ndim,
+        axis_types=axis_types,
+        axis_names=names,
+    )
+    if not spatial_axes:
+        spatial_axes = _fallback_projection_spatial_indices(ndim, shape)
+    if len(spatial_axes) <= 2:
+        return ()
+    return tuple(spatial_axes[:-2])
+
+
+def _orthogonal_spatial_axis_indices(
+    ndim: int,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> tuple[int, ...]:
+    if ndim < 3:
+        return ()
+    names = _normalized_axis_names(ndim, axis_names, shape)
+    named = [names.index(name) for name in ("z", "y", "x") if name in names]
+    if len(named) == 3:
+        return tuple(named)
+    spatial_axes = _metadata_spatial_axis_indices(
+        ndim,
+        axis_types=axis_types,
+        axis_names=names,
+    )
+    if len(spatial_axes) >= 3:
+        return tuple(spatial_axes[-3:])
+    fallback = _fallback_projection_spatial_indices(ndim, shape)
+    if len(fallback) >= 3:
+        return tuple(fallback[-3:])
+    return ()
+
+
+def _metadata_spatial_axis_indices(
+    ndim: int,
+    *,
+    axis_types: Sequence[str],
+    axis_names: Sequence[str],
+) -> list[int]:
+    types = [str(axis_type).strip().lower() for axis_type in axis_types]
+    spatial = [
+        index
+        for index, axis_type in enumerate(types[:ndim])
+        if axis_type == "space"
+    ]
+    if spatial:
+        return spatial
+    return [
+        index
+        for index, axis_name in enumerate(axis_names[:ndim])
+        if axis_name in {"z", "y", "x"}
+    ]
+
+
+def _fallback_projection_spatial_indices(
+    ndim: int,
+    shape: Sequence[int] = (),
+) -> list[int]:
+    names = _fallback_axis_names(ndim, shape)
+    spatial = [
+        index
+        for index, axis_name in enumerate(names)
+        if axis_name in {"z", "y", "x"}
+    ]
+    if spatial:
+        return spatial
+    if ndim == 3 and shape and int(shape[-1]) in RGB_CHANNELS:
+        return [0, 1]
+    return list(range(ndim))
+
+
+def _normalized_axis_names(
+    ndim: int,
+    axis_names: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> list[str]:
+    names = [str(name).strip().lower() for name in axis_names[:ndim]]
+    if len(names) == ndim and all(names):
+        return names
+    return list(_fallback_axis_names(ndim, shape))
+
+
+def _fallback_axis_names(ndim: int, shape: Sequence[int] = ()) -> tuple[str, ...]:
+    shape_tuple = tuple(int(size) for size in shape) if shape else ()
+    if ndim == 5:
+        return ("t", "c", "z", "y", "x")
+    if ndim == 4:
+        if shape_tuple and shape_tuple[-1] in RGB_CHANNELS:
+            return ("z", "y", "x", "rgb")
+        if shape_tuple and shape_tuple[0] <= 4:
+            return ("c", "z", "y", "x")
+        return ("t", "z", "y", "x")
+    if ndim == 3:
+        if shape_tuple and shape_tuple[-1] in RGB_CHANNELS:
+            return ("y", "x", "rgb")
+        return ("z", "y", "x")
+    if ndim == 2:
+        return ("y", "x")
+    return tuple(f"axis{index}" for index in range(ndim))
+
+
+def _xyz_axis_indices(
+    ndim: int,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    shape: Sequence[int] = (),
+) -> dict[str, int]:
+    names = _normalized_axis_names(ndim, axis_names, shape)
+    axis_map = {
+        name: names.index(name)
+        for name in ("x", "y", "z")
+        if name in names
+    }
+    spatial_axes = _metadata_spatial_axis_indices(
+        ndim,
+        axis_types=axis_types,
+        axis_names=names,
+    )
+    if not spatial_axes:
+        spatial_axes = _fallback_projection_spatial_indices(ndim, shape)
+    if spatial_axes:
+        axis_map.setdefault("x", spatial_axes[-1])
+    if len(spatial_axes) >= 2:
+        axis_map.setdefault("y", spatial_axes[-2])
+    if len(spatial_axes) >= 3:
+        axis_map.setdefault("z", spatial_axes[-3])
+    return axis_map
+
+
+def _resize_order(interpolation: str, semantic: str) -> int:
+    if semantic in {"mask", "labels"}:
+        return 0
+    normalized = str(interpolation or "Auto").strip().lower()
+    if normalized.startswith("auto"):
+        return 1
+    if "nearest" in normalized:
+        return 0
+    if "linear" in normalized or "bilinear" in normalized or "trilinear" in normalized:
+        return 1
+    if "quadratic" in normalized:
+        return 2
+    if "cubic" in normalized or "bicubic" in normalized or "tricubic" in normalized:
+        return 3
+    if "quartic" in normalized:
+        return 4
+    if "quintic" in normalized:
+        return 5
+    return 1
+
+
+def _rescale_semantic_kind(arr: np.ndarray, input_kind: str) -> str:
+    text = str(input_kind or "").strip().lower()
+    if arr.dtype == bool or "mask" in text:
+        return "mask"
+    if "label" in text:
+        return "labels"
+    return "image"
+
+
+def _restore_rescaled_axes_dtype(
+    resized: np.ndarray,
+    original: np.ndarray,
+    semantic: str,
+) -> np.ndarray:
+    if semantic == "mask" or original.dtype == bool:
+        return np.ascontiguousarray(resized > 0.5)
+    return _restore_numeric_dtype(resized, original)
+
+
+def _orthogonal_projection_block(
+    block: np.ndarray,
+    method: str,
+    display_shape: tuple[int, int, int],
+) -> np.ndarray:
+    z_size, y_size, x_size = block.shape
+    display_z, display_y, display_x = display_shape
+    xy = _project_array(block, (0,), method)
+    xz = _project_array(block, (1,), method)
+    yz = _project_array(block, (2,), method).T
+    xy = _resize_projection_panel(xy, (display_y, display_x))
+    xz = _resize_projection_panel(xz, (display_z, display_x))
+    yz = _resize_projection_panel(yz, (display_y, display_z))
+    fill_value = _projection_canvas_fill(block)
+    canvas = np.full(
+        (display_y + display_z, display_x + display_z),
+        fill_value,
+        dtype=xy.dtype,
+    )
+    canvas[:display_y, :display_x] = xy
+    canvas[display_y:, :display_x] = xz
+    canvas[:display_y, display_x:] = yz
+    return canvas
+
+
+def _orthogonal_display_scales(
+    spatial_axes: Sequence[int],
+    *,
+    use_physical_scale: bool,
+    axis_scales: Sequence[float] = (),
+    axis_units: Sequence[str | None] = (),
+) -> tuple[float, float, float]:
+    if not use_physical_scale or len(spatial_axes) < 3:
+        return (1.0, 1.0, 1.0)
+    converted: list[float] = []
+    normalized_units: list[str] = []
+    for axis in spatial_axes[-3:]:
+        scale = _positive_float(
+            axis_scales[axis] if axis < len(axis_scales) else 1.0,
+            1.0,
+        )
+        unit = axis_units[axis] if axis < len(axis_units) else None
+        normalized_unit = _normalized_physical_unit(unit)
+        factor = _unit_to_micrometer_factor(normalized_unit)
+        converted.append(scale * factor if factor is not None else scale)
+        normalized_units.append(normalized_unit)
+    known_units = [unit for unit in normalized_units if unit not in {"", "pixel"}]
+    if known_units and any(
+        _unit_to_micrometer_factor(unit) is None for unit in known_units
+    ):
+        if len(set(known_units)) > 1:
+            return (1.0, 1.0, 1.0)
+    if any(value <= 0 or not np.isfinite(value) for value in converted):
+        return (1.0, 1.0, 1.0)
+    return tuple(converted)  # type: ignore[return-value]
+
+
+def _orthogonal_display_sizes(
+    shape: tuple[int, int, int],
+    display_scales: tuple[float, float, float],
+) -> tuple[int, int, int]:
+    positive = [value for value in display_scales if value > 0 and np.isfinite(value)]
+    base = min(positive) if positive else 1.0
+    return tuple(
+        max(int(round(size * scale / base)), 1)
+        for size, scale in zip(shape, display_scales, strict=True)
+    )  # type: ignore[return-value]
+
+
+def _resize_projection_panel(
+    panel: np.ndarray,
+    target_shape: tuple[int, int],
+) -> np.ndarray:
+    target_y, target_x = (max(int(size), 1) for size in target_shape)
+    if panel.shape == (target_y, target_x):
+        return np.ascontiguousarray(panel)
+    zoom = (
+        target_y / max(panel.shape[0], 1),
+        target_x / max(panel.shape[1], 1),
+    )
+    order = 1 if np.issubdtype(panel.dtype, np.floating) else 0
+    resized = ndi.zoom(panel, zoom=zoom, order=order)
+    return _fit_projection_panel(resized, (target_y, target_x), panel.dtype)
+
+
+def _fit_projection_panel(
+    panel: np.ndarray,
+    target_shape: tuple[int, int],
+    dtype: np.dtype,
+) -> np.ndarray:
+    fitted = np.zeros(target_shape, dtype=dtype)
+    y_size = min(panel.shape[0], target_shape[0])
+    x_size = min(panel.shape[1], target_shape[1])
+    fitted[:y_size, :x_size] = panel[:y_size, :x_size].astype(dtype, copy=False)
+    return np.ascontiguousarray(fitted)
+
+
+def _projection_canvas_fill(arr: np.ndarray):
+    if arr.size == 0:
+        return 0
+    if np.issubdtype(arr.dtype, np.floating):
+        finite = arr[np.isfinite(arr)]
+        if finite.size:
+            return finite.min()
+        return 0.0
+    return arr.min()
+
+
+def _positive_float(value, default: float) -> float:
+    try:
+        result = float(value)
+    except Exception:
+        return default
+    if result <= 0 or not np.isfinite(result):
+        return default
+    return result
+
+
+def _normalized_physical_unit(unit) -> str:
+    text = str(unit or "").strip().lower()
+    aliases = {
+        "µm": "micrometer",
+        "um": "micrometer",
+        "micron": "micrometer",
+        "microns": "micrometer",
+        "micrometre": "micrometer",
+        "micrometres": "micrometer",
+        "micrometers": "micrometer",
+        "nm": "nanometer",
+        "nanometre": "nanometer",
+        "nanometres": "nanometer",
+        "nanometers": "nanometer",
+        "mm": "millimeter",
+        "millimetre": "millimeter",
+        "millimetres": "millimeter",
+        "millimeters": "millimeter",
+        "m": "meter",
+        "metre": "meter",
+        "metres": "meter",
+        "meters": "meter",
+        "px": "pixel",
+        "pixels": "pixel",
+    }
+    return aliases.get(text, text)
+
+
+def _unit_to_micrometer_factor(unit: str) -> float | None:
+    return {
+        "nanometer": 0.001,
+        "micrometer": 1.0,
+        "millimeter": 1000.0,
+        "meter": 1_000_000.0,
+    }.get(unit)
 
 
 def _axis_order_indices(
