@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-06-21
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -47,12 +47,17 @@ Implemented and covered by automated tests:
 
 - editable typed graph execution, workflow persistence, and Python export;
 - semantic image/mask/label outputs and multi-output channel routing;
+- typed Mask Image with named image/mask ports and RGB/multichannel mask
+  broadcasting;
+- image/mask/label pinning as persistent napari preview layers while editing
+  other nodes;
 - first-class table outputs and basic label-object measurements;
 - named typed input ports and intensity-aware per-object measurement tables;
 - generic skeletonization and skeleton-network measurement tables with 2D/3D
   graph node, graph edge, isolate, and cycle metrics;
 - metadata-aware 2D/3D label cleanup;
-- OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and NumPy I/O;
+- OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and NumPy I/O,
+  plus common raster import and 2D raster export;
 - TIFF series and OME-Zarr image selection;
 - OME-TIFF axes, physical scale, channel names, and VIPP provenance round trips;
 - ImageJ hyperstack axes and calibration;

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import imageio.v3 as iio
 import numpy as np
 import tifffile
 from qtpy.QtCore import QEvent, QPointF, QSignalBlocker, Qt
@@ -8,6 +9,7 @@ from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QScrollArea,
     QWidget,
@@ -445,6 +447,30 @@ def test_image_source_node_inspects_and_selects_tiff_series(qtbot, tmp_path):
     assert widget.pipeline.output_states["input"].source.format == "tiff"
 
 
+def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
+    data = np.zeros((5, 6, 3), dtype=np.uint8)
+    data[..., 0] = 255
+    path = tmp_path / "source.png"
+    iio.imwrite(path, data)
+
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    control.mode_combo.setCurrentText("file path")
+    control.path_edit.setText(str(path))
+    widget._refresh_image_source_options()
+
+    assert control.series_combo.count() == 1
+    assert "png" in control.source_summary.text()
+    widget.run_pipeline()
+
+    assert widget.pipeline.outputs["input"].shape == data.shape
+    assert widget.pipeline.output_states["input"].kind == "RGB image"
+    assert widget.pipeline.output_states["input"].source.format == "png"
+
+
 def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -563,7 +589,8 @@ def test_selecting_node_updates_inspection_layer(qtbot):
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "input"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
-    assert widget.pin_button.isHidden()
+    assert not widget.pin_button.isHidden()
+    assert widget.pin_button.text() == "Pin selected"
 
 
 def test_widget_pins_threshold_as_labels(qtbot):
@@ -577,8 +604,11 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
     assert widget.graph_view._cards["threshold"]._pinned
+    assert "border: 4px solid #facc15" in widget.graph_view._cards[
+        "threshold"
+    ].styleSheet()
     assert widget.graph_view._cards["threshold"].pin_button.isHidden()
-    assert widget.pin_button.isHidden()
+    assert not widget.pin_button.isHidden()
 
 
 def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
@@ -1085,6 +1115,9 @@ def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
 
     assert "threshold_scope" not in widget._parameter_widgets
     assert widget.parameter_group.isHidden()
+    assert not widget.rescale_input_histogram_group.isHidden()
+    assert widget.rescale_input_histogram_scope_row.isHidden()
+    assert widget.rescale_input_histogram_group.title() == "Input Histogram"
 
 
 def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
@@ -2621,22 +2654,50 @@ def test_palette_image_operations_can_run(qtbot):
     label_source_id = None
     table_source_id = None
 
+    def ensure_label_source() -> str:
+        nonlocal label_source_id
+        if label_source_id is not None:
+            return label_source_id
+        labels = widget.add_node_from_palette("label_connected_components")
+        widget._connect_nodes("threshold", labels.id)
+        assert widget.pipeline.outputs[labels.id] is not None
+        label_source_id = labels.id
+        return label_source_id
+
+    def ensure_table_source() -> str:
+        nonlocal table_source_id
+        if table_source_id is not None:
+            return table_source_id
+        measurements = widget.add_node_from_palette("measure_objects")
+        widget._connect_nodes(ensure_label_source(), measurements.id)
+        assert widget.pipeline.outputs[measurements.id] is not None
+        table_source_id = measurements.id
+        return table_source_id
+
+    def source_for_type(input_type: str | None) -> str:
+        if input_type in {"mask", "mask_or_labels"}:
+            return "threshold"
+        if input_type == "labels":
+            return ensure_label_source()
+        if input_type == "table":
+            return ensure_table_source()
+        return "input"
+
     for spec in PALETTE_NODE_LIBRARY:
         if not spec.has_input:
             continue
         node = widget.add_node_from_palette(spec.id)
-        if spec.input_type in {"mask", "mask_or_labels"}:
-            source_id = "threshold"
-        elif spec.input_type == "labels":
-            assert label_source_id is not None
-            source_id = label_source_id
-        elif spec.input_type == "table":
-            assert table_source_id is not None
-            source_id = table_source_id
+        if spec.inputs:
+            for port_index, input_spec in enumerate(spec.inputs):
+                widget._connect_nodes(
+                    source_for_type(input_spec.input_type),
+                    node.id,
+                    target_port=port_index,
+                )
         else:
-            source_id = "input"
-        widget._connect_nodes(source_id, node.id)
-        if spec.max_inputs is None or spec.max_inputs != 1:
+            source_id = source_for_type(spec.input_type)
+            widget._connect_nodes(source_id, node.id)
+        if not spec.inputs and (spec.max_inputs is None or spec.max_inputs != 1):
             if spec.input_type == "table":
                 widget._connect_nodes(table_source_id, node.id)
             else:
@@ -2689,6 +2750,9 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     assert widget.table_preview.columnCount() > 0
     assert widget.histogram_group.isHidden()
     assert widget.thumbnail_checkbox.isHidden()
+    assert "include_shape_descriptors" in widget._parameter_widgets
+    assert "include_axis_descriptors" in widget._parameter_widgets
+    assert "include_2d_boundary_descriptors" not in widget._parameter_widgets
     widget.graph_view.select_node(labels.id)
     assert not widget.thumbnail_checkbox.isHidden()
     assert widget.thumbnail_checkbox.isEnabled()
@@ -2720,7 +2784,38 @@ def test_save_selected_output_dialog_defaults_to_ome_tiff(
     assert captured["title"] == "Save selected node output"
     assert captured["default_name"].endswith(".ome.tif")
     assert captured["filters"].startswith("OME-TIFF")
+    assert "PNG image" not in captured["filters"]
     assert path.exists()
+
+
+def test_save_selected_output_dialog_allows_raster_for_2d_output(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    viewer = _Viewer(np.arange(6 * 7, dtype=np.uint8).reshape(6, 7))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    captured = {}
+    path = tmp_path / "selected-output.png"
+
+    def fake_get_save_file_name(_parent, title, default_name, filters):
+        captured["title"] = title
+        captured["default_name"] = default_name
+        captured["filters"] = filters
+        return str(path), "PNG image (*.png)"
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        fake_get_save_file_name,
+    )
+
+    widget._save_selected_output_dialog()
+
+    assert captured["title"] == "Save selected node output"
+    assert "PNG image" in captured["filters"]
+    assert path.exists()
+    assert iio.imread(path).ndim == 2
 
 
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
@@ -2767,6 +2862,54 @@ def test_save_image_node_writes_imagej_tiff_with_metadata(qtbot, tmp_path):
     assert metadata["channels"] == 3
     assert series.axes == "TZCYX"
     assert set(np.unique(saved)) == {0, 255}
+
+
+def test_save_image_node_writes_png_for_2d_output(qtbot, tmp_path):
+    viewer = _Viewer(np.arange(6 * 7, dtype=np.uint8).reshape(6, 7))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("save_output")
+    widget._connect_nodes("input", node.id)
+    path = tmp_path / "graph-output.png"
+
+    widget.pipeline.set_param(node.id, "enabled", "on")
+    widget.pipeline.set_param(node.id, "path", str(path))
+    widget.pipeline.set_param(node.id, "format", "png")
+    widget.pipeline.set_param(node.id, "overwrite", "yes")
+    widget.run_pipeline()
+
+    assert path.exists()
+    assert iio.imread(path).shape == (6, 7)
+
+
+def test_new_workflow_prompts_and_creates_empty_source_graph(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("binary_threshold")
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.No,
+    )
+    widget._new_workflow_dialog()
+    assert node.id in widget.pipeline.nodes
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    widget._new_workflow_dialog()
+
+    assert list(widget.pipeline.nodes) == ["input"]
+    assert widget.pipeline.connections == []
+    assert widget.pipeline.nodes["input"].params["source_mode"] == "file path"
+    assert widget.pipeline.nodes["input"].params["file_path"] == ""
+    assert widget.pipeline.outputs["input"] is None
+    assert widget.status_label.text() == "New empty workflow created."
 
 
 def test_export_ome_dataset_dialog_writes_reference_and_labels(
@@ -2850,7 +2993,7 @@ def test_mask_output_can_feed_projection_and_remain_pinnable(qtbot):
     assert pinned.layer_type == "labels"
 
 
-def test_non_mask_nodes_cannot_be_pinned(qtbot):
+def test_image_nodes_can_be_pinned(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -2862,29 +3005,58 @@ def test_non_mask_nodes_cannot_be_pinned(qtbot):
         for layer in viewer.layers
         if layer.metadata.get("napari_vipp_kind") == "pinned"
     ]
-    assert pinned_layers == []
-    assert widget._active_pinned_node_id is None
-    assert (
-        "'Gaussian Blur' does not produce a mask overlay."
-        in widget.status_label.text()
-    )
+    assert len(pinned_layers) == 1
+    assert pinned_layers[0].metadata["node_id"] == "gaussian"
+    assert pinned_layers[0].layer_type == "image"
+    assert pinned_layers[0].metadata["display_kind"] == "image"
+    assert widget._active_pinned_node_id == "gaussian"
+    assert widget.graph_view._cards["gaussian"]._pinned
     assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
 
 
-def test_pin_button_visible_only_for_selected_mask_node(qtbot):
+def test_table_nodes_cannot_be_pinned(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+
+    widget.pin_node(measurements.id)
+
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+    ]
+    assert pinned_layers == []
+    assert widget._active_pinned_node_id is None
+    assert (
+        "'Measure Objects' does not produce a displayable image output."
+        in widget.status_label.text()
+    )
+
+
+def test_pin_button_visible_for_selected_image_node(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.graph_view.select_node("gaussian")
-    assert widget.pin_button.isHidden()
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
 
-    widget.graph_view.select_node("threshold")
+    widget.graph_view.select_node("gaussian")
     assert not widget.pin_button.isHidden()
     assert widget.pin_button.text() == "Pin selected"
 
+    widget.graph_view.select_node(measurements.id)
+    assert widget.pin_button.isHidden()
 
-def test_only_one_mask_node_is_actively_pinned(qtbot):
+
+def test_only_one_image_node_is_actively_pinned(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -2892,7 +3064,7 @@ def test_only_one_mask_node_is_actively_pinned(qtbot):
     binary = widget.add_node_from_palette("binary_threshold")
     widget._connect_nodes("gaussian", binary.id)
     widget.pin_node(binary.id)
-    widget.pin_node("threshold")
+    widget.pin_node("gaussian")
 
     pinned_layers = [
         layer
@@ -2900,9 +3072,9 @@ def test_only_one_mask_node_is_actively_pinned(qtbot):
         if layer.metadata.get("napari_vipp_kind") == "pinned"
     ]
     assert len(pinned_layers) == 1
-    assert pinned_layers[0].metadata["node_id"] == "threshold"
-    assert widget._active_pinned_node_id == "threshold"
-    assert widget.graph_view._cards["threshold"]._pinned
+    assert pinned_layers[0].metadata["node_id"] == "gaussian"
+    assert widget._active_pinned_node_id == "gaussian"
+    assert widget.graph_view._cards["gaussian"]._pinned
     assert not widget.graph_view._cards[binary.id]._pinned
     assert viewer.layers[-1] is pinned_layers[0]
 
@@ -2920,7 +3092,8 @@ def test_selecting_another_node_does_not_clear_pin(qtbot):
     assert widget.graph_view._cards["threshold"]._pinned
     assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
-    assert widget.pin_button.isHidden()
+    assert not widget.pin_button.isHidden()
+    assert widget.pin_button.text() == "Pin selected"
 
 
 def test_selected_pinned_node_shows_unpin_in_inspector(qtbot):
@@ -2946,6 +3119,26 @@ def test_active_pin_stays_on_top_after_inspect(qtbot):
     assert viewer.layers[-1].metadata["napari_vipp_kind"] == "pinned"
     assert viewer.layers[-1].metadata["node_id"] == "threshold"
     assert viewer.layers[-2].metadata["napari_vipp_kind"] == "inspect"
+
+
+def test_pinned_image_stays_visible_while_editing_other_node(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.pin_node("gaussian")
+    widget.graph_view.select_node("threshold")
+    widget.pipeline.set_param("threshold", "threshold_scope", "Slice histogram")
+    widget.run_pipeline()
+
+    pinned = viewer.layers["VIPP Pinned: Gaussian Blur"]
+
+    assert pinned.layer_type == "image"
+    assert pinned.metadata["node_id"] == "gaussian"
+    assert widget._active_pinned_node_id == "gaussian"
+    assert widget.graph_view._cards["gaussian"]._pinned
+    assert viewer.layers[-1] is pinned
+    assert viewer.layers[-2].metadata["node_id"] == "threshold"
 
 
 def test_inspect_shows_mask_as_standalone_image(qtbot):

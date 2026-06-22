@@ -40,6 +40,7 @@ from napari_vipp.core.operations import (
     erode,
     extract_channel,
     fill_holes,
+    filter_labels_by_property,
     filter_labels_by_volume,
     gamma_correction,
     gaussian_blur,
@@ -75,6 +76,7 @@ from napari_vipp.core.operations import (
     sauvola_threshold,
     save_output,
     select_axis_slice,
+    select_table_columns,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -292,6 +294,7 @@ SPATIAL_OPERATIONS = {
     "fill_holes",
     "hysteresis_threshold",
     "label_connected_components",
+    "filter_labels_by_property",
     "filter_labels_by_volume",
     "analyze_skeleton",
     "measure_objects",
@@ -1020,6 +1023,71 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         filter_labels_by_volume,
     ),
     OperationSpec(
+        "filter_labels_by_property",
+        "Filter Labels By Property",
+        LABEL_OPERATIONS_CATEGORY,
+        "labels",
+        "labels",
+        (
+            ParameterSpec(
+                "property_column",
+                "Property column (auto or name)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "min_value",
+                "Minimum value",
+                "float",
+                0.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
+                1.0,
+                3,
+            ),
+            ParameterSpec(
+                "max_value",
+                "Maximum value (0 = none)",
+                "float",
+                0.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
+                1.0,
+                3,
+            ),
+            ParameterSpec(
+                "keep_mode",
+                "Action",
+                "choice",
+                "Keep inside range",
+                0,
+                0,
+                1,
+                choices=("Keep inside range", "Remove inside range"),
+            ),
+            ParameterSpec(
+                "unmatched_labels",
+                "Labels without table row",
+                "choice",
+                "Remove unmatched labels",
+                0,
+                0,
+                1,
+                choices=("Remove unmatched labels", "Keep unmatched labels"),
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        filter_labels_by_property,
+        max_inputs=2,
+        inputs=(
+            InputSpec("labels", "labels", "Labels"),
+            InputSpec("table", "table", "Measurements table"),
+        ),
+    ),
+    OperationSpec(
         "relabel_sequential",
         "Relabel Sequential",
         LABEL_OPERATIONS_CATEGORY,
@@ -1037,14 +1105,31 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             SPATIAL_MODE_PARAMETER,
             ParameterSpec(
-                "measurement_set",
-                "Measurement set",
-                "choice",
-                "Basic morphology",
-                0,
+                "include_shape_descriptors",
+                "Shape descriptors",
+                "bool",
+                False,
                 0,
                 1,
-                choices=("Basic morphology",),
+                1,
+            ),
+            ParameterSpec(
+                "include_axis_descriptors",
+                "Axis/inertia descriptors",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "include_2d_boundary_descriptors",
+                "2D boundary descriptors",
+                "bool",
+                False,
+                0,
+                1,
+                1,
             ),
         ),
         measure_objects,
@@ -1058,14 +1143,31 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             SPATIAL_MODE_PARAMETER,
             ParameterSpec(
-                "measurement_set",
-                "Measurement set",
-                "choice",
-                "Basic morphology + intensity",
-                0,
+                "include_shape_descriptors",
+                "Shape descriptors",
+                "bool",
+                False,
                 0,
                 1,
-                choices=("Basic morphology + intensity",),
+                1,
+            ),
+            ParameterSpec(
+                "include_axis_descriptors",
+                "Axis/inertia descriptors",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "include_2d_boundary_descriptors",
+                "2D boundary descriptors",
+                "bool",
+                False,
+                0,
+                1,
+                1,
             ),
         ),
         measure_objects_with_intensity,
@@ -1156,6 +1258,46 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         add_metadata_columns,
+        subcategory="Tables",
+    ),
+    OperationSpec(
+        "select_table_columns",
+        "Select Table Columns",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "table",
+        (
+            ParameterSpec(
+                "columns",
+                "Columns (comma-separated, auto = all)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "selection_mode",
+                "Mode",
+                "choice",
+                "Keep listed columns",
+                0,
+                0,
+                1,
+                choices=("Keep listed columns", "Drop listed columns"),
+            ),
+            ParameterSpec(
+                "append_unlisted",
+                "Append unlisted columns",
+                "choice",
+                "no",
+                0,
+                0,
+                1,
+                choices=("no", "yes"),
+            ),
+        ),
+        select_table_columns,
         subcategory="Tables",
     ),
     OperationSpec(
@@ -1251,10 +1393,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask_image",
         "Mask Image",
         IMAGE_DATA_CATEGORY,
-        "array",
+        "image",
         "image",
         (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 2, 1),
             ParameterSpec(
                 "outside_value",
                 "Outside value",
@@ -1278,6 +1419,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         mask_image,
         max_inputs=2,
+        inputs=(
+            InputSpec("image", "image", "Image"),
+            InputSpec("mask", "mask_or_labels", "Mask"),
+        ),
         subcategory=MATH_LOGIC_GROUP,
     ),
     OperationSpec(
@@ -1537,6 +1682,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "imagej-tiff",
                     "tiff",
                     "npy",
+                    "png",
+                    "jpeg",
+                    "bmp",
+                    "gif",
+                    "webp",
+                    "tga",
+                    "pnm",
                 ),
             ),
             ParameterSpec(
@@ -1657,6 +1809,28 @@ class PrototypePipeline:
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
+
+    def reset_empty_graph(self) -> None:
+        """Reset to one unbound Image Source node."""
+        input_node = _clone_node(PROTOTYPE_NODES[0])
+        input_node.params.update(
+            {
+                "source_mode": "file path",
+                "layer_name": "",
+                "file_path": "",
+                "sample_name": "",
+                "series_index": 0,
+                "binding_mode": "single item",
+                "channel_colors": "",
+            }
+        )
+        self.nodes = {input_node.id: input_node}
+        self.connections = []
+        self.outputs = {}
+        self.output_states = {}
+        self.node_outputs = {}
+        self.node_output_states = {}
+        self._counters = Counter({input_node.operation_id: 1})
 
     def restore_graph(
         self,
@@ -2146,6 +2320,23 @@ class PrototypePipeline:
                         axis.unit for axis in labels_state.axes
                     )
                     kwargs["source_name"] = labels_state.source_name
+            if node.operation_id == "filter_labels_by_property":
+                labels_state = input_states[0]
+                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+                resolved_spatial_ndim = _resolved_spatial_ndim(
+                    labels_state,
+                    source_outputs[0],
+                    spatial_mode,
+                )
+                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+                if isinstance(labels_state, ImageState):
+                    kwargs["axis_names"] = tuple(
+                        axis.name for axis in labels_state.axes
+                    )
+                    kwargs["axis_types"] = tuple(
+                        axis.type for axis in labels_state.axes
+                    )
             output = spec.function(source_outputs, **kwargs)
             if spec.output_type == "table":
                 history = _table_history(input_states, node.title, output)
@@ -2394,6 +2585,10 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     if "skeleton" in table_kind:
         noun = "component" if row_count == 1 else "components"
         action = "analyzed"
+    elif "column selection" in table_kind:
+        column_count = getattr(table, "column_count", 0)
+        noun = "column" if column_count == 1 else "columns"
+        return prior + (f"{operation_title}: selected {column_count} {noun}",)
     elif "metadata" in table_kind:
         noun = "row" if row_count == 1 else "rows"
         action = "annotated"

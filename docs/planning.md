@@ -1,6 +1,6 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-06-21
 
 For the prioritized algorithm and node catalogue, see
 [node-roadmap.md](node-roadmap.md). For implementation details, see
@@ -152,7 +152,8 @@ image
 Current label support includes:
 
 - a distinct `labels` graph type;
-- napari Labels inspection and pinning;
+- napari Labels inspection/pinning for label outputs, plus image-layer pinning
+  for image outputs;
 - 2D-per-plane and true 3D connected-component labeling;
 - face or full connectivity;
 - metadata-aware, size-limited 2D/3D hole filling for masks;
@@ -160,6 +161,7 @@ Current label support includes:
   for mask inputs;
 - minimum and optional maximum pixel/voxel-volume filtering;
 - mask/label-preserving removal of objects touching a spatial boundary;
+- table-driven label filtering by measured object properties;
 - logarithmic, data-aware volume sliders;
 - an incoming object-volume histogram with threshold markers;
 - sequential relabeling;
@@ -176,9 +178,13 @@ Broader graph capabilities have also enabled:
 
 - Split Channels and Combine Channels;
 - configurable multichannel-to-RGB display;
-- image arithmetic and logical operations;
+- typed Mask Image, image arithmetic, and logical operations;
 - workflow save/load and Python export;
-- image and label histograms;
+- image and label histograms, including clearer 2D versus stack threshold
+  histogram labeling;
+- common raster import and 2D raster export alongside TIFF, OME-TIFF, and
+  OME-Zarr;
+- image/mask/label pinning as persistent napari preview layers;
 - first-class label cleanup;
 - first-class table outputs and label-object measurements;
 - generic skeletonization and skeleton-network measurement tables.
@@ -186,19 +192,35 @@ Broader graph capabilities have also enabled:
 Still requiring new platform types or UI:
 
 - spot/peak detection benefits from points outputs;
-- marker-controlled watershed requires named heterogeneous input ports;
-- intensity-aware object measurements, Channel Overlap, and colocalization
-  require named heterogeneous input ports or scalar/table contracts;
+- Channel Overlap and colocalization need scalar/table result contracts and
+  careful channel/mask input UI;
 - batch processing needs a dedicated UI beyond exported scripts.
 
 ## Immediate Implementation Sequence
 
+The current near-term order should be:
+
+1. **Grouped table summaries for analysis-ready exports**
+   Add `Summarize Measurements` so merged morphology/intensity/skeleton tables
+   can be grouped by metadata and summarized cleanly for PCA or treatment
+   comparisons. `Select Table Columns` now handles trimming and reordering.
+
+2. **Touching-object separation**
+   Add Euclidean Distance Transform, H-maxima/local-maxima marker generation,
+   Marker-Controlled Watershed, and Expand Labels now that named heterogeneous
+   ports are available.
+
+3. **Skeleton QC and pruning**
+   Add endpoint/junction masks, branch labels, connected skeleton-component
+   labels, and short-branch pruning so network table measurements can be
+   visually audited.
+
 ## Deferred TODOs From Recent Decisions
 
 These items were deliberately deferred while implementing table outputs,
-`Measure Objects`, OME I/O, table merge/annotation, and label cleanup. Keep
-them visible so future implementation work does not have to infer old
-discussion context:
+`Measure Objects`, OME/raster I/O, table merge/annotation, label cleanup, typed
+masking, graph pinning, and histogram polish. Keep them visible so future
+implementation work does not have to infer old discussion context:
 
 1. **Named heterogeneous input ports**
    Implemented for graph execution, visual ports, workflow JSON, and Python
@@ -215,13 +237,15 @@ discussion context:
    Implemented as `Merge Tables` and `Add Metadata Columns`. The merge node
    joins table branches by shared stable identity columns such as `t_index` and
    `label_id`, or by row position when no identity key exists and row counts
-   match. Remaining table work is column selection/reordering, grouped
-   summaries, and richer sample metadata import for batch processing.
+   match. `Select Table Columns` now handles keep/drop/reorder workflows.
+   Remaining table work is grouped summaries and richer sample metadata import
+   for batch processing.
 
 4. **Property-based label filtering**
-   Add `Filter Labels By Property` for measurements such as physical volume,
-   intensity, eccentricity, branch count, or other table-derived properties.
-   This should preserve label IDs unless an explicit relabeling step is used.
+   Implemented as `Filter Labels By Property`. It accepts named `Labels` and
+   `Measurements table` inputs, filters by numeric table columns such as
+   physical volume, intensity, branch count, or other table-derived properties,
+   and preserves label IDs unless an explicit relabeling step is used.
 
 5. **Skeleton/network analysis**
    Base `Skeletonize` and `Analyze Skeleton` nodes are implemented. Remaining
@@ -239,9 +263,8 @@ discussion context:
 
 7. **Touching-object separation**
    Add Euclidean distance transform, H-maxima/local maxima marker generation,
-   and marker-controlled watershed. These should wait for named heterogeneous
-   inputs because watershed needs at least image/elevation, markers, and
-   optional mask inputs.
+   and marker-controlled watershed. Named heterogeneous inputs are now
+   implemented, so this is no longer blocked by graph plumbing.
 
 8. **Mitochondrial-specific measurements**
    Treat the old MitoMorph code as inspiration for future specialist nodes:
@@ -275,8 +298,8 @@ See [ome-io-plan.md](ome-io-plan.md) for the accepted decisions and status.
 
 The next measurement-focused milestone is:
 
-1. selectable extended region-property groups;
-2. table column selection/reordering and grouped summaries;
+1. grouped table summaries;
+2. calibrated physical variants for extended length/shape measurements;
 3. 3D mesh morphology as an opt-in expensive measurement family.
 
 The next network-analysis milestone remains skeleton endpoint/junction QC masks,
@@ -284,11 +307,10 @@ branch labels, and short-branch pruning.
 
 After that, implement touching-object separation:
 
-1. named heterogeneous input ports;
-2. Euclidean Distance Transform;
-3. H-Maxima or local-maxima marker generation;
-4. Marker-Controlled Watershed;
-5. Expand Labels.
+1. Euclidean Distance Transform;
+2. H-Maxima or local-maxima marker generation;
+3. Marker-Controlled Watershed;
+4. Expand Labels.
 
 Table outputs and basic `Measure Objects` are implemented. A dedicated `Save
 Table` graph node is not yet required because selected table outputs and

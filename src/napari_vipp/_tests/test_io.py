@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import imageio.v3 as iio
 import numpy as np
 import pytest
 from tifffile import TiffFile, TiffWriter
@@ -126,6 +127,76 @@ def test_tiff_inspection_and_reader_select_independent_series(tmp_path):
     assert inspection.series[1].shape == (7, 8)
     assert loaded.selected_series.index == 1
     assert np.array_equal(loaded.data, second)
+
+
+def test_common_raster_sources_read_png_and_jpeg(tmp_path):
+    gray = np.arange(6 * 7, dtype=np.uint8).reshape(6, 7)
+    gray_path = tmp_path / "gray.png"
+    iio.imwrite(gray_path, gray)
+
+    gray_inspection = inspect_image_source(gray_path)
+    gray_loaded = read_image(gray_path)
+
+    assert gray_inspection.format == "png"
+    assert gray_inspection.series[0].axes == "YX"
+    assert gray_loaded.image_state.kind == "intensity image"
+    assert gray_loaded.image_state.axis_order == "YX"
+    assert np.array_equal(gray_loaded.data, gray)
+
+    rgb = np.zeros((6, 7, 3), dtype=np.uint8)
+    rgb[..., 0] = 255
+    rgb[..., 1] = np.arange(7, dtype=np.uint8) * 20
+    rgb[..., 2] = np.arange(6, dtype=np.uint8)[:, None] * 30
+    png_path = tmp_path / "rgb.png"
+    jpeg_path = tmp_path / "rgb.jpg"
+    iio.imwrite(png_path, rgb)
+    iio.imwrite(jpeg_path, rgb)
+
+    png_inspection = inspect_image_source(png_path)
+    png_loaded = read_image(png_path)
+    jpeg_loaded = read_image(jpeg_path)
+
+    assert png_inspection.format == "png"
+    assert png_inspection.series[0].axes == "Y,X,rgb"
+    assert png_inspection.series[0].shape == rgb.shape
+    assert png_loaded.image_state.kind == "RGB image"
+    assert png_loaded.image_state.axis_order == "Y,X,rgb"
+    assert png_loaded.image_state.source.format == "png"
+    assert np.array_equal(png_loaded.data, rgb)
+    assert jpeg_loaded.image_state.kind == "RGB image"
+    assert jpeg_loaded.image_state.source.format == "jpeg"
+    assert jpeg_loaded.data.shape == rgb.shape
+    with pytest.raises(IndexError):
+        read_image(png_path, series_index=1)
+
+
+def test_write_image_saves_2d_raster_formats(tmp_path):
+    gray = (np.arange(6 * 7, dtype=np.uint16).reshape(6, 7) * 1000)
+    png_path = tmp_path / "gray.png"
+
+    saved = write_image(gray, png_path, format="png")
+    loaded_gray = iio.imread(png_path)
+
+    assert saved == png_path
+    assert loaded_gray.dtype == np.uint16
+    assert np.array_equal(loaded_gray, gray)
+
+    rgb = np.zeros((6, 7, 3), dtype=np.float32)
+    rgb[..., 1] = 1.0
+    jpeg_path = tmp_path / "rgb.jpg"
+
+    write_image(rgb, jpeg_path, format="jpeg")
+    loaded_rgb = iio.imread(jpeg_path)
+
+    assert loaded_rgb.dtype == np.uint8
+    assert loaded_rgb.shape == rgb.shape
+
+
+def test_write_image_rejects_stack_raster_export(tmp_path):
+    path = tmp_path / "stack.png"
+
+    with pytest.raises(ValueError, match="2D"):
+        write_image(np.zeros((3, 6, 7), dtype=np.uint8), path, format="png")
 
 
 @pytest.mark.parametrize(

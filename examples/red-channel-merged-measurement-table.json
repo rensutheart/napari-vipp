@@ -67,7 +67,10 @@
       "operation_id": "measure_objects",
       "params": {
         "spatial_mode": "Auto from axes",
-        "measurement_set": "Basic morphology"
+        "measurement_set": "Basic morphology",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false
       }
     },
     {
@@ -75,7 +78,10 @@
       "operation_id": "measure_objects_intensity",
       "params": {
         "spatial_mode": "Auto from axes",
-        "measurement_set": "Basic morphology + intensity"
+        "measurement_set": "Basic morphology + intensity",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false
       }
     },
     {

@@ -33,6 +33,7 @@ from napari_vipp.core.operations import (
     erode,
     extract_channel,
     fill_holes,
+    filter_labels_by_property,
     filter_labels_by_volume,
     gamma_correction,
     gaussian_blur,
@@ -67,6 +68,7 @@ from napari_vipp.core.operations import (
     save_array_output,
     save_output,
     select_axis_slice,
+    select_table_columns,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -120,6 +122,7 @@ def test_vipp_operation_nodes_are_registered():
         "clear_border_objects",
         "label_connected_components",
         "filter_labels_by_volume",
+        "filter_labels_by_property",
         "relabel_sequential",
         "extract_channel",
         "combine_channels",
@@ -135,6 +138,7 @@ def test_vipp_operation_nodes_are_registered():
         "assign_channel_colors",
         "merge_tables",
         "add_metadata_columns",
+        "select_table_columns",
         "logical_and",
         "logical_or",
         "logical_xor",
@@ -214,6 +218,61 @@ def test_measure_objects_reports_3d_objects_with_physical_volume():
     assert records[1]["volume_voxels"] == 4
 
 
+def test_measure_objects_reports_selected_extended_2d_properties():
+    labels = np.zeros((12, 12), dtype=np.int32)
+    labels[2:8, 3:9] = 1
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=2,
+        include_shape_descriptors=True,
+        include_axis_descriptors=True,
+        include_2d_boundary_descriptors=True,
+    )
+    record = table.records()[0]
+
+    assert table.row_count == 1
+    assert record["bbox_area_pixels"] == 36
+    assert record["filled_area_pixels"] == 36
+    assert record["convex_area_pixels"] == 36
+    assert record["solidity"] == 1.0
+    assert record["major_axis_length_pixels"] > 0
+    assert record["minor_axis_length_pixels"] > 0
+    assert record["inertia_tensor_eigval_0"] >= 0
+    assert record["inertia_tensor_eigval_1"] >= 0
+    assert "eccentricity" in table.columns
+    assert "orientation_radians" in table.columns
+    assert record["perimeter_pixels"] > 0
+    assert record["perimeter_crofton_pixels"] > 0
+    assert table.unit_for("orientation_radians") == "radians"
+    assert "shape descriptors" in table.table_kind
+
+
+def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
+    labels = np.zeros((4, 12, 12), dtype=np.int32)
+    labels[1:3, 2:8, 3:9] = 1
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=3,
+        include_shape_descriptors=True,
+        include_axis_descriptors=True,
+        include_2d_boundary_descriptors=True,
+    )
+    record = table.records()[0]
+
+    assert table.row_count == 1
+    assert record["bbox_volume_voxels"] == 72
+    assert record["filled_volume_voxels"] == 72
+    assert record["major_axis_length_voxels"] > 0
+    assert record["minor_axis_length_voxels"] > 0
+    assert "inertia_tensor_eigval_2" in table.columns
+    assert "perimeter_pixels" not in table.columns
+    assert "orientation_radians" not in table.columns
+    assert "convex_volume_voxels" not in table.columns
+    assert table.unit_for("inertia_tensor_eigval_2") == "voxels^2"
+
+
 def test_measure_objects_with_intensity_reports_per_label_values():
     labels = np.zeros((5, 6), dtype=np.int32)
     labels[1:3, 1:4] = 1
@@ -235,6 +294,78 @@ def test_measure_objects_with_intensity_reports_per_label_values():
     assert records[1]["label_id"] == 2
     assert records[1]["intensity_min"] == float(intensity[labels == 2].min())
     assert records[1]["intensity_max"] == float(intensity[labels == 2].max())
+
+
+def test_measure_objects_with_intensity_can_include_extended_properties():
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 1:4] = 1
+    intensity = np.arange(labels.size, dtype=np.float32).reshape(labels.shape)
+
+    table = measure_objects_with_intensity(
+        [labels, intensity],
+        resolved_spatial_ndim=2,
+        include_axis_descriptors=True,
+    )
+    record = table.records()[0]
+
+    assert "intensity_mean" in table.columns
+    assert "major_axis_length_pixels" in table.columns
+    assert record["major_axis_length_pixels"] > 0
+
+
+def test_filter_labels_by_property_filters_using_measurement_table():
+    labels = np.array(
+        [
+            [1, 1, 0, 2],
+            [1, 0, 2, 2],
+            [0, 3, 3, 3],
+        ],
+        dtype=np.int32,
+    )
+    table = table_from_columns(
+        {
+            "label_id": [1, 2, 3],
+            "area_pixels": [3, 3, 3],
+            "intensity_mean": [5.0, 20.0, 40.0],
+        }
+    )
+
+    filtered = filter_labels_by_property(
+        [labels, table],
+        property_column="intensity_mean",
+        min_value=10,
+        max_value=30,
+    )
+
+    np.testing.assert_array_equal(
+        filtered,
+        np.where(labels == 2, labels, 0),
+    )
+
+
+def test_filter_labels_by_property_matches_leading_axis_indices():
+    labels = np.zeros((2, 4, 4), dtype=np.int32)
+    labels[0, 1:3, 1:3] = 1
+    labels[1, 1:3, 1:3] = 1
+    table = table_from_columns(
+        {
+            "t_index": [0, 1],
+            "label_id": [1, 1],
+            "intensity_mean": [5.0, 20.0],
+        }
+    )
+
+    filtered = filter_labels_by_property(
+        [labels, table],
+        property_column="intensity_mean",
+        min_value=10,
+        resolved_spatial_ndim=2,
+        axis_names=("t", "y", "x"),
+        axis_types=("time", "space", "space"),
+    )
+
+    assert not filtered[0].any()
+    np.testing.assert_array_equal(filtered[1], labels[1])
 
 
 def test_merge_tables_joins_on_identity_columns_and_suffixes_duplicates():
@@ -308,6 +439,44 @@ def test_add_metadata_columns_appends_constant_values_and_blocks_collisions():
         raise AssertionError("Expected duplicate metadata column to be rejected")
 
 
+def test_select_table_columns_keeps_drops_and_reorders_columns():
+    table = table_from_columns(
+        {
+            "label_id": [1, 2],
+            "area_pixels": [6, 4],
+            "intensity_mean": [10.0, 20.0],
+            "condition": ["control", "treated"],
+        },
+        column_units={"area_pixels": "pixels", "intensity_mean": "intensity"},
+    )
+
+    kept = select_table_columns(
+        table,
+        columns="intensity_mean, label_id",
+    )
+    dropped = select_table_columns(
+        table,
+        columns="condition",
+        selection_mode="Drop listed columns",
+    )
+    reordered = select_table_columns(
+        table,
+        columns="condition, label_id",
+        append_unlisted="yes",
+    )
+
+    assert kept.columns == ("intensity_mean", "label_id")
+    assert kept.rows[0] == (10.0, 1)
+    assert kept.unit_for("intensity_mean") == "intensity"
+    assert dropped.columns == ("label_id", "area_pixels", "intensity_mean")
+    assert reordered.columns == (
+        "condition",
+        "label_id",
+        "area_pixels",
+        "intensity_mean",
+    )
+
+
 def test_pipeline_measure_objects_creates_table_state():
     data = np.zeros((3, 9, 9), dtype=np.float32)
     data[:, 1:4, 1:4] = 10
@@ -373,6 +542,79 @@ def test_pipeline_measure_objects_with_intensity_uses_named_input_ports():
     )
 
 
+def test_pipeline_filter_labels_by_property_uses_named_input_ports():
+    data = np.zeros((8, 8), dtype=np.float32)
+    data[1:4, 1:4] = 10
+    data[6, 6] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    filtered = pipeline.add_node("filter_labels_by_property")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(filtered.id, "property_column", "area_pixels")
+    pipeline.set_param(filtered.id, "min_value", 5)
+
+    assert [port.name for port in pipeline.input_ports(filtered.id)] == [
+        "labels",
+        "table",
+    ]
+    assert [port.input_type for port in pipeline.input_ports(filtered.id)] == [
+        "labels",
+        "table",
+    ]
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    label_result = pipeline.connect(labels.id, filtered.id, target_port=0)
+    table_result = pipeline.connect(measurements.id, filtered.id, target_port=1)
+    bad_result = pipeline.connect("input", filtered.id, target_port=1)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "YX"})
+
+    assert label_result.success
+    assert table_result.success
+    assert not bad_result.success
+    assert set(np.unique(outputs[labels.id])) == {0, 1, 2}
+    assert set(np.unique(outputs[filtered.id])) == {0, 1}
+    assert pipeline.output_states[filtered.id].kind == "label image"
+    assert pipeline.output_states[filtered.id].history[-1] == (
+        "Filter Labels By Property: filtered by area_pixels"
+    )
+
+
+def test_pipeline_mask_image_uses_named_image_and_mask_ports():
+    data = np.zeros((5, 6), dtype=np.float32)
+    data[1:4, 2:5] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    masked = pipeline.add_node("mask_image")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(masked.id, "outside_value", -1)
+
+    input_ports = pipeline.input_ports(masked.id)
+    assert [port.name for port in input_ports] == ["image", "mask"]
+    assert [port.label for port in input_ports] == ["Image", "Mask"]
+    assert [port.input_type for port in input_ports] == ["image", "mask_or_labels"]
+    assert "input_count" not in pipeline.nodes[masked.id].params
+
+    pipeline.connect("input", threshold.id)
+    image_result = pipeline.connect("input", masked.id, target_port=0)
+    mask_result = pipeline.connect(threshold.id, masked.id, target_port=1)
+    bad_result = pipeline.connect("input", masked.id, target_port=1)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "YX"})
+    output = outputs[masked.id]
+
+    assert image_result.success
+    assert mask_result.success
+    assert not bad_result.success
+    assert output.dtype == data.dtype
+    assert output[0, 0] == -1
+    assert output[2, 3] == 10
+    assert pipeline.output_states[masked.id].history[-1] == "Mask Image: applied mask"
+
+
 def test_pipeline_merges_and_annotates_measurement_tables():
     data = np.zeros((7, 7), dtype=np.float32)
     data[1:3, 1:4] = 10
@@ -404,6 +646,30 @@ def test_pipeline_merges_and_annotates_measurement_tables():
     assert table.records()[0]["condition"] == "demo"
     assert state.history[-2] == "Merge Tables: merged 2 rows"
     assert state.history[-1] == "Add Metadata Columns: annotated 2 rows"
+
+
+def test_pipeline_select_table_columns_creates_table_state():
+    data = np.zeros((7, 7), dtype=np.float32)
+    data[1:3, 1:4] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    selected = pipeline.add_node("select_table_columns")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(selected.id, "columns", "label_id,area_pixels")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    pipeline.connect(measurements.id, selected.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "YX"})
+    table = outputs[selected.id]
+    state = pipeline.output_states[selected.id]
+
+    assert table.columns == ("label_id", "area_pixels")
+    assert state.columns == ("label_id", "area_pixels")
+    assert state.history[-1] == "Select Table Columns: selected 2 columns"
 
 
 def test_save_table_output_writes_csv(tmp_path):
@@ -631,7 +897,7 @@ def test_bilateral_filter_preserves_shape():
     result = bilateral_filter(data, diameter=3, sigma_color=5, sigma_space=2)
 
     assert result.shape == data.shape
-    assert result.dtype == np.float32
+    assert result.dtype == data.dtype
 
 
 def test_additional_filter_nodes_preserve_shape():
@@ -656,6 +922,31 @@ def test_additional_filter_nodes_preserve_shape():
     assert dog.max() > 0
     assert sobel.max() > 0
     assert not np.allclose(laplace, 0)
+
+
+def test_safe_filter_nodes_preserve_integer_dtype():
+    data = np.zeros((2, 16, 16), dtype=np.uint16)
+    data[:, 5:11, 5:11] = 40000
+
+    bilateral = bilateral_filter(data, diameter=3, sigma_color=5, sigma_space=2)
+    unsharp = unsharp_mask_filter(data, radius=1.0, amount=1.0)
+    nlm = non_local_means_filter(
+        data,
+        patch_size=3,
+        patch_distance=2,
+        h=0.05,
+    )
+    sobel = sobel_filter(data)
+    dog = difference_of_gaussians_filter(data, low_sigma=1.0, high_sigma=3.0)
+    laplace = laplace_filter(data, kernel_size=3)
+
+    for result in (bilateral, unsharp, nlm, sobel):
+        assert result.shape == data.shape
+        assert result.dtype == data.dtype
+
+    assert sobel.max() > 0
+    assert dog.dtype == np.float32
+    assert laplace.dtype == np.float32
 
 
 def test_additional_global_thresholds_return_masks():
@@ -728,6 +1019,13 @@ def test_linear_scale_gamma_crop_and_extract_channel():
     assert cropped.shape == (2, 3, 3, 3)
     assert channel.shape == (2, 6, 7)
     assert channel.max() == 128
+
+    uint16 = np.array([[0, 20000, 40000]], dtype=np.uint16)
+    stretched16 = linear_scale_offset(uint16, alpha=2, beta=1)
+    gamma16 = gamma_correction(uint16, gamma=0.5)
+
+    assert stretched16.dtype == uint16.dtype
+    assert gamma16.dtype == uint16.dtype
 
 
 def test_reorder_axes_accepts_named_and_numeric_orders():
@@ -804,6 +1102,7 @@ def test_intensity_rescale_normalize_and_clip():
     assert normalized.dtype == np.float32
     assert normalized.min() == 0
     assert normalized.max() == 1
+    assert normalize_image(data.astype(np.float64)).dtype == np.float64
     assert clipped.dtype == data.dtype
     np.testing.assert_array_equal(clipped, np.array([[2, 2, 2], [3, 4, 4]]))
 
@@ -825,6 +1124,45 @@ def test_image_math_nodes_add_subtract_ratio_and_mask():
         masked,
         np.array([[10, 99, 10], [99, 10, 99]], dtype=np.uint16),
     )
+
+
+def test_mask_image_broadcasts_spatial_mask_over_rgb_channels():
+    image = np.zeros((2, 3, 3), dtype=np.uint8)
+    image[:] = np.array([10, 20, 30], dtype=np.uint8)
+    mask = np.array([[True, False, True], [False, True, False]])
+
+    masked = mask_image([image, mask], outside_value=0)
+
+    assert masked.dtype == image.dtype
+    assert masked.shape == image.shape
+    np.testing.assert_array_equal(masked[0, 0], [10, 20, 30])
+    np.testing.assert_array_equal(masked[0, 1], [0, 0, 0])
+    np.testing.assert_array_equal(masked[1, 1], [10, 20, 30])
+
+
+def test_mask_image_broadcasts_stack_mask_over_channel_first_image():
+    image = np.ones((3, 2, 4, 5), dtype=np.float32)
+    mask = np.zeros((2, 4, 5), dtype=bool)
+    mask[:, 1:3, 2:4] = True
+
+    masked = mask_image([image, mask], outside_value=-5)
+
+    assert masked.shape == image.shape
+    assert masked.dtype == image.dtype
+    assert np.all(masked[:, :, 0, 0] == -5)
+    assert np.all(masked[:, :, 1, 2] == 1)
+
+
+def test_mask_image_rejects_non_broadcastable_mask_shape():
+    image = np.zeros((4, 5, 3), dtype=np.uint8)
+    mask = np.ones((4, 4), dtype=bool)
+
+    try:
+        mask_image([image, mask])
+    except ValueError as exc:
+        assert "broadcastable" in str(exc)
+    else:
+        raise AssertionError("Mask Image should reject incompatible mask shapes.")
 
 
 def test_logical_nodes_combine_masks():

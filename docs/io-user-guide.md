@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-06-15
+Last reviewed: 2026-06-20
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -21,10 +21,15 @@ Supported file sources:
 | TIFF | Reads independent TIFF series and basic axes. |
 | OME-Zarr 0.4/0.5 | Discovers image groups and label groups, reads multiscale levels lazily, and marks label groups as label images. Level 0 is the analysis image. |
 | NPY/NPZ | Reads one NPY array or a selected NPZ member. |
+| PNG/JPEG/BMP/GIF/WebP/TGA/PNM | Reads ordinary raster images through imageio/Pillow. RGB/RGBA files are treated as rendered color images; grayscale files are treated as intensity images. Animated raster files use a leading time axis. |
 
 For multi-series TIFF or multi-image OME-Zarr, select the required item in
 `Series / image`. Time, channel, and Z remain axes inside that item. Use graph
 nodes such as Select Axis Slice to subset them reproducibly.
+
+Ordinary raster formats are also available as export targets only for 2D
+intensity images and 2D RGB/RGBA images. Use OME-TIFF, ImageJ TIFF, TIFF,
+OME-Zarr, or NPY for stacks, metadata-rich outputs, and exact numeric exchange.
 
 `Binding: collection` currently records future batch intent and uses the
 selected series as the interactive representative. It does not yet execute a
@@ -39,6 +44,7 @@ batch.
 | ImageJ TIFF | Direct ImageJ/Fiji hyperstack behavior is the priority. Binary masks are written as `uint8` values `0` and `255`. |
 | TIFF | Broad TIFF compatibility or preservation of 32-bit integer label IDs is required. |
 | NPY | Exact array exchange is needed and scientific image metadata is not required. |
+| PNG/JPEG/BMP/GIF/WebP/TGA/PNM | A 2D display image is needed. PNG can preserve 16-bit grayscale values and label IDs up to 65535; JPEG/WebP/BMP/GIF/TGA-style outputs are 8-bit display exports. JPEG cannot store alpha. |
 
 ImageJ TIFF cannot safely represent 32-bit integer label IDs. Use conventional
 TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.

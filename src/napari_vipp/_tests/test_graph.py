@@ -65,6 +65,8 @@ def test_pin_button_is_not_shown_on_node_cards(qtbot):
     assert not view._cards["input"].pin_button.isVisible()
     assert not view._cards["gaussian"].pin_button.isVisible()
     assert not view._cards["threshold"].pin_button.isVisible()
+    assert view._cards["input"]._can_pin
+    assert view._cards["gaussian"]._can_pin
     assert view._cards["threshold"]._can_pin
 
 
@@ -107,6 +109,7 @@ def test_node_context_menu_uses_unpin_label_for_pinned_nodes(qtbot, monkeypatch)
     view._show_node_context_menu("threshold", QPoint(0, 0))
 
     assert pinned == ["threshold"]
+    assert "border: 4px solid #facc15" in view._cards["threshold"].styleSheet()
 
 
 def test_graph_cards_use_category_colors(qtbot):
@@ -244,6 +247,32 @@ def test_delete_key_requests_selected_node_deletion(qtbot):
     qtbot.keyClick(view, Qt.Key_Delete)
 
     assert deleted == ["gaussian"]
+
+
+def test_delete_key_prefers_selected_connection_over_selected_node(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    deleted_nodes = []
+    removed_connections = []
+    view.node_delete_requested.connect(deleted_nodes.append)
+    view.connection_removed.connect(
+        lambda source, target, port: removed_connections.append(
+            (source, target, port)
+        )
+    )
+
+    view._proxies["gaussian"].setSelected(True)
+    view._connections[0].setSelected(True)
+
+    qtbot.keyClick(view, Qt.Key_Delete)
+
+    assert deleted_nodes == []
+    assert removed_connections == [("input", "gaussian", 0)]
+    assert "gaussian" in view._proxies
+    assert len(view._connections) == 1
 
 
 def test_removing_node_removes_related_connections(qtbot):

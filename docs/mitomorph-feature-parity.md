@@ -1,6 +1,6 @@
 # MitoMorph Feature Parity And Measurement Roadmap
 
-Last reviewed: 2026-06-16
+Last reviewed: 2026-06-21
 
 This document captures the MitoMorph-derived capabilities that should become
 first-class VIPP workflows. The goal is not to copy the old implementation
@@ -46,15 +46,19 @@ Proposed measurement families:
    the first `Measure Objects` set.
 
 2. **Extended Region Properties**
-   Filled area/volume, bounding-box area/volume, convex area/volume where
-   valid, solidity, major/minor axis length, inertia tensor eigenvalues,
-   orientation, eccentricity for 2D, perimeter for 2D, Feret diameter where
-   available, Hu moments for 2D, and form-factor/circularity-style metrics.
+   Baseline selectable groups are implemented in `Measure Objects` and
+   `Measure Objects + Intensity`: filled and bounding-box area/volume,
+   major/minor axis length, inertia tensor eigenvalues, 2D orientation,
+   2D eccentricity, 2D perimeter, 2D Crofton perimeter, 2D convex area,
+   2D solidity, and 2D maximum Feret diameter. Remaining work includes Hu
+   moments for 2D, form-factor/circularity-style metrics, calibrated physical
+   variants for extended length/shape columns, and robust 3D mesh morphology.
 
 3. **Intensity Measurements**
-   Requires named inputs: `labels + intensity image -> table`. Include mean,
-   minimum, maximum, sum/integrated intensity, standard deviation, selected
-   percentiles, and optionally background-corrected versions.
+   Baseline `labels + intensity image -> table` support is implemented in
+   `Measure Objects + Intensity` with mean, minimum, maximum, sum/integrated
+   intensity, and standard deviation. Remaining intensity work includes
+   selected percentiles and optionally background-corrected variants.
 
 4. **3D Mesh-Based Morphology**
    Convert each 3D label object to a surface mesh when requested. Measure mesh
@@ -82,7 +86,8 @@ pleasant:
 
 - `Merge Tables`: implemented; joins tables by stable object identity columns
   and falls back to row-position joining for equal-length tables.
-- `Select Table Columns`: keep/drop/reorder measurement columns before export.
+- `Select Table Columns`: implemented; keep/drop/reorder measurement columns
+  before export while preserving row order and column units.
 - `Add Metadata Columns`: implemented; adds treatment, replicate, condition,
   timepoint, or batch metadata columns.
 - `Summarize Measurements`: group by condition/time/source and calculate
@@ -102,13 +107,19 @@ and then assemble them into one analysis-ready table.
    deviation intensity.
 3. Add table merge and metadata annotation. Implemented as `Merge Tables` and
    `Add Metadata Columns`.
-4. Expand `Measure Objects` with selectable extended region-property groups.
-5. Add table column selection and grouped summaries.
-6. Add 3D mesh morphology as an opt-in node because it is more expensive and
+4. Add property-based label cleanup. Implemented as `Filter Labels By
+   Property`, using existing measurement-table columns to keep or remove label
+   IDs before downstream measurement or export.
+5. Expand `Measure Objects` with selectable extended region-property groups.
+   Implemented as checkbox groups for shape descriptors, axis/inertia
+   descriptors, and 2D boundary descriptors.
+6. Add table column selection and grouped summaries. Column selection is
+   implemented as `Select Table Columns`; grouped summaries remain.
+7. Add 3D mesh morphology as an opt-in node because it is more expensive and
    has stronger assumptions about anisotropy, surface extraction, and object
    size.
-7. Add skeleton QC/pruning/branch-label outputs.
-8. Add mitochondrial event analysis after tracking/association design is in
+8. Add skeleton QC/pruning/branch-label outputs.
+9. Add mitochondrial event analysis after tracking/association design is in
    place.
 
 ## Scientific Cautions

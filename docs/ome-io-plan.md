@@ -1,7 +1,7 @@
 # First-Class OME Import And Export
 
 Status: accepted architecture; Phase 1 complete, Phase 2 image foundation implemented  
-Last reviewed: 2026-06-15
+Last reviewed: 2026-06-20
 
 This document defines how VIPP should treat OME-TIFF, OME-Zarr, and conventional
 TIFF/ImageJ files as first-class image sources and outputs.
@@ -22,6 +22,7 @@ VIPP should expose these distinct formats:
 | ImageJ TIFF | Yes | Yes | Direct Fiji/ImageJ hyperstack compatibility |
 | Conventional TIFF | Yes | Yes | Broad TIFF compatibility and integer label images |
 | NumPy NPY/NPZ | Yes | Yes | Internal/debug array exchange with limited metadata |
+| Common raster PNG/JPEG/BMP/GIF/WebP/TGA/PNM | Yes | 2D only | Convenience I/O for ordinary display-image sources |
 
 OME-TIFF and ImageJ TIFF must remain separate export modes. They use different
 metadata conventions. Fiji can open OME-TIFF through Bio-Formats, but a file
@@ -41,6 +42,9 @@ Implemented:
   identity, and VIPP operation history;
 - explicit ImageJ TIFF export with hyperstack ordering and calibration;
 - conventional TIFF export that preserves 32-bit label IDs;
+- common raster import/export through imageio/Pillow, with RGB/RGBA files
+  marked as rendered color images, grayscale files marked as intensity images,
+  and export limited to 2D intensity or 2D RGB/RGBA arrays;
 - local OME-Zarr 0.4 and 0.5 image import/export;
 - lazy Dask-backed OME-Zarr level access;
 - OME-Zarr axes, scale, channel names, and namespaced VIPP provenance;
@@ -73,6 +77,7 @@ src/napari_vipp/core/io/
   registry.py       format detection and reader/writer dispatch
   tiff.py           OME-TIFF, ImageJ TIFF, and conventional TIFF
   ome_zarr.py       OME-Zarr 0.4/0.5 image reader/writer
+  raster.py         common PNG/JPEG/BMP/GIF/WebP/TGA/PNM import and 2D export
   numpy_io.py       NPY/NPZ support
 ```
 
@@ -426,6 +431,7 @@ Recommended core dependencies for first-class OME support:
 - `ome-zarr` and `zarr` for OME-Zarr;
 - `dask[array]` for chunked/lazy arrays;
 - `fsspec` for local and remote stores.
+- `imageio` and `pillow` for common raster image import and 2D export.
 
 Bio-Formats is not required for OME-TIFF or OME-Zarr. It can remain a later,
 optional route for proprietary microscope formats.

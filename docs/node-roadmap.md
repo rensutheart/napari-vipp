@@ -1,7 +1,7 @@
 # Bioimage Node Roadmap
 
 Status: working discussion document  
-Last reviewed: 2026-06-16
+Last reviewed: 2026-06-21
 
 This document prioritizes future VIPP nodes for bioimage analysis. It is not a
 commitment to reproduce every function in OpenCV, scikit-image, or SciPy.
@@ -56,8 +56,10 @@ Implementation status:
 - implemented: Remove Small Objects for masks and labels, with type-preserving
   minimum-size filtering and contextual area/volume controls;
 - implemented: Relabel Sequential;
-- next: add calibrated physical area/volume and support richer property-based
-  label filtering.
+- implemented: table-driven property-based label filtering;
+- implemented: selectable extended region-property groups;
+- implemented: table column selection/reordering;
+- next: add grouped measurement summaries.
 
 ## Priority Definitions
 
@@ -93,30 +95,34 @@ VIPP already has useful coverage in these areas:
 - channel extraction, splitting, combination, and RGB display conversion;
 - crop and axis slicing;
 - dtype conversion, normalization, clipping, and intensity rescaling;
-- image arithmetic, masking, and logical operations;
+- typed Mask Image, image arithmetic, and logical operations;
 - Gaussian, mean, median, and bilateral filtering;
-- fixed, Otsu, triangle, and local thresholding;
+- fixed, Otsu, Triangle, Li, Yen, Isodata, Minimum, Hysteresis, Sauvola,
+  Niblack, adaptive mean/Gaussian, and local thresholding;
+- Sobel, Canny, Laplace, Difference of Gaussians, Unsharp Mask, Non-Local
+  Means, and other filtering/detail nodes;
 - binary erosion, dilation, opening, closing, fill holes, and small-component
   removal;
 - maximum projection;
 - image metadata, thumbnails, intensity histograms, label-volume histograms,
-  mask inspection, and label inspection;
+  image/mask/label inspection, and image/mask/label pinning;
 - connected-component labels, pixel/voxel-volume filtering, sequential
-  relabeling, table outputs, basic label-object measurements, skeletonization,
-  and skeleton-network measurement tables.
+  relabeling, table outputs, basic and intensity-aware label-object
+  measurements, table merge/annotation, skeletonization, and skeleton-network
+  measurement tables.
 
 The remaining object-analysis gaps are difficult segmentation, richer
-measurement, skeleton QC outputs, pruning, and property-based filtering. VIPP
-can now label separated foreground objects, clean them by size, measure basic
-label morphology, skeletonize masks, and measure skeleton components with
-generic graph metrics, but it cannot yet:
+measurement utilities, skeleton QC outputs, and pruning. VIPP can now label
+separated foreground objects, clean them by size or measured properties,
+measure basic and selected extended label morphology plus intensity,
+skeletonize masks, and measure skeleton components with generic graph metrics,
+but it cannot yet:
 
 - separate touching objects with distance markers and watershed;
-- measure per-object intensity into a table;
+- select/reorder/group result table columns for analysis-ready exports;
 - export explicit branch graphs or visualize endpoints/junctions as QC masks;
 - prune short skeleton branches;
-- filter labels by properties other than pixel/voxel volume;
-- use calibrated physical area/volume as a filter unit.
+- use calibrated physical area/volume directly as a filter unit.
 
 ## Existing Nodes To Clarify
 
@@ -125,7 +131,7 @@ cleaned up.
 
 | Current node | Issue | Recommended direction |
 | --- | --- | --- |
-| Linear Scale + Offset | This renamed node is explicit about its alpha/beta math, but it still clips to `uint8`. | Decide whether it should preserve dtype or be replaced by image math plus `Rescale Intensity` for most workflows. |
+| Linear Scale + Offset | Dtype preservation is implemented, but users may still confuse it with contrast stretching. | Keep the explicit math name; use `Rescale Intensity` when the desired output range is the main control. |
 | Top Hat / Black Hat | These are binary operations, while grayscale white top-hat is a common bioimage background-removal tool. | Rename current nodes `Binary Top Hat` and `Binary Black Hat`; add explicit grayscale morphology later. |
 | Maximum Projection | Axis is numeric and only the maximum reducer is available. | Replace or complement it with an axis-aware `Reduce Axis` node. |
 | 2D filtering behavior | Several nodes infer XY and process other axes plane by plane. | Add an explicit processing scope: `XY per plane` or `spatial volume`. |
@@ -139,7 +145,8 @@ implemented with misleading types or awkward parameters.
 
 The `labels` port/output type represents non-negative integer object IDs where
 `0` is background. Labels inspect and pin as napari Labels layers and are not
-treated as ordinary intensity data.
+treated as ordinary intensity data. Image outputs can also be pinned as napari
+Image layers; boolean mask pins remain Labels overlays.
 
 Implemented behavior:
 
@@ -153,10 +160,13 @@ Implemented behavior:
 Nearest-neighbor interpolation remains a requirement for future geometry and
 registration nodes that accept labels.
 
-### Named Heterogeneous Input Ports: Not Implemented
+### Named Heterogeneous Input Ports: Implemented
 
-The current operation model gives all inputs one type. Marker-controlled
-watershed needs ports such as:
+Nodes can declare named, typed input ports and keep those slots through visual
+wiring, workflow JSON, Python export, and execution. Current examples include
+`Measure Objects + Intensity` and `Mask Image`.
+
+Marker-controlled watershed can now use ports such as:
 
 | Port | Type |
 | --- | --- |
@@ -164,8 +174,9 @@ watershed needs ports such as:
 | Markers | labels |
 | Mask | mask, optional |
 
-Add an `InputSpec` equivalent to `OutputSpec`, including name, type, title,
-optional/required state, and stable slot identity.
+Optional input slots are not implemented yet; watershed should initially use
+required elevation/marker inputs and add optional masks once optional ports are
+designed.
 
 ### Table Outputs: Implemented
 
@@ -369,12 +380,12 @@ annotation are implemented.
 | Implemented | Measure Objects + Intensity | labels + image -> table | named heterogeneous input ports plus intensity statistics |
 | Implemented | Merge Tables | tables -> table | stable object identity column joins; row-position fallback for equal-length tables |
 | Implemented | Add Metadata Columns | table -> table | constant treatment, replicate, batch, or condition columns |
-| 3 | Extended Region Properties | labels -> table | selectable `regionprops_table` property groups |
-| 4 | 3D Mesh Morphology | labels -> table, optional mesh later | marching cubes plus mesh/convex-hull measurements |
-| 5 | Select Table Columns | table -> table | keep/drop/reorder measurement columns |
-| 7 | Filter Labels By Property | labels + table, or labels + intensity -> labels | region properties plus label remapping |
-| 8 | Save Table | table -> table | CSV/TSV writer |
-| 9 | Summarize Measurements | table -> table/scalars | NumPy/SciPy statistics |
+| Implemented | Filter Labels By Property | labels + table -> labels | table-derived label remapping |
+| Implemented | Extended Region Properties | labels -> table | selectable `regionprops_table` property groups |
+| Implemented | Select Table Columns | table -> table | keep/drop/reorder measurement columns |
+| Next 1 | Summarize Measurements | table -> table/scalars | NumPy/SciPy statistics |
+| Later | 3D Mesh Morphology | labels -> table, optional mesh later | marching cubes plus mesh/convex-hull measurements |
+| Later | Save Table | table -> table | CSV/TSV writer |
 
 The implemented first `Measure Objects` property set is intentionally small:
 
@@ -390,9 +401,24 @@ Mean, minimum, maximum, sum, and standard deviation of intensity are implemented
 in `Measure Objects + Intensity`, which accepts separate `Labels` and
 `Intensity image` ports.
 
-Properties such as eccentricity, orientation, perimeter, and Feret diameter
-need dimension-specific UI labels and should not be presented as universally
-meaningful in 3D.
+Selectable extended morphology groups are implemented on both object
+measurement nodes. The current groups are:
+
+- shape descriptors: bounding-box size and filled size for 2D/3D, plus convex
+  area, solidity, and maximum Feret diameter for 2D;
+- axis/inertia descriptors: major/minor axis length and inertia tensor
+  eigenvalues for 2D/3D, plus eccentricity and orientation for 2D;
+- 2D boundary descriptors: perimeter and Crofton perimeter, hidden for true 3D
+  inputs in the inspector.
+
+`Filter Labels By Property` is implemented as the table-driven cleanup step
+after measurement. It keeps or removes labels using any numeric table column and
+matches stable index columns such as `t_index` back to the corresponding
+non-spatial label block.
+
+Calibrated physical variants for extended length/shape columns remain future
+work. The current extended length and area descriptors are explicitly labeled
+in pixels or voxels.
 
 The intended end state is broader than a single measurement node: users should
 be able to compute selected morphology, intensity, mesh, and skeleton feature
@@ -404,12 +430,12 @@ metadata, and export the result for PCA or other statistical analysis. See
 
 Table outputs, basic object measurement, intensity measurement, table merge,
 metadata annotation, and base skeleton-network measurement are now implemented.
-For the MitoMorph/PCA use case, the next measurement step is selectable
-extended region-property groups, followed by column selection/reordering and
-grouped table summaries. Skeleton QC outputs and pruning remain the next
-network-analysis step: endpoint masks, junction masks, branch labels,
-component-label images, and removal of terminal branches below a selected
-length.
+For the MitoMorph/PCA use case, the next measurement step should be grouped
+table summaries, so extended morphology, intensity, skeleton, and metadata
+tables can be summarized for statistical analysis. Skeleton QC outputs and
+pruning remain the next network-analysis step: endpoint masks, junction masks,
+branch labels, component-label images, and removal of terminal branches below a
+selected length.
 
 ## Recommended First Milestone
 
@@ -426,11 +452,11 @@ Completed:
 4. Clear Border Objects.
 5. Fill Holes.
 6. Relabel Sequential.
+7. Filter Labels By Property when a measurement table is available.
 
 Remaining:
 
-1. Calibrated physical area/volume filtering.
-2. Explicit kept/removed object counts.
+1. Explicit kept/removed object counts.
 
 The primary pipeline is:
 
@@ -450,12 +476,14 @@ Image
 - support minimum and optional maximum volume: implemented;
 - offer voxel/pixel count immediately: implemented;
 - offer calibrated physical area/volume when trustworthy scale and units exist;
+  implemented through `Measure Objects` plus `Filter Labels By Property`;
 - preserve retained label IDs until an explicit `Relabel Sequential` node:
   implemented;
 - report how many labels were kept and removed;
 - operate over full `ZYX` volumes for 3D data and `YX` for 2D data:
   implemented;
-- later expand to filtering by morphological and intensity properties.
+- expand to filtering by morphological and intensity properties: implemented
+  through measurement tables and `Filter Labels By Property`.
 
 The inspector already reports the incoming object count, median, and largest
 volume and displays the input volume distribution with live thresholds. It does
@@ -467,11 +495,10 @@ cutoff and an object-volume distribution for choosing thresholds.
 
 ### Milestone 1B: Split Touching Objects
 
-1. Named heterogeneous input ports.
-2. Euclidean Distance Transform.
-3. H-Maxima Markers.
-4. Marker-Controlled Watershed.
-5. Expand Labels.
+1. Euclidean Distance Transform.
+2. H-Maxima Markers.
+3. Marker-Controlled Watershed.
+4. Expand Labels.
 
 This optional branch is inserted when thresholded structures touch:
 
@@ -484,9 +511,10 @@ binary mask
   -> cleaned Labels
 ```
 
-The next milestone should add distance transforms, marker generation, and
-marker-controlled watershed. After named heterogeneous input ports are
-available, extend `Measure Objects` to include intensity measurements.
+The watershed branch is now technically unblocked because named heterogeneous
+input ports are implemented. It should follow the table-driven property
+filtering work unless touching-object splitting becomes the immediate user
+priority.
 
 ## P2: Add After Core Object Analysis
 

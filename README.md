@@ -34,10 +34,11 @@ The prototype currently supports:
   slice/stack and linear/log modes;
 - compact node metadata plus detailed selected-node metadata;
 - normalized axes, channel, acquisition, source, and provenance metadata;
-- OME-TIFF, ImageJ TIFF, conventional TIFF, and OME-Zarr 0.4/0.5 I/O;
+- OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and common
+  raster image import plus 2D raster export;
 - adaptive image/series selection for multi-image sources;
 - table outputs for object, intensity, skeleton, merged, and annotated results;
-- mask pinning as a napari overlay layer;
+- image/mask/label pinning as persistent napari preview layers;
 - generated inspect layers for full-resolution napari review.
 
 ## Image Metadata
@@ -167,6 +168,7 @@ The current node catalogue includes:
 - Label Operations:
   - Label Connected Components
   - Filter Labels By Volume
+  - Filter Labels By Property
   - Clear Border Objects
   - Relabel Sequential
 - Measurements:
@@ -174,6 +176,7 @@ The current node catalogue includes:
   - Measure Objects + Intensity
   - Analyze Skeleton
   - Merge Tables
+  - Select Table Columns
   - Add Metadata Columns
 
 Histogram-based automatic threshold nodes show `Threshold uses` on stack inputs.
@@ -194,6 +197,11 @@ the numeric fields still accept exact values up to one billion. Selecting
 above the regular histogram. Dashed minimum and enabled maximum markers update
 with the filter controls. Its `Log volume axis` toggle is enabled by
 default and can be switched off for a linear distribution.
+
+`Filter Labels By Property` accepts named `Labels` and `Measurements table`
+inputs and keeps or removes labels using any numeric table column, including
+area/volume, intensity, and skeleton/network measurements. It preserves label
+IDs and leaves compact renumbering to `Relabel Sequential`.
 
 `Clear Border Objects` accepts either a binary mask or integer labels and
 preserves that semantic type. In 3D it can remove objects touching all `ZYX`
@@ -216,24 +224,30 @@ For labels-only cleanup with both minimum and maximum cutoffs, use
 `Filter Labels By Volume`.
 
 `Measure Objects` accepts a label image and produces a table output instead of
-an image. The first measurement set includes label ID, pixel/voxel area or
+an image. The default measurement set includes label ID, pixel/voxel area or
 volume, calibrated physical area or volume when spatial scale metadata is
 available, centroid, bounding box, equivalent diameter, extent, and Euler
-number. Table outputs show a row preview in the inspector and can be saved as
-CSV or TSV.
+number. Optional checkboxes add shape descriptors, axis/inertia descriptors,
+and 2D boundary descriptors. The 2D boundary group is hidden for true 3D
+inputs because perimeter, Crofton perimeter, orientation, and eccentricity are
+2D concepts in the current implementation. Table outputs show a row preview in
+the inspector and can be saved as CSV or TSV.
 
 `Measure Objects + Intensity` is the first named multi-input measurement node.
 It has separate `Labels` and `Intensity image` input ports, then outputs the
 basic object morphology columns plus per-label mean, minimum, maximum, sum, and
-standard deviation intensity. The example workflow
+standard deviation intensity. It exposes the same optional morphology groups as
+`Measure Objects`. The example workflow
 `examples/red-channel-object-intensity-measurements.json` demonstrates this
 pattern.
 
 `Merge Tables` joins two or more table outputs into a single table. In `auto`
 mode it joins on stable identity columns such as `t_index` and `label_id`; when
 no identity columns are shared, equal-length tables can be joined by row
-position. `Add Metadata Columns` appends constant treatment, replicate, batch,
-or condition columns before CSV/TSV export. The example workflow
+position. `Select Table Columns` keeps, drops, or reorders table columns while
+preserving row order and column units. `Add Metadata Columns` appends constant
+treatment, replicate, batch, or condition columns before CSV/TSV export. The
+example workflow
 `examples/red-channel-merged-measurement-table.json` demonstrates a
 PCA-oriented table assembly path.
 
@@ -264,16 +278,25 @@ single-channel plane mapping. `Calculate New Image` is a multi-input image-math
 node that applies comma separated weights to connected inputs and then adds an
 offset.
 
-`Image Source` can point to an existing napari layer, a local `.npy`, TIFF, or
-OME-Zarr source, or one of the bundled synthetic samples. The design decision is
+`Mask Image` is a typed two-input node with separate `Image` and `Mask` ports.
+The mask port accepts binary masks or labels, treating nonzero values as inside
+the mask. Spatial masks can be broadcast over compatible image axes, including
+channel-last RGB/RGBA images and common channel-first multichannel arrays, so a
+`YX` or `ZYX` mask can mask all colour/channel planes without first splitting
+the image.
+
+`Image Source` can point to an existing napari layer, a local `.npy`, TIFF,
+OME-Zarr, or common raster source such as PNG/JPEG/BMP/GIF/WebP, or one of the
+bundled synthetic samples. The design decision is
 that future source-level pixel size and unit overrides should repair missing or
 incorrect input calibration before analysis. `Save Image` passes data through
 unchanged and, when `Auto-save on update` is set to `on`, writes the node input
 to disk every time the graph recomputes. For quick interactive work, the
 inspector also provides `Save selected output...` for the currently selected
-node; that dialog defaults to TIFF but still allows `.npy`. TIFF output is
-written in ImageJ hyperstack format when axis metadata is available, and binary
-masks are saved as 8-bit `0`/`255` values.
+node; that dialog defaults to TIFF but also allows `.npy` and PNG/JPEG-style
+formats when the selected output is 2D. TIFF output is written in ImageJ
+hyperstack format when axis metadata is available, and binary masks are saved
+as 8-bit `0`/`255` values.
 
 ## Development
 
@@ -322,11 +345,11 @@ Intensity`.
 Near-term development priorities:
 
 - axis-aware channel selectors that show probe names instead of only numbers;
-- calibrated physical area and volume filtering;
+- grouped table summaries by condition/time/source;
 - skeleton QC feature masks, branch labels, and short-branch pruning;
 - distance transforms, marker generation, and marker-controlled watershed;
-- extended region-property measurements, table merge/select/annotate nodes, and
-  property-based label filtering;
+- richer 3D mesh morphology and calibrated physical variants for extended
+  length/shape measurements;
 - fluorescence background correction;
 - OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
 - plate/well/field browsing, remote reads, batch execution, and memory-aware

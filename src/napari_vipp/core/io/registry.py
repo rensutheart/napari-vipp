@@ -13,6 +13,14 @@ from napari_vipp.core.io.ome_zarr import (
     read_ome_zarr,
     write_ome_zarr,
 )
+from napari_vipp.core.io.raster import (
+    RASTER_SUFFIXES,
+    RASTER_WRITE_FORMATS,
+    inspect_raster,
+    raster_format,
+    read_raster,
+    write_raster,
+)
 from napari_vipp.core.io.tiff import inspect_tiff, read_tiff, write_tiff
 from napari_vipp.core.metadata import ImageState
 
@@ -24,6 +32,13 @@ WRITE_FORMATS = (
     "imagej-tiff",
     "tiff",
     "npy",
+    "png",
+    "jpeg",
+    "bmp",
+    "gif",
+    "webp",
+    "tga",
+    "pnm",
 )
 
 
@@ -37,6 +52,8 @@ def inspect_image_source(path: str | Path) -> SourceInspection:
         return inspect_numpy(source_path)
     if suffix in {".tif", ".tiff"}:
         return inspect_tiff(source_path)
+    if suffix in RASTER_SUFFIXES:
+        return inspect_raster(source_path)
     raise ValueError(f"Unsupported image source: {source_path}")
 
 
@@ -54,6 +71,8 @@ def read_image(
         return read_numpy(source_path, series_index)
     if suffix in {".tif", ".tiff"}:
         return read_tiff(source_path, series_index)
+    if suffix in RASTER_SUFFIXES:
+        return read_raster(source_path, series_index)
     raise ValueError(f"Unsupported image source: {source_path}")
 
 
@@ -105,6 +124,13 @@ def write_image(
             format=selected,
             image_state=image_state,
         )
+    if selected in RASTER_WRITE_FORMATS:
+        return write_raster(
+            data,
+            output_path,
+            format=selected,
+            image_state=image_state,
+        )
     raise ValueError(f"Unsupported save format: {format}")
 
 
@@ -119,6 +145,10 @@ def _resolve_write_format(
         "ome-tif": "ome-tiff",
         "imagej": "imagej-tiff",
         "ij-tiff": "imagej-tiff",
+        "jpg": "jpeg",
+        "jpe": "jpeg",
+        "jfif": "jpeg",
+        "dib": "bmp",
         "tif": "tiff",
     }
     selected = aliases.get(selected, selected)
@@ -129,6 +159,8 @@ def _resolve_write_format(
         return "npy"
     if path.suffix.lower() == ".zarr":
         return "ome-zarr"
+    if path.suffix.lower() in RASTER_SUFFIXES:
+        return raster_format(path)
     if lower_name.endswith((".ome.tif", ".ome.tiff")):
         return "ome-tiff"
     kind = _state_kind(image_state)

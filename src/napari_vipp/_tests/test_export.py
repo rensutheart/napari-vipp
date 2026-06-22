@@ -115,6 +115,36 @@ def test_exported_label_volume_pipeline_executes():
     assert set(np.unique(results[relabeled.id])) == {0, 1}
 
 
+def test_exported_label_property_filter_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    filtered = pipeline.add_node("filter_labels_by_property")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(filtered.id, "property_column", "area_pixels")
+    pipeline.set_param(filtered.id, "min_value", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    pipeline.connect(labels.id, filtered.id, target_port=0)
+    pipeline.connect(measurements.id, filtered.id, target_port=1)
+
+    image = np.zeros((8, 8), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    image[6, 6] = 10
+    pipeline.run(image, input_metadata={"axes": "YX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+
+    assert "filter_labels_by_property(" in code
+    assert "resolved_spatial_ndim=2" in code
+    assert set(np.unique(results[filtered.id])) == {0, 1}
+
+
 def test_exported_clear_border_pipeline_executes():
     pipeline = PrototypePipeline()
     threshold = pipeline.add_node("binary_threshold")
@@ -198,6 +228,7 @@ def test_exported_measure_objects_pipeline_executes_and_saves_table(tmp_path):
     labels = pipeline.add_node("label_connected_components")
     measurements = pipeline.add_node("measure_objects")
     pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.set_param(measurements.id, "include_axis_descriptors", True)
     pipeline.connect("input", threshold.id)
     pipeline.connect(threshold.id, labels.id)
     pipeline.connect(labels.id, measurements.id)
@@ -217,9 +248,11 @@ def test_exported_measure_objects_pipeline_executes_and_saves_table(tmp_path):
     namespace["save_image"](table, output_path)
 
     assert "measure_objects(" in code
+    assert "include_axis_descriptors=True" in code
     assert "from napari_vipp.core.tables import" in code
     assert table.row_count == 2
     assert table.columns[:2] == ("label_id", "volume_voxels")
+    assert "major_axis_length_voxels" in table.columns
     csv_path = tmp_path / "measurements.ome.csv"
     assert csv_path.exists()
     assert csv_path.read_text(encoding="utf-8").startswith(
@@ -235,8 +268,10 @@ def test_exported_merged_table_pipeline_executes():
     intensity = pipeline.add_node("measure_objects_intensity")
     merged = pipeline.add_node("merge_tables")
     annotated = pipeline.add_node("add_metadata_columns")
+    selected = pipeline.add_node("select_table_columns")
     pipeline.set_param(threshold.id, "threshold", 5)
     pipeline.set_param(annotated.id, "metadata_columns", "condition=demo")
+    pipeline.set_param(selected.id, "columns", "label_id,intensity_mean,condition")
     pipeline.connect("input", threshold.id)
     pipeline.connect(threshold.id, labels.id)
     pipeline.connect(labels.id, morphology.id)
@@ -245,6 +280,7 @@ def test_exported_merged_table_pipeline_executes():
     pipeline.connect(morphology.id, merged.id, target_port=0)
     pipeline.connect(intensity.id, merged.id, target_port=1)
     pipeline.connect(merged.id, annotated.id)
+    pipeline.connect(annotated.id, selected.id)
 
     image = np.zeros((7, 7), dtype=np.float32)
     image[1:3, 1:4] = 10
@@ -255,12 +291,13 @@ def test_exported_merged_table_pipeline_executes():
     namespace: dict[str, object] = {"__name__": "exported_pipeline"}
     exec(compile(code, "<exported>", "exec"), namespace)
     results = namespace["run_pipeline"](image)
-    table = results[annotated.id]
+    table = results[selected.id]
 
     assert "merge_tables(" in code
     assert "add_metadata_columns(" in code
+    assert "select_table_columns(" in code
     assert table.row_count == 2
-    assert "intensity_mean" in table.columns
+    assert table.columns == ("label_id", "intensity_mean", "condition")
     assert table.records()[0]["condition"] == "demo"
 
 

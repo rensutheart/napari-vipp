@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 from napari_vipp._theme import category_color, category_tint
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
+PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
 
 
 class ClickablePreview(QLabel):
@@ -163,15 +164,19 @@ class NodeCard(QFrame):
 
     def _refresh_style(self) -> None:
         border = "#4b5563"
+        border_width = 2
+        background = "#20242b"
         if self._selected:
             border = "#60a5fa"
         if self._pinned:
             border = "#facc15"
+            border_width = 4
+            background = "#2a271b"
         self.setStyleSheet(
             f"""
             QFrame#NodeCard {{
-                background: #20242b;
-                border: 2px solid {border};
+                background: {background};
+                border: {border_width}px solid {border};
                 border-radius: 6px;
             }}
             QLabel {{
@@ -884,7 +889,7 @@ class PipelineGraphView(QGraphicsView):
             node.id,
             node.title,
             node.category,
-            can_pin=node.output_type in {"mask", "labels"},
+            can_pin=node.output_type in PINNABLE_OUTPUT_TYPES,
         )
         card.selected.connect(self._select_node)
         card.pin_requested.connect(self.pin_requested)
@@ -1130,6 +1135,17 @@ class PipelineGraphView(QGraphicsView):
 
     def keyPressEvent(self, event):  # noqa: N802
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected_connections = [
+                item
+                for item in self.scene.selectedItems()
+                if isinstance(item, ConnectionItem)
+            ]
+            for item in selected_connections:
+                self.delete_connection_item(item, notify=True)
+            if selected_connections:
+                event.accept()
+                return
+
             selected_nodes = [
                 item
                 for item in self.scene.selectedItems()
@@ -1144,17 +1160,6 @@ class PipelineGraphView(QGraphicsView):
             for item in selected_nodes:
                 self.node_delete_requested.emit(item.node_id)
             if selected_nodes:
-                event.accept()
-                return
-
-            selected = [
-                item
-                for item in self.scene.selectedItems()
-                if isinstance(item, ConnectionItem)
-            ]
-            for item in selected:
-                self.delete_connection_item(item, notify=True)
-            if selected:
                 event.accept()
                 return
         super().keyPressEvent(event)

@@ -56,6 +56,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
@@ -914,7 +915,9 @@ class ImageSourceControl(QWidget):
             self,
             "Select image source",
             self.path_edit.text(),
-            "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.npy *.npz);;"
+            "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.png *.jpg "
+            "*.jpeg *.jpe *.jfif *.bmp *.dib *.gif *.webp *.tga *.pbm *.pgm "
+            "*.ppm *.pnm *.npy *.npz);;"
             "All files (*.*)",
         )
         if path:
@@ -2081,7 +2084,7 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.setFixedSize(24, 24)
         self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
-        self.build_button = QPushButton("Reset graph")
+        self.new_workflow_button = QPushButton("New workflow...")
         self.refresh_button = QPushButton("Refresh")
         self.undo_action = QAction(
             _toolbar_icon("undo"),
@@ -2416,7 +2419,6 @@ class VippWidget(QWidget):
         input_row.addWidget(self.graph_zoom_reset_button)
         input_row.addWidget(self.graph_zoom_label)
         input_row.addWidget(_toolbar_separator())
-        input_row.addWidget(self.build_button)
         input_row.addWidget(self.refresh_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
@@ -2425,6 +2427,7 @@ class VippWidget(QWidget):
         workflow_row = QHBoxLayout()
         workflow_row.setContentsMargins(0, 0, 0, 0)
         workflow_row.setSpacing(4)
+        workflow_row.addWidget(self.new_workflow_button)
         workflow_row.addWidget(self.save_workflow_button)
         workflow_row.addWidget(self.load_workflow_button)
         workflow_row.addWidget(self.export_button)
@@ -2553,7 +2556,7 @@ class VippWidget(QWidget):
         return scroll
 
     def _connect_signals(self) -> None:
-        self.build_button.clicked.connect(self._reset_graph)
+        self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
         self.refresh_button.clicked.connect(self._refresh_and_run)
         self.undo_action.triggered.connect(self.undo)
         self.redo_action.triggered.connect(self.redo)
@@ -3006,20 +3009,33 @@ class VippWidget(QWidget):
             ref = f"{ref}[{int(connection.source_port)}]"
         return ref
 
-    def _reset_graph(self) -> None:
+    def _new_workflow_dialog(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "New workflow",
+            "Create a new empty workflow? This will erase the current graph and "
+            "any unsaved changes.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._new_workflow()
+
+    def _new_workflow(self) -> None:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
-        self.pipeline.reset_starter_graph()
+        self.pipeline.reset_empty_graph()
         self._preview_disabled_node_ids.clear()
         self._clip_auto_input_ranges.clear()
         self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
         self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
-        self._select_node("gaussian")
+        self._select_node("input")
         self.run_pipeline()
         self._push_undo_if_changed(before)
-        self.status_label.setText("Starter graph restored.")
+        self.status_label.setText("New empty workflow created.")
 
     def _build_graph_from_pipeline(self) -> None:
         self.graph_view.build_graph(
@@ -3333,7 +3349,7 @@ class VippWidget(QWidget):
         if mode == "file path":
             path = str(node.params.get("file_path", "")).strip()
             if not path:
-                return None, None
+                return SourcePayload(None, {}, ""), None
             dataset = read_image(
                 path,
                 series_index=int(node.params.get("series_index", 0)),
@@ -4052,6 +4068,12 @@ class VippWidget(QWidget):
                 return False
             state = self.pipeline.input_state_for_node(node_id)
             return not _histogram_has_stack_scope(data, state)
+        if (
+            node is not None
+            and node.operation_id in {"measure_objects", "measure_objects_intensity"}
+            and spec.name == "include_2d_boundary_descriptors"
+        ):
+            return self._input_spatial_count(node_id) >= 3
         return False
 
     def _effective_parameter_spec(self, node_id: str, spec):
@@ -5248,13 +5270,17 @@ class VippWidget(QWidget):
             self.status_label.setText("No image layer selected.")
             return
 
-        primary_layer = source_layers[0] if source_layers else toolbar_layer
+        primary_layer = source_layers[0] if source_layers else (
+            None if source_payloads else toolbar_layer
+        )
         if primary_layer is not None:
             self._last_input_layer_name = getattr(primary_layer, "name", None)
         self._restore_hidden_input_layers(except_layer=primary_layer)
-        input_data = getattr(toolbar_layer, "data", None)
-        input_metadata = getattr(toolbar_layer, "metadata", None)
-        input_name = getattr(toolbar_layer, "name", "")
+        input_data = None if source_payloads else getattr(toolbar_layer, "data", None)
+        input_metadata = (
+            None if source_payloads else getattr(toolbar_layer, "metadata", None)
+        )
+        input_name = "" if source_payloads else getattr(toolbar_layer, "name", "")
         try:
             self.pipeline.run(
                 input_data,
@@ -5304,10 +5330,13 @@ class VippWidget(QWidget):
         self._update_histogram()
         source_names = [payload.name for payload in source_payloads.values()]
         source_label = ", ".join(name for name in source_names if name) or input_name
-        self.status_label.setText(
-            f"Graph updated from '{source_label}'. "
-            "Connect ports to build alternate paths."
-        )
+        if source_label:
+            self.status_label.setText(
+                f"Graph updated from '{source_label}'. "
+                "Connect ports to build alternate paths."
+            )
+        else:
+            self.status_label.setText("No image source selected.")
 
     def _on_dims_changed(self, _event=None) -> None:
         self._update_thumbnails()
@@ -5512,11 +5541,15 @@ class VippWidget(QWidget):
         state = self.pipeline.input_state_for_node(node_id)
         scope_available = _histogram_has_stack_scope(data, state)
         if node.operation_id in GLOBAL_THRESHOLD_OPERATIONS:
-            scope = str(node.params.get("threshold_scope", "Stack histogram"))
-            scope_label = _threshold_histogram_scope_label(scope)
-            self.rescale_input_histogram_group.setTitle(
-                f"Input Histogram ({scope_label})"
-            )
+            if scope_available:
+                scope = str(node.params.get("threshold_scope", "Stack histogram"))
+                scope_label = _threshold_histogram_scope_label(scope)
+                self.rescale_input_histogram_group.setTitle(
+                    f"Input Histogram ({scope_label})"
+                )
+            else:
+                scope = "Slice histogram"
+                self.rescale_input_histogram_group.setTitle("Input Histogram")
             self.rescale_input_histogram_scope_row.setHidden(True)
         else:
             self.rescale_input_histogram_group.setTitle("Input Histogram")
@@ -5685,16 +5718,29 @@ class VippWidget(QWidget):
             return
 
         default_name = f"{self._node_title(node_id).replace(' ', '_')}.ome.tif"
-        path, selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Save selected node output",
-            default_name,
+        filters = (
             "OME-TIFF (*.ome.tif *.ome.tiff);;"
             "OME-Zarr (*.ome.zarr);;"
             "ImageJ TIFF (*.tif *.tiff);;"
             "TIFF (*.tif *.tiff);;"
             "NumPy array (*.npy);;"
-            "All files (*.*)",
+        )
+        if self._can_save_selected_output_as_raster(node_id):
+            filters += (
+                "PNG image (*.png);;"
+                "JPEG image (*.jpg *.jpeg);;"
+                "BMP image (*.bmp);;"
+                "GIF image (*.gif);;"
+                "WebP image (*.webp);;"
+                "TGA image (*.tga);;"
+                "PNM image (*.pnm *.pgm *.ppm *.pbm);;"
+            )
+        filters += "All files (*.*)"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save selected node output",
+            default_name,
+            filters,
         )
         if path:
             selected_format = {
@@ -5703,6 +5749,13 @@ class VippWidget(QWidget):
                 "ImageJ TIFF": "imagej-tiff",
                 "TIFF": "tiff",
                 "NumPy array": "npy",
+                "PNG image": "png",
+                "JPEG image": "jpeg",
+                "BMP image": "bmp",
+                "GIF image": "gif",
+                "WebP image": "webp",
+                "TGA image": "tga",
+                "PNM image": "pnm",
             }
             format = next(
                 (
@@ -5713,6 +5766,19 @@ class VippWidget(QWidget):
                 "auto",
             )
             self._save_node_output(node_id, path, format=format)
+
+    def _can_save_selected_output_as_raster(self, node_id: str) -> bool:
+        data = self.pipeline.outputs.get(node_id)
+        if data is None or is_table_data(data):
+            return False
+        shape = getattr(data, "shape", None)
+        if shape is None:
+            try:
+                shape = np.asarray(data).shape
+            except Exception:
+                return False
+        shape = tuple(int(size) for size in shape)
+        return len(shape) == 2 or (len(shape) == 3 and shape[-1] in {3, 4})
 
     def _save_node_output(
         self,
@@ -5781,7 +5847,8 @@ class VippWidget(QWidget):
     def pin_node(self, node_id: str) -> None:
         if not self._node_can_pin(node_id):
             self.status_label.setText(
-                f"'{self._node_title(node_id)}' does not produce a mask overlay."
+                f"'{self._node_title(node_id)}' does not produce a displayable "
+                "image output."
             )
             return
         self._finish_parameter_history_group()
@@ -6109,8 +6176,8 @@ class VippWidget(QWidget):
             return False
         data = self.pipeline.outputs.get(node_id)
         if data is not None:
-            return self._data_kind(data, node_id) in {"mask", "labels"}
-        return node.output_type in {"mask", "labels"}
+            return not is_table_data(data) and self._data_kind(data, node_id) != "table"
+        return node.output_type != "table"
 
     def _node_output_type(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)

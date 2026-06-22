@@ -23,7 +23,7 @@ measurement parity and table-combination requirements are tracked in
 processing workflow inside a dock widget. The graph is the main work surface:
 users add processing nodes, wire outputs to inputs, tune parameters in the
 inspector, view live thumbnails, inspect full-resolution outputs in napari, and
-pin mask or label outputs as overlays.
+pin image, mask, or label outputs as persistent napari preview layers.
 
 The implementation deliberately separates a headless core from the Qt/napari
 UI:
@@ -40,7 +40,7 @@ headless core
   core/operations.py  pure NumPy/scikit-image/scipy node functions
   core/metadata.py    OME-NGFF-inspired ImageState propagation
   core/tables.py      TableData/TableState and CSV/TSV table saving
-  core/io/            normalized OME/TIFF/Zarr/NumPy readers and writers
+  core/io/            normalized OME/TIFF/Zarr/raster/NumPy readers and writers
   core/preview.py     thumbnail and fluorescence composite reduction
   core/workflow.py    JSON workflow save/load
   core/export.py      runnable Python script export
@@ -67,6 +67,7 @@ src/napari_vipp/
       model.py         ImageDataset, SourceInspection, and series records
       registry.py      format detection and shared read/write entry points
       tiff.py          OME-TIFF, ImageJ TIFF, and conventional TIFF
+      raster.py        common PNG/JPEG/BMP/GIF/WebP/TGA/PNM import and 2D export
       ome_zarr.py      OME-Zarr 0.4/0.5 image support
       numpy_io.py      NPY/NPZ support
     tables.py          TableData, TableState, CSV/TSV writer
@@ -160,6 +161,10 @@ Special execution cases:
 - `combine_channels` derives its insertion channel axis from upstream metadata,
   stores that `channel_axis` back into `node.params`, and then stacks inputs in
   slot order.
+- `mask_image` is a named two-input node. Port 0 is the image whose metadata
+  is carried forward, and port 1 accepts a binary mask or label image. The
+  operation broadcasts compatible spatial masks over leading axes and
+  channel-last RGB/RGBA axes.
 - `measure_objects` receives upstream axis names/types/scales/units when an
   `ImageState` is available and returns `TableData`; the executor builds a
   `TableState` instead of trying to infer image metadata.
@@ -229,22 +234,23 @@ or slice axis is intended.
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
-  Clear Border Objects, Relabel Sequential
+  Filter Labels By Property, Clear Border Objects, Relabel Sequential
 - `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Merge Tables, Add Metadata Columns
+  Skeleton, Merge Tables, Select Table Columns, Add Metadata Columns
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
 intensity `image`. Label outputs inspect and pin as napari Labels layers, retain
 their integer IDs through TIFF/NumPy saving, and connect only to label-aware or
-generic array inputs.
+generic array inputs. Image outputs pin as napari Image layers; pinned mask
+outputs remain napari Labels layers so they can be used as overlays.
 
-Connected-component labeling, label-volume filtering, relabeling, and Fill
-Holes expose metadata-aware 2D/3D spatial processing. Auto mode resolves from
-carried axis metadata and stores the resolved spatial dimensionality for Python
-export. Leading non-spatial axes are processed independently, so `TCZYX` data
-is processed per timepoint and channel while each `ZYX` block is treated as one
-volume.
+Connected-component labeling, label-volume/property filtering, relabeling, and
+Fill Holes expose metadata-aware 2D/3D spatial processing. Auto mode resolves
+from carried axis metadata and stores the resolved spatial dimensionality for
+Python export. Leading non-spatial axes are processed independently, so `TCZYX`
+data is processed per timepoint and channel while each `ZYX` block is treated
+as one volume.
 
 `Clear Border Objects` accepts only masks or labels, preserves the connected
 semantic output type and retained label IDs. For 3D inputs it can examine all
@@ -264,20 +270,33 @@ label IDs, and exposes face/full connectivity for mask components. Its
 minimum-size control is logarithmic, uses contextual area/volume labeling, and
 is bounded by the largest observed input object.
 
+`Filter Labels By Property` declares named `Labels` and `Measurements table`
+ports. It filters label IDs using a numeric table column such as physical
+volume, intensity, or skeleton/network metrics. Rows with leading index columns
+such as `t_index` are matched to the corresponding non-spatial block, so
+time-series labels are filtered per frame. The node preserves retained label
+IDs; use `Relabel Sequential` when compact IDs are needed after filtering.
+
 `Measure Objects` accepts labels and outputs a `table` rather than an image.
-The first implementation uses `skimage.measure.regionprops_table` for one row
+The implementation uses `skimage.measure.regionprops_table` for one row
 per labeled object. It measures label ID, pixel/voxel area or volume,
 calibrated physical area or volume when spatial scale metadata is available,
 centroid, bounding box, equivalent diameter, extent, and Euler number. Leading
 time/channel or other non-spatial axes become index columns so repeated label
-IDs remain distinguishable across frames.
+IDs remain distinguishable across frames. Optional checkbox groups add
+shape descriptors, axis/inertia descriptors, and 2D boundary descriptors. The
+2D boundary group is hidden when the connected input resolves to true 3D,
+because perimeter, orientation, and eccentricity are not currently meaningful
+as generic 3D measurements. The first 3D-safe extension includes bounding-box
+volume, filled volume, major/minor axis length, and inertia tensor eigenvalues.
 
 `Measure Objects + Intensity` is the first named heterogeneous-input node. It
 declares separate `Labels` and `Intensity image` input slots, requires matching
 array shapes in the first implementation, and emits the basic morphology table
 plus per-label mean, minimum, maximum, sum, and standard deviation intensity.
-The same `InputSpec` mechanism is intended for watershed, colocalization, and
-other heterogeneous-input nodes.
+It exposes the same optional morphology groups as `Measure Objects`. The same
+`InputSpec` mechanism is intended for watershed, colocalization, and other
+heterogeneous-input nodes.
 
 `Merge Tables` accepts a variable number of `table` inputs and emits a joined
 `table`. The `input_count` parameter controls visible/required input ports.
@@ -286,6 +305,11 @@ other heterogeneous-input nodes.
 identity columns overlap and all tables have the same row count, the node falls
 back to row-position joining. Duplicate non-key columns from later tables are
 suffixes such as `_table2` so no source column is silently overwritten.
+
+`Select Table Columns` accepts one `table` input and emits a table with columns
+kept, dropped, or moved to the front according to a comma-separated column
+list. It preserves row order and column units, and errors on missing columns so
+batch exports fail explicitly when an upstream table schema changes.
 
 `Add Metadata Columns` accepts one `table` input and appends constant
 user-supplied `name=value` columns, intended for treatment, replicate, batch,
@@ -307,6 +331,20 @@ The longer-term measurement architecture must support selectable measurement
 families and merged per-object result tables for exploratory statistics such as
 PCA and treatment-group separation. See
 [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
+
+Operation dtype policy:
+
+- Preserve the input dtype for intensity-preserving transforms whenever that can
+  be done without changing the mathematical meaning of the output. Examples are
+  blur, denoise, sharpen, clip, gamma, linear scale/offset, and Sobel edge
+  magnitude.
+- Use natural output dtypes for semantic type changes: masks are `bool`, labels
+  are integer labels, measurement nodes are tables, and RGB composites are
+  display floats.
+- Keep float outputs when the operation's result has a new numeric domain that
+  cannot be represented safely in the original integer dtype, such as ratio,
+  weighted image calculation, z-score normalization, Difference of Gaussians, or
+  Laplace signed responses.
 
 To add a node:
 
@@ -368,12 +406,13 @@ preview slicing or histograms. The inspector therefore hides the per-node
 thumbnail toggle for table-only nodes such as measurement outputs.
 
 `core/io/` is the only format-specific boundary. `inspect_image_source()`
-discovers selectable image items without loading full TIFF pixel data.
-`read_image()` returns an `ImageDataset`; OME-Zarr data and multiscale levels
-remain Dask-backed. `write_image()` dispatches explicit OME-Zarr, OME-TIFF,
-ImageJ TIFF, TIFF, and NPY formats. Auto mode selects NPY by suffix, OME-Zarr
-for `.zarr`, OME-TIFF for `.ome.tif[f]`, conventional TIFF for label images,
-and OME-TIFF for other TIFF outputs.
+discovers selectable image items without loading full TIFF pixel data and also
+inspects ordinary raster images through imageio/Pillow. `read_image()` returns
+an `ImageDataset`; OME-Zarr data and multiscale levels remain Dask-backed.
+`write_image()` dispatches explicit OME-Zarr, OME-TIFF, ImageJ TIFF, TIFF, NPY,
+and 2D raster formats. Auto mode selects NPY by suffix, OME-Zarr for `.zarr`,
+PNG/JPEG-style raster output by suffix, OME-TIFF for `.ome.tif[f]`,
+conventional TIFF for label images, and OME-TIFF for other TIFF outputs.
 
 ## Preview And Histograms
 
@@ -478,12 +517,12 @@ Main classes:
 | `ConnectionItem` | Curved wire storing source id, target id, `target_port`, and `source_port`. |
 
 Right-clicking a node opens a context menu with Delete, Inspect Code, Duplicate
-Node, and, for mask/label-producing nodes, Pin or Unpin. Duplicate Node copies
-the node operation and current parameter values into an unconnected node near
-the original; it does not infer connections. Inspect Code opens a read-only
-dialog containing node metadata, connected input references, a single-node call
-shape, and the pure operation function source when available, with lightweight
-Python syntax highlighting.
+Node, and, for image/mask/label-producing nodes, Pin or Unpin. Duplicate Node
+copies the node operation and current parameter values into an unconnected node
+near the original; it does not infer connections. Inspect Code opens a
+read-only dialog containing node metadata, connected input references, a
+single-node call shape, and the pure operation function source when available,
+with lightweight Python syntax highlighting.
 
 Signals to `VippWidget`:
 
@@ -559,17 +598,20 @@ Input is represented both by the toolbar input selector and by explicit
 graph-level Image Source nodes. Image Source supports:
 
 - existing napari layer;
-- file path (`.npy`, `.npz`, OME-TIFF/ImageJ/conventional TIFF, and OME-Zarr
-  stores);
+- file path (`.npy`, `.npz`, OME-TIFF/ImageJ/conventional TIFF, OME-Zarr
+  stores, and common raster images such as PNG/JPEG/BMP/GIF/WebP);
 - bundled synthetic sample;
 - adaptive file/store inspection with a series or image selector when multiple
   items are available.
 
 Quick output saving:
 
-- The inspector has `Save selected output...`; it defaults to TIFF but allows
-  `.npy`.
+- The inspector has `Save selected output...`; it defaults to OME-TIFF, allows
+  `.npy`, and exposes PNG/JPEG-style raster formats only when the selected
+  output is 2D intensity or 2D RGB/RGBA.
 - `save_array_output()` writes TIFF as ImageJ hyperstacks when metadata allows.
+- `save_array_output()` writes ordinary raster formats only for 2D arrays;
+  stacks must use TIFF/OME/Zarr/NumPy formats.
 - Binary masks are saved as 8-bit `0`/`255`, not `0`/`1`.
 - Integer label images use standard TIFF rather than ImageJ TIFF so 32-bit IDs
   are preserved.
@@ -664,10 +706,12 @@ Implemented now:
 - OME-NGFF-inspired metadata propagation;
 - per-node and global preview controls;
 - slice/stack/log histograms;
+- guarded `New workflow...` action that resets to one unbound Image Source
+  node;
 - workflow JSON save/load;
 - Python export;
-- shared OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and NumPy
-  import/export;
+- shared OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, NumPy,
+  and 2D common raster import/export;
 - graph-aware OME-Zarr analysis dataset export with reference image plus label
   groups;
 - adaptive TIFF/OME-Zarr image selection and stored collection-binding intent;
@@ -681,7 +725,7 @@ Implemented now:
 
 Still incomplete or deliberately future-facing:
 
-- intensity-aware measurements and property-based label filtering;
+- grouped summaries, calibrated extended-length variants, and mesh morphology;
 - skeleton QC feature masks, branch labels, pruning, and graph export;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch

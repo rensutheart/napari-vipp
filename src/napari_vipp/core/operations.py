@@ -55,8 +55,10 @@ def reorder_axes(
 def linear_scale_offset(data, alpha: float = 3.0, beta: float = 1.0) -> np.ndarray:
     """Apply a linear scale-and-offset contrast operation."""
     arr = np.asarray(data)
+    if arr.dtype == bool:
+        return arr.copy()
     scaled = arr.astype(np.float32, copy=False) * float(alpha) + float(beta)
-    return np.clip(scaled, 0, 255).astype(np.uint8)
+    return _restore_numeric_dtype(scaled, arr)
 
 
 def gamma_correction(data, gamma: float = 0.5) -> np.ndarray:
@@ -157,7 +159,7 @@ def bilateral_filter(
             channel_axis=channel_axis,
         ).astype(np.float32)
 
-    return _apply_plane_wise(arr, filter_plane)
+    return _restore_unit_float_dtype(_apply_plane_wise(arr, filter_plane), arr)
 
 
 def difference_of_gaussians_filter(
@@ -166,12 +168,14 @@ def difference_of_gaussians_filter(
     high_sigma: float = 3.0,
 ) -> np.ndarray:
     """Enhance structures between two Gaussian blur scales slice-wise."""
-    arr = _float_if_bool(np.asarray(data)).astype(np.float32, copy=False)
+    original = np.asarray(data)
+    dtype = original.dtype if np.issubdtype(original.dtype, np.floating) else np.float32
+    arr = _float_if_bool(original).astype(dtype, copy=False)
     low_sigma = max(float(low_sigma), 0.0)
     high_sigma = max(float(high_sigma), low_sigma + 1e-6)
     low = gaussian_blur(arr, sigma=low_sigma)
     high = gaussian_blur(arr, sigma=high_sigma)
-    return low.astype(np.float32, copy=False) - high.astype(np.float32, copy=False)
+    return low.astype(dtype, copy=False) - high.astype(dtype, copy=False)
 
 
 def unsharp_mask_filter(
@@ -195,7 +199,7 @@ def unsharp_mask_filter(
             preserve_range=False,
         ).astype(np.float32)
 
-    return _apply_plane_wise(arr, sharpen_plane)
+    return _restore_unit_float_dtype(_apply_plane_wise(arr, sharpen_plane), arr)
 
 
 def non_local_means_filter(
@@ -223,29 +227,35 @@ def non_local_means_filter(
             channel_axis=channel_axis,
         ).astype(np.float32)
 
-    return _apply_plane_wise(arr, denoise_plane)
+    return _restore_unit_float_dtype(_apply_plane_wise(arr, denoise_plane), arr)
 
 
 def sobel_filter(data) -> np.ndarray:
     """Return the slice-wise Sobel edge magnitude of a grayscale image."""
-    arr = _to_grayscale(np.asarray(data))
-    return _apply_plane_wise(
+    original = np.asarray(data)
+    arr = _to_grayscale(original)
+    result = _apply_plane_wise(
         arr,
         lambda plane: filters.sobel(plane.astype(np.float32, copy=False)),
-    ).astype(np.float32)
+    )
+    return _restore_numeric_dtype(result, original)
 
 
 def laplace_filter(data, kernel_size: int = 3) -> np.ndarray:
     """Return a slice-wise Laplace edge/detail response."""
-    arr = _to_grayscale(np.asarray(data))
+    original = np.asarray(data)
+    arr = _to_grayscale(original)
     kernel_size = _odd_size(kernel_size, minimum=3)
-    return _apply_plane_wise(
+    result = _apply_plane_wise(
         arr,
         lambda plane: filters.laplace(
             plane.astype(np.float32, copy=False),
             ksize=kernel_size,
         ),
-    ).astype(np.float32)
+    )
+    if np.issubdtype(original.dtype, np.floating):
+        return result.astype(original.dtype, copy=False)
+    return result.astype(np.float32, copy=False)
 
 
 def canny_edges(
@@ -696,6 +706,132 @@ def filter_labels_by_volume(
     )
 
 
+PROPERTY_FILTER_COLUMN_PRIORITY = (
+    "volume_physical",
+    "area_physical",
+    "volume_voxels",
+    "area_pixels",
+    "length_physical",
+    "length_pixels",
+    "intensity_mean",
+    "intensity_sum",
+    "intensity_max",
+    "intensity_min",
+    "intensity_std",
+    "skeleton_length_physical",
+    "skeleton_length_pixels",
+    "skeleton_length_voxels",
+    "skeleton_voxel_count",
+    "branch_count",
+    "graph_edge_count",
+    "voxel_graph_edge_count",
+    "isolated_node_count",
+    "endpoint_voxel_count",
+    "junction_voxel_count",
+    "cycle_count",
+)
+
+
+def filter_labels_by_property(
+    inputs,
+    property_column: str = "auto",
+    min_value: float = 0.0,
+    max_value: float = 0.0,
+    keep_mode: str = "Keep inside range",
+    unmatched_labels: str = "Remove unmatched labels",
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+) -> np.ndarray:
+    """Filter label IDs using a per-object measurement table column."""
+    labels_data, table = _labels_and_table_inputs(inputs)
+    labels = _validated_labels(labels_data)
+    table = _validated_table(table)
+    label_column = _label_id_column(table)
+    value_column = _property_filter_column(table, property_column)
+    minimum = float(min_value)
+    maximum = float(max_value)
+    has_maximum = maximum > minimum if maximum > 0 else False
+    remove_inside = str(keep_mode).strip().lower().startswith("remove")
+    keep_unmatched = str(unmatched_labels).strip().lower().startswith("keep")
+
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    axis_names = _measurement_axis_names(labels.ndim, axis_names)
+    axis_types = _measurement_axis_types(labels.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        labels.ndim,
+        spatial_ndim,
+        axis_types,
+    )
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(labels.ndim - spatial_ndim, labels.ndim))
+
+    labels_for_filter = np.moveaxis(
+        labels,
+        spatial_axes,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(labels.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: labels.ndim - spatial_ndim],
+        fallback=tuple(
+            f"axis_{index}" for index in range(labels.ndim - spatial_ndim)
+        ),
+    )
+    leading_shape = labels_for_filter.shape[: labels.ndim - spatial_ndim]
+    kept_by_block, matched_by_block = _property_filter_records_by_block(
+        table,
+        leading_axis_names,
+        value_column,
+        label_column,
+        minimum,
+        maximum,
+        has_maximum,
+        remove_inside,
+    )
+    output = np.zeros_like(labels_for_filter)
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = (
+            labels_for_filter[block_index]
+            if leading_shape
+            else labels_for_filter
+        )
+        key = _property_filter_block_key(leading_axis_names, block_index)
+        kept = _property_filter_labels_for_block(kept_by_block, key)
+        if keep_unmatched:
+            matched = _property_filter_labels_for_block(matched_by_block, key)
+            block_output = block.copy()
+            if kept:
+                remove = np.isin(block, list(matched - kept))
+                block_output[remove] = 0
+            elif matched:
+                block_output[np.isin(block, list(matched))] = 0
+        elif kept:
+            block_output = np.where(np.isin(block, list(kept)), block, 0)
+        else:
+            block_output = np.zeros_like(block)
+        if leading_shape:
+            output[block_index] = block_output
+        else:
+            output = block_output
+
+    return np.moveaxis(
+        output,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+        spatial_axes,
+    ).astype(labels.dtype, copy=False)
+
+
 def relabel_sequential(
     data,
     spatial_mode: str = "Auto from axes",
@@ -752,6 +888,9 @@ def measure_objects(
     data,
     spatial_mode: str = "Auto from axes",
     measurement_set: str = "Basic morphology",
+    include_shape_descriptors: bool = False,
+    include_axis_descriptors: bool = False,
+    include_2d_boundary_descriptors: bool = False,
     resolved_spatial_ndim: int | None = None,
     axis_names: tuple[str, ...] | None = None,
     axis_types: tuple[str, ...] | None = None,
@@ -806,11 +945,22 @@ def measure_objects(
         leading_axis_names,
         spatial_axis_names,
         units,
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        spatial_ndim=spatial_ndim,
     )
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
         block = labels_for_measure[block_index] if leading_shape else labels_for_measure
-        block_columns = _measure_label_block(block, spatial_axis_names, spatial_ndim)
+        block_columns = _measure_label_block(
+            block,
+            spatial_axis_names,
+            spatial_ndim,
+            include_shape_descriptors=include_shape_descriptors,
+            include_axis_descriptors=include_axis_descriptors,
+            include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        )
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
             columns[f"{axis_name}_index"].extend(
@@ -830,7 +980,13 @@ def measure_objects(
     return table_from_columns(
         columns,
         name="Object measurements",
-        table_kind=str(measurement_set or "Basic morphology"),
+        table_kind=_measurement_table_kind(
+            str(measurement_set or "Basic morphology"),
+            include_shape_descriptors=include_shape_descriptors,
+            include_axis_descriptors=include_axis_descriptors,
+            include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            spatial_ndim=spatial_ndim,
+        ),
         source_name=source_name,
         column_units=units.column_units,
     )
@@ -840,6 +996,9 @@ def measure_objects_with_intensity(
     inputs,
     spatial_mode: str = "Auto from axes",
     measurement_set: str = "Basic morphology + intensity",
+    include_shape_descriptors: bool = False,
+    include_axis_descriptors: bool = False,
+    include_2d_boundary_descriptors: bool = False,
     resolved_spatial_ndim: int | None = None,
     axis_names: tuple[str, ...] | None = None,
     axis_types: tuple[str, ...] | None = None,
@@ -908,6 +1067,10 @@ def measure_objects_with_intensity(
         spatial_axis_names,
         units,
         include_intensity=True,
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        spatial_ndim=spatial_ndim,
     )
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
@@ -922,6 +1085,9 @@ def measure_objects_with_intensity(
             spatial_axis_names,
             spatial_ndim,
             intensity_block=intensity_block,
+            include_shape_descriptors=include_shape_descriptors,
+            include_axis_descriptors=include_axis_descriptors,
+            include_2d_boundary_descriptors=include_2d_boundary_descriptors,
         )
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
@@ -939,7 +1105,13 @@ def measure_objects_with_intensity(
             )
             columns["physical_unit"].extend([units.unit_label] * row_count)
 
-    table_kind = str(measurement_set or "Basic morphology + intensity")
+    table_kind = _measurement_table_kind(
+        str(measurement_set or "Basic morphology + intensity"),
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        spatial_ndim=spatial_ndim,
+    )
     return table_from_columns(
         columns,
         name="Object intensity measurements",
@@ -1172,6 +1344,53 @@ def add_metadata_columns(
     )
 
 
+def select_table_columns(
+    data,
+    columns: str = "auto",
+    selection_mode: str = "Keep listed columns",
+    append_unlisted: str = "no",
+) -> TableData:
+    """Keep, drop, or reorder table columns for analysis-ready export."""
+    table = _validated_table(data)
+    requested = _parse_table_column_list(columns)
+    if not requested:
+        selected = list(table.columns)
+    else:
+        missing = [column for column in requested if column not in table.columns]
+        if missing:
+            raise ValueError(
+                "Select Table Columns could not find column(s): "
+                + ", ".join(missing)
+            )
+        mode = str(selection_mode).strip().lower()
+        if mode.startswith("drop"):
+            drop = set(requested)
+            selected = [column for column in table.columns if column not in drop]
+        else:
+            selected = list(dict.fromkeys(requested))
+            if str(append_unlisted).strip().lower().startswith("y"):
+                selected.extend(
+                    column for column in table.columns if column not in selected
+                )
+    if not selected:
+        raise ValueError("Select Table Columns would remove every table column.")
+    indices = [table.columns.index(column) for column in selected]
+    rows = tuple(tuple(row[index] for index in indices) for row in table.rows)
+    units = tuple(
+        (column, table.unit_for(column))
+        for column in selected
+        if table.unit_for(column)
+    )
+    return TableData(
+        columns=tuple(selected),
+        rows=rows,
+        name=table.name or "Selected table columns",
+        table_kind=f"{table.table_kind} + column selection",
+        source_name=table.source_name,
+        column_units=units,
+    )
+
+
 def _table_inputs(inputs, input_count: int) -> list[TableData]:
     if isinstance(inputs, TableData):
         candidates = [inputs]
@@ -1186,10 +1405,153 @@ def _table_inputs(inputs, input_count: int) -> list[TableData]:
     return tables
 
 
+def _parse_table_column_list(text: str) -> tuple[str, ...]:
+    cleaned = str(text or "").strip()
+    if not cleaned or cleaned.lower() == "auto":
+        return ()
+    columns: list[str] = []
+    seen: set[str] = set()
+    for part in cleaned.split(","):
+        column = part.strip()
+        if not column or column in seen:
+            continue
+        columns.append(column)
+        seen.add(column)
+    return tuple(columns)
+
+
 def _validated_table(value) -> TableData:
     if not isinstance(value, TableData):
         raise TypeError("This operation expects VIPP TableData input.")
     return value
+
+
+def _labels_and_table_inputs(inputs) -> tuple[object, TableData]:
+    if not isinstance(inputs, Sequence) or len(inputs) < 2:
+        raise ValueError("Filter Labels By Property needs labels and table inputs.")
+    return inputs[0], _validated_table(inputs[1])
+
+
+def _label_id_column(table: TableData) -> str:
+    for column in ("label_id", "object_id"):
+        if column in table.columns:
+            return column
+    raise ValueError("Filter Labels By Property table needs a label_id column.")
+
+
+def _property_filter_column(table: TableData, requested: str) -> str:
+    text = str(requested).strip()
+    if text and text.lower() != "auto":
+        if text not in table.columns:
+            raise ValueError(f"Property column {text!r} is not in the table.")
+        if not _table_column_has_numeric_values(table, text):
+            raise ValueError(f"Property column {text!r} has no numeric values.")
+        return text
+
+    for column in PROPERTY_FILTER_COLUMN_PRIORITY:
+        if column in table.columns and _table_column_has_numeric_values(table, column):
+            return column
+    for column in table.columns:
+        if column in IDENTITY_JOIN_COLUMNS or column.endswith("_index"):
+            continue
+        if _table_column_has_numeric_values(table, column):
+            return column
+    raise ValueError("Could not find a numeric property column to filter labels.")
+
+
+def _table_column_has_numeric_values(table: TableData, column: str) -> bool:
+    column_index = table.columns.index(column)
+    return any(
+        _table_numeric_value(row[column_index]) is not None for row in table.rows
+    )
+
+
+def _property_filter_records_by_block(
+    table: TableData,
+    leading_axis_names: tuple[str, ...],
+    value_column: str,
+    label_column: str,
+    minimum: float,
+    maximum: float,
+    has_maximum: bool,
+    remove_inside: bool,
+) -> tuple[dict[tuple[object, ...], set[int]], dict[tuple[object, ...], set[int]]]:
+    value_index = table.columns.index(value_column)
+    label_index = table.columns.index(label_column)
+    axis_columns = tuple(
+        (axis_name, f"{axis_name}_index", table.columns.index(f"{axis_name}_index"))
+        for axis_name in leading_axis_names
+        if f"{axis_name}_index" in table.columns
+    )
+    kept: dict[tuple[object, ...], set[int]] = {}
+    matched: dict[tuple[object, ...], set[int]] = {}
+    for row in table.rows:
+        label_id = _table_int_value(row[label_index])
+        if label_id is None or label_id <= 0:
+            continue
+        if axis_columns:
+            key_items: list[tuple[str, int]] = []
+            for axis_name, _name, index in axis_columns:
+                axis_value = _table_int_value(row[index])
+                if axis_value is None:
+                    key_items = []
+                    break
+                key_items.append((axis_name, axis_value))
+            if not key_items:
+                continue
+            key = tuple(key_items)
+        else:
+            key = (None,)
+        matched.setdefault(key, set()).add(label_id)
+        value = _table_numeric_value(row[value_index])
+        if value is None:
+            continue
+        inside = value >= minimum and (not has_maximum or value <= maximum)
+        if remove_inside:
+            inside = not inside
+        if inside:
+            kept.setdefault(key, set()).add(label_id)
+    return kept, matched
+
+
+def _property_filter_block_key(
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+) -> tuple[object, ...]:
+    if not leading_axis_names:
+        return (None,)
+    return tuple(
+        (axis_name, int(block_index[position]))
+        for position, axis_name in enumerate(leading_axis_names)
+    )
+
+
+def _property_filter_labels_for_block(
+    labels_by_block: dict[tuple[object, ...], set[int]],
+    key: tuple[object, ...],
+) -> set[int]:
+    labels: set[int] = set()
+    key_items = set(key)
+    for record_key, record_labels in labels_by_block.items():
+        if record_key == (None,) or set(record_key) <= key_items:
+            labels.update(record_labels)
+    return labels
+
+
+def _table_numeric_value(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _table_int_value(value) -> int | None:
+    number = _table_numeric_value(value)
+    if number is None:
+        return None
+    rounded = int(round(number))
+    return rounded if np.isclose(number, rounded) else None
 
 
 def _table_join_keys(
@@ -1612,19 +1974,24 @@ def normalize_image(
 ) -> np.ndarray:
     """Normalize an image to min-max or z-score float output."""
     arr = np.asarray(data)
+    output_dtype = arr.dtype if np.issubdtype(arr.dtype, np.floating) else np.float32
     if arr.dtype == bool:
-        return arr.astype(np.float32)
-    values = arr[np.isfinite(arr)].astype(np.float32, copy=False)
+        return arr.astype(output_dtype)
+    values = arr[np.isfinite(arr)].astype(output_dtype, copy=False)
     if values.size == 0:
-        return np.zeros_like(arr, dtype=np.float32)
+        return np.zeros_like(arr, dtype=output_dtype)
     if str(method).lower() == "z-score":
         mean = float(values.mean())
         std = float(values.std())
         if std == 0:
-            return np.zeros_like(arr, dtype=np.float32)
-        return ((arr.astype(np.float32, copy=False) - mean) / std).astype(np.float32)
-    return _rescale_values(arr.astype(np.float32, copy=False), 0.0, 1.0).astype(
-        np.float32,
+            return np.zeros_like(arr, dtype=output_dtype)
+        return ((arr.astype(output_dtype, copy=False) - mean) / std).astype(
+            output_dtype,
+            copy=False,
+        )
+    return _rescale_values(arr.astype(output_dtype, copy=False), 0.0, 1.0).astype(
+        output_dtype,
+        copy=False,
     )
 
 
@@ -1675,16 +2042,19 @@ def ratio_image(inputs, input_count: int = 2, epsilon: float = 1e-6) -> np.ndarr
 
 def mask_image(
     inputs,
-    input_count: int = 2,
     outside_value: float = 0.0,
     invert_mask: str = "no",
 ) -> np.ndarray:
     """Apply a binary mask to an image, filling outside-mask pixels."""
-    arrays = _matching_input_arrays(inputs, input_count, "Mask Image")
+    arrays = [np.asarray(item) for item in inputs if item is not None]
+    if len(arrays) < 2:
+        raise ValueError("Mask Image needs an image input and a mask input.")
+
     image = arrays[0]
     mask = _to_bool_mask(arrays[1])
     if str(invert_mask).lower() == "yes":
         mask = ~mask
+    mask = _broadcast_mask_to_image(mask, image.shape)
     output = np.asarray(image).copy()
     output[~mask] = np.asarray(outside_value, dtype=output.dtype)
     return output
@@ -1744,6 +2114,55 @@ def _matching_input_arrays(
     if any(array.shape != shape for array in arrays):
         raise ValueError(f"{operation_name} inputs must have matching shapes.")
     return arrays
+
+
+def _broadcast_mask_to_image(
+    mask: np.ndarray,
+    image_shape: tuple[int, ...],
+) -> np.ndarray:
+    """Return a boolean mask broadcast to an image shape."""
+    mask = np.asarray(mask, dtype=bool)
+    if mask.shape == image_shape:
+        return mask
+    if mask.ndim > len(image_shape):
+        raise ValueError(
+            "Mask Image mask shape must match the image shape or be broadcastable "
+            "to it."
+        )
+
+    priority_shapes: list[tuple[int, ...]] = []
+    if len(image_shape) >= 3 and image_shape[-1] in RGB_CHANNELS:
+        priority_shapes.append(mask.shape + (1,))
+    priority_shapes.append((1,) * (len(image_shape) - mask.ndim) + mask.shape)
+
+    for expanded_shape in priority_shapes:
+        if len(expanded_shape) != len(image_shape):
+            continue
+        try:
+            return np.broadcast_to(mask.reshape(expanded_shape), image_shape)
+        except ValueError:
+            continue
+
+    inserted_axes = len(image_shape) - mask.ndim
+    for singleton_axes in combinations(range(len(image_shape)), inserted_axes):
+        singleton_axes_set = set(singleton_axes)
+        expanded_shape: list[int] = []
+        mask_axis = 0
+        for axis in range(len(image_shape)):
+            if axis in singleton_axes_set:
+                expanded_shape.append(1)
+            else:
+                expanded_shape.append(mask.shape[mask_axis])
+                mask_axis += 1
+        try:
+            return np.broadcast_to(mask.reshape(expanded_shape), image_shape)
+        except ValueError:
+            continue
+
+    raise ValueError(
+        "Mask Image mask shape must match the image shape or be broadcastable "
+        "to it."
+    )
 
 
 def _extract_channel(
@@ -2572,15 +2991,15 @@ def _measure_label_block(
     spatial_axis_names: tuple[str, ...],
     spatial_ndim: int,
     intensity_block: np.ndarray | None = None,
+    include_shape_descriptors: bool = False,
+    include_axis_descriptors: bool = False,
+    include_2d_boundary_descriptors: bool = False,
 ) -> dict[str, list[object]]:
-    properties = (
-        "label",
-        "area",
-        "bbox",
-        "centroid",
-        "equivalent_diameter_area",
-        "extent",
-        "euler_number",
+    properties = _regionprops_measurement_properties(
+        spatial_ndim,
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
     )
     raw = measure.regionprops_table(block, properties=properties)
     units = _measurement_units(spatial_ndim, (), ())
@@ -2608,9 +3027,118 @@ def _measure_label_block(
     result["euler_number"] = [
         int(value) for value in raw.get("euler_number", [])
     ]
+    if include_shape_descriptors:
+        _add_shape_descriptor_measurements(result, raw, spatial_ndim)
+    if include_axis_descriptors:
+        _add_axis_descriptor_measurements(result, raw, spatial_ndim)
+    if include_2d_boundary_descriptors and spatial_ndim == 2:
+        result["perimeter_pixels"] = _float_column(raw, "perimeter")
+        result["perimeter_crofton_pixels"] = _float_column(
+            raw,
+            "perimeter_crofton",
+        )
     if intensity_block is not None:
         _add_intensity_measurements(result, block, intensity_block)
     return result
+
+
+def _regionprops_measurement_properties(
+    spatial_ndim: int,
+    *,
+    include_shape_descriptors: bool,
+    include_axis_descriptors: bool,
+    include_2d_boundary_descriptors: bool,
+) -> tuple[str, ...]:
+    properties: list[str] = [
+        "label",
+        "area",
+        "bbox",
+        "centroid",
+        "equivalent_diameter_area",
+        "extent",
+        "euler_number",
+    ]
+    if include_shape_descriptors:
+        properties.extend(("area_bbox", "area_filled"))
+        if spatial_ndim == 2:
+            properties.extend(("area_convex", "solidity", "feret_diameter_max"))
+    if include_axis_descriptors and spatial_ndim >= 2:
+        properties.extend(
+            (
+                "axis_major_length",
+                "axis_minor_length",
+                "inertia_tensor_eigvals",
+            )
+        )
+        if spatial_ndim == 2:
+            properties.extend(("eccentricity", "orientation"))
+    if include_2d_boundary_descriptors and spatial_ndim == 2:
+        properties.extend(("perimeter", "perimeter_crofton"))
+    return tuple(dict.fromkeys(properties))
+
+
+def _add_shape_descriptor_measurements(
+    result: dict[str, list[object]],
+    raw: dict[str, np.ndarray],
+    spatial_ndim: int,
+) -> None:
+    result[_size_descriptor_column("bbox", spatial_ndim)] = _int_column(
+        raw,
+        "area_bbox",
+    )
+    result[_size_descriptor_column("filled", spatial_ndim)] = _int_column(
+        raw,
+        "area_filled",
+    )
+    if spatial_ndim == 2:
+        result["convex_area_pixels"] = _int_column(raw, "area_convex")
+        result["solidity"] = _float_column(raw, "solidity")
+        result["feret_diameter_max_pixels"] = _float_column(
+            raw,
+            "feret_diameter_max",
+        )
+
+
+def _add_axis_descriptor_measurements(
+    result: dict[str, list[object]],
+    raw: dict[str, np.ndarray],
+    spatial_ndim: int,
+) -> None:
+    if spatial_ndim < 2:
+        return
+    suffix = "voxels" if spatial_ndim >= 3 else "pixels"
+    result[f"major_axis_length_{suffix}"] = _float_column(
+        raw,
+        "axis_major_length",
+    )
+    result[f"minor_axis_length_{suffix}"] = _float_column(
+        raw,
+        "axis_minor_length",
+    )
+    for axis_index in range(spatial_ndim):
+        result[f"inertia_tensor_eigval_{axis_index}"] = _float_column(
+            raw,
+            f"inertia_tensor_eigvals-{axis_index}",
+        )
+    if spatial_ndim == 2:
+        result["eccentricity"] = _float_column(raw, "eccentricity")
+        result["orientation_radians"] = _float_column(raw, "orientation")
+
+
+def _size_descriptor_column(prefix: str, spatial_ndim: int) -> str:
+    if spatial_ndim >= 3:
+        return f"{prefix}_volume_voxels"
+    if spatial_ndim == 2:
+        return f"{prefix}_area_pixels"
+    return f"{prefix}_length_pixels"
+
+
+def _float_column(raw: dict[str, np.ndarray], name: str) -> list[float]:
+    return [float(value) for value in raw.get(name, [])]
+
+
+def _int_column(raw: dict[str, np.ndarray], name: str) -> list[int]:
+    return [int(round(float(value))) for value in raw.get(name, [])]
 
 
 def _add_intensity_measurements(
@@ -2651,6 +3179,10 @@ def _measurement_empty_columns(
     units: _MeasurementUnits,
     *,
     include_intensity: bool = False,
+    include_shape_descriptors: bool = False,
+    include_axis_descriptors: bool = False,
+    include_2d_boundary_descriptors: bool = False,
+    spatial_ndim: int = 2,
 ) -> dict[str, list[object]]:
     columns: dict[str, list[object]] = {}
     for axis_name in leading_axis_names:
@@ -2669,6 +3201,25 @@ def _measurement_empty_columns(
     columns[units.equivalent_diameter_column] = []
     columns["extent"] = []
     columns["euler_number"] = []
+    if include_shape_descriptors:
+        columns[_size_descriptor_column("bbox", spatial_ndim)] = []
+        columns[_size_descriptor_column("filled", spatial_ndim)] = []
+        if spatial_ndim == 2:
+            columns["convex_area_pixels"] = []
+            columns["solidity"] = []
+            columns["feret_diameter_max_pixels"] = []
+    if include_axis_descriptors and spatial_ndim >= 2:
+        suffix = "voxels" if spatial_ndim >= 3 else "pixels"
+        columns[f"major_axis_length_{suffix}"] = []
+        columns[f"minor_axis_length_{suffix}"] = []
+        for axis_index in range(spatial_ndim):
+            columns[f"inertia_tensor_eigval_{axis_index}"] = []
+        if spatial_ndim == 2:
+            columns["eccentricity"] = []
+            columns["orientation_radians"] = []
+    if include_2d_boundary_descriptors and spatial_ndim == 2:
+        columns["perimeter_pixels"] = []
+        columns["perimeter_crofton_pixels"] = []
     if include_intensity:
         columns["intensity_mean"] = []
         columns["intensity_min"] = []
@@ -2716,12 +3267,38 @@ def _measurement_units(
     column_units = {
         size_column: "voxels" if spatial_ndim >= 3 else "pixels",
         equivalent_column: "voxels" if spatial_ndim >= 3 else "pixels",
+        _size_descriptor_column("bbox", spatial_ndim): (
+            "voxels" if spatial_ndim >= 3 else "pixels"
+        ),
+        _size_descriptor_column("filled", spatial_ndim): (
+            "voxels" if spatial_ndim >= 3 else "pixels"
+        ),
         "intensity_mean": "intensity",
         "intensity_min": "intensity",
         "intensity_max": "intensity",
         "intensity_sum": "intensity",
         "intensity_std": "intensity",
     }
+    if spatial_ndim == 2:
+        column_units.update(
+            {
+                "convex_area_pixels": "pixels",
+                "feret_diameter_max_pixels": "pixels",
+                "perimeter_pixels": "pixels",
+                "perimeter_crofton_pixels": "pixels",
+            }
+        )
+    if spatial_ndim >= 2:
+        suffix = "voxels" if spatial_ndim >= 3 else "pixels"
+        length_unit = "voxels" if spatial_ndim >= 3 else "pixels"
+        squared_unit = "voxels^2" if spatial_ndim >= 3 else "pixels^2"
+        column_units[f"major_axis_length_{suffix}"] = length_unit
+        column_units[f"minor_axis_length_{suffix}"] = length_unit
+        for axis_index in range(spatial_ndim):
+            column_units[f"inertia_tensor_eigval_{axis_index}"] = squared_unit
+    column_units["solidity"] = "ratio"
+    column_units["eccentricity"] = "ratio"
+    column_units["orientation_radians"] = "radians"
     if calibrated:
         column_units[physical_column] = unit_label
         column_units["physical_unit"] = "text"
@@ -2745,6 +3322,24 @@ def _labels_and_intensity_inputs(inputs) -> tuple[object, object]:
             "Intensity-aware measurements require labels and intensity image inputs."
         )
     return values[0], values[1]
+
+
+def _measurement_table_kind(
+    base: str,
+    *,
+    include_shape_descriptors: bool,
+    include_axis_descriptors: bool,
+    include_2d_boundary_descriptors: bool,
+    spatial_ndim: int,
+) -> str:
+    extras: list[str] = []
+    if include_shape_descriptors:
+        extras.append("shape descriptors")
+    if include_axis_descriptors:
+        extras.append("axis/inertia descriptors")
+    if include_2d_boundary_descriptors and spatial_ndim == 2:
+        extras.append("2D boundary descriptors")
+    return f"{base} + {', '.join(extras)}" if extras else base
 
 
 def _physical_unit_label(
@@ -3104,10 +3699,40 @@ def _intensity_scale(arr: np.ndarray) -> float:
 
 
 def _restore_numeric_dtype(values: np.ndarray, original: np.ndarray) -> np.ndarray:
+    values = np.asarray(values)
+    if original.dtype == bool:
+        return np.nan_to_num(values, nan=0.0, posinf=1.0, neginf=0.0) > 0
     if np.issubdtype(original.dtype, np.integer):
         info = np.iinfo(original.dtype)
-        return np.clip(values, info.min, info.max).astype(original.dtype)
-    return values.astype(np.float32)
+        safe = np.nan_to_num(
+            values,
+            nan=0.0,
+            posinf=float(info.max),
+            neginf=float(info.min),
+        )
+        rounded = np.rint(safe)
+        return np.clip(rounded, info.min, info.max).astype(original.dtype)
+    if np.issubdtype(original.dtype, np.floating):
+        return values.astype(original.dtype, copy=False)
+    return values.astype(original.dtype, copy=False)
+
+
+def _restore_unit_float_dtype(values: np.ndarray, original: np.ndarray) -> np.ndarray:
+    values = np.nan_to_num(
+        np.clip(np.asarray(values), 0.0, 1.0),
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0,
+    )
+    if original.dtype == bool:
+        return values > 0.5
+    if np.issubdtype(original.dtype, np.integer):
+        info = np.iinfo(original.dtype)
+        scaled = values * float(info.max)
+        return _restore_numeric_dtype(scaled, original)
+    if np.issubdtype(original.dtype, np.floating):
+        return values.astype(original.dtype, copy=False)
+    return values.astype(original.dtype, copy=False)
 
 
 def _to_float_unit(arr: np.ndarray) -> np.ndarray:

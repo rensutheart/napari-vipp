@@ -33,6 +33,7 @@ CHANNEL_COLLAPSE_OPERATIONS = {
 }
 LABEL_OPERATIONS = {
     "label_connected_components",
+    "filter_labels_by_property",
     "filter_labels_by_volume",
     "relabel_sequential",
 }
@@ -440,7 +441,7 @@ def transform_multi_input_image_state(
         axes = infer_axis_metadata(arr)
         metadata_source = f"inferred after {operation_title}"
 
-    return image_state_from_array(
+    state = image_state_from_array(
         arr,
         axes=axes,
         metadata_source=metadata_source,
@@ -451,6 +452,7 @@ def transform_multi_input_image_state(
         acquisition=first.acquisition,
         source=first.source,
     )
+    return _with_operation_kind(state, operation_id)
 
 
 def transform_split_output_state(
@@ -1212,6 +1214,11 @@ def _multi_input_history(
             f"{operation_title}: weighted {count} inputs "
             f"(weights {weights}, offset {_format_number(offset)})"
         )
+    if operation_id == "mask_image":
+        return f"{operation_title}: applied mask"
+    if operation_id == "filter_labels_by_property":
+        column = str(params.get("property_column", "auto")).strip() or "auto"
+        return f"{operation_title}: filtered by {column}"
     return f"{operation_title}: combined {count} inputs"
 
 
