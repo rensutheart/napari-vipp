@@ -1,6 +1,6 @@
 # MitoMorph Feature Parity And Measurement Roadmap
 
-Last reviewed: 2026-06-21
+Last reviewed: 2026-06-23
 
 This document captures the MitoMorph-derived capabilities that should become
 first-class VIPP workflows. The goal is not to copy the old implementation
@@ -35,6 +35,10 @@ Use both focused nodes and selectable measurement groups.
   for feature groups that are conceptually related.
 - Put expensive or dimension-specific computations in separate nodes so users
   can opt into them deliberately.
+- For expensive feature families, use an explicit manual calculation model
+  rather than live recomputation: show `Calculate`/`Recalculate`, progress,
+  stale-state warnings after upstream changes, and the last valid cached result
+  until recomputed.
 - Avoid presenting 2D-only measurements as meaningful in 3D. The UI should hide
   or clearly label dimension-specific metrics.
 
@@ -73,7 +77,14 @@ Proposed measurement families:
    endpoint/junction QC masks, short-branch pruning, explicit graph export, and
    domain-normalized connectedness metrics.
 
-6. **Mitochondrial Time-Lapse Events**
+6. **Localization And Colocalization Measurements**
+   Add table-producing nodes for pixel-based colocalization, object-based
+   association, nearest-neighbor distance, object/event localization relative
+   to labels or masks, and optional ROI-restricted measurements. These should
+   preserve object identity columns so they can be merged with morphology,
+   intensity, mesh, and skeleton features.
+
+7. **Mitochondrial Time-Lapse Events**
    MitoMorph-specific fission, fusion, depolarization, event localization, and
    duplicate suppression should become a later specialist workflow family. This
    likely requires object tracking/association and should not be folded into
@@ -118,8 +129,13 @@ and then assemble them into one analysis-ready table.
 7. Add 3D mesh morphology as an opt-in node because it is more expensive and
    has stronger assumptions about anisotropy, surface extraction, and object
    size.
-8. Add skeleton QC/pruning/branch-label outputs.
-9. Add mitochondrial event analysis after tracking/association design is in
+8. Add the manual/cached expensive-node execution model before exposing broad
+   mesh, graph, colocalization, or restoration calculations that would feel
+   sluggish if run live.
+9. Add colocalization/localization table nodes that can merge with object
+   measurement tables.
+10. Add skeleton QC/pruning/branch-label outputs.
+11. Add mitochondrial event analysis after tracking/association design is in
    place.
 
 ## Scientific Cautions

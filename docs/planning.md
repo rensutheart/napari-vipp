@@ -1,6 +1,6 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-06-21
+Last reviewed: 2026-06-23
 
 For the prioritized algorithm and node catalogue, see
 [node-roadmap.md](node-roadmap.md). For implementation details, see
@@ -194,6 +194,9 @@ Still requiring new platform types or UI:
 - spot/peak detection benefits from points outputs;
 - Channel Overlap and colocalization need scalar/table result contracts and
   careful channel/mask input UI;
+- slow measurements, deconvolution, and other expensive operations need a
+  manual/cached execution mode with progress, stale-state display, and
+  deterministic export behavior;
 - batch processing needs a dedicated UI beyond exported scripts.
 
 ## Immediate Implementation Sequence
@@ -274,7 +277,36 @@ implementation work does not have to infer old discussion context:
    is broad selectable feature extraction for downstream PCA/treatment-group
    analysis; see [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
-9. **Batch execution UI**
+9. **Colocalization and localization analysis**
+   Add pixel-based and object-based colocalization/localization nodes that
+   produce scalar or table outputs rather than synthetic images by default.
+   Planned examples include Pearson/Manders channel metrics, object overlap or
+   association tables, nearest-object distances, event localization, and
+   optional mask/ROI-restricted measurements.
+
+10. **Manual expensive-node execution and stale cached outputs**
+    Some nodes should not recalculate continuously while the user drags
+    sliders or edits upstream nodes. Expensive measurement families,
+    colocalization/localization, skeleton graph refinements, 3D mesh
+    morphology, deconvolution, and possibly large-stack background estimation
+    should support an explicit `Calculate`/`Recalculate` action on the node
+    card and in the inspector. While running, the node thumbnail/card should
+    show progress or busy state so the UI does not feel frozen. After
+    completion, the last result becomes the node output. If an upstream input
+    or relevant parameter changes, the node should become visually stale while
+    preserving the last valid output until recalculated. A node may instead be
+    an explicit pass-through calculation checkpoint only if that behavior is
+    clear in the node name, status, and exported script. The implementation
+    needs an invalidation model, cancellation, batch/export semantics, and a
+    clear policy for whether cached results are persisted in workflow files.
+
+11. **Fiji/ImageJ-style background subtraction**
+    Add rolling-ball/sliding-paraboloid-style background estimation and
+    subtraction workflows for uneven fluorescence background. The background
+    image should be inspectable as its own output where possible, so correction
+    remains auditable.
+
+12. **Batch execution UI**
    Python export exists, but a real collection-batch UI still needs stable item
    identities, output templates, source collections, and per-item provenance.
 

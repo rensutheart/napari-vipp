@@ -1,7 +1,7 @@
 # Bioimage Node Roadmap
 
 Status: working discussion document  
-Last reviewed: 2026-06-21
+Last reviewed: 2026-06-23
 
 This document prioritizes future VIPP nodes for bioimage analysis. It is not a
 commitment to reproduce every function in OpenCV, scikit-image, or SciPy.
@@ -86,6 +86,9 @@ Implementation status:
    workflow, and exportable to Python.
 8. Avoid several nearly identical nodes when one well-designed node with a
    method selector is clearer.
+9. Expensive nodes should be explicit about execution state. If recomputing
+   live would make the UI stutter or hide long-running work, prefer a
+   manual/cached node with progress and stale-state indicators.
 
 ## Current Coverage
 
@@ -124,7 +127,9 @@ but it cannot yet:
 - select/reorder/group result table columns for analysis-ready exports;
 - export explicit branch graphs or visualize endpoints/junctions as QC masks;
 - prune short skeleton branches;
-- use calibrated physical area/volume directly as a filter unit.
+- use calibrated physical area/volume directly as a filter unit;
+- run expensive metrics or restorations as explicit cached computations with
+  progress and stale-result feedback.
 
 ## Existing Nodes To Clarify
 
@@ -195,6 +200,35 @@ The first `table` output type is implemented through `TableData` and
 Pandas is intentionally not required for core measurement or export. Optional
 linkage from a label column back to a displayed Labels layer remains future UI
 work.
+
+### Slow Node Execution And Progress State: Not Implemented
+
+Some future nodes should not execute continuously on every upstream or
+parameter change. Examples include broad measurement families, 3D mesh
+morphology, richer skeleton graph analysis, colocalization/localization over
+large stacks, deconvolution, and expensive background estimation.
+
+The intended UX model is:
+
+- the node card and inspector expose `Calculate` or `Recalculate`;
+- the node can keep its last valid result as its current output, or act as an
+  explicit pass-through checkpoint only when that behavior is named and visible;
+- changing an upstream input or relevant parameter marks the result as stale;
+- stale nodes remain usable downstream but show a visible warning state;
+- active calculations show a progress ring/bar on the card or thumbnail and a
+  status message in the inspector;
+- live nodes that briefly take longer than expected should also show a busy
+  indicator instead of making the interface look frozen;
+- the UI remains responsive while the operation runs;
+- cancellation and failure states are explicit;
+- exported Python and batch execution recompute deterministically rather than
+  depending on an interactive cached value.
+
+The first implementation should probably introduce operation capability flags
+such as `live`, `manual`, and `expensive`, plus a cached-result wrapper that can
+track input fingerprints, parameter fingerprints, progress, stale state, and
+failure messages. Workflow JSON should initially persist the node settings and
+stale/calculated status policy, not large cached arrays or tables.
 
 ### Spatial Scope And Units: Partially Implemented
 
@@ -322,6 +356,12 @@ Rolling-ball background estimation should probably remain separate from
 subtraction. This exposes the estimated background and allows users to inspect,
 save, or reuse it. A later convenience node may return both `background` and
 `corrected` outputs.
+
+The target behavior should match the practical Fiji/ImageJ use case: uneven
+fluorescence background correction with an inspectable estimated background and
+an auditable subtraction step. Large 3D rolling-ball or sliding-paraboloid
+background estimation may need the manual/cached slow-node execution model
+rather than live recomputation.
 
 ### P1C: Thresholding Without Node Explosion
 
@@ -542,7 +582,9 @@ priority.
 
 Deconvolution should not be shipped as a single sigma slider. The user must be
 able to inspect or supply the point-spread function, understand iteration count,
-and preserve physical spacing.
+and preserve physical spacing. Deconvolution should use the manual/cached
+slow-node execution model because iteration count, PSF size, and stack size can
+make live recomputation impractical.
 
 ### Registration And Drift Correction
 
@@ -627,6 +669,12 @@ These become much cleaner after `points` and `table` output types exist.
 - contingency table between label images.
 
 These should produce scalar or table results, not synthetic images.
+Pixel-based colocalization, object-based association, nearest-neighbor
+localization, and event localization should remain distinct enough that users
+can tell whether they are measuring intensity overlap, object overlap, object
+distance, or time-lapse event position. Expensive variants over large 3D/time
+series data are candidates for manual/cached execution with stale-state
+feedback.
 
 ## P3: Specialized Or Expensive
 
