@@ -1117,7 +1117,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec(
                 "h",
-                "H / prominence (0 = local maxima)",
+                "H / prominence in px/voxels (0 = local maxima)",
                 "float",
                 1.0,
                 0.0,
@@ -1188,7 +1188,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec(
                 "h",
-                "H / prominence (0 = local maxima)",
+                "H / prominence in px/voxels (0 = local maxima)",
                 "float",
                 1.0,
                 0.0,

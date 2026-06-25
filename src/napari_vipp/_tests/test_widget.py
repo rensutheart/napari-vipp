@@ -1517,6 +1517,26 @@ def test_watershed_h_parameter_has_sane_upper_bound(qtbot):
         assert float(h_widget.value_box.maximum()) >= 1_000_000.0
         h_widget.value_box.setValue(7.5)
         assert np.isclose(float(h_widget.value_box.value()), 7.5)
+        label = widget.parameter_form.labelForField(h_widget)
+        assert label.text() == "H / prominence in px/voxels (0 = local maxima)"
+
+
+def test_watershed_h_parameter_shows_units_and_tuning_note(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    for operation_id in ("h_maxima_markers", "auto_watershed_from_mask"):
+        node = widget.add_node_from_palette(operation_id)
+        widget._connect_nodes("input", node.id)
+        widget.graph_view.select_node(node.id)
+
+        note = widget._parameter_widgets.get("operation_notice")
+        assert note is not None
+        text = note.text().lower()
+        assert "pixels/voxels" in text
+        assert "0 to 2" in text
+        assert "local maxima" in text
 
 
 def test_marker_controlled_watershed_shows_input_guide_note(qtbot):

@@ -4106,6 +4106,13 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id in {"h_maxima_markers", "auto_watershed_from_mask"}:
+            return (
+                "H tuning guide:\n"
+                "- H is a peak-prominence threshold on the distance map, in pixels/voxels.\n"
+                "- 0 uses all local maxima.\n"
+                "- Around 0 to 2 is usually the useful range; larger values only matter for larger objects or deeper peak separations."
+            )
         if node.operation_id == "marker_controlled_watershed":
             return (
                 "Input guide:\n"

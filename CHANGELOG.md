@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.7.1a1 - 2026-06-25
+
+- Added `Auto Watershed From Mask` as a single-node object-separation workflow
+  that chains distance transform, h-maxima marker detection, and watershed.
+- Kept the advanced watershed building blocks available separately and improved
+  inspector guidance for marker-controlled watershed inputs.
+- Improved watershed parameter UX with a saner `H` slider range, explicit
+  auto spatial-mode resolution feedback, and a clearer explanation that `H`
+  is a distance-map prominence measured in pixels/voxels.
+- Made the graph canvas auto-expand as nodes or the viewport approach the
+  scene edge, so long pipelines are no longer constrained by a fixed canvas.
+
 ## 0.7.0a1 - 2026-06-25
 
 - Marked the package release maturity as Alpha in project metadata.
