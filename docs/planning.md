@@ -218,6 +218,73 @@ save/load.
 **Other refinements.** Graph annotations/notes, alignment guides, and
 larger-workflow navigation aids.
 
+### AI-Assisted Pipeline Authoring
+
+Let the user describe a pipeline in natural language and have an AI model
+assemble it on the canvas from the existing nodes, so the result is a normal,
+fully interactive VIPP graph whose steps can be inspected, reparametrized, and
+swapped like any hand-built workflow. The user can optionally attach context
+(for example the already-added Image Source nodes or sample images) and then
+ask for either a brand-new pipeline or a modification of an existing one. This
+is a large, forward-looking direction; nothing here is implemented yet.
+
+**First milestone: generate a new pipeline from a description.** Given a text
+prompt plus optional source context, the model returns a workflow that lands on
+the canvas. Modification of an existing graph (described changes, added
+branches) is a follow-on milestone built on the same machinery.
+
+**Output via the validating loader.** The model emits a workflow JSON in the
+existing version-1 format and it is applied through the current validating
+loader rather than mutating the graph model directly. This constrains the model
+to real operation ids, real port contracts, and the existing connection rules
+(cycle/port-type rejection, slot occupancy), and any invalid graph is rejected
+with the same clear errors as a hand-edited file. The model's job is reduced to
+"produce a valid `workflow.json` using the declared node catalogue."
+
+**Context priming.** Useful generation requires giving the model substantial
+grounding before it can produce anything valid: the full node catalogue with
+operation ids, titles, categories, and human descriptions; each node's
+parameters with types/ranges/defaults; the port contracts and which output
+kinds (image/mask/labels/table) connect to which inputs; the connection and
+slot rules; the workflow JSON schema and a few worked examples; and, where
+helpful, the `ImageState`/`TableState` contract so the model can reason about
+axes, kinds, and table shapes. Most of this can be generated directly from the
+live registry so the prompt context stays in sync with the codebase.
+
+**Data sharing controls (privacy).** By default only text is sent: the prompt,
+the generated node-catalogue context, and the workflow schema. Sending anything
+derived from the user's images is strictly opt-in and per-request under the
+user's control, with two escalating levels: `ImageState`/`TableState` metadata
+(shape, dtype, axes, value summaries) for the active sources, and downsampled
+thumbnails of sample images for stronger visual grounding. Full-resolution
+pixels are not sent.
+
+**Provider configuration.** Support both user-supplied API keys for hosted
+providers (e.g. OpenAI, Anthropic) and local/self-hosted models (e.g. Ollama),
+behind a small provider abstraction so the rest of the feature is
+provider-agnostic. Keys are user-managed and never persisted into workflow
+files.
+
+**Black-box / custom nodes for unsupported steps.** When a requested step has
+no matching existing node, the model may propose a custom node that wraps the
+missing functionality and still behaves like a normal node on the graph
+(typed ports, parameters, inspectable, swappable), acting as a small black box
+in an otherwise standard pipeline. Because such a node implies AI-generated code
+running locally against the user's data, the execution policy is **user-
+configurable**, with options spanning: require human review and explicit
+approval of the generated code before it runs (default); run it in a
+restricted/sandboxed environment; or trust-and-run automatically. Custom-node
+generation is a separate, gated mechanism from ordinary catalogue-only
+generation, and any code surfaced to the user is shown in full.
+
+**Open questions.** How custom nodes serialize and round-trip in `workflow.json`
+(and whether their code is embedded, referenced, or regenerated); how to make
+generation deterministic/reproducible enough for publication; how to validate
+that a generated graph actually runs before committing it to the canvas; cost
+and rate-limit handling; and how to let the user iterate conversationally
+("now add a colocalization branch") while keeping the canvas as the source of
+truth.
+
 ### Workflow Persistence Gaps
 
 Not yet stored: per-node thumbnail visibility; inspector and histogram UI state;
