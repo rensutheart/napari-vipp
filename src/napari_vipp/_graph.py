@@ -652,6 +652,9 @@ class NodeProxy(QGraphicsProxyWidget):
         ):
             for connection in self.connections:
                 connection.update_path()
+            view = _view_for_scene(self.scene())
+            if view is not None:
+                view._ensure_scene_space_for_rect(self.sceneBoundingRect())
         return result
 
     def _card(self) -> NodeCard | None:
@@ -839,6 +842,9 @@ class PipelineGraphView(QGraphicsView):
     DEFAULT_ZOOM = 100
     WHEEL_MIN_ZOOM = 20
     WHEEL_MAX_ZOOM = 400
+    SCENE_EDGE_MARGIN = 260.0
+    SCENE_EXPAND_STEP_X = 1400.0
+    SCENE_EXPAND_STEP_Y = 1100.0
 
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
@@ -1009,6 +1015,7 @@ class PipelineGraphView(QGraphicsView):
         proxy.refresh_ports()
         self._cards[node.id] = card
         self._proxies[node.id] = proxy
+        self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
 
     def add_connection(
         self,
@@ -1339,6 +1346,7 @@ class PipelineGraphView(QGraphicsView):
             delta = pos - self._pan_start
             self.horizontalScrollBar().setValue(self._pan_h_value - delta.x())
             self.verticalScrollBar().setValue(self._pan_v_value - delta.y())
+            self._ensure_scene_space_for_rect(self.mapToScene(self.viewport().rect()).boundingRect())
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -1478,6 +1486,34 @@ class PipelineGraphView(QGraphicsView):
             self._processing_timer.start()
         elif not active and self._processing_timer.isActive():
             self._processing_timer.stop()
+
+    def _ensure_scene_space_for_rect(self, rect: QRectF) -> None:
+        if rect.isNull() or not rect.isValid():
+            return
+        scene_rect = QRectF(self.scene.sceneRect())
+        if scene_rect.isNull() or not scene_rect.isValid():
+            scene_rect = rect.adjusted(-400.0, -300.0, 400.0, 300.0)
+
+        margin = float(self.SCENE_EDGE_MARGIN)
+        expand_x = float(self.SCENE_EXPAND_STEP_X)
+        expand_y = float(self.SCENE_EXPAND_STEP_Y)
+
+        changed = False
+        while rect.left() < scene_rect.left() + margin:
+            scene_rect.setLeft(scene_rect.left() - expand_x)
+            changed = True
+        while rect.right() > scene_rect.right() - margin:
+            scene_rect.setRight(scene_rect.right() + expand_x)
+            changed = True
+        while rect.top() < scene_rect.top() + margin:
+            scene_rect.setTop(scene_rect.top() - expand_y)
+            changed = True
+        while rect.bottom() > scene_rect.bottom() - margin:
+            scene_rect.setBottom(scene_rect.bottom() + expand_y)
+            changed = True
+
+        if changed:
+            self.scene.setSceneRect(scene_rect)
 
 
 def _to_pointf(value) -> QPointF | None:

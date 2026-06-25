@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from qtpy.QtCore import QPoint, QPointF, Qt
+from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
 
 from napari_vipp._graph import PipelineGraphView
 from napari_vipp._theme import category_color, category_tint
@@ -284,3 +284,37 @@ def test_removing_node_removes_related_connections(qtbot):
     assert "gaussian" not in view._proxies
     assert "gaussian" not in view._cards
     assert not view._connections
+
+
+def test_scene_expands_when_node_moves_near_right_edge(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    scene_rect_before = view.scene.sceneRect()
+    proxy = view._proxies["threshold"]
+    move_x = (
+        scene_rect_before.right()
+        - proxy.boundingRect().width()
+        - (PipelineGraphView.SCENE_EDGE_MARGIN * 0.4)
+    )
+    proxy.setPos(QPointF(move_x, proxy.pos().y()))
+
+    scene_rect_after = view.scene.sceneRect()
+    assert scene_rect_after.right() > scene_rect_before.right()
+
+
+def test_scene_expands_when_viewport_reaches_edge(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    scene_rect_before = view.scene.sceneRect()
+    near_edge_rect = QRectF(
+        scene_rect_before.right() - 32.0,
+        scene_rect_before.center().y() - 32.0,
+        64.0,
+        64.0,
+    )
+    view._ensure_scene_space_for_rect(near_edge_rect)
+
+    scene_rect_after = view.scene.sceneRect()
+    assert scene_rect_after.right() > scene_rect_before.right()
