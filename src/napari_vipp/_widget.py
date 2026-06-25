@@ -2337,6 +2337,12 @@ class VippWidget(QWidget):
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
         self.export_ome_button = QPushButton("Export OME dataset...")
+        self.background_all_checkbox = QCheckBox("Run all in BG")
+        self.background_all_checkbox.setChecked(False)
+        self.background_all_checkbox.setToolTip(
+            "Run all pipeline updates in background. "
+            "When off, only known-slower operations use background processing."
+        )
         self.pipeline_busy_label = QLabel("Processing")
         self.pipeline_busy_label.setStyleSheet("color: #93c5fd; font-weight: 650;")
         self.pipeline_busy_bar = QProgressBar()
@@ -2643,6 +2649,7 @@ class VippWidget(QWidget):
         input_row.addWidget(self.layer_combo, 1)
         input_row.addWidget(_toolbar_separator())
         input_row.addWidget(self.global_thumbnail_checkbox)
+        input_row.addWidget(self.background_all_checkbox)
         input_row.addWidget(QLabel("Preview"))
         input_row.addWidget(self.preview_mode_combo)
         input_row.addWidget(QLabel("Contrast"))
@@ -6295,6 +6302,16 @@ class VippWidget(QWidget):
         self,
         dirty_node_ids: set[str] | None = None,
     ) -> str | None:
+        if self.background_all_checkbox.isChecked():
+            if dirty_node_ids:
+                affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
+                for node_id in self.pipeline.topological_order():
+                    if node_id in affected_node_ids:
+                        return node_id
+                return None
+            order = self.pipeline.topological_order()
+            return order[0] if order else None
+
         affected_node_ids = None
         if dirty_node_ids:
             affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)

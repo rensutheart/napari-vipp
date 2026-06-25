@@ -105,6 +105,12 @@ Open sample data from napari:
 File > Open Sample > VIPP synthetic microscopy samples
 ```
 
+## Documentation
+
+- End-user workflow usage: `docs/user-guide.md`
+- Operator tips and performance tuning: `docs/operator-tips.md`
+- Developer and architecture notes: `docs/developer-notes.md`
+
 ## Node Library
 
 The current node catalogue includes:
@@ -384,6 +390,9 @@ Near-term development priorities:
 - richer non-image outputs, including points and scalar summaries;
 - batch execution over files, positions, channels, z-slices, and timepoints.
 
-See `docs/planning.md` for broader planning, `docs/io-user-guide.md` for current
+See `docs/user-guide.md` for end-user operation guidance,
+`docs/operator-tips.md` for operator-focused tuning,
+`docs/developer-notes.md` and `docs/architecture.md` for technical internals,
+`docs/planning.md` for broader planning, `docs/io-user-guide.md` for current
 I/O behavior, `docs/ome-io-plan.md` for the accepted OME architecture, and
 `docs/research-and-publication.md` for the evidence and publication record.
