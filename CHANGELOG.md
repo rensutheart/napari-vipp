@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.0a1 - 2026-06-25
+
+- Marked the package release maturity as Alpha in project metadata.
+- Updated package version metadata to `0.7.0a1`.
+- Added an explicit alpha disclaimer and acknowledgement guidance to the README.
+- Added a release runbook for PyPI, GitHub Releases, and napari hub listing.
+
 - Added a shared headless image I/O registry used by Image Source, quick save,
   Save Image, and generated Python scripts.
 - Added OME-TIFF import/export with series discovery, semantic axes, physical

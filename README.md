@@ -1,5 +1,13 @@
 # napari-vipp
 
+## Alpha Disclaimer
+
+napari-vipp is an early alpha build in active development.
+
+- Expect breaking changes between releases.
+- Workflows, node parameters, and file compatibility may change.
+- Validate outputs before scientific interpretation or publication use.
+
 `napari-vipp` is an early prototype of a napari-native Visual Image Processing
 Pipeline (VIPP): an interactive node-graph workflow composer for bioimage
 analysis.
@@ -12,6 +20,15 @@ the pipeline updates live.
 This is research/prototype software. The current code is useful for exploring
 interaction patterns and metadata-aware pipeline execution, but it is not yet a
 released production analysis package.
+
+## Acknowledgement
+
+If VIPP contributes to your work, please acknowledge the project by name
+("napari-vipp") and include a link to the repository:
+https://github.com/rensutheart/napari-vipp
+
+Formal citation metadata can be added in a future release once a citation
+target (for example DOI or manuscript) is available.
 
 ## Current Status
 
