@@ -366,6 +366,7 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     2,
 )
 
+
 class NodePalette(QTreeWidget):
     """Small categorized operation palette for adding nodes."""
 
@@ -679,14 +680,10 @@ class ParameterControl(QWidget):
     ) -> tuple[float | int, float | int]:
         if bounds.entry_minimum is not None or bounds.entry_maximum is not None:
             minimum = (
-                bounds.minimum
-                if bounds.entry_minimum is None
-                else bounds.entry_minimum
+                bounds.minimum if bounds.entry_minimum is None else bounds.entry_minimum
             )
             maximum = (
-                bounds.maximum
-                if bounds.entry_maximum is None
-                else bounds.entry_maximum
+                bounds.maximum if bounds.entry_maximum is None else bounds.entry_maximum
             )
             return minimum, maximum
         if not bounds.expandable:
@@ -1224,9 +1221,7 @@ class AxisIntervalSlider(QWidget):
         x = self._event_x(event)
         start_x = self._x_for_value(self._start)
         end_x = self._x_for_value(self._end)
-        self._active_handle = (
-            "start" if abs(x - start_x) <= abs(x - end_x) else "end"
-        )
+        self._active_handle = "start" if abs(x - start_x) <= abs(x - end_x) else "end"
         self._set_active_value_from_x(x)
         event.accept()
 
@@ -1537,8 +1532,7 @@ class AxisSliceControl(QWidget):
             "axes": ",".join(str(axis) for axis in remove_axes),
             "indices": ",".join(str(removals[axis]) for axis in remove_axes),
             "ranges": ";".join(
-                f"{axis}:{start}:{end}"
-                for axis, (start, end) in sorted(ranges.items())
+                f"{axis}:{start}:{end}" for axis, (start, end) in sorted(ranges.items())
             ),
             "range_mode": True,
             "remove_axes": ",".join(str(axis) for axis in remove_axes),
@@ -1557,14 +1551,10 @@ class AxisSliceControl(QWidget):
         ranges, removals = _axis_slice_state_from_value(current, self._options)
         option_indices = {option.index for option in self._options}
         ranges = {
-            axis: value
-            for axis, value in ranges.items()
-            if axis in option_indices
+            axis: value for axis, value in ranges.items() if axis in option_indices
         }
         removals = {
-            axis: value
-            for axis, value in removals.items()
-            if axis in option_indices
+            axis: value for axis, value in removals.items() if axis in option_indices
         }
         self._clear_rows()
         self._build_rows(ranges, removals)
@@ -2149,9 +2139,7 @@ class HistogramPlot(QWidget):
                 plot_rect.left(),
                 plot_rect.right() - text_width,
             )
-            text_x = int(
-                np.clip(x + 3, plot_rect.left(), rightmost_text_x)
-            )
+            text_x = int(np.clip(x + 3, plot_rect.left(), rightmost_text_x))
             painter.setPen(color)
             painter.drawText(
                 text_x,
@@ -2169,9 +2157,7 @@ class HistogramPlot(QWidget):
         if self._x_scale == "log":
             shifted_value = max(value - minimum, 0.0)
             shifted_maximum = maximum - minimum
-            return float(
-                np.log1p(shifted_value) / np.log1p(max(shifted_maximum, 1.0))
-            )
+            return float(np.log1p(shifted_value) / np.log1p(max(shifted_maximum, 1.0)))
         return float((value - minimum) / (maximum - minimum))
 
 
@@ -2251,9 +2237,7 @@ class VippWidget(QWidget):
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
-        self._source_inspection_cache: dict[
-            str, tuple[int, SourceInspection]
-        ] = {}
+        self._source_inspection_cache: dict[str, tuple[int, SourceInspection]] = {}
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
@@ -2266,6 +2250,7 @@ class VippWidget(QWidget):
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self._code_dialogs: list[QDialog] = []
         self._pending_dirty_node_ids: set[str] = set()
+        self._inflight_dirty_node_ids: set[str] | None = None
         self._last_pipeline_source_signature: tuple | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
@@ -2746,9 +2731,7 @@ class VippWidget(QWidget):
         label_volume_layout.addWidget(self.label_volume_log_checkbox)
         label_volume_layout.addWidget(self.label_volume_plot)
         layout.addWidget(self.label_volume_group)
-        rescale_input_histogram_layout = QVBoxLayout(
-            self.rescale_input_histogram_group
-        )
+        rescale_input_histogram_layout = QVBoxLayout(self.rescale_input_histogram_group)
         self.rescale_input_histogram_scope_row = QWidget()
         rescale_input_histogram_scope_layout = QHBoxLayout(
             self.rescale_input_histogram_scope_row
@@ -2759,9 +2742,7 @@ class VippWidget(QWidget):
             self.rescale_input_histogram_scope_combo,
             1,
         )
-        rescale_input_histogram_layout.addWidget(
-            self.rescale_input_histogram_scope_row
-        )
+        rescale_input_histogram_layout.addWidget(self.rescale_input_histogram_scope_row)
         rescale_input_histogram_layout.addWidget(
             self.rescale_input_histogram_log_checkbox
         )
@@ -2816,7 +2797,9 @@ class VippWidget(QWidget):
         self.thumbnail_contrast_combo.currentTextChanged.connect(
             self._update_thumbnails,
         )
-        self.thumbnail_colormap_combo.currentTextChanged.connect(self._update_thumbnails)
+        self.thumbnail_colormap_combo.currentTextChanged.connect(
+            self._update_thumbnails
+        )
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
@@ -2988,9 +2971,9 @@ class VippWidget(QWidget):
                 workflow["connections"],
             )
             valid_node_ids = set(self.pipeline.nodes)
-            self._preview_disabled_node_ids = set(
-                snapshot.preview_disabled_node_ids
-            ) & valid_node_ids
+            self._preview_disabled_node_ids = (
+                set(snapshot.preview_disabled_node_ids) & valid_node_ids
+            )
             self._active_pinned_node_id = (
                 snapshot.active_pinned_node_id
                 if snapshot.active_pinned_node_id in valid_node_ids
@@ -3134,9 +3117,7 @@ class VippWidget(QWidget):
         self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
-        self.status_label.setText(
-            f"Duplicated '{original.title}' as '{clone.title}'."
-        )
+        self.status_label.setText(f"Duplicated '{original.title}' as '{clone.title}'.")
 
     def _inspect_node_code(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
@@ -3150,8 +3131,7 @@ class VippWidget(QWidget):
         editor.setLineWrapMode(QPlainTextEdit.NoWrap)
         editor.setPlainText(self._node_code_text(node_id))
         editor.setStyleSheet(
-            "font-family: Menlo, Monaco, Consolas, monospace; "
-            "font-size: 12px;"
+            "font-family: Menlo, Monaco, Consolas, monospace; font-size: 12px;"
         )
         editor._vipp_python_highlighter = PythonSyntaxHighlighter(editor.document())
         layout.addWidget(editor)
@@ -3164,9 +3144,7 @@ class VippWidget(QWidget):
         )
         self._code_dialogs.append(dialog)
         dialog.show()
-        self.status_label.setText(
-            f"Opened code for '{self._node_title(node_id)}'."
-        )
+        self.status_label.setText(f"Opened code for '{self._node_title(node_id)}'.")
 
     def _forget_code_dialog(self, dialog: QDialog) -> None:
         if dialog in self._code_dialogs:
@@ -3245,8 +3223,7 @@ class VippWidget(QWidget):
             return "input_data"
         if node.max_inputs is None or node.max_inputs != 1:
             refs = [
-                self._node_code_source_ref(connection)
-                for connection in connections
+                self._node_code_source_ref(connection) for connection in connections
             ]
             return f"[{', '.join(refs)}]"
         return self._node_code_source_ref(connections[0])
@@ -3474,8 +3451,32 @@ class VippWidget(QWidget):
 
     def _invalidate_pipeline_cache(self) -> None:
         self._pending_dirty_node_ids.clear()
+        self._inflight_dirty_node_ids = None
         self._last_pipeline_source_signature = None
         self.pipeline.completed_node_ids.clear()
+
+    def _begin_pipeline_dispatch(self, dirty_node_ids: set[str] | None) -> None:
+        """Mark a run as in flight and clear the dirty nodes it covers.
+
+        Removing the dispatched dirty nodes from ``_pending_dirty_node_ids`` here
+        (rather than on completion) means any edit that re-marks the same node
+        while the run is in flight is preserved as genuinely pending work, and a
+        later debounced run will not see an empty pending set and recompute the
+        whole pipeline from the source.
+        """
+        self._inflight_dirty_node_ids = (
+            None if dirty_node_ids is None else set(dirty_node_ids)
+        )
+        if dirty_node_ids is not None:
+            self._pending_dirty_node_ids.difference_update(dirty_node_ids)
+
+    def _requeue_inflight_dirty_nodes(self) -> None:
+        """Return a discarded run's dirty nodes to the pending set for a rerun."""
+        if self._inflight_dirty_node_ids:
+            self._pending_dirty_node_ids.update(
+                self._inflight_dirty_node_ids & set(self.pipeline.nodes)
+            )
+        self._inflight_dirty_node_ids = None
 
     def _pipeline_source_signature(
         self,
@@ -3513,11 +3514,12 @@ class VippWidget(QWidget):
         source_signature: tuple,
         dirty_node_ids: set[str] | None,
     ) -> None:
+        # The dispatched dirty nodes were already cleared from
+        # ``_pending_dirty_node_ids`` when the run started (see
+        # ``_begin_pipeline_dispatch``). Anything still pending here arrived
+        # while this run was in flight and must survive for the next run.
         self._last_pipeline_source_signature = source_signature
-        if dirty_node_ids is None:
-            self._pending_dirty_node_ids.clear()
-        else:
-            self._pending_dirty_node_ids.difference_update(dirty_node_ids)
+        self._inflight_dirty_node_ids = None
 
     def _dirty_nodes_affect_node(
         self,
@@ -3768,9 +3770,7 @@ class VippWidget(QWidget):
     ) -> None:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
-        result = self.pipeline.connect(
-            source_id, target_id, target_port, source_port
-        )
+        result = self.pipeline.connect(source_id, target_id, target_port, source_port)
         if not result.success:
             self.status_label.setText(result.message)
             return
@@ -3805,11 +3805,7 @@ class VippWidget(QWidget):
             self._invalidate_pipeline_cache()
             self.run_pipeline()
             self._push_undo_if_changed(before)
-            port_text = (
-                ""
-                if target_port is None
-                else f" input {int(target_port) + 1}"
-            )
+            port_text = "" if target_port is None else f" input {int(target_port) + 1}"
             self.status_label.setText(
                 f"Disconnected {source_id} -> {target_id}{port_text}."
             )
@@ -4146,9 +4142,7 @@ class VippWidget(QWidget):
             count,
             self._parameter_bounds_for(node_id, count_spec),
         )
-        count_widget.valueChanged.connect(
-            self._on_combine_channels_input_count_changed
-        )
+        count_widget.valueChanged.connect(self._on_combine_channels_input_count_changed)
         self.parameter_form.addRow(count_spec.label, count_widget)
         self._parameter_widgets["input_count"] = count_widget
 
@@ -4431,6 +4425,30 @@ class VippWidget(QWidget):
         self.parameter_form.addRow(control)
         self._parameter_widgets["order"] = control
 
+    def _parameter_value_changed(self, spec, previous, current) -> bool:
+        """Return ``True`` only when a parameter value meaningfully changed.
+
+        Numeric controls round-trip through ``QDoubleSpinBox``, so a value the
+        user produced with the spinner (e.g. ``1.74 + 0.1`` stored as
+        ``1.8399999999999999``) differs from the box's cleanly rounded
+        ``value()`` (``1.84``) by floating-point noise alone. Treat such values
+        as unchanged so refreshing the controls never forces a spurious
+        recompute.
+        """
+        if previous is None:
+            return current is not None
+        if spec.kind in {"int", "float"}:
+            try:
+                previous_number = float(previous)
+                current_number = float(current)
+            except (TypeError, ValueError):
+                return previous != current
+            if spec.kind == "int":
+                return int(round(previous_number)) != int(round(current_number))
+            decimals = max(int(getattr(spec, "decimals", 2) or 0), 0)
+            return round(previous_number, decimals) != round(current_number, decimals)
+        return previous != current
+
     def _refresh_selected_parameter_controls(self) -> bool:
         if self._selected_node_id not in self.pipeline.nodes:
             return False
@@ -4459,8 +4477,7 @@ class VippWidget(QWidget):
                 )
                 changed = previous != node.params
             visible_color_controls = sum(
-                name.startswith("channel_color_")
-                for name in self._parameter_widgets
+                name.startswith("channel_color_") for name in self._parameter_widgets
             )
             if visible_color_controls != self._channel_color_control_count(node.id):
                 self._render_parameters(node.id)
@@ -4526,21 +4543,27 @@ class VippWidget(QWidget):
             if isinstance(label, QLabel):
                 label.setText(spec.label)
             current = widget.value()
-            if current != previous:
-                node.params[spec.name] = current
+            if self._parameter_value_changed(spec, previous, current):
                 changed = True
+            node.params[spec.name] = current
         if node.operation_id == "fill_holes":
             self._update_fill_holes_scope_note()
         if node.operation_id == "gaussian_blur_3d":
-            changed = self._sync_gaussian_blur_3d_xy_lock(
-                self._selected_node_id,
-                source_name="sigma_y",
-            ) or changed
+            changed = (
+                self._sync_gaussian_blur_3d_xy_lock(
+                    self._selected_node_id,
+                    source_name="sigma_y",
+                )
+                or changed
+            )
         if node.operation_id == "rescale_axes":
-            changed = self._sync_rescale_axes_xy_lock(
-                self._selected_node_id,
-                source_name="x_scale",
-            ) or changed
+            changed = (
+                self._sync_rescale_axes_xy_lock(
+                    self._selected_node_id,
+                    source_name="x_scale",
+                )
+                or changed
+            )
         return changed
 
     def _parameter_spec_hidden(self, node_id: str, spec) -> bool:
@@ -5078,14 +5101,8 @@ class VippWidget(QWidget):
         if node is None or node.operation_id != "combine_channels":
             return
         colors = self._combine_channels_colors(node)
-        labels = [
-            f"Channel {index + 1}: {color}"
-            for index, color in enumerate(colors)
-        ]
-        graph_colors = [
-            CHANNEL_COLOR_HEX.get(color.lower())
-            for color in colors
-        ]
+        labels = [f"Channel {index + 1}: {color}" for index, color in enumerate(colors)]
+        graph_colors = [CHANNEL_COLOR_HEX.get(color.lower()) for color in colors]
         self.graph_view.set_node_input_ports(
             node_id,
             len(colors),
@@ -5111,16 +5128,13 @@ class VippWidget(QWidget):
         )
 
     def _sync_node_output_ports(self, node_id: str) -> None:
-        spec = self.pipeline.operation_spec(
-            self.pipeline.nodes[node_id].operation_id
-        )
+        spec = self.pipeline.operation_spec(self.pipeline.nodes[node_id].operation_id)
         ports = self.pipeline.output_ports(node_id)
         if not spec.is_multi_output:
             return
         labels = [port.label for port in ports]
         colors = [
-            self._output_port_color(index, port)
-            for index, port in enumerate(ports)
+            self._output_port_color(index, port) for index, port in enumerate(ports)
         ]
         data_types = [port.output_type for port in ports]
         self.graph_view.set_node_output_ports(
@@ -5253,22 +5267,23 @@ class VippWidget(QWidget):
             expandable=True,
         )
 
-    def _sync_all_rescale_output_range_defaults(self) -> bool:
-        changed = False
-        for node_id in tuple(self.pipeline.nodes):
-            changed = self._sync_rescale_output_range_defaults(node_id) or changed
-        return changed
+    def _resync_autodefault_nodes(self) -> set[str]:
+        """Re-sync all auto-tracked range params and report changed nodes.
 
-    def _sync_all_rescale_input_cutoff_defaults(self) -> bool:
-        changed = False
+        Clip/Rescale Intensity nodes track their input's data range. When an
+        upstream edit shifts that range, the matching node's params update and
+        it must recompute. Returns the ids of nodes whose params actually
+        changed so the follow-up run can start there (reusing cached upstream
+        output) instead of recomputing from the original dirty set's source.
+        """
+        changed: set[str] = set()
         for node_id in tuple(self.pipeline.nodes):
-            changed = self._sync_rescale_input_cutoff_defaults(node_id) or changed
-        return changed
-
-    def _sync_all_clip_intensity_defaults(self) -> bool:
-        changed = False
-        for node_id in tuple(self.pipeline.nodes):
-            changed = self._sync_clip_intensity_defaults(node_id) or changed
+            if self._sync_clip_intensity_defaults(node_id):
+                changed.add(node_id)
+            if self._sync_rescale_input_cutoff_defaults(node_id):
+                changed.add(node_id)
+            if self._sync_rescale_output_range_defaults(node_id):
+                changed.add(node_id)
         return changed
 
     def _sync_clip_intensity_defaults(self, node_id: str) -> bool:
@@ -5309,10 +5324,7 @@ class VippWidget(QWidget):
         low_value, high_value = _percentile_cutoff_values(values, low_p, high_p)
         current = _rescale_value_pair(node.params)
         previous_auto = self._rescale_auto_input_cutoffs.get(node_id)
-        has_values = (
-            "in_low_value" in node.params
-            and "in_high_value" in node.params
-        )
+        has_values = "in_low_value" in node.params and "in_high_value" in node.params
         should_update = (
             not has_values
             or (
@@ -5320,10 +5332,7 @@ class VippWidget(QWidget):
                 and _ranges_close(current, (0.0, 1.0))
                 and not _ranges_close((low_value, high_value), (0.0, 1.0))
             )
-            or (
-                previous_auto is not None
-                and _ranges_close(current, previous_auto)
-            )
+            or (previous_auto is not None and _ranges_close(current, previous_auto))
         )
         self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
         if not should_update:
@@ -5925,11 +5934,7 @@ class VippWidget(QWidget):
             return VippWidget._largest_label_volume(arr, spatial_ndim)
 
         spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
-        rank = (
-            1
-            if str(connectivity).lower().startswith("face")
-            else spatial_ndim
-        )
+        rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
         structure = ndi.generate_binary_structure(spatial_ndim, rank)
         leading_shape = arr.shape[: arr.ndim - spatial_ndim]
         blocks = (
@@ -6006,9 +6011,7 @@ class VippWidget(QWidget):
             if name == "resize_mode":
                 self._sync_rescale_axes_representations(
                     self._selected_node_id,
-                    source_name=(
-                        "x_size" if value == "Output size" else "x_scale"
-                    ),
+                    source_name=("x_size" if value == "Output size" else "x_scale"),
                 )
                 self._render_parameters(self._selected_node_id)
             elif name == "lock_xy" and bool(value):
@@ -6064,15 +6067,10 @@ class VippWidget(QWidget):
                 self._refresh_rescale_cutoff_widgets(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step()
-                if self.follow_dims_checkbox.isChecked()
-                else None,
+                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
             )
         if (
-            (
-                node.operation_id == "clip_intensity"
-                and name in CLIP_CUTOFF_PARAMETERS
-            )
+            (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
             or (node.operation_id == "binary_threshold" and name == "threshold")
             or (
                 node.operation_id == "hysteresis_threshold"
@@ -6085,9 +6083,7 @@ class VippWidget(QWidget):
         ):
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step()
-                if self.follow_dims_checkbox.isChecked()
-                else None,
+                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
             )
         self._debounce_timer.start()
 
@@ -6171,8 +6167,10 @@ class VippWidget(QWidget):
             self.status_label.setText("No image layer selected.")
             return
 
-        primary_layer = source_layers[0] if source_layers else (
-            None if source_payloads else toolbar_layer
+        primary_layer = (
+            source_layers[0]
+            if source_layers
+            else (None if source_payloads else toolbar_layer)
         )
         if primary_layer is not None:
             self._last_input_layer_name = getattr(primary_layer, "name", None)
@@ -6190,9 +6188,7 @@ class VippWidget(QWidget):
             source_payloads,
         )
         dirty_node_ids = self._dirty_nodes_for_run(source_signature)
-        if (not force_sync) and self._should_run_pipeline_in_background(
-            dirty_node_ids
-        ):
+        if (not force_sync) and self._should_run_pipeline_in_background(dirty_node_ids):
             self._start_background_pipeline_run(
                 input_data,
                 input_metadata,
@@ -6227,6 +6223,7 @@ class VippWidget(QWidget):
         dirty_node_ids: set[str] | None,
     ) -> None:
         self._set_pipeline_busy(False)
+        self._begin_pipeline_dispatch(dirty_node_ids)
         try:
             self.pipeline.run(
                 input_data,
@@ -6238,38 +6235,21 @@ class VippWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
             return
-        if self._sync_all_clip_intensity_defaults():
-            self.pipeline.run(
-                input_data,
-                input_metadata=input_metadata,
-                input_name=input_name,
-                source_payloads=source_payloads,
-                dirty_node_ids=dirty_node_ids,
-            )
-        if self._sync_all_rescale_input_cutoff_defaults():
-            self.pipeline.run(
-                input_data,
-                input_metadata=input_metadata,
-                input_name=input_name,
-                source_payloads=source_payloads,
-                dirty_node_ids=dirty_node_ids,
-            )
-        if self._sync_all_rescale_output_range_defaults():
-            self.pipeline.run(
-                input_data,
-                input_metadata=input_metadata,
-                input_name=input_name,
-                source_payloads=source_payloads,
-                dirty_node_ids=dirty_node_ids,
-            )
-        if self._refresh_selected_parameter_controls():
-            self.pipeline.run(
-                input_data,
-                input_metadata=input_metadata,
-                input_name=input_name,
-                source_payloads=source_payloads,
-                dirty_node_ids=dirty_node_ids,
-            )
+        autodefault_changed = self._resync_autodefault_nodes()
+        refreshed_selected = self._refresh_selected_parameter_controls()
+        if autodefault_changed or refreshed_selected:
+            rerun_dirty = set(autodefault_changed)
+            if refreshed_selected and self._selected_node_id in self.pipeline.nodes:
+                rerun_dirty.add(self._selected_node_id)
+            rerun_dirty &= set(self.pipeline.nodes)
+            if rerun_dirty:
+                self.pipeline.run(
+                    input_data,
+                    input_metadata=input_metadata,
+                    input_name=input_name,
+                    source_payloads=source_payloads,
+                    dirty_node_ids=rerun_dirty,
+                )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
 
@@ -6348,9 +6328,11 @@ class VippWidget(QWidget):
                 self._active_pipeline_node_id or processing_node_id,
                 queued=True,
             )
-            title = self._node_title(self._active_pipeline_node_id) if (
-                self._active_pipeline_node_id in self.pipeline.nodes
-            ) else "graph"
+            title = (
+                self._node_title(self._active_pipeline_node_id)
+                if (self._active_pipeline_node_id in self.pipeline.nodes)
+                else "graph"
+            )
             self.status_label.setText(
                 f"Processing '{title}' in background; latest edit queued to rerun."
             )
@@ -6396,6 +6378,7 @@ class VippWidget(QWidget):
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
         )
         self._active_pipeline_run_id = run_id
+        self._begin_pipeline_dispatch(dirty_node_ids)
         self._pipeline_run_context[run_id] = (
             primary_layer,
             source_label,
@@ -6404,9 +6387,11 @@ class VippWidget(QWidget):
             dirty_node_ids,
         )
         self._set_pipeline_busy(True, processing_node_id)
-        title = self._node_title(processing_node_id) if (
-            processing_node_id in self.pipeline.nodes
-        ) else "graph"
+        title = (
+            self._node_title(processing_node_id)
+            if (processing_node_id in self.pipeline.nodes)
+            else "graph"
+        )
         self.status_label.setText(f"Processing '{title}' in background...")
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
@@ -6445,6 +6430,7 @@ class VippWidget(QWidget):
         )
         if self._pipeline_run_pending and not can_apply_before_pending:
             self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
             self.status_label.setText(
                 "Restarting background processing with latest edit."
             )
@@ -6460,6 +6446,7 @@ class VippWidget(QWidget):
             return
         if not self._workflow_matches_current_pipeline(result.workflow):
             if not can_apply_before_pending:
+                self._requeue_inflight_dirty_nodes()
                 self.status_label.setText(
                     "Discarded stale background result; rerunning latest graph."
                 )
@@ -6472,16 +6459,25 @@ class VippWidget(QWidget):
         )
         if can_apply_before_pending:
             self._last_pipeline_source_signature = source_signature
+            self._inflight_dirty_node_ids = None
         else:
             self._complete_pipeline_run(source_signature, dirty_node_ids)
-        if (
-            self._sync_all_clip_intensity_defaults()
-            or self._sync_all_rescale_input_cutoff_defaults()
-            or self._sync_all_rescale_output_range_defaults()
-            or self._refresh_selected_parameter_controls()
-        ):
-            QTimer.singleShot(0, self.run_pipeline)
-            return
+        autodefault_changed = self._resync_autodefault_nodes()
+        refreshed_selected = self._refresh_selected_parameter_controls()
+        if autodefault_changed or refreshed_selected:
+            # An auto-tracking node (Clip/Rescale range) or the selected node's
+            # controls shifted because a descendant of the just-run dirty set
+            # got new data. Re-queue only the nodes that actually changed so the
+            # follow-up run starts there and reuses cached upstream output,
+            # instead of recomputing the whole dirty subtree from its source.
+            rerun_dirty = set(autodefault_changed)
+            if refreshed_selected and self._selected_node_id in self.pipeline.nodes:
+                rerun_dirty.add(self._selected_node_id)
+            rerun_dirty &= set(self.pipeline.nodes)
+            if rerun_dirty:
+                self._pending_dirty_node_ids.update(rerun_dirty)
+                QTimer.singleShot(0, self.run_pipeline)
+                return
         self._set_pipeline_busy(False)
         if can_apply_before_pending:
             self._pipeline_run_pending = False
@@ -6575,8 +6571,8 @@ class VippWidget(QWidget):
             )
             self.graph_view.set_node_output_type(node_id, node_output_type)
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
-            preview_enabled = (
-                previews_visible_globally and self._node_preview_enabled(node_id)
+            preview_enabled = previews_visible_globally and self._node_preview_enabled(
+                node_id
             )
             self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
             if not preview_enabled:
@@ -6602,9 +6598,8 @@ class VippWidget(QWidget):
                 data_kind=node_output_type,
             )
             self.graph_view.set_thumbnail(node_id, thumbnail)
-        if (
-            self._active_pinned_node_id is not None
-            and not self._node_can_pin(self._active_pinned_node_id)
+        if self._active_pinned_node_id is not None and not self._node_can_pin(
+            self._active_pinned_node_id
         ):
             self._clear_active_pin(status=False)
         else:
@@ -6843,10 +6838,7 @@ class VippWidget(QWidget):
 
     def _update_label_volume_histogram(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
-        visible = (
-            node is not None
-            and node.operation_id == "filter_labels_by_volume"
-        )
+        visible = node is not None and node.operation_id == "filter_labels_by_volume"
         self.label_volume_group.setHidden(not visible)
         if not visible:
             self.label_volume_plot.set_histogram(None, log_scale=False)
@@ -8128,15 +8120,13 @@ def _axis_order_item_text(option: AxisSliceOption) -> str:
 def _axis_order_value(ordered: list[AxisSliceOption]) -> str:
     names = [str(option.name).strip() for option in ordered]
     normalized = [name.lower() for name in names]
-    if (
-        all(len(name) == 1 for name in names)
-        and len(set(normalized)) == len(normalized)
+    if all(len(name) == 1 for name in names) and len(set(normalized)) == len(
+        normalized
     ):
         return "".join(name.upper() for name in names)
-    if (
-        all(name and not any(char in name for char in ",; ") for name in names)
-        and len(set(normalized)) == len(normalized)
-    ):
+    if all(name and not any(char in name for char in ",; ") for name in names) and len(
+        set(normalized)
+    ) == len(normalized):
         return ",".join(names)
     return ",".join(str(option.index) for option in ordered)
 

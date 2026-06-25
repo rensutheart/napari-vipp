@@ -99,9 +99,7 @@ class _Viewer:
     def __init__(self, data=None, metadata=None):
         if data is None:
             data = np.zeros((4, 16, 18), dtype=np.float32)
-        self.layers = _LayerList(
-            [_Layer(data, "input volume", metadata=metadata)]
-        )
+        self.layers = _LayerList([_Layer(data, "input volume", metadata=metadata)])
         self.dims = _Dims()
 
     def add_image(self, data, **kwargs):
@@ -613,9 +611,7 @@ def test_image_source_shows_only_detected_multichannel_colours(qtbot):
     widget.graph_view.select_node("input")
 
     controls = [
-        name
-        for name in widget._parameter_widgets
-        if name.startswith("channel_color_")
+        name for name in widget._parameter_widgets if name.startswith("channel_color_")
     ]
     assert controls == ["channel_color_0", "channel_color_1", "channel_color_2"]
 
@@ -661,9 +657,10 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
     assert widget.graph_view._cards["threshold"]._pinned
-    assert "border: 4px solid #facc15" in widget.graph_view._cards[
-        "threshold"
-    ].styleSheet()
+    assert (
+        "border: 4px solid #facc15"
+        in widget.graph_view._cards["threshold"].styleSheet()
+    )
     assert widget.graph_view._cards["threshold"].pin_button.isHidden()
     assert not widget.pin_button.isHidden()
 
@@ -730,10 +727,7 @@ def test_clear_border_hides_lateral_choice_for_true_2d_input(qtbot):
     widget._connect_nodes("threshold", cleared.id)
 
     control = widget._parameter_widgets["boundary_mode"]
-    choices = [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == ["All spatial borders"]
     assert widget.pipeline.nodes[cleared.id].params["boundary_mode"] in choices
@@ -750,10 +744,7 @@ def test_clear_border_offers_all_or_lateral_boundaries_for_z_stack(qtbot):
     widget._connect_nodes("threshold", cleared.id)
 
     control = widget._parameter_widgets["boundary_mode"]
-    choices = [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == [
         "All spatial borders",
@@ -818,18 +809,16 @@ def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
     widget._connect_nodes("threshold", filled.id)
 
     control = widget._parameter_widgets["spatial_mode"]
-    choices = [
-        control.combo.itemText(index)
-        for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == [
         "Auto from axes",
         "2D per XY slice (advanced)",
     ]
-    assert "connected YX image" in widget._parameter_widgets[
-        "fill_holes_scope_note"
-    ].text()
+    assert (
+        "connected YX image"
+        in widget._parameter_widgets["fill_holes_scope_note"].text()
+    )
 
 
 def test_remove_small_objects_uses_observed_sizes_and_contextual_units(qtbot):
@@ -934,8 +923,7 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
     assert widget.label_volume_plot._x_scale == "log"
     assert widget.label_volume_plot._x_range == (0.0, float(volumes.max()))
     assert [
-        (label, value)
-        for label, value, _color in widget.label_volume_plot._markers
+        (label, value) for label, value, _color in widget.label_volume_plot._markers
     ] == [("min", 10.0)]
     assert "objects" in widget.label_volume_summary.text()
     assert "voxels" in widget.label_volume_summary.text()
@@ -950,15 +938,13 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
     widget._parameter_widgets["max_volume"].value_box.setValue(50)
 
     assert [
-        (label, value)
-        for label, value, _color in widget.label_volume_plot._markers
+        (label, value) for label, value, _color in widget.label_volume_plot._markers
     ] == [("min", 20.0), ("max", 50.0)]
 
     widget._parameter_widgets["max_volume"].value_box.setValue(0)
 
     assert [
-        (label, value)
-        for label, value, _color in widget.label_volume_plot._markers
+        (label, value) for label, value, _color in widget.label_volume_plot._markers
     ] == [("min", 20.0)]
 
     widget.graph_view.select_node(labels.id)
@@ -1075,9 +1061,7 @@ def test_palette_uses_category_colors(qtbot):
     assert label_operations.foreground(0).color().name() == category_color(
         "Label Operations"
     )
-    assert label_node.foreground(0).color().name() == category_color(
-        "Label Operations"
-    )
+    assert label_node.foreground(0).color().name() == category_color("Label Operations")
 
 
 def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
@@ -1352,12 +1336,8 @@ def test_project_image_uses_contextual_axis_dropdown(qtbot):
     )
 
     control = widget._parameter_widgets["axes"]
-    choices = [
-        control.combo.itemText(index) for index in range(control.combo.count())
-    ]
-    values = [
-        control.combo.itemData(index) for index in range(control.combo.count())
-    ]
+    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
+    values = [control.combo.itemData(index) for index in range(control.combo.count())]
 
     assert choices[0] == "Auto (Z if present)"
     assert "T axis (time, size 2)" in choices
@@ -1414,8 +1394,7 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
 
     segmentation = _palette_category(widget, "Segmentation")
     segmentation_subgroups = {
-        segmentation.child(index).text(0)
-        for index in range(segmentation.childCount())
+        segmentation.child(index).text(0) for index in range(segmentation.childCount())
     }
     assert {
         "Global Thresholds",
@@ -1579,9 +1558,7 @@ def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
     }
     assert "threshold" in stack_markers
 
-    widget._parameter_widgets["threshold_scope"].combo.setCurrentText(
-        "Slice histogram"
-    )
+    widget._parameter_widgets["threshold_scope"].combo.setCurrentText("Slice histogram")
 
     assert widget.rescale_input_histogram_group.title() == (
         "Input Histogram (Slice histogram)"
@@ -1743,9 +1720,7 @@ def test_floating_dock_window_has_standard_maximize_controls(qtbot):
 
     dock.hide()
     dock.show()
-    qtbot.waitUntil(
-        lambda: bool(dock.windowFlags() & Qt.WindowMaximizeButtonHint)
-    )
+    qtbot.waitUntil(lambda: bool(dock.windowFlags() & Qt.WindowMaximizeButtonHint))
 
     assert dock.windowFlags() & Qt.WindowType_Mask == Qt.Window
 
@@ -2194,8 +2169,7 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
     assert inspect.metadata["display_rgb"] is True
     assert inspect.data.shape == (2, 4, 5, 6, 3)
     assert (
-        "1. Composite \u2192 RGB: mapped channels to RGB"
-        in widget.history_label.text()
+        "1. Composite \u2192 RGB: mapped channels to RGB" in widget.history_label.text()
     )
 
 
@@ -2448,13 +2422,16 @@ def test_combine_channels_accepts_multiple_connected_inputs(qtbot):
     widget.graph_view.select_node(composite.id)
 
     assert widget.pipeline.outputs[composite.id].shape == (2, 2, 4, 5, 6)
-    assert len(
-        [
-            connection
-            for connection in widget.pipeline.connections
-            if connection.target_id == composite.id
-        ]
-    ) == 2
+    assert (
+        len(
+            [
+                connection
+                for connection in widget.pipeline.connections
+                if connection.target_id == composite.id
+            ]
+        )
+        == 2
+    )
     assert _metadata_value(widget, "Kind") == "multi-channel image"
     assert _metadata_value(widget, "Dimensions") == "t=2, c=2, z=4, y=5, x=6"
     assert (
@@ -2551,10 +2528,7 @@ def test_select_axis_slice_updates_metadata_axes(qtbot):
     assert widget.pipeline.outputs[node.id].shape == (2, 1, 4, 5, 6)
     assert _metadata_value(widget, "Dimensions") == "t=2, c=1, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "1"
-    assert (
-        "1. Select Axis Slice: kept c axis (1)[2..2]"
-        in widget.history_label.text()
-    )
+    assert "1. Select Axis Slice: kept c axis (1)[2..2]" in widget.history_label.text()
 
 
 def test_select_axis_slice_can_slice_multiple_metadata_axes(qtbot):
@@ -2600,10 +2574,7 @@ def test_select_axis_slice_can_remove_metadata_axis(qtbot):
     assert widget.pipeline.outputs[node.id].shape == (2, 4, 5, 6)
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6"
     assert _metadata_value(widget, "Channels") == "none"
-    assert (
-        "1. Select Axis Slice: removed c axis (1)[2]"
-        in widget.history_label.text()
-    )
+    assert "1. Select Axis Slice: removed c axis (1)[2]" in widget.history_label.text()
 
 
 def test_select_axis_slice_can_mix_ranges_and_removed_axes(qtbot):
@@ -2683,10 +2654,7 @@ def test_reorder_axes_list_drag_changes_order(qtbot):
     qtbot.mouseMove(axis_list.viewport(), pos=third)
     qtbot.mouseRelease(axis_list.viewport(), Qt.LeftButton, pos=third)
 
-    order = [
-        axis_list.item(row).data(Qt.UserRole)
-        for row in range(axis_list.count())
-    ]
+    order = [axis_list.item(row).data(Qt.UserRole) for row in range(axis_list.count())]
     assert order == [1, 2, 0, 3, 4]
     assert widget.pipeline.nodes[node.id].params["order"] == "CZTYX"
 
@@ -2763,9 +2731,7 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
     widget._update_thumbnails()
 
     reorder_shape = tuple(widget.pipeline.outputs[node.id].shape)
-    reorder_calls = [
-        call for call in calls if call[0] == reorder_shape
-    ]
+    reorder_calls = [call for call in calls if call[0] == reorder_shape]
     assert reorder_calls
     assert reorder_calls[-1][1] == (0, 7, 4, 0)
     assert reorder_calls[-1][2].axis_order == "CZYX"
@@ -2996,6 +2962,177 @@ def test_downstream_parameter_change_reuses_cached_upstream_slow_node(
     )
 
     assert calls["subtract"] == calls_before
+
+
+def test_reedit_while_run_in_flight_stays_incremental(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    background = widget.add_node_from_palette("subtract_background")
+    widget._connect_nodes("input", background.id)
+    gamma = widget.add_node_from_palette("gamma_correction")
+    widget._connect_nodes(background.id, gamma.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(gamma.id) is not None
+        ),
+        timeout=30_000,
+    )
+    signature = widget._last_pipeline_source_signature
+    assert signature is not None
+
+    # A downstream-only run is dispatched for the gamma node.
+    widget._mark_pipeline_dirty(gamma.id)
+    dirty = {gamma.id}
+    widget._begin_pipeline_dispatch(dirty)
+    # The dispatched node is cleared from the pending set so that a re-edit of
+    # the same node while the run is in flight is preserved as new work.
+    assert gamma.id not in widget._pending_dirty_node_ids
+
+    # The user edits gamma again before the in-flight run finishes.
+    widget._mark_pipeline_dirty(gamma.id)
+    assert gamma.id in widget._pending_dirty_node_ids
+
+    # Completing the in-flight run must not discard the re-queued edit, so the
+    # follow-up run stays incremental (gamma only) instead of recomputing the
+    # whole pipeline from the source.
+    widget._complete_pipeline_run(signature, dirty)
+    assert gamma.id in widget._pending_dirty_node_ids
+    assert widget._dirty_nodes_for_run(signature) == {gamma.id}
+
+
+def test_discarded_inflight_run_requeues_dirty_nodes(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    background = widget.add_node_from_palette("subtract_background")
+    widget._connect_nodes("input", background.id)
+    gamma = widget.add_node_from_palette("gamma_correction")
+    widget._connect_nodes(background.id, gamma.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(gamma.id) is not None
+        ),
+        timeout=30_000,
+    )
+
+    widget._mark_pipeline_dirty(gamma.id)
+    dirty = {gamma.id}
+    widget._begin_pipeline_dispatch(dirty)
+    assert gamma.id not in widget._pending_dirty_node_ids
+
+    # A discarded/restarted run must return its in-flight dirty nodes to the
+    # pending set so the rerun still covers them.
+    widget._requeue_inflight_dirty_nodes()
+    assert gamma.id in widget._pending_dirty_node_ids
+    assert widget._inflight_dirty_node_ids is None
+
+
+def test_autodefault_rerun_starts_at_changed_node_not_original_dirty(
+    qtbot, monkeypatch
+):
+    # After an incremental background run, an auto-tracking node downstream of
+    # the edit can shift its range and request a follow-up run. That follow-up
+    # must start at the changed node (reusing the cached upstream output of the
+    # edited node), not recompute the original dirty subtree from its source.
+    calls = {"gamma": 0}
+    original_gamma = NODE_LIBRARY_BY_ID["gamma_correction"]
+
+    def fake_gamma(image, **_kwargs):
+        calls["gamma"] += 1
+        return np.asarray(image)
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "gamma_correction",
+        replace(original_gamma, function=fake_gamma),
+    )
+
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.background_all_checkbox.setChecked(True)
+
+    gamma = widget.add_node_from_palette("gamma_correction")
+    widget._connect_nodes("input", gamma.id)
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes(gamma.id, rescale.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(rescale.id) is not None
+        ),
+        timeout=30_000,
+    )
+
+    # Pretend the downstream rescale node's auto-tracked range shifts exactly
+    # once, right after the next incremental run completes. Neutralize the
+    # selected-control refresh so only the auto-default path drives the rerun.
+    state = {"armed": False, "fired": False}
+    monkeypatch.setattr(widget, "_refresh_selected_parameter_controls", lambda: False)
+
+    def fake_resync():
+        if state["armed"] and not state["fired"]:
+            state["fired"] = True
+            return {rescale.id}
+        return set()
+
+    monkeypatch.setattr(widget, "_resync_autodefault_nodes", fake_resync)
+
+    widget.graph_view.select_node(gamma.id)
+    calls_at_edit = calls["gamma"]
+    state["armed"] = True
+    widget._parameter_widgets["gamma"].value_box.setValue(0.8)
+    qtbot.waitUntil(
+        lambda: (
+            state["fired"]
+            and widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._pending_dirty_node_ids
+            and widget.pipeline.nodes[gamma.id].params["gamma"] == 0.8
+        ),
+        timeout=30_000,
+    )
+
+    # The edit recomputed gamma exactly once. The auto-default follow-up run
+    # started at the changed rescale node and reused the cached gamma output,
+    # so gamma was NOT recomputed a second time.
+    assert calls["gamma"] == calls_at_edit + 1
+
+
+def test_refresh_controls_ignores_float_spinner_noise(qtbot):
+    # Reproduces the spurious-recompute bug: a sigma value produced by the
+    # spinner (1.74 + 0.1) is stored with floating-point noise
+    # (1.8399999999999999) while the spin box's value() rounds to 1.84.
+    # Refreshing the selected node's controls must NOT report that as a change,
+    # otherwise it forces an unnecessary follow-up pipeline run.
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    gaussian = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", gaussian.id)
+    widget.graph_view.select_node(gaussian.id)
+
+    noisy_sigma = float(np.nextafter(1.84, 0.0))  # 1.8399999999999999
+    assert noisy_sigma != 1.84
+    assert round(noisy_sigma, 2) == 1.84
+    gaussian.params["sigma"] = noisy_sigma
+    widget._parameter_widgets["sigma"].value_box.setValue(1.84)
+
+    changed = widget._refresh_selected_parameter_controls()
+
+    # No meaningful change: the follow-up rerun must not be triggered, and the
+    # stored parameter is normalized to the clean spin-box value.
+    assert changed is False
+    assert gaussian.params["sigma"] == widget._parameter_widgets["sigma"].value()
 
 
 def test_rescale_axes_dirty_run_starts_at_rescale_and_reuses_upstream_cache(
@@ -3334,9 +3471,7 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     assert "label_id" in path.read_text(encoding="utf-8")
 
 
-def test_save_selected_output_dialog_defaults_to_ome_tiff(
-    qtbot, monkeypatch, tmp_path
-):
+def test_save_selected_output_dialog_defaults_to_ome_tiff(qtbot, monkeypatch, tmp_path):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
