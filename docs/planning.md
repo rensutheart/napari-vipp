@@ -50,7 +50,44 @@ The graph currently supports:
 
 Remaining graph-editor refinements include automatic insertion when dropping a
 node onto an existing wire, alignment/layout tools, graph annotations, and
-larger-workflow navigation aids.
+larger-workflow navigation aids. The next two prioritized refinements are
+described below.
+
+#### Planned: Insert Node Between Connected Nodes
+
+Make it easy to splice a new node into an existing connection without manually
+deleting and rewiring. When a user adds or drops a node onto an existing wire,
+or chooses an "Insert node here" action on a connection, the editor should:
+
+- detect the targeted source -> target connection;
+- remove that single connection;
+- wire `source -> new node` and `new node -> target`, honoring port types and
+  the existing source output slot and target input slot;
+- reject the insertion with clear feedback when the new node's input or output
+  port contracts are incompatible with the spliced connection;
+- position the new node sensibly on or near the original wire;
+- treat the whole splice as one undoable action.
+
+This should work for the common single-input/single-output case first, with a
+defined fallback for multi-input or multi-output nodes (for example, prompt for
+or default to the first compatible port pair).
+
+#### Planned: User-Initiated Automatic Layout Cleanup
+
+Add an explicit, user-initiated command that repositions nodes to tidy up a
+messy graph, similar to how Obsidian relaxes its knowledge graph. Requirements:
+
+- expose a toolbar button next to "Export OME dataset..." that improves graph
+  workflow formatting/positioning on demand;
+- never reposition nodes automatically; layout cleanup must only run when the
+  user invokes it;
+- compute a readable layout from the existing connections, for example a
+  layered/topological left-to-right (or top-to-bottom) arrangement that reduces
+  edge crossings and overlap;
+- keep the result deterministic and stable so repeated invocations on an
+  unchanged graph do not reshuffle the canvas;
+- treat the relayout as a single undoable action and persist the new positions
+  through the existing save/load of canvas positions.
 
 ### Workflow Persistence
 
