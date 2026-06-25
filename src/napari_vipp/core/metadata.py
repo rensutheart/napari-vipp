@@ -32,6 +32,7 @@ CHANNEL_COLLAPSE_OPERATIONS = {
     "niblack_threshold",
 }
 LABEL_OPERATIONS = {
+    "auto_watershed_from_mask",
     "expand_labels",
     "h_maxima_markers",
     "label_connected_components",
@@ -1564,6 +1565,12 @@ def _operation_history(
     if operation_id == "euclidean_distance_transform":
         return f"{operation_title}: {params.get('spatial_mode', 'Auto from axes')}"
     if operation_id == "h_maxima_markers":
+        h_value = _format_number(params.get("h", 1.0))
+        return (
+            f"{operation_title}: h={h_value}, "
+            f"{params.get('spatial_mode', 'Auto from axes')}"
+        )
+    if operation_id == "auto_watershed_from_mask":
         h_value = _format_number(params.get("h", 1.0))
         return (
             f"{operation_title}: h={h_value}, "

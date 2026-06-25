@@ -9,6 +9,7 @@ from napari_vipp.core.metadata import (
     transform_multi_input_image_state,
 )
 from napari_vipp.core.operations import (
+    auto_watershed_from_mask,
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
@@ -117,6 +118,7 @@ def test_vipp_operation_nodes_are_registered():
         "sauvola_threshold",
         "niblack_threshold",
         "euclidean_distance_transform",
+        "auto_watershed_from_mask",
         "h_maxima_markers",
         "marker_controlled_watershed",
         "expand_labels",
@@ -227,6 +229,19 @@ def test_touching_object_separation_splits_two_touching_disks():
     assert np.all(labels[mask] > 0)
 
 
+def test_auto_watershed_from_mask_splits_two_touching_disks():
+    yy, xx = np.mgrid[:48, :64]
+    mask = ((yy - 24) ** 2 + (xx - 22) ** 2 <= 13**2) | (
+        (yy - 24) ** 2 + (xx - 42) ** 2 <= 13**2
+    )
+
+    labels = auto_watershed_from_mask(mask, resolved_spatial_ndim=2)
+
+    assert labels.dtype == np.int32
+    assert int(labels.max()) == 2
+    assert np.all(labels[mask] > 0)
+
+
 def test_expand_labels_can_run_in_3d_or_slice_wise():
     labels = np.zeros((3, 7, 7), dtype=np.int32)
     labels[0, 3, 3] = 1
@@ -266,6 +281,20 @@ def test_touching_object_pipeline_defaults_to_3d_for_z_stacks():
     assert outputs[watershed.id].dtype == np.int32
     assert pipeline.nodes[distance.id].params["resolved_spatial_ndim"] == 3
     assert pipeline.nodes[markers.id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.nodes[watershed.id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.output_states[watershed.id].kind == "label image"
+
+
+def test_auto_watershed_pipeline_defaults_to_3d_for_z_stacks():
+    data = np.zeros((3, 16, 16), dtype=bool)
+    data[:, 5:11, 5:11] = True
+    pipeline = PrototypePipeline()
+    watershed = pipeline.add_node("auto_watershed_from_mask")
+    pipeline.connect("input", watershed.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "ZYX"})
+
+    assert outputs[watershed.id].dtype == np.int32
     assert pipeline.nodes[watershed.id].params["resolved_spatial_ndim"] == 3
     assert pipeline.output_states[watershed.id].kind == "label image"
 

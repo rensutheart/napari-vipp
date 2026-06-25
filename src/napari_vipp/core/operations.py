@@ -787,6 +787,44 @@ def h_maxima_markers(
     return _apply_spatial_blocks(arr, spatial_ndim, marker_block, dtype=np.int32)
 
 
+def auto_watershed_from_mask(
+    data,
+    h: float = 1.0,
+    connectivity: str = "Full connectivity",
+    image_mode: str = "Distance map (invert)",
+    compactness: float = 0.0,
+    watershed_line: bool = False,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Segment touching foreground structures from one mask-like input.
+
+    This convenience operation performs the common separation chain:
+    mask -> distance transform -> h-maxima markers -> marker-controlled watershed.
+    """
+    mask = _to_bool_mask(data)
+    distance = euclidean_distance_transform(
+        mask,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+    )
+    markers = h_maxima_markers(
+        distance,
+        h=h,
+        spatial_mode=spatial_mode,
+        connectivity=connectivity,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+    )
+    return marker_controlled_watershed(
+        [distance, markers, mask],
+        image_mode=image_mode,
+        compactness=compactness,
+        watershed_line=watershed_line,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+    )
+
+
 def marker_controlled_watershed(
     inputs,
     image_mode: str = "Distance map (invert)",

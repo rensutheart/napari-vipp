@@ -1432,10 +1432,12 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     assert _palette_child_by_text(global_thresholds, "Hysteresis Threshold")
     assert _palette_child_by_text(local_thresholds, "Adaptive Gaussian Threshold")
     assert _palette_child_by_text(local_thresholds, "Sauvola Threshold")
+    assert _palette_child_by_text(object_separation, "Auto Watershed From Mask")
     assert _palette_child_by_text(object_separation, "Euclidean Distance Transform")
     assert _palette_child_by_text(object_separation, "H-Maxima Markers")
     assert _palette_child_by_text(object_separation, "Marker-Controlled Watershed")
     assert _palette_child_by_text(object_separation, "Expand Labels")
+    assert object_separation.child(0).text(0) == "Auto Watershed From Mask"
 
 
 def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
@@ -1473,6 +1475,64 @@ def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
     assert widget.pipeline.nodes[node.id].params["threshold_scope"] == (
         "Stack histogram"
     )
+
+
+def test_auto_watershed_hides_spatial_mode_for_2d_input(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32), metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("auto_watershed_from_mask")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "spatial_mode" not in widget._parameter_widgets
+
+
+def test_auto_watershed_shows_spatial_mode_for_z_stack_input(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("auto_watershed_from_mask")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "spatial_mode" in widget._parameter_widgets
+    control = widget._parameter_widgets["spatial_mode"]
+    assert control.combo.itemText(0) == "Auto from axes - using 3D ZYX"
+
+
+def test_watershed_h_parameter_has_sane_upper_bound(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    for operation_id in ("h_maxima_markers", "auto_watershed_from_mask"):
+        node = widget.add_node_from_palette(operation_id)
+        widget._connect_nodes("input", node.id)
+        widget.graph_view.select_node(node.id)
+        h_widget = widget._parameter_widgets["h"]
+        assert np.isclose(h_widget._from_slider(h_widget.slider.maximum()), 5.0)
+        assert float(h_widget.value_box.maximum()) >= 1_000_000.0
+        h_widget.value_box.setValue(7.5)
+        assert np.isclose(float(h_widget.value_box.value()), 7.5)
+
+
+def test_marker_controlled_watershed_shows_input_guide_note(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("marker_controlled_watershed")
+    widget.graph_view.select_node(node.id)
+
+    note = widget._parameter_widgets.get("operation_notice")
+    assert note is not None
+    text = note.text().lower()
+    assert "image / distance" in text
+    assert "markers" in text
+    assert "mask" in text
 
 
 def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):

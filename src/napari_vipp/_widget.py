@@ -3893,10 +3893,14 @@ class VippWidget(QWidget):
             return
         specs = self.pipeline.node_parameter_specs(node_id)
         stack_note = self._stack_processing_note(node_id)
-        self.parameter_group.setHidden(not specs and not stack_note)
+        help_note = self._operation_help_note(node_id)
+        self.parameter_group.setHidden(not specs and not stack_note and not help_note)
         if not specs:
             if stack_note:
                 self._add_operation_note(stack_note)
+                self.parameter_group.setHidden(False)
+            if help_note:
+                self._add_operation_note(help_note)
                 self.parameter_group.setHidden(False)
             return
         if node.operation_id == "select_axis_slice":
@@ -3951,6 +3955,9 @@ class VippWidget(QWidget):
             rendered = True
         if stack_note:
             self._add_operation_note(stack_note)
+            rendered = True
+        if help_note:
+            self._add_operation_note(help_note)
             rendered = True
         self.parameter_group.setHidden(not rendered)
 
@@ -4094,6 +4101,19 @@ class VippWidget(QWidget):
         if self._input_spatial_count(node_id) < 3:
             return ""
         return spec.stack_processing_note
+
+    def _operation_help_note(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ""
+        if node.operation_id == "marker_controlled_watershed":
+            return (
+                "Input guide:\n"
+                "- Image / distance: elevation image or distance map.\n"
+                "- Markers: non-negative integer seed labels.\n"
+                "- Mask: foreground constraint region (>0 = inside)."
+            )
+        return ""
 
     def _render_combine_channels_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -4513,6 +4533,12 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if (
             node is not None
+            and node.operation_id == "auto_watershed_from_mask"
+            and spec.name == "spatial_mode"
+        ):
+            return self._input_spatial_count(node_id) < 3
+        if (
+            node is not None
             and node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
             and spec.name == "threshold_scope"
         ):
@@ -4552,9 +4578,11 @@ class VippWidget(QWidget):
     def _effective_parameter_spec(self, node_id: str, spec):
         node = self.pipeline.nodes.get(node_id)
         if spec.name == "spatial_mode":
+            choices = self._available_spatial_modes(node_id)
             return replace(
                 spec,
-                choices=self._available_spatial_modes(node_id),
+                choices=choices,
+                choice_labels=self._spatial_mode_choice_labels(node_id, choices),
             )
         if (
             node is not None
@@ -4616,6 +4644,34 @@ class VippWidget(QWidget):
                 choice_labels=choice_labels,
             )
         return spec
+
+    def _spatial_mode_choice_labels(
+        self,
+        node_id: str,
+        choices: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        labels = list(choices)
+        resolved = self._resolved_auto_spatial_mode_label(node_id)
+        if resolved:
+            for index, choice in enumerate(choices):
+                if str(choice).startswith("Auto from axes"):
+                    labels[index] = f"Auto from axes - using {resolved}"
+                    break
+        return tuple(labels)
+
+    def _resolved_auto_spatial_mode_label(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return ""
+        mode = str(node.params.get("spatial_mode", "Auto from axes")).strip().lower()
+        if not mode.startswith("auto"):
+            return ""
+        resolved = node.params.get("resolved_spatial_ndim")
+        if resolved == 3:
+            return "3D ZYX"
+        if resolved == 2:
+            return "2D YX"
+        return "3D ZYX" if self._input_spatial_count(node_id) >= 3 else "2D YX"
 
     def _available_project_axis_choices(
         self,
@@ -4766,6 +4822,21 @@ class VippWidget(QWidget):
         if spec.kind == "choice":
             return ParameterBounds(0, max(len(spec.choices) - 1, 0), 1, 0)
         node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id in {"h_maxima_markers", "auto_watershed_from_mask"}
+            and spec.name == "h"
+        ):
+            upper = min(float(spec.maximum), 5.0)
+            return ParameterBounds(
+                spec.minimum,
+                upper,
+                spec.step,
+                spec.decimals,
+                expandable=False,
+                entry_minimum=min(float(spec.minimum), -1_000_000.0),
+                entry_maximum=1_000_000.0,
+            )
         if (
             node is not None
             and node.operation_id == "split_channels"
