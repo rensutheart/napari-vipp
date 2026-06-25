@@ -6064,7 +6064,9 @@ class VippWidget(QWidget):
                 self._refresh_rescale_cutoff_widgets(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+                self._current_step()
+                if self.follow_dims_checkbox.isChecked()
+                else None,
             )
         if (
             (
@@ -6083,7 +6085,9 @@ class VippWidget(QWidget):
         ):
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+                self._current_step()
+                if self.follow_dims_checkbox.isChecked()
+                else None,
             )
         self._debounce_timer.start()
 
@@ -6555,7 +6559,9 @@ class VippWidget(QWidget):
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
         current_step_nsteps = (
-            self._viewer_nsteps() if self.follow_dims_checkbox.isChecked() else None
+            self._current_step_nsteps()
+            if self.follow_dims_checkbox.isChecked()
+            else None
         )
         contrast_mode = self.thumbnail_contrast_combo.currentText()
         previews_visible_globally = (
@@ -6708,7 +6714,9 @@ class VippWidget(QWidget):
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
         current_step_nsteps = (
-            self._viewer_nsteps() if self.follow_dims_checkbox.isChecked() else None
+            self._current_step_nsteps()
+            if self.follow_dims_checkbox.isChecked()
+            else None
         )
         self._update_rescale_input_histogram(node.id, current_step)
         self.histogram_group.setHidden(False)
@@ -6737,7 +6745,7 @@ class VippWidget(QWidget):
         current_step,
     ) -> None:
         current_step_nsteps = (
-            self._viewer_nsteps()
+            self._current_step_nsteps()
             if self.follow_dims_checkbox.isChecked() and current_step is not None
             else None
         )
@@ -7497,7 +7505,13 @@ class VippWidget(QWidget):
         raw_step = self._raw_current_step()
         if raw_step is None:
             return None
-        return self._canonical_current_step(raw_step)
+        return self._canonical_viewer_values(raw_step, fill_value=0)
+
+    def _current_step_nsteps(self):
+        raw_nsteps = self._viewer_nsteps()
+        if raw_nsteps is None:
+            return None
+        return self._canonical_viewer_values(raw_nsteps, fill_value=1)
 
     def _raw_current_step(self):
         try:
@@ -7505,35 +7519,40 @@ class VippWidget(QWidget):
         except Exception:
             return None
 
-    def _canonical_current_step(self, current_step: tuple) -> tuple:
+    def _canonical_viewer_values(
+        self,
+        values: tuple,
+        *,
+        fill_value: int,
+    ) -> tuple:
         layer = self._layer_by_name(self._inspect_layer_name)
         metadata = getattr(layer, "metadata", {}) if layer is not None else {}
         if not isinstance(metadata, dict):
-            return current_step
+            return tuple(int(value) for value in values)
         node_id = metadata.get("node_id")
         state = self.pipeline.output_states.get(node_id)
         axes = tuple(getattr(state, "axes", ()))
         if not axes:
-            return current_step
+            return tuple(int(value) for value in values)
         display_axis_indices = [
             index
             for index, axis in enumerate(axes)
             if not _state_axis_hidden_from_napari_dims(axis, metadata)
         ]
         if not display_axis_indices:
-            return current_step
-        offset = max(len(current_step) - len(display_axis_indices), 0)
+            return tuple(int(value) for value in values)
+        offset = max(len(values) - len(display_axis_indices), 0)
         source_axes = [
             int(axis.source_axis)
             for axis in axes
             if getattr(axis, "source_axis", None) is not None
         ]
         if not source_axes:
-            return current_step
-        canonical = [0] * (max(source_axes) + 1)
+            return tuple(int(value) for value in values)
+        canonical = [int(fill_value)] * (max(source_axes) + 1)
         for display_position, state_axis_index in enumerate(display_axis_indices):
             current_index = offset + display_position
-            if current_index < 0 or current_index >= len(current_step):
+            if current_index < 0 or current_index >= len(values):
                 continue
             axis = axes[state_axis_index]
             source_axis = getattr(axis, "source_axis", None)
@@ -7541,7 +7560,7 @@ class VippWidget(QWidget):
                 continue
             source_axis = int(source_axis)
             if 0 <= source_axis < len(canonical):
-                canonical[source_axis] = int(current_step[current_index])
+                canonical[source_axis] = int(values[current_index])
         return tuple(canonical)
 
     def _node_title(self, node_id: str) -> str:
@@ -8045,6 +8064,10 @@ def _metadata_current_step_axis(state, axis_index: int, current_step=None) -> in
     except Exception:
         current_ndim = 0
     axes = tuple(getattr(state, "axes", ()))
+    state_ndim = len(axes)
+    if current_ndim == state_ndim and current_ndim > 0:
+        # When viewer dims already match this state, map positionally.
+        return axis_index
     try:
         source_axis = axes[axis_index].source_axis
     except Exception:
@@ -8078,6 +8101,9 @@ def _histogram_axis_index(
             source_nsteps = int(tuple(current_step_nsteps)[axis])
         except Exception:
             source_nsteps = 0
+        # Keep exact napari index when source and target axis sizes match.
+        if source_nsteps == int(axis_size):
+            return int(np.clip(step, 0, max(axis_size - 1, 0)))
         source_max = max(source_nsteps - 1, 0)
         target_max = max(int(axis_size) - 1, 0)
         if source_max > 0 and target_max > 0:

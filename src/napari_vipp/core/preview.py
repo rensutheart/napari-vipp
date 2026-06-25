@@ -60,7 +60,11 @@ def make_preview(
             return state_preview
     if mode == "mip":
         return _mip(arr)
-    return _slice(arr, current_step=current_step, current_step_nsteps=current_step_nsteps)
+    return _slice(
+        arr,
+        current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
+    )
 
 
 def normalize_thumbnail(data, size: tuple[int, int] = (180, 110)) -> np.ndarray | None:
@@ -258,6 +262,10 @@ def _current_step_axis(
         current_ndim = len(tuple(current_step))
     except Exception:
         current_ndim = 0
+    state_ndim = len(getattr(state, "axes", ()))
+    if current_ndim == state_ndim and current_ndim > 0:
+        # When viewer dims already match this state, map positionally.
+        return axis_index
     try:
         source_axis = state.axes[axis_index].source_axis
     except Exception:
@@ -332,6 +340,9 @@ def _axis_index(
             source_nsteps = int(tuple(current_step_nsteps)[axis])
         except Exception:
             source_nsteps = 0
+        # Keep exact napari index when source and target axis sizes match.
+        if source_nsteps == int(axis_size):
+            return max(0, min(axis_size - 1, step))
         source_max = max(source_nsteps - 1, 0)
         target_max = max(int(axis_size) - 1, 0)
         if source_max > 0 and target_max > 0:
