@@ -3351,9 +3351,9 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._sync_all_input_ports()
         self._sync_all_output_ports()
-        self._select_first_available_node()
         self._invalidate_pipeline_cache()
-        self.run_pipeline()
+        self.run_pipeline(force_sync=True)
+        self._select_first_available_node()
         self._push_undo_if_changed(before)
         return source
 
@@ -6147,7 +6147,7 @@ class VippWidget(QWidget):
             f"({lower:.3g} to {upper:.3g})."
         )
 
-    def run_pipeline(self) -> None:
+    def run_pipeline(self, *, force_sync: bool = False) -> None:
         toolbar_layer = self._selected_input_layer()
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
@@ -6186,7 +6186,9 @@ class VippWidget(QWidget):
             source_payloads,
         )
         dirty_node_ids = self._dirty_nodes_for_run(source_signature)
-        if self._should_run_pipeline_in_background(dirty_node_ids):
+        if (not force_sync) and self._should_run_pipeline_in_background(
+            dirty_node_ids
+        ):
             self._start_background_pipeline_run(
                 input_data,
                 input_metadata,
@@ -6552,6 +6554,9 @@ class VippWidget(QWidget):
         current_step = (
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
+        current_step_nsteps = (
+            self._viewer_nsteps() if self.follow_dims_checkbox.isChecked() else None
+        )
         contrast_mode = self.thumbnail_contrast_combo.currentText()
         previews_visible_globally = (
             self.global_thumbnail_checkbox.isChecked() and mode.lower() != "off"
@@ -6579,6 +6584,7 @@ class VippWidget(QWidget):
                 preview_data,
                 mode=mode,
                 current_step=current_step,
+                current_step_nsteps=current_step_nsteps,
                 state=preview_state,
                 channel_colors=self._node_preview_channel_colors(node_id),
                 contrast_mode=contrast_mode,
@@ -6701,6 +6707,9 @@ class VippWidget(QWidget):
         current_step = (
             self._current_step() if self.follow_dims_checkbox.isChecked() else None
         )
+        current_step_nsteps = (
+            self._viewer_nsteps() if self.follow_dims_checkbox.isChecked() else None
+        )
         self._update_rescale_input_histogram(node.id, current_step)
         self.histogram_group.setHidden(False)
         self.histogram_group.setTitle("Output Histogram")
@@ -6713,6 +6722,7 @@ class VippWidget(QWidget):
             state=state,
             scope=scope,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         self.histogram_plot.set_histogram(
             counts,
@@ -6726,6 +6736,11 @@ class VippWidget(QWidget):
         node_id: str,
         current_step,
     ) -> None:
+        current_step_nsteps = (
+            self._viewer_nsteps()
+            if self.follow_dims_checkbox.isChecked() and current_step is not None
+            else None
+        )
         node = self.pipeline.nodes.get(node_id)
         visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
         self.rescale_input_histogram_group.setHidden(not visible)
@@ -6768,6 +6783,7 @@ class VippWidget(QWidget):
             state=state,
             scope=scope,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         markers = _input_histogram_markers(
             node.operation_id,
@@ -6775,6 +6791,7 @@ class VippWidget(QWidget):
             state=state,
             scope=scope,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
             params=node.params,
         )
         self.rescale_input_histogram_plot.set_histogram(
@@ -7175,6 +7192,8 @@ class VippWidget(QWidget):
         metadata: dict,
         role: str,
     ) -> None:
+        saved_step = self._raw_current_step()
+        saved_nsteps = self._viewer_nsteps()
         display_data = self._display_data(data)
         data_kind = self._data_kind(data, metadata.get("node_id"))
         metadata = {
@@ -7188,15 +7207,76 @@ class VippWidget(QWidget):
         layer = self._layer_by_name(name)
         if layer is None:
             self._add_image_or_labels(name, data, metadata=metadata)
+            self._restore_viewer_step(saved_step, saved_nsteps)
             return
         if self._generated_layer_needs_replacement(layer, metadata):
             self._remove_layer(layer)
             self._add_image_or_labels(name, data, metadata=metadata)
+            self._restore_viewer_step(saved_step, saved_nsteps)
             return
         layer.data = display_data
         layer.metadata.update(metadata)
         layer.visible = True
         self._configure_generated_layer(layer, data, metadata)
+        self._restore_viewer_step(saved_step, saved_nsteps)
+
+    def _viewer_nsteps(self) -> tuple[int, ...] | None:
+        try:
+            return tuple(int(value) for value in self.viewer.dims.nsteps)
+        except Exception:
+            return None
+
+    def _restore_viewer_step(
+        self,
+        step: tuple | None,
+        previous_nsteps: tuple[int, ...] | None,
+    ) -> None:
+        if step is None:
+            return
+        try:
+            dims = self.viewer.dims
+            current = tuple(dims.current_step)
+        except Exception:
+            return
+        target_ndim = len(current)
+        source = tuple(step)
+        if target_ndim <= 0:
+            return
+        offset = max(target_ndim - len(source), 0)
+        aligned = [0] * target_ndim
+        for axis in range(target_ndim):
+            source_axis = axis - offset
+            if 0 <= source_axis < len(source):
+                aligned[axis] = int(source[source_axis])
+            else:
+                aligned[axis] = int(current[axis])
+        nsteps = tuple(int(value) for value in getattr(dims, "nsteps", ()))
+
+        # Preserve relative position (for example through Z rescaling) instead
+        # of forcing the old absolute index after layer replacement.
+        if previous_nsteps is not None:
+            previous = tuple(int(value) for value in previous_nsteps)
+            for axis in range(target_ndim):
+                source_axis = axis - offset
+                if source_axis < 0 or source_axis >= len(source):
+                    continue
+                if source_axis >= len(previous) or axis >= len(nsteps):
+                    continue
+                old_max = max(previous[source_axis] - 1, 0)
+                new_max = max(nsteps[axis] - 1, 0)
+                if old_max <= 0 or new_max <= 0:
+                    continue
+                ratio = float(np.clip(source[source_axis], 0, old_max)) / float(old_max)
+                aligned[axis] = int(round(ratio * new_max))
+
+        for axis, value in enumerate(aligned):
+            if axis < len(nsteps):
+                upper = max(int(nsteps[axis]) - 1, 0)
+                value = int(np.clip(value, 0, upper))
+            try:
+                dims.set_current_step(axis, int(value))
+            except Exception:
+                pass
 
     def _add_image_or_labels(self, name: str, data, metadata: dict):
         display_data = self._display_data(data)
@@ -7614,12 +7694,14 @@ def _histogram_counts(
     state=None,
     scope: str = "Slice",
     current_step=None,
+    current_step_nsteps=None,
 ) -> np.ndarray | None:
     counts, _x_range, _colors = _histogram_summary(
         data,
         state=state,
         scope=scope,
         current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
     )
     return counts
 
@@ -7629,6 +7711,7 @@ def _histogram_summary(
     state=None,
     scope: str = "Slice",
     current_step=None,
+    current_step_nsteps=None,
 ) -> tuple[np.ndarray | None, tuple[float, float] | None, list[QColor] | None]:
     if data is None:
         return None, None, None
@@ -7638,6 +7721,7 @@ def _histogram_summary(
         state=state,
         scope=scope,
         current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
     )
     if source is None:
         return None, None, None
@@ -7683,6 +7767,7 @@ def _input_histogram_markers(
     state=None,
     scope: str = "Slice",
     current_step=None,
+    current_step_nsteps=None,
     params: dict | None = None,
 ) -> list[tuple[str, float, QColor]]:
     if operation_id == "rescale_intensity":
@@ -7691,6 +7776,7 @@ def _input_histogram_markers(
             state=state,
             scope=scope,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
             params=params,
         )
     if operation_id == "clip_intensity":
@@ -7720,6 +7806,7 @@ def _input_histogram_markers(
             state=state,
             scope=scope,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         if source is None:
             return []
@@ -7744,6 +7831,7 @@ def _rescale_percentile_markers(
     state=None,
     scope: str = "Slice",
     current_step=None,
+    current_step_nsteps=None,
     params: dict | None = None,
 ) -> list[tuple[str, float, QColor]]:
     if params is not None and {
@@ -7761,6 +7849,7 @@ def _rescale_percentile_markers(
         state=state,
         scope=scope,
         current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
     )
     if source is None:
         return []
@@ -7857,6 +7946,7 @@ def _histogram_source(
     state=None,
     scope: str = "Slice",
     current_step=None,
+    current_step_nsteps=None,
 ) -> tuple[np.ndarray, int | None, str] | None:
     arr = np.asarray(data)
     channel_axis, channel_axis_name = _histogram_channel_axis(arr, state)
@@ -7869,6 +7959,7 @@ def _histogram_source(
             state,
             channel_axis,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         if source is not None:
             return source[0], source[1], channel_axis_name
@@ -7877,6 +7968,7 @@ def _histogram_source(
         data,
         mode="slice",
         current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
         state=state,
     )
     if preview is None:
@@ -7892,6 +7984,7 @@ def _state_histogram_slice(
     channel_axis: int | None,
     *,
     current_step=None,
+    current_step_nsteps=None,
 ) -> tuple[np.ndarray, int | None] | None:
     if len(state.axes) != arr.ndim:
         return None
@@ -7919,6 +8012,7 @@ def _state_histogram_slice(
             step_axis,
             result.shape[local_axis],
             current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         result = np.take(result, index, axis=local_axis)
         remaining.pop(local_axis)
@@ -7966,13 +8060,29 @@ def _state_axis_hidden_from_napari_dims(axis, metadata: dict) -> bool:
     return str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
 
 
-def _histogram_axis_index(axis: int, axis_size: int, current_step=None) -> int:
+def _histogram_axis_index(
+    axis: int,
+    axis_size: int,
+    current_step=None,
+    *,
+    current_step_nsteps=None,
+) -> int:
     if current_step is None:
         return axis_size // 2
     try:
         step = int(tuple(current_step)[axis])
     except Exception:
         step = axis_size // 2
+    if current_step_nsteps is not None:
+        try:
+            source_nsteps = int(tuple(current_step_nsteps)[axis])
+        except Exception:
+            source_nsteps = 0
+        source_max = max(source_nsteps - 1, 0)
+        target_max = max(int(axis_size) - 1, 0)
+        if source_max > 0 and target_max > 0:
+            ratio = float(np.clip(step, 0, source_max)) / float(source_max)
+            step = int(round(ratio * target_max))
     return int(np.clip(step, 0, max(axis_size - 1, 0)))
 
 

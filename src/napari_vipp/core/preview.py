@@ -32,6 +32,7 @@ def make_preview(
     data,
     mode: str = "slice",
     current_step=None,
+    current_step_nsteps=None,
     state: ImageState | None = None,
     channel_colors: str | list[str] | tuple[str, ...] | None = None,
     contrast_mode: str = "Percentile",
@@ -50,6 +51,7 @@ def make_preview(
             arr,
             mode,
             current_step,
+            current_step_nsteps,
             state,
             channel_colors=channel_colors,
             contrast_mode=contrast_mode,
@@ -58,7 +60,7 @@ def make_preview(
             return state_preview
     if mode == "mip":
         return _mip(arr)
-    return _slice(arr, current_step=current_step)
+    return _slice(arr, current_step=current_step, current_step_nsteps=current_step_nsteps)
 
 
 def normalize_thumbnail(data, size: tuple[int, int] = (180, 110)) -> np.ndarray | None:
@@ -108,15 +110,25 @@ def normalize_thumbnail_with_colormap(
     return _resize_nearest(rgb, size)
 
 
-def _slice(arr: np.ndarray, current_step=None) -> np.ndarray:
+def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.ndarray:
     arr = _strip_rgb_safe_singletons(arr)
     while arr.ndim > 3 or (arr.ndim == 3 and arr.shape[-1] not in RGB_CHANNELS):
         axis = 0
-        index = _axis_index(axis, arr.shape[axis], current_step)
+        index = _axis_index(
+            axis,
+            arr.shape[axis],
+            current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
         arr = np.take(arr, index, axis=axis)
 
     if arr.ndim == 3 and arr.shape[-1] not in RGB_CHANNELS:
-        index = _axis_index(0, arr.shape[0], current_step)
+        index = _axis_index(
+            0,
+            arr.shape[0],
+            current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
         arr = arr[index]
     return arr
 
@@ -125,6 +137,7 @@ def _state_aware_preview(
     arr: np.ndarray,
     mode: str,
     current_step,
+    current_step_nsteps,
     state: ImageState,
     *,
     channel_colors: str | list[str] | tuple[str, ...] | None = None,
@@ -146,6 +159,7 @@ def _state_aware_preview(
             keep_axes={channel_axis, y_axis, x_axis},
             mode=mode,
             current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
         )
         if reduced.ndim != 3:
             return None
@@ -174,6 +188,7 @@ def _state_aware_preview(
         keep_axes={y_axis, x_axis},
         mode=mode,
         current_step=current_step,
+        current_step_nsteps=current_step_nsteps,
     )
     if reduced.ndim != 2:
         return None
@@ -190,6 +205,7 @@ def _reduce_to_axes(
     keep_axes: set[int],
     mode: str,
     current_step,
+    current_step_nsteps,
 ) -> np.ndarray:
     result = arr
     remaining = list(range(arr.ndim))
@@ -203,6 +219,12 @@ def _reduce_to_axes(
         else:
             step_axis = _current_step_axis(state, original_axis, current_step)
             index = _axis_index(step_axis, result.shape[local_axis], current_step)
+            index = _axis_index(
+                step_axis,
+                result.shape[local_axis],
+                current_step,
+                current_step_nsteps=current_step_nsteps,
+            )
             result = np.take(result, index, axis=local_axis)
         remaining.pop(local_axis)
     return result
@@ -292,13 +314,29 @@ def _mip(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _axis_index(axis: int, axis_size: int, current_step=None) -> int:
+def _axis_index(
+    axis: int,
+    axis_size: int,
+    current_step=None,
+    *,
+    current_step_nsteps=None,
+) -> int:
     if current_step is None:
         return axis_size // 2
     try:
         step = int(tuple(current_step)[axis])
     except Exception:
         step = axis_size // 2
+    if current_step_nsteps is not None:
+        try:
+            source_nsteps = int(tuple(current_step_nsteps)[axis])
+        except Exception:
+            source_nsteps = 0
+        source_max = max(source_nsteps - 1, 0)
+        target_max = max(int(axis_size) - 1, 0)
+        if source_max > 0 and target_max > 0:
+            ratio = float(np.clip(step, 0, source_max)) / float(source_max)
+            step = int(round(ratio * target_max))
     return max(0, min(axis_size - 1, step))
 
 
