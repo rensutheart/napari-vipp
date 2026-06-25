@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
     QImage,
@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QMenu,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from napari_vipp._theme import category_color, category_tint
@@ -40,6 +41,42 @@ class ClickablePreview(QLabel):
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+class ProcessingBadge(QWidget):
+    """Raised busy indicator that stays visible above card child widgets."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._angle = 0
+        self._queued = False
+        self.setFixedSize(30, 30)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def set_queued(self, queued: bool) -> None:
+        self._queued = queued
+        self.update()
+
+    def set_angle(self, angle: int) -> None:
+        self._angle = int(angle) % 360
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(15, 23, 42, 225))
+        painter.setPen(QPen(QColor("#475569"), 1.1))
+        painter.drawRoundedRect(QRectF(1.0, 1.0, 28.0, 28.0), 8.0, 8.0)
+
+        color = QColor("#f59e0b" if self._queued else "#93c5fd")
+        painter.setPen(QPen(color, 2.4))
+        painter.drawArc(QRectF(7.0, 7.0, 16.0, 16.0), self._angle * 16, 285 * 16)
+        if self._queued:
+            painter.setBrush(color)
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(15.0, 15.0), 2.4, 2.4)
 
 
 class NodeCard(QFrame):
@@ -65,6 +102,9 @@ class NodeCard(QFrame):
         self._selected = False
         self._pinned = False
         self._preview_enabled = True
+        self._processing = False
+        self._processing_queued = False
+        self._processing_angle = 0
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(220)
@@ -93,6 +133,7 @@ class NodeCard(QFrame):
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
+        self.processing_badge = ProcessingBadge(self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 10)
@@ -112,6 +153,10 @@ class NodeCard(QFrame):
     def mouseReleaseEvent(self, event):  # noqa: N802
         self.setCursor(Qt.OpenHandCursor)
         super().mouseReleaseEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._position_processing_badge()
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
@@ -137,6 +182,33 @@ class NodeCard(QFrame):
             self.preview.setPixmap(QPixmap())
         elif self.preview.pixmap() is None:
             self.preview.setText("No preview")
+
+    def set_processing(self, processing: bool, *, queued: bool = False) -> None:
+        self._processing = processing
+        self._processing_queued = queued if processing else False
+        self.processing_badge.set_queued(self._processing_queued)
+        self.processing_badge.setVisible(processing)
+        if processing:
+            self.setToolTip(
+                "Processing in background; latest edit is queued."
+                if queued
+                else "Processing in background."
+            )
+        else:
+            self.setToolTip("")
+        self._position_processing_badge()
+        self._refresh_style()
+        self.update()
+
+    def is_processing(self) -> bool:
+        return self._processing
+
+    def advance_processing_spinner(self) -> None:
+        if not self._processing:
+            return
+        self._processing_angle = (self._processing_angle - 32) % 360
+        self.processing_badge.set_angle(self._processing_angle)
+        self.update()
 
     def set_thumbnail(self, thumbnail: np.ndarray | None) -> None:
         if not self._preview_enabled:
@@ -172,6 +244,19 @@ class NodeCard(QFrame):
             border = "#facc15"
             border_width = 4
             background = "#2a271b"
+        if self._processing:
+            background = "#303640"
+            if not self._pinned and not self._selected:
+                border = "#94a3b8"
+            if self._processing_queued and not self._pinned:
+                border = "#f59e0b"
+        accent_color = self._category_color
+        category_background = self._category_tint
+        category_color = self._category_color
+        if self._processing:
+            accent_color = "#94a3b8"
+            category_background = "#3a414c"
+            category_color = "#d1d5db"
         self.setStyleSheet(
             f"""
             QFrame#NodeCard {{
@@ -183,7 +268,7 @@ class NodeCard(QFrame):
                 color: #f3f4f6;
             }}
             QFrame#NodeAccent {{
-                background: {self._category_color};
+                background: {accent_color};
                 border: none;
                 border-radius: 2px;
             }}
@@ -195,8 +280,8 @@ class NodeCard(QFrame):
         self.category_label.setStyleSheet(
             f"""
             QLabel#NodeCategory {{
-                background: {self._category_tint};
-                color: {self._category_color};
+                background: {category_background};
+                color: {category_color};
                 border-radius: 4px;
                 font-size: 10px;
                 font-weight: 650;
@@ -205,6 +290,19 @@ class NodeCard(QFrame):
             """
         )
         self.pin_button.setVisible(False)
+        self.processing_badge.raise_()
+
+    def _position_processing_badge(self) -> None:
+        badge_size = self.processing_badge.size()
+        preview_rect = self.preview.geometry()
+        if self.preview.isVisible() and preview_rect.isValid():
+            x = preview_rect.right() - badge_size.width() - 8
+            y = preview_rect.top() + 8
+        else:
+            x = self.width() - badge_size.width() - 10
+            y = 10
+        self.processing_badge.move(max(0, x), max(0, y))
+        self.processing_badge.raise_()
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -741,7 +839,6 @@ class PipelineGraphView(QGraphicsView):
     DEFAULT_ZOOM = 100
     WHEEL_MIN_ZOOM = 20
     WHEEL_MAX_ZOOM = 400
-    DEFAULT_VISUAL_SCALE = 3.125
 
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
@@ -778,6 +875,9 @@ class PipelineGraphView(QGraphicsView):
         self._pan_v_value = 0
         self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
+        self._processing_timer = QTimer(self)
+        self._processing_timer.setInterval(80)
+        self._processing_timer.timeout.connect(self._advance_processing_spinners)
 
     def build_graph(
         self,
@@ -791,6 +891,7 @@ class PipelineGraphView(QGraphicsView):
         preserved_transform = QTransform(self.transform())
         preserved_base_transform = QTransform(self._base_transform)
         preserved_zoom = float(self._zoom_percent)
+        self.clear_node_processing()
         self.scene.clear()
         self._proxies.clear()
         self._cards.clear()
@@ -837,10 +938,9 @@ class PipelineGraphView(QGraphicsView):
             self.centerOn(preserved_center)
             return
         self.resetTransform()
-        self.fitInView(graph_rect.adjusted(-80, -80, 120, 80), Qt.KeepAspectRatio)
-        self._base_transform = QTransform(self.transform())
+        self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
-        self._apply_zoom_from_base()
+        self._apply_zoom_from_base(graph_rect.center())
         self.zoom_changed.emit(self._zoom_percent)
 
     @property
@@ -858,14 +958,11 @@ class PipelineGraphView(QGraphicsView):
     def reset_zoom(self) -> None:
         self.set_zoom_percent(float(self.DEFAULT_ZOOM))
 
-    def _apply_zoom_from_base(self) -> None:
-        center = self.mapToScene(self.viewport().rect().center())
+    def _apply_zoom_from_base(self, center: QPointF | None = None) -> None:
+        if center is None:
+            center = self.mapToScene(self.viewport().rect().center())
         self.setTransform(QTransform(self._base_transform))
-        factor = (
-            self._zoom_percent
-            / float(self.DEFAULT_ZOOM)
-            * self.DEFAULT_VISUAL_SCALE
-        )
+        factor = self._zoom_percent / float(self.DEFAULT_ZOOM)
         self.scale(factor, factor)
         self.centerOn(center)
 
@@ -1032,6 +1129,30 @@ class PipelineGraphView(QGraphicsView):
         proxy.refresh_ports()
         for connection in proxy.connections:
             connection.update_path()
+
+    def set_node_processing(
+        self,
+        node_id: str,
+        processing: bool,
+        *,
+        queued: bool = False,
+    ) -> None:
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None:
+            return
+        card.set_processing(processing, queued=queued)
+        if proxy is not None:
+            proxy.update()
+        self._sync_processing_timer()
+
+    def clear_node_processing(self) -> None:
+        for node_id, card in self._cards.items():
+            card.set_processing(False)
+            proxy = self._proxies.get(node_id)
+            if proxy is not None:
+                proxy.update()
+        self._processing_timer.stop()
 
     def set_node_input_ports(
         self,
@@ -1337,6 +1458,26 @@ class PipelineGraphView(QGraphicsView):
             and item.source_port == int(source_port)
             for item in self._connections
         )
+
+    def _advance_processing_spinners(self) -> None:
+        active = False
+        for node_id, card in self._cards.items():
+            if not card.is_processing():
+                continue
+            active = True
+            card.advance_processing_spinner()
+            proxy = self._proxies.get(node_id)
+            if proxy is not None:
+                proxy.update()
+        if not active:
+            self._processing_timer.stop()
+
+    def _sync_processing_timer(self) -> None:
+        active = any(card.is_processing() for card in self._cards.values())
+        if active and not self._processing_timer.isActive():
+            self._processing_timer.start()
+        elif not active and self._processing_timer.isActive():
+            self._processing_timer.stop()
 
 
 def _to_pointf(value) -> QPointF | None:

@@ -45,6 +45,25 @@ def test_exported_run_pipeline_executes():
     assert namespace["OUTPUT_NODES"] == ("threshold",)
 
 
+def test_exported_rescale_axes_preserves_output_size_mode():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("rescale_axes")
+    pipeline.connect("input", node.id)
+    pipeline.set_param(node.id, "resize_mode", "Output size")
+    pipeline.set_param(node.id, "x_size", 12)
+    pipeline.set_param(node.id, "y_size", 8)
+    pipeline.set_param(node.id, "z_size", 5)
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](np.zeros((3, 4, 6), dtype=np.uint8))
+
+    assert "resize_mode='Output size'" in code
+    assert "x_size=12" in code
+    assert results[node.id].shape == (5, 8, 12)
+
+
 def test_export_handles_multi_input_nodes():
     pipeline = _starter_pipeline()
     add = pipeline.add_node("add_images")
@@ -56,6 +75,52 @@ def test_export_handles_multi_input_nodes():
     # Multi-input call should pass a list of upstream variables.
     assert "add_images([" in code
     assert "add_images([v_input, v_gaussian]" in code
+
+
+def test_export_includes_subtract_background_node():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("subtract_background")
+    pipeline.set_param(node.id, "radius", 7)
+    pipeline.connect("input", node.id)
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.zeros((21, 21), dtype=np.uint8)
+    image[10, 10] = 200
+    results = namespace["run_pipeline"](image)
+
+    assert "subtract_background(" in code
+    assert "radius=7" in code
+    assert results[node.id].shape == image.shape
+    assert results[node.id].dtype == image.dtype
+
+
+def test_exported_touching_object_separation_pipeline_executes():
+    pipeline = PrototypePipeline()
+    distance = pipeline.add_node("euclidean_distance_transform")
+    markers = pipeline.add_node("h_maxima_markers")
+    watershed = pipeline.add_node("marker_controlled_watershed")
+    pipeline.connect("input", distance.id)
+    pipeline.connect(distance.id, markers.id)
+    pipeline.connect(distance.id, watershed.id, target_port=0)
+    pipeline.connect(markers.id, watershed.id, target_port=1)
+    pipeline.connect("input", watershed.id, target_port=2)
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    yy, xx = np.mgrid[:48, :64]
+    image = (((yy - 24) ** 2 + (xx - 22) ** 2 <= 13**2) | (
+        (yy - 24) ** 2 + (xx - 42) ** 2 <= 13**2
+    ))
+    results = namespace["run_pipeline"](image)
+
+    assert "euclidean_distance_transform(" in code
+    assert "h_maxima_markers(" in code
+    assert "marker_controlled_watershed(" in code
+    assert results[watershed.id].dtype == np.int32
+    assert int(results[watershed.id].max()) == 2
 
 
 def test_exported_intensity_measurement_pipeline_executes():

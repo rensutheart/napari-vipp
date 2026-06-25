@@ -32,9 +32,12 @@ CHANNEL_COLLAPSE_OPERATIONS = {
     "niblack_threshold",
 }
 LABEL_OPERATIONS = {
+    "expand_labels",
+    "h_maxima_markers",
     "label_connected_components",
     "filter_labels_by_property",
     "filter_labels_by_volume",
+    "marker_controlled_watershed",
     "relabel_sequential",
 }
 KIND_PRESERVING_OPERATIONS = {
@@ -854,7 +857,12 @@ def _transformed_axes(
     if operation_id == "set_pixel_size":
         return _pixel_sized_axes(axes, params)
     if operation_id == "rescale_axes":
-        return _rescaled_axes(axes, params)
+        return _rescaled_axes(
+            axes,
+            params,
+            input_shape=input_state.shape,
+            output_shape=arr.shape,
+        )
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
         return _range_and_removed_axes(axes, params)
@@ -1145,10 +1153,10 @@ def _orthogonal_projection_axes(
     if len(spatial_axes) < 3 or output_ndim != len(axes) - 1:
         return axes
 
-    scale, unit = _orthogonal_montage_axis_scale(axes, params)
+    y_scale, x_scale, unit = _orthogonal_montage_axis_scales(axes, params)
     montage_axes = (
-        AxisMetadata(name="y", type="space", unit=unit, scale=scale),
-        AxisMetadata(name="x", type="space", unit=unit, scale=scale),
+        AxisMetadata(name="y", type="space", unit=unit, scale=y_scale),
+        AxisMetadata(name="x", type="space", unit=unit, scale=x_scale),
     )
     first_spatial_axis = min(spatial_axes)
     spatial_set = set(spatial_axes)
@@ -1216,22 +1224,20 @@ def _pixel_sized_axes(
 def _rescaled_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
+    *,
+    input_shape: tuple[int, ...],
+    output_shape: tuple[int, ...],
 ) -> tuple[AxisMetadata, ...]:
     axis_map = _xyz_axis_map_for_metadata(axes)
     if not axis_map:
         return axes
-    x_scale = _positive_float(params.get("x_scale"), 1.0)
-    y_scale = x_scale if bool(params.get("lock_xy", True)) else _positive_float(
-        params.get("y_scale"),
-        1.0,
-    )
-    z_scale = _positive_float(params.get("z_scale"), 1.0)
-    scale_by_role = {"x": x_scale, "y": y_scale, "z": z_scale}
-    axis_scale_factors = {
-        axis_index: scale_by_role[role]
-        for role, axis_index in axis_map.items()
-        if role in scale_by_role
-    }
+    axis_scale_factors = {}
+    for axis_index in axis_map.values():
+        if axis_index >= len(input_shape) or axis_index >= len(output_shape):
+            continue
+        input_size = max(int(input_shape[axis_index]), 1)
+        output_size = max(int(output_shape[axis_index]), 1)
+        axis_scale_factors[axis_index] = output_size / input_size
     return tuple(
         replace(axis, scale=axis.scale / axis_scale_factors[index])
         if index in axis_scale_factors and axis_scale_factors[index] > 0
@@ -1259,29 +1265,30 @@ def _xyz_axis_map_for_metadata(
     return axis_map
 
 
-def _orthogonal_montage_axis_scale(
+def _orthogonal_montage_axis_scales(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
-) -> tuple[float, str | None]:
+) -> tuple[float, float, str | None]:
     if not bool(params.get("use_physical_scale", True)):
-        return 1.0, None
+        return 1.0, 1.0, None
     spatial_axes = _orthogonal_projection_spatial_axes(axes)
     if len(spatial_axes) < 3:
-        return 1.0, None
+        return 1.0, 1.0, None
 
     spatial = [axes[index] for index in spatial_axes[-3:]]
     units = [_normalized_physical_unit(axis.unit) for axis in spatial]
     if len(set(units)) == 1:
-        values = [_positive_float(axis.scale, 1.0) for axis in spatial]
-        return min(values), _metadata_unit(units[0])
+        y_scale = _positive_float(spatial[1].scale, 1.0)
+        x_scale = _positive_float(spatial[2].scale, 1.0)
+        return y_scale, x_scale, _metadata_unit(units[0])
 
     converted: list[float] = []
     for axis, unit in zip(spatial, units, strict=True):
         factor = _unit_to_micrometer_factor(unit)
         if factor is None:
-            return 1.0, None
+            return 1.0, 1.0, None
         converted.append(_positive_float(axis.scale, 1.0) * factor)
-    return min(converted), "micrometer"
+    return converted[1], converted[2], "micrometer"
 
 
 def _metadata_unit(unit) -> str | None:
@@ -1459,6 +1466,17 @@ def _operation_history(
             f"z={_format_number(params.get('z_size', 1.0))} {unit}"
         )
     if operation_id == "rescale_axes":
+        interpolation = params.get("interpolation", "Auto")
+        if str(params.get("resize_mode", "")).lower().startswith("output"):
+            dimensions = ", ".join(
+                f"{role}={int(params.get(f'{role}_size', 0) or 0)}"
+                for role in ("x", "y", "z")
+                if f"{role}_size" in params
+            )
+            return (
+                f"{operation_title}: output size {dimensions} "
+                f"via {interpolation}"
+            )
         x_scale = _format_number(params.get("x_scale", 1.0))
         y_scale = _format_number(
             params.get("x_scale", 1.0)
@@ -1466,7 +1484,6 @@ def _operation_history(
             else params.get("y_scale", 1.0)
         )
         z_scale = _format_number(params.get("z_scale", 1.0))
-        interpolation = params.get("interpolation", "Auto")
         return (
             f"{operation_title}: x={x_scale}, y={y_scale}, z={z_scale} "
             f"via {interpolation}"
@@ -1536,6 +1553,28 @@ def _operation_history(
             f"bottom={int(params.get('bottom', 0))}, "
             f"left={int(params.get('left', 0))}, right={int(params.get('right', 0))}"
         )
+    if operation_id in {"rolling_ball_background", "subtract_background"}:
+        radius = _format_number(params.get("radius", 50.0))
+        spatial_mode = str(params.get("spatial_mode", "2D YX"))
+        if bool(params.get("light_background", False)):
+            polarity = ", light background"
+        else:
+            polarity = ""
+        return f"{operation_title}: radius {radius} px{polarity}, {spatial_mode}"
+    if operation_id == "euclidean_distance_transform":
+        return f"{operation_title}: {params.get('spatial_mode', 'Auto from axes')}"
+    if operation_id == "h_maxima_markers":
+        h_value = _format_number(params.get("h", 1.0))
+        return (
+            f"{operation_title}: h={h_value}, "
+            f"{params.get('spatial_mode', 'Auto from axes')}"
+        )
+    if operation_id == "expand_labels":
+        distance = _format_number(params.get("distance", 5.0))
+        return (
+            f"{operation_title}: distance {distance}, "
+            f"{params.get('spatial_mode', 'Auto from axes')}"
+        )
     if operation_id == "convert_dtype":
         return (
             f"{operation_title}: {params.get('output_dtype', 'uint8')} "
@@ -1565,6 +1604,10 @@ def _multi_input_history(
     if operation_id == "filter_labels_by_property":
         column = str(params.get("property_column", "auto")).strip() or "auto"
         return f"{operation_title}: filtered by {column}"
+    if operation_id == "marker_controlled_watershed":
+        mode = str(params.get("image_mode", "Distance map (invert)"))
+        spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
+        return f"{operation_title}: {mode}, {spatial_mode}"
     return f"{operation_title}: combined {count} inputs"
 
 

@@ -15,12 +15,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 from qtpy.QtCore import (
     QEvent,
+    QLocale,
     QMimeData,
+    QObject,
     QPointF,
     QRect,
+    QRunnable,
     QSignalBlocker,
     QSize,
     Qt,
+    QThreadPool,
     QTimer,
     Signal,
 )
@@ -58,6 +62,7 @@ from qtpy.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -157,6 +162,93 @@ class WorkflowHistorySnapshot:
     active_pinned_node_id: str | None = None
 
 
+@dataclass(frozen=True)
+class PipelineRunRequest:
+    run_id: int
+    workflow: dict
+    input_data: object
+    input_metadata: object
+    input_name: str
+    source_payloads: dict[str, SourcePayload]
+    dirty_node_ids: frozenset[str] | None = None
+    cached_outputs: dict[str, object] | None = None
+    cached_output_states: dict[str, object] | None = None
+    cached_node_outputs: dict[str, list[object]] | None = None
+    cached_node_output_states: dict[str, list[object]] | None = None
+    completed_node_ids: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class PipelineRunResult:
+    run_id: int
+    workflow: dict
+    pipeline: PrototypePipeline | None = None
+    error: str = ""
+
+
+class PipelineRunSignals(QObject):
+    node_started = Signal(object)
+    finished = Signal(object)
+
+
+class PipelineRunWorker(QRunnable):
+    """Run the headless pipeline on a serialized graph snapshot."""
+
+    def __init__(self, request: PipelineRunRequest):
+        super().__init__()
+        self.request = request
+        self.signals = PipelineRunSignals()
+
+    def run(self) -> None:
+        try:
+            workflow = deserialize_workflow(deepcopy(self.request.workflow))
+            pipeline = PrototypePipeline()
+            pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+            self._hydrate_cached_pipeline_outputs(pipeline)
+            pipeline.run(
+                self.request.input_data,
+                input_metadata=self.request.input_metadata,
+                input_name=self.request.input_name,
+                source_payloads=self.request.source_payloads,
+                dirty_node_ids=self.request.dirty_node_ids,
+                node_started_callback=self._emit_node_started,
+            )
+        except Exception as exc:
+            self.signals.finished.emit(
+                PipelineRunResult(
+                    self.request.run_id,
+                    self.request.workflow,
+                    error=str(exc),
+                )
+            )
+            return
+        self.signals.finished.emit(
+            PipelineRunResult(self.request.run_id, self.request.workflow, pipeline)
+        )
+
+    def _emit_node_started(self, node_id: str) -> None:
+        self.signals.node_started.emit((self.request.run_id, node_id))
+
+    def _hydrate_cached_pipeline_outputs(self, pipeline: PrototypePipeline) -> None:
+        if self.request.dirty_node_ids is None:
+            return
+        if self.request.cached_outputs is not None:
+            pipeline.outputs = dict(self.request.cached_outputs)
+        if self.request.cached_output_states is not None:
+            pipeline.output_states = dict(self.request.cached_output_states)
+        if self.request.cached_node_outputs is not None:
+            pipeline.node_outputs = {
+                node_id: list(outputs)
+                for node_id, outputs in self.request.cached_node_outputs.items()
+            }
+        if self.request.cached_node_output_states is not None:
+            pipeline.node_output_states = {
+                node_id: list(states)
+                for node_id, states in self.request.cached_node_output_states.items()
+            }
+        pipeline.completed_node_ids = set(self.request.completed_node_ids)
+
+
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
@@ -167,6 +259,20 @@ INPUT_HISTOGRAM_OPERATIONS = {
     "hysteresis_threshold",
     "rescale_intensity",
 } | GLOBAL_THRESHOLD_OPERATIONS
+BACKGROUND_PIPELINE_OPERATIONS = {
+    "euclidean_distance_transform",
+    "gaussian_blur_3d",
+    "h_maxima_markers",
+    "marker_controlled_watershed",
+    "non_local_means_filter",
+    "orthogonal_projection",
+    "project_image",
+    "rescale_axes",
+    "rolling_ball_background",
+    "subtract_background",
+}
+ROLLING_BALL_RADIUS_SLIDER_MAX = 100.0
+MAX_CHANNEL_COLOR_CONTROLS = 12
 
 
 def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
@@ -398,6 +504,34 @@ class NodePalette(QTreeWidget):
         return parent_visible, visible_count
 
 
+class FlexibleDoubleSpinBox(QDoubleSpinBox):
+    """Locale-independent float entry accepting decimal points and commas."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setLocale(QLocale.c())
+
+    @staticmethod
+    def _normalized_text(text: str) -> str:
+        return str(text).replace(",", ".")
+
+    def validate(self, text: str, position: int):
+        state, _normalized, validated_position = super().validate(
+            self._normalized_text(text),
+            position,
+        )
+        return state, text, validated_position
+
+    def valueFromText(self, text: str) -> float:
+        return super().valueFromText(self._normalized_text(text))
+
+
+def _configure_numeric_spin_box(box: QSpinBox | QDoubleSpinBox) -> None:
+    editor = box.lineEdit()
+    editor.setAlignment(Qt.AlignCenter)
+    editor.setTextMargins(0, 0, 0, 0)
+
+
 class ParameterControl(QWidget):
     """Slider with numeric entry for a single node parameter."""
 
@@ -416,8 +550,9 @@ class ParameterControl(QWidget):
         if self._is_integer:
             self.value_box = QSpinBox()
         else:
-            self.value_box = QDoubleSpinBox()
+            self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(74)
 
         layout = QHBoxLayout(self)
@@ -633,8 +768,9 @@ class NumericEntryControl(QWidget):
         if self._is_integer:
             self.value_box = QSpinBox()
         else:
-            self.value_box = QDoubleSpinBox()
+            self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(100)
 
         layout = QHBoxLayout(self)
@@ -1180,6 +1316,8 @@ class AxisSelectionRow(QWidget):
         self.end_box = QSpinBox()
         self.index_slider = QSlider(Qt.Horizontal)
         self.index_box = QSpinBox()
+        for box in (self.start_box, self.end_box, self.index_box):
+            _configure_numeric_spin_box(box)
         for widget in (self.start_box, self.end_box, self.index_slider, self.index_box):
             widget.setRange(0, maximum)
         for box in (self.start_box, self.end_box, self.index_box):
@@ -2127,6 +2265,8 @@ class VippWidget(QWidget):
         self._rescale_auto_input_cutoffs: dict[str, tuple[float, float]] = {}
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self._code_dialogs: list[QDialog] = []
+        self._pending_dirty_node_ids: set[str] = set()
+        self._last_pipeline_source_signature: tuple | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -2197,6 +2337,15 @@ class VippWidget(QWidget):
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
         self.export_ome_button = QPushButton("Export OME dataset...")
+        self.pipeline_busy_label = QLabel("Processing")
+        self.pipeline_busy_label.setStyleSheet("color: #93c5fd; font-weight: 650;")
+        self.pipeline_busy_bar = QProgressBar()
+        self.pipeline_busy_bar.setRange(0, 0)
+        self.pipeline_busy_bar.setTextVisible(False)
+        self.pipeline_busy_bar.setFixedWidth(96)
+        self.pipeline_busy_bar.setFixedHeight(12)
+        self.pipeline_busy_label.setVisible(False)
+        self.pipeline_busy_bar.setVisible(False)
         self.status_label = QLabel(
             "Select an image layer and build the starter pipeline."
         )
@@ -2219,6 +2368,13 @@ class VippWidget(QWidget):
         self._default_splitter_sizes = [210, 850, 260]
         self._left_panel_last_width = self._default_splitter_sizes[0]
         self._right_panel_last_width = self._default_splitter_sizes[2]
+        self._pipeline_thread_pool = QThreadPool(self)
+        self._pipeline_thread_pool.setMaxThreadCount(1)
+        self._pipeline_run_serial = 0
+        self._active_pipeline_run_id: int | None = None
+        self._active_pipeline_node_id: str | None = None
+        self._pipeline_run_pending = False
+        self._pipeline_run_context: dict[int, tuple] = {}
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
@@ -2514,6 +2670,8 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.export_button)
         workflow_row.addWidget(self.export_ome_button)
         workflow_row.addStretch(1)
+        workflow_row.addWidget(self.pipeline_busy_label)
+        workflow_row.addWidget(self.pipeline_busy_bar)
         root.addLayout(workflow_row)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -2846,6 +3004,7 @@ class VippWidget(QWidget):
             self._sync_all_input_ports()
             self._sync_all_output_ports()
             self._sync_pin_ui()
+            self._invalidate_pipeline_cache()
             self.run_pipeline()
             if selected:
                 self.graph_view.select_node(selected)
@@ -2940,6 +3099,7 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(node.id)
         self._sync_pin_ui()
         self.graph_view.select_node(node.id)
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
@@ -2964,6 +3124,7 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(clone.id)
         self._sync_pin_ui()
         self.graph_view.select_node(clone.id)
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(
@@ -3114,6 +3275,7 @@ class VippWidget(QWidget):
         self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
         self._select_node("input")
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText("New empty workflow created.")
@@ -3183,6 +3345,7 @@ class VippWidget(QWidget):
         self._sync_all_input_ports()
         self._sync_all_output_ports()
         self._select_first_available_node()
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         return source
@@ -3294,11 +3457,69 @@ class VippWidget(QWidget):
         return candidate
 
     def _refresh_and_run(self) -> None:
+        self._invalidate_pipeline_cache()
         self._refresh_layer_choices()
         self.run_pipeline()
 
-        self._refresh_layer_choices()
-        self.run_pipeline()
+    def _mark_pipeline_dirty(self, node_id: str) -> None:
+        if node_id in self.pipeline.nodes:
+            self._pending_dirty_node_ids.add(node_id)
+
+    def _invalidate_pipeline_cache(self) -> None:
+        self._pending_dirty_node_ids.clear()
+        self._last_pipeline_source_signature = None
+        self.pipeline.completed_node_ids.clear()
+
+    def _pipeline_source_signature(
+        self,
+        input_data,
+        input_metadata,
+        input_name: str,
+        source_payloads: dict[str, SourcePayload],
+    ) -> tuple:
+        if source_payloads:
+            return (
+                "sources",
+                tuple(
+                    sorted(
+                        (
+                            node_id,
+                            payload.name,
+                            id(payload.data),
+                            id(payload.metadata),
+                        )
+                        for node_id, payload in source_payloads.items()
+                    )
+                ),
+            )
+        return ("toolbar", input_name, id(input_data), id(input_metadata))
+
+    def _dirty_nodes_for_run(self, source_signature: tuple) -> set[str] | None:
+        if source_signature != self._last_pipeline_source_signature:
+            self._pending_dirty_node_ids.clear()
+            return None
+        dirty_nodes = self._pending_dirty_node_ids & set(self.pipeline.nodes)
+        return set(dirty_nodes) if dirty_nodes else None
+
+    def _complete_pipeline_run(
+        self,
+        source_signature: tuple,
+        dirty_node_ids: set[str] | None,
+    ) -> None:
+        self._last_pipeline_source_signature = source_signature
+        if dirty_node_ids is None:
+            self._pending_dirty_node_ids.clear()
+        else:
+            self._pending_dirty_node_ids.difference_update(dirty_node_ids)
+
+    def _dirty_nodes_affect_node(
+        self,
+        dirty_node_ids: set[str],
+        node_id: str | None,
+    ) -> bool:
+        if not node_id:
+            return True
+        return node_id in self.pipeline.descendants_inclusive(dirty_node_ids)
 
     def _hide_input_layer_for_inspection(self, layer) -> None:
         if layer is None or self._is_vipp_generated_layer(layer):
@@ -3560,6 +3781,7 @@ class VippWidget(QWidget):
                 result.connection.target_port,
                 result.connection.source_port,
             )
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(result.message)
@@ -3573,6 +3795,7 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         if self.pipeline.disconnect(source_id, target_id, target_port):
+            self._invalidate_pipeline_cache()
             self.run_pipeline()
             self._push_undo_if_changed(before)
             port_text = (
@@ -3602,6 +3825,7 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         if self._selected_node_id == node_id:
             self._select_first_available_node()
+        self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Deleted '{title}'.")
@@ -3681,6 +3905,9 @@ class VippWidget(QWidget):
         if node.operation_id == "reorder_axes":
             self._render_reorder_axes_parameters(node_id)
             return
+        if node.operation_id == "rescale_axes":
+            self._render_rescale_axes_parameters(node_id)
+            return
         if node.operation_id == "combine_channels":
             self._render_combine_channels_parameters(node_id)
             return
@@ -3726,6 +3953,124 @@ class VippWidget(QWidget):
             self._add_operation_note(stack_note)
             rendered = True
         self.parameter_group.setHidden(not rendered)
+
+    def _render_rescale_axes_parameters(self, node_id: str) -> None:
+        self._sync_rescale_axes_representations(node_id)
+        node = self.pipeline.nodes[node_id]
+        for spec in self._rescale_axes_visible_specs(node_id):
+            bounds = self._parameter_bounds_for(node_id, spec)
+            if spec.kind == "choice":
+                control_class = ChoiceControl
+            elif spec.kind == "bool":
+                control_class = BoolControl
+            else:
+                control_class = NumericEntryControl
+            widget = control_class(spec, node.params.get(spec.name), bounds)
+            node.params[spec.name] = widget.value()
+            widget.valueChanged.connect(
+                lambda value, name=spec.name: self._on_param_changed(name, value)
+            )
+            if isinstance(widget, NumericEntryControl):
+                self._configure_rescale_axis_control(widget)
+            if spec.name in {
+                "x_scale",
+                "y_scale",
+                "z_scale",
+                "x_size",
+                "y_size",
+                "z_size",
+            }:
+                self._add_rescale_axis_reset_button(node_id, spec.name, widget)
+            self.parameter_form.addRow(spec.label, widget)
+            self._parameter_widgets[spec.name] = widget
+        self.parameter_group.setHidden(False)
+
+    @staticmethod
+    def _configure_rescale_axis_control(widget: NumericEntryControl) -> None:
+        widget.layout().setSpacing(3)
+        widget.value_box.setMinimumWidth(112)
+        widget.value_box.setMaximumWidth(122)
+        widget.value_box.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        widget.value_box.lineEdit().setTextMargins(0, 0, 0, 0)
+        widget.value_box.setStyleSheet(
+            "QSpinBox, QDoubleSpinBox { padding-left: 1px; padding-right: 1px; }"
+            "QSpinBox::up-button, QDoubleSpinBox::up-button { width: 18px; }"
+            "QSpinBox::down-button, QDoubleSpinBox::down-button { width: 18px; }"
+        )
+
+    def _rescale_axes_visible_specs(self, node_id: str) -> tuple[ParameterSpec, ...]:
+        node = self.pipeline.nodes[node_id]
+        base_specs = {
+            spec.name: spec for spec in self.pipeline.node_parameter_specs(node_id)
+        }
+        mode = str(node.params.get("resize_mode", "Scale factor"))
+        specs = [
+            ParameterSpec(
+                "resize_mode",
+                "Resize using",
+                "choice",
+                "Scale factor",
+                0,
+                0,
+                1,
+                choices=("Scale factor", "Output size"),
+                choice_labels=("Scale factor", "Output size (pixels)"),
+            )
+        ]
+        options = self._rescale_axis_options_by_role(node_id)
+        for role in ("x", "y", "z"):
+            option = options.get(role)
+            if option is None:
+                continue
+            if mode == "Output size":
+                current = max(int(node.params.get(f"{role}_size", option.size)), 1)
+                specs.append(
+                    ParameterSpec(
+                        f"{role}_size",
+                        self._rescale_axis_label(node_id, role, mode),
+                        "int",
+                        int(option.size),
+                        1,
+                        max(int(option.size) * 4, current, 32),
+                        1,
+                    )
+                )
+            else:
+                specs.append(
+                    self._effective_parameter_spec(
+                        node_id,
+                        base_specs[f"{role}_scale"],
+                    )
+                )
+        specs.append(base_specs["lock_xy"])
+        specs.append(
+            self._effective_parameter_spec(node_id, base_specs["interpolation"])
+        )
+        specs.append(base_specs["anti_aliasing"])
+        return tuple(specs)
+
+    def _add_rescale_axis_reset_button(
+        self,
+        node_id: str,
+        name: str,
+        widget: NumericEntryControl,
+    ) -> None:
+        role = name.split("_", maxsplit=1)[0]
+        option = self._rescale_axis_options_by_role(node_id).get(role)
+        reset_value = int(option.size) if name.endswith("_size") and option else 1.0
+        button = QToolButton(widget)
+        button.setIcon(_toolbar_icon("reset"))
+        button.setIconSize(QSize(14, 14))
+        button.setFixedSize(20, 20)
+        if name.endswith("_size"):
+            button.setToolTip(f"Reset {role.upper()} to its input size.")
+        else:
+            button.setToolTip(f"Reset {role.upper()} scale to 1.")
+        button.clicked.connect(
+            lambda _checked=False, value=reset_value: widget.value_box.setValue(value)
+        )
+        widget.layout().addWidget(button)
+        self._parameter_widgets[f"{name}_reset"] = button
 
     def _add_operation_note(self, text: str) -> None:
         note = QLabel(text)
@@ -3845,6 +4190,8 @@ class VippWidget(QWidget):
     def _render_channel_color_controls(self, node_id: str) -> None:
         count = self._channel_color_control_count(node_id)
         if count <= 0:
+            if self.pipeline.nodes[node_id].operation_id == "input":
+                return
             note = QLabel("No channel axis detected for colour assignment.")
             note.setWordWrap(True)
             note.setStyleSheet("color: #94a3b8;")
@@ -3885,7 +4232,9 @@ class VippWidget(QWidget):
                 if (axis.type == "channel" or axis.name.lower() == "c") and (
                     axis.name.lower() not in {"rgb", "rgba"}
                 ):
-                    return int(state.shape[index])
+                    count = int(state.shape[index])
+                    return min(count, MAX_CHANNEL_COLOR_CONTROLS) if count > 1 else 0
+            return 0
         data = (
             self.pipeline.outputs.get(node_id)
             if self.pipeline.nodes[node_id].operation_id == "input"
@@ -3896,7 +4245,8 @@ class VippWidget(QWidget):
         axis = self._selected_channel_axis(node_id, np.asarray(data))
         if axis is None:
             return 0
-        return int(np.asarray(data).shape[axis])
+        count = int(np.asarray(data).shape[axis])
+        return min(count, MAX_CHANNEL_COLOR_CONTROLS) if count > 1 else 0
 
     def _channel_color_reference_state(self, node_id: str):
         node = self.pipeline.nodes.get(node_id)
@@ -3954,6 +4304,7 @@ class VippWidget(QWidget):
         self._record_parameter_undo(node_id, f"channel_color_{slot}")
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
+        self._mark_pipeline_dirty(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
 
@@ -3970,6 +4321,7 @@ class VippWidget(QWidget):
             or str(value.get("binding_mode", "")) != previous_binding
         ):
             QTimer.singleShot(0, self._refresh_image_source_options)
+        self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
 
     def _refresh_image_source_options(self) -> None:
@@ -4072,6 +4424,12 @@ class VippWidget(QWidget):
                     widget.value(),
                 )
                 changed = previous != node.params
+            visible_color_controls = sum(
+                name.startswith("channel_color_")
+                for name in self._parameter_widgets
+            )
+            if visible_color_controls != self._channel_color_control_count(node.id):
+                self._render_parameters(node.id)
             return changed
         if node.operation_id == "select_axis_slice":
             widget = self._parameter_widgets.get("axis_slice")
@@ -4103,6 +4461,8 @@ class VippWidget(QWidget):
                 )
                 changed = previous != node.params
             return changed
+        if node.operation_id == "rescale_axes":
+            return self._refresh_rescale_axes_controls(self._selected_node_id)
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
             changed = True
         if self._sync_clip_intensity_defaults(self._selected_node_id):
@@ -4235,6 +4595,17 @@ class VippWidget(QWidget):
             )
         if (
             node is not None
+            and node.operation_id == "rescale_axes"
+            and spec.name == "interpolation"
+        ):
+            automatic = self._automatic_rescale_interpolation(node_id)
+            labels = tuple(
+                f"Auto - {automatic}" if choice == "Auto" else choice
+                for choice in spec.choices
+            )
+            return replace(spec, choice_labels=labels)
+        if (
+            node is not None
             and node.operation_id == "project_image"
             and spec.name == "axes"
         ):
@@ -4278,19 +4649,37 @@ class VippWidget(QWidget):
 
     def _rescale_axis_scale_label(self, node_id: str, spec) -> str:
         role = spec.name.split("_", maxsplit=1)[0]
+        return self._rescale_axis_label(node_id, role, "Scale factor")
+
+    def _rescale_axis_label(self, node_id: str, role: str, mode: str) -> str:
         option = self._rescale_axis_options_by_role(node_id).get(role)
         if option is None:
-            return spec.label
+            suffix = "output size" if mode == "Output size" else "scale factor"
+            return f"{role.upper()} {suffix}"
         node = self.pipeline.nodes.get(node_id)
+        if mode == "Output size":
+            target_size = max(
+                (
+                    int(node.params.get(f"{role}_size", option.size))
+                    if node
+                    else option.size
+                ),
+                1,
+            )
+            return f"{role.upper()} output size ({option.size} -> {target_size})"
         scale = self._rescale_axis_scale_value(node, role)
         target_size = max(int(round(option.size * scale)), 1)
-        suffix = ""
-        if role == "y" and node is not None and bool(node.params.get("lock_xy", True)):
-            suffix = "; locked to X"
-        return (
-            f"{role.upper()} scale factor "
-            f"({option.title} axis, {option.size} -> {target_size}{suffix})"
-        )
+        return f"{role.upper()} scale factor ({option.size} -> {target_size})"
+
+    def _automatic_rescale_interpolation(self, node_id: str) -> str:
+        state = self.pipeline.input_state_for_node(node_id)
+        kind = str(getattr(state, "kind", "")).strip().lower()
+        data = self.pipeline.input_data_for_node(node_id)
+        if (data is not None and np.asarray(data).dtype == bool) or any(
+            token in kind for token in ("mask", "label")
+        ):
+            return "Nearest neighbor"
+        return "Linear"
 
     def _rescale_axis_scale_value(self, node, role: str) -> float:
         if node is None:
@@ -4320,6 +4709,19 @@ class VippWidget(QWidget):
             role_map.setdefault("y", spatial_options[-2])
         if len(spatial_options) >= 3:
             role_map.setdefault("z", spatial_options[-3])
+        if self.pipeline.input_data_for_node(node_id) is None:
+            spatial_count = self._input_spatial_count(node_id)
+            fallback_roles = ("x", "y", "z")[:spatial_count]
+            for fallback_index, role in enumerate(fallback_roles):
+                role_map.setdefault(
+                    role,
+                    AxisSliceOption(
+                        fallback_index,
+                        role,
+                        "space",
+                        1,
+                    ),
+                )
         return role_map
 
     def _available_spatial_modes(self, node_id: str) -> tuple[str, ...]:
@@ -4390,10 +4792,30 @@ class VippWidget(QWidget):
             return self._intensity_input_value_bounds(node_id, spec)
         if (
             node is not None
+            and node.operation_id in {"rolling_ball_background", "subtract_background"}
+            and spec.name == "radius"
+        ):
+            return self._rolling_ball_radius_bounds(spec)
+        if (
+            node is not None
             and node.operation_id == "rescale_intensity"
             and spec.name in {"out_min", "out_max"}
         ):
             return self._rescale_output_bounds(node_id, spec)
+        if (
+            node is not None
+            and node.operation_id == "rescale_axes"
+            and spec.name in {"x_scale", "y_scale", "z_scale"}
+        ):
+            return ParameterBounds(
+                spec.minimum,
+                10.0,
+                spec.step,
+                spec.decimals,
+                expandable=False,
+                entry_minimum=spec.minimum,
+                entry_maximum=1_000_000.0,
+            )
         if spec.name in {"threshold", "low_threshold", "high_threshold"}:
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
@@ -4438,6 +4860,18 @@ class VippWidget(QWidget):
             spec.step,
             spec.decimals,
             expandable=True,
+        )
+
+    def _rolling_ball_radius_bounds(self, spec) -> ParameterBounds:
+        slider_maximum = min(float(spec.maximum), ROLLING_BALL_RADIUS_SLIDER_MAX)
+        return ParameterBounds(
+            spec.minimum,
+            slider_maximum,
+            spec.step,
+            spec.decimals,
+            expandable=False,
+            entry_minimum=spec.minimum,
+            entry_maximum=spec.maximum,
         )
 
     def _axis_slice_options_for(self, node_id: str) -> list[AxisSliceOption]:
@@ -4498,6 +4932,7 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, "axis_slice")
         self._apply_select_axis_slice_params(self._selected_node_id, value)
+        self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
 
     def _apply_reorder_axes_params(self, node_id: str, value: str) -> None:
@@ -4509,6 +4944,7 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, "order")
         self._apply_reorder_axes_params(self._selected_node_id, value)
+        self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
 
     def _on_combine_channels_input_count_changed(self, value) -> None:
@@ -4531,6 +4967,7 @@ class VippWidget(QWidget):
             )
         self._sync_combine_channels_graph_ports(node_id)
         self._render_parameters(node_id)
+        self._mark_pipeline_dirty(node_id)
         self._debounce_timer.start()
 
     def _on_channel_color_changed(self, slot: int, value) -> None:
@@ -4547,6 +4984,7 @@ class VippWidget(QWidget):
         colors[slot] = str(value)
         node.params["channel_colors"] = ",".join(colors)
         self._sync_combine_channels_graph_ports(node_id)
+        self._mark_pipeline_dirty(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
 
@@ -4942,28 +5380,121 @@ class VippWidget(QWidget):
         *,
         source_name: str,
     ) -> bool:
+        return self._sync_rescale_axes_representations(
+            node_id,
+            source_name=source_name,
+        )
+
+    def _sync_rescale_axes_representations(
+        self,
+        node_id: str,
+        *,
+        source_name: str = "",
+    ) -> bool:
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "rescale_axes":
             return False
-        if not bool(node.params.get("lock_xy", True)):
-            return False
-        if source_name not in {"x_scale", "y_scale"}:
-            source_name = "x_scale"
-        target_name = "y_scale" if source_name == "x_scale" else "x_scale"
-        value = node.params.get(source_name)
-        if value is None:
-            return False
-        changed = self._set_node_param_if_changed(node_id, target_name, value)
-        if changed:
-            widget = self._parameter_widgets.get(target_name)
-            spec = self._parameter_spec_by_name(node_id, target_name)
-            if widget is not None and spec is not None:
-                spec = self._effective_parameter_spec(node_id, spec)
-                widget.set_bounds(
-                    self._parameter_bounds_for(node_id, spec),
-                    value,
-                    emit=False,
+        changed = False
+        if "resize_mode" not in node.params:
+            node.params["resize_mode"] = "Scale factor"
+            changed = True
+        mode = str(node.params.get("resize_mode", "Scale factor"))
+        options = self._rescale_axis_options_by_role(node_id)
+
+        for role, option in options.items():
+            size_name = f"{role}_size"
+            scale_name = f"{role}_scale"
+            if size_name not in node.params:
+                scale = _positive_scale_float(node.params.get(scale_name), 1.0)
+                node.params[size_name] = max(int(round(option.size * scale)), 1)
+                changed = True
+
+        lock_xy = bool(node.params.get("lock_xy", True))
+        if mode == "Output size":
+            if lock_xy and "x" in options and "y" in options:
+                source_role = "y" if source_name == "y_size" else "x"
+                source_option = options[source_role]
+                source_size = max(
+                    int(node.params.get(f"{source_role}_size", source_option.size)),
+                    1,
                 )
+                common_scale = source_size / max(source_option.size, 1)
+                for role in ("x", "y"):
+                    target = max(int(round(options[role].size * common_scale)), 1)
+                    changed = (
+                        self._set_node_param_if_changed(
+                            node_id,
+                            f"{role}_size",
+                            target,
+                        )
+                        or changed
+                    )
+            for role, option in options.items():
+                target = max(
+                    int(node.params.get(f"{role}_size", option.size)),
+                    1,
+                )
+                scale = target / max(option.size, 1)
+                changed = (
+                    self._set_node_param_if_changed(
+                        node_id,
+                        f"{role}_scale",
+                        scale,
+                    )
+                    or changed
+                )
+            return changed
+
+        if lock_xy and "x" in options and "y" in options:
+            source_role = "y" if source_name == "y_scale" else "x"
+            common_scale = _positive_scale_float(
+                node.params.get(f"{source_role}_scale"),
+                1.0,
+            )
+            for role in ("x", "y"):
+                changed = (
+                    self._set_node_param_if_changed(
+                        node_id,
+                        f"{role}_scale",
+                        common_scale,
+                    )
+                    or changed
+                )
+        for role, option in options.items():
+            scale = _positive_scale_float(node.params.get(f"{role}_scale"), 1.0)
+            target = max(int(round(option.size * scale)), 1)
+            changed = (
+                self._set_node_param_if_changed(
+                    node_id,
+                    f"{role}_size",
+                    target,
+                )
+                or changed
+            )
+        return changed
+
+    def _refresh_rescale_axes_controls(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_axes":
+            return False
+        changed = self._sync_rescale_axes_representations(node_id)
+        for spec in self._rescale_axes_visible_specs(node_id):
+            widget = self._parameter_widgets.get(spec.name)
+            if widget is None:
+                continue
+            previous = node.params.get(spec.name, spec.default)
+            bounds = self._parameter_bounds_for(node_id, spec)
+            if isinstance(widget, ChoiceControl):
+                widget.set_choices(
+                    spec.choices,
+                    previous,
+                    emit=False,
+                    choice_labels=spec.choice_labels,
+                )
+            widget.set_bounds(bounds, previous, emit=False)
+            label = self.parameter_form.labelForField(widget)
+            if isinstance(label, QLabel):
+                label.setText(spec.label)
         return changed
 
     def _refresh_rescale_cutoff_widgets(self, node_id: str) -> None:
@@ -5374,6 +5905,7 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
+        self._mark_pipeline_dirty(self._selected_node_id)
         if node.operation_id == "gaussian_blur_3d":
             if name == "lock_xy" and bool(value):
                 self._sync_gaussian_blur_3d_xy_lock(
@@ -5386,17 +5918,41 @@ class VippWidget(QWidget):
                     source_name=name,
                 )
         if node.operation_id == "rescale_axes":
-            if name == "lock_xy" and bool(value):
-                self._sync_rescale_axes_xy_lock(
+            if name == "resize_mode":
+                self._sync_rescale_axes_representations(
                     self._selected_node_id,
-                    source_name="x_scale",
+                    source_name=(
+                        "x_size" if value == "Output size" else "x_scale"
+                    ),
                 )
-            elif name in {"x_scale", "y_scale"}:
-                self._sync_rescale_axes_xy_lock(
+                self._render_parameters(self._selected_node_id)
+            elif name == "lock_xy" and bool(value):
+                mode = str(node.params.get("resize_mode", "Scale factor"))
+                self._sync_rescale_axes_representations(
+                    self._selected_node_id,
+                    source_name="x_size" if mode == "Output size" else "x_scale",
+                )
+            elif name in {
+                "x_scale",
+                "y_scale",
+                "z_scale",
+                "x_size",
+                "y_size",
+                "z_size",
+            }:
+                self._sync_rescale_axes_representations(
                     self._selected_node_id,
                     source_name=name,
                 )
-            if name in {"x_scale", "y_scale", "z_scale", "lock_xy"}:
+            if name != "resize_mode" and name in {
+                "x_scale",
+                "y_scale",
+                "z_scale",
+                "x_size",
+                "y_size",
+                "z_size",
+                "lock_xy",
+            }:
                 self._refresh_selected_parameter_controls()
         if name == "input_count":
             for connection in self.pipeline.trim_invalid_connections(
@@ -5495,6 +6051,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         self.pipeline.set_param(node_id, "alpha", alpha)
         self.pipeline.set_param(node_id, "beta", beta)
+        self._mark_pipeline_dirty(node_id)
         self._debounce_timer.stop()
         self._render_parameters(node_id)
         self.run_pipeline()
@@ -5510,10 +6067,13 @@ class VippWidget(QWidget):
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except Exception as exc:
+            self._set_pipeline_busy(False)
             self.status_label.setText(f"Image source error: {exc}")
             return
 
         if toolbar_layer is None and not source_payloads:
+            self._set_pipeline_busy(False)
+            self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
             self.pipeline.run(None)
             self._update_thumbnails()
@@ -5533,12 +6093,56 @@ class VippWidget(QWidget):
             None if source_payloads else getattr(toolbar_layer, "metadata", None)
         )
         input_name = "" if source_payloads else getattr(toolbar_layer, "name", "")
+        source_label = self._pipeline_source_label(source_payloads, input_name)
+        source_signature = self._pipeline_source_signature(
+            input_data,
+            input_metadata,
+            input_name,
+            source_payloads,
+        )
+        dirty_node_ids = self._dirty_nodes_for_run(source_signature)
+        if self._should_run_pipeline_in_background(dirty_node_ids):
+            self._start_background_pipeline_run(
+                input_data,
+                input_metadata,
+                input_name,
+                source_payloads,
+                primary_layer,
+                source_label,
+                source_signature,
+                dirty_node_ids,
+            )
+            return
+        self._run_pipeline_synchronously(
+            input_data,
+            input_metadata,
+            input_name,
+            source_payloads,
+            primary_layer,
+            source_label,
+            source_signature,
+            dirty_node_ids,
+        )
+
+    def _run_pipeline_synchronously(
+        self,
+        input_data,
+        input_metadata,
+        input_name: str,
+        source_payloads: dict[str, SourcePayload],
+        primary_layer,
+        source_label: str,
+        source_signature: tuple,
+        dirty_node_ids: set[str] | None,
+    ) -> None:
+        self._set_pipeline_busy(False)
         try:
             self.pipeline.run(
                 input_data,
                 input_metadata=input_metadata,
                 input_name=input_name,
                 source_payloads=source_payloads,
+                dirty_node_ids=dirty_node_ids,
             )
         except Exception as exc:
             self.status_label.setText(f"Pipeline error: {exc}")
@@ -5549,6 +6153,7 @@ class VippWidget(QWidget):
                 input_metadata=input_metadata,
                 input_name=input_name,
                 source_payloads=source_payloads,
+                dirty_node_ids=dirty_node_ids,
             )
         if self._sync_all_rescale_input_cutoff_defaults():
             self.pipeline.run(
@@ -5556,6 +6161,7 @@ class VippWidget(QWidget):
                 input_metadata=input_metadata,
                 input_name=input_name,
                 source_payloads=source_payloads,
+                dirty_node_ids=dirty_node_ids,
             )
         if self._sync_all_rescale_output_range_defaults():
             self.pipeline.run(
@@ -5563,6 +6169,7 @@ class VippWidget(QWidget):
                 input_metadata=input_metadata,
                 input_name=input_name,
                 source_payloads=source_payloads,
+                dirty_node_ids=dirty_node_ids,
             )
         if self._refresh_selected_parameter_controls():
             self.pipeline.run(
@@ -5570,9 +6177,13 @@ class VippWidget(QWidget):
                 input_metadata=input_metadata,
                 input_name=input_name,
                 source_payloads=source_payloads,
+                dirty_node_ids=dirty_node_ids,
             )
-        self._hide_input_layer_for_inspection(primary_layer)
+        self._complete_pipeline_run(source_signature, dirty_node_ids)
+        self._finish_pipeline_update(primary_layer, source_label)
 
+    def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
+        self._hide_input_layer_for_inspection(primary_layer)
         self._refresh_dynamic_output_ports()
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
@@ -5580,8 +6191,6 @@ class VippWidget(QWidget):
         self._refresh_pinned_layer_if_active()
         self._update_metadata_panel()
         self._update_histogram()
-        source_names = [payload.name for payload in source_payloads.values()]
-        source_label = ", ".join(name for name in source_names if name) or input_name
         if source_label:
             self.status_label.setText(
                 f"Graph updated from '{source_label}'. "
@@ -5589,6 +6198,254 @@ class VippWidget(QWidget):
             )
         else:
             self.status_label.setText("No image source selected.")
+
+    def _pipeline_source_label(
+        self,
+        source_payloads: dict[str, SourcePayload],
+        input_name: str,
+    ) -> str:
+        source_names = [payload.name for payload in source_payloads.values()]
+        return ", ".join(name for name in source_names if name) or input_name
+
+    def _should_run_pipeline_in_background(
+        self,
+        dirty_node_ids: set[str] | None = None,
+    ) -> bool:
+        return self._background_processing_node_id(dirty_node_ids) is not None
+
+    def _background_processing_node_id(
+        self,
+        dirty_node_ids: set[str] | None = None,
+    ) -> str | None:
+        affected_node_ids = None
+        if dirty_node_ids:
+            affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
+        for node_id in self.pipeline.topological_order():
+            if affected_node_ids is not None and node_id not in affected_node_ids:
+                continue
+            node = self.pipeline.nodes.get(node_id)
+            if node is not None and node.operation_id in BACKGROUND_PIPELINE_OPERATIONS:
+                return node_id
+        return None
+
+    def _start_background_pipeline_run(
+        self,
+        input_data,
+        input_metadata,
+        input_name: str,
+        source_payloads: dict[str, SourcePayload],
+        primary_layer,
+        source_label: str,
+        source_signature: tuple,
+        dirty_node_ids: set[str] | None,
+    ) -> None:
+        processing_node_id = self._background_processing_node_id(dirty_node_ids)
+        if self._active_pipeline_run_id is not None:
+            self._pipeline_run_pending = True
+            self._set_pipeline_busy(
+                True,
+                self._active_pipeline_node_id or processing_node_id,
+                queued=True,
+            )
+            title = self._node_title(self._active_pipeline_node_id) if (
+                self._active_pipeline_node_id in self.pipeline.nodes
+            ) else "graph"
+            self.status_label.setText(
+                f"Processing '{title}' in background; latest edit queued to rerun."
+            )
+            return
+
+        self._pipeline_run_serial += 1
+        run_id = self._pipeline_run_serial
+        workflow = deepcopy(serialize_workflow(self.pipeline))
+        request = PipelineRunRequest(
+            run_id=run_id,
+            workflow=workflow,
+            input_data=input_data,
+            input_metadata=input_metadata,
+            input_name=input_name,
+            source_payloads=dict(source_payloads),
+            dirty_node_ids=(
+                frozenset(dirty_node_ids) if dirty_node_ids is not None else None
+            ),
+            cached_outputs=(
+                dict(self.pipeline.outputs) if dirty_node_ids is not None else None
+            ),
+            cached_output_states=(
+                dict(self.pipeline.output_states)
+                if dirty_node_ids is not None
+                else None
+            ),
+            cached_node_outputs=(
+                {
+                    node_id: list(outputs)
+                    for node_id, outputs in self.pipeline.node_outputs.items()
+                }
+                if dirty_node_ids is not None
+                else None
+            ),
+            cached_node_output_states=(
+                {
+                    node_id: list(states)
+                    for node_id, states in self.pipeline.node_output_states.items()
+                }
+                if dirty_node_ids is not None
+                else None
+            ),
+            completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+        )
+        self._active_pipeline_run_id = run_id
+        self._pipeline_run_context[run_id] = (
+            primary_layer,
+            source_label,
+            processing_node_id,
+            source_signature,
+            dirty_node_ids,
+        )
+        self._set_pipeline_busy(True, processing_node_id)
+        title = self._node_title(processing_node_id) if (
+            processing_node_id in self.pipeline.nodes
+        ) else "graph"
+        self.status_label.setText(f"Processing '{title}' in background...")
+        worker = PipelineRunWorker(request)
+        worker.signals.node_started.connect(self._on_background_pipeline_node_started)
+        worker.signals.finished.connect(self._on_background_pipeline_finished)
+        self._pipeline_thread_pool.start(worker)
+
+    def _on_background_pipeline_node_started(self, payload: object) -> None:
+        try:
+            run_id, node_id = payload
+        except Exception:
+            return
+        if run_id != self._active_pipeline_run_id:
+            return
+        node_id = str(node_id)
+        self._set_pipeline_busy(True, node_id, queued=self._pipeline_run_pending)
+        title = self._node_title(node_id) if node_id in self.pipeline.nodes else "graph"
+        suffix = "; latest edit queued" if self._pipeline_run_pending else ""
+        self.status_label.setText(f"Processing '{title}' in background{suffix}...")
+
+    def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
+        if result.run_id != self._active_pipeline_run_id:
+            return
+        self._active_pipeline_run_id = None
+        (
+            primary_layer,
+            source_label,
+            processing_node_id,
+            source_signature,
+            dirty_node_ids,
+        ) = self._pipeline_run_context.pop(result.run_id, (None, "", None, None, None))
+        pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
+        can_apply_before_pending = bool(
+            self._pipeline_run_pending
+            and pending_dirty
+            and not self._dirty_nodes_affect_node(pending_dirty, processing_node_id)
+        )
+        if self._pipeline_run_pending and not can_apply_before_pending:
+            self._pipeline_run_pending = False
+            self.status_label.setText(
+                "Restarting background processing with latest edit."
+            )
+            QTimer.singleShot(0, self.run_pipeline)
+            return
+        if result.error:
+            self._set_pipeline_busy(False)
+            self.status_label.setText(f"Pipeline error: {result.error}")
+            return
+        if result.pipeline is None:
+            self._set_pipeline_busy(False)
+            self.status_label.setText("Pipeline error: no result returned.")
+            return
+        if not self._workflow_matches_current_pipeline(result.workflow):
+            if not can_apply_before_pending:
+                self.status_label.setText(
+                    "Discarded stale background result; rerunning latest graph."
+                )
+                QTimer.singleShot(0, self.run_pipeline)
+                return
+
+        self._apply_pipeline_run_result(
+            result.pipeline,
+            update_params=not can_apply_before_pending,
+        )
+        if can_apply_before_pending:
+            self._last_pipeline_source_signature = source_signature
+        else:
+            self._complete_pipeline_run(source_signature, dirty_node_ids)
+        if (
+            self._sync_all_clip_intensity_defaults()
+            or self._sync_all_rescale_input_cutoff_defaults()
+            or self._sync_all_rescale_output_range_defaults()
+            or self._refresh_selected_parameter_controls()
+        ):
+            QTimer.singleShot(0, self.run_pipeline)
+            return
+        self._set_pipeline_busy(False)
+        if can_apply_before_pending:
+            self._pipeline_run_pending = False
+            self.status_label.setText(
+                "Cached upstream result; rerunning latest downstream edit."
+            )
+            QTimer.singleShot(0, self.run_pipeline)
+            return
+        self._finish_pipeline_update(primary_layer, source_label)
+
+    def _workflow_matches_current_pipeline(self, workflow: dict) -> bool:
+        return serialize_workflow(self.pipeline) == workflow
+
+    def _apply_pipeline_run_result(
+        self,
+        result_pipeline: PrototypePipeline,
+        *,
+        update_params: bool = True,
+    ) -> None:
+        for node_id, node in self.pipeline.nodes.items():
+            result_node = result_pipeline.nodes.get(node_id)
+            if result_node is None or result_node.operation_id != node.operation_id:
+                continue
+            if update_params:
+                node.params = dict(result_node.params)
+        self.pipeline.outputs = dict(result_pipeline.outputs)
+        self.pipeline.output_states = dict(result_pipeline.output_states)
+        self.pipeline.node_outputs = {
+            node_id: list(outputs)
+            for node_id, outputs in result_pipeline.node_outputs.items()
+        }
+        self.pipeline.node_output_states = {
+            node_id: list(states)
+            for node_id, states in result_pipeline.node_output_states.items()
+        }
+        self.pipeline.completed_node_ids = set(result_pipeline.completed_node_ids)
+
+    def _set_pipeline_busy(
+        self,
+        busy: bool,
+        node_id: str | None = None,
+        *,
+        queued: bool = False,
+    ) -> None:
+        self.pipeline_busy_label.setVisible(busy)
+        self.pipeline_busy_bar.setVisible(busy)
+        if not busy:
+            self.pipeline_busy_label.setText("Processing")
+            self.graph_view.clear_node_processing()
+            self._active_pipeline_node_id = None
+            return
+        if node_id is None:
+            node_id = self._active_pipeline_node_id
+        if node_id not in self.pipeline.nodes:
+            node_id = None
+        if self._active_pipeline_node_id and self._active_pipeline_node_id != node_id:
+            self.graph_view.set_node_processing(self._active_pipeline_node_id, False)
+        self._active_pipeline_node_id = node_id
+        if node_id is not None:
+            title = self._node_title(node_id)
+            suffix = " queued" if queued else ""
+            self.pipeline_busy_label.setText(f"Processing: {title}{suffix}")
+            self.graph_view.set_node_processing(node_id, True, queued=queued)
+        else:
+            self.pipeline_busy_label.setText("Processing graph")
 
     def _on_dims_changed(self, _event=None) -> None:
         self._update_thumbnails()

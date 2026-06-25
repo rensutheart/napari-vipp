@@ -38,6 +38,8 @@ from napari_vipp.core.operations import (
     difference_of_gaussians_filter,
     dilate,
     erode,
+    euclidean_distance_transform,
+    expand_labels_image,
     extract_channel,
     fill_holes,
     filter_labels_by_property,
@@ -45,6 +47,7 @@ from napari_vipp.core.operations import (
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    h_maxima_markers,
     hysteresis_threshold,
     invert,
     isodata_threshold,
@@ -55,6 +58,7 @@ from napari_vipp.core.operations import (
     logical_and,
     logical_or,
     logical_xor,
+    marker_controlled_watershed,
     mask_image,
     max_intensity_projection,
     measure_objects,
@@ -76,6 +80,7 @@ from napari_vipp.core.operations import (
     reorder_axes,
     rescale_axes,
     rescale_intensity,
+    rolling_ball_background,
     sauvola_threshold,
     save_output,
     select_axis_slice,
@@ -84,6 +89,7 @@ from napari_vipp.core.operations import (
     skeletonize_mask,
     sobel_filter,
     split_channels,
+    subtract_background,
     subtract_images,
     top_hat,
     triangle_threshold,
@@ -228,8 +234,10 @@ FILTERING_CATEGORY = "Filtering"
 SEGMENTATION_CATEGORY = "Segmentation"
 SMOOTHING_DENOISING_GROUP = "Smoothing & Denoising"
 EDGE_DETAIL_GROUP = "Edge & Detail"
+BACKGROUND_CORRECTION_GROUP = "Background Correction"
 GLOBAL_THRESHOLDS_GROUP = "Global Thresholds"
 LOCAL_THRESHOLDS_GROUP = "Local Thresholds"
+OBJECT_SEPARATION_GROUP = "Object Separation"
 SLICE_WISE_STACK_NOTICE = (
     "Stack notice: this node processes each YX slice independently and does not "
     "use 3D neighborhoods. If another plane should be processed, use Reorder "
@@ -283,6 +291,17 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     choices=("Auto from axes", "2D YX", "3D ZYX"),
 )
 
+BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
+    "spatial_mode",
+    "Spatial processing",
+    "choice",
+    "2D YX",
+    0,
+    0,
+    1,
+    choices=("2D YX", "3D ZYX", "Auto from axes"),
+)
+
 THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
     "threshold_scope",
     "Threshold uses",
@@ -296,15 +315,21 @@ THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
 
 SPATIAL_OPERATIONS = {
     "clear_border_objects",
+    "euclidean_distance_transform",
+    "expand_labels",
     "fill_holes",
     "hysteresis_threshold",
+    "h_maxima_markers",
     "label_connected_components",
+    "marker_controlled_watershed",
     "filter_labels_by_property",
     "filter_labels_by_volume",
     "analyze_skeleton",
     "measure_objects",
     "relabel_sequential",
     "remove_small_objects",
+    "rolling_ball_background",
+    "subtract_background",
     "skeletonize",
 }
 
@@ -485,6 +510,85 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         non_local_means_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "rolling_ball_background",
+        "Rolling-Ball Background",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("radius", "Radius (px)", "float", 50.0, 1.0, 500.0, 1.0, 1),
+            ParameterSpec(
+                "light_background",
+                "Light background",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "disable_smoothing",
+                "Disable smoothing",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            BACKGROUND_SPATIAL_MODE_PARAMETER,
+        ),
+        rolling_ball_background,
+        subcategory=BACKGROUND_CORRECTION_GROUP,
+        stack_processing_note=(
+            "Stack notice: the default processes each YX slice independently. "
+            "3D rolling-ball background estimation can be slow for large radii."
+        ),
+    ),
+    OperationSpec(
+        "subtract_background",
+        "Subtract Background",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec("radius", "Radius (px)", "float", 50.0, 1.0, 500.0, 1.0, 1),
+            ParameterSpec(
+                "light_background",
+                "Light background",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "disable_smoothing",
+                "Disable smoothing",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "clip_negative",
+                "Clip negative values",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            BACKGROUND_SPATIAL_MODE_PARAMETER,
+        ),
+        subtract_background,
+        subcategory=BACKGROUND_CORRECTION_GROUP,
+        stack_processing_note=(
+            "Stack notice: the default processes each YX slice independently. "
+            "3D rolling-ball background subtraction can be slow for large radii."
+        ),
     ),
     OperationSpec(
         "difference_of_gaussians",
@@ -1001,6 +1105,117 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         niblack_threshold,
         subcategory=LOCAL_THRESHOLDS_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "euclidean_distance_transform",
+        "Euclidean Distance Transform",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "image",
+        (SPATIAL_MODE_PARAMETER,),
+        euclidean_distance_transform,
+        subcategory=OBJECT_SEPARATION_GROUP,
+    ),
+    OperationSpec(
+        "h_maxima_markers",
+        "H-Maxima Markers",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "h",
+                "H / prominence (0 = local maxima)",
+                "float",
+                1.0,
+                0.0,
+                1_000_000.0,
+                0.1,
+                3,
+            ),
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "connectivity",
+                "Marker connectivity",
+                "choice",
+                "Full connectivity",
+                0,
+                0,
+                1,
+                choices=("Face connected", "Full connectivity"),
+            ),
+        ),
+        h_maxima_markers,
+        subcategory=OBJECT_SEPARATION_GROUP,
+    ),
+    OperationSpec(
+        "marker_controlled_watershed",
+        "Marker-Controlled Watershed",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "labels",
+        (
+            ParameterSpec(
+                "image_mode",
+                "Image meaning",
+                "choice",
+                "Distance map (invert)",
+                0,
+                0,
+                1,
+                choices=("Distance map (invert)", "Elevation image"),
+            ),
+            ParameterSpec(
+                "compactness",
+                "Compactness",
+                "float",
+                0.0,
+                0.0,
+                100.0,
+                0.1,
+                3,
+            ),
+            ParameterSpec(
+                "watershed_line",
+                "Watershed line",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        marker_controlled_watershed,
+        max_inputs=3,
+        inputs=(
+            InputSpec("image", "array", "Image / distance"),
+            InputSpec("markers", "labels", "Markers"),
+            InputSpec("mask", "array", "Mask"),
+        ),
+        subcategory=OBJECT_SEPARATION_GROUP,
+    ),
+    OperationSpec(
+        "expand_labels",
+        "Expand Labels",
+        SEGMENTATION_CATEGORY,
+        "labels",
+        "labels",
+        (
+            ParameterSpec(
+                "distance",
+                "Distance (pixels/voxels)",
+                "float",
+                5.0,
+                0.0,
+                10_000.0,
+                0.1,
+                2,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        expand_labels_image,
+        subcategory=OBJECT_SEPARATION_GROUP,
     ),
     OperationSpec(
         "dilate",
@@ -2017,6 +2232,7 @@ class PrototypePipeline:
         self.output_states: dict[str, ImageState | TableState | None] = {}
         self.node_outputs: dict[str, list[Any]] = {}
         self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
+        self.completed_node_ids: set[str] = set()
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -2027,6 +2243,7 @@ class PrototypePipeline:
         self.output_states = {}
         self.node_outputs = {}
         self.node_output_states = {}
+        self.completed_node_ids = set()
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -2051,6 +2268,7 @@ class PrototypePipeline:
         self.output_states = {}
         self.node_outputs = {}
         self.node_output_states = {}
+        self.completed_node_ids = set()
         self._counters = Counter({input_node.operation_id: 1})
 
     def restore_graph(
@@ -2069,6 +2287,7 @@ class PrototypePipeline:
         self.output_states = {node_id: None for node_id in self.nodes}
         self.node_outputs = {node_id: [] for node_id in self.nodes}
         self.node_output_states = {node_id: [] for node_id in self.nodes}
+        self.completed_node_ids = set()
         for connection in self.connections:
             if (
                 connection.source_id not in valid
@@ -2422,13 +2641,27 @@ class PrototypePipeline:
         input_metadata: dict | None = None,
         input_name: str = "",
         source_payloads: dict[str, SourcePayload] | None = None,
+        dirty_node_ids: Iterable[str] | None = None,
+        node_started_callback: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
-        self.outputs = {node_id: None for node_id in self.nodes}
-        self.output_states = {node_id: None for node_id in self.nodes}
-        self.node_outputs = {node_id: [] for node_id in self.nodes}
-        self.node_output_states = {node_id: [] for node_id in self.nodes}
-        remaining = set(self.nodes)
-        completed: set[str] = set()
+        dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
+        if dirty_nodes is None:
+            self.outputs = {node_id: None for node_id in self.nodes}
+            self.output_states = {node_id: None for node_id in self.nodes}
+            self.node_outputs = {node_id: [] for node_id in self.nodes}
+            self.node_output_states = {node_id: [] for node_id in self.nodes}
+            remaining = set(self.nodes)
+            completed: set[str] = set()
+            self.completed_node_ids = set()
+        else:
+            remaining = self.descendants_inclusive(dirty_nodes)
+            self.completed_node_ids.difference_update(remaining)
+            for node_id in remaining:
+                self.outputs[node_id] = None
+                self.output_states[node_id] = None
+                self.node_outputs[node_id] = []
+                self.node_output_states[node_id] = []
+            completed = set(self.nodes) - remaining
 
         while remaining:
             runnable = [
@@ -2440,6 +2673,8 @@ class PrototypePipeline:
                 break
 
             for node_id in runnable:
+                if node_started_callback is not None:
+                    node_started_callback(node_id)
                 results = self._run_node(
                     node_id,
                     input_data,
@@ -2454,7 +2689,49 @@ class PrototypePipeline:
                 self.output_states[node_id] = primary_state
                 remaining.remove(node_id)
                 completed.add(node_id)
+                self.completed_node_ids.add(node_id)
         return self.outputs
+
+    def descendants_inclusive(self, node_ids: Iterable[str]) -> set[str]:
+        targets = {node_id for node_id in node_ids if node_id in self.nodes}
+        if not targets:
+            return set()
+        descendants = set(targets)
+        changed = True
+        while changed:
+            changed = False
+            for connection in self.connections:
+                if (
+                    connection.source_id in descendants
+                    and connection.target_id not in descendants
+                ):
+                    descendants.add(connection.target_id)
+                    changed = True
+        return descendants
+
+    def _validated_dirty_nodes(
+        self,
+        dirty_node_ids: Iterable[str] | None,
+    ) -> set[str] | None:
+        if dirty_node_ids is None:
+            return None
+        dirty_nodes = {node_id for node_id in dirty_node_ids if node_id in self.nodes}
+        if not dirty_nodes:
+            return None
+        if set(self.outputs) != set(self.nodes):
+            return None
+        if set(self.output_states) != set(self.nodes):
+            return None
+        if set(self.node_outputs) != set(self.nodes):
+            return None
+        if set(self.node_output_states) != set(self.nodes):
+            return None
+        cached_nodes = set(self.completed_node_ids) & set(self.nodes)
+        nodes_to_run = self.descendants_inclusive(dirty_nodes)
+        cached_upstream = set(self.nodes) - nodes_to_run
+        if not cached_upstream <= cached_nodes:
+            return None
+        return dirty_nodes
 
     def _run_node(
         self,
@@ -2511,6 +2788,15 @@ class PrototypePipeline:
                 for conn in ordered
             ]
             kwargs = dict(node.params)
+            if node.operation_id in SPATIAL_OPERATIONS:
+                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+                resolved_spatial_ndim = _resolved_spatial_ndim(
+                    input_states[0],
+                    source_outputs[0],
+                    spatial_mode,
+                )
+                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
             if node.operation_id == "combine_channels":
                 derived_axis = _default_combined_channel_axis(
                     input_states[0],

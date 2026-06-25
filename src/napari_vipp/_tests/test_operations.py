@@ -31,6 +31,8 @@ from napari_vipp.core.operations import (
     difference_of_gaussians_filter,
     dilate,
     erode,
+    euclidean_distance_transform,
+    expand_labels_image,
     extract_channel,
     fill_holes,
     filter_labels_by_property,
@@ -38,6 +40,7 @@ from napari_vipp.core.operations import (
     gamma_correction,
     gaussian_blur,
     gaussian_blur_3d,
+    h_maxima_markers,
     hysteresis_threshold,
     isodata_threshold,
     label_connected_components,
@@ -47,6 +50,7 @@ from napari_vipp.core.operations import (
     logical_and,
     logical_or,
     logical_xor,
+    marker_controlled_watershed,
     mask_image,
     measure_objects,
     measure_objects_with_intensity,
@@ -67,6 +71,7 @@ from napari_vipp.core.operations import (
     reorder_axes,
     rescale_axes,
     rescale_intensity,
+    rolling_ball_background,
     sauvola_threshold,
     save_array_output,
     save_output,
@@ -76,6 +81,7 @@ from napari_vipp.core.operations import (
     skeletonize_mask,
     sobel_filter,
     split_channels,
+    subtract_background,
     subtract_images,
     top_hat,
     triangle_threshold,
@@ -97,6 +103,8 @@ def test_vipp_operation_nodes_are_registered():
         "median_filter",
         "bilateral_filter",
         "non_local_means_filter",
+        "rolling_ball_background",
+        "subtract_background",
         "difference_of_gaussians",
         "unsharp_mask",
         "sobel_filter",
@@ -108,6 +116,10 @@ def test_vipp_operation_nodes_are_registered():
         "adaptive_gaussian_threshold",
         "sauvola_threshold",
         "niblack_threshold",
+        "euclidean_distance_transform",
+        "h_maxima_markers",
+        "marker_controlled_watershed",
+        "expand_labels",
         "otsu_threshold",
         "triangle_threshold",
         "li_threshold",
@@ -192,6 +204,70 @@ def test_pipeline_runs_mask_to_labels_to_label_volume_filter_in_3d():
     assert set(np.unique(outputs[relabeled.id])) == {0, 1}
     assert pipeline.output_states[labels.id].kind == "label image"
     assert pipeline.nodes[labels.id].params["resolved_spatial_ndim"] == 3
+
+
+def test_touching_object_separation_splits_two_touching_disks():
+    yy, xx = np.mgrid[:48, :64]
+    mask = ((yy - 24) ** 2 + (xx - 22) ** 2 <= 13**2) | (
+        (yy - 24) ** 2 + (xx - 42) ** 2 <= 13**2
+    )
+
+    distance = euclidean_distance_transform(mask, resolved_spatial_ndim=2)
+    markers = h_maxima_markers(distance, h=1.0, resolved_spatial_ndim=2)
+    labels = marker_controlled_watershed(
+        [distance, markers, mask],
+        resolved_spatial_ndim=2,
+    )
+
+    assert distance.dtype == np.float32
+    assert markers.dtype == np.int32
+    assert labels.dtype == np.int32
+    assert int(markers.max()) == 2
+    assert int(labels.max()) == 2
+    assert np.all(labels[mask] > 0)
+
+
+def test_expand_labels_can_run_in_3d_or_slice_wise():
+    labels = np.zeros((3, 7, 7), dtype=np.int32)
+    labels[0, 3, 3] = 1
+
+    expanded_3d = expand_labels_image(
+        labels,
+        distance=1.1,
+        spatial_mode="3D ZYX",
+    )
+    expanded_2d = expand_labels_image(
+        labels,
+        distance=1.1,
+        spatial_mode="2D YX",
+    )
+
+    assert expanded_3d[1, 3, 3] == 1
+    assert expanded_2d[1, 3, 3] == 0
+
+
+def test_touching_object_pipeline_defaults_to_3d_for_z_stacks():
+    data = np.zeros((3, 16, 16), dtype=bool)
+    data[:, 5:11, 5:11] = True
+    pipeline = PrototypePipeline()
+    distance = pipeline.add_node("euclidean_distance_transform")
+    markers = pipeline.add_node("h_maxima_markers")
+    watershed = pipeline.add_node("marker_controlled_watershed")
+    pipeline.connect("input", distance.id)
+    pipeline.connect(distance.id, markers.id)
+    pipeline.connect(distance.id, watershed.id, target_port=0)
+    pipeline.connect(markers.id, watershed.id, target_port=1)
+    pipeline.connect("input", watershed.id, target_port=2)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "ZYX"})
+
+    assert outputs[distance.id].dtype == np.float32
+    assert outputs[markers.id].dtype == np.int32
+    assert outputs[watershed.id].dtype == np.int32
+    assert pipeline.nodes[distance.id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.nodes[markers.id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.nodes[watershed.id].params["resolved_spatial_ndim"] == 3
+    assert pipeline.output_states[watershed.id].kind == "label image"
 
 
 def test_measure_objects_reports_3d_objects_with_physical_volume():
@@ -932,6 +1008,94 @@ def test_additional_filter_nodes_preserve_shape():
     assert not np.allclose(laplace, 0)
 
 
+def test_rolling_ball_background_and_subtraction_preserve_dtype():
+    yy, xx = np.mgrid[:31, :31]
+    smooth_background = 30 + yy.astype(np.float32) * 1.2 + xx.astype(np.float32) * 0.5
+    image = smooth_background.copy()
+    image[15, 15] = 220
+    image = np.clip(image, 0, 255).astype(np.uint8)
+
+    background = rolling_ball_background(image, radius=7, disable_smoothing=True)
+    corrected = subtract_background(image, radius=7, disable_smoothing=True)
+
+    assert background.shape == image.shape
+    assert corrected.shape == image.shape
+    assert background.dtype == image.dtype
+    assert corrected.dtype == image.dtype
+    assert corrected[15, 15] > corrected[0, 0] + 100
+    assert corrected[0, 0] < 5
+
+
+def test_subtract_background_light_background_makes_dark_objects_positive():
+    image = np.full((25, 25), 200, dtype=np.uint8)
+    image[12, 12] = 20
+
+    corrected = subtract_background(
+        image,
+        radius=5,
+        light_background=True,
+        disable_smoothing=True,
+    )
+
+    assert corrected.dtype == image.dtype
+    assert corrected[12, 12] > 150
+    assert corrected[0, 0] < 5
+
+
+def test_rolling_ball_background_defaults_to_slice_wise_processing():
+    data = np.zeros((3, 21, 21), dtype=np.float32)
+    data[1, 10, 10] = 10.0
+
+    corrected = subtract_background(
+        data,
+        radius=5,
+        disable_smoothing=True,
+        spatial_mode="2D YX",
+    )
+
+    assert corrected.shape == data.shape
+    assert corrected.dtype == data.dtype
+    assert np.allclose(corrected[0], 0)
+    assert np.allclose(corrected[2], 0)
+    assert corrected[1, 10, 10] > 5
+
+
+def test_rolling_ball_background_processes_rgb_stack_channels_independently():
+    data = np.zeros((2, 21, 21, 3), dtype=np.uint8)
+    data[0, 10, 10, 0] = 200
+    data[1, 10, 10, 1] = 180
+
+    corrected = subtract_background(
+        data,
+        radius=5,
+        disable_smoothing=True,
+        spatial_mode="2D YX",
+    )
+
+    assert corrected.shape == data.shape
+    assert corrected.dtype == data.dtype
+    assert corrected[0, 10, 10, 0] > 100
+    assert corrected[0, :, :, 1].max() == 0
+    assert corrected[1, 10, 10, 1] > 100
+    assert corrected[1, :, :, 0].max() == 0
+
+
+def test_subtract_background_pipeline_records_metadata_history():
+    data = np.zeros((2, 16, 16), dtype=np.float32)
+    data[:, 6:10, 6:10] = 20.0
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("subtract_background")
+    pipeline.set_param(node.id, "radius", 5)
+    pipeline.connect("input", node.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "ZYX"})
+
+    assert outputs[node.id].shape == data.shape
+    assert pipeline.output_states[node.id].history[-1] == (
+        "Subtract Background: radius 5 px, 2D YX"
+    )
+
+
 def test_safe_filter_nodes_preserve_integer_dtype():
     data = np.zeros((2, 16, 16), dtype=np.uint16)
     data[:, 5:11, 5:11] = 40000
@@ -1132,6 +1296,21 @@ def test_orthogonal_projection_uses_physical_z_spacing():
     assert unscaled.shape == (5, 6)
 
 
+def test_orthogonal_projection_keeps_xy_native_when_z_spacing_is_finer():
+    data = np.zeros((75, 96, 128), dtype=np.uint8)
+
+    projected = orthogonal_projection(
+        data,
+        method="Maximum",
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(1.0 / 6.25, 1.0, 1.0),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+    )
+
+    assert projected.shape == (108, 140)
+
+
 def test_projection_metadata_updates_axes():
     data = np.zeros((2, 3, 4), dtype=np.uint16)
     state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
@@ -1237,8 +1416,46 @@ def test_rescale_axes_updates_shape_dtype_and_physical_scale_metadata():
     assert [axis.name for axis in scaled_state.axes] == ["z", "y", "x"]
     assert [axis.scale for axis in scaled_state.axes] == [
         1.0 / 1.5,
-        2.0,
+        1.5,
         0.5,
+    ]
+
+
+def test_rescale_axes_accepts_explicit_output_sizes():
+    data = np.zeros((4, 10, 20), dtype=np.uint16)
+    state = image_state_from_array(data)
+
+    scaled = rescale_axes(
+        data,
+        resize_mode="Output size",
+        x_size=30,
+        y_size=15,
+        z_size=7,
+        lock_xy=False,
+        interpolation="Nearest neighbor",
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+    )
+    scaled_state = transform_image_state(
+        scaled,
+        state,
+        operation_id="rescale_axes",
+        operation_title="Rescale Axes",
+        params={
+            "resize_mode": "Output size",
+            "x_size": 30,
+            "y_size": 15,
+            "z_size": 7,
+            "interpolation": "Nearest neighbor",
+        },
+    )
+
+    assert scaled.shape == (7, 15, 30)
+    assert scaled.dtype == data.dtype
+    assert [axis.scale for axis in scaled_state.axes] == [
+        4 / 7,
+        10 / 15,
+        20 / 30,
     ]
 
 
@@ -1265,6 +1482,27 @@ def test_rescale_axes_z_scale_only_changes_semantic_z_dimension_in_pipeline():
         "y": 1.0,
         "x": 1.0,
     }
+
+
+def test_rescaled_z_orthogonal_projection_does_not_upscale_xy_panel():
+    data = np.zeros((12, 96, 128), dtype=np.uint8)
+    pipeline = PrototypePipeline()
+    rescale = pipeline.add_node("rescale_axes")
+    projection = pipeline.add_node("orthogonal_projection")
+    pipeline.connect("input", rescale.id)
+    pipeline.connect(rescale.id, projection.id)
+    pipeline.set_param(rescale.id, "x_scale", 1.0)
+    pipeline.set_param(rescale.id, "y_scale", 1.0)
+    pipeline.set_param(rescale.id, "z_scale", 6.25)
+    pipeline.set_param(rescale.id, "lock_xy", True)
+
+    pipeline.run(data, input_metadata={"axes": "ZYX"})
+    projected_state = pipeline.output_states[projection.id]
+
+    assert pipeline.outputs[rescale.id].shape == (75, 96, 128)
+    assert pipeline.outputs[projection.id].shape == (108, 140)
+    assert projected_state is not None
+    assert [axis.scale for axis in projected_state.axes] == [1.0, 1.0]
 
 
 def test_rescale_axes_uses_current_reordered_spatial_semantics():

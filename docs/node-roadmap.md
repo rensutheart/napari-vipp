@@ -264,10 +264,10 @@ Implement the remaining nodes in the order shown by the planned statuses.
 | Implemented | Clear Border Objects | mask/labels -> same semantic type | `skimage.segmentation.clear_border` | Removes partial objects touching image or ROI boundaries. |
 | Implemented | Fill Holes | mask -> mask | `scipy.ndimage.binary_fill_holes` and connected-hole sizing | Fills all or size-limited holes using metadata-aware 2D/3D processing. |
 | Implemented | Remove Small Objects | mask/labels -> same semantic type | SciPy connected components and NumPy label counts | Removes objects below a metadata-aware 2D/3D minimum size while preserving mask/label type. |
-| Planned 1 | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness. |
-| Planned 2 | H-Maxima / Local Maxima Markers | image -> mask or labels | `skimage.morphology.h_maxima` or `local_maxima` | Produces robust watershed seeds. |
-| Planned 3 | Marker-Controlled Watershed | image + labels + optional mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles. |
-| Planned 4 | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap. |
+| Implemented | Euclidean Distance Transform | mask -> image | `scipy.ndimage.distance_transform_edt` | Foundation for separating touching objects and measuring thickness; metadata-aware 2D/3D processing. |
+| Implemented | H-Maxima Markers | image -> labels | `skimage.morphology.h_maxima` / `local_maxima` | Produces robust labeled watershed seeds; `h=0` falls back to local maxima. |
+| Implemented | Marker-Controlled Watershed | image + markers + mask -> labels | `skimage.segmentation.watershed` | Core method for separating touching nuclei, cells, and particles; defaults to inverted distance-map mode. |
+| Implemented | Expand Labels | labels -> labels | `skimage.segmentation.expand_labels` | Approximates cell regions from nuclear seeds without label overlap; supports 2D slice-wise or 3D expansion. |
 | Planned 5 | Find Label Boundaries | labels -> mask | `skimage.segmentation.find_boundaries` | Useful for QC, overlays, and boundary measurements. |
 
 `Filter Labels By Volume` is also implemented as the label-preserving cleanup
@@ -345,17 +345,17 @@ ordinary connected-component labeling.
 
 | Order | Node | Input -> Output | Suggested backend | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | Rolling-Ball Background | image -> background image | `skimage.restoration.rolling_ball` | High value for uneven fluorescence background. Default to per-plane processing; warn that large 3D radii are expensive. |
-| 2 | Subtract Background | image + background -> image | Existing subtraction or a named wrapper | Keeping the background visible makes the workflow auditable. |
+| 1 | Rolling-Ball Background | image -> background image | `skimage.restoration.rolling_ball` | Implemented under Filtering -> Background Correction. Defaults to per-plane processing; warns that large 3D radii are expensive. |
+| 2 | Subtract Background | image -> corrected image | `skimage.restoration.rolling_ball` + dtype-preserving subtraction | Implemented as a Fiji/ImageJ-style convenience node. Use Rolling-Ball Background when the estimated background itself should be inspected or saved. |
 | 3 | Grayscale White Top-Hat | image -> image | `scipy.ndimage.white_tophat` | Faster approximate background suppression for bright objects. |
 | 4 | Difference of Gaussians | image -> image | `scipy.ndimage.gaussian_filter`-based slice-wise DoG | Implemented as an `Edge & Detail` filtering node; enhances puncta and structures within a size band. |
 | 5 | Laplacian of Gaussian | image -> image | `scipy.ndimage.gaussian_laplace` | Useful for blob enhancement and marker generation. |
 | 6 | Unsharp Mask | image -> image | `skimage.filters.unsharp_mask` | Implemented as an `Edge & Detail` filtering node for general sharpening. |
 
-Rolling-ball background estimation should probably remain separate from
+Rolling-ball background estimation remains available separately from
 subtraction. This exposes the estimated background and allows users to inspect,
-save, or reuse it. A later convenience node may return both `background` and
-`corrected` outputs.
+save, or reuse it, while `Subtract Background` provides the common one-node
+correction workflow.
 
 The target behavior should match the practical Fiji/ImageJ use case: uneven
 fluorescence background correction with an inspectable estimated background and
@@ -546,6 +546,8 @@ cutoff and an object-volume distribution for choosing thresholds.
 
 ### Milestone 1B: Split Touching Objects
 
+Implemented:
+
 1. Euclidean Distance Transform.
 2. H-Maxima Markers.
 3. Marker-Controlled Watershed.
@@ -563,9 +565,9 @@ binary mask
 ```
 
 The watershed branch is now technically unblocked because named heterogeneous
-input ports are implemented. It should follow the table-driven property
-filtering work unless touching-object splitting becomes the immediate user
-priority.
+input ports are implemented and the branch itself is available in the node
+palette. Remaining polish is marker QC visualization, better defaults based on
+real microscopy examples, and optional marker/label validation summaries.
 
 ## P2: Add After Core Object Analysis
 
@@ -736,15 +738,15 @@ Image Data
 
 Intensity & Contrast
 
-Enhancement
+Filtering
   Background Correction
-  Denoising
-  Sharpening & Features
+  Smoothing & Denoising
+  Edge & Detail
 
 Segmentation
-  Thresholding
-  Marker Generation
-  Watershed & Region Methods
+  Global Thresholds
+  Local Thresholds
+  Object Separation
 
 Binary Morphology
 Label Operations

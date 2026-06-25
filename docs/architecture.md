@@ -399,11 +399,13 @@ Source metadata comes from, in order of preference:
 napari layers that lack reliable physical metadata. It updates X/Y pixel size,
 optional Z step size, and the shared physical unit in carried `AxisMetadata`
 without changing pixel values. `Rescale Axes` changes the pixel grid along
-X/Y/Z by scale factors, optionally locks X/Y aspect ratio, supports nearest,
-linear, cubic, and spline interpolation, and updates `AxisMetadata.scale`
-inversely to the requested scale factor. `Orthogonal Projection` uses
-calibrated Z/Y/X spacing to size its XZ and YZ panels, so anisotropic z-stacks
-display with physical proportions.
+X/Y/Z either by scale factors or explicit output pixel counts, optionally locks
+X/Y aspect ratio, supports nearest, linear, cubic, and spline interpolation,
+and updates `AxisMetadata.scale` from the dimensions actually produced.
+Automatic interpolation resolves to linear for intensity images and nearest
+neighbor for masks and labels. `Orthogonal Projection` uses calibrated Z/Y/X
+spacing to size its XZ and YZ panels, so anisotropic z-stacks display with
+physical proportions.
 
 The inspector uses `metadata_table_rows()` and `metadata_history_items()`. Node
 cards use `format_compact_metadata()`. Metadata is useful for UI labels,

@@ -186,6 +186,12 @@ Broader graph capabilities have also enabled:
   OME-Zarr;
 - image/mask/label pinning as persistent napari preview layers;
 - first-class label cleanup;
+- touching-object separation using distance transforms, H-maxima markers,
+  marker-controlled watershed, and label expansion;
+- background execution for known slow image-processing graphs, with a global
+  indeterminate processing indicator, per-node busy rings for the slow node
+  that triggered background execution, and coalesced reruns while a long
+  calculation is active;
 - first-class table outputs and label-object measurements;
 - generic skeletonization and skeleton-network measurement tables.
 
@@ -201,22 +207,42 @@ Still requiring new platform types or UI:
 
 ## Immediate Implementation Sequence
 
-The current near-term order should be:
+Recently completed:
+
+- Fiji/ImageJ-style rolling-ball background correction is implemented as
+  `Rolling-Ball Background` and `Subtract Background` under
+  `Filtering -> Background Correction`. The estimated background can be
+  inspected separately, while the subtract node provides the common direct
+  correction workflow.
+- Touching-object separation is implemented under
+  `Segmentation -> Object Separation`: `Euclidean Distance Transform`,
+  `H-Maxima Markers`, `Marker-Controlled Watershed`, and `Expand Labels`.
+  These nodes use metadata-aware `Auto from axes` processing, so z-stacks
+  default to true 3D while explicit `2D YX` slice-wise processing remains
+  available.
+
+The current recommended near-term order is:
 
 1. **Grouped table summaries for analysis-ready exports**
    Add `Summarize Measurements` so merged morphology/intensity/skeleton tables
    can be grouped by metadata and summarized cleanly for PCA or treatment
    comparisons. `Select Table Columns` now handles trimming and reordering.
 
-2. **Touching-object separation**
-   Add Euclidean Distance Transform, H-maxima/local-maxima marker generation,
-   Marker-Controlled Watershed, and Expand Labels now that named heterogeneous
-   ports are available.
-
-3. **Skeleton QC and pruning**
+2. **Skeleton QC and pruning**
    Add endpoint/junction masks, branch labels, connected skeleton-component
    labels, and short-branch pruning so network table measurements can be
    visually audited.
+
+3. **Manual/cached execution for expensive nodes**
+   Add an explicit `Calculate`/`Recalculate` execution mode for nodes that are
+   too expensive to recompute continuously, starting with large 3D
+   rolling-ball/sliding-paraboloid background estimation and later extending to
+   deconvolution, 3D mesh morphology, and heavy colocalization workflows.
+   Basic background-thread execution with a global busy indicator, node-level
+   busy feedback, and queued reruns is implemented for known slow live graphs;
+   this future item is about explicit cached results, process-based or
+   cooperative cancellation, persisted stale-state semantics, and optional true
+   progress reporting where algorithms expose meaningful progress.
 
 ## Deferred TODOs From Recent Decisions
 
@@ -265,9 +291,11 @@ implementation work does not have to infer old discussion context:
    table metrics were produced.
 
 7. **Touching-object separation**
-   Add Euclidean distance transform, H-maxima/local maxima marker generation,
-   and marker-controlled watershed. Named heterogeneous inputs are now
-   implemented, so this is no longer blocked by graph plumbing.
+   Implemented as `Euclidean Distance Transform`, `H-Maxima Markers`,
+   `Marker-Controlled Watershed`, and `Expand Labels`. The watershed node uses
+   named `Image / distance`, `Markers`, and `Mask` ports. All four nodes expose
+   `Auto from axes`, `2D YX`, and `3D ZYX`, with z-stacks defaulting to 3D via
+   metadata-aware spatial resolution.
 
 8. **Mitochondrial-specific measurements**
    Treat the old MitoMorph code as inspiration for future specialist nodes:
@@ -301,10 +329,12 @@ implementation work does not have to infer old discussion context:
     clear policy for whether cached results are persisted in workflow files.
 
 11. **Fiji/ImageJ-style background subtraction**
-    Add rolling-ball/sliding-paraboloid-style background estimation and
-    subtraction workflows for uneven fluorescence background. The background
-    image should be inspectable as its own output where possible, so correction
-    remains auditable.
+    Implemented as native `Rolling-Ball Background` and `Subtract Background`
+    nodes under Filtering -> Background Correction. Remaining background work
+    is no longer basic rolling-ball subtraction; it is validation against Fiji
+    behavior on representative microscopy images, optional sliding-paraboloid
+    parity if needed, and deciding whether very large 3D workflows should use
+    the manual/cached slow-node execution model rather than live recomputation.
 
 12. **Batch execution UI**
    Python export exists, but a real collection-batch UI still needs stable item
@@ -337,12 +367,9 @@ The next measurement-focused milestone is:
 The next network-analysis milestone remains skeleton endpoint/junction QC masks,
 branch labels, and short-branch pruning.
 
-After that, implement touching-object separation:
-
-1. Euclidean Distance Transform;
-2. H-Maxima or local-maxima marker generation;
-3. Marker-Controlled Watershed;
-4. Expand Labels.
+Touching-object separation is implemented. Remaining segmentation refinements
+are now marker QC polish, optional Multi-Otsu class images, and validation of
+watershed defaults on representative nuclei/cell/object datasets.
 
 Table outputs and basic `Measure Objects` are implemented. A dedicated `Save
 Table` graph node is not yet required because selected table outputs and

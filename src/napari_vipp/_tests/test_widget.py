@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from dataclasses import replace
+
 import imageio.v3 as iio
 import numpy as np
 import tifffile
@@ -18,7 +21,11 @@ from qtpy.QtWidgets import (
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
 from napari_vipp.core.io import inspect_image_source, read_image
-from napari_vipp.core.pipeline import PALETTE_NODE_LIBRARY, SourcePayload
+from napari_vipp.core.pipeline import (
+    NODE_LIBRARY_BY_ID,
+    PALETTE_NODE_LIBRARY,
+    SourcePayload,
+)
 from napari_vipp.core.preview import make_preview
 
 
@@ -579,6 +586,56 @@ def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
     assert calls[-1] == (3, 1, 2, 0, 0)
 
 
+def test_image_source_hides_channel_colours_for_mono_data(qtbot):
+    viewer = _Viewer(
+        np.zeros((12, 16, 18), dtype=np.uint8),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert widget._channel_color_control_count("input") == 0
+    assert not any(
+        name.startswith("channel_color_") for name in widget._parameter_widgets
+    )
+
+
+def test_image_source_shows_only_detected_multichannel_colours(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 12, 16, 18), dtype=np.uint16),
+        metadata={"axes": "CZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    controls = [
+        name
+        for name in widget._parameter_widgets
+        if name.startswith("channel_color_")
+    ]
+    assert controls == ["channel_color_0", "channel_color_1", "channel_color_2"]
+
+
+def test_image_source_hides_singleton_channel_axis(qtbot):
+    viewer = _Viewer(
+        np.zeros((1, 12, 16, 18), dtype=np.uint16),
+        metadata={"axes": "CZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert widget._channel_color_control_count("input") == 0
+    assert not any(
+        name.startswith("channel_color_") for name in widget._parameter_widgets
+    )
+
+
 def test_selecting_node_updates_inspection_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -1128,6 +1185,48 @@ def test_rescale_axes_can_lock_xy_scale(qtbot):
     assert widget.pipeline.nodes[node.id].params["y_scale"] == 0.75
 
 
+def test_rescale_axes_uses_numeric_entry_without_sliders(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    x_scale = widget._parameter_widgets["x_scale"]
+    assert not hasattr(x_scale, "slider")
+    assert x_scale.layout().spacing() == 3
+    assert x_scale.value_box.minimumWidth() == 112
+    assert x_scale.value_box.maximumWidth() == 122
+    assert x_scale.value_box.lineEdit().alignment() == Qt.AlignCenter
+    assert x_scale.value_box.lineEdit().textMargins().left() == 0
+    assert widget._parameter_widgets["x_scale_reset"].width() == 20
+
+    x_scale.value_box.setValue(20.25)
+
+    assert widget.pipeline.nodes[node.id].params["x_scale"] == 20.25
+
+
+def test_float_spinners_accept_decimal_point_or_comma(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    value_box = widget._parameter_widgets["x_scale"].value_box
+
+    value_box.lineEdit().setText("1,23")
+    value_box.interpretText()
+    assert np.isclose(value_box.value(), 1.23)
+
+    value_box.lineEdit().setText("2.34")
+    value_box.interpretText()
+    assert np.isclose(value_box.value(), 2.34)
+
+
 def test_rescale_axes_labels_show_mapped_axis_sizes(qtbot):
     viewer = _Viewer(
         np.zeros((3, 12, 96, 128), dtype=np.float32),
@@ -1144,9 +1243,17 @@ def test_rescale_axes_labels_show_mapped_axis_sizes(qtbot):
     z_control.value_box.setValue(2.0)
     widget._debounce_timer.stop()
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+        ),
+        timeout=30_000,
+    )
 
     label = widget.parameter_form.labelForField(z_control)
-    assert label.text() == "Z scale factor (Z axis, 12 -> 24)"
+    assert label.text() == "Z scale factor (12 -> 24)"
     assert widget.pipeline.outputs[node.id].shape == (3, 24, 96, 128)
     assert _metadata_value(widget, "Dimensions") == "c=3, z=24, y=96, x=128"
 
@@ -1170,11 +1277,61 @@ def test_rescale_axes_labels_follow_reordered_spatial_semantics(qtbot):
     z_control.value_box.setValue(2.0)
     widget._debounce_timer.stop()
     widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(rescale.id) is not None
+        ),
+        timeout=30_000,
+    )
 
     label = widget.parameter_form.labelForField(z_control)
-    assert label.text() == "Z scale factor (Z axis, 96 -> 192)"
+    assert label.text() == "Z scale factor (96 -> 192)"
     assert widget.pipeline.outputs[rescale.id].shape == (3, 192, 12, 128)
     assert _metadata_value(widget, "Dimensions") == "c=3, z=192, y=12, x=128"
+
+
+def test_rescale_axes_supports_output_size_mode_and_axis_reset(qtbot):
+    viewer = _Viewer(
+        np.zeros((12, 96, 128), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    mode = widget._parameter_widgets["resize_mode"]
+    mode.combo.setCurrentIndex(mode.combo.findData("Output size"))
+    x_size = widget._parameter_widgets["x_size"]
+    y_size = widget._parameter_widgets["y_size"]
+    assert x_size.value() == 128
+    assert y_size.value() == 96
+
+    x_size.value_box.setValue(256)
+    assert widget.pipeline.nodes[node.id].params["x_size"] == 256
+    assert widget.pipeline.nodes[node.id].params["y_size"] == 192
+
+    widget._parameter_widgets["x_size_reset"].click()
+    assert widget.pipeline.nodes[node.id].params["x_size"] == 128
+    assert widget.pipeline.nodes[node.id].params["y_size"] == 96
+
+
+def test_rescale_axes_auto_interpolation_names_resolved_method(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    interpolation = widget._parameter_widgets["interpolation"]
+    assert interpolation.combo.currentData() == "Auto"
+    assert interpolation.combo.currentText() == "Auto - Linear"
 
 
 def test_project_image_uses_contextual_axis_dropdown(qtbot):
@@ -1185,6 +1342,14 @@ def test_project_image_uses_contextual_axis_dropdown(qtbot):
 
     node = widget.add_node_from_palette("project_image")
     widget._connect_nodes("input", node.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(node.id) is not None
+        ),
+        timeout=30_000,
+    )
 
     control = widget._parameter_widgets["axes"]
     choices = [
@@ -1225,15 +1390,22 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     filtering_subgroups = {
         filtering.child(index).text(0) for index in range(filtering.childCount())
     }
-    assert {"Smoothing & Denoising", "Edge & Detail"} <= filtering_subgroups
+    assert {
+        "Smoothing & Denoising",
+        "Edge & Detail",
+        "Background Correction",
+    } <= filtering_subgroups
 
     smoothing = _palette_child_by_text(filtering, "Smoothing & Denoising")
     edge_detail = _palette_child_by_text(filtering, "Edge & Detail")
+    background = _palette_child_by_text(filtering, "Background Correction")
     assert _palette_child_by_text(smoothing, "Gaussian Blur")
     assert _palette_child_by_text(smoothing, "Non-Local Means")
     assert _palette_child_by_text(edge_detail, "Difference of Gaussians")
     assert _palette_child_by_text(edge_detail, "Sobel Edges")
     assert _palette_child_by_text(edge_detail, "Canny Edges")
+    assert _palette_child_by_text(background, "Rolling-Ball Background")
+    assert _palette_child_by_text(background, "Subtract Background")
 
     projection = _palette_category(widget, "Projection")
     assert _palette_child_by_text(projection, "Maximum Projection")
@@ -1245,16 +1417,25 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
         segmentation.child(index).text(0)
         for index in range(segmentation.childCount())
     }
-    assert {"Global Thresholds", "Local Thresholds"} <= segmentation_subgroups
+    assert {
+        "Global Thresholds",
+        "Local Thresholds",
+        "Object Separation",
+    } <= segmentation_subgroups
     assert "Edge-Based" not in segmentation_subgroups
 
     global_thresholds = _palette_child_by_text(segmentation, "Global Thresholds")
     local_thresholds = _palette_child_by_text(segmentation, "Local Thresholds")
+    object_separation = _palette_child_by_text(segmentation, "Object Separation")
     assert _palette_child_by_text(global_thresholds, "Otsu Threshold")
     assert _palette_child_by_text(global_thresholds, "Li Threshold")
     assert _palette_child_by_text(global_thresholds, "Hysteresis Threshold")
     assert _palette_child_by_text(local_thresholds, "Adaptive Gaussian Threshold")
     assert _palette_child_by_text(local_thresholds, "Sauvola Threshold")
+    assert _palette_child_by_text(object_separation, "Euclidean Distance Transform")
+    assert _palette_child_by_text(object_separation, "H-Maxima Markers")
+    assert _palette_child_by_text(object_separation, "Marker-Controlled Watershed")
+    assert _palette_child_by_text(object_separation, "Expand Labels")
 
 
 def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
@@ -2597,6 +2778,7 @@ def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
     assert widget.graph_zoom_slider.maximum() == 250
     assert widget.graph_zoom_slider.value() == 100
     assert widget.graph_zoom_label.text() == "100%"
+    assert np.isclose(widget.graph_view.transform().m11(), 1.0)
     assert widget.graph_zoom_reset_button.isEnabled()
     assert not widget.graph_zoom_reset_button.icon().isNull()
 
@@ -2604,12 +2786,14 @@ def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
 
     assert widget.graph_view.zoom_percent == 150
     assert widget.graph_zoom_label.text() == "150%"
+    assert np.isclose(widget.graph_view.transform().m11(), 1.5)
 
     qtbot.mouseClick(widget.graph_zoom_reset_button, Qt.LeftButton)
 
     assert widget.graph_view.zoom_percent == 100
     assert widget.graph_zoom_slider.value() == 100
     assert widget.graph_zoom_label.text() == "100%"
+    assert np.isclose(widget.graph_view.transform().m11(), 1.0)
     assert widget.graph_zoom_reset_button.isEnabled()
 
 
@@ -2658,6 +2842,148 @@ def test_gaussian_blur_3d_can_lock_xy_sigma(qtbot):
     assert widget.pipeline.nodes[node.id].params["lock_xy"] is False
     assert widget.pipeline.nodes[node.id].params["sigma_y"] == 4.2
     assert widget.pipeline.nodes[node.id].params["sigma_x"] == 1.6
+
+
+def test_slow_pipeline_run_shows_busy_indicator(qtbot):
+    viewer = _Viewer(np.zeros((3, 12, 12), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("gaussian_blur_3d")
+    widget._connect_nodes("input", node.id)
+
+    assert widget._active_pipeline_run_id is not None
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.graph_view._cards[node.id].is_processing()
+
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and widget.pipeline.outputs.get(node.id) is not None
+        ),
+        timeout=30_000,
+    )
+
+    assert widget.pipeline_busy_bar.isHidden()
+    assert not widget.graph_view._cards[node.id].is_processing()
+    assert widget.pipeline.outputs[node.id].shape == (3, 12, 12)
+
+
+def test_downstream_parameter_change_reuses_cached_upstream_slow_node(
+    qtbot,
+    monkeypatch,
+):
+    calls = {"subtract": 0}
+    original = NODE_LIBRARY_BY_ID["subtract_background"]
+
+    def fake_subtract_background(image, **_kwargs):
+        calls["subtract"] += 1
+        return np.asarray(image)
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "subtract_background",
+        replace(original, function=fake_subtract_background),
+    )
+
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    background = widget.add_node_from_palette("subtract_background")
+    widget._connect_nodes("input", background.id)
+    gamma = widget.add_node_from_palette("gamma_correction")
+    widget._connect_nodes(background.id, gamma.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(gamma.id) is not None
+        ),
+        timeout=30_000,
+    )
+    calls_before = calls["subtract"]
+
+    widget.graph_view.select_node(gamma.id)
+    widget._parameter_widgets["gamma"].value_box.setValue(0.8)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pending_dirty_node_ids
+            and widget.pipeline.nodes[gamma.id].params["gamma"] == 0.8
+        ),
+        timeout=30_000,
+    )
+
+    assert calls["subtract"] == calls_before
+
+
+def test_rescale_axes_dirty_run_starts_at_rescale_and_reuses_upstream_cache(
+    qtbot,
+    monkeypatch,
+):
+    calls = {"subtract": 0, "rescale": 0}
+    original_subtract = NODE_LIBRARY_BY_ID["subtract_background"]
+    original_rescale = NODE_LIBRARY_BY_ID["rescale_axes"]
+
+    def fake_subtract_background(image, **_kwargs):
+        calls["subtract"] += 1
+        return np.asarray(image)
+
+    def fake_rescale_axes(image, **_kwargs):
+        calls["rescale"] += 1
+        time.sleep(0.1)
+        return np.asarray(image)
+
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "subtract_background",
+        replace(original_subtract, function=fake_subtract_background),
+    )
+    monkeypatch.setitem(
+        NODE_LIBRARY_BY_ID,
+        "rescale_axes",
+        replace(original_rescale, function=fake_rescale_axes),
+    )
+
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    background = widget.add_node_from_palette("subtract_background")
+    widget._connect_nodes("input", background.id)
+    rescale = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes(background.id, rescale.id)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and widget.pipeline.outputs.get(rescale.id) is not None
+        ),
+        timeout=30_000,
+    )
+    subtract_calls_before = calls["subtract"]
+
+    widget.graph_view.select_node(rescale.id)
+    widget._parameter_widgets["x_scale"].value_box.setValue(1.25)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is not None
+            and widget._active_pipeline_node_id == rescale.id
+        ),
+        timeout=30_000,
+    )
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pending_dirty_node_ids
+            and widget.pipeline.nodes[rescale.id].params["x_scale"] == 1.25
+        ),
+        timeout=30_000,
+    )
+
+    assert calls["subtract"] == subtract_calls_before
+    assert calls["rescale"] >= 1
 
 
 def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
@@ -2813,6 +3139,10 @@ def test_palette_image_operations_can_run(qtbot):
             return label_source_id
         labels = widget.add_node_from_palette("label_connected_components")
         widget._connect_nodes("threshold", labels.id)
+        qtbot.waitUntil(
+            lambda: widget.pipeline.outputs.get(labels.id) is not None,
+            timeout=30_000,
+        )
         assert widget.pipeline.outputs[labels.id] is not None
         label_source_id = labels.id
         return label_source_id
@@ -2823,6 +3153,10 @@ def test_palette_image_operations_can_run(qtbot):
             return table_source_id
         measurements = widget.add_node_from_palette("measure_objects")
         widget._connect_nodes(ensure_label_source(), measurements.id)
+        qtbot.waitUntil(
+            lambda: widget.pipeline.outputs.get(measurements.id) is not None,
+            timeout=30_000,
+        )
         assert widget.pipeline.outputs[measurements.id] is not None
         table_source_id = measurements.id
         return table_source_id
@@ -2857,6 +3191,14 @@ def test_palette_image_operations_can_run(qtbot):
                 second_input = widget.add_node_from_palette("input")
                 widget._connect_nodes(second_input.id, node.id)
 
+        qtbot.waitUntil(
+            lambda node_id=node.id: (
+                widget._active_pipeline_run_id is None
+                and not widget._pipeline_run_pending
+                and widget.pipeline.outputs.get(node_id) is not None
+            ),
+            timeout=30_000,
+        )
         assert widget.pipeline.outputs[node.id] is not None, spec.id
         if spec.output_type == "labels":
             label_source_id = node.id
@@ -3519,6 +3861,28 @@ def test_soft_parameter_text_entry_expands_slider_range(qtbot):
     assert control.slider.maximum() >= 2000
     assert control.slider.value() == 2000
     assert widget.pipeline.nodes["gaussian"].params["sigma"] == 20.0
+
+
+def test_subtract_background_radius_slider_is_capped_but_entry_allows_more(qtbot):
+    viewer = _Viewer(np.zeros((8, 8), dtype=np.uint8))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("subtract_background")
+    widget._connect_nodes("input", node.id)
+
+    control = widget._parameter_widgets["radius"]
+    control.slider.setValue(control.slider.maximum())
+
+    assert control.value() == 100.0
+    assert control.value_box.maximum() == 500.0
+
+    control.value_box.setValue(250.0)
+
+    assert control.slider.maximum() == 1000
+    assert control.slider.value() == 1000
+    assert control.value() == 250.0
+    assert widget.pipeline.nodes[node.id].params["radius"] == 250.0
 
 
 def test_crop_parameter_text_entry_stays_image_limited(qtbot):

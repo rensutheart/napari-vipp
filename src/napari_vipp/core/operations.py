@@ -210,6 +210,60 @@ def unsharp_mask_filter(
     return _restore_unit_float_dtype(_apply_plane_wise(arr, sharpen_plane), arr)
 
 
+def rolling_ball_background(
+    data,
+    radius: float = 50.0,
+    light_background: bool = False,
+    disable_smoothing: bool = False,
+    spatial_mode: str = "2D YX",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Estimate smooth background with a Fiji/ImageJ-style rolling ball."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return np.zeros_like(arr)
+    background = _estimate_rolling_ball_background(
+        arr,
+        radius=radius,
+        light_background=light_background,
+        disable_smoothing=disable_smoothing,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+    )
+    return _restore_numeric_dtype(background, arr)
+
+
+def subtract_background(
+    data,
+    radius: float = 50.0,
+    light_background: bool = False,
+    disable_smoothing: bool = False,
+    clip_negative: bool = True,
+    spatial_mode: str = "2D YX",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Subtract a rolling-ball background estimate while preserving dtype."""
+    arr = np.asarray(data)
+    if arr.dtype == bool:
+        return arr.copy()
+    background = _estimate_rolling_ball_background(
+        arr,
+        radius=radius,
+        light_background=light_background,
+        disable_smoothing=disable_smoothing,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+    )
+    values = arr.astype(background.dtype, copy=False)
+    if bool(light_background):
+        corrected = background - values
+    else:
+        corrected = values - background
+    if bool(clip_negative):
+        corrected = np.maximum(corrected, 0)
+    return _restore_numeric_dtype(corrected, arr)
+
+
 def non_local_means_filter(
     data,
     patch_size: int = 5,
@@ -672,6 +726,139 @@ def label_connected_components(
         return labels.astype(np.int32, copy=False)
 
     return _apply_spatial_blocks(mask, spatial_ndim, label_block, dtype=np.int32)
+
+
+def euclidean_distance_transform(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Compute foreground distance to background per 2D plane or 3D volume."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    def distance_block(block: np.ndarray) -> np.ndarray:
+        return ndi.distance_transform_edt(block).astype(np.float32, copy=False)
+
+    return _apply_spatial_blocks(mask, spatial_ndim, distance_block, dtype=np.float32)
+
+
+def h_maxima_markers(
+    data,
+    h: float = 1.0,
+    spatial_mode: str = "Auto from axes",
+    connectivity: str = "Full connectivity",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Generate labeled watershed seed markers from robust local maxima."""
+    arr = np.asarray(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
+    structure = ndi.generate_binary_structure(spatial_ndim, rank)
+    height = max(float(h), 0.0)
+
+    def marker_block(block: np.ndarray) -> np.ndarray:
+        values = np.asarray(block, dtype=np.float32)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0 or float(finite.min()) == float(finite.max()):
+            return np.zeros(values.shape, dtype=np.int32)
+        safe = np.nan_to_num(
+            values,
+            nan=float(finite.min()),
+            posinf=float(finite.max()),
+            neginf=float(finite.min()),
+        )
+        if height > 0:
+            peaks = morphology.h_maxima(safe, height)
+        else:
+            peaks = morphology.local_maxima(safe)
+        peaks &= safe > float(finite.min())
+        labels, _count = ndi.label(peaks, structure=structure)
+        return labels.astype(np.int32, copy=False)
+
+    return _apply_spatial_blocks(arr, spatial_ndim, marker_block, dtype=np.int32)
+
+
+def marker_controlled_watershed(
+    inputs,
+    image_mode: str = "Distance map (invert)",
+    compactness: float = 0.0,
+    watershed_line: bool = False,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Segment touching objects from image/elevation, marker, and mask inputs."""
+    arrays = _matching_input_arrays(inputs, 3, "Marker-Controlled Watershed")
+    image = arrays[0].astype(np.float32, copy=False)
+    markers = _validated_labels(arrays[1]).astype(np.int32, copy=False)
+    mask = _to_bool_mask(arrays[2])
+    spatial_ndim = _resolved_spatial_ndim(
+        image,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    invert = str(image_mode).strip().lower().startswith("distance")
+
+    def watershed_block(
+        image_block: np.ndarray,
+        marker_block: np.ndarray,
+        mask_block: np.ndarray,
+    ) -> np.ndarray:
+        if not np.any(mask_block) or int(marker_block.max(initial=0)) <= 0:
+            return np.zeros(mask_block.shape, dtype=np.int32)
+        elevation = -image_block if invert else image_block
+        labels = segmentation.watershed(
+            elevation,
+            marker_block,
+            mask=mask_block,
+            compactness=max(float(compactness), 0.0),
+            watershed_line=bool(watershed_line),
+        )
+        return labels.astype(np.int32, copy=False)
+
+    return _apply_spatial_blocks_multi(
+        (image, markers, mask),
+        spatial_ndim,
+        watershed_block,
+        dtype=np.int32,
+    )
+
+
+def expand_labels_image(
+    data,
+    distance: float = 5.0,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Expand labels into nearby background without allowing overlaps."""
+    labels = _validated_labels(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    expansion = max(float(distance), 0.0)
+
+    def expand_block(block: np.ndarray) -> np.ndarray:
+        if expansion <= 0 or int(block.max(initial=0)) <= 0:
+            return block.copy()
+        expanded = segmentation.expand_labels(block, distance=expansion)
+        return np.asarray(expanded, dtype=labels.dtype)
+
+    return _apply_spatial_blocks(
+        labels,
+        spatial_ndim,
+        expand_block,
+        dtype=labels.dtype,
+    )
 
 
 def filter_labels_by_volume(
@@ -2413,18 +2600,22 @@ def orthogonal_projection(
         axis_scales=axis_scales,
         axis_units=axis_units,
     )
-    display_z, display_y, display_x = _orthogonal_display_sizes(
+    display_z_y, display_z_x, display_y, display_x = _orthogonal_display_sizes(
         (z_size, y_size, x_size),
         display_scales,
     )
     flat = moved.reshape((-1, z_size, y_size, x_size))
 
     montages = [
-        _orthogonal_projection_block(block, method, (display_z, display_y, display_x))
+        _orthogonal_projection_block(
+            block,
+            method,
+            (display_z_y, display_z_x, display_y, display_x),
+        )
         for block in flat
     ]
     montage = np.stack(montages, axis=0).reshape(
-        leading_shape + (display_y + display_z, display_x + display_z)
+        leading_shape + (display_y + display_z_y, display_x + display_z_x)
     )
 
     temp_labels = non_spatial_axes + [-2, -1]
@@ -2466,11 +2657,15 @@ def rescale_axes(
     lock_xy: bool = True,
     interpolation: str = "Auto",
     anti_aliasing: bool = True,
+    resize_mode: str = "Scale factor",
+    x_size: int = 0,
+    y_size: int = 0,
+    z_size: int = 0,
     axis_names: Sequence[str] = (),
     axis_types: Sequence[str] = (),
     input_kind: str = "",
 ) -> np.ndarray:
-    """Resample spatial X/Y/Z axes by scale factors."""
+    """Resample spatial X/Y/Z axes by scale factors or explicit output sizes."""
     arr = np.asarray(data)
     if arr.ndim == 0:
         return arr.copy()
@@ -2484,15 +2679,25 @@ def rescale_axes(
         axis_types=axis_types,
         shape=arr.shape,
     )
-    scale_by_axis = {axis_map["x"]: x_scale}
-    if "y" in axis_map:
-        scale_by_axis[axis_map["y"]] = y_scale
-    if "z" in axis_map:
-        scale_by_axis[axis_map["z"]] = z_scale
-    output_shape = tuple(
-        max(int(round(size * scale_by_axis.get(axis, 1.0))), 1)
-        for axis, size in enumerate(arr.shape)
-    )
+    output_shape = list(arr.shape)
+    if str(resize_mode).strip().lower().startswith("output"):
+        requested_sizes = {"x": x_size, "y": y_size, "z": z_size}
+        for role, axis in axis_map.items():
+            output_shape[axis] = _positive_int(
+                requested_sizes.get(role),
+                arr.shape[axis],
+            )
+    else:
+        scale_by_axis = {axis_map["x"]: x_scale}
+        if "y" in axis_map:
+            scale_by_axis[axis_map["y"]] = y_scale
+        if "z" in axis_map:
+            scale_by_axis[axis_map["z"]] = z_scale
+        output_shape = [
+            max(int(round(size * scale_by_axis.get(axis, 1.0))), 1)
+            for axis, size in enumerate(arr.shape)
+        ]
+    output_shape = tuple(output_shape)
     if output_shape == arr.shape:
         return arr.copy()
 
@@ -2783,6 +2988,31 @@ def _apply_spatial_blocks(
     return result
 
 
+def _apply_spatial_blocks_multi(
+    arrays: Sequence[np.ndarray],
+    spatial_ndim: int,
+    func: Callable[..., np.ndarray],
+    *,
+    dtype,
+) -> np.ndarray:
+    """Apply ``func`` over matching leading blocks from several arrays."""
+    arrays = tuple(np.asarray(array) for array in arrays)
+    if not arrays:
+        raise ValueError("At least one array is required.")
+    shape = arrays[0].shape
+    if any(array.shape != shape for array in arrays):
+        raise ValueError("Spatial block inputs must have matching shapes.")
+    spatial_ndim = int(np.clip(spatial_ndim, 1, max(arrays[0].ndim, 1)))
+    if arrays[0].ndim <= spatial_ndim:
+        return np.asarray(func(*arrays), dtype=dtype)
+
+    result = np.empty(shape, dtype=dtype)
+    leading_shape = shape[: arrays[0].ndim - spatial_ndim]
+    for index in np.ndindex(leading_shape):
+        result[index] = func(*(array[index] for array in arrays))
+    return result
+
+
 def _resolved_spatial_ndim(
     arr: np.ndarray,
     spatial_mode: str,
@@ -2798,6 +3028,86 @@ def _resolved_spatial_ndim(
     else:
         requested = 3 if arr.ndim >= 3 else 2
     return int(np.clip(requested, 1, max(arr.ndim, 1)))
+
+
+def _estimate_rolling_ball_background(
+    arr: np.ndarray,
+    *,
+    radius: float,
+    light_background: bool,
+    disable_smoothing: bool,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+) -> np.ndarray:
+    arr = np.asarray(arr)
+    if arr.ndim == 0:
+        return arr.astype(np.float32, copy=True)
+    radius_pixels = max(int(round(float(radius))), 1)
+    spatial_ndim = _resolved_spatial_ndim(
+        arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    output_dtype = np.float64 if arr.dtype == np.float64 else np.float32
+
+    def estimate(block: np.ndarray) -> np.ndarray:
+        return _rolling_ball_background_block(
+            block,
+            radius_pixels=radius_pixels,
+            light_background=bool(light_background),
+            disable_smoothing=bool(disable_smoothing),
+            output_dtype=output_dtype,
+        )
+
+    if _has_channel_axis(arr):
+        channels = [
+            _apply_spatial_blocks(
+                arr[..., channel],
+                min(spatial_ndim, max(arr.ndim - 1, 1)),
+                estimate,
+                dtype=output_dtype,
+            )
+            for channel in range(arr.shape[-1])
+        ]
+        return np.stack(channels, axis=-1).astype(output_dtype, copy=False)
+    return _apply_spatial_blocks(arr, spatial_ndim, estimate, dtype=output_dtype)
+
+
+def _rolling_ball_background_block(
+    block: np.ndarray,
+    *,
+    radius_pixels: int,
+    light_background: bool,
+    disable_smoothing: bool,
+    output_dtype,
+) -> np.ndarray:
+    values = np.asarray(block, dtype=output_dtype)
+    if values.size == 0:
+        return values.copy()
+
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros_like(values, dtype=output_dtype)
+    low = float(finite.min())
+    high = float(finite.max())
+    safe = np.nan_to_num(values, nan=low, posinf=high, neginf=low)
+
+    if not bool(disable_smoothing) and safe.ndim > 0:
+        safe = ndi.uniform_filter(safe, size=3, mode="nearest")
+
+    if bool(light_background):
+        finite = safe[np.isfinite(safe)]
+        low = float(finite.min()) if finite.size else low
+        high = float(finite.max()) if finite.size else high
+        offset = low + high
+        inverted = offset - safe
+        background = offset - restoration.rolling_ball(
+            inverted,
+            radius=radius_pixels,
+        )
+    else:
+        background = restoration.rolling_ball(safe, radius=radius_pixels)
+    return np.asarray(background, dtype=output_dtype)
 
 
 def _validated_labels(data) -> np.ndarray:
@@ -4100,19 +4410,18 @@ def _restore_rescaled_axes_dtype(
 def _orthogonal_projection_block(
     block: np.ndarray,
     method: str,
-    display_shape: tuple[int, int, int],
+    display_shape: tuple[int, int, int, int],
 ) -> np.ndarray:
-    z_size, y_size, x_size = block.shape
-    display_z, display_y, display_x = display_shape
+    display_z_y, display_z_x, display_y, display_x = display_shape
     xy = _project_array(block, (0,), method)
     xz = _project_array(block, (1,), method)
     yz = _project_array(block, (2,), method).T
     xy = _resize_projection_panel(xy, (display_y, display_x))
-    xz = _resize_projection_panel(xz, (display_z, display_x))
-    yz = _resize_projection_panel(yz, (display_y, display_z))
+    xz = _resize_projection_panel(xz, (display_z_y, display_x))
+    yz = _resize_projection_panel(yz, (display_y, display_z_x))
     fill_value = _projection_canvas_fill(block)
     canvas = np.full(
-        (display_y + display_z, display_x + display_z),
+        (display_y + display_z_y, display_x + display_z_x),
         fill_value,
         dtype=xy.dtype,
     )
@@ -4157,13 +4466,17 @@ def _orthogonal_display_scales(
 def _orthogonal_display_sizes(
     shape: tuple[int, int, int],
     display_scales: tuple[float, float, float],
-) -> tuple[int, int, int]:
-    positive = [value for value in display_scales if value > 0 and np.isfinite(value)]
-    base = min(positive) if positive else 1.0
-    return tuple(
-        max(int(round(size * scale / base)), 1)
-        for size, scale in zip(shape, display_scales, strict=True)
-    )  # type: ignore[return-value]
+) -> tuple[int, int, int, int]:
+    z_size, y_size, x_size = shape
+    z_scale, y_scale, x_scale = display_scales
+    if any(
+        value <= 0 or not np.isfinite(value)
+        for value in (z_scale, y_scale, x_scale)
+    ):
+        return z_size, z_size, y_size, x_size
+    display_z_y = max(int(round(z_size * z_scale / y_scale)), 1)
+    display_z_x = max(int(round(z_size * z_scale / x_scale)), 1)
+    return display_z_y, display_z_x, y_size, x_size
 
 
 def _resize_projection_panel(
@@ -4213,6 +4526,14 @@ def _positive_float(value, default: float) -> float:
     if result <= 0 or not np.isfinite(result):
         return default
     return result
+
+
+def _positive_int(value, default: int) -> int:
+    try:
+        result = int(value)
+    except Exception:
+        return default
+    return result if result > 0 else default
 
 
 def _normalized_physical_unit(unit) -> str:
