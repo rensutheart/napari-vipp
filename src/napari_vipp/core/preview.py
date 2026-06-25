@@ -222,7 +222,6 @@ def _reduce_to_axes(
             result = np.max(result, axis=local_axis)
         else:
             step_axis = _current_step_axis(state, original_axis, current_step)
-            index = _axis_index(step_axis, result.shape[local_axis], current_step)
             index = _axis_index(
                 step_axis,
                 result.shape[local_axis],
