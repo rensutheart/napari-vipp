@@ -125,6 +125,7 @@ from napari_vipp.core.workflow import (
     save_workflow,
     serialize_workflow,
 )
+from napari_vipp import __version__ as VIPP_VERSION
 
 if TYPE_CHECKING:
     import napari
@@ -2337,6 +2338,13 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setFixedHeight(12)
         self.pipeline_busy_label.setVisible(False)
         self.pipeline_busy_bar.setVisible(False)
+        self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
+        self.version_label.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; font-weight: 600;"
+            "padding: 2px 8px; border: 1px solid #334155;"
+            "border-radius: 999px; background: #1f2937;"
+        )
+        self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
         self.status_label = QLabel(
             "Select an image layer and build the starter pipeline."
         )
@@ -2664,6 +2672,7 @@ class VippWidget(QWidget):
         workflow_row.addStretch(1)
         workflow_row.addWidget(self.pipeline_busy_label)
         workflow_row.addWidget(self.pipeline_busy_bar)
+        workflow_row.addWidget(self.version_label)
         root.addLayout(workflow_row)
 
         self.splitter = QSplitter(Qt.Horizontal)

@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
+from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
@@ -182,6 +183,8 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
 
     assert widget.layer_combo.count() == 1
     assert "gaussian" in widget.pipeline.outputs
+    assert widget.version_label.text() == f"VIPP {VIPP_VERSION}"
+    assert widget.background_all_checkbox.text() == "Run all in BG"
 
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "gaussian"
