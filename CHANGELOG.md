@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.2a1 - 2026-06-26
+
+- Restored the global `Run all in BG` workflow toggle after it was dropped in a
+  later widget refactor.
+- Added a visible VIPP version badge in the workflow header so running builds
+  are easier to identify during testing.
+
 ## 0.7.1a1 - 2026-06-25
 
 - Added `Auto Watershed From Mask` as a single-node object-separation workflow
