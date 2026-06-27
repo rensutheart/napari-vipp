@@ -292,6 +292,35 @@ graph notes/annotations; environment/package provenance; YAML format. Workflow
 files do not embed input data, rebase paths, or package assets for portable
 sharing.
 
+### Preview / Dims Usability
+
+Add VIPP-local Z/T/C sliders to the workflow UI and keep them synchronized with
+napari's dims state. The main reason is 3D viewing: when napari is in 3D mode,
+the usual Z slider is no longer directly available, which makes it awkward to
+choose the thumbnail slice or inspect a specific plane from within VIPP.
+Requirements: expose whichever semantic axes are present (at least Z, T, and C
+where applicable); keep them bidirectionally synced with napari's own dims so a
+change in either place updates the other; preserve the existing "Follow napari
+dims" behavior for thumbnails and histograms; and make sure thumbnail slice
+selection remains easy even when napari's native slider UI is hidden by 3D
+view.
+
+### Calibration / Napari Display Regression
+
+Fix the current regression where `Set Pixel Size / Units` no longer changes the
+apparent Z versus X/Y scaling in napari's 3D viewer (for example setting Z step
+size to 10 while leaving X/Y at 1 has no visible effect). This should be the
+next debugging task. Best current guess: the metadata pipeline still updates
+`ImageState.axes` correctly for both `Set Pixel Size / Units` and `Rescale
+Axes`, but the final preview-layer handoff into napari is only attaching that
+information as layer metadata instead of applying it to the actual napari layer
+`scale` property. If so, the calibration exists in VIPP's carried metadata and
+inspector/history, but never reaches the viewer transform that controls 3D
+display spacing. A secondary possibility is that `Rescale Axes` and
+`Set Pixel Size / Units` interact correctly in `transform_image_state(...)` for
+some paths but a later layer-update/replacement path drops the transformed axis
+scales when refreshing generated layers.
+
 ### Table Analysis
 
 - **Grouped table summaries** (`Summarize Measurements`): group merged
@@ -367,10 +396,11 @@ Registration and deconvolution.
 
 ## Near-Term Order
 
-1. Grouped table summaries (`Summarize Measurements`).
-2. Skeleton QC masks, branch labels, and short-branch pruning.
-3. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
-4. Graph editor usability: insert-node-on-wire and user-initiated layout cleanup.
+1. Fix the `Set Pixel Size / Units` / napari 3D calibration-display regression.
+2. Grouped table summaries (`Summarize Measurements`).
+3. Skeleton QC masks, branch labels, and short-branch pruning.
+4. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
+5. Graph editor usability: insert-node-on-wire and user-initiated layout cleanup.
 
 ---
 
