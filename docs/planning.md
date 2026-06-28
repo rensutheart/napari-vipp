@@ -307,19 +307,13 @@ view.
 
 ### Calibration / Napari Display Regression
 
-Fix the current regression where `Set Pixel Size / Units` no longer changes the
-apparent Z versus X/Y scaling in napari's 3D viewer (for example setting Z step
-size to 10 while leaving X/Y at 1 has no visible effect). This should be the
-next debugging task. Best current guess: the metadata pipeline still updates
-`ImageState.axes` correctly for both `Set Pixel Size / Units` and `Rescale
-Axes`, but the final preview-layer handoff into napari is only attaching that
-information as layer metadata instead of applying it to the actual napari layer
-`scale` property. If so, the calibration exists in VIPP's carried metadata and
-inspector/history, but never reaches the viewer transform that controls 3D
-display spacing. A secondary possibility is that `Rescale Axes` and
-`Set Pixel Size / Units` interact correctly in `transform_image_state(...)` for
-some paths but a later layer-update/replacement path drops the transformed axis
-scales when refreshing generated layers.
+Resolved 2026-06-28. The regression was in the final napari layer handoff:
+`Set Pixel Size / Units` and `Rescale Axes` were updating `ImageState.axes`
+correctly, but generated inspect/pinned layers only stored that state as
+metadata and did not apply it to the napari layer `scale` property. Inspect and
+pinned layer creation/refresh now derive napari layer scale from carried
+`ImageState` metadata, so setting Z step size to 10 while leaving X/Y at 1
+changes the 3D viewer spacing as expected.
 
 ### Table Analysis
 
@@ -396,11 +390,10 @@ Registration and deconvolution.
 
 ## Near-Term Order
 
-1. Fix the `Set Pixel Size / Units` / napari 3D calibration-display regression.
-2. Grouped table summaries (`Summarize Measurements`).
-3. Skeleton QC masks, branch labels, and short-branch pruning.
-4. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
-5. Graph editor usability: insert-node-on-wire and user-initiated layout cleanup.
+1. Grouped table summaries (`Summarize Measurements`).
+2. Skeleton QC masks, branch labels, and short-branch pruning.
+3. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
+4. Graph editor usability: insert-node-on-wire and user-initiated layout cleanup.
 
 ---
 

@@ -97,6 +97,7 @@ from napari_vipp.core.io import (
     write_ome_zarr_analysis_dataset,
 )
 from napari_vipp.core.metadata import (
+    ImageState,
     MetadataRow,
     format_compact_metadata,
     image_state_from_array,
@@ -7128,6 +7129,7 @@ class VippWidget(QWidget):
             layer.metadata.update(metadata)
             layer.name = self._pinned_layer_name(title)
             layer.visible = True
+            self._configure_generated_layer(layer, data, metadata)
 
         self._move_layer_to_top(layer)
         self._active_pinned_node_id = node_id
@@ -7289,9 +7291,15 @@ class VippWidget(QWidget):
 
     def _add_image_or_labels(self, name: str, data, metadata: dict):
         display_data = self._display_data(data)
+        scale = _layer_scale_from_metadata(metadata)
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
-            return self.viewer.add_labels(display_data, name=name, metadata=metadata)
+            kwargs = {"name": name, "metadata": metadata}
+            if scale is not None:
+                kwargs["scale"] = scale
+            return self.viewer.add_labels(display_data, **kwargs)
         kwargs = {"name": name, "metadata": metadata}
+        if scale is not None:
+            kwargs["scale"] = scale
         if metadata.get("display_rgb"):
             kwargs["rgb"] = True
         if metadata["data_kind"] == "mask":
@@ -7320,6 +7328,12 @@ class VippWidget(QWidget):
         )
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
+        scale = _layer_scale_from_metadata(metadata)
+        if scale is not None:
+            try:
+                layer.scale = scale
+            except Exception:
+                pass
         if metadata["display_kind"] != "image":
             return
         if metadata["data_kind"] == "mask":
@@ -8082,6 +8096,45 @@ def _state_axis_hidden_from_napari_dims(axis, metadata: dict) -> bool:
     if not bool(metadata.get("display_rgb")):
         return False
     return str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
+
+
+def _layer_scale_from_metadata(metadata: dict) -> tuple[float, ...] | None:
+    if not isinstance(metadata, dict):
+        return None
+    expected_ndim = _napari_layer_transform_ndim(metadata)
+    default_scale = (
+        tuple(1.0 for _ in range(expected_ndim)) if expected_ndim > 0 else None
+    )
+    carried = metadata.get("vipp_image_state")
+    if not isinstance(carried, dict):
+        return default_scale
+    state = ImageState.from_dict(carried)
+    if state is None or not state.axes:
+        return default_scale
+    scales = tuple(
+        _positive_scale_float(axis.scale, 1.0)
+        for axis in state.axes
+        if not _state_axis_hidden_from_napari_dims(axis, metadata)
+    )
+    if expected_ndim <= 0 or len(scales) != expected_ndim:
+        return default_scale
+    return scales
+
+
+def _napari_layer_transform_ndim(metadata: dict) -> int:
+    shape = tuple(metadata.get("display_shape", ()))
+    if shape:
+        ndim = len(shape)
+        if bool(metadata.get("display_rgb")) and shape[-1] in (3, 4):
+            return max(ndim - 1, 0)
+        return ndim
+    try:
+        ndim = int(metadata.get("display_ndim", 0))
+    except Exception:
+        return 0
+    if bool(metadata.get("display_rgb")) and ndim > 0:
+        return ndim - 1
+    return ndim
 
 
 def _histogram_axis_index(

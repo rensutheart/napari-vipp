@@ -71,6 +71,7 @@ class _Layer:
         self.contrast_limits = None
         self.visible = True
         self.rgb = False
+        self.scale = None
 
 
 class _LayerList(list):
@@ -114,6 +115,7 @@ class _Viewer:
         layer.colormap = kwargs.get("colormap")
         layer.contrast_limits = kwargs.get("contrast_limits")
         layer.rgb = bool(kwargs.get("rgb", False))
+        layer.scale = kwargs.get("scale")
         self.layers.append(layer)
         return layer
 
@@ -124,6 +126,7 @@ class _Viewer:
             metadata=kwargs.get("metadata"),
             layer_type="labels",
         )
+        layer.scale = kwargs.get("scale")
         self.layers.append(layer)
         return layer
 
@@ -1133,6 +1136,40 @@ def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
     x_control.value_box.setValue(0.25)
 
     assert widget.pipeline.nodes[node.id].params["x_size"] == 0.25
+
+
+def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("set_pixel_size")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "x_size", 1.0)
+    widget.pipeline.set_param(node.id, "y_size", 1.0)
+    widget.pipeline.set_param(node.id, "z_size", 1.0)
+    widget.run_pipeline()
+    widget.inspect_node(node.id)
+
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.scale == (1.0, 1.0, 1.0)
+    widget.pin_node(node.id)
+    pinned = viewer.layers["VIPP Pinned: Set Pixel Size / Units"]
+    assert pinned.scale == (1.0, 1.0, 1.0)
+
+    widget.pipeline.set_param(node.id, "z_size", 10.0)
+    widget.run_pipeline()
+
+    refreshed = viewer.layers["VIPP Inspect"]
+    assert refreshed is inspect
+    assert refreshed.scale == (10.0, 1.0, 1.0)
+    refreshed_pin = viewer.layers["VIPP Pinned: Set Pixel Size / Units"]
+    assert refreshed_pin is pinned
+    assert refreshed_pin.scale == (10.0, 1.0, 1.0)
+    assert [
+        axis["scale"]
+        for axis in refreshed.metadata["vipp_image_state"]["axes"]
+    ] == [10.0, 1.0, 1.0]
 
 
 def test_rescale_axes_can_lock_xy_scale(qtbot):
