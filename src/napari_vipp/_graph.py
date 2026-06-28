@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from qtpy.QtGui import (
@@ -9,6 +11,7 @@ from qtpy.QtGui import (
     QImage,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPixmap,
     QTransform,
@@ -758,6 +761,9 @@ class NodeProxy(QGraphicsProxyWidget):
 
 
 class ConnectionItem(QGraphicsPathItem):
+    HIT_WIDTH = 18.0
+    PREVIEW_STATES = {"full", "partial", "place", "incompatible"}
+
     def __init__(
         self,
         source: NodeProxy,
@@ -772,8 +778,11 @@ class ConnectionItem(QGraphicsPathItem):
         self.target_id = target.node_id
         self.target_port = int(target_port)
         self.source_port = int(source_port)
+        self._insert_preview_state: str | None = None
+        self._pulse_phase = 0
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setAcceptHoverEvents(True)
         self._refresh_pen()
         self.update_path()
 
@@ -781,6 +790,35 @@ class ConnectionItem(QGraphicsPathItem):
         start = self.source.port_scene_pos("output", self.source_port)
         end = self.target.port_scene_pos("input", self.target_port)
         self.setPath(_wire_path(start, end))
+
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(self.HIT_WIDTH)
+        stroker.setCapStyle(Qt.RoundCap)
+        stroker.setJoinStyle(Qt.RoundJoin)
+        return stroker.createStroke(self.path())
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        pad = self.HIT_WIDTH / 2.0 + 8.0
+        return super().boundingRect().adjusted(-pad, -pad, pad, pad)
+
+    def set_insert_preview_state(self, state: str | None) -> None:
+        if state not in self.PREVIEW_STATES:
+            state = None
+        if state == self._insert_preview_state:
+            return
+        self.prepareGeometryChange()
+        self._insert_preview_state = state
+        self._pulse_phase = 0
+        self._refresh_pen()
+        self.update()
+
+    def advance_insert_preview_pulse(self) -> None:
+        if self._insert_preview_state is None:
+            return
+        self._pulse_phase = (self._pulse_phase + 1) % 24
+        self._refresh_pen()
+        self.update()
 
     def itemChange(self, change, value):  # noqa: N802
         result = super().itemChange(change, value)
@@ -818,7 +856,43 @@ class ConnectionItem(QGraphicsPathItem):
     def _refresh_pen(self) -> None:
         color = "#facc15" if self.isSelected() else "#8aa0c8"
         width = 3.0 if self.isSelected() else 2.0
-        self.setPen(QPen(QColor(color), width))
+        style = Qt.SolidLine
+        if self._insert_preview_state == "incompatible":
+            color = "#fb7185"
+            width = 4.0
+            style = Qt.DashLine
+        elif self._insert_preview_state == "full":
+            color = "#22c55e"
+            width = 4.0 + self._pulse_amount()
+        elif self._insert_preview_state in {"partial", "place"}:
+            color = "#38bdf8"
+            width = 4.0 + self._pulse_amount()
+            style = Qt.DashLine
+        pen = QPen(QColor(color), width)
+        pen.setStyle(style)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        self.setPen(pen)
+
+    def _pulse_amount(self) -> float:
+        distance = abs(12 - self._pulse_phase) / 12.0
+        return 1.5 * (1.0 - distance)
+
+    def paint(self, painter, option, widget=None):  # noqa: N802
+        if self._insert_preview_state is not None:
+            glow_color = QColor("#fb7185")
+            if self._insert_preview_state == "full":
+                glow_color = QColor("#22c55e")
+            elif self._insert_preview_state in {"partial", "place"}:
+                glow_color = QColor("#38bdf8")
+            alpha = 55 + int(45 * self._pulse_amount())
+            glow_color.setAlpha(alpha)
+            glow = QPen(glow_color, 11.0 + self._pulse_amount() * 3.0)
+            glow.setCapStyle(Qt.RoundCap)
+            glow.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(glow)
+            painter.drawPath(self.path())
+        super().paint(painter, option, widget)
 
 
 class PendingConnectionItem(QGraphicsPathItem):
@@ -853,6 +927,7 @@ class PipelineGraphView(QGraphicsView):
     node_moved = Signal(str, object, object)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
+    node_insert_requested = Signal(str, object, QPointF)
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     status_message = Signal(str)
@@ -874,6 +949,13 @@ class PipelineGraphView(QGraphicsView):
         self._pending_source: PortItem | None = None
         self._pending_wire: PendingConnectionItem | None = None
         self._highlighted_input_port: PortItem | None = None
+        self._highlighted_connection: ConnectionItem | None = None
+        self._highlighted_connection_state: str | None = None
+        self._highlighted_connection_operation: str | None = None
+        self._connection_insert_validator: Callable[
+            [str, tuple[str, str, int, int]],
+            tuple[str, str],
+        ] | None = None
         self._connection_dragging = False
         self._panning = False
         self._pan_start = QPoint()
@@ -884,6 +966,11 @@ class PipelineGraphView(QGraphicsView):
         self._processing_timer = QTimer(self)
         self._processing_timer.setInterval(80)
         self._processing_timer.timeout.connect(self._advance_processing_spinners)
+        self._connection_pulse_timer = QTimer(self)
+        self._connection_pulse_timer.setInterval(80)
+        self._connection_pulse_timer.timeout.connect(
+            self._advance_connection_insert_pulse
+        )
 
     def build_graph(
         self,
@@ -905,6 +992,7 @@ class PipelineGraphView(QGraphicsView):
         self._pending_source = None
         self._pending_wire = None
         self._highlighted_input_port = None
+        self._clear_connection_insert_preview()
 
         default_positions = {
             "input": QPointF(0, 20),
@@ -986,6 +1074,40 @@ class PipelineGraphView(QGraphicsView):
     def node_position(self, node_id: str) -> QPointF | None:
         proxy = self._proxies.get(node_id)
         return QPointF(proxy.pos()) if proxy is not None else None
+
+    def node_scene_rect(self, node_id: str) -> QRectF | None:
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return None
+        return proxy.sceneBoundingRect()
+
+    def center_node_on(self, node_id: str, scene_pos: QPointF) -> None:
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return
+        rect = proxy.sceneBoundingRect()
+        proxy.setPos(proxy.pos() + (scene_pos - rect.center()))
+        self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
+
+    def move_nodes_by(self, node_ids: set[str], delta: QPointF) -> None:
+        if not node_ids or (abs(delta.x()) < 0.001 and abs(delta.y()) < 0.001):
+            return
+        moved_rect = QRectF()
+        for node_id in node_ids:
+            proxy = self._proxies.get(node_id)
+            if proxy is None:
+                continue
+            proxy.setPos(proxy.pos() + delta)
+            moved_rect = moved_rect.united(proxy.sceneBoundingRect())
+        if moved_rect.isValid():
+            self._ensure_scene_space_for_rect(moved_rect)
+
+    def set_connection_insert_validator(
+        self,
+        validator: Callable[[str, tuple[str, str, int, int]], tuple[str, str]]
+        | None,
+    ) -> None:
+        self._connection_insert_validator = validator
 
     def add_node(self, node, position: QPointF) -> None:
         card = NodeCard(
@@ -1246,17 +1368,32 @@ class PipelineGraphView(QGraphicsView):
 
     def dragMoveEvent(self, event):  # noqa: N802
         if event.mimeData().hasFormat(OPERATION_MIME):
+            operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
+            self._update_connection_insert_preview(
+                operation_id,
+                self.mapToScene(_point_from_event(event)),
+            )
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
+    def dragLeaveEvent(self, event):  # noqa: N802
+        self._clear_connection_insert_preview()
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event):  # noqa: N802
         if event.mimeData().hasFormat(OPERATION_MIME):
             operation_id = bytes(event.mimeData().data(OPERATION_MIME)).decode()
-            self.node_create_requested.emit(
-                operation_id,
-                self.mapToScene(_point_from_event(event)),
-            )
+            scene_pos = self.mapToScene(_point_from_event(event))
+            self._update_connection_insert_preview(operation_id, scene_pos)
+            connection = self._highlighted_connection
+            state = self._highlighted_connection_state
+            connection_key = self._connection_key(connection)
+            if connection_key is not None and state != "incompatible":
+                self.node_insert_requested.emit(operation_id, connection_key, scene_pos)
+            else:
+                self.node_create_requested.emit(operation_id, scene_pos)
+            self._clear_connection_insert_preview()
             event.acceptProposedAction()
             return
         super().dropEvent(event)
@@ -1415,6 +1552,92 @@ class PipelineGraphView(QGraphicsView):
             if isinstance(item, PortItem) and item.kind == "input":
                 return item
         return None
+
+    def _connection_at(self, scene_pos: QPointF) -> ConnectionItem | None:
+        candidates: list[tuple[float, ConnectionItem]] = []
+        for item in self.scene.items(scene_pos):
+            if not isinstance(item, ConnectionItem):
+                continue
+            distance = self._distance_to_connection(item, scene_pos)
+            candidates.append((distance, item))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda candidate: candidate[0])
+        return candidates[0][1]
+
+    @staticmethod
+    def _distance_to_connection(item: ConnectionItem, scene_pos: QPointF) -> float:
+        path = item.path()
+        if path.isEmpty():
+            return float("inf")
+        best = float("inf")
+        samples = 48
+        for index in range(samples + 1):
+            point = path.pointAtPercent(index / samples)
+            dx = point.x() - scene_pos.x()
+            dy = point.y() - scene_pos.y()
+            best = min(best, dx * dx + dy * dy)
+        return best
+
+    @staticmethod
+    def _connection_key(
+        connection: ConnectionItem | None,
+    ) -> tuple[str, str, int, int] | None:
+        if connection is None:
+            return None
+        return (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+
+    def _update_connection_insert_preview(
+        self,
+        operation_id: str,
+        scene_pos: QPointF,
+    ) -> None:
+        connection = self._connection_at(scene_pos)
+        key = self._connection_key(connection)
+        state = None
+        message = ""
+        if key is not None and self._connection_insert_validator is not None:
+            state, message = self._connection_insert_validator(operation_id, key)
+        elif key is not None:
+            state = "full"
+            message = "Drop to insert node on this connection."
+        if state not in ConnectionItem.PREVIEW_STATES:
+            state = None
+        if (
+            connection is self._highlighted_connection
+            and operation_id == self._highlighted_connection_operation
+            and state == self._highlighted_connection_state
+        ):
+            return
+        self._clear_connection_insert_preview()
+        if connection is None or state is None:
+            return
+        self._highlighted_connection = connection
+        self._highlighted_connection_state = state
+        self._highlighted_connection_operation = operation_id
+        connection.set_insert_preview_state(state)
+        self._connection_pulse_timer.start()
+        if message:
+            self.status_message.emit(message)
+
+    def _clear_connection_insert_preview(self) -> None:
+        if self._highlighted_connection is not None:
+            self._highlighted_connection.set_insert_preview_state(None)
+        self._highlighted_connection = None
+        self._highlighted_connection_state = None
+        self._highlighted_connection_operation = None
+        self._connection_pulse_timer.stop()
+
+    def _advance_connection_insert_pulse(self) -> None:
+        if self._highlighted_connection is None:
+            self._connection_pulse_timer.stop()
+            return
+        self._highlighted_connection.advance_insert_preview_pulse()
 
     def _update_drop_target_feedback(self, scene_pos: QPointF) -> None:
         target = self._input_port_at(scene_pos)

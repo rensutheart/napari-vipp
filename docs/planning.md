@@ -1,6 +1,6 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-06-25
+Last reviewed: 2026-06-28
 
 This document is the consolidated source of truth for what is **implemented**
 versus **planned**. It was reconciled against the live node registry
@@ -47,6 +47,13 @@ Registration and deconvolution remain later milestones.
   contextual Pin/Unpin;
 - click-to-connect and drag-to-connect wiring;
 - visual compatible/incompatible drop feedback;
+- widened connector hit targets for easier selection/right-clicking;
+- drag a palette node onto a connector to insert it on that connection, with
+  pulsing/glowing insertion preview;
+- phase-1 insert-on-wire modes: full splice for unambiguous one-input/one-output
+  nodes, partial upstream-only insertion for single-input/multi-output nodes,
+  and place-in-gap for ambiguous nodes;
+- local make-room movement of the target/downstream side during insert-on-wire;
 - cycle and port-type rejection;
 - slot-aware multi-input connections;
 - per-port multi-output connections;
@@ -196,27 +203,137 @@ explicitly noted as partial.
 
 ### Graph Editor Usability
 
+The main design rule is that VIPP should not move existing nodes behind the
+user's back. Manual graph editing keeps node positions exactly where they are.
+Only an explicit auto-structure command or mode is allowed to reposition
+existing nodes globally. The exception is an explicit insert-on-wire gesture:
+when the user drops or inserts a node on a specific wire, VIPP may locally move
+the target-side nodes just far enough to make a readable gap for the inserted
+node. That local make-room shift is part of the same undoable insert action.
+New loose nodes may be placed at the user's drop/click location, at the midpoint
+of a selected wire, or at the current palette-suggested position.
+
 **Insert Node Between Connected Nodes.** Splice a new node into an existing
-connection without manual delete-and-rewire. When a node is dropped onto a wire,
-or an "Insert node here" action is chosen on a connection, the editor should:
-detect the targeted source -> target connection; remove that single connection;
-wire `source -> new node` and `new node -> target` honoring port types and the
-existing output/input slots; reject incompatible splices with clear feedback;
-position the new node on or near the original wire; and treat the splice as one
-undoable action. Target the single-input/single-output case first, with a
-defined fallback for multi-port nodes.
+connection without manual delete-and-rewire. Phase 1 is implemented for
+dragging a palette node onto an existing connector. Remaining entry points
+should share the same command path:
 
-**User-Initiated Automatic Layout Cleanup.** An explicit command that tidies a
-messy graph (similar to Obsidian relaxing its knowledge graph). Requirements:
-expose a toolbar button next to "Export OME dataset..." that improves graph
-formatting/positioning on demand; never reposition automatically; compute a
-readable layered/topological layout that reduces edge crossings and overlap;
-keep results deterministic and stable across repeated invocations; treat the
-relayout as one undoable action persisted through the existing canvas-position
-save/load.
+- Right-click a wire and choose `Insert node here...`, opening the node palette
+  filtered to compatible candidates.
+- Drag an already-existing loose node onto a wire to splice it in.
 
-**Other refinements.** Graph annotations/notes, alignment guides, and
-larger-workflow navigation aids.
+Drag/drop affordance:
+
+- Connector interaction should have a wide hit target independent of the visual
+  line width. The line can remain visually thin, but selection, right-click, and
+  drop detection should use a stroked hit path wide enough for trackpads.
+- When a palette node is dragged over a compatible wire, the wire should enter a
+  clear insertion-preview state: brighter color, pulsing/glowing or dashed
+  overlay, and a status message such as `Drop to insert Gaussian Blur between
+  Image Source and Otsu Threshold`. Avoid fast flicker; use a readable pulse.
+- If the hovered wire cannot accept the node, use an incompatible state and do
+  not perform a splice on drop. The fallback is ordinary node placement.
+
+Implementation details:
+
+- Represent the candidate wire by full connection identity:
+  `source_id`, `source_port`, `target_id`, and `target_port`.
+- Hit-test wires using the actual Bezier path plus a small tolerance, with
+  hover highlighting while dragging palette items. If multiple wires are close,
+  use the nearest wire; if ambiguous, require the right-click menu path.
+- Validate the insertion mode before mutating the model. A full splice requires
+  an unambiguous upstream input and downstream output. Partial or manual
+  insertions should make only the safe connections described below. Whenever an
+  existing connection is replaced, the original `source_port` and `target_port`
+  must be preserved.
+- Phase 1 has three insertion modes:
+  - **Full splice.** If the inserted operation has exactly one compatible input
+    and exactly one declared output, remove the original connection, connect
+    `source -> inserted`, connect `inserted -> target`, run once, and push one
+    undo entry. This is the common linear pipeline case.
+  - **Partial insert.** If the inserted operation has one unambiguous compatible
+    input but multiple outputs, remove the original connection and connect only
+    `source -> inserted`. Leave the downstream target disconnected so the user
+    manually chooses the correct output port. This covers nodes such as
+    `Split Channels`.
+  - **Place-in-gap.** If even the input side is ambiguous, do not guess. Create
+    the node in the opened gap, leave connections unchanged or reject the insert
+    with clear feedback depending on whether the node can participate in the
+    connection at all. This avoids silently wiring multi-input/multi-output
+    nodes incorrectly.
+- Phase 2 can add an output/input chooser for ambiguous cases. The chooser
+  should be explicit rather than assuming a port.
+- Perform all insertion modes atomically: capture an undo snapshot, add the new
+  node, apply the local make-room shift, edit the affected connection(s), run
+  the pipeline once when connectivity changed, and push one undo entry. If any
+  required step fails, restore the original graph and positions.
+- Local make-room should be deterministic and limited. For the first
+  implementation, keep the source-side nodes fixed, place the new node at the
+  drop point or wire midpoint, and shift the target node plus its downstream
+  descendants away from the source by roughly `inserted_node_width + padding`
+  along the dominant source-to-target direction. This creates space without
+  invoking global auto-structure.
+
+Tests should cover a simple chain splice, incompatible splices leaving the graph
+unchanged, preservation of multi-port `source_port`/`target_port`, undo/redo as
+one step, local make-room moving only the target/downstream side, partial insert
+for a single-input/multi-output node, and deletion of a connection without
+deleting attached nodes.
+
+**Connection Context Menu.** Extend the current wire menu from `Info`/`Delete`
+to include `Insert node here...`. This should be implemented as a connection
+signal from `PipelineGraphView` to the main widget, not as graph-model logic in
+the Qt item. The main widget owns operation compatibility, undo snapshots, and
+pipeline reruns.
+
+**User-Initiated Automatic Layout Cleanup.** Add an explicit graph layout
+command named `Auto structure graph` or `Auto structure`. It should tidy a messy
+workflow on demand and never run as an automatic side effect of adding,
+duplicating, inserting, deleting, or connecting nodes.
+
+Phase 1 layout should be a deterministic layered DAG layout:
+
+- Use the pipeline's acyclic graph to assign source-to-sink columns.
+- Order nodes inside each column to reduce edge crossings, using barycentric
+  sweeps or a similarly stable heuristic.
+- Account for actual node-card sizes, port locations, and padding so cards do
+  not overlap.
+- Place disconnected components in separate lanes.
+- Apply the resulting positions through the existing saved-position mechanism.
+- Treat the relayout as one undoable action. Undo must restore the previous
+  coordinates without changing graph connectivity or rerunning image
+  processing unless necessary for the current UI architecture.
+
+Phase 2 can add an Obsidian-like live structure mode:
+
+- Seed from the layered layout, then relax positions with springs on edges and
+  repulsion between nodes.
+- Animate node movement for readability using Qt animation or timer-based
+  interpolation.
+- When live structure mode is disabled, freeze the current coordinates and save
+  them like normal manual positions.
+- Consider optional pinned/anchored nodes later, but keep the first version
+  simple: one-shot auto-structure plus undo.
+
+Architectural notes:
+
+- Keep layout computation in a pure helper module, for example
+  `core/graph_layout.py`, taking node records, edge records, and measured card
+  sizes and returning `{node_id: (x, y)}`. The Qt graph view should only measure,
+  animate/apply, and redraw connectors.
+- Add a graph-view method such as `apply_node_positions(positions,
+  animate=False)` so layout, workflow restore, and future live relaxation use
+  the same position-application path.
+- Add a widget-level splice method such as `_insert_node_on_connection(...)` so
+  palette drop, connection menu, and future AI-assisted graph editing can reuse
+  the same validation, rollback, undo, and pipeline-run behavior.
+- Avoid workflow-schema churn for phase 1; existing saved canvas positions are
+  enough. Only introduce schema fields later if live layout needs persistent
+  layout mode or anchored-node metadata.
+
+**Other refinements.** Graph annotations/notes, alignment guides, snap-to-grid,
+manual local "make room downstream" commands, minimap/navigation aids, and
+optional edge labels for multi-port workflows.
 
 ### AI-Assisted Pipeline Authoring
 
@@ -393,7 +510,8 @@ Registration and deconvolution.
 1. Grouped table summaries (`Summarize Measurements`).
 2. Skeleton QC masks, branch labels, and short-branch pruning.
 3. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
-4. Graph editor usability: insert-node-on-wire and user-initiated layout cleanup.
+4. Graph editor usability: insert-node-on-wire, connection insertion menu, and
+   user-initiated auto-structure layout cleanup.
 
 ---
 

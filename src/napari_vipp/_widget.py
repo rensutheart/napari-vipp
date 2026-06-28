@@ -79,6 +79,7 @@ from qtpy.QtWidgets import (
 )
 from scipy import ndimage as ndi
 
+from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
@@ -106,6 +107,7 @@ from napari_vipp.core.metadata import (
 )
 from napari_vipp.core.operations import automatic_threshold_value, save_array_output
 from napari_vipp.core.pipeline import (
+    DEFAULT_DYNAMIC_OUTPUT_PORTS,
     GLOBAL_THRESHOLD_OPERATIONS,
     OperationSpec,
     ParameterSpec,
@@ -126,7 +128,6 @@ from napari_vipp.core.workflow import (
     save_workflow,
     serialize_workflow,
 )
-from napari_vipp import __version__ as VIPP_VERSION
 
 if TYPE_CHECKING:
     import napari
@@ -2359,6 +2360,9 @@ class VippWidget(QWidget):
         self.palette.setMinimumHeight(0)
         self.palette_panel = self._build_palette_panel()
         self.graph_view = PipelineGraphView()
+        self.graph_view.set_connection_insert_validator(
+            self._connection_insert_preview_state
+        )
         self.graph_view.setMinimumHeight(80)
         self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.left_panel_toggle = SidePanelToggleButton("left")
@@ -2836,6 +2840,7 @@ class VippWidget(QWidget):
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
+        self.graph_view.node_insert_requested.connect(self._insert_node_on_connection)
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_delete_requested.connect(self._delete_node)
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
@@ -3104,6 +3109,266 @@ class VippWidget(QWidget):
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
         return node
+
+    def _insert_node_on_connection(
+        self,
+        operation_id: str,
+        connection_key,
+        position,
+    ) -> object | None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        mode, reason = self._connection_insert_mode(operation_id, connection_key)
+        if mode == "incompatible":
+            self.status_label.setText(reason)
+            return None
+
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            downstream = self.pipeline.descendants_inclusive([target_id])
+            node = self.pipeline.add_node(operation_id)
+            self.graph_view.add_node(node, position)
+            self._sync_node_input_ports(node.id)
+            self._sync_node_output_ports(node.id)
+            self.graph_view.center_node_on(node.id, position)
+            self.graph_view.move_nodes_by(
+                downstream,
+                self._insert_make_room_delta(source_id, target_id, node.id),
+            )
+
+            changed_connections = False
+            if mode in {"full", "partial"}:
+                if not self.pipeline.disconnect(source_id, target_id, target_port):
+                    raise RuntimeError("Original connection was no longer available.")
+                self.graph_view.remove_connection(
+                    source_id,
+                    target_id,
+                    target_port=target_port,
+                    notify=False,
+                )
+                changed_connections = True
+
+                input_result = self.pipeline.connect(
+                    source_id,
+                    node.id,
+                    target_port=0,
+                    source_port=source_port,
+                )
+                if not input_result.success:
+                    raise RuntimeError(input_result.message)
+                self._apply_connection_result_to_graph(input_result)
+                self._sync_node_output_ports(node.id)
+
+                if mode == "full":
+                    output_result = self.pipeline.connect(
+                        node.id,
+                        target_id,
+                        target_port=target_port,
+                        source_port=0,
+                    )
+                    if not output_result.success:
+                        raise RuntimeError(output_result.message)
+                    self._apply_connection_result_to_graph(output_result)
+
+            self.graph_view.select_node(node.id)
+            self._sync_pin_ui()
+            self._invalidate_pipeline_cache()
+            self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self.status_label.setText(f"Insert failed: {exc}")
+            return None
+
+        if mode == "full":
+            self.status_label.setText(
+                f"Inserted '{node.title}' between "
+                f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}'."
+            )
+        elif mode == "partial":
+            self.status_label.setText(
+                f"Inserted '{node.title}' after '{self._node_title(source_id)}'. "
+                f"Choose which output should feed '{self._node_title(target_id)}'."
+            )
+        else:
+            connection_note = (
+                " Connections were left unchanged."
+                if not changed_connections
+                else ""
+            )
+            self.status_label.setText(
+                f"Placed '{node.title}' in the opened gap. "
+                f"Connect ports manually.{connection_note}"
+            )
+        return node
+
+    def _apply_connection_result_to_graph(self, result) -> None:
+        for connection in result.removed:
+            self.graph_view.remove_connection(
+                connection.source_id,
+                connection.target_id,
+                target_port=connection.target_port,
+                notify=False,
+            )
+        if result.connection is not None:
+            self.graph_view.add_connection(
+                result.connection.source_id,
+                result.connection.target_id,
+                result.connection.target_port,
+                result.connection.source_port,
+            )
+
+    @staticmethod
+    def _normalize_connection_key(connection_key) -> tuple[str, str, int, int]:
+        source_id, target_id, target_port, source_port = tuple(connection_key)
+        return str(source_id), str(target_id), int(target_port), int(source_port)
+
+    def _connection_insert_preview_state(
+        self,
+        operation_id: str,
+        connection_key,
+    ) -> tuple[str, str]:
+        mode, reason = self._connection_insert_mode(operation_id, connection_key)
+        try:
+            source_id, target_id, _target_port, _source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            title = self.pipeline.operation_spec(operation_id).title
+            source_title = self._node_title(source_id)
+            target_title = self._node_title(target_id)
+        except Exception:
+            return "incompatible", reason
+        if mode == "full":
+            return (
+                "full",
+                f"Drop to insert '{title}' between "
+                f"'{source_title}' and '{target_title}'.",
+            )
+        if mode == "partial":
+            return (
+                "partial",
+                f"Drop to insert '{title}' after '{source_title}'. "
+                f"Reconnect the desired output to '{target_title}'.",
+            )
+        if mode == "place":
+            return (
+                "place",
+                f"Drop to place '{title}' in the gap. Connect ports manually.",
+            )
+        return "incompatible", reason
+
+    def _connection_insert_mode(
+        self,
+        operation_id: str,
+        connection_key,
+    ) -> tuple[str, str]:
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            spec = self.pipeline.operation_spec(operation_id)
+        except Exception as exc:
+            return "incompatible", f"Cannot insert node here: {exc}"
+        if source_id not in self.pipeline.nodes or target_id not in self.pipeline.nodes:
+            return "incompatible", "Cannot insert on a missing connection."
+
+        source_ports = self.pipeline.output_ports(source_id)
+        if not 0 <= source_port < len(source_ports):
+            return "incompatible", "The source output no longer exists."
+        target_ports = self.pipeline.input_ports(target_id)
+        if not 0 <= target_port < len(target_ports):
+            return "incompatible", "The target input no longer exists."
+
+        source_type = source_ports[source_port].output_type
+        target_type = target_ports[target_port].input_type
+        input_ports = spec.input_ports if spec.has_input else ()
+        compatible_inputs = [
+            index
+            for index, port in enumerate(input_ports)
+            if self.pipeline._types_compatible(source_type, port.input_type)
+        ]
+        output_ports = self._operation_insert_output_ports(spec, source_type)
+        compatible_outputs = [
+            index
+            for index, port in enumerate(output_ports)
+            if self.pipeline._types_compatible(port.output_type, target_type)
+        ]
+
+        if not input_ports:
+            if compatible_outputs:
+                return (
+                    "place",
+                    "Source-like nodes can be placed in the gap, but are not "
+                    "auto-wired.",
+                )
+            return (
+                "incompatible",
+                f"'{spec.title}' does not accept the upstream output.",
+            )
+        if not compatible_inputs:
+            return (
+                "incompatible",
+                f"Cannot feed {source_type} output into '{spec.title}'.",
+            )
+
+        single_input = (
+            len(input_ports) == 1
+            and len(compatible_inputs) == 1
+            and spec.max_inputs == 1
+        )
+        if not single_input:
+            return (
+                "place",
+                f"'{spec.title}' has multiple possible inputs; connect it manually.",
+            )
+
+        if len(output_ports) == 1 and compatible_outputs:
+            return "full", ""
+        if len(output_ports) > 1 and compatible_outputs:
+            return "partial", ""
+        if len(output_ports) > 1:
+            return (
+                "place",
+                f"'{spec.title}' has multiple outputs; connect the desired output "
+                "manually.",
+            )
+        return (
+            "incompatible",
+            f"'{spec.title}' output cannot feed the downstream input.",
+        )
+
+    @staticmethod
+    def _operation_insert_output_ports(
+        spec: OperationSpec,
+        source_type: str,
+    ):
+        if spec.output_factory is not None:
+            ports = spec.output_factory(DEFAULT_DYNAMIC_OUTPUT_PORTS)
+        else:
+            ports = spec.output_ports
+        if spec.preserves_input_type:
+            return tuple(replace(port, output_type=source_type) for port in ports)
+        return ports
+
+    def _insert_make_room_delta(
+        self,
+        source_id: str,
+        target_id: str,
+        inserted_node_id: str,
+    ) -> QPointF:
+        source_rect = self.graph_view.node_scene_rect(source_id)
+        target_rect = self.graph_view.node_scene_rect(target_id)
+        inserted_rect = self.graph_view.node_scene_rect(inserted_node_id)
+        if source_rect is None or target_rect is None or inserted_rect is None:
+            return QPointF(280.0, 0.0)
+        vector = target_rect.center() - source_rect.center()
+        if abs(vector.x()) >= abs(vector.y()):
+            sign = -1.0 if vector.x() < 0 else 1.0
+            return QPointF(sign * max(inserted_rect.width() + 90.0, 280.0), 0.0)
+        sign = -1.0 if vector.y() < 0 else 1.0
+        return QPointF(0.0, sign * max(inserted_rect.height() + 70.0, 220.0))
 
     def _duplicate_node(self, node_id: str) -> None:
         original = self.pipeline.nodes.get(node_id)
@@ -4122,9 +4387,11 @@ class VippWidget(QWidget):
         if node.operation_id in {"h_maxima_markers", "auto_watershed_from_mask"}:
             return (
                 "H tuning guide:\n"
-                "- H is a peak-prominence threshold on the distance map, in pixels/voxels.\n"
+                "- H is a peak-prominence threshold on the distance map, in "
+                "pixels/voxels.\n"
                 "- 0 uses all local maxima.\n"
-                "- Around 0 to 2 is usually the useful range; larger values only matter for larger objects or deeper peak separations."
+                "- Around 0 to 2 is usually the useful range; larger values only "
+                "matter for larger objects or deeper peak separations."
             )
         if node.operation_id == "marker_controlled_watershed":
             return (

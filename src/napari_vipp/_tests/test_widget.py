@@ -18,9 +18,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import VippWidget
-from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
@@ -3378,6 +3378,90 @@ def test_palette_adds_node_and_connects_branch(qtbot):
         for connection in widget.pipeline.connections
     }
     assert widget.pipeline.outputs[node.id] is not None
+
+
+def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    source_before = QPointF(widget.graph_view.node_position("input"))
+    target_before = QPointF(widget.graph_view.node_position("gaussian"))
+
+    node = widget._insert_node_on_connection(
+        "median_filter",
+        ("input", "gaussian", 0, 0),
+        QPointF(180, 100),
+    )
+
+    assert node is not None
+    assert node.operation_id == "median_filter"
+    assert ("input", node.id, 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert (node.id, "gaussian", 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert ("input", "gaussian") not in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget.graph_view.node_position("input") == source_before
+    assert widget.graph_view.node_position("gaussian").x() > target_before.x()
+
+    widget.undo()
+
+    assert node.id not in widget.pipeline.nodes
+    assert ("input", "gaussian") in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget.graph_view.node_position("gaussian") == target_before
+
+
+def test_insert_split_channels_on_connection_is_partial(qtbot):
+    viewer = _Viewer(np.zeros((3, 4, 8, 9), dtype=np.uint8))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget._insert_node_on_connection(
+        "split_channels",
+        ("input", "gaussian", 0, 0),
+        QPointF(180, 100),
+    )
+
+    assert node is not None
+    assert node.operation_id == "split_channels"
+    assert ("input", node.id, 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert not any(
+        connection.source_id == node.id and connection.target_id == "gaussian"
+        for connection in widget.pipeline.connections
+    )
+    assert ("input", "gaussian") not in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert "Choose which output should feed" in widget.status_label.text()
 
 
 def test_palette_image_operations_can_run(qtbot):
