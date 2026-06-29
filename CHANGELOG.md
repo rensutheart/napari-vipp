@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.8.1a1 - 2026-06-29
+
+- Added right-click connector insertion with a compatible-node picker.
+- Added one-shot `Auto structure graph` layout cleanup with undo.
+- Added staged toolbar compaction for narrow dock layouts, moving crowded
+  controls into `Settings` as space runs out.
+- Improved graph layout planning and test coverage for connector insertion and
+  auto-structure behavior.
+
 ## 0.8.0a1 - 2026-06-29
 
 - Drag nodes onto existing wires to insert them into a pipeline.

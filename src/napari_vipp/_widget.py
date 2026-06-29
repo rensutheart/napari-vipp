@@ -60,6 +60,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -76,6 +77,7 @@ from qtpy.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 from scipy import ndimage as ndi
 
@@ -90,6 +92,11 @@ from napari_vipp.core.channel_colors import (
     channel_color_labels_from_metadata,
 )
 from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.graph_layout import (
+    LayoutEdge,
+    LayoutNode,
+    layout_layered_dag,
+)
 from napari_vipp.core.io import (
     AnalysisLabel,
     SourceInspection,
@@ -350,11 +357,11 @@ def _toolbar_icon_pixmap(kind: str, foreground: str) -> QPixmap:
     return pixmap
 
 
-def _toolbar_separator() -> QFrame:
+def _toolbar_separator(width: int = 12) -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.VLine)
     line.setFrameShadow(QFrame.Sunken)
-    line.setFixedWidth(12)
+    line.setFixedWidth(int(width))
     return line
 
 
@@ -368,6 +375,130 @@ AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
     0.05,
     2,
 )
+
+
+@dataclass(frozen=True)
+class ConnectionInsertCandidate:
+    operation_id: str
+    title: str
+    category: str
+    subcategory: str
+    mode: str
+    detail: str
+    search_text: str
+
+
+class ConnectionInsertDialog(QDialog):
+    """Searchable picker for inserting a node on a specific connection."""
+
+    def __init__(
+        self,
+        candidates: list[ConnectionInsertCandidate],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Insert node on connection")
+        self.resize(620, 460)
+        self._candidates = candidates
+        self._candidate_by_id = {
+            candidate.operation_id: candidate for candidate in candidates
+        }
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search compatible nodes")
+        self.search.setClearButtonEnabled(True)
+
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Node", "Insertion", "Category"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tree.itemDoubleClicked.connect(self._accept_item)
+        self.tree.itemSelectionChanged.connect(self._sync_button_state)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        self.ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setEnabled(False)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Choose a compatible node to insert on this wire."))
+        layout.addWidget(self.search)
+        layout.addWidget(self.tree, 1)
+        layout.addWidget(self.buttons)
+
+        self.search.textChanged.connect(self._populate)
+        self._populate("")
+
+    def selected_operation_id(self) -> str | None:
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        operation_id = item.data(0, Qt.UserRole)
+        return str(operation_id) if operation_id else None
+
+    def _populate(self, query: str) -> None:
+        normalized = _normalize_search_text(query)
+        self.tree.clear()
+        first_item = None
+        for candidate in self._candidates:
+            if normalized and normalized not in candidate.search_text:
+                continue
+            item = QTreeWidgetItem(
+                [
+                    candidate.title,
+                    self._mode_label(candidate.mode),
+                    self._category_label(candidate),
+                ]
+            )
+            item.setData(0, Qt.UserRole, candidate.operation_id)
+            item.setToolTip(0, candidate.detail)
+            item.setToolTip(1, candidate.detail)
+            item.setForeground(0, QBrush(QColor(category_color(candidate.category))))
+            item.setForeground(1, QBrush(QColor(self._mode_color(candidate.mode))))
+            self.tree.addTopLevelItem(item)
+            if first_item is None:
+                first_item = item
+        if first_item is not None:
+            self.tree.setCurrentItem(first_item)
+        self.tree.resizeColumnToContents(0)
+        self.tree.resizeColumnToContents(1)
+        self._sync_button_state()
+
+    def _sync_button_state(self) -> None:
+        self.ok_button.setEnabled(self.selected_operation_id() is not None)
+
+    def _accept_item(self, item, _column) -> None:
+        if item.data(0, Qt.UserRole):
+            self.accept()
+
+    @staticmethod
+    def _mode_label(mode: str) -> str:
+        return {
+            "full": "Full splice",
+            "partial": "Partial insert",
+            "place": "Place in gap",
+        }.get(mode, mode)
+
+    @staticmethod
+    def _mode_color(mode: str) -> str:
+        return {
+            "full": "#22c55e",
+            "partial": "#38bdf8",
+            "place": "#f59e0b",
+        }.get(mode, "#cbd5e1")
+
+    @staticmethod
+    def _category_label(candidate: ConnectionInsertCandidate) -> str:
+        if candidate.subcategory:
+            return f"{candidate.category} / {candidate.subcategory}"
+        return candidate.category
 
 
 class NodePalette(QTreeWidget):
@@ -2228,6 +2359,9 @@ class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
     HISTORY_LIMIT = 80
+    TOOLBAR_HIDE_CHECKBOXES_WIDTH = 1700
+    TOOLBAR_HIDE_DROPDOWNS_WIDTH = 1500
+    TOOLBAR_HIDE_ZOOM_WIDTH = 1050
 
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
@@ -2255,6 +2389,11 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids: set[str] = set()
         self._inflight_dirty_node_ids: set[str] | None = None
         self._last_pipeline_source_signature: tuple | None = None
+        self._toolbar_compact_stage: tuple[bool, bool, bool] | None = None
+        self._toolbar_checkbox_widgets: list[QWidget] = []
+        self._toolbar_dropdown_widgets: list[QWidget] = []
+        self._toolbar_zoom_widgets: list[QWidget] = []
+        self._toolbar_settings_widgets: list[QWidget] = []
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -2294,6 +2433,10 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
         self.new_workflow_button = QPushButton("New workflow...")
+        self.auto_structure_button = QPushButton("Auto structure graph")
+        self.auto_structure_button.setToolTip(
+            "One-shot source-to-sink layout cleanup. Undo restores old positions."
+        )
         self.refresh_button = QPushButton("Refresh")
         self.undo_action = QAction(
             _toolbar_icon("undo"),
@@ -2325,6 +2468,26 @@ class VippWidget(QWidget):
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
         self.export_ome_button = QPushButton("Export OME dataset...")
+        self.settings_menu_button = QToolButton()
+        self.settings_menu_button.setText("Settings")
+        self.settings_menu_button.setMinimumWidth(96)
+        self.settings_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.settings_menu_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.settings_menu_button.setStyleSheet(
+            "QToolButton { padding: 3px 18px 3px 8px; }"
+            "QToolButton::menu-indicator {"
+            " subcontrol-origin: padding;"
+            " subcontrol-position: right center;"
+            " right: 4px;"
+            " width: 10px;"
+            "}"
+        )
+        self.settings_menu_button.setToolTip(
+            "Collapsed thumbnail, preview, contrast, colormap, and zoom controls."
+        )
+        self.settings_menu = QMenu(self.settings_menu_button)
+        self.settings_menu.aboutToShow.connect(self._populate_settings_toolbar_menu)
+        self.settings_menu_button.setMenu(self.settings_menu)
         self.background_all_checkbox = QCheckBox("Run all in BG")
         self.background_all_checkbox.setChecked(False)
         self.background_all_checkbox.setToolTip(
@@ -2468,6 +2631,7 @@ class VippWidget(QWidget):
 
         self._build_layout()
         self._connect_signals()
+        self._sync_toolbar_responsive_mode()
         self._refresh_layer_choices()
         self._build_graph_from_pipeline()
         self._select_node(self._selected_node_id)
@@ -2477,6 +2641,10 @@ class VippWidget(QWidget):
     def closeEvent(self, event):  # noqa: N802
         self._restore_hidden_input_layers()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_toolbar_responsive_mode()
 
     def eventFilter(self, watched, event):  # noqa: N802
         dock = self._dock_widget()
@@ -2495,6 +2663,7 @@ class VippWidget(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        self._sync_toolbar_responsive_mode()
         if not self._dock_chrome_configured:
             QTimer.singleShot(0, self._ensure_dock_widget_chrome)
         if not self._initial_dock_size_applied:
@@ -2643,28 +2812,65 @@ class VippWidget(QWidget):
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
         input_row.setSpacing(4)
-        input_row.addWidget(QLabel("Input"))
+        input_label = QLabel("Input")
+        input_row.addWidget(input_label)
         input_row.addWidget(self.layer_combo, 1)
-        input_row.addWidget(_toolbar_separator())
+        thumbnail_separator = _toolbar_separator()
+        input_row.addWidget(thumbnail_separator)
         input_row.addWidget(self.global_thumbnail_checkbox)
         input_row.addWidget(self.background_all_checkbox)
-        input_row.addWidget(QLabel("Preview"))
+        preview_label = QLabel("Preview")
+        input_row.addWidget(preview_label)
         input_row.addWidget(self.preview_mode_combo)
-        input_row.addWidget(QLabel("Contrast"))
+        contrast_label = QLabel("Contrast")
+        input_row.addWidget(contrast_label)
         input_row.addWidget(self.thumbnail_contrast_combo)
-        input_row.addWidget(QLabel("Mono"))
+        mono_label = QLabel("Mono")
+        input_row.addWidget(mono_label)
         input_row.addWidget(self.thumbnail_colormap_combo)
         input_row.addWidget(self.follow_dims_checkbox)
-        input_row.addWidget(_toolbar_separator())
-        input_row.addWidget(QLabel("Zoom"))
+        zoom_separator = _toolbar_separator()
+        input_row.addWidget(zoom_separator)
+        zoom_label = QLabel("Zoom")
+        input_row.addWidget(zoom_label)
         input_row.addWidget(self.graph_zoom_slider)
         input_row.addWidget(self.graph_zoom_reset_button)
         input_row.addWidget(self.graph_zoom_label)
-        input_row.addWidget(_toolbar_separator())
+        action_separator = _toolbar_separator()
+        input_row.addWidget(action_separator)
         input_row.addWidget(self.refresh_button)
+        input_row.addWidget(self.auto_structure_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
+        compact_separator = _toolbar_separator(6)
+        input_row.addWidget(compact_separator)
+        input_row.addWidget(self.settings_menu_button)
         root.addLayout(input_row)
+        self._toolbar_checkbox_widgets = [
+            self.global_thumbnail_checkbox,
+            self.background_all_checkbox,
+            self.follow_dims_checkbox,
+        ]
+        self._toolbar_dropdown_widgets = [
+            thumbnail_separator,
+            preview_label,
+            self.preview_mode_combo,
+            contrast_label,
+            self.thumbnail_contrast_combo,
+            mono_label,
+            self.thumbnail_colormap_combo,
+        ]
+        self._toolbar_zoom_widgets = [
+            zoom_separator,
+            zoom_label,
+            self.graph_zoom_slider,
+            self.graph_zoom_reset_button,
+            self.graph_zoom_label,
+        ]
+        self._toolbar_settings_widgets = [
+            compact_separator,
+            self.settings_menu_button,
+        ]
 
         workflow_row = QHBoxLayout()
         workflow_row.setContentsMargins(0, 0, 0, 0)
@@ -2672,8 +2878,12 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.new_workflow_button)
         workflow_row.addWidget(self.save_workflow_button)
         workflow_row.addWidget(self.load_workflow_button)
+        workflow_separator = _toolbar_separator()
+        workflow_row.addWidget(workflow_separator)
         workflow_row.addWidget(self.export_button)
         workflow_row.addWidget(self.export_ome_button)
+        export_separator = _toolbar_separator()
+        workflow_row.addWidget(export_separator)
         workflow_row.addStretch(1)
         workflow_row.addWidget(self.pipeline_busy_label)
         workflow_row.addWidget(self.pipeline_busy_bar)
@@ -2693,6 +2903,141 @@ class VippWidget(QWidget):
         root.addWidget(self.splitter, 1)
         root.addWidget(self.status_label)
         self._sync_side_panel_toggles()
+
+    def _sync_toolbar_responsive_mode(self) -> None:
+        width = int(self.width())
+        hide_checkboxes = 0 < width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH
+        hide_dropdowns = 0 < width < self.TOOLBAR_HIDE_DROPDOWNS_WIDTH
+        hide_zoom = 0 < width < self.TOOLBAR_HIDE_ZOOM_WIDTH
+        stage = (hide_checkboxes, hide_dropdowns, hide_zoom)
+        if stage == self._toolbar_compact_stage:
+            return
+        self._toolbar_compact_stage = stage
+        for widget in self._toolbar_checkbox_widgets:
+            widget.setVisible(not hide_checkboxes)
+        for widget in self._toolbar_dropdown_widgets:
+            widget.setVisible(not hide_dropdowns)
+        for widget in self._toolbar_zoom_widgets:
+            widget.setVisible(not hide_zoom)
+        show_settings = hide_checkboxes or hide_dropdowns or hide_zoom
+        for widget in self._toolbar_settings_widgets:
+            widget.setVisible(show_settings)
+        self.layer_combo.setMinimumWidth(140 if show_settings else 220)
+        self.auto_structure_button.setText(
+            "Structure" if show_settings else "Auto structure graph"
+        )
+
+    def _populate_settings_toolbar_menu(self) -> None:
+        menu = self.settings_menu
+        menu.clear()
+        hide_checkboxes, hide_dropdowns, hide_zoom = self._toolbar_compact_stage or (
+            False,
+            False,
+            False,
+        )
+        added_section = False
+        if hide_checkboxes:
+            self._add_checkbox_menu_action(
+                menu,
+                "Show thumbnails",
+                self.global_thumbnail_checkbox,
+            )
+            self._add_checkbox_menu_action(
+                menu,
+                "Run all in background",
+                self.background_all_checkbox,
+            )
+            self._add_checkbox_menu_action(
+                menu,
+                "Follow napari dims",
+                self.follow_dims_checkbox,
+            )
+            added_section = True
+        if hide_dropdowns:
+            if added_section:
+                menu.addSeparator()
+            self._add_combo_menu(menu, "Preview mode", self.preview_mode_combo)
+            self._add_combo_menu(
+                menu,
+                "Thumbnail contrast",
+                self.thumbnail_contrast_combo,
+            )
+            self._add_combo_menu(
+                menu,
+                "Monochrome colormap",
+                self.thumbnail_colormap_combo,
+            )
+            added_section = True
+        if hide_zoom:
+            if added_section:
+                menu.addSeparator()
+            self._add_zoom_menu_widget(menu)
+
+    def _add_checkbox_menu_action(
+        self,
+        menu: QMenu,
+        label: str,
+        checkbox: QCheckBox,
+    ) -> QAction:
+        action = menu.addAction(label)
+        action.setCheckable(True)
+        action.setChecked(checkbox.isChecked())
+        action.triggered.connect(lambda checked: checkbox.setChecked(bool(checked)))
+        return action
+
+    def _add_combo_menu(
+        self,
+        menu: QMenu,
+        label: str,
+        combo: QComboBox,
+    ) -> QMenu:
+        submenu = menu.addMenu(label)
+        current = combo.currentText()
+        for index in range(combo.count()):
+            value = combo.itemText(index)
+            action = submenu.addAction(value)
+            action.setCheckable(True)
+            action.setChecked(value == current)
+            action.triggered.connect(
+                lambda _checked=False, selected=value: combo.setCurrentText(selected)
+            )
+        return submenu
+
+    def _add_zoom_menu_widget(self, menu: QMenu) -> None:
+        widget = QWidget(menu)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("Zoom"))
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(
+            PipelineGraphView.SLIDER_MIN_ZOOM,
+            PipelineGraphView.SLIDER_MAX_ZOOM,
+        )
+        slider.setSingleStep(5)
+        slider.setPageStep(20)
+        slider.setFixedWidth(150)
+        slider.setValue(int(round(self.graph_view.zoom_percent)))
+        label = QLabel(f"{int(round(self.graph_view.zoom_percent))}%")
+        label.setMinimumWidth(44)
+        reset_button = QToolButton()
+        reset_button.setIcon(_toolbar_icon("reset"))
+        reset_button.setIconSize(QSize(16, 16))
+        reset_button.setToolTip("Reset graph zoom to the default 100%.")
+        slider.valueChanged.connect(
+            lambda value: self.graph_view.set_zoom_percent(float(value))
+        )
+        slider.valueChanged.connect(lambda value: label.setText(f"{int(value)}%"))
+        reset_button.clicked.connect(
+            lambda: slider.setValue(PipelineGraphView.DEFAULT_ZOOM)
+        )
+        layout.addWidget(slider)
+        layout.addWidget(reset_button)
+        layout.addWidget(label)
+
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(widget)
+        menu.addAction(action)
 
     def _build_graph_panel(self) -> QWidget:
         panel = QWidget()
@@ -2798,6 +3143,7 @@ class VippWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
+        self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
         self.undo_action.triggered.connect(self.undo)
         self.redo_action.triggered.connect(self.redo)
@@ -2841,6 +3187,9 @@ class VippWidget(QWidget):
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
         self.graph_view.node_insert_requested.connect(self._insert_node_on_connection)
+        self.graph_view.connection_insert_requested.connect(
+            self._insert_node_from_connection_menu
+        )
         self.graph_view.node_selected.connect(self._select_node)
         self.graph_view.node_delete_requested.connect(self._delete_node)
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
@@ -3092,6 +3441,40 @@ class VippWidget(QWidget):
             "Hide inspector" if right_visible else "Show inspector"
         )
 
+    def _auto_structure_graph(self) -> None:
+        self._finish_parameter_history_group()
+        if not self.pipeline.nodes:
+            self.status_label.setText("No graph nodes to structure.")
+            return
+
+        before = self._current_history_snapshot()
+        sizes = self.graph_view.node_card_sizes()
+        layout_nodes = [
+            LayoutNode(
+                node_id,
+                sizes.get(node_id, (220.0, 180.0))[0],
+                sizes.get(node_id, (220.0, 180.0))[1],
+            )
+            for node_id in self.pipeline.nodes
+        ]
+        layout_edges = [
+            LayoutEdge(connection.source_id, connection.target_id)
+            for connection in self.pipeline.connections
+        ]
+        positions = layout_layered_dag(
+            layout_nodes,
+            layout_edges,
+            current_positions=self.graph_view.node_positions(),
+        )
+        if not self.graph_view.apply_node_positions(positions):
+            self.status_label.setText("Graph is already structured.")
+            return
+
+        self._push_undo_if_changed(before)
+        self.status_label.setText(
+            f"Auto-structured graph layout for {len(positions)} nodes."
+        )
+
     def add_node_from_palette(self, operation_id: str):
         return self._add_node_at(operation_id, self.graph_view.suggest_node_position())
 
@@ -3204,6 +3587,86 @@ class VippWidget(QWidget):
                 f"Connect ports manually.{connection_note}"
             )
         return node
+
+    def _insert_node_from_connection_menu(self, connection_key, position) -> None:
+        operation_id = self._choose_connection_insert_operation(connection_key)
+        if not operation_id:
+            return
+        self._insert_node_on_connection(operation_id, connection_key, position)
+
+    def _choose_connection_insert_operation(self, connection_key) -> str | None:
+        candidates = self._connection_insert_candidates(connection_key)
+        if not candidates:
+            self.status_label.setText("No compatible nodes can be inserted here.")
+            return None
+        dialog = ConnectionInsertDialog(candidates, self)
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return dialog.selected_operation_id()
+
+    def _connection_insert_candidates(
+        self,
+        connection_key,
+    ) -> list[ConnectionInsertCandidate]:
+        candidates: list[ConnectionInsertCandidate] = []
+        for category, subgroups in grouped_palette_specs().items():
+            for subcategory, specs in subgroups.items():
+                for spec in specs:
+                    mode, reason = self._connection_insert_mode(
+                        spec.id,
+                        connection_key,
+                    )
+                    if mode == "incompatible":
+                        continue
+                    search_text = _normalize_search_text(
+                        " ".join(
+                            (
+                                spec.id,
+                                spec.title,
+                                spec.category,
+                                spec.subcategory,
+                                mode,
+                                self._connection_insert_mode_label(mode),
+                            )
+                        )
+                    )
+                    candidates.append(
+                        ConnectionInsertCandidate(
+                            operation_id=spec.id,
+                            title=spec.title,
+                            category=category,
+                            subcategory=subcategory,
+                            mode=mode,
+                            detail=self._connection_insert_detail(mode, reason),
+                            search_text=search_text,
+                        )
+                    )
+        return candidates
+
+    @staticmethod
+    def _connection_insert_mode_label(mode: str) -> str:
+        return {
+            "full": "full splice",
+            "partial": "partial insert",
+            "place": "place in gap",
+        }.get(mode, mode)
+
+    def _connection_insert_detail(self, mode: str, reason: str) -> str:
+        if mode == "full":
+            return (
+                "Full splice: replace the original wire and connect "
+                "source -> inserted node -> target."
+            )
+        if mode == "partial":
+            return (
+                "Partial insert: replace the original wire and connect only "
+                "source -> inserted node. Choose the downstream output manually."
+            )
+        if mode == "place":
+            if reason:
+                return f"Place in gap: {reason}"
+            return "Place in gap: create the node here and connect ports manually."
+        return reason
 
     def _apply_connection_result_to_graph(self, result) -> None:
         for connection in result.removed:

@@ -113,6 +113,45 @@ def test_node_context_menu_uses_unpin_label_for_pinned_nodes(qtbot, monkeypatch)
     assert "border: 4px solid #facc15" in view._cards["threshold"].styleSheet()
 
 
+def test_connection_context_menu_can_request_insert(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    labels = []
+
+    def fake_exec(menu, _pos):
+        labels[:] = [
+            action.text()
+            for action in menu.actions()
+            if not action.isSeparator()
+        ]
+        return next(
+            action
+            for action in menu.actions()
+            if action.text() == "Insert node here..."
+        )
+
+    class FakeContextMenuEvent:
+        def screenPos(self):
+            return QPoint(0, 0)
+
+        def scenePos(self):
+            return QPointF(123, 45)
+
+    requests = []
+    view.connection_insert_requested.connect(
+        lambda connection_key, position: requests.append(
+            (tuple(connection_key), QPointF(position))
+        )
+    )
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._connections[0].contextMenuEvent(FakeContextMenuEvent())
+
+    assert labels == ["Info", "Insert node here...", "Delete"]
+    assert requests == [(("input", "gaussian", 0, 0), QPointF(123, 45))]
+
+
 def test_graph_cards_use_category_colors(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -140,6 +179,23 @@ def test_graph_zoom_can_be_set_and_reset(qtbot):
 
     assert view.zoom_percent == PipelineGraphView.DEFAULT_ZOOM
     assert view.transform().m11() == initial
+
+
+def test_graph_view_can_apply_absolute_node_positions(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    assert view.apply_node_positions(
+        {
+            "input": QPointF(40, 50),
+            "gaussian": (360, 120),
+            "missing": (1, 1),
+        }
+    )
+
+    assert view.node_position("input") == QPointF(40, 50)
+    assert view.node_position("gaussian") == QPointF(360, 120)
+    assert not view.apply_node_positions({"input": QPointF(40, 50)})
 
 
 def test_connection_routes_around_intermediate_node(qtbot):

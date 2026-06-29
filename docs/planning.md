@@ -50,6 +50,8 @@ Registration and deconvolution remain later milestones.
 - widened connector hit targets for easier selection/right-clicking;
 - drag a palette node onto a connector to insert it on that connection, with
   pulsing/glowing insertion preview;
+- right-click a connector and choose `Insert node here...` to open a filtered
+  compatible-node picker;
 - phase-1 insert-on-wire modes: full splice for unambiguous one-input/one-output
   nodes, partial upstream-only insertion for single-input/multi-output nodes,
   and place-in-gap for ambiguous nodes;
@@ -60,6 +62,9 @@ Registration and deconvolution remain later milestones.
 - dynamic Split Channels output counts;
 - connector updates while nodes move;
 - undo/redo for graph and parameter edits;
+- one-shot `Auto structure graph` layout cleanup with undo;
+- staged responsive toolbar compaction for narrow dock layouts: checkboxes,
+  dropdowns, then zoom controls collapse into `Settings` as space runs out;
 - save/load of canvas positions.
 
 ### Workflow Persistence
@@ -215,11 +220,10 @@ of a selected wire, or at the current palette-suggested position.
 
 **Insert Node Between Connected Nodes.** Splice a new node into an existing
 connection without manual delete-and-rewire. Phase 1 is implemented for
-dragging a palette node onto an existing connector. Remaining entry points
-should share the same command path:
+dragging a palette node onto an existing connector and for right-clicking a
+connector and choosing `Insert node here...`. Remaining entry points should
+share the same command path:
 
-- Right-click a wire and choose `Insert node here...`, opening the node palette
-  filtered to compatible candidates.
 - Drag an already-existing loose node onto a wire to splice it in.
 
 Drag/drop affordance:
@@ -280,18 +284,12 @@ one step, local make-room moving only the target/downstream side, partial insert
 for a single-input/multi-output node, and deletion of a connection without
 deleting attached nodes.
 
-**Connection Context Menu.** Extend the current wire menu from `Info`/`Delete`
-to include `Insert node here...`. This should be implemented as a connection
-signal from `PipelineGraphView` to the main widget, not as graph-model logic in
-the Qt item. The main widget owns operation compatibility, undo snapshots, and
-pipeline reruns.
+**User-Initiated Automatic Layout Cleanup.** The explicit `Auto structure graph`
+command is implemented as a one-shot cleanup. It tidies a messy workflow on
+demand and never runs as an automatic side effect of adding, duplicating,
+inserting, deleting, or connecting nodes.
 
-**User-Initiated Automatic Layout Cleanup.** Add an explicit graph layout
-command named `Auto structure graph` or `Auto structure`. It should tidy a messy
-workflow on demand and never run as an automatic side effect of adding,
-duplicating, inserting, deleting, or connecting nodes.
-
-Phase 1 layout should be a deterministic layered DAG layout:
+Implemented phase 1 layout:
 
 - Use the pipeline's acyclic graph to assign source-to-sink columns.
 - Order nodes inside each column to reduce edge crossings, using barycentric
@@ -300,9 +298,8 @@ Phase 1 layout should be a deterministic layered DAG layout:
   not overlap.
 - Place disconnected components in separate lanes.
 - Apply the resulting positions through the existing saved-position mechanism.
-- Treat the relayout as one undoable action. Undo must restore the previous
-  coordinates without changing graph connectivity or rerunning image
-  processing unless necessary for the current UI architecture.
+- Treat the relayout as one undoable action. Undo restores the previous
+  coordinates without changing graph connectivity.
 
 Phase 2 can add an Obsidian-like live structure mode:
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 import numpy as np
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
@@ -853,10 +853,21 @@ class ConnectionItem(QGraphicsPathItem):
         view = _view_for_scene(self.scene())
         menu = QMenu()
         info_action = menu.addAction("Info")
+        insert_action = menu.addAction("Insert node here...")
         delete_action = menu.addAction("Delete")
         action = _exec_menu(menu, event.screenPos())
         if view is not None and action == delete_action:
             view.delete_connection_item(self, notify=True)
+        elif view is not None and action == insert_action:
+            view.connection_insert_requested.emit(
+                (
+                    self.source_id,
+                    self.target_id,
+                    self.target_port,
+                    self.source_port,
+                ),
+                event.scenePos(),
+            )
         elif view is not None and action == info_action:
             source_port = self.source.output_port_at(self.source_port)
             target_port = self.target.input_port_at(self.target_port)
@@ -952,6 +963,7 @@ class PipelineGraphView(QGraphicsView):
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
+    connection_insert_requested = Signal(object, QPointF)
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     status_message = Signal(str)
@@ -1111,11 +1123,55 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         return QPointF(proxy.pos()) if proxy is not None else None
 
+    def node_card_sizes(self) -> dict[str, tuple[float, float]]:
+        """Return current node-card sizes in scene units."""
+        sizes: dict[str, tuple[float, float]] = {}
+        for node_id, proxy in self._proxies.items():
+            rect = proxy.sceneBoundingRect()
+            sizes[node_id] = (float(rect.width()), float(rect.height()))
+        return sizes
+
     def node_scene_rect(self, node_id: str) -> QRectF | None:
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return None
         return proxy.sceneBoundingRect()
+
+    def apply_node_positions(
+        self,
+        positions: Mapping[str, tuple[float, float] | QPointF],
+        *,
+        animate: bool = False,
+    ) -> bool:
+        """Move existing nodes to absolute scene positions.
+
+        ``animate`` is accepted for the future live-layout path; phase 1 applies
+        positions immediately.
+        """
+        del animate
+        moved_rect: QRectF | None = None
+        changed = False
+        for node_id, value in positions.items():
+            proxy = self._proxies.get(node_id)
+            point = _to_pointf(value)
+            if proxy is None or point is None:
+                continue
+            if _points_close(proxy.pos(), point):
+                continue
+            before = proxy.sceneBoundingRect()
+            proxy.setPos(point)
+            after = proxy.sceneBoundingRect()
+            combined = before.united(after)
+            moved_rect = combined if moved_rect is None else moved_rect.united(combined)
+            changed = True
+
+        if not changed:
+            return False
+        if moved_rect is not None and moved_rect.isValid():
+            self._ensure_scene_space_for_rect(moved_rect)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections()
+        return True
 
     def center_node_on(self, node_id: str, scene_pos: QPointF) -> None:
         proxy = self._proxies.get(node_id)
@@ -2199,6 +2255,13 @@ def _rect_changed(first: QRectF, second: QRectF, tolerance: float = 0.5) -> bool
             (first.width(), second.width()),
             (first.height(), second.height()),
         )
+    )
+
+
+def _points_close(first: QPointF, second: QPointF, tolerance: float = 0.5) -> bool:
+    return (
+        abs(float(first.x()) - float(second.x())) <= tolerance
+        and abs(float(first.y()) - float(second.y())) <= tolerance
     )
 
 

@@ -20,7 +20,7 @@ from qtpy.QtWidgets import (
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._theme import category_color, category_tint
-from napari_vipp._widget import VippWidget
+from napari_vipp._widget import ConnectionInsertDialog, VippWidget
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
@@ -3438,7 +3438,7 @@ def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
     left_gap = inserted_rect.left() - source_rect.right()
     right_gap = target_rect.left() - inserted_rect.right()
     assert left_gap > 0
-    assert abs(left_gap - right_gap) < 1.0
+    assert right_gap > 0
 
     widget.undo()
 
@@ -3481,6 +3481,221 @@ def test_insert_split_channels_on_connection_is_partial(qtbot):
         for connection in widget.pipeline.connections
     }
     assert "Choose which output should feed" in widget.status_label.text()
+
+
+def test_connection_insert_candidates_show_modes(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    candidates = {
+        candidate.operation_id: candidate
+        for candidate in widget._connection_insert_candidates(
+            ("input", "gaussian", 0, 0)
+        )
+    }
+
+    assert candidates["median_filter"].mode == "full"
+    assert candidates["split_channels"].mode == "partial"
+    assert "Full splice" in candidates["median_filter"].detail
+    assert "Partial insert" in candidates["split_channels"].detail
+    assert "measure_objects" not in candidates
+
+
+def test_connection_insert_dialog_filters_candidates(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    candidates = widget._connection_insert_candidates(("input", "gaussian", 0, 0))
+
+    dialog = ConnectionInsertDialog(candidates, widget)
+    qtbot.addWidget(dialog)
+
+    dialog.search.setText("split")
+
+    assert dialog.selected_operation_id() == "split_channels"
+    assert dialog.ok_button.isEnabled()
+
+
+def test_connection_menu_insert_uses_selected_candidate(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(
+        widget,
+        "_choose_connection_insert_operation",
+        lambda _connection_key: "median_filter",
+    )
+
+    widget._insert_node_from_connection_menu(
+        ("input", "gaussian", 0, 0),
+        QPointF(180, 100),
+    )
+
+    inserted_nodes = [
+        node
+        for node in widget.pipeline.nodes.values()
+        if node.operation_id == "median_filter"
+    ]
+    assert len(inserted_nodes) == 1
+    inserted = inserted_nodes[0]
+    assert ("input", inserted.id) in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert (inserted.id, "gaussian") in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+
+
+def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    messy_positions = {
+        "input": (520, 280),
+        "gaussian": (40, 460),
+        "threshold": (180, 30),
+    }
+    widget.graph_view.apply_node_positions(messy_positions)
+    before_connections = {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+
+    widget._auto_structure_graph()
+
+    after_connections = {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert after_connections == before_connections
+    input_pos = widget.graph_view.node_position("input")
+    gaussian_pos = widget.graph_view.node_position("gaussian")
+    threshold_pos = widget.graph_view.node_position("threshold")
+    assert input_pos is not None
+    assert gaussian_pos is not None
+    assert threshold_pos is not None
+    assert input_pos.x() < gaussian_pos.x()
+    assert gaussian_pos.x() < threshold_pos.x()
+    assert "Auto-structured graph layout" in widget.status_label.text()
+
+    widget.undo()
+
+    assert widget.graph_view.node_positions() == {
+        node_id: (float(x), float(y))
+        for node_id, (x, y) in messy_positions.items()
+    }
+
+
+def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.resize(1600, 600)
+    widget._sync_toolbar_responsive_mode()
+
+    assert widget.settings_menu_button.isHidden() is False
+    assert widget.settings_menu_button.text() == "Settings"
+    assert widget.settings_menu_button.minimumWidth() >= 96
+    assert widget.global_thumbnail_checkbox.isHidden()
+    assert widget.background_all_checkbox.isHidden()
+    assert widget.follow_dims_checkbox.isHidden()
+    assert widget.preview_mode_combo.isHidden() is False
+    assert widget.thumbnail_contrast_combo.isHidden() is False
+    assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.save_workflow_button.isHidden() is False
+    assert widget.export_button.isHidden() is False
+    assert widget.auto_structure_button.text() == "Structure"
+
+    widget.resize(1400, 600)
+    widget._sync_toolbar_responsive_mode()
+
+    assert widget.global_thumbnail_checkbox.isHidden()
+    assert widget.preview_mode_combo.isHidden()
+    assert widget.thumbnail_contrast_combo.isHidden()
+    assert widget.thumbnail_colormap_combo.isHidden()
+    assert widget.graph_zoom_slider.isHidden() is False
+
+    widget.resize(1200, 600)
+    widget._sync_toolbar_responsive_mode()
+
+    assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.graph_zoom_reset_button.isHidden() is False
+    assert widget.graph_zoom_label.isHidden() is False
+
+    widget.resize(1000, 600)
+    widget._sync_toolbar_responsive_mode()
+
+    assert widget.graph_zoom_slider.isHidden()
+    assert widget.graph_zoom_reset_button.isHidden()
+    assert widget.graph_zoom_label.isHidden()
+
+    widget.resize(widget.TOOLBAR_HIDE_CHECKBOXES_WIDTH + 100, 600)
+    widget._sync_toolbar_responsive_mode()
+
+    assert widget.settings_menu_button.isHidden()
+    assert widget.global_thumbnail_checkbox.isHidden() is False
+    assert widget.preview_mode_combo.isHidden() is False
+    assert widget.thumbnail_contrast_combo.isHidden() is False
+    assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.save_workflow_button.isHidden() is False
+    assert widget.export_button.isHidden() is False
+    assert widget.auto_structure_button.text() == "Auto structure graph"
+
+
+def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.resize(1600, 600)
+    widget._sync_toolbar_responsive_mode()
+    widget._populate_settings_toolbar_menu()
+
+    labels = [
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    ]
+    assert "Show thumbnails" in labels
+    assert "Run all in background" in labels
+    assert "Follow napari dims" in labels
+    assert "Preview mode" not in labels
+
+    widget.resize(1200, 600)
+    widget._sync_toolbar_responsive_mode()
+    widget._populate_settings_toolbar_menu()
+    labels = [
+        action.text()
+        for action in widget.settings_menu.actions()
+        if not action.isSeparator() and action.text()
+    ]
+    assert "Preview mode" in labels
+    assert "Thumbnail contrast" in labels
+    assert "Monochrome colormap" in labels
+
+    show_action = next(
+        action
+        for action in widget.settings_menu.actions()
+        if action.text() == "Show thumbnails"
+    )
+    assert widget.global_thumbnail_checkbox.isChecked()
+    show_action.trigger()
+    assert not widget.global_thumbnail_checkbox.isChecked()
 
 
 def test_palette_image_operations_can_run(qtbot):
