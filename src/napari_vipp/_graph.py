@@ -653,11 +653,16 @@ class NodeProxy(QGraphicsProxyWidget):
             QGraphicsItem.ItemPositionHasChanged,
             QGraphicsItem.ItemTransformHasChanged,
         ):
-            for connection in self.connections:
-                connection.update_path()
             view = _view_for_scene(self.scene())
             if view is not None:
+                view._mark_graph_geometry_changed()
+                for connection in self.connections:
+                    connection.update_path()
+                view.reroute_connections(affected_rect=self.sceneBoundingRect())
                 view._ensure_scene_space_for_rect(self.sceneBoundingRect())
+            else:
+                for connection in self.connections:
+                    connection.update_path()
         return result
 
     def _card(self) -> NodeCard | None:
@@ -780,6 +785,7 @@ class ConnectionItem(QGraphicsPathItem):
         self.source_port = int(source_port)
         self._insert_preview_state: str | None = None
         self._pulse_phase = 0
+        self._last_route_key: tuple[float, float, float, float, int] | None = None
         self.setZValue(-10)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
@@ -789,7 +795,24 @@ class ConnectionItem(QGraphicsPathItem):
     def update_path(self) -> None:
         start = self.source.port_scene_pos("output", self.source_port)
         end = self.target.port_scene_pos("input", self.target_port)
-        self.setPath(_wire_path(start, end))
+        view = _view_for_scene(self.scene())
+        revision = int(view.route_revision) if view is not None else -1
+        route_key = (
+            round(start.x(), 3),
+            round(start.y(), 3),
+            round(end.x(), 3),
+            round(end.y(), 3),
+            revision,
+        )
+        if route_key == self._last_route_key:
+            return
+        obstacles = (
+            view.connection_obstacle_rects(self)
+            if view is not None
+            else ()
+        )
+        self.setPath(_wire_path(start, end, obstacles=obstacles))
+        self._last_route_key = route_key
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()
@@ -919,6 +942,7 @@ class PipelineGraphView(QGraphicsView):
     SCENE_EDGE_MARGIN = 260.0
     SCENE_EXPAND_STEP_X = 1400.0
     SCENE_EXPAND_STEP_Y = 1100.0
+    WIRE_OBSTACLE_MARGIN = 24.0
 
     node_selected = Signal(str)
     node_delete_requested = Signal(str)
@@ -963,6 +987,8 @@ class PipelineGraphView(QGraphicsView):
         self._pan_v_value = 0
         self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
+        self._rerouting_connections = False
+        self._route_revision = 0
         self._processing_timer = QTimer(self)
         self._processing_timer.setInterval(80)
         self._processing_timer.timeout.connect(self._advance_processing_spinners)
@@ -1025,21 +1051,31 @@ class PipelineGraphView(QGraphicsView):
             )
             scene_rect = scene_rect.united(center_rect)
         self.scene.setSceneRect(scene_rect)
+        self._mark_graph_geometry_changed()
         if preserve_view:
             self.setTransform(preserved_transform)
             self._base_transform = preserved_base_transform
             self._zoom_percent = preserved_zoom
             self.centerOn(preserved_center)
+            self.reroute_connections()
             return
         self.resetTransform()
         self._base_transform = QTransform()
         self._zoom_percent = float(self.DEFAULT_ZOOM)
         self._apply_zoom_from_base(graph_rect.center())
+        self.reroute_connections()
         self.zoom_changed.emit(self._zoom_percent)
 
     @property
     def zoom_percent(self) -> float:
         return float(self._zoom_percent)
+
+    @property
+    def route_revision(self) -> int:
+        return int(self._route_revision)
+
+    def _mark_graph_geometry_changed(self) -> None:
+        self._route_revision += 1
 
     def set_zoom_percent(self, value: float) -> None:
         zoom = float(np.clip(value, self.WHEEL_MIN_ZOOM, self.WHEEL_MAX_ZOOM))
@@ -1087,7 +1123,10 @@ class PipelineGraphView(QGraphicsView):
             return
         rect = proxy.sceneBoundingRect()
         proxy.setPos(proxy.pos() + (scene_pos - rect.center()))
+        moved_rect = rect.united(proxy.sceneBoundingRect())
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(affected_rect=moved_rect)
 
     def move_nodes_by(self, node_ids: set[str], delta: QPointF) -> None:
         if not node_ids or (abs(delta.x()) < 0.001 and abs(delta.y()) < 0.001):
@@ -1101,6 +1140,8 @@ class PipelineGraphView(QGraphicsView):
             moved_rect = moved_rect.united(proxy.sceneBoundingRect())
         if moved_rect.isValid():
             self._ensure_scene_space_for_rect(moved_rect)
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=moved_rect)
 
     def set_connection_insert_validator(
         self,
@@ -1108,6 +1149,62 @@ class PipelineGraphView(QGraphicsView):
         | None,
     ) -> None:
         self._connection_insert_validator = validator
+
+    def connection_obstacle_rects(
+        self,
+        connection: ConnectionItem | None = None,
+        *,
+        exclude_node_ids: set[str] | None = None,
+    ) -> tuple[QRectF, ...]:
+        excluded = set(exclude_node_ids or set())
+        if connection is not None:
+            excluded.update({connection.source_id, connection.target_id})
+        margin = float(self.WIRE_OBSTACLE_MARGIN)
+        rects: list[QRectF] = []
+        for node_id, proxy in self._proxies.items():
+            if node_id in excluded:
+                continue
+            rect = proxy.sceneBoundingRect()
+            if rect.isNull() or not rect.isValid():
+                continue
+            rects.append(rect.adjusted(-margin, -margin, margin, margin))
+        return tuple(rects)
+
+    def reroute_connections(self, affected_rect: QRectF | None = None) -> None:
+        if self._rerouting_connections:
+            return
+        if affected_rect is not None:
+            affected = QRectF(affected_rect)
+            if not affected.isValid() or affected.isNull():
+                return
+            margin = float(self.WIRE_OBSTACLE_MARGIN) * 2.0
+            affected = affected.adjusted(-margin, -margin, margin, margin)
+            connections = [
+                connection
+                for connection in self._connections
+                if self._connection_route_rect(connection).intersects(affected)
+            ]
+        else:
+            connections = list(self._connections)
+        if not connections:
+            return
+        self._rerouting_connections = True
+        try:
+            for connection in connections:
+                connection.update_path()
+        finally:
+            self._rerouting_connections = False
+
+    def _connection_route_rect(self, connection: ConnectionItem) -> QRectF:
+        start = connection.source.port_scene_pos("output", connection.source_port)
+        end = connection.target.port_scene_pos("input", connection.target_port)
+        corridor = QRectF(start, end).normalized().adjusted(
+            -180.0,
+            -240.0,
+            180.0,
+            240.0,
+        )
+        return corridor.united(connection.sceneBoundingRect())
 
     def add_node(self, node, position: QPointF) -> None:
         card = NodeCard(
@@ -1138,6 +1235,8 @@ class PipelineGraphView(QGraphicsView):
         self._cards[node.id] = card
         self._proxies[node.id] = proxy
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(affected_rect=proxy.sceneBoundingRect())
 
     def add_connection(
         self,
@@ -1155,11 +1254,13 @@ class PipelineGraphView(QGraphicsView):
         source.connections.append(item)
         target.connections.append(item)
         self._connections.append(item)
+        item.update_path()
 
     def remove_node(self, node_id: str) -> None:
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
+        affected_rect = proxy.sceneBoundingRect()
         for connection in list(proxy.connections):
             self.delete_connection_item(connection, notify=False)
         if self._pending_source is not None and self._pending_source.node_id == node_id:
@@ -1173,6 +1274,8 @@ class PipelineGraphView(QGraphicsView):
         self._cards.pop(node_id, None)
         self._proxies.pop(node_id, None)
         self.scene.removeItem(proxy)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(affected_rect=affected_rect)
 
     def remove_connection(
         self,
@@ -1228,9 +1331,15 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if card is None or proxy is None:
             return
+        before = proxy.sceneBoundingRect()
         card.set_metadata_summary(text)
         card.adjustSize()
         proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
         for connection in proxy.connections:
             connection.update_path()
 
@@ -1253,9 +1362,15 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if card is None or proxy is None:
             return
+        before = proxy.sceneBoundingRect()
         card.set_preview_enabled(enabled)
         card.adjustSize()
         proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
         for connection in proxy.connections:
             connection.update_path()
 
@@ -1750,8 +1865,42 @@ def _to_pointf(value) -> QPointF | None:
     return None
 
 
-def _wire_path(start: QPointF, end: QPointF) -> QPainterPath:
-    dx = max(80.0, abs(end.x() - start.x()) * 0.5)
+def _wire_path(
+    start: QPointF,
+    end: QPointF,
+    *,
+    obstacles: tuple[QRectF, ...] | list[QRectF] = (),
+) -> QPainterPath:
+    clean_obstacles = tuple(
+        rect for rect in obstacles if rect.isValid() and not rect.isNull()
+    )
+    if not clean_obstacles:
+        return _bezier_wire_path(start, end)
+    relevant_obstacles = _route_corridor_obstacles(start, end, clean_obstacles)
+    if not relevant_obstacles:
+        return _bezier_wire_path(start, end)
+    if _should_use_close_port_curve(start, end):
+        return _bezier_wire_path(start, end)
+
+    bezier = _bezier_wire_path(start, end)
+    bezier_points = _sample_path_points(bezier, samples=24)
+    if not _route_collision_penalty(bezier_points, relevant_obstacles):
+        return bezier
+
+    candidates = _wire_route_candidates(start, end, relevant_obstacles)
+    best_path, _points, _score = min(
+        candidates,
+        key=lambda candidate: candidate[2],
+    )
+    return best_path
+
+
+def _bezier_wire_path(start: QPointF, end: QPointF) -> QPainterPath:
+    horizontal_gap = end.x() - start.x()
+    if horizontal_gap > 0:
+        dx = min(80.0, max(1.0, horizontal_gap * 0.45))
+    else:
+        dx = max(80.0, abs(horizontal_gap) * 0.5)
     path = QPainterPath(start)
     path.cubicTo(
         QPointF(start.x() + dx, start.y()),
@@ -1759,6 +1908,298 @@ def _wire_path(start: QPointF, end: QPointF) -> QPainterPath:
         end,
     )
     return path
+
+
+def _should_use_close_port_curve(start: QPointF, end: QPointF) -> bool:
+    horizontal_gap = end.x() - start.x()
+    return 0 < horizontal_gap <= 220.0
+
+
+def _wire_route_candidates(
+    start: QPointF,
+    end: QPointF,
+    obstacles: tuple[QRectF, ...],
+) -> list[tuple[QPainterPath, tuple[QPointF, ...], float]]:
+    candidates: list[tuple[QPainterPath, tuple[QPointF, ...], float]] = []
+    bezier = _bezier_wire_path(start, end)
+    bezier_points = _sample_path_points(bezier, samples=32)
+    candidates.append(
+        (
+            bezier,
+            bezier_points,
+            _route_score(bezier_points, obstacles, bends=0),
+        )
+    )
+
+    for points in _orthogonal_route_candidates(start, end, obstacles):
+        clean = _clean_route_points(points)
+        if len(clean) < 2:
+            continue
+        path = _rounded_polyline_path(clean)
+        candidates.append(
+            (
+                path,
+                tuple(clean),
+                _route_score(tuple(clean), obstacles, bends=max(len(clean) - 2, 0)),
+            )
+        )
+    return candidates
+
+
+def _orthogonal_route_candidates(
+    start: QPointF,
+    end: QPointF,
+    obstacles: tuple[QRectF, ...],
+) -> list[list[QPointF]]:
+    port_stub = _port_stub_length(start, end)
+    route_start = QPointF(start.x() + port_stub, start.y())
+    route_end = QPointF(end.x() - port_stub, end.y())
+    sign = 1.0 if route_end.x() >= route_start.x() else -1.0
+    horizontal_gap = abs(route_end.x() - route_start.x())
+    lead = min(max(horizontal_gap * 0.22, 56.0), 130.0)
+    x1 = route_start.x() + sign * lead
+    x2 = route_end.x() - sign * lead
+    mid_x = (route_start.x() + route_end.x()) / 2.0
+    mid_y = (route_start.y() + route_end.y()) / 2.0
+    candidates = [
+        [
+            start,
+            route_start,
+            QPointF(mid_x, route_start.y()),
+            QPointF(mid_x, route_end.y()),
+            route_end,
+            end,
+        ],
+        [
+            start,
+            route_start,
+            QPointF(route_start.x(), route_end.y()),
+            route_end,
+            end,
+        ],
+        [
+            start,
+            route_start,
+            QPointF(route_start.x(), mid_y),
+            QPointF(route_end.x(), mid_y),
+            route_end,
+            end,
+        ],
+    ]
+
+    blockers = _route_relevant_obstacles(route_start, route_end, obstacles)
+    if blockers:
+        top = min(rect.top() for rect in blockers)
+        bottom = max(rect.bottom() for rect in blockers)
+        left = min(rect.left() for rect in blockers)
+        right = max(rect.right() for rect in blockers)
+    else:
+        top = min(route_start.y(), route_end.y())
+        bottom = max(route_start.y(), route_end.y())
+        left = min(route_start.x(), route_end.x())
+        right = max(route_start.x(), route_end.x())
+    pad = 44.0
+    above_y = top - pad
+    below_y = bottom + pad
+    left_x = left - pad
+    right_x = right + pad
+    lo_x = min(route_start.x(), route_end.x())
+    hi_x = max(route_start.x(), route_end.x())
+    if sign >= 0:
+        detour_start_x = min(max(min(x1, left_x), lo_x), hi_x)
+        detour_end_x = min(max(max(x2, right_x), lo_x), hi_x)
+    else:
+        detour_start_x = min(max(max(x1, right_x), lo_x), hi_x)
+        detour_end_x = min(max(min(x2, left_x), lo_x), hi_x)
+    for y in (above_y, below_y):
+        candidates.append(
+            [
+                start,
+                route_start,
+                QPointF(detour_start_x, route_start.y()),
+                QPointF(detour_start_x, y),
+                QPointF(detour_end_x, y),
+                QPointF(detour_end_x, route_end.y()),
+                route_end,
+                end,
+            ]
+        )
+    for x in (left_x, right_x):
+        if x < lo_x or x > hi_x:
+            continue
+        candidates.append(
+            [
+                start,
+                route_start,
+                QPointF(x, route_start.y()),
+                QPointF(x, route_end.y()),
+                route_end,
+                end,
+            ]
+        )
+    return candidates
+
+
+def _port_stub_length(start: QPointF, end: QPointF) -> float:
+    preferred = 36.0
+    horizontal_gap = end.x() - start.x()
+    if horizontal_gap > 0:
+        return min(preferred, max(1.0, horizontal_gap / 3.0))
+    return min(preferred, max(10.0, abs(horizontal_gap) * 0.18))
+
+
+def _route_relevant_obstacles(
+    start: QPointF,
+    end: QPointF,
+    obstacles: tuple[QRectF, ...],
+) -> tuple[QRectF, ...]:
+    relevant = _route_corridor_obstacles(start, end, obstacles)
+    return relevant or obstacles
+
+
+def _route_corridor_obstacles(
+    start: QPointF,
+    end: QPointF,
+    obstacles: tuple[QRectF, ...],
+) -> tuple[QRectF, ...]:
+    corridor = QRectF(start, end).normalized().adjusted(-80.0, -110.0, 80.0, 110.0)
+    relevant = [rect for rect in obstacles if rect.intersects(corridor)]
+    if len(relevant) <= 12:
+        return tuple(relevant)
+    center = QPointF((start.x() + end.x()) / 2.0, (start.y() + end.y()) / 2.0)
+    relevant.sort(key=lambda rect: _point_distance(rect.center(), center))
+    return tuple(relevant[:12])
+
+
+def _route_score(
+    points: tuple[QPointF, ...],
+    obstacles: tuple[QRectF, ...],
+    *,
+    bends: int,
+) -> float:
+    collision = _route_collision_penalty(points, obstacles)
+    return collision * 1000.0 + _polyline_length(points) + bends * 42.0
+
+
+def _route_collision_penalty(
+    points: tuple[QPointF, ...],
+    obstacles: tuple[QRectF, ...],
+) -> float:
+    return sum(_polyline_rect_penalty(points, rect) for rect in obstacles)
+
+
+def _polyline_rect_penalty(points: tuple[QPointF, ...], rect: QRectF) -> float:
+    penalty = 0.0
+    for start, end in zip(points, points[1:], strict=False):
+        penalty += _segment_rect_penalty(start, end, rect)
+    return penalty
+
+
+def _segment_rect_penalty(start: QPointF, end: QPointF, rect: QRectF) -> float:
+    segment_rect = QRectF(start, end).normalized().adjusted(-1.0, -1.0, 1.0, 1.0)
+    if not segment_rect.intersects(rect):
+        return 0.0
+    dx = end.x() - start.x()
+    dy = end.y() - start.y()
+    if abs(dy) < 0.001:
+        if rect.top() <= start.y() <= rect.bottom():
+            overlap = _range_overlap(start.x(), end.x(), rect.left(), rect.right())
+            return max(overlap, 0.0) + 25.0
+        return 0.0
+    if abs(dx) < 0.001:
+        if rect.left() <= start.x() <= rect.right():
+            overlap = _range_overlap(start.y(), end.y(), rect.top(), rect.bottom())
+            return max(overlap, 0.0) + 25.0
+        return 0.0
+
+    samples = max(int(np.hypot(dx, dy) / 18.0), 8)
+    inside = 0
+    for index in range(samples + 1):
+        t = index / max(samples, 1)
+        point = QPointF(start.x() + dx * t, start.y() + dy * t)
+        if rect.contains(point):
+            inside += 1
+    if inside:
+        return inside * 18.0 + 25.0
+    return 0.0
+
+
+def _range_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
+    lo_a, hi_a = sorted((float(a0), float(a1)))
+    lo_b, hi_b = sorted((float(b0), float(b1)))
+    return max(0.0, min(hi_a, hi_b) - max(lo_a, lo_b))
+
+
+def _polyline_length(points: tuple[QPointF, ...]) -> float:
+    return sum(
+        float(np.hypot(end.x() - start.x(), end.y() - start.y()))
+        for start, end in zip(points, points[1:], strict=False)
+    )
+
+
+def _sample_path_points(path: QPainterPath, *, samples: int) -> tuple[QPointF, ...]:
+    count = max(int(samples), 2)
+    return tuple(path.pointAtPercent(index / count) for index in range(count + 1))
+
+
+def _rounded_polyline_path(points: list[QPointF], radius: float = 18.0) -> QPainterPath:
+    clean = _clean_route_points(points)
+    path = QPainterPath(clean[0])
+    if len(clean) == 2:
+        path.lineTo(clean[-1])
+        return path
+    for index in range(1, len(clean) - 1):
+        previous = clean[index - 1]
+        corner = clean[index]
+        next_point = clean[index + 1]
+        distance_in = _point_distance(previous, corner)
+        distance_out = _point_distance(corner, next_point)
+        bend_radius = min(float(radius), distance_in / 2.0, distance_out / 2.0)
+        if bend_radius < 1.0:
+            path.lineTo(corner)
+            continue
+        before = _point_towards(corner, previous, bend_radius)
+        after = _point_towards(corner, next_point, bend_radius)
+        path.lineTo(before)
+        path.quadTo(corner, after)
+    path.lineTo(clean[-1])
+    return path
+
+
+def _clean_route_points(points: list[QPointF]) -> list[QPointF]:
+    clean: list[QPointF] = []
+    for point in points:
+        if clean and _point_distance(clean[-1], point) < 0.5:
+            continue
+        clean.append(QPointF(point))
+    return clean
+
+
+def _point_distance(first: QPointF, second: QPointF) -> float:
+    return float(np.hypot(second.x() - first.x(), second.y() - first.y()))
+
+
+def _point_towards(origin: QPointF, target: QPointF, distance: float) -> QPointF:
+    total = _point_distance(origin, target)
+    if total <= 0:
+        return QPointF(origin)
+    ratio = float(distance) / total
+    return QPointF(
+        origin.x() + (target.x() - origin.x()) * ratio,
+        origin.y() + (target.y() - origin.y()) * ratio,
+    )
+
+
+def _rect_changed(first: QRectF, second: QRectF, tolerance: float = 0.5) -> bool:
+    return any(
+        abs(a - b) > tolerance
+        for a, b in (
+            (first.left(), second.left()),
+            (first.top(), second.top()),
+            (first.width(), second.width()),
+            (first.height(), second.height()),
+        )
+    )
 
 
 def _types_compatible(output_type: str, input_type: str | None) -> bool:

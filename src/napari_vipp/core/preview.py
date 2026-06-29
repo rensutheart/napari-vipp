@@ -261,16 +261,16 @@ def _current_step_axis(
         current_ndim = len(tuple(current_step))
     except Exception:
         current_ndim = 0
-    state_ndim = len(getattr(state, "axes", ()))
-    if current_ndim == state_ndim and current_ndim > 0:
-        # When viewer dims already match this state, map positionally.
-        return axis_index
     try:
         source_axis = state.axes[axis_index].source_axis
     except Exception:
         source_axis = None
     if source_axis is not None and 0 <= int(source_axis) < current_ndim:
         return int(source_axis)
+    state_ndim = len(getattr(state, "axes", ()))
+    if current_ndim == state_ndim and current_ndim > 0:
+        # When viewer dims already match this state, map positionally.
+        return axis_index
     return axis_index
 
 

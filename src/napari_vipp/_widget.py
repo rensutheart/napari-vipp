@@ -3137,6 +3137,7 @@ class VippWidget(QWidget):
                 downstream,
                 self._insert_make_room_delta(source_id, target_id, node.id),
             )
+            self._center_inserted_node_in_open_gap(source_id, target_id, node.id)
 
             changed_connections = False
             if mode in {"full", "partial"}:
@@ -3369,6 +3370,39 @@ class VippWidget(QWidget):
             return QPointF(sign * max(inserted_rect.width() + 90.0, 280.0), 0.0)
         sign = -1.0 if vector.y() < 0 else 1.0
         return QPointF(0.0, sign * max(inserted_rect.height() + 70.0, 220.0))
+
+    def _center_inserted_node_in_open_gap(
+        self,
+        source_id: str,
+        target_id: str,
+        inserted_node_id: str,
+    ) -> None:
+        source_rect = self.graph_view.node_scene_rect(source_id)
+        target_rect = self.graph_view.node_scene_rect(target_id)
+        inserted_rect = self.graph_view.node_scene_rect(inserted_node_id)
+        if source_rect is None or target_rect is None or inserted_rect is None:
+            return
+
+        vector = target_rect.center() - source_rect.center()
+        if abs(vector.x()) >= abs(vector.y()):
+            if vector.x() >= 0:
+                gap_center_x = (source_rect.right() + target_rect.left()) / 2.0
+            else:
+                gap_center_x = (source_rect.left() + target_rect.right()) / 2.0
+            center = QPointF(
+                gap_center_x,
+                (source_rect.center().y() + target_rect.center().y()) / 2.0,
+            )
+        else:
+            if vector.y() >= 0:
+                gap_center_y = (source_rect.bottom() + target_rect.top()) / 2.0
+            else:
+                gap_center_y = (source_rect.top() + target_rect.bottom()) / 2.0
+            center = QPointF(
+                (source_rect.center().x() + target_rect.center().x()) / 2.0,
+                gap_center_y,
+            )
+        self.graph_view.center_node_on(inserted_node_id, center)
 
     def _duplicate_node(self, node_id: str) -> None:
         original = self.pipeline.nodes.get(node_id)

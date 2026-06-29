@@ -575,6 +575,7 @@ def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -789,7 +790,7 @@ def test_fill_holes_uses_contextual_2d_and_3d_controls(qtbot):
     note = widget._parameter_widgets["fill_holes_scope_note"]
 
     assert choices == [
-        "Auto from axes",
+        "Auto from axes - using 3D ZYX",
         "2D per XY slice (advanced)",
         "3D ZYX volume",
     ]
@@ -818,7 +819,7 @@ def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
     choices = [control.combo.itemText(index) for index in range(control.combo.count())]
 
     assert choices == [
-        "Auto from axes",
+        "Auto from axes - using 2D YX",
         "2D per XY slice (advanced)",
     ]
     assert (
@@ -2381,6 +2382,7 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -2532,6 +2534,7 @@ def test_combine_channels_colour_change_refreshes_thumbnail_palette(
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -2760,6 +2763,7 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -2827,6 +2831,7 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -3254,6 +3259,7 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -3281,6 +3287,7 @@ def test_global_thumbnail_checkbox_skips_thumbnail_generation(qtbot, monkeypatch
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -3308,6 +3315,7 @@ def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -3336,6 +3344,7 @@ def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch)
         data,
         mode,
         current_step,
+        current_step_nsteps=None,
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
@@ -3420,6 +3429,16 @@ def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
     }
     assert widget.graph_view.node_position("input") == source_before
     assert widget.graph_view.node_position("gaussian").x() > target_before.x()
+    source_rect = widget.graph_view.node_scene_rect("input")
+    inserted_rect = widget.graph_view.node_scene_rect(node.id)
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert inserted_rect is not None
+    assert target_rect is not None
+    left_gap = inserted_rect.left() - source_rect.right()
+    right_gap = target_rect.left() - inserted_rect.right()
+    assert left_gap > 0
+    assert abs(left_gap - right_gap) < 1.0
 
     widget.undo()
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
+from qtpy.QtGui import QPainterPath
 
-from napari_vipp._graph import PipelineGraphView
+from napari_vipp._graph import PipelineGraphView, _wire_path
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.pipeline import PrototypePipeline
 
@@ -127,20 +128,112 @@ def test_graph_zoom_can_be_set_and_reset(qtbot):
     qtbot.addWidget(view)
 
     initial = view.transform().m11()
-    fitted = view._base_transform.m11()
-
-    assert initial > fitted
-    assert abs(initial / fitted - PipelineGraphView.DEFAULT_VISUAL_SCALE) < 1e-6
+    assert view.zoom_percent == PipelineGraphView.DEFAULT_ZOOM
 
     view.set_zoom_percent(150)
 
     assert view.zoom_percent == 150
     assert view.transform().m11() > initial
+    assert abs(view.transform().m11() / initial - 1.5) < 1e-6
 
     view.reset_zoom()
 
-    assert view.zoom_percent == 100
+    assert view.zoom_percent == PipelineGraphView.DEFAULT_ZOOM
     assert view.transform().m11() == initial
+
+
+def test_connection_routes_around_intermediate_node(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    view.add_connection("input", "threshold")
+    connection = next(
+        item
+        for item in view._connections
+        if item.source_id == "input" and item.target_id == "threshold"
+    )
+    obstacle = view.node_scene_rect("gaussian")
+    assert obstacle is not None
+    margin = view.WIRE_OBSTACLE_MARGIN
+    inflated = obstacle.adjusted(-margin, -margin, margin, margin)
+
+    assert not _path_intersects_rect(connection.path(), inflated)
+
+
+def test_routed_connection_keeps_port_tangents(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    view.add_connection("input", "threshold")
+    connection = next(
+        item
+        for item in view._connections
+        if item.source_id == "input" and item.target_id == "threshold"
+    )
+    start = connection.source.port_scene_pos("output", connection.source_port)
+    end = connection.target.port_scene_pos("input", connection.target_port)
+    path = connection.path()
+
+    assert path.pointAtPercent(0.01).x() > start.x()
+    assert path.pointAtPercent(0.99).x() < end.x()
+
+
+def test_close_port_routing_does_not_create_horizontal_loop():
+    start = QPointF(0, 0)
+    end = QPointF(45, 65)
+    obstacle = QRectF(20, 16, 12, 34)
+
+    path = _wire_path(start, end, obstacles=(obstacle,))
+    points = [path.pointAtPercent(index / 100.0) for index in range(101)]
+
+    assert min(point.x() for point in points) >= start.x() - 1.0
+    assert max(point.x() for point in points) <= end.x() + 1.0
+    assert path.pointAtPercent(0.01).x() > start.x()
+    assert path.pointAtPercent(0.99).x() < end.x()
+
+
+def test_local_obstacle_uses_compact_curve_instead_of_deep_u():
+    start = QPointF(0, 100)
+    end = QPointF(170, 118)
+    obstacle = QRectF(55, 45, 90, 160)
+
+    path = _wire_path(start, end, obstacles=(obstacle,))
+    points = [path.pointAtPercent(index / 100.0) for index in range(101)]
+
+    assert max(point.y() for point in points) <= end.y() + 1.0
+    assert min(point.x() for point in points) >= start.x() - 1.0
+    assert max(point.x() for point in points) <= end.x() + 1.0
+
+
+def test_adding_node_over_existing_wire_reroutes_connection(qtbot):
+    pipeline = PrototypePipeline()
+    view = PipelineGraphView()
+    view.resize(980, 520)
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        positions={
+            "input": QPointF(0, 20),
+            "gaussian": QPointF(330, 360),
+            "threshold": QPointF(660, 20),
+        },
+    )
+    qtbot.addWidget(view)
+    view.add_connection("input", "threshold")
+    connection = next(
+        item
+        for item in view._connections
+        if item.source_id == "input" and item.target_id == "threshold"
+    )
+
+    inserted = pipeline.add_node("median_filter")
+    view.add_node(inserted, QPointF(330, 20))
+    obstacle = view.node_scene_rect(inserted.id)
+    assert obstacle is not None
+    margin = view.WIRE_OBSTACLE_MARGIN
+    inflated = obstacle.adjusted(-margin, -margin, margin, margin)
+
+    assert not _path_intersects_rect(connection.path(), inflated)
 
 
 def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
@@ -171,6 +264,13 @@ def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
 
     assert not source._active
     assert target._drop_state is None
+
+
+def _path_intersects_rect(path: QPainterPath, rect: QRectF) -> bool:
+    return any(
+        rect.contains(path.pointAtPercent(index / 120.0))
+        for index in range(121)
+    )
 
 
 def test_clear_border_input_accepts_mask_and_labels_but_rejects_image(qtbot):

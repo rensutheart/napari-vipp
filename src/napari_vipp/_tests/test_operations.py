@@ -9,13 +9,13 @@ from napari_vipp.core.metadata import (
     transform_multi_input_image_state,
 )
 from napari_vipp.core.operations import (
-    auto_watershed_from_mask,
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
     add_metadata_columns,
     analyze_skeleton,
     assign_channel_colors,
+    auto_watershed_from_mask,
     average_blur,
     bilateral_filter,
     binary_threshold,

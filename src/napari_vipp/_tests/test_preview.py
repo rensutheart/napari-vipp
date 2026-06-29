@@ -8,7 +8,7 @@ from napari_vipp.core.metadata import (
     transform_image_state,
     transform_split_output_state,
 )
-from napari_vipp.core.operations import gaussian_blur, otsu_threshold
+from napari_vipp.core.operations import composite_to_rgb, gaussian_blur, otsu_threshold
 from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail,
@@ -227,6 +227,41 @@ def test_time_lapse_multichannel_preview_follows_current_step():
 
     assert first.shape == (8, 9, 3)
     assert second.shape == (8, 9, 3)
+    assert first[2, 3].sum() > 0
+    assert second[5, 6].sum() > 0
+    assert first[5, 6].sum() == 0
+    assert second[2, 3].sum() == 0
+
+
+def test_composite_to_rgb_preview_uses_source_z_axis_when_rgb_axis_is_hidden():
+    data = np.zeros((3, 4, 8, 9), dtype=np.uint16)
+    data[:, 0, 2, 3] = 2000
+    data[:, 3, 5, 6] = 4000
+    source_state = image_state_from_array(data, layer_metadata={"axes": "CZYX"})
+    rgb = composite_to_rgb(data)
+    rgb_state = transform_image_state(
+        rgb,
+        source_state,
+        operation_id="composite_to_rgb",
+        operation_title="Composite to RGB",
+        params={},
+    )
+
+    first = make_preview(
+        rgb,
+        mode="slice",
+        current_step=(0, 0, 0, 0),
+        state=rgb_state,
+    )
+    second = make_preview(
+        rgb,
+        mode="slice",
+        current_step=(0, 3, 0, 0),
+        state=rgb_state,
+    )
+
+    assert rgb_state.axes[0].name == "z"
+    assert rgb_state.axes[0].source_axis == 1
     assert first[2, 3].sum() > 0
     assert second[5, 6].sum() > 0
     assert first[5, 6].sum() == 0

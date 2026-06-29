@@ -1,11 +1,11 @@
-# VIPP 0.7.2a1 Alpha Release Runbook
+# VIPP 0.8.0a1 Alpha Release Runbook
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
 
 ## Scope
 
-- Package version: 0.7.2a1
+- Package version: 0.8.0a1
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,7 +25,7 @@ Recommended local tools:
 
 Confirm these are set:
 
-- `pyproject.toml` version is `0.7.2a1`
+- `pyproject.toml` version is `0.8.0a1`
 - `pyproject.toml` classifier includes `Development Status :: 3 - Alpha`
 - README has a clear alpha disclaimer
 
@@ -46,8 +46,8 @@ python -m twine check dist/*
 
 Expected output artifacts:
 
-- `dist/napari_vipp-0.7.2a1.tar.gz`
-- `dist/napari_vipp-0.7.2a1-py3-none-any.whl`
+- `dist/napari_vipp-0.8.0a1.tar.gz`
+- `dist/napari_vipp-0.8.0a1-py3-none-any.whl`
 
 ## 4. Publish To PyPI
 
@@ -62,7 +62,7 @@ python -m twine upload dist/*
 Post-upload validation:
 
 - Open https://pypi.org/project/napari-vipp/
-- Confirm version `0.7.2a1` is visible
+- Confirm version `0.8.0a1` is visible
 - Confirm README renders alpha disclaimer
 
 ## 5. Create Git Tag And GitHub Release
@@ -70,22 +70,22 @@ Post-upload validation:
 Create and push tag:
 
 ```powershell
-git tag -a v0.7.2a1 -m "napari-vipp 0.7.2a1 alpha"
-git push origin v0.7.2a1
+git tag -a v0.8.0a1 -m "napari-vipp 0.8.0a1 alpha"
+git push origin v0.8.0a1
 ```
 
 Create release page in GitHub UI:
 
 1. GitHub repository -> Releases -> Draft a new release
-2. Tag: `v0.7.2a1`
-3. Title: `napari-vipp v0.7.2a1 (Alpha)`
+2. Tag: `v0.8.0a1`
+3. Title: `napari-vipp v0.8.0a1 (Alpha)`
 4. Mark as pre-release: enabled
 5. Add release notes (suggested template below)
 
 Suggested release notes body:
 
 ```markdown
-## napari-vipp v0.7.2a1 (Alpha)
+## napari-vipp v0.8.0a1 (Alpha)
 
 This is an early alpha build and is still in active development.
 
@@ -94,10 +94,10 @@ This is an early alpha build and is still in active development.
 - Validate outputs before publication or production use.
 
 ### Highlights
-- Expanded node graph model with slot-aware multi-input and multi-output wiring.
-- Improved metadata propagation and preview/histogram behavior.
-- Added first-class labels, table outputs, and richer measurement workflows.
-- Added broader image I/O and export behaviors for microscopy workflows.
+- Added insert-on-wire graph editing for splicing nodes into existing pipelines.
+- Added smarter graph connector routing with compact close-node curves.
+- Added VIPP-local Z/T/C slider planning and calibrated preview scale handling.
+- Improved axis-aware thumbnails for RGB/composite previews.
 ```
 
 ## 6. napari Hub Listing/Refresh
@@ -110,7 +110,7 @@ After PyPI upload:
 2. Check: https://napari-hub.org/plugins/napari-vipp
 3. Confirm:
    - plugin appears
-   - version updates to 0.7.2a1
+   - version updates to 0.8.0a1
    - README/disclaimer is visible
 
 If not updated after indexing delay:
@@ -122,8 +122,8 @@ If not updated after indexing delay:
 ## 7. Post-Release Follow-up
 
 1. Announce alpha status clearly in repository and release channels.
-2. Open a tracking milestone for issues found in 0.7.0 alpha.
-3. Plan next versioning strategy (for example 0.7.1 or 0.8.0).
+2. Open a tracking milestone for issues found in 0.8.0 alpha.
+3. Plan next versioning strategy.
 
 ## Operator Checklist
 
