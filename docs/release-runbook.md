@@ -94,10 +94,13 @@ This is an early alpha build and is still in active development.
 - Validate outputs before publication or production use.
 
 ### Highlights
-- Added insert-on-wire graph editing for splicing nodes into existing pipelines.
-- Added smarter graph connector routing with compact close-node curves.
-- Added VIPP-local Z/T/C slider planning and calibrated preview scale handling.
-- Improved axis-aware thumbnails for RGB/composite previews.
+- Drag nodes onto existing wires to insert them into a pipeline.
+- Newly inserted nodes are centered between their connected neighbors.
+- Graph wires route more cleanly around nearby nodes and stay readable as nodes
+  move.
+- Napari preview scaling and RGB/composite thumbnail slice tracking are more
+  reliable.
+- Spatial processing options now show the resolved 2D or 3D mode.
 ```
 
 ## 6. napari Hub Listing/Refresh

@@ -4,27 +4,13 @@
 
 ## 0.8.0a1 - 2026-06-29
 
-- Added insert-on-wire graph editing so dragging a node from the palette onto
-  an existing connector can splice it into the pipeline, optionally preserve
-  downstream wiring, and make room for the inserted node.
-- Centered inserted nodes in the open gap between their source and target
-  nodes, reducing overlap when adding nodes into existing graph paths.
-- Added smart connector routing that keeps wires behind nodes, reroutes nearby
-  connections when nodes move or resize, and avoids routing through intermediate
-  graph cards where practical.
-- Refined connector behavior for close or overlapping nodes: outputs now leave
-  to the right, inputs are approached from the left, and short local
-  connections use compact curves instead of large looped detours.
-- Added graph-routing regression coverage for obstacle avoidance, port
-  tangents, local close-port curves, and rerouting when nodes are inserted over
-  existing wires.
-- Added VIPP-local Z/T/C sliders and planning notes for resolving napari 3D
-  calibration/viewer slider regressions.
-- Applied calibrated layer scale handling in the napari preview workflow.
-- Fixed RGB/composite thumbnail slicing so hidden RGB axes no longer override
-  the source Z axis when following the current napari view.
-- Updated spatial auto-mode labels to show the resolved 2D/3D processing mode
-  directly in parameter choices.
+- Drag nodes onto existing wires to insert them into a pipeline.
+- Newly inserted nodes are centered between their connected neighbors.
+- Graph wires route more cleanly around nearby nodes and stay readable as nodes
+  move.
+- Napari preview scaling and RGB/composite thumbnail slice tracking are more
+  reliable.
+- Spatial processing options now show the resolved 2D or 3D mode.
 
 ## 0.7.2a1 - 2026-06-26
 
