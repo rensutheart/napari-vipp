@@ -102,7 +102,7 @@ pleasant:
 - `Add Metadata Columns`: implemented; adds treatment, replicate, condition,
   timepoint, or batch metadata columns.
 - `Summarize Measurements`: group by condition/time/source and calculate
-  mean, median, standard deviation, count, and quantiles.
+  mean, median, standard deviation, count, and quantiles. Implemented.
 
 These nodes are required for the intended PCA/treatment-group workflow because
 users will compute different measurement families in separate graph branches
@@ -124,8 +124,8 @@ and then assemble them into one analysis-ready table.
 5. Expand `Measure Objects` with selectable extended region-property groups.
    Implemented as checkbox groups for shape descriptors, axis/inertia
    descriptors, and 2D boundary descriptors.
-6. Add table column selection and grouped summaries. Column selection is
-   implemented as `Select Table Columns`; grouped summaries remain.
+6. Add table column selection and grouped summaries. Implemented as
+   `Select Table Columns` and `Summarize Measurements`.
 7. Add 3D mesh morphology as an opt-in node because it is more expensive and
    has stronger assumptions about anisotropy, surface extraction, and object
    size.

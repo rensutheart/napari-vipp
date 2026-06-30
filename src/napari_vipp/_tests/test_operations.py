@@ -84,6 +84,7 @@ from napari_vipp.core.operations import (
     split_channels,
     subtract_background,
     subtract_images,
+    summarize_measurements,
     top_hat,
     triangle_threshold,
     unsharp_mask_filter,
@@ -157,6 +158,7 @@ def test_vipp_operation_nodes_are_registered():
         "merge_tables",
         "add_metadata_columns",
         "select_table_columns",
+        "summarize_measurements",
         "logical_and",
         "logical_or",
         "logical_xor",
@@ -590,6 +592,79 @@ def test_select_table_columns_keeps_drops_and_reorders_columns():
     )
 
 
+def test_summarize_measurements_groups_by_metadata_and_units():
+    table = table_from_columns(
+        {
+            "condition": ["control", "control", "drug"],
+            "t_index": [0, 0, 0],
+            "label_id": [1, 2, 1],
+            "area_pixels": [24, 30, 40],
+            "intensity_mean": [10.0, 20.0, 30.0],
+        },
+        column_units={"area_pixels": "pixel"},
+    )
+
+    summarized = summarize_measurements(
+        table,
+        group_by="condition,t_index",
+        value_columns="area_pixels",
+        statistics="count,mean,median,std,min,max,q25,q75",
+    )
+    records = summarized.records()
+
+    assert summarized.columns == (
+        "condition",
+        "t_index",
+        "row_count",
+        "area_pixels_count",
+        "area_pixels_mean",
+        "area_pixels_median",
+        "area_pixels_std",
+        "area_pixels_min",
+        "area_pixels_max",
+        "area_pixels_q25",
+        "area_pixels_q75",
+    )
+    assert summarized.unit_for("area_pixels_mean") == "pixel"
+    assert summarized.unit_for("area_pixels_count") == ""
+    assert records[0]["condition"] == "control"
+    assert records[0]["row_count"] == 2
+    assert records[0]["area_pixels_count"] == 2
+    assert records[0]["area_pixels_mean"] == 27.0
+    assert np.isclose(records[0]["area_pixels_std"], np.sqrt(18.0))
+    assert records[0]["area_pixels_q25"] == 25.5
+    assert records[0]["area_pixels_q75"] == 28.5
+    assert records[1]["condition"] == "drug"
+    assert records[1]["row_count"] == 1
+    assert records[1]["area_pixels_std"] == 0.0
+
+
+def test_summarize_measurements_auto_groups_by_time_index():
+    table = table_from_columns(
+        {
+            "t_index": [0, 0, 1],
+            "label_id": [1, 2, 1],
+            "area_pixels": [24, 30, 40],
+        }
+    )
+
+    summarized = summarize_measurements(
+        table,
+        value_columns="area_pixels",
+        statistics="mean,min,max",
+    )
+
+    assert summarized.columns == (
+        "t_index",
+        "row_count",
+        "area_pixels_mean",
+        "area_pixels_min",
+        "area_pixels_max",
+    )
+    assert summarized.records()[0]["area_pixels_mean"] == 27.0
+    assert summarized.records()[1]["area_pixels_mean"] == 40.0
+
+
 def test_pipeline_measure_objects_creates_table_state():
     data = np.zeros((3, 9, 9), dtype=np.float32)
     data[:, 1:4, 1:4] = 10
@@ -783,6 +858,40 @@ def test_pipeline_select_table_columns_creates_table_state():
     assert table.columns == ("label_id", "area_pixels")
     assert state.columns == ("label_id", "area_pixels")
     assert state.history[-1] == "Select Table Columns: selected 2 columns"
+
+
+def test_pipeline_summarizes_measurement_table_by_time_index():
+    data = np.zeros((2, 12, 12), dtype=np.float32)
+    data[0, 1:4, 1:5] = 10
+    data[0, 7:10, 7:11] = 10
+    data[1, 2:7, 2:6] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    summarized = pipeline.add_node("summarize_measurements")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(summarized.id, "value_columns", "area_pixels")
+    pipeline.set_param(summarized.id, "statistics", "count,mean,min,max")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    pipeline.connect(measurements.id, summarized.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "TYX"})
+    table = outputs[summarized.id]
+    state = pipeline.output_states[summarized.id]
+    records = table.records()
+
+    assert table.row_count == 2
+    assert records[0]["t_index"] == 0
+    assert records[0]["row_count"] == 2
+    assert records[0]["area_pixels_count"] == 2
+    assert records[0]["area_pixels_mean"] == 12.0
+    assert records[1]["t_index"] == 1
+    assert records[1]["row_count"] == 1
+    assert records[1]["area_pixels_mean"] == 20.0
+    assert state.history[-1] == "Summarize Measurements: summarized 2 groups"
 
 
 def test_save_table_output_writes_csv(tmp_path):

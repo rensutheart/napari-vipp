@@ -58,7 +58,7 @@ src/napari_vipp/
   _widget.py           main dock widget and inspector orchestration
   _graph.py            QGraphicsView node canvas, ports, wires, node cards
   _theme.py            category colour tokens
-  _sample_data.py      synthetic ZYX, CZYX, and TCZYX fluorescence samples
+  _sample_data.py      synthetic ZYX, CZYX, TCZYX, and TYX validation samples
   core/
     pipeline.py        graph model, NODE_LIBRARY, executor
     operations.py      pure processing kernels
@@ -239,7 +239,8 @@ or slice axis is intended.
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential
 - `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Merge Tables, Select Table Columns, Add Metadata Columns
+  Skeleton, Merge Tables, Select Table Columns, Add Metadata Columns,
+  Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -318,6 +319,14 @@ batch exports fail explicitly when an upstream table schema changes.
 user-supplied `name=value` columns, intended for treatment, replicate, batch,
 condition, or source annotations before export. Existing columns are protected
 unless the node's overwrite parameter is explicitly set to `yes`.
+
+`Summarize Measurements` accepts one `table` input and emits grouped summary
+statistics. Auto grouping prefers metadata and leading index columns such as
+`condition`, `replicate`, `source_name`, and `t_index`; users can also enter
+explicit group, value, and statistic lists. Numeric value columns are summarized
+with count, mean, median, standard deviation, min/max, sum when requested, and
+quartiles. Unit metadata is propagated to summary columns when the statistic
+retains the source measurement unit.
 
 `Skeletonize` accepts masks and produces a binary skeleton mask in metadata-aware
 2D or 3D spatial blocks. `Analyze Skeleton` accepts a skeleton mask and outputs
@@ -664,7 +673,9 @@ Python export:
 
 - `VIPP synthetic volume`: grayscale `ZYX`;
 - `VIPP synthetic multichannel volume`: `CZYX`;
-- `VIPP synthetic time-lapse multichannel`: `TCZYX`.
+- `VIPP synthetic time-lapse multichannel`: `TCZYX`;
+- `VIPP synthetic measurement summary`: `TYX` time-series objects with known
+  counts and areas.
 
 The samples include OME-NGFF-like `multiscales` metadata and VIPP hint keys.
 The time-lapse multichannel sample is preferred as the default when present.

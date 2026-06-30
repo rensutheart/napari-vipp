@@ -1624,6 +1624,105 @@ def select_table_columns(
     )
 
 
+SUMMARY_GROUP_COLUMN_PRIORITY = (
+    "condition",
+    "treatment",
+    "group",
+    "replicate",
+    "batch",
+    "sample_id",
+    "sample",
+    "source_name",
+    "series_index",
+    "series",
+    "plate",
+    "well",
+    "field",
+    "timepoint",
+    "time_point",
+    "t_index",
+    "time_index",
+    "c_index",
+    "channel_index",
+    "z_index",
+)
+
+SUMMARY_EXCLUDED_VALUE_COLUMNS = frozenset(
+    set(IDENTITY_JOIN_COLUMNS) | set(SUMMARY_GROUP_COLUMN_PRIORITY)
+)
+
+DEFAULT_SUMMARY_STATISTICS = (
+    "count",
+    "mean",
+    "median",
+    "std",
+    "min",
+    "max",
+    "q25",
+    "q75",
+)
+
+
+def summarize_measurements(
+    data,
+    group_by: str = "auto",
+    value_columns: str = "auto",
+    statistics: str = "count,mean,median,std,min,max,q25,q75",
+) -> TableData:
+    """Summarize measurement columns by metadata or axis-index groups."""
+    table = _validated_table(data)
+    group_columns = _summary_group_columns(table, group_by)
+    numeric_columns = _summary_value_columns(table, value_columns, group_columns)
+    summary_stats = _summary_statistics(statistics)
+
+    output_columns = list(group_columns) + ["row_count"]
+    output_units: dict[str, str] = {}
+    for column in numeric_columns:
+        for stat in summary_stats:
+            output_column = f"{column}_{stat}"
+            output_columns.append(output_column)
+            unit = table.unit_for(column)
+            if unit and stat != "count":
+                output_units[output_column] = unit
+
+    records = table.records()
+    grouped_records: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    key_values: dict[tuple[object, ...], tuple[object, ...]] = {}
+    key_order: list[tuple[object, ...]] = []
+    for record in records:
+        raw_key = tuple(record[column] for column in group_columns)
+        key = tuple(_hashable_table_key(value) for value in raw_key)
+        if key not in grouped_records:
+            grouped_records[key] = []
+            key_values[key] = raw_key
+            key_order.append(key)
+        grouped_records[key].append(record)
+
+    rows: list[tuple[object, ...]] = []
+    for key in key_order:
+        group_records = grouped_records[key]
+        row: list[object] = list(key_values[key])
+        row.append(len(group_records))
+        for column in numeric_columns:
+            values = [
+                value
+                for record in group_records
+                if (value := _table_numeric_value(record.get(column))) is not None
+            ]
+            for stat in summary_stats:
+                row.append(_summary_statistic(values, stat))
+        rows.append(tuple(row))
+
+    return TableData(
+        columns=tuple(output_columns),
+        rows=tuple(rows),
+        name="Measurement summary",
+        table_kind="Grouped measurement summary",
+        source_name=table.source_name,
+        column_units=tuple(output_units.items()),
+    )
+
+
 def _table_inputs(inputs, input_count: int) -> list[TableData]:
     if isinstance(inputs, TableData):
         candidates = [inputs]
@@ -1651,6 +1750,131 @@ def _parse_table_column_list(text: str) -> tuple[str, ...]:
         columns.append(column)
         seen.add(column)
     return tuple(columns)
+
+
+def _summary_group_columns(table: TableData, group_by: str) -> tuple[str, ...]:
+    requested = _parse_table_column_list(group_by)
+    if requested:
+        missing = [column for column in requested if column not in table.columns]
+        if missing:
+            raise ValueError(
+                "Summarize Measurements could not find group column(s): "
+                + ", ".join(missing)
+            )
+        return requested
+    return tuple(
+        column for column in SUMMARY_GROUP_COLUMN_PRIORITY if column in table.columns
+    )
+
+
+def _summary_value_columns(
+    table: TableData,
+    value_columns: str,
+    group_columns: tuple[str, ...],
+) -> tuple[str, ...]:
+    requested = _parse_table_column_list(value_columns)
+    if requested:
+        missing = [column for column in requested if column not in table.columns]
+        if missing:
+            raise ValueError(
+                "Summarize Measurements could not find value column(s): "
+                + ", ".join(missing)
+            )
+        non_numeric = [
+            column
+            for column in requested
+            if not _table_column_has_numeric_values(table, column)
+        ]
+        if non_numeric:
+            raise ValueError(
+                "Summarize Measurements value column(s) have no numeric values: "
+                + ", ".join(non_numeric)
+            )
+        return requested
+
+    excluded = set(group_columns) | SUMMARY_EXCLUDED_VALUE_COLUMNS
+    return tuple(
+        column
+        for column in table.columns
+        if column not in excluded
+        and not column.endswith("_index")
+        and _table_column_has_numeric_values(table, column)
+    )
+
+
+def _summary_statistics(statistics: str) -> tuple[str, ...]:
+    parsed = _parse_summary_statistics(statistics)
+    if not parsed:
+        return DEFAULT_SUMMARY_STATISTICS
+    return parsed
+
+
+def _parse_summary_statistics(statistics: str) -> tuple[str, ...]:
+    aliases = {
+        "n": "count",
+        "count": "count",
+        "mean": "mean",
+        "average": "mean",
+        "avg": "mean",
+        "median": "median",
+        "std": "std",
+        "sd": "std",
+        "stdev": "std",
+        "standard_deviation": "std",
+        "standard deviation": "std",
+        "min": "min",
+        "minimum": "min",
+        "max": "max",
+        "maximum": "max",
+        "sum": "sum",
+        "total": "sum",
+        "q25": "q25",
+        "p25": "q25",
+        "25%": "q25",
+        "q75": "q75",
+        "p75": "q75",
+        "75%": "q75",
+    }
+    cleaned = str(statistics or "").replace("\n", ",").replace(";", ",")
+    stats: list[str] = []
+    seen: set[str] = set()
+    for part in cleaned.split(","):
+        token = part.strip().lower().replace("-", "_")
+        if not token or token == "auto":
+            continue
+        stat = aliases.get(token)
+        if stat is None:
+            raise ValueError(f"Unsupported summary statistic: {part.strip()!r}.")
+        if stat not in seen:
+            stats.append(stat)
+            seen.add(stat)
+    return tuple(stats)
+
+
+def _summary_statistic(values: Sequence[float], statistic: str) -> object:
+    count = len(values)
+    if statistic == "count":
+        return int(count)
+    if count == 0:
+        return ""
+    arr = np.asarray(values, dtype=np.float64)
+    if statistic == "mean":
+        return float(np.mean(arr))
+    if statistic == "median":
+        return float(np.median(arr))
+    if statistic == "std":
+        return float(np.std(arr, ddof=1)) if count > 1 else 0.0
+    if statistic == "min":
+        return float(np.min(arr))
+    if statistic == "max":
+        return float(np.max(arr))
+    if statistic == "sum":
+        return float(np.sum(arr))
+    if statistic == "q25":
+        return float(np.percentile(arr, 25))
+    if statistic == "q75":
+        return float(np.percentile(arr, 75))
+    raise ValueError(f"Unsupported summary statistic: {statistic!r}.")
 
 
 def _validated_table(value) -> TableData:

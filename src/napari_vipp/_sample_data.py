@@ -29,6 +29,7 @@ def make_sample_data():
         (data, metadata, "image"),
         _multichannel_volume_sample(z, y, x, rng),
         _time_lapse_sample(z, y, x, rng),
+        _measurement_summary_sample(),
     ]
 
 
@@ -97,6 +98,44 @@ def _time_lapse_sample(z, y, x, rng):
                 "mCherry-like reporter",
             ],
             **_ome_image_metadata("TCZYX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _measurement_summary_sample():
+    """Return a small time series with deterministic object areas."""
+    data = np.zeros((3, 64, 64), dtype=np.uint16)
+    # Areas per timepoint are:
+    # t0: 24, 30
+    # t1: 12, 20, 28
+    # t2: 40
+    objects = (
+        ((0, slice(8, 12), slice(8, 14)), 24_000),
+        ((0, slice(30, 36), slice(20, 25)), 26_000),
+        ((1, slice(8, 11), slice(8, 12)), 28_000),
+        ((1, slice(24, 28), slice(24, 29)), 30_000),
+        ((1, slice(42, 46), slice(40, 47)), 32_000),
+        ((2, slice(18, 23), slice(18, 26)), 34_000),
+    )
+    for index, value in objects:
+        data[index] = value
+
+    yy, xx = np.indices(data.shape[-2:], dtype=np.uint16)
+    background = ((yy + xx) % 32).astype(np.uint16)
+    data += background[None, :, :]
+
+    metadata = {
+        "name": "VIPP synthetic measurement summary",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Time-series object sample with known per-timepoint object "
+                "counts and areas for validating measurement summaries."
+            ),
+            **_ome_image_metadata("TYX", data.shape),
         },
     }
     return data, metadata, "image"

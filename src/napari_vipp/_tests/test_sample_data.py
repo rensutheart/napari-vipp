@@ -21,11 +21,13 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic volume",
         "VIPP synthetic multichannel volume",
         "VIPP synthetic time-lapse multichannel",
+        "VIPP synthetic measurement summary",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
     assert shapes[2] == (5, 3, 12, 96, 128)
-    assert axis_orders == ["ZYX", "CZYX", "TCZYX"]
-    assert preferred_flags == [False, False, True]
+    assert shapes[3] == (3, 64, 64)
+    assert axis_orders == ["ZYX", "CZYX", "TCZYX", "TYX"]
+    assert preferred_flags == [False, False, True, False]
     assert samples[0][1]["visible"] is False
     assert samples[1][1]["visible"] is False

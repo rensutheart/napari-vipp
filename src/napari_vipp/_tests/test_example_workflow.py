@@ -23,6 +23,11 @@ MERGED_TABLE_EXAMPLE_WORKFLOW = (
     / "examples"
     / "red-channel-merged-measurement-table.json"
 )
+SUMMARY_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-measurement-summary.json"
+)
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():
@@ -132,3 +137,42 @@ def test_red_channel_merged_measurement_table_workflow_loads_and_runs():
     assert "condition" in table.columns
     assert "replicate" in table.columns
     assert table.records()[0]["condition"] == "example"
+
+
+def test_synthetic_measurement_summary_workflow_loads_and_runs():
+    workflow = load_workflow(SUMMARY_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic measurement summary"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    measurements = outputs["measure_objects_1"]
+    summary = outputs["summarize_measurements_1"]
+    records = summary.records()
+
+    assert measurements.row_count == 6
+    assert summary.columns == (
+        "condition",
+        "replicate",
+        "t_index",
+        "row_count",
+        "area_pixels_count",
+        "area_pixels_mean",
+        "area_pixels_min",
+        "area_pixels_max",
+    )
+    assert summary.row_count == 3
+    assert [record["row_count"] for record in records] == [2, 3, 1]
+    assert [record["area_pixels_count"] for record in records] == [2, 3, 1]
+    assert [record["area_pixels_mean"] for record in records] == [27.0, 20.0, 40.0]
+    assert [record["area_pixels_min"] for record in records] == [24.0, 12.0, 40.0]
+    assert [record["area_pixels_max"] for record in records] == [30.0, 28.0, 40.0]
+    assert all(record["condition"] == "summary_validation" for record in records)

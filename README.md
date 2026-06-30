@@ -69,7 +69,8 @@ The prototype currently supports:
 - OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and common
   raster image import plus 2D raster export;
 - adaptive image/series selection for multi-image sources;
-- table outputs for object, intensity, skeleton, merged, and annotated results;
+- table outputs for object, intensity, skeleton, merged, annotated, and grouped
+  summary results;
 - image/mask/label pinning as persistent napari preview layers;
 - generated inspect layers for full-resolution napari review.
 
@@ -105,6 +106,8 @@ The plugin contributes synthetic fluorescence-like sample data:
   channels;
 - `VIPP synthetic time-lapse multichannel`: `TCZYX` time-lapse, multichannel
   stack.
+- `VIPP synthetic measurement summary`: `TYX` time-series object sample with
+  known per-timepoint object counts and areas.
 
 The multichannel samples use separate intensity channels, not baked RGB images.
 Graph thumbnails render these as fluorescence-style pseudo-color composites
@@ -220,6 +223,7 @@ The current node catalogue includes:
   - Merge Tables
   - Select Table Columns
   - Add Metadata Columns
+  - Summarize Measurements
 
 Histogram-based automatic threshold nodes show `Threshold uses` on stack inputs.
 `Stack histogram` computes one cutoff from the whole grayscale input and applies
@@ -288,10 +292,16 @@ mode it joins on stable identity columns such as `t_index` and `label_id`; when
 no identity columns are shared, equal-length tables can be joined by row
 position. `Select Table Columns` keeps, drops, or reorders table columns while
 preserving row order and column units. `Add Metadata Columns` appends constant
-treatment, replicate, batch, or condition columns before CSV/TSV export. The
+treatment, replicate, batch, or condition columns before CSV/TSV export.
+`Summarize Measurements` groups table rows by metadata or axis-index columns
+such as `condition`, `replicate`, and `t_index`, then calculates count, mean,
+median, standard deviation, min/max, and quartiles for selected numeric
+measurement columns. The
 example workflow
 `examples/red-channel-merged-measurement-table.json` demonstrates a
 PCA-oriented table assembly path.
+`examples/synthetic-measurement-summary.json` demonstrates grouped summaries on
+a synthetic time-series object sample with known object counts and areas.
 
 `Skeletonize` accepts a binary mask and produces a skeleton mask using
 metadata-aware 2D or 3D processing. `Analyze Skeleton` accepts a skeleton mask
@@ -393,7 +403,6 @@ Intensity`.
 Near-term development priorities:
 
 - axis-aware channel selectors that show probe names instead of only numbers;
-- grouped table summaries by condition/time/source;
 - skeleton QC feature masks, branch labels, and short-branch pruning;
 - distance transforms, marker generation, and marker-controlled watershed;
 - richer 3D mesh morphology and calibrated physical variants for extended

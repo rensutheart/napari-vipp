@@ -4,7 +4,7 @@ Last reviewed: 2026-06-28
 
 This document is the consolidated source of truth for what is **implemented**
 versus **planned**. It was reconciled against the live node registry
-(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 81 nodes) and the widget
+(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 82 nodes) and the widget
 code, so the status labels below reflect the actual codebase rather than older
 intentions.
 
@@ -157,7 +157,7 @@ channel and time metadata stay attached to their data.
 
 See [ome-io-plan.md](ome-io-plan.md) for accepted decisions and status.
 
-### Implemented Node Catalogue (81 nodes)
+### Implemented Node Catalogue (82 nodes)
 
 Counts and names below match the live registry.
 
@@ -183,7 +183,8 @@ Counts and names below match the live registry.
 - **Label Operations**: Label Connected Components, Clear Border Objects, Filter
   Labels By Volume, Filter Labels By Property, Relabel Sequential.
 - **Measurements**: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Merge Tables, Add Metadata Columns, Select Table Columns.
+  Skeleton, Merge Tables, Add Metadata Columns, Select Table Columns,
+  Summarize Measurements.
 
 A reference label-cleanup workflow is implemented end to end:
 
@@ -430,10 +431,12 @@ changes the 3D viewer spacing as expected.
 
 ### Table Analysis
 
-- **Grouped table summaries** (`Summarize Measurements`): group merged
-  morphology/intensity/skeleton tables by metadata and summarize for PCA or
-  treatment comparison. (`Merge Tables`, `Add Metadata Columns`, and `Select
-  Table Columns` already exist; the summary/group-by step does not.)
+- **Grouped table summaries** (`Summarize Measurements`): implemented. It
+  groups merged morphology/intensity/skeleton tables by metadata or axis-index
+  columns and calculates count, mean, median, standard deviation, min/max, and
+  quartiles for selected numeric columns. The synthetic workflow
+  `examples/synthetic-measurement-summary.json` validates grouped object counts
+  and area summaries on a deterministic time-series sample.
 - **Calibrated physical variants** for extended length/shape measurements.
 - A dedicated `Save Table` node is intentionally deferred: selected table
   outputs and exported scripts already write CSV/TSV.
@@ -503,9 +506,9 @@ Registration and deconvolution.
 
 ## Near-Term Order
 
-1. Grouped table summaries (`Summarize Measurements`).
-2. Skeleton QC masks, branch labels, and short-branch pruning.
-3. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
+1. Skeleton QC masks, branch labels, and short-branch pruning.
+2. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
+3. Colocalization/localization table nodes.
 4. Graph editor usability: insert-node-on-wire, connection insertion menu, and
    user-initiated auto-structure layout cleanup.
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added `Summarize Measurements`, a table node that groups measurement rows by
+  metadata or axis-index columns and calculates count, mean, median, standard
+  deviation, min/max, and quartiles for selected numeric columns.
+- Added a deterministic `VIPP synthetic measurement summary` sample plus an
+  example workflow for validating grouped object-count and area summaries.
+
 ## 0.8.2a2 - 2026-06-30
 
 - Changed the project license for future releases to PolyForm Shield License

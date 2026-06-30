@@ -92,6 +92,7 @@ from napari_vipp.core.operations import (
     split_channels,
     subtract_background,
     subtract_images,
+    summarize_measurements,
     top_hat,
     triangle_threshold,
     unsharp_mask_filter,
@@ -1800,6 +1801,44 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory="Tables",
     ),
     OperationSpec(
+        "summarize_measurements",
+        "Summarize Measurements",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "table",
+        (
+            ParameterSpec(
+                "group_by",
+                "Group by columns (auto or comma-separated)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "value_columns",
+                "Value columns (auto or comma-separated)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "statistics",
+                "Statistics",
+                "text",
+                "count,mean,median,std,min,max,q25,q75",
+                0,
+                0,
+                1,
+            ),
+        ),
+        summarize_measurements,
+        subcategory="Tables",
+    ),
+    OperationSpec(
         "extract_channel",
         "Extract Channel",
         IMAGE_DATA_CATEGORY,
@@ -3171,6 +3210,9 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
         column_count = getattr(table, "column_count", 0)
         noun = "column" if column_count == 1 else "columns"
         return prior + (f"{operation_title}: selected {column_count} {noun}",)
+    elif "summary" in table_kind:
+        noun = "group" if row_count == 1 else "groups"
+        action = "summarized"
     elif "metadata" in table_kind:
         noun = "row" if row_count == 1 else "rows"
         action = "annotated"

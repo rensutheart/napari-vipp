@@ -59,7 +59,7 @@ Implementation status:
 - implemented: table-driven property-based label filtering;
 - implemented: selectable extended region-property groups;
 - implemented: table column selection/reordering;
-- next: add grouped measurement summaries.
+- next: add skeleton QC masks, branch labels, and short-branch pruning.
 
 ## Priority Definitions
 
@@ -434,7 +434,7 @@ annotation are implemented.
 | Implemented | Filter Labels By Property | labels + table -> labels | table-derived label remapping |
 | Implemented | Extended Region Properties | labels -> table | selectable `regionprops_table` property groups |
 | Implemented | Select Table Columns | table -> table | keep/drop/reorder measurement columns |
-| Next 1 | Summarize Measurements | table -> table/scalars | NumPy/SciPy statistics |
+| Implemented | Summarize Measurements | table -> table | grouped NumPy statistics for treatment/PCA summaries |
 | Later | 3D Mesh Morphology | labels -> table, optional mesh later | marching cubes plus mesh/convex-hull measurements |
 | Later | Save Table | table -> table | CSV/TSV writer |
 
@@ -480,13 +480,11 @@ metadata, and export the result for PCA or other statistical analysis. See
 ## Next Implementation Recommendation
 
 Table outputs, basic object measurement, intensity measurement, table merge,
-metadata annotation, and base skeleton-network measurement are now implemented.
-For the MitoMorph/PCA use case, the next measurement step should be grouped
-table summaries, so extended morphology, intensity, skeleton, and metadata
-tables can be summarized for statistical analysis. Skeleton QC outputs and
-pruning remain the next network-analysis step: endpoint masks, junction masks,
-branch labels, component-label images, and removal of terminal branches below a
-selected length.
+metadata annotation, grouped table summaries, and base skeleton-network
+measurement are now implemented. Skeleton QC outputs and pruning are the next
+network-analysis step: endpoint masks, junction masks, branch labels,
+component-label images, and removal of terminal branches below a selected
+length.
 
 ## Recommended First Milestone
 

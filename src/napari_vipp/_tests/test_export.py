@@ -366,6 +366,44 @@ def test_exported_merged_table_pipeline_executes():
     assert table.records()[0]["condition"] == "demo"
 
 
+def test_exported_summary_table_pipeline_executes():
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    annotated = pipeline.add_node("add_metadata_columns")
+    summarized = pipeline.add_node("summarize_measurements")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.set_param(annotated.id, "metadata_columns", "condition=demo")
+    pipeline.set_param(summarized.id, "group_by", "condition")
+    pipeline.set_param(summarized.id, "value_columns", "area_pixels")
+    pipeline.set_param(summarized.id, "statistics", "mean,min,max")
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+    pipeline.connect(measurements.id, annotated.id)
+    pipeline.connect(annotated.id, summarized.id)
+
+    image = np.zeros((2, 12, 12), dtype=np.float32)
+    image[0, 1:4, 1:5] = 10
+    image[0, 7:10, 7:11] = 10
+    image[1, 2:7, 2:6] = 10
+    pipeline.run(image, input_metadata={"axes": "TYX"})
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image)
+    table = results[summarized.id]
+
+    assert "add_metadata_columns(" in code
+    assert "summarize_measurements(" in code
+    assert table.row_count == 1
+    assert table.records()[0]["condition"] == "demo"
+    assert table.records()[0]["row_count"] == 3
+    assert table.records()[0]["area_pixels_mean"] == 14.666666666666666
+
+
 def test_exported_skeleton_analysis_pipeline_executes():
     pipeline = PrototypePipeline()
     threshold = pipeline.add_node("binary_threshold")
