@@ -654,6 +654,7 @@ class NodeProxy(QGraphicsProxyWidget):
             if moved:
                 view = _view_for_scene(self.scene())
                 if view is not None:
+                    was_loose = not self.connections
                     inserted = view.release_existing_node_insert(
                         self.node_id,
                         start_pos,
@@ -661,6 +662,12 @@ class NodeProxy(QGraphicsProxyWidget):
                         event.scenePos(),
                     )
                     if not inserted:
+                        if was_loose:
+                            view.finish_loose_node_drag(
+                                self.node_id,
+                                start_pos,
+                                end_pos,
+                            )
                         view.node_moved.emit(self.node_id, start_pos, end_pos)
             event.accept()
             return
@@ -677,7 +684,8 @@ class NodeProxy(QGraphicsProxyWidget):
                 view._mark_graph_geometry_changed()
                 for connection in self.connections:
                     connection.update_path()
-                view.reroute_connections(affected_rect=self.sceneBoundingRect())
+                if not (self._dragging and not self.connections):
+                    view.reroute_connections(affected_rect=self.sceneBoundingRect())
                 view._ensure_scene_space_for_rect(self.sceneBoundingRect())
             else:
                 for connection in self.connections:
@@ -1225,6 +1233,23 @@ class PipelineGraphView(QGraphicsView):
         | None,
     ) -> None:
         self._connection_insert_validator = validator
+
+    def finish_loose_node_drag(
+        self,
+        node_id: str,
+        old_pos: QPointF,
+        new_pos: QPointF,
+    ) -> None:
+        """Reroute wires once a loose node has been dropped."""
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return
+        local_rect = proxy.boundingRect()
+        old_rect = QRectF(local_rect).translated(old_pos)
+        new_rect = QRectF(local_rect).translated(new_pos)
+        affected = old_rect.united(new_rect)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(affected_rect=affected)
 
     def update_existing_node_insert_preview(
         self,

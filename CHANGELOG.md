@@ -7,6 +7,13 @@
   behavior used by palette and right-click insertion.
 - Made nodes translucent while dragging so connector insertion targets remain
   visible underneath the moving card.
+- Kept loose-node drags from live-rerouting unrelated wires before drop; wires
+  now route around the node only after it is placed.
+- Made insert-on-wire spacing gap-aware so downstream nodes move only by the
+  extra space needed for the inserted card and padding.
+- Improved numeric spinbox editing so partial decimal input such as `1.` is not
+  reformatted before the user can finish typing, and floats display without
+  unnecessary trailing zeros.
 
 ## 0.8.1a1 - 2026-06-29
 

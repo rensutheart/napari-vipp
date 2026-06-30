@@ -57,6 +57,58 @@ def test_dragging_node_is_translucent_until_released(qtbot):
     assert proxy.opacity() == 1.0
 
 
+def test_dragging_loose_node_does_not_reroute_wires_until_release(qtbot):
+    pipeline = PrototypePipeline()
+    view = PipelineGraphView()
+    view.resize(980, 520)
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        positions={
+            "input": QPointF(0, 20),
+            "gaussian": QPointF(330, 360),
+            "threshold": QPointF(660, 20),
+        },
+    )
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    view.add_connection("input", "threshold")
+    node = pipeline.add_node("median_filter")
+    view.add_node(node, QPointF(330, -260))
+    proxy = view._proxies[node.id]
+    connection = next(
+        item
+        for item in view._connections
+        if item.source_id == "input" and item.target_id == "threshold"
+    )
+    path_before = QPainterPath(connection.path())
+    scene_target = connection.path().pointAtPercent(0.5)
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = view.mapFromScene(scene_target)
+    view.set_connection_insert_validator(
+        lambda _operation_id, _key: ("incompatible", "Not for this test.")
+    )
+
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+
+    assert _paths_equal(connection.path(), path_before)
+    assert _path_intersects_rect(
+        connection.path(),
+        proxy.sceneBoundingRect().adjusted(-4, -4, 4, 4),
+    )
+
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert not _paths_equal(connection.path(), path_before)
+    assert not _path_intersects_rect(
+        connection.path(),
+        proxy.sceneBoundingRect().adjusted(-4, -4, 4, 4),
+    )
+
+
 def test_clicking_node_selects_it_without_inspect_button(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -397,6 +449,20 @@ def _path_intersects_rect(path: QPainterPath, rect: QRectF) -> bool:
         rect.contains(path.pointAtPercent(index / 120.0))
         for index in range(121)
     )
+
+
+def _paths_equal(first: QPainterPath, second: QPainterPath) -> bool:
+    if first.elementCount() != second.elementCount():
+        return False
+    for index in range(first.elementCount()):
+        first_element = first.elementAt(index)
+        second_element = second.elementAt(index)
+        if (
+            abs(first_element.x - second_element.x) > 1e-6
+            or abs(first_element.y - second_element.y) > 1e-6
+        ):
+            return False
+    return True
 
 
 def test_clear_border_input_accepts_mask_and_labels_but_rejects_image(qtbot):

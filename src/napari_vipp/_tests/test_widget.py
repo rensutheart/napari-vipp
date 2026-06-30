@@ -20,7 +20,11 @@ from qtpy.QtWidgets import (
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._theme import category_color, category_tint
-from napari_vipp._widget import ConnectionInsertDialog, VippWidget
+from napari_vipp._widget import (
+    ConnectionInsertDialog,
+    FlexibleDoubleSpinBox,
+    VippWidget,
+)
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
@@ -177,6 +181,51 @@ def _metadata_value(widget, label):
 
 def _graph_view_center(view):
     return view.mapToScene(view.viewport().rect().center())
+
+
+def test_flexible_double_spinbox_allows_decimal_typing_without_padding(qtbot):
+    box = FlexibleDoubleSpinBox()
+    qtbot.addWidget(box)
+    box.setRange(-100.0, 100.0)
+    box.setDecimals(3)
+    box.setValue(5.0)
+    box.show()
+    box.lineEdit().setFocus()
+    box.selectAll()
+    emitted = []
+    box.valueChanged.connect(emitted.append)
+
+    qtbot.keyClicks(box.lineEdit(), "1.")
+
+    assert box.lineEdit().text() == "1."
+    assert emitted == []
+
+    qtbot.keyClicks(box.lineEdit(), "2")
+
+    assert box.lineEdit().text() == "1.2"
+    assert emitted == []
+
+    qtbot.keyClick(box.lineEdit(), Qt.Key_Return)
+
+    assert abs(box.value() - 1.2) < 1e-9
+    assert box.text() == "1.2"
+    assert emitted == [1.2]
+
+
+def test_flexible_double_spinbox_shows_compact_float_text(qtbot):
+    box = FlexibleDoubleSpinBox()
+    qtbot.addWidget(box)
+    box.setRange(-100.0, 100.0)
+    box.setDecimals(3)
+
+    box.setValue(1.2)
+    assert box.text() == "1.2"
+
+    box.setValue(1.0)
+    assert box.text() == "1"
+
+    box.setValue(0.0)
+    assert box.text() == "0"
 
 
 def test_widget_builds_graph_and_inspects_node(qtbot):
@@ -3437,8 +3486,8 @@ def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
     assert target_rect is not None
     left_gap = inserted_rect.left() - source_rect.right()
     right_gap = target_rect.left() - inserted_rect.right()
-    assert left_gap > 0
-    assert right_gap > 0
+    assert left_gap >= widget.INSERT_GAP_PADDING_X
+    assert right_gap >= widget.INSERT_GAP_PADDING_X
 
     widget.undo()
 
@@ -3448,6 +3497,40 @@ def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
         for connection in widget.pipeline.connections
     }
     assert widget.graph_view.node_position("gaussian") == target_before
+
+
+def test_insert_node_on_connection_does_not_shift_when_gap_is_sufficient(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.apply_node_positions(
+        {
+            "input": QPointF(0, 20),
+            "gaussian": QPointF(900, 20),
+            "threshold": QPointF(1230, 20),
+        }
+    )
+    target_before = QPointF(widget.graph_view.node_position("gaussian"))
+    downstream_before = QPointF(widget.graph_view.node_position("threshold"))
+
+    node = widget._insert_node_on_connection(
+        "median_filter",
+        ("input", "gaussian", 0, 0),
+        QPointF(450, 100),
+    )
+
+    assert node is not None
+    assert widget.graph_view.node_position("gaussian") == target_before
+    assert widget.graph_view.node_position("threshold") == downstream_before
+    source_rect = widget.graph_view.node_scene_rect("input")
+    inserted_rect = widget.graph_view.node_scene_rect(node.id)
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert inserted_rect is not None
+    assert target_rect is not None
+    assert inserted_rect.left() - source_rect.right() >= widget.INSERT_GAP_PADDING_X
+    assert target_rect.left() - inserted_rect.right() >= widget.INSERT_GAP_PADDING_X
 
 
 def test_insert_split_channels_on_connection_is_partial(qtbot):

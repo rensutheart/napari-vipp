@@ -645,6 +645,7 @@ class FlexibleDoubleSpinBox(QDoubleSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setLocale(QLocale.c())
+        self.setKeyboardTracking(False)
 
     @staticmethod
     def _normalized_text(text: str) -> str:
@@ -660,8 +661,16 @@ class FlexibleDoubleSpinBox(QDoubleSpinBox):
     def valueFromText(self, text: str) -> float:
         return super().valueFromText(self._normalized_text(text))
 
+    def textFromValue(self, value: float) -> str:  # noqa: N802
+        decimals = max(int(self.decimals()), 0)
+        text = f"{float(value):.{decimals}f}" if decimals else f"{float(value):.0f}"
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return "0" if text == "-0" else text
+
 
 def _configure_numeric_spin_box(box: QSpinBox | QDoubleSpinBox) -> None:
+    box.setKeyboardTracking(False)
     editor = box.lineEdit()
     editor.setAlignment(Qt.AlignCenter)
     editor.setTextMargins(0, 0, 0, 0)
@@ -2359,6 +2368,8 @@ class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
     HISTORY_LIMIT = 80
+    INSERT_GAP_PADDING_X = 70.0
+    INSERT_GAP_PADDING_Y = 55.0
     TOOLBAR_HIDE_CHECKBOXES_WIDTH = 1700
     TOOLBAR_HIDE_DROPDOWNS_WIDTH = 1500
     TOOLBAR_HIDE_ZOOM_WIDTH = 1050
@@ -3519,11 +3530,7 @@ class VippWidget(QWidget):
             self._sync_node_input_ports(node.id)
             self._sync_node_output_ports(node.id)
             self.graph_view.center_node_on(node.id, position)
-            self.graph_view.move_nodes_by(
-                downstream,
-                self._insert_make_room_delta(source_id, target_id, node.id),
-            )
-            self._center_inserted_node_in_open_gap(source_id, target_id, node.id)
+            self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
 
             changed_connections = False
             if mode in {"full", "partial"}:
@@ -3563,6 +3570,7 @@ class VippWidget(QWidget):
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
             self.run_pipeline()
+            self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
             self._push_undo_if_changed(before)
         except Exception as exc:
             self._restore_history_snapshot(before)
@@ -3633,11 +3641,7 @@ class VippWidget(QWidget):
             )
             downstream = self.pipeline.descendants_inclusive([target_id])
             downstream.discard(node_id)
-            self.graph_view.move_nodes_by(
-                downstream,
-                self._insert_make_room_delta(source_id, target_id, node_id),
-            )
-            self._center_inserted_node_in_open_gap(source_id, target_id, node_id)
+            self._make_room_for_inserted_node(source_id, target_id, node_id, downstream)
 
             changed_connections = False
             if mode in {"full", "partial"}:
@@ -3678,6 +3682,12 @@ class VippWidget(QWidget):
             if changed_connections:
                 self._invalidate_pipeline_cache()
                 self.run_pipeline()
+                self._make_room_for_inserted_node(
+                    source_id,
+                    target_id,
+                    node_id,
+                    downstream,
+                )
             self._push_undo_if_changed(before)
         except Exception as exc:
             self._restore_history_snapshot(before)
@@ -3944,9 +3954,36 @@ class VippWidget(QWidget):
         vector = target_rect.center() - source_rect.center()
         if abs(vector.x()) >= abs(vector.y()):
             sign = -1.0 if vector.x() < 0 else 1.0
-            return QPointF(sign * max(inserted_rect.width() + 90.0, 280.0), 0.0)
+            if sign > 0:
+                gap = target_rect.left() - source_rect.right()
+            else:
+                gap = source_rect.left() - target_rect.right()
+            needed = inserted_rect.width() + (2.0 * self.INSERT_GAP_PADDING_X)
+            return QPointF(sign * max(needed - gap, 0.0), 0.0)
         sign = -1.0 if vector.y() < 0 else 1.0
-        return QPointF(0.0, sign * max(inserted_rect.height() + 70.0, 220.0))
+        if sign > 0:
+            gap = target_rect.top() - source_rect.bottom()
+        else:
+            gap = source_rect.top() - target_rect.bottom()
+        needed = inserted_rect.height() + (2.0 * self.INSERT_GAP_PADDING_Y)
+        return QPointF(0.0, sign * max(needed - gap, 0.0))
+
+    def _make_room_for_inserted_node(
+        self,
+        source_id: str,
+        target_id: str,
+        inserted_node_id: str,
+        downstream: set[str],
+    ) -> None:
+        self.graph_view.move_nodes_by(
+            downstream,
+            self._insert_make_room_delta(source_id, target_id, inserted_node_id),
+        )
+        self._center_inserted_node_in_open_gap(
+            source_id,
+            target_id,
+            inserted_node_id,
+        )
 
     def _center_inserted_node_in_open_gap(
         self,
