@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.2a1 - 2026-06-30
+
 - Added insertion of already-existing loose nodes by dragging them onto a graph
   wire, sharing the connector glow, local make-room, and single-step undo
   behavior used by palette and right-click insertion.
