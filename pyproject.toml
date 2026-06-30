@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.8.2a1"
+version = "0.8.2a2"
 description = "Visual image processing pipelines for napari"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     {name = "Rensu P. Theart"},
 ]
-license = "BSD-3-Clause"
-license-files = ["LICENSE"]
+license = "LicenseRef-PolyForm-Shield-1.0.0"
+license-files = ["LICENSE", "NOTICE", "COMMERCIAL-LICENSE.md"]
 keywords = [
     "bioimage analysis",
     "fluorescence microscopy",

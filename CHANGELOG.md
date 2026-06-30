@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.8.2a2 - 2026-06-30
+
+- Changed the project license for future releases to PolyForm Shield License
+  1.0.0.
+- Added project-specific commercial-permission guidance, required notice text,
+  and citation metadata.
+- Documented that versions published through `0.8.2a1` remain under BSD
+  3-Clause terms, while later releases use their declared distribution license.
+
 ## 0.8.2a1 - 2026-06-30
 
 - Added insertion of already-existing loose nodes by dragging them onto a graph

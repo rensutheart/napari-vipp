@@ -1,11 +1,11 @@
-# VIPP 0.8.2a1 Alpha Release Runbook
+# VIPP 0.8.2a2 Alpha Release Runbook
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
 
 ## Scope
 
-- Package version: 0.8.2a1
+- Package version: 0.8.2a2
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,9 +25,11 @@ Recommended local tools:
 
 Confirm these are set:
 
-- `pyproject.toml` version is `0.8.2a1`
+- `pyproject.toml` version is `0.8.2a2`
 - `pyproject.toml` classifier includes `Development Status :: 3 - Alpha`
+- `pyproject.toml` license is `LicenseRef-PolyForm-Shield-1.0.0`
 - README has a clear alpha disclaimer
+- README has a clear license section
 
 Optional but recommended checks:
 
@@ -46,8 +48,8 @@ python -m twine check dist/*
 
 Expected output artifacts:
 
-- `dist/napari_vipp-0.8.2a1.tar.gz`
-- `dist/napari_vipp-0.8.2a1-py3-none-any.whl`
+- `dist/napari_vipp-0.8.2a2.tar.gz`
+- `dist/napari_vipp-0.8.2a2-py3-none-any.whl`
 
 ## 4. Publish To PyPI
 
@@ -62,46 +64,45 @@ python -m twine upload dist/*
 Post-upload validation:
 
 - Open https://pypi.org/project/napari-vipp/
-- Confirm version `0.8.2a1` is visible
+- Confirm version `0.8.2a2` is visible
 - Confirm README renders alpha disclaimer
+- Confirm license metadata shows PolyForm Shield/custom license terms
 
 ## 5. Create Git Tag And GitHub Release
 
 Create and push tag:
 
 ```powershell
-git tag -a v0.8.2a1 -m "napari-vipp 0.8.2a1 alpha"
-git push origin v0.8.2a1
+git tag -a v0.8.2a2 -m "napari-vipp 0.8.2a2 alpha"
+git push origin v0.8.2a2
 ```
 
 Create release page in GitHub UI:
 
 1. GitHub repository -> Releases -> Draft a new release
-2. Tag: `v0.8.2a1`
-3. Title: `napari-vipp v0.8.2a1 (Alpha)`
+2. Tag: `v0.8.2a2`
+3. Title: `napari-vipp v0.8.2a2 (Alpha)`
 4. Mark as pre-release: enabled
 5. Add release notes (suggested template below)
 
 Suggested release notes body:
 
 ```markdown
-## napari-vipp v0.8.2a1 (Alpha)
+## napari-vipp v0.8.2a2 (Alpha)
 
 This is an early alpha build and is still in active development.
 
 ### Important
 - Breaking changes are expected between releases.
 - Validate outputs before publication or production use.
+- Licensing changed from BSD 3-Clause to PolyForm Shield License 1.0.0 for this
+  and future releases. Versions through 0.8.2a1 remain BSD 3-Clause.
 
 ### Highlights
-- Drag an already-existing loose node onto a connector to insert it into the
-  pipeline.
-- Loose node drags stay translucent and no longer live-reroute unrelated wires
-  before drop.
-- Insert-on-wire spacing now moves downstream nodes only by the extra space
-  needed for the inserted card and padding.
-- Numeric float entry no longer reformats partial decimal input before the user
-  finishes typing.
+- Changed future-release licensing to PolyForm Shield License 1.0.0.
+- Added commercial-permission guidance for productized redistribution,
+  white-labeling, hosted offerings, and competing products.
+- Added required notice text and `CITATION.cff` citation metadata.
 ```
 
 ## 6. napari Hub Listing/Refresh
@@ -114,7 +115,7 @@ After PyPI upload:
 2. Check: https://napari-hub.org/plugins/napari-vipp
 3. Confirm:
    - plugin appears
-   - version updates to 0.8.2a1
+   - version updates to 0.8.2a2
    - README/disclaimer is visible
 
 If not updated after indexing delay:

@@ -27,8 +27,23 @@ If VIPP contributes to your work, please acknowledge the project by name
 ("napari-vipp") and include a link to the repository:
 https://github.com/rensutheart/napari-vipp
 
-Formal citation metadata can be added in a future release once a citation
-target (for example DOI or manuscript) is available.
+Citation metadata is available in `CITATION.cff`. A DOI or manuscript citation
+can be added once one is available.
+
+## License
+
+napari-vipp is source-available under the PolyForm Shield License 1.0.0. The
+public license permits many uses, including commercial internal use, but it does
+not permit providing a product or service that competes with napari-vipp or with
+products provided by the licensor using napari-vipp.
+
+Commercial redistribution, white-labeling, hosted product offerings, or bundling
+napari-vipp as a substantial commercial product feature require prior written
+permission. See `COMMERCIAL-LICENSE.md` for guidance.
+
+Versions published through `0.8.2a1` were released under the BSD 3-Clause
+License. Later releases use the license declared in their corresponding source
+and distribution metadata.
 
 ## Current Status
 

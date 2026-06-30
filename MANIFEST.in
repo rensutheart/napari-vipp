@@ -1,1 +1,2 @@
 include src/napari_vipp/napari.yaml
+include CITATION.cff
