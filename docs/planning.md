@@ -218,13 +218,12 @@ node. That local make-room shift is part of the same undoable insert action.
 New loose nodes may be placed at the user's drop/click location, at the midpoint
 of a selected wire, or at the current palette-suggested position.
 
-**Insert Node Between Connected Nodes.** Splice a new node into an existing
-connection without manual delete-and-rewire. Phase 1 is implemented for
-dragging a palette node onto an existing connector and for right-clicking a
-connector and choosing `Insert node here...`. Remaining entry points should
-share the same command path:
-
-- Drag an already-existing loose node onto a wire to splice it in.
+**Insert Node Between Connected Nodes.** Splice a new or loose existing node
+into an existing connection without manual delete-and-rewire. Phase 1 is
+implemented for dragging a palette node onto an existing connector,
+right-clicking a connector and choosing `Insert node here...`, and dragging an
+already-existing loose node onto a wire. These entry points share the same
+validation, local make-room, undo, and pipeline-run behavior.
 
 Drag/drop affordance:
 

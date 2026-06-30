@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added insertion of already-existing loose nodes by dragging them onto a graph
+  wire, sharing the connector glow, local make-room, and single-step undo
+  behavior used by palette and right-click insertion.
+- Made nodes translucent while dragging so connector insertion targets remain
+  visible underneath the moving card.
+
 ## 0.8.1a1 - 2026-06-29
 
 - Added right-click connector insertion with a compatible-node picker.

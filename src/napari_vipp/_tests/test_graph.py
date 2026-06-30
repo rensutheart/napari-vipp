@@ -37,6 +37,26 @@ def test_graph_node_can_be_dragged_with_mouse(qtbot):
     assert connection.path().elementAt(3).x != path_before
 
 
+def test_dragging_node_is_translucent_until_released(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+
+    proxy = view._proxies["gaussian"]
+    start = view.mapFromScene(proxy.sceneBoundingRect().center())
+    end = start + QPoint(90, 45)
+
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+
+    assert 0.0 < proxy.opacity() < 1.0
+
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert proxy.opacity() == 1.0
+
+
 def test_clicking_node_selects_it_without_inspect_button(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -150,6 +170,56 @@ def test_connection_context_menu_can_request_insert(qtbot, monkeypatch):
 
     assert labels == ["Info", "Insert node here...", "Delete"]
     assert requests == [(("input", "gaussian", 0, 0), QPointF(123, 45))]
+
+
+def test_releasing_loose_node_on_connection_requests_splice(qtbot):
+    view, pipeline = _build_view()
+    qtbot.addWidget(view)
+    node = pipeline.add_node("median_filter")
+    view.add_node(node, QPointF(180, 180))
+    connection = view._connections[0]
+    scene_pos = connection.path().pointAtPercent(0.5)
+    old_pos = QPointF(view.node_position(node.id))
+    new_pos = old_pos + QPointF(10, 15)
+    requests = []
+
+    view.set_connection_insert_validator(lambda _operation_id, _key: ("full", "drop"))
+    view.node_splice_requested.connect(
+        lambda node_id, key, old, new: requests.append(
+            (node_id, tuple(key), QPointF(old), QPointF(new))
+        )
+    )
+
+    view.update_existing_node_insert_preview(node.id, scene_pos)
+
+    assert view._highlighted_connection is connection
+    assert view._highlighted_connection_state == "full"
+    assert view.release_existing_node_insert(node.id, old_pos, new_pos, scene_pos)
+    assert requests == [
+        (node.id, ("input", "gaussian", 0, 0), old_pos, new_pos)
+    ]
+    assert view._highlighted_connection is None
+
+
+def test_releasing_connected_node_on_connection_does_not_request_splice(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    connection = view._connections[0]
+    scene_pos = connection.path().pointAtPercent(0.5)
+    old_pos = QPointF(view.node_position("gaussian"))
+    requests = []
+
+    view.node_splice_requested.connect(
+        lambda node_id, key, old, new: requests.append((node_id, tuple(key)))
+    )
+
+    assert not view.release_existing_node_insert(
+        "gaussian",
+        old_pos,
+        old_pos + QPointF(10, 10),
+        scene_pos,
+    )
+    assert requests == []
 
 
 def test_graph_cards_use_category_colors(qtbot):

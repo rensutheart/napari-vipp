@@ -3483,6 +3483,147 @@ def test_insert_split_channels_on_connection_is_partial(qtbot):
     assert "Choose which output should feed" in widget.status_label.text()
 
 
+def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("median_filter")
+    node_count = len(widget.pipeline.nodes)
+    old_pos = QPointF(widget.graph_view.node_position(node.id))
+    target_before = QPointF(widget.graph_view.node_position("gaussian"))
+    widget.graph_view.center_node_on(node.id, QPointF(180, 100))
+
+    result = widget._insert_existing_node_on_connection(
+        node.id,
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position(node.id),
+    )
+
+    assert result is node
+    assert len(widget.pipeline.nodes) == node_count
+    assert ("input", node.id, 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert (node.id, "gaussian", 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert ("input", "gaussian") not in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert widget.graph_view.node_position("gaussian").x() > target_before.x()
+    assert "Inserted existing" in widget.status_label.text()
+
+    widget.undo()
+
+    assert node.id in widget.pipeline.nodes
+    assert widget.graph_view.node_position(node.id) == old_pos
+    assert widget.graph_view.node_position("gaussian") == target_before
+    assert ("input", "gaussian") in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert not any(
+        connection.source_id == node.id or connection.target_id == node.id
+        for connection in widget.pipeline.connections
+    )
+
+
+def test_insert_existing_split_channels_on_connection_is_partial(qtbot):
+    viewer = _Viewer(np.zeros((3, 4, 8, 9), dtype=np.uint8))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("split_channels")
+    old_pos = QPointF(widget.graph_view.node_position(node.id))
+    widget.graph_view.center_node_on(node.id, QPointF(180, 100))
+
+    result = widget._insert_existing_node_on_connection(
+        node.id,
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position(node.id),
+    )
+
+    assert result is node
+    assert ("input", node.id, 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert not any(
+        connection.source_id == node.id and connection.target_id == "gaussian"
+        for connection in widget.pipeline.connections
+    )
+    assert ("input", "gaussian") not in {
+        (connection.source_id, connection.target_id)
+        for connection in widget.pipeline.connections
+    }
+    assert "Choose which output should feed" in widget.status_label.text()
+
+
+def test_insert_existing_connected_node_is_rejected_without_rewiring(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    before_connections = {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    old_pos = QPointF(widget.graph_view.node_position("gaussian"))
+    widget.graph_view.center_node_on("gaussian", QPointF(180, 100))
+
+    result = widget._insert_existing_node_on_connection(
+        "gaussian",
+        ("input", "gaussian", 0, 0),
+        old_pos,
+        widget.graph_view.node_position("gaussian"),
+    )
+
+    after_connections = {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert result is None
+    assert after_connections == before_connections
+    assert "Disconnect 'Gaussian Blur' before inserting it on a wire." in (
+        widget.status_label.text()
+    )
+
+    widget.undo()
+
+    assert widget.graph_view.node_position("gaussian") == old_pos
+
+
 def test_connection_insert_candidates_show_modes(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

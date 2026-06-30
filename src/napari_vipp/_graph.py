@@ -460,9 +460,12 @@ class PortItem(QGraphicsEllipseItem):
 class NodeProxy(QGraphicsProxyWidget):
     """Movable graphics item that keeps connected wires attached."""
 
+    DRAG_OPACITY = 0.62
+
     def __init__(
         self,
         node_id: str,
+        operation_id: str,
         input_type: str | None,
         output_type: str,
         has_input: bool,
@@ -470,6 +473,7 @@ class NodeProxy(QGraphicsProxyWidget):
     ):
         super().__init__()
         self.node_id = node_id
+        self.operation_id = operation_id
         self.input_type = input_type
         self.output_type = output_type
         self.connections: list[ConnectionItem] = []
@@ -614,7 +618,14 @@ class NodeProxy(QGraphicsProxyWidget):
             delta = event.scenePos() - self._drag_start_scene
             if delta.manhattanLength() >= 3:
                 self._dragging = True
+                self.setOpacity(self.DRAG_OPACITY)
                 self.setPos(self._drag_start_pos + delta)
+                view = _view_for_scene(self.scene())
+                if view is not None:
+                    view.update_existing_node_insert_preview(
+                        self.node_id,
+                        event.scenePos(),
+                    )
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -635,6 +646,7 @@ class NodeProxy(QGraphicsProxyWidget):
             card = self._card()
             if card is not None:
                 card.setCursor(Qt.OpenHandCursor)
+            self.setOpacity(1.0)
             self._drag_start_scene = None
             self._drag_start_pos = None
             self._dragging = False
@@ -642,7 +654,14 @@ class NodeProxy(QGraphicsProxyWidget):
             if moved:
                 view = _view_for_scene(self.scene())
                 if view is not None:
-                    view.node_moved.emit(self.node_id, start_pos, end_pos)
+                    inserted = view.release_existing_node_insert(
+                        self.node_id,
+                        start_pos,
+                        end_pos,
+                        event.scenePos(),
+                    )
+                    if not inserted:
+                        view.node_moved.emit(self.node_id, start_pos, end_pos)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -960,6 +979,7 @@ class PipelineGraphView(QGraphicsView):
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
     node_moved = Signal(str, object, object)
+    node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
@@ -1206,6 +1226,46 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         self._connection_insert_validator = validator
 
+    def update_existing_node_insert_preview(
+        self,
+        node_id: str,
+        scene_pos: QPointF,
+    ) -> None:
+        """Preview wire insertion while a loose existing node is dragged."""
+        proxy = self._proxies.get(node_id)
+        if proxy is None or proxy.connections:
+            self._clear_connection_insert_preview()
+            return
+        self._update_connection_insert_preview(proxy.operation_id, scene_pos)
+
+    def release_existing_node_insert(
+        self,
+        node_id: str,
+        old_pos: QPointF,
+        new_pos: QPointF,
+        scene_pos: QPointF,
+    ) -> bool:
+        """Emit a splice request if a loose node is dropped on a valid wire."""
+        proxy = self._proxies.get(node_id)
+        if proxy is None or proxy.connections:
+            self._clear_connection_insert_preview()
+            return False
+        self._update_connection_insert_preview(proxy.operation_id, scene_pos)
+        connection_key = self._connection_key(self._highlighted_connection)
+        state = self._highlighted_connection_state
+        if connection_key is None or state == "incompatible":
+            self._clear_connection_insert_preview()
+            return False
+
+        self._clear_connection_insert_preview()
+        self.node_splice_requested.emit(
+            node_id,
+            connection_key,
+            QPointF(old_pos),
+            QPointF(new_pos),
+        )
+        return True
+
     def connection_obstacle_rects(
         self,
         connection: ConnectionItem | None = None,
@@ -1273,6 +1333,7 @@ class PipelineGraphView(QGraphicsView):
         card.pin_requested.connect(self.pin_requested)
         proxy = NodeProxy(
             node.id,
+            node.operation_id,
             node.input_type,
             node.output_type,
             node.has_input,

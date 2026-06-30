@@ -3195,6 +3195,9 @@ class VippWidget(QWidget):
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
         self.graph_view.node_moved.connect(self._on_node_moved)
+        self.graph_view.node_splice_requested.connect(
+            self._insert_existing_node_on_connection
+        )
         self.graph_view.pin_requested.connect(self.pin_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
@@ -3593,6 +3596,117 @@ class VippWidget(QWidget):
         if not operation_id:
             return
         self._insert_node_on_connection(operation_id, connection_key, position)
+
+    def _insert_existing_node_on_connection(
+        self,
+        node_id: str,
+        connection_key,
+        old_pos,
+        _new_pos,
+    ) -> object | None:
+        self._finish_parameter_history_group()
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return None
+
+        old_point = QPointF(old_pos)
+        positions = self.graph_view.node_positions()
+        positions[node_id] = (float(old_point.x()), float(old_point.y()))
+        before = self._current_history_snapshot(positions)
+
+        if self._node_has_connections(node_id):
+            self._push_undo_if_changed(before)
+            self.status_label.setText(
+                f"Disconnect '{node.title}' before inserting it on a wire."
+            )
+            return None
+
+        mode, reason = self._connection_insert_mode(node.operation_id, connection_key)
+        if mode == "incompatible":
+            self._push_undo_if_changed(before)
+            self.status_label.setText(reason)
+            return None
+
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            downstream = self.pipeline.descendants_inclusive([target_id])
+            downstream.discard(node_id)
+            self.graph_view.move_nodes_by(
+                downstream,
+                self._insert_make_room_delta(source_id, target_id, node_id),
+            )
+            self._center_inserted_node_in_open_gap(source_id, target_id, node_id)
+
+            changed_connections = False
+            if mode in {"full", "partial"}:
+                if not self.pipeline.disconnect(source_id, target_id, target_port):
+                    raise RuntimeError("Original connection was no longer available.")
+                self.graph_view.remove_connection(
+                    source_id,
+                    target_id,
+                    target_port=target_port,
+                    notify=False,
+                )
+                changed_connections = True
+
+                input_result = self.pipeline.connect(
+                    source_id,
+                    node_id,
+                    target_port=0,
+                    source_port=source_port,
+                )
+                if not input_result.success:
+                    raise RuntimeError(input_result.message)
+                self._apply_connection_result_to_graph(input_result)
+                self._sync_node_output_ports(node_id)
+
+                if mode == "full":
+                    output_result = self.pipeline.connect(
+                        node_id,
+                        target_id,
+                        target_port=target_port,
+                        source_port=0,
+                    )
+                    if not output_result.success:
+                        raise RuntimeError(output_result.message)
+                    self._apply_connection_result_to_graph(output_result)
+
+            self.graph_view.select_node(node_id)
+            self._sync_pin_ui()
+            if changed_connections:
+                self._invalidate_pipeline_cache()
+                self.run_pipeline()
+            self._push_undo_if_changed(before)
+        except Exception as exc:
+            self._restore_history_snapshot(before)
+            self.status_label.setText(f"Insert failed: {exc}")
+            return None
+
+        if mode == "full":
+            self.status_label.setText(
+                f"Inserted existing '{node.title}' between "
+                f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}'."
+            )
+        elif mode == "partial":
+            self.status_label.setText(
+                f"Inserted existing '{node.title}' after "
+                f"'{self._node_title(source_id)}'. Choose which output should feed "
+                f"'{self._node_title(target_id)}'."
+            )
+        else:
+            self.status_label.setText(
+                f"Placed existing '{node.title}' in the opened gap. "
+                "Connect ports manually."
+            )
+        return node
+
+    def _node_has_connections(self, node_id: str) -> bool:
+        return any(
+            connection.source_id == node_id or connection.target_id == node_id
+            for connection in self.pipeline.connections
+        )
 
     def _choose_connection_insert_operation(self, connection_key) -> str | None:
         candidates = self._connection_insert_candidates(connection_key)
