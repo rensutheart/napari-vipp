@@ -74,9 +74,10 @@ Proposed measurement families:
 
 5. **Skeleton And Network Measurements**
    `Skeletonize`, `Analyze Skeleton`, skeleton keypoint masks,
-   component/branch label images, and short-branch pruning are implemented.
-   Future work should add branch length distributions, tortuosity,
-   physical-length pruning units, explicit graph export, and
+   skeleton graph overlays, component/branch label images, short-branch
+   pruning, and row-per-branch measurements are implemented. Future work should
+   add branch-summary distributions, physical-length pruning units, explicit
+   graph export, and
    domain-normalized connectedness metrics.
 
 6. **Localization And Colocalization Measurements**
@@ -136,7 +137,8 @@ and then assemble them into one analysis-ready table.
    sluggish if run live.
 9. Add colocalization/localization table nodes that can merge with object
    measurement tables.
-10. Add skeleton graph export and richer branch/network metrics.
+10. Add skeleton graph export, branch-summary tables, and domain-specific
+    network metrics.
 11. Add mitochondrial event analysis after tracking/association design is in
    place.
 

@@ -9,15 +9,28 @@
   example workflow for validating grouped object-count and area summaries.
 - Added skeleton QC and cleanup nodes: `Skeleton Keypoints`, `Label Skeleton
   Components`, `Label Skeleton Branches`, and `Prune Skeleton Branches`.
+- Added `Skeleton Graph Overlay` for RGB edge/node visualization and
+  `Measure Skeleton Branches` for row-per-branch length, endpoint, and
+  tortuosity tables.
+- Fixed `Skeleton Graph Overlay` output metadata so 2D napari inspect/pin
+  layers display the result as channel-last RGB instead of grayscale.
+- Display volumetric RGB outputs as separate additive red/green/blue napari
+  layers, avoiding napari's 3D RGB-volume scalar-field status/rendering path.
+- Regrouped skeleton nodes by output type: visual mask/RGB skeleton QC under
+  Morphology, skeleton label images under Label Operations, and skeleton tables
+  under Measurements.
+- Added a dedicated skeleton-node user guide covering expected inputs, outputs,
+  and intended use for each skeleton/network node.
 - Added a deterministic `VIPP synthetic skeleton network` sample plus an
   example workflow for validating skeleton keypoint masks, branch labels,
   component labels, pruning, and before/after skeleton analysis.
 - Adjusted thumbnail percentile contrast so sparse bright foreground objects
   are not dropped as outliers while low-amplitude background ramps are stretched.
 - Added manual/cached execution for expensive table nodes. `Measure Objects`,
-  `Measure Objects + Intensity`, and `Analyze Skeleton` now expose
-  `Calculate`/`Recalculate`, keep the last result available downstream when
-  stale, and recompute deterministically in headless/export runs.
+  `Measure Objects + Intensity`, `Analyze Skeleton`, and
+  `Measure Skeleton Branches` now expose `Calculate`/`Recalculate`, keep the
+  last result available downstream when stale, and recompute deterministically
+  in headless/export runs.
 - Added per-node `Auto Recalculate` for manual nodes, with a warning that it
   can be slow on large inputs. Manual node cards now use gray, green, orange,
   and red state colors for not calculated, ready, stale, and error results.

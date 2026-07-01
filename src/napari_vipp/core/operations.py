@@ -1178,6 +1178,31 @@ def label_skeleton_branches(
     )
 
 
+def skeleton_graph_overlay(
+    data,
+    display_mode: str = "Colored edges + colored nodes",
+    node_size: int = 1,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Render skeleton branches and graph nodes as a channel-last RGB overlay."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    def overlay_block(block: np.ndarray) -> np.ndarray:
+        return _skeleton_graph_overlay_block(
+            block,
+            display_mode=display_mode,
+            node_size=node_size,
+        )
+
+    return _apply_spatial_blocks_rgb(mask, spatial_ndim, overlay_block)
+
+
 def prune_skeleton_branches(
     data,
     min_branch_length: float = 3.0,
@@ -1522,6 +1547,101 @@ def analyze_skeleton(
     )
 
 
+def measure_skeleton_branches(
+    data,
+    spatial_mode: str = "Auto from axes",
+    input_mode: str = "Already skeletonized",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure traced skeleton branches into a row-per-branch table."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    has_axis_names = axis_names is not None and len(axis_names) == mask.ndim
+    axis_names = _measurement_axis_names(mask.ndim, axis_names)
+    axis_types = _measurement_axis_types(mask.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
+    mask_for_analysis = np.moveaxis(
+        mask,
+        spatial_axes,
+        tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(mask.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: mask.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(mask.ndim - spatial_ndim)),
+    )
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:]
+        if has_axis_names
+        else tuple("" for _axis in range(spatial_ndim)),
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_shape = mask_for_analysis.shape[: mask.ndim - spatial_ndim]
+    units = _skeleton_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    columns = _skeleton_branch_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        units,
+    )
+    should_skeletonize = str(input_mode).strip().lower().startswith("skeletonize")
+
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = (
+            mask_for_analysis[block_index]
+            if leading_shape
+            else mask_for_analysis
+        )
+        skeleton = (
+            morphology.skeletonize(block).astype(bool)
+            if should_skeletonize
+            else block.astype(bool, copy=False)
+        )
+        block_columns = _measure_skeleton_branches_block(
+            skeleton,
+            units,
+            spatial_axis_names,
+        )
+        row_count = len(block_columns["component_id"])
+        for axis_position, axis_name in enumerate(leading_axis_names):
+            columns[f"{axis_name}_index"].extend(
+                [int(block_index[axis_position])] * row_count
+            )
+        for name, values in block_columns.items():
+            columns[name].extend(values)
+        if units.physical_column:
+            columns["physical_unit"].extend([units.unit_label] * row_count)
+
+    return table_from_columns(
+        columns,
+        name="Skeleton branch measurements",
+        table_kind="Skeleton branches",
+        source_name=source_name,
+        column_units=_skeleton_branch_column_units(units),
+    )
+
+
 IDENTITY_JOIN_COLUMNS = (
     "source_name",
     "sample_id",
@@ -1536,6 +1656,7 @@ IDENTITY_JOIN_COLUMNS = (
     "label_id",
     "object_id",
     "component_id",
+    "branch_id",
 )
 
 
@@ -3513,6 +3634,20 @@ class _SkeletonUnits:
     column_units: dict[str, str]
 
 
+@dataclass(frozen=True)
+class _SkeletonBranchTrace:
+    branch_id: int
+    branch_type: str
+    path: tuple[int, ...]
+    start_node: int | None
+    end_node: int | None
+    edge_count: int
+    pixel_length: float
+    physical_length: float
+    euclidean_pixel_distance: float
+    euclidean_physical_distance: float
+
+
 def _skeletonize_method(method: str) -> str | None:
     value = str(method).strip().lower()
     if value == "auto":
@@ -3667,6 +3802,82 @@ def _label_skeleton_branches_block(block: np.ndarray) -> np.ndarray:
     return branch_labels
 
 
+def _apply_spatial_blocks_rgb(
+    arr: np.ndarray,
+    spatial_ndim: int,
+    func: Callable[[np.ndarray], np.ndarray],
+) -> np.ndarray:
+    arr = np.asarray(arr)
+    spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+    if arr.ndim <= spatial_ndim:
+        return np.asarray(func(arr), dtype=np.float32)
+
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    spatial_shape = arr.shape[arr.ndim - spatial_ndim :]
+    result = np.zeros(leading_shape + spatial_shape + (3,), dtype=np.float32)
+    for index in np.ndindex(leading_shape):
+        result[index] = func(arr[index])
+    return result
+
+
+def _skeleton_graph_overlay_block(
+    block: np.ndarray,
+    *,
+    display_mode: str,
+    node_size: int,
+) -> np.ndarray:
+    skeleton = np.asarray(block, dtype=bool)
+    overlay = np.zeros(skeleton.shape + (3,), dtype=np.float32)
+    if not np.any(skeleton):
+        return overlay
+
+    mode = str(display_mode).strip().lower()
+    color_edges = "colored edge" in mode
+    color_nodes = "colored node" in mode or "nodes" in mode
+    white_edges = "white edge" in mode or not color_edges
+    branch_labels = _label_skeleton_branches_block(skeleton)
+    if color_edges:
+        for label_id in range(1, int(branch_labels.max()) + 1):
+            overlay[branch_labels == label_id] = _skeleton_palette_color(label_id)
+    elif white_edges:
+        overlay[skeleton] = (1.0, 1.0, 1.0)
+
+    endpoints, junctions, isolated = _skeleton_keypoint_masks_block(skeleton)
+    key_nodes = endpoints | junctions | isolated
+    if color_nodes:
+        radius = max(int(node_size), 1)
+        endpoints = _dilate_keypoint_mask(endpoints, radius)
+        junctions = _dilate_keypoint_mask(junctions, radius)
+        isolated = _dilate_keypoint_mask(isolated, radius)
+        overlay[endpoints] = (0.0, 1.0, 0.0)
+        overlay[junctions] = (1.0, 0.0, 1.0)
+        overlay[isolated] = (0.0, 0.65, 1.0)
+    elif color_edges:
+        overlay[key_nodes] = (1.0, 1.0, 1.0)
+    return overlay
+
+
+def _dilate_keypoint_mask(mask: np.ndarray, radius: int) -> np.ndarray:
+    if radius <= 1 or not np.any(mask):
+        return mask
+    structure = ndi.generate_binary_structure(max(mask.ndim, 1), 1)
+    return ndi.binary_dilation(mask, structure=structure, iterations=radius - 1)
+
+
+def _skeleton_palette_color(index: int) -> tuple[float, float, float]:
+    palette = (
+        (0.95, 0.20, 0.20),
+        (0.20, 0.75, 1.00),
+        (1.00, 0.80, 0.20),
+        (0.45, 0.90, 0.35),
+        (0.80, 0.45, 1.00),
+        (1.00, 0.45, 0.75),
+        (0.30, 1.00, 0.80),
+        (1.00, 0.55, 0.25),
+    )
+    return palette[(int(index) - 1) % len(palette)]
+
+
 def _trace_terminal_branch(
     endpoint: int,
     adjacency: list[list[int]],
@@ -3808,6 +4019,116 @@ def _analyze_skeleton_block(
     return columns
 
 
+def _skeleton_branch_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    spatial_axis_names: tuple[str, ...],
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["component_id"] = []
+    columns["branch_id"] = []
+    columns["branch_type"] = []
+    columns["branch_voxel_count"] = []
+    columns["branch_edge_count"] = []
+    columns[_branch_length_column(units)] = []
+    columns[_branch_euclidean_column(units)] = []
+    columns["branch_tortuosity"] = []
+    if units.physical_column:
+        columns["branch_length_physical"] = []
+        columns["branch_euclidean_distance_physical"] = []
+        columns["physical_unit"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"start_{axis_name}"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"end_{axis_name}"] = []
+    return columns
+
+
+def _measure_skeleton_branches_block(
+    skeleton: np.ndarray,
+    units: _SkeletonUnits,
+    spatial_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    skeleton = np.asarray(skeleton, dtype=bool)
+    ndim = skeleton.ndim
+    structure = ndi.generate_binary_structure(ndim, ndim)
+    component_labels, component_count = ndi.label(skeleton, structure=structure)
+    columns = _skeleton_branch_empty_columns((), spatial_axis_names, units)
+
+    global_branch_id = 1
+    for component_id in range(1, component_count + 1):
+        component = component_labels == component_id
+        coords, traces = _skeleton_branch_traces(component, units.scales)
+        for trace in traces:
+            columns["component_id"].append(int(component_id))
+            columns["branch_id"].append(global_branch_id)
+            columns["branch_type"].append(trace.branch_type)
+            columns["branch_voxel_count"].append(len(trace.path))
+            columns["branch_edge_count"].append(trace.edge_count)
+            columns[_branch_length_column(units)].append(trace.pixel_length)
+            columns[_branch_euclidean_column(units)].append(
+                trace.euclidean_pixel_distance
+            )
+            denominator = trace.euclidean_pixel_distance
+            columns["branch_tortuosity"].append(
+                float(trace.pixel_length / denominator)
+                if denominator > 0
+                else 0.0
+            )
+            if units.physical_column:
+                columns["branch_length_physical"].append(trace.physical_length)
+                columns["branch_euclidean_distance_physical"].append(
+                    trace.euclidean_physical_distance
+                )
+            start_coord = _trace_coord(coords, trace.start_node)
+            end_coord = _trace_coord(coords, trace.end_node)
+            for axis_index, axis_name in enumerate(spatial_axis_names):
+                columns[f"start_{axis_name}"].append(start_coord[axis_index])
+            for axis_index, axis_name in enumerate(spatial_axis_names):
+                columns[f"end_{axis_name}"].append(end_coord[axis_index])
+            global_branch_id += 1
+    return columns
+
+
+def _trace_coord(coords: np.ndarray, node: int | None) -> tuple[int, ...]:
+    if node is None or coords.shape[0] == 0:
+        return tuple(0 for _axis in range(coords.shape[1] if coords.ndim == 2 else 0))
+    return tuple(int(value) for value in coords[int(node)])
+
+
+def _branch_length_column(units: _SkeletonUnits) -> str:
+    return (
+        "branch_length_voxels"
+        if units.length_column.endswith("voxels")
+        else "branch_length_pixels"
+    )
+
+
+def _branch_euclidean_column(units: _SkeletonUnits) -> str:
+    return (
+        "branch_euclidean_distance_voxels"
+        if units.length_column.endswith("voxels")
+        else "branch_euclidean_distance_pixels"
+    )
+
+
+def _skeleton_branch_column_units(units: _SkeletonUnits) -> dict[str, str]:
+    distance_unit = "voxels" if units.length_column.endswith("voxels") else "pixels"
+    column_units = {
+        "branch_voxel_count": "voxels",
+        "branch_edge_count": "count",
+        _branch_length_column(units): distance_unit,
+        _branch_euclidean_column(units): distance_unit,
+        "branch_tortuosity": "ratio",
+    }
+    if units.physical_column:
+        column_units["branch_length_physical"] = units.unit_label
+        column_units["branch_euclidean_distance_physical"] = units.unit_label
+    return column_units
+
+
 @dataclass(frozen=True)
 class _SkeletonGraphMetrics:
     voxel_count: int
@@ -3905,6 +4226,168 @@ def _skeleton_branch_count(adjacency: list[list[int]], degrees: np.ndarray) -> i
                 previous, current = current, next_node
             branches += 1
     return branches
+
+
+def _skeleton_branch_traces(
+    component: np.ndarray,
+    scales: tuple[float, ...],
+) -> tuple[np.ndarray, list[_SkeletonBranchTrace]]:
+    coords, adjacency, degrees, edge_count, pixel_length, physical_length = (
+        _skeleton_adjacency(component, scales)
+    )
+    if coords.shape[0] == 0:
+        return coords, []
+    if coords.shape[0] == 1:
+        return coords, [
+            _SkeletonBranchTrace(
+                branch_id=1,
+                branch_type="isolated",
+                path=(0,),
+                start_node=0,
+                end_node=0,
+                edge_count=0,
+                pixel_length=0.0,
+                physical_length=0.0,
+                euclidean_pixel_distance=0.0,
+                euclidean_physical_distance=0.0,
+            )
+        ]
+
+    key_nodes = {index for index, degree in enumerate(degrees) if degree != 2}
+    if not key_nodes:
+        return coords, [
+            _SkeletonBranchTrace(
+                branch_id=1,
+                branch_type="cycle",
+                path=tuple(range(coords.shape[0])),
+                start_node=None,
+                end_node=None,
+                edge_count=int(edge_count),
+                pixel_length=float(pixel_length),
+                physical_length=float(physical_length),
+                euclidean_pixel_distance=0.0,
+                euclidean_physical_distance=0.0,
+            )
+        ]
+
+    visited: set[tuple[int, int]] = set()
+    traces: list[_SkeletonBranchTrace] = []
+    next_branch_id = 1
+    for start in sorted(key_nodes):
+        if int(degrees[start]) == 0:
+            traces.append(
+                _SkeletonBranchTrace(
+                    branch_id=next_branch_id,
+                    branch_type="isolated",
+                    path=(start,),
+                    start_node=start,
+                    end_node=start,
+                    edge_count=0,
+                    pixel_length=0.0,
+                    physical_length=0.0,
+                    euclidean_pixel_distance=0.0,
+                    euclidean_physical_distance=0.0,
+                )
+            )
+            next_branch_id += 1
+            continue
+        for neighbor in adjacency[start]:
+            edge = _edge_key(start, neighbor)
+            if edge in visited:
+                continue
+            visited.add(edge)
+            path = [start, neighbor]
+            previous = start
+            current = neighbor
+            while current not in key_nodes:
+                next_nodes = [node for node in adjacency[current] if node != previous]
+                if not next_nodes:
+                    break
+                next_node = next_nodes[0]
+                edge = _edge_key(current, next_node)
+                if edge in visited:
+                    break
+                visited.add(edge)
+                path.append(next_node)
+                previous, current = current, next_node
+
+            start_node = int(path[0])
+            end_node = int(path[-1])
+            branch_type = _skeleton_branch_type(
+                int(degrees[start_node]),
+                int(degrees[end_node]),
+            )
+            trace = _skeleton_branch_trace_from_path(
+                next_branch_id,
+                branch_type,
+                path,
+                coords,
+                scales,
+            )
+            traces.append(trace)
+            next_branch_id += 1
+    return coords, traces
+
+
+def _skeleton_branch_trace_from_path(
+    branch_id: int,
+    branch_type: str,
+    path: Sequence[int],
+    coords: np.ndarray,
+    scales: tuple[float, ...],
+) -> _SkeletonBranchTrace:
+    scales = _normalized_spatial_scales(coords.shape[1], scales)
+    pixel_length = 0.0
+    physical_length = 0.0
+    for first, second in zip(path, path[1:], strict=False):
+        offset = tuple(
+            int(coords[int(second), axis] - coords[int(first), axis])
+            for axis in range(coords.shape[1])
+        )
+        pixel_length += _offset_length(offset, (1.0,) * coords.shape[1])
+        physical_length += _offset_length(offset, scales)
+    start_node = int(path[0]) if path else None
+    end_node = int(path[-1]) if path else None
+    euclidean_pixel = 0.0
+    euclidean_physical = 0.0
+    if start_node is not None and end_node is not None:
+        delta = tuple(
+            int(coords[end_node, axis] - coords[start_node, axis])
+            for axis in range(coords.shape[1])
+        )
+        euclidean_pixel = _offset_length(delta, (1.0,) * coords.shape[1])
+        euclidean_physical = _offset_length(delta, scales)
+    return _SkeletonBranchTrace(
+        branch_id=int(branch_id),
+        branch_type=branch_type,
+        path=tuple(int(node) for node in path),
+        start_node=start_node,
+        end_node=end_node,
+        edge_count=max(len(path) - 1, 0),
+        pixel_length=float(pixel_length),
+        physical_length=float(physical_length),
+        euclidean_pixel_distance=float(euclidean_pixel),
+        euclidean_physical_distance=float(euclidean_physical),
+    )
+
+
+def _skeleton_branch_type(start_degree: int, end_degree: int) -> str:
+    start_type = _skeleton_node_type(start_degree)
+    end_type = _skeleton_node_type(end_degree)
+    priority = {"isolated": 0, "endpoint": 1, "junction": 2, "path": 3}
+    if priority.get(end_type, 99) < priority.get(start_type, 99):
+        start_type, end_type = end_type, start_type
+    return f"{start_type}_to_{end_type}"
+
+
+def _skeleton_node_type(degree: int) -> str:
+    if degree <= 0:
+        return "isolated"
+    if degree == 1:
+        return "endpoint"
+    if degree == 2:
+        return "path"
+    return "junction"
 
 
 def _edge_key(first: int, second: int) -> tuple[int, int]:

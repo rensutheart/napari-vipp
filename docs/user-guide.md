@@ -48,7 +48,7 @@ Recommended for fixed-reference comparisons while navigating dims:
 
 Some table-producing nodes are intentionally not recalculated on every
 parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
-+ Intensity`, and `Analyze Skeleton`.
++ Intensity`, `Analyze Skeleton`, and `Measure Skeleton Branches`.
 
 When selected, these nodes show an `Execution` panel with `Calculate` or
 `Recalculate`. The same action is available on the node card. If upstream data
@@ -70,3 +70,10 @@ Manual node cards use status colours:
 - green: calculated and current;
 - orange: cached result is stale;
 - red: calculation failed.
+
+## Skeleton Analysis Nodes
+
+The skeleton/network nodes are documented in
+[skeleton-nodes.md](skeleton-nodes.md). That guide explains which nodes expect
+binary masks, which expect already skeletonized masks, which nodes produce
+visual QC outputs, and which nodes produce measurement tables.

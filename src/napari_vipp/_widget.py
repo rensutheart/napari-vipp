@@ -142,6 +142,12 @@ from napari_vipp.core.workflow import (
     serialize_workflow,
 )
 
+_RGB_VOLUME_CHANNELS = (
+    (0, "Red", "red"),
+    (1, "Green", "green"),
+    (2, "Blue", "blue"),
+)
+
 if TYPE_CHECKING:
     import napari
 
@@ -8238,40 +8244,21 @@ class VippWidget(QWidget):
 
     def _set_active_pin_layer(self, node_id: str, data) -> None:
         title = self._node_title(node_id)
-        display_data = self._display_data(data)
-        data_kind = self._data_kind(data, node_id)
-        metadata = {
-            "napari_vipp_kind": "pinned",
-            "node_id": node_id,
-            "data_kind": data_kind,
-            "display_kind": self._display_kind(data_kind, "pinned"),
-            "display_ndim": np.asarray(display_data).ndim,
-            "display_shape": tuple(np.asarray(display_data).shape),
-            "display_rgb": self._display_rgb(data, node_id),
-            "vipp_image_state": self._node_state_dict(node_id),
-        }
-        layer = self._active_pinned_layer()
-        if layer is not None and self._generated_layer_needs_replacement(
-            layer,
-            metadata,
-        ):
-            self._remove_layer(layer)
-            layer = None
-
-        if layer is None:
-            layer = self._add_image_or_labels(
-                self._pinned_layer_name(title),
-                data,
-                metadata,
-            )
-        else:
-            layer.data = display_data
-            layer.metadata.update(metadata)
-            layer.name = self._pinned_layer_name(title)
-            layer.visible = True
-            self._configure_generated_layer(layer, data, metadata)
-
-        self._move_layer_to_top(layer)
+        layer_name = self._pinned_layer_name(title)
+        for layer in self._active_pinned_layers():
+            if layer.metadata.get("node_id") != node_id:
+                self._remove_layer(layer)
+        self._set_or_add_generated_layer(
+            layer_name,
+            data,
+            metadata={
+                "napari_vipp_kind": "pinned",
+                "node_id": node_id,
+                "vipp_image_state": self._node_state_dict(node_id),
+            },
+            role="pinned",
+        )
+        self._move_generated_layers_to_top(layer_name)
         self._active_pinned_node_id = node_id
         self._sync_pin_ui()
 
@@ -8281,8 +8268,7 @@ class VippWidget(QWidget):
             if self._active_pinned_node_id in self.pipeline.nodes
             else None
         )
-        layer = self._active_pinned_layer()
-        if layer is not None:
+        for layer in self._active_pinned_layers():
             self._remove_layer(layer)
         self._active_pinned_node_id = None
         self._sync_pin_ui()
@@ -8355,6 +8341,11 @@ class VippWidget(QWidget):
             "display_shape": tuple(np.asarray(display_data).shape),
             "display_rgb": self._display_rgb(data, metadata.get("node_id")),
         }
+        if self._display_rgb_as_channel_layers(display_data, metadata):
+            self._set_or_add_rgb_channel_layers(name, display_data, metadata)
+            self._restore_viewer_step(saved_step, saved_nsteps)
+            return
+        self._remove_rgb_channel_layers(name)
         layer = self._layer_by_name(name)
         if layer is None:
             self._add_image_or_labels(name, data, metadata=metadata)
@@ -8456,6 +8447,142 @@ class VippWidget(QWidget):
                 kwargs["contrast_limits"] = limits
         return self.viewer.add_image(display_data, **kwargs)
 
+    def _display_rgb_as_channel_layers(self, display_data, metadata: dict) -> bool:
+        arr = np.asarray(display_data)
+        return (
+            bool(metadata.get("display_rgb"))
+            and arr.ndim > 3
+            and arr.shape[-1] in (3, 4)
+        )
+
+    def _set_or_add_rgb_channel_layers(
+        self,
+        name: str,
+        display_data,
+        metadata: dict,
+    ) -> None:
+        arr = np.asarray(display_data)
+        base_layer = self._layer_by_name(name)
+        if base_layer is not None and not bool(
+            base_layer.metadata.get("display_rgb_as_channels")
+        ):
+            self._remove_layer(base_layer)
+        for index, channel_name, colormap in _RGB_VOLUME_CHANNELS:
+            channel_data = arr[..., index]
+            layer_name = _rgb_channel_layer_name(name, index)
+            channel_metadata = {
+                **metadata,
+                "display_rgb_as_channels": True,
+                "display_rgb_group": name,
+                "display_rgb_channel": channel_name,
+                "display_rgb_channel_index": index,
+                "display_ndim": channel_data.ndim,
+                "display_shape": tuple(channel_data.shape),
+            }
+            layer = self._layer_by_name(layer_name)
+            if layer is not None and self._generated_layer_needs_replacement(
+                layer,
+                channel_metadata,
+            ):
+                self._remove_layer(layer)
+                layer = None
+            if layer is None:
+                self._add_rgb_channel_layer(
+                    layer_name,
+                    channel_data,
+                    channel_metadata,
+                    colormap,
+                )
+                continue
+            layer.data = channel_data
+            layer.metadata.update(channel_metadata)
+            layer.visible = True
+            self._configure_rgb_channel_layer(layer, channel_data, channel_metadata)
+        self._remove_extra_rgb_channel_layers(name)
+
+    def _add_rgb_channel_layer(
+        self,
+        name: str,
+        data,
+        metadata: dict,
+        colormap: str,
+    ):
+        kwargs = {
+            "name": name,
+            "metadata": metadata,
+            "colormap": colormap,
+            "blending": "additive",
+        }
+        scale = _layer_scale_from_metadata(metadata)
+        if scale is not None:
+            kwargs["scale"] = scale
+        limits = _rgb_channel_contrast_limits(data)
+        if limits is not None:
+            kwargs["contrast_limits"] = limits
+        return self.viewer.add_image(data, **kwargs)
+
+    def _configure_rgb_channel_layer(self, layer, data, metadata: dict) -> None:
+        channel_index = int(metadata["display_rgb_channel_index"])
+        colormap = _RGB_VOLUME_CHANNELS[channel_index][2]
+        for attr, value in (
+            ("colormap", colormap),
+            ("blending", "additive"),
+        ):
+            try:
+                setattr(layer, attr, value)
+            except Exception:
+                pass
+        scale = _layer_scale_from_metadata(metadata)
+        if scale is not None:
+            try:
+                layer.scale = scale
+            except Exception:
+                pass
+        limits = _rgb_channel_contrast_limits(data)
+        if limits is not None:
+            try:
+                layer.contrast_limits = limits
+            except Exception:
+                pass
+
+    def _rgb_channel_layers(self, group_name: str) -> list:
+        layers = []
+        for layer in list(self.viewer.layers):
+            try:
+                if layer.metadata.get("display_rgb_group") == group_name:
+                    layers.append(layer)
+            except Exception:
+                continue
+        return layers
+
+    def _remove_rgb_channel_layers(self, group_name: str) -> None:
+        for layer in self._rgb_channel_layers(group_name):
+            self._remove_layer(layer)
+
+    def _remove_extra_rgb_channel_layers(self, group_name: str) -> None:
+        expected = {
+            _rgb_channel_layer_name(group_name, index)
+            for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
+        }
+        for layer in self._rgb_channel_layers(group_name):
+            if layer.name not in expected:
+                self._remove_layer(layer)
+
+    def _generated_layers_for_name(self, name: str) -> list:
+        layers = self._rgb_channel_layers(name)
+        if layers:
+            ordered = {
+                _rgb_channel_layer_name(name, index): index
+                for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
+            }
+            return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
+        layer = self._layer_by_name(name)
+        return [layer] if layer is not None else []
+
+    def _move_generated_layers_to_top(self, name: str) -> None:
+        for layer in self._generated_layers_for_name(name):
+            self._move_layer_to_top(layer)
+
     def _generated_layer_needs_replacement(self, layer, metadata: dict) -> bool:
         return (
             layer.metadata.get("display_kind") != metadata["display_kind"]
@@ -8465,6 +8592,10 @@ class VippWidget(QWidget):
             != tuple(metadata["display_shape"])
             or bool(layer.metadata.get("display_rgb"))
             != bool(metadata.get("display_rgb"))
+            or bool(layer.metadata.get("display_rgb_as_channels"))
+            != bool(metadata.get("display_rgb_as_channels"))
+            or layer.metadata.get("display_rgb_channel_index")
+            != metadata.get("display_rgb_channel_index")
         )
 
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
@@ -8563,13 +8694,18 @@ class VippWidget(QWidget):
         return arr
 
     def _active_pinned_layer(self):
+        layers = self._active_pinned_layers()
+        return layers[0] if layers else None
+
+    def _active_pinned_layers(self) -> list:
+        layers = []
         for layer in self.viewer.layers:
             try:
                 if layer.metadata.get("napari_vipp_kind") == "pinned":
-                    return layer
+                    layers.append(layer)
             except Exception:
                 continue
-        return None
+        return layers
 
     def _move_layer_to_top(self, layer) -> None:
         layers = self.viewer.layers
@@ -8586,8 +8722,7 @@ class VippWidget(QWidget):
             pass
 
     def _keep_active_pin_on_top(self) -> None:
-        layer = self._active_pinned_layer()
-        if layer is not None:
+        for layer in self._active_pinned_layers():
             self._move_layer_to_top(layer)
 
     def _sync_pin_ui(self) -> None:
@@ -9114,6 +9249,28 @@ def _percentile_for_cutoff_value(
     return float(np.clip((index / (sorted_values.size - 1)) * 100.0, 0.0, 100.0))
 
 
+def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:
+    if int(channel_index) == 0:
+        return base_name
+    channel_name = _RGB_VOLUME_CHANNELS[int(channel_index)][1]
+    return f"{base_name} {channel_name}"
+
+
+def _rgb_channel_contrast_limits(data) -> tuple[float, float] | None:
+    arr = np.asarray(data)
+    if arr.size == 0:
+        return None
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return None
+    high = float(finite.max())
+    if high <= 0.0:
+        return None
+    if np.issubdtype(arr.dtype, np.integer):
+        return (0.0, high)
+    return (0.0, max(high, 1.0))
+
+
 def _histogram_source(
     data,
     *,
@@ -9265,14 +9422,22 @@ def _napari_layer_transform_ndim(metadata: dict) -> int:
     shape = tuple(metadata.get("display_shape", ()))
     if shape:
         ndim = len(shape)
-        if bool(metadata.get("display_rgb")) and shape[-1] in (3, 4):
+        if (
+            bool(metadata.get("display_rgb"))
+            and not bool(metadata.get("display_rgb_as_channels"))
+            and shape[-1] in (3, 4)
+        ):
             return max(ndim - 1, 0)
         return ndim
     try:
         ndim = int(metadata.get("display_ndim", 0))
     except Exception:
         return 0
-    if bool(metadata.get("display_rgb")) and ndim > 0:
+    if (
+        bool(metadata.get("display_rgb"))
+        and not bool(metadata.get("display_rgb_as_channels"))
+        and ndim > 0
+    ):
         return ndim - 1
     return ndim
 

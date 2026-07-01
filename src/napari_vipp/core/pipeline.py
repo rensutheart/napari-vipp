@@ -66,6 +66,7 @@ from napari_vipp.core.operations import (
     max_intensity_projection,
     measure_objects,
     measure_objects_with_intensity,
+    measure_skeleton_branches,
     median_filter,
     merge_tables,
     minimum_threshold,
@@ -90,6 +91,7 @@ from napari_vipp.core.operations import (
     select_axis_slice,
     select_table_columns,
     set_pixel_size,
+    skeleton_graph_overlay,
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
@@ -342,6 +344,7 @@ SPATIAL_OPERATIONS = {
     "h_maxima_markers",
     "label_skeleton_branches",
     "label_skeleton_components",
+    "measure_skeleton_branches",
     "label_connected_components",
     "marker_controlled_watershed",
     "filter_labels_by_property",
@@ -354,6 +357,7 @@ SPATIAL_OPERATIONS = {
     "prune_skeleton_branches",
     "subtract_background",
     "skeletonize",
+    "skeleton_graph_overlay",
     "skeleton_keypoints",
 }
 
@@ -1459,6 +1463,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         skeletonize_mask,
+        subcategory=SKELETON_NETWORK_GROUP,
     ),
     OperationSpec(
         "label_connected_components",
@@ -1724,9 +1729,32 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "measure_skeleton_branches",
+        "Measure Skeleton Branches",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "input_mode",
+                "Input",
+                "choice",
+                "Already skeletonized",
+                0,
+                0,
+                1,
+                choices=("Already skeletonized", "Skeletonize first"),
+            ),
+        ),
+        measure_skeleton_branches,
+        subcategory=SKELETON_NETWORK_GROUP,
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "skeleton_keypoints",
         "Skeleton Keypoints",
-        MEASUREMENTS_CATEGORY,
+        "Morphology",
         "mask",
         "mask",
         (SPATIAL_MODE_PARAMETER,),
@@ -1739,9 +1767,36 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
+        "skeleton_graph_overlay",
+        "Skeleton Graph Overlay",
+        "Morphology",
+        "mask",
+        "image",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "display_mode",
+                "Display mode",
+                "choice",
+                "Colored edges + colored nodes",
+                0,
+                0,
+                1,
+                choices=(
+                    "Colored edges + colored nodes",
+                    "Colored edges",
+                    "White edges + colored nodes",
+                ),
+            ),
+            ParameterSpec("node_size", "Node size", "int", 1, 1, 5, 1),
+        ),
+        skeleton_graph_overlay,
+        subcategory=SKELETON_NETWORK_GROUP,
+    ),
+    OperationSpec(
         "label_skeleton_components",
         "Label Skeleton Components",
-        MEASUREMENTS_CATEGORY,
+        LABEL_OPERATIONS_CATEGORY,
         "mask",
         "labels",
         (SPATIAL_MODE_PARAMETER,),
@@ -1751,7 +1806,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "label_skeleton_branches",
         "Label Skeleton Branches",
-        MEASUREMENTS_CATEGORY,
+        LABEL_OPERATIONS_CATEGORY,
         "mask",
         "labels",
         (SPATIAL_MODE_PARAMETER,),
@@ -1761,7 +1816,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "prune_skeleton_branches",
         "Prune Skeleton Branches",
-        MEASUREMENTS_CATEGORY,
+        "Morphology",
         "mask",
         "mask",
         (
@@ -3294,10 +3349,11 @@ class PrototypePipeline:
             )
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
-        if node.operation_id in {"measure_objects", "analyze_skeleton"} and isinstance(
-            input_state,
-            ImageState,
-        ):
+        if node.operation_id in {
+            "measure_objects",
+            "analyze_skeleton",
+            "measure_skeleton_branches",
+        } and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
             kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
             kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
@@ -3511,7 +3567,10 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     prior = _combined_history(states)
     row_count = getattr(table, "row_count", 0)
     table_kind = str(getattr(table, "table_kind", "")).lower()
-    if "skeleton" in table_kind:
+    if "branch" in table_kind:
+        noun = "branch" if row_count == 1 else "branches"
+        action = "measured"
+    elif "skeleton" in table_kind:
         noun = "component" if row_count == 1 else "components"
         action = "analyzed"
     elif "column selection" in table_kind:

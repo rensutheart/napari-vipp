@@ -57,6 +57,7 @@ from napari_vipp.core.operations import (
     mask_image,
     measure_objects,
     measure_objects_with_intensity,
+    measure_skeleton_branches,
     median_filter,
     merge_tables,
     minimum_threshold,
@@ -82,6 +83,7 @@ from napari_vipp.core.operations import (
     select_axis_slice,
     select_table_columns,
     set_pixel_size,
+    skeleton_graph_overlay,
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
@@ -166,7 +168,9 @@ def test_vipp_operation_nodes_are_registered():
         "measure_objects_intensity",
         "skeletonize",
         "analyze_skeleton",
+        "measure_skeleton_branches",
         "skeleton_keypoints",
+        "skeleton_graph_overlay",
         "label_skeleton_components",
         "label_skeleton_branches",
         "prune_skeleton_branches",
@@ -525,6 +529,24 @@ def test_merge_tables_joins_on_identity_columns_and_suffixes_duplicates():
     assert records[0]["label_id"] == 1
     assert records[0]["intensity_sum"] == float(intensity[labels == 1].sum())
     assert records[1]["label_id"] == 2
+
+
+def test_merge_tables_auto_uses_branch_id_for_skeleton_branch_tables():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+    branches = measure_skeleton_branches(skeleton, resolved_spatial_ndim=2)
+
+    merged = merge_tables(
+        [branches, branches],
+        input_count=2,
+        join_mode="Left join",
+        join_keys="auto",
+    )
+
+    assert merged.row_count == branches.row_count
+    assert "branch_length_pixels_table2" in merged.columns
+    assert [record["branch_id"] for record in merged.records()] == [1, 2, 3, 4]
 
 
 def test_merge_tables_can_join_equal_length_tables_by_row_position():
@@ -1039,6 +1061,72 @@ def test_label_skeleton_branches_labels_paths_around_junctions():
     assert labels[3, 5] != 0
 
 
+def test_skeleton_graph_overlay_supports_edge_and_node_modes():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    colored = skeleton_graph_overlay(
+        skeleton,
+        display_mode="Colored edges",
+        resolved_spatial_ndim=2,
+    )
+    node_overlay = skeleton_graph_overlay(
+        skeleton,
+        display_mode="White edges + colored nodes",
+        resolved_spatial_ndim=2,
+    )
+
+    assert colored.shape == (7, 7, 3)
+    assert colored.dtype == np.float32
+    assert np.any(colored[2, 3] != colored[4, 3])
+    np.testing.assert_allclose(node_overlay[2, 3], (1.0, 1.0, 1.0))
+    np.testing.assert_allclose(node_overlay[1, 3], (0.0, 1.0, 0.0))
+    np.testing.assert_allclose(node_overlay[3, 3], (1.0, 0.0, 1.0))
+
+
+def test_pipeline_skeleton_graph_overlay_is_rgb_image_state():
+    image = np.zeros((3, 7, 7), dtype=np.float32)
+    image[:, 1:6, 3] = 1
+    image[:, 3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    overlay = pipeline.add_node("skeleton_graph_overlay")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, overlay.id)
+
+    outputs = pipeline.run(image, input_metadata={"axes": "ZYX"})
+    state = pipeline.output_states[overlay.id]
+
+    assert outputs[overlay.id].shape == (3, 7, 7, 3)
+    assert state.kind == "RGB image"
+    assert tuple(axis.name for axis in state.axes) == ("z", "y", "x", "rgb")
+    assert (
+        state.history[-1]
+        == "Skeleton Graph Overlay: Colored edges + colored nodes"
+    )
+
+
+def test_measure_skeleton_branches_reports_branch_lengths_and_tortuosity():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    table = measure_skeleton_branches(skeleton, resolved_spatial_ndim=2)
+    records = table.records()
+
+    assert table.row_count == 4
+    assert table.table_kind == "Skeleton branches"
+    assert {record["branch_type"] for record in records} == {
+        "endpoint_to_junction"
+    }
+    assert all(record["branch_length_pixels"] == 2.0 for record in records)
+    assert all(record["branch_edge_count"] == 2 for record in records)
+    assert all(record["branch_tortuosity"] == 1.0 for record in records)
+    assert {"start_y", "start_x", "end_y", "end_x"} <= set(table.columns)
+
+
 def test_prune_skeleton_branches_removes_short_terminal_spurs():
     skeleton = np.zeros((7, 9), dtype=bool)
     skeleton[3, 1:8] = True
@@ -1159,6 +1247,28 @@ def test_pipeline_skeleton_analysis_creates_table_state():
     assert state.kind == "measurement table"
     assert "branch_count" in state.columns
     assert state.history[-1] == "Analyze Skeleton: analyzed 1 component"
+
+
+def test_pipeline_skeleton_branch_measurement_creates_table_state():
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    measurements = pipeline.add_node("measure_skeleton_branches")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, measurements.id)
+
+    outputs = pipeline.run(image, input_metadata={"axes": "YX"})
+    table = outputs[measurements.id]
+    state = pipeline.output_states[measurements.id]
+
+    assert table.row_count == 4
+    assert state.kind == "measurement table"
+    assert state.table_kind == "Skeleton branches"
+    assert "branch_length_pixels" in state.columns
+    assert state.history[-1] == "Measure Skeleton Branches: measured 4 branches"
 
 
 def test_pipeline_skeleton_keypoints_creates_three_mask_outputs():

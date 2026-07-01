@@ -4,7 +4,7 @@ Last reviewed: 2026-07-01
 
 This document is the consolidated source of truth for what is **implemented**
 versus **planned**. It was reconciled against the live node registry
-(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 86 nodes) and the widget
+(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 88 nodes) and the widget
 code, so the status labels below reflect the actual codebase rather than older
 intentions.
 
@@ -14,6 +14,7 @@ For the prioritized algorithm and node catalogue, see
 architecture is in [ome-io-plan.md](ome-io-plan.md). Current user-facing format
 behavior is in [io-user-guide.md](io-user-guide.md), and research evidence is
 tracked in [research-and-publication.md](research-and-publication.md).
+Skeleton node usage is documented in [skeleton-nodes.md](skeleton-nodes.md).
 MitoMorph-derived high-dimensional feature extraction and table-combination
 requirements are tracked in
 [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
@@ -120,7 +121,8 @@ expensive nodes:
 
 - `Measure Objects`;
 - `Measure Objects + Intensity`;
-- `Analyze Skeleton`.
+- `Analyze Skeleton`;
+- `Measure Skeleton Branches`.
 
 These nodes expose `Calculate` or `Recalculate` on both the graph card and the
 inspector. Ordinary live pipeline updates skip them. When a manual node has a
@@ -185,7 +187,7 @@ channel and time metadata stay attached to their data.
 
 See [ome-io-plan.md](ome-io-plan.md) for accepted decisions and status.
 
-### Implemented Node Catalogue (82 nodes)
+### Implemented Node Catalogue (88 nodes)
 
 Counts and names below match the live registry.
 
@@ -207,12 +209,13 @@ Counts and names below match the live registry.
   Distance Transform, H-Maxima Markers, Marker-Controlled Watershed, Expand
   Labels.
 - **Morphology**: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
-  Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize.
+  Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize,
+  Skeleton Keypoints, Skeleton Graph Overlay, Prune Skeleton Branches.
 - **Label Operations**: Label Connected Components, Clear Border Objects, Filter
-  Labels By Volume, Filter Labels By Property, Relabel Sequential.
+  Labels By Volume, Filter Labels By Property, Relabel Sequential, Label
+  Skeleton Components, Label Skeleton Branches.
 - **Measurements**: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Skeleton Keypoints, Label Skeleton Components, Label Skeleton
-  Branches, Prune Skeleton Branches, Merge Tables, Add Metadata Columns,
+  Skeleton, Measure Skeleton Branches, Merge Tables, Add Metadata Columns,
   Select Table Columns, Summarize Measurements.
 
 A reference label-cleanup workflow is implemented end to end:
@@ -478,9 +481,11 @@ isolate, graph-edge, cycle, and connected-component metrics for 2D/3D).
 `Label Skeleton Components` and `Label Skeleton Branches` create inspectable
 label images for connected skeleton components and branch paths. `Prune
 Skeleton Branches` removes short terminal spurs and optional isolated skeleton
-voxels. Still TODO: richer branch tracing metrics such as branch-length
-distributions and tortuosity, physical-length pruning units, domain-normalized
-connectivity summaries, and explicit graph export.
+voxels. `Skeleton Graph Overlay` renders RGB edge/node QC overlays, and
+`Measure Skeleton Branches` reports row-per-branch length, endpoint distance,
+tortuosity, start/end coordinates, and calibrated physical length when
+available. Still TODO: explicit graph export, branch-summary distributions,
+physical-length pruning units, and domain-normalized connectivity summaries.
 
 ### Colocalization And Localization
 
@@ -512,10 +517,11 @@ independently bound sources, and explicit iteration over semantic axes.
 ### Mitochondria-Specific Measurements
 
 Treat the old MitoMorph code as inspiration for future specialist nodes:
-mesh/surface estimates, convexity, branch-length distributions,
+mesh/surface estimates, convexity, branch-summary distributions,
 domain-normalized connectivity, and network fragmentation, without forcing
 these assumptions into the generic `Measure Objects` node. The larger goal is
-broad selectable feature extraction for downstream PCA/treatment-group analysis;
+broad selectable feature extraction for downstream PCA/treatment-group
+analysis;
 see [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
 
 ### Later Milestones
@@ -528,7 +534,8 @@ Registration and deconvolution.
 
 1. Adopt manual/cached execution for the next expensive feature families as
    they are added, including cancellation/progress where libraries expose it.
-2. Skeleton graph export and richer branch metrics.
+2. Skeleton graph export, branch-summary distributions, and physical-length
+   pruning units.
 3. 3D mesh morphology and calibrated physical variants for extended
    length/shape measurements.
 4. Colocalization/localization table nodes after the measurement/graph platform

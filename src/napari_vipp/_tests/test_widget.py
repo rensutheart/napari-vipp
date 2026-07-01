@@ -173,6 +173,24 @@ def _palette_child_by_text(parent, text):
     raise AssertionError(f"Palette child not found: {text}")
 
 
+def _assert_rgb_channel_layers(viewer, base_name: str, expected_shape: tuple[int, ...]):
+    channels = (
+        (base_name, "Red", "red", 0),
+        (f"{base_name} Green", "Green", "green", 1),
+        (f"{base_name} Blue", "Blue", "blue", 2),
+    )
+    for layer_name, channel_name, colormap, channel_index in channels:
+        layer = viewer.layers[layer_name]
+        assert layer.data.shape == expected_shape
+        assert not layer.rgb
+        assert layer.colormap == colormap
+        assert layer.blending == "additive"
+        assert layer.metadata["display_rgb"] is True
+        assert layer.metadata["display_rgb_as_channels"] is True
+        assert layer.metadata["display_rgb_channel"] == channel_name
+        assert layer.metadata["display_rgb_channel_index"] == channel_index
+
+
 def _metadata_value(widget, label):
     for row in range(widget.metadata_table.rowCount()):
         label_item = widget.metadata_table.item(row, 0)
@@ -1511,6 +1529,29 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     assert _palette_child_by_text(object_separation, "Expand Labels")
     assert object_separation.child(0).text(0) == "Auto Watershed From Mask"
 
+    morphology = _palette_category(widget, "Morphology")
+    skeleton_qc = _palette_child_by_text(morphology, "Skeleton / Network QC")
+    assert _palette_child_by_text(skeleton_qc, "Skeletonize")
+    assert _palette_child_by_text(skeleton_qc, "Skeleton Keypoints")
+    assert _palette_child_by_text(skeleton_qc, "Skeleton Graph Overlay")
+    assert _palette_child_by_text(skeleton_qc, "Prune Skeleton Branches")
+
+    labels = _palette_category(widget, "Label Operations")
+    label_skeleton_qc = _palette_child_by_text(labels, "Skeleton / Network QC")
+    assert _palette_child_by_text(label_skeleton_qc, "Label Skeleton Components")
+    assert _palette_child_by_text(label_skeleton_qc, "Label Skeleton Branches")
+
+    measurements = _palette_category(widget, "Measurements")
+    measurement_skeleton_qc = _palette_child_by_text(
+        measurements,
+        "Skeleton / Network QC",
+    )
+    assert _palette_child_by_text(measurement_skeleton_qc, "Analyze Skeleton")
+    assert _palette_child_by_text(
+        measurement_skeleton_qc,
+        "Measure Skeleton Branches",
+    )
+
 
 def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
     viewer = _Viewer(np.zeros((16, 18), dtype=np.float32))
@@ -2257,13 +2298,49 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
 
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
-    inspect = viewer.layers["VIPP Inspect"]
-    assert inspect.rgb
-    assert inspect.metadata["display_rgb"] is True
-    assert inspect.data.shape == (2, 4, 5, 6, 3)
+    _assert_rgb_channel_layers(viewer, "VIPP Inspect", (2, 4, 5, 6))
     assert (
         "1. Composite \u2192 RGB: mapped channels to RGB" in widget.history_label.text()
     )
+
+
+def test_skeleton_graph_overlay_inspects_as_rgb_layer(qtbot):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+    data[:, 4:12, 8] = 1
+    data[:, 8, 4:14] = 1
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeleton_graph_overlay")
+    widget._connect_nodes("threshold", node.id)
+    widget.run_pipeline()
+    widget.inspect_node(node.id)
+
+    assert widget.pipeline.outputs[node.id].shape == (3, 16, 18, 3)
+    assert _metadata_value(widget, "Kind") == "RGB image"
+    assert _metadata_value(widget, "Dimensions") == "z=3, y=16, x=18, rgb=3"
+    _assert_rgb_channel_layers(viewer, "VIPP Inspect", (3, 16, 18))
+
+
+def test_skeleton_graph_overlay_2d_inspects_as_single_rgb_layer(qtbot):
+    data = np.zeros((16, 18), dtype=np.float32)
+    data[4:12, 8] = 1
+    data[8, 4:14] = 1
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("skeleton_graph_overlay")
+    widget._connect_nodes("threshold", node.id)
+    widget.run_pipeline()
+    widget.inspect_node(node.id)
+
+    assert widget.pipeline.outputs[node.id].shape == (16, 18, 3)
+    inspect = viewer.layers["VIPP Inspect"]
+    assert inspect.rgb
+    assert inspect.metadata["display_rgb"] is True
+    assert inspect.data.shape == (16, 18, 3)
 
 
 def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
@@ -2289,9 +2366,7 @@ def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
     assert widget.pipeline.outputs[node.id].shape == (12, 16, 18, 3)
     assert widget.pipeline.outputs[node.id].max() == 1.0
     assert _metadata_value(widget, "Dimensions") == "z=12, y=16, x=18, rgb=3"
-    inspect = viewer.layers["VIPP Inspect"]
-    assert inspect.rgb
-    assert inspect.metadata["display_rgb"] is True
+    _assert_rgb_channel_layers(viewer, "VIPP Inspect", (12, 16, 18))
 
     channel_axis.value_box.setValue(0)
     red_channel.value_box.setValue(0)
@@ -4384,6 +4459,45 @@ def test_image_nodes_can_be_pinned(qtbot):
     assert widget._active_pinned_node_id == "gaussian"
     assert widget.graph_view._cards["gaussian"]._pinned
     assert widget.graph_view._cards["gaussian"].pin_button.isHidden()
+
+
+def test_rgb_volume_pin_uses_additive_channel_layers(qtbot):
+    data = np.zeros((3, 12, 16, 18), dtype=np.uint16)
+    data[0] = 1000
+    data[1] = 2000
+    data[2] = 3000
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.pin_node(node.id)
+
+    base_name = "VIPP Pinned: Composite \u2192 RGB"
+    _assert_rgb_channel_layers(viewer, base_name, (12, 16, 18))
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+    ]
+    assert len(pinned_layers) == 3
+    assert {layer.metadata["display_rgb_channel"] for layer in pinned_layers} == {
+        "Red",
+        "Green",
+        "Blue",
+    }
+    assert widget._active_pinned_node_id == node.id
+
+    widget.pin_node(node.id)
+
+    pinned_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "pinned"
+    ]
+    assert pinned_layers == []
+    assert widget._active_pinned_node_id is None
 
 
 def test_table_nodes_cannot_be_pinned(qtbot):

@@ -235,12 +235,13 @@ morphology operations: users must be told that the node works in the current
 `YX` plane and that `Reorder Axes` should be used first when a different plane
 or slice axis is intended.
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
-  Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize
+  Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize,
+  Skeleton Keypoints, Skeleton Graph Overlay, Prune Skeleton Branches
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
-  Filter Labels By Property, Clear Border Objects, Relabel Sequential
+  Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
+  Skeleton Components, Label Skeleton Branches
 - `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Skeleton Keypoints, Label Skeleton Components, Label Skeleton
-  Branches, Prune Skeleton Branches, Merge Tables, Select Table Columns, Add
+  Skeleton, Measure Skeleton Branches, Merge Tables, Select Table Columns, Add
   Metadata Columns, Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
@@ -335,13 +336,16 @@ a `table` with one row per connected skeleton component. It reports skeleton
 voxel count, endpoint voxels, junction voxels, isolated nodes, simplified
 graph node/edge counts, voxel-graph edge count, cycle count, per-block
 connected-component context, and skeleton length in pixels/voxels plus
-calibrated physical units when spatial scale metadata is available. `Skeleton
-Keypoints`, `Label Skeleton Components`, `Label Skeleton Branches`, and `Prune
-Skeleton Branches` provide visual QC masks/labels and simple terminal-spur
-cleanup using the same skeleton graph rules. The first graph analyzer
-deliberately stays generic; mitochondrial-specific fragmentation, mesh/surface,
-domain-normalized connectivity measurements, graph export, and richer branch
-metrics should be separate specialist nodes.
+calibrated physical units when spatial scale metadata is available. `Measure
+Skeleton Branches` emits one table row per traced branch with branch type,
+length, endpoint-to-endpoint distance, tortuosity, start/end coordinates, and
+calibrated physical length when possible. `Skeleton Keypoints`, `Skeleton Graph
+Overlay`, `Label Skeleton Components`, `Label Skeleton Branches`, and `Prune
+Skeleton Branches` provide visual QC masks/RGB overlays/labels and simple
+terminal-spur cleanup using the same skeleton graph rules. The first graph
+analyzers deliberately stay generic; mitochondrial-specific fragmentation,
+mesh/surface, domain-normalized connectivity measurements, graph export, and
+summary branch distributions should be separate specialist nodes.
 
 The longer-term measurement architecture must support selectable measurement
 families and merged per-object result tables for exploratory statistics such as
@@ -481,6 +485,11 @@ red/green/blue selectors still force single-channel RGB plane mapping. Split
 Channels exposes a `Thumbnail channel` inspector parameter that chooses which
 output port appears on the node card; it does not alter the generated channel
 outputs or downstream port wiring.
+
+For generated napari inspect/pin layers, 2D RGB outputs use napari's native
+`rgb=True` image layer. Volumetric RGB outputs are displayed as synchronized
+additive red/green/blue image layers because napari's scalar-field 3D status
+and rendering path does not reliably handle hidden RGB axes.
 
 Toolbar thumbnail controls are global display settings. `Thumbnails` gates all
 node-card thumbnail generation, while the selected-node inspector checkbox
@@ -760,15 +769,16 @@ Implemented now:
   generated Python export still calculate manual nodes by default so batch
   output is deterministic and does not depend on UI caches. Workflow JSON
   persists node settings but does not serialize cached arrays or tables;
-- generic skeletonization, skeleton-network measurement tables, keypoint masks,
-  branch/component labels, and short-branch pruning;
+- generic skeletonization, skeleton-network and skeleton-branch measurement
+  tables, keypoint masks, RGB graph overlays, branch/component labels, and
+  short-branch pruning;
 - standard maximize behavior for detached VIPP windows.
 
 Still incomplete or deliberately future-facing:
 
 - calibrated extended-length variants and mesh morphology;
-- skeleton graph export, richer branch metrics, physical-length pruning units,
-  and cancellation/percentage progress for long manual calculations;
+- skeleton graph export, branch-summary distributions, physical-length pruning
+  units, and cancellation/percentage progress for long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution;

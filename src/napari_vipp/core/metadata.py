@@ -853,7 +853,7 @@ def _transformed_axes(
         axes = _crop_shifted_axes(axes, params)
     if operation_id == "reorder_axes":
         return _reordered_axes(axes, params, arr.ndim)
-    if operation_id == "composite_to_rgb":
+    if operation_id in {"composite_to_rgb", "skeleton_graph_overlay"}:
         return _composite_to_rgb_axes(axes, arr.ndim)
     if operation_id == "orthogonal_projection":
         return _orthogonal_projection_axes(axes, arr.ndim, params)
@@ -1550,6 +1550,8 @@ def _operation_history(
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "composite_to_rgb":
         return f"{operation_title}: mapped channels to RGB"
+    if operation_id == "skeleton_graph_overlay":
+        return f"{operation_title}: {params.get('display_mode', 'RGB graph overlay')}"
     if operation_id == "crop_stack":
         return (
             f"{operation_title}: cropped top={int(params.get('top', 0))}, "

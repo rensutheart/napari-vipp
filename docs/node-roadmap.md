@@ -129,11 +129,10 @@ yet:
 
 - provide robust seeded segmentation presets beyond the current watershed
   building blocks and defaults;
-- export explicit branch graphs or calculate tortuosity/branch-length
-  distributions;
+- export explicit branch graphs or calculate branch-summary distributions;
 - use calibrated physical area/volume directly as a filter unit;
-- run expensive metrics or restorations as explicit cached computations with
-  progress and stale-result feedback.
+- provide cancellation and percentage progress for long cached metrics or
+  restorations.
 
 ## Existing Nodes To Clarify
 
@@ -209,8 +208,8 @@ work.
 
 Some nodes should not execute continuously on every upstream or parameter
 change. The baseline manual/cached model is now implemented for
-`Measure Objects`, `Measure Objects + Intensity`, and `Analyze Skeleton`.
-Future examples include 3D mesh morphology, richer skeleton graph analysis,
+`Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`, and
+`Measure Skeleton Branches`. Future examples include 3D mesh morphology,
 colocalization/localization over large stacks, deconvolution, and expensive
 background estimation.
 
@@ -489,8 +488,9 @@ Table outputs, basic object measurement, intensity measurement, table merge,
 metadata annotation, grouped table summaries, and base skeleton-network
 measurement are now implemented. Skeleton QC outputs and pruning are also
 implemented. Manual/cached `Calculate`/`Recalculate` execution is implemented
-for the first expensive table nodes. Next priorities are skeleton graph export
-and richer branch metrics, 3D mesh morphology, and then
+for the first expensive table nodes. Branch-level skeleton measurements and
+RGB graph overlays are implemented. Next priorities are explicit skeleton graph
+export, branch-summary distributions, 3D mesh morphology, and then
 colocalization/localization tables.
 
 ## Recommended First Milestone
@@ -637,11 +637,15 @@ inputs require nearest-neighbor interpolation.
   voxel-graph edge count, cycle count, connected-component context, and
   calibrated length;
 - implemented: Skeleton Keypoints endpoint/junction/isolated-node masks;
+- implemented: Skeleton Graph Overlay for RGB edge/node QC visualization;
 - implemented: Label Skeleton Components and Label Skeleton Branches;
 - implemented: Prune Skeleton Branches for short terminal spurs and isolated
   skeleton voxels;
+- implemented: Measure Skeleton Branches for row-per-branch length,
+  endpoint-distance, tortuosity, start/end coordinates, and calibrated physical
+  length when metadata is available;
 - medial axis;
-- physical-length pruning units, branch-length distributions, and tortuosity;
+- physical-length pruning units and branch-summary distributions;
 - grayscale erosion, dilation, opening, and closing;
 - label erosion and label-safe expansion;
 - convex hull per object;

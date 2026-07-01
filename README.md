@@ -212,20 +212,22 @@ The current node catalogue includes:
   - Fill Holes
   - Remove Small Objects
   - Skeletonize
+  - Skeleton Keypoints
+  - Skeleton Graph Overlay
+  - Prune Skeleton Branches
 - Label Operations:
   - Label Connected Components
   - Filter Labels By Volume
   - Filter Labels By Property
   - Clear Border Objects
   - Relabel Sequential
+  - Label Skeleton Components
+  - Label Skeleton Branches
 - Measurements:
   - Measure Objects
   - Measure Objects + Intensity
   - Analyze Skeleton
-  - Skeleton Keypoints
-  - Label Skeleton Components
-  - Label Skeleton Branches
-  - Prune Skeleton Branches
+  - Measure Skeleton Branches
   - Merge Tables
   - Select Table Columns
   - Add Metadata Columns
@@ -318,12 +320,23 @@ and outputs a per-component table with skeleton voxel count, endpoint voxels,
 junction voxels, isolated nodes, branch/graph edge counts, voxel-graph edge
 count, cycle count, per-block component count, component voxel fraction, and
 skeleton length in pixel/voxel and physical units when scale metadata is
+available. `Measure Skeleton Branches` outputs one row per traced graph branch
+with branch type, voxel/edge counts, length, endpoint-to-endpoint distance,
+tortuosity, start/end coordinates, and calibrated physical length when
 available. `Skeleton Keypoints` emits separate endpoint, junction, and isolated
-node masks. `Label Skeleton Components` and `Label Skeleton Branches` turn
-network topology into inspectable label images, while `Prune Skeleton Branches`
-removes short terminal spurs and optional isolated skeleton voxels. These nodes
-are generic and are intended for mitochondria, neurites, vessels, fibers,
-hyphae, and other curvilinear structures.
+node masks. `Skeleton Graph Overlay` renders skeleton edges and graph nodes as
+a channel-last RGB QC image with selectable colored-edge or white-edge modes.
+For napari 3D viewing, VIPP displays volumetric RGB outputs as separate
+additive red/green/blue layers because napari's native RGB-volume path is not
+reliable for this use case.
+`Label Skeleton Components` and `Label Skeleton Branches` turn network topology
+into inspectable label images, while `Prune Skeleton Branches` removes short
+terminal spurs and optional isolated skeleton voxels. These nodes are generic
+and are intended for mitochondria, neurites, vessels, fibers, hyphae, and other
+curvilinear structures.
+
+See [docs/skeleton-nodes.md](docs/skeleton-nodes.md) for a practical guide to
+the skeleton node inputs, outputs, and intended use.
 
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
@@ -419,8 +432,8 @@ Near-term development priorities:
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
   and progress where possible;
-- skeleton graph export and richer branch metrics such as branch-length
-  distributions and tortuosity;
+- skeleton graph export, branch-summary distributions, and physical-length
+  pruning units;
 - richer 3D mesh morphology and calibrated physical variants for extended
   length/shape measurements;
 - colocalization/localization table nodes;
