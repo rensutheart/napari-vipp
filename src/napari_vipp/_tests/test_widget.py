@@ -27,6 +27,9 @@ from napari_vipp._widget import (
 )
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.pipeline import (
+    EXECUTION_NOT_CALCULATED,
+    EXECUTION_READY,
+    EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
     SourcePayload,
@@ -3928,6 +3931,7 @@ def test_palette_image_operations_can_run(qtbot):
     data[1, 8, 10] = 255
     viewer = _Viewer(data)
     widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
     qtbot.addWidget(widget)
     label_source_id = None
     table_source_id = None
@@ -3952,6 +3956,7 @@ def test_palette_image_operations_can_run(qtbot):
             return table_source_id
         measurements = widget.add_node_from_palette("measure_objects")
         widget._connect_nodes(ensure_label_source(), measurements.id)
+        widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
         qtbot.waitUntil(
             lambda: widget.pipeline.outputs.get(measurements.id) is not None,
             timeout=30_000,
@@ -3991,13 +3996,27 @@ def test_palette_image_operations_can_run(qtbot):
                 widget._connect_nodes(second_input.id, node.id)
 
         qtbot.waitUntil(
-            lambda node_id=node.id: (
+            lambda: (
                 widget._active_pipeline_run_id is None
                 and not widget._pipeline_run_pending
-                and widget.pipeline.outputs.get(node_id) is not None
             ),
             timeout=30_000,
         )
+        if widget.pipeline.is_manual_node(node.id):
+            widget.run_pipeline(force_sync=True, manual_node_ids={node.id})
+        else:
+            widget.run_pipeline(force_sync=True)
+        try:
+            qtbot.waitUntil(
+                lambda node_id=node.id: (
+                    widget._active_pipeline_run_id is None
+                    and not widget._pipeline_run_pending
+                    and widget.pipeline.outputs.get(node_id) is not None
+                ),
+                timeout=30_000,
+            )
+        except Exception as exc:
+            raise AssertionError(f"{spec.id} did not produce output") from exc
         assert widget.pipeline.outputs[node.id] is not None, spec.id
         if spec.output_type == "labels":
             label_source_id = node.id
@@ -4035,6 +4054,17 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     widget.graph_view.select_node(measurements.id)
     path = tmp_path / "measurements.csv"
 
+    assert widget.execution_group.isHidden() is False
+    assert (
+        widget.pipeline.node_execution_states[measurements.id]
+        == EXECUTION_NOT_CALCULATED
+    )
+    assert widget.table_group.isHidden()
+
+    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    widget.graph_view.select_node(measurements.id)
     saved = widget._save_node_output(measurements.id, str(path), format="csv")
 
     assert saved == path
@@ -4051,6 +4081,56 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     assert not widget.thumbnail_checkbox.isHidden()
     assert widget.thumbnail_checkbox.isEnabled()
     assert "label_id" in path.read_text(encoding="utf-8")
+
+
+def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    image[6, 6] = 10
+    viewer = _Viewer(image, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+
+    widget.graph_view.select_node(measurements.id)
+
+    assert not widget.auto_recalculate_checkbox.isChecked()
+    assert not widget.calculate_button.isHidden()
+    assert widget.graph_view._cards[measurements.id].calculate_button.isVisible()
+
+    widget.auto_recalculate_checkbox.setChecked(True)
+
+    assert widget.pipeline.node_auto_recalculate(measurements.id)
+    assert widget.calculate_button.isHidden()
+    assert not widget.graph_view._cards[measurements.id].calculate_button.isVisible()
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    assert widget.pipeline.outputs[measurements.id].row_count == 2
+
+    widget.pipeline.set_param(threshold.id, "threshold", 20)
+    widget._mark_pipeline_dirty(threshold.id)
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    assert widget.pipeline.outputs[measurements.id].row_count == 0
+
+    widget.auto_recalculate_checkbox.setChecked(False)
+    assert not widget.pipeline.node_auto_recalculate(measurements.id)
+    assert not widget.calculate_button.isHidden()
+    assert widget.graph_view._cards[measurements.id].calculate_button.isVisible()
+
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._mark_pipeline_dirty(threshold.id)
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_STALE
+    assert widget.pipeline.outputs[measurements.id].row_count == 0
 
 
 def test_save_selected_output_dialog_defaults_to_ome_tiff(qtbot, monkeypatch, tmp_path):

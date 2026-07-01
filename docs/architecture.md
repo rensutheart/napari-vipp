@@ -747,6 +747,19 @@ Implemented now:
   sequential relabeling, and label-volume distribution controls;
 - first-class table outputs, basic label-object measurement, CSV/TSV table
   saving, and generated-script table output saving;
+- manual/cached execution for expensive table-producing nodes via
+  `OperationSpec.execution_policy = "manual"`. In the interactive widget,
+  manual nodes skip ordinary live recomputation, expose `Calculate`/
+  `Recalculate` on the node card and inspector, keep their last cached output
+  available downstream when stale, and show `not calculated`, `running`,
+  `ready`, `stale`, or `error` state. Manual nodes can opt into the persisted
+  private `_vipp_auto_recalculate` setting from the inspector; when enabled,
+  the widget includes affected manual nodes in ordinary dirty reruns and hides
+  the explicit recalculate button. Private `_vipp_*` settings are filtered out
+  before operation functions run. Headless `PrototypePipeline.run()` and
+  generated Python export still calculate manual nodes by default so batch
+  output is deterministic and does not depend on UI caches. Workflow JSON
+  persists node settings but does not serialize cached arrays or tables;
 - generic skeletonization, skeleton-network measurement tables, keypoint masks,
   branch/component labels, and short-branch pruning;
 - standard maximize behavior for detached VIPP windows.
@@ -754,8 +767,8 @@ Implemented now:
 Still incomplete or deliberately future-facing:
 
 - calibrated extended-length variants and mesh morphology;
-- skeleton graph export, richer branch metrics, and physical-length pruning
-  units;
+- skeleton graph export, richer branch metrics, physical-length pruning units,
+  and cancellation/percentage progress for long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution;

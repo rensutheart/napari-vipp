@@ -115,7 +115,13 @@ from napari_vipp.core.metadata import (
 from napari_vipp.core.operations import automatic_threshold_value, save_array_output
 from napari_vipp.core.pipeline import (
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
+    EXECUTION_ERROR,
+    EXECUTION_NOT_CALCULATED,
+    EXECUTION_READY,
+    EXECUTION_RUNNING,
+    EXECUTION_STALE,
     GLOBAL_THRESHOLD_OPERATIONS,
+    MANUAL_RUN_SKIP,
     OperationSpec,
     ParameterSpec,
     PrototypePipeline,
@@ -186,6 +192,9 @@ class PipelineRunRequest:
     cached_node_outputs: dict[str, list[object]] | None = None
     cached_node_output_states: dict[str, list[object]] | None = None
     completed_node_ids: frozenset[str] = frozenset()
+    cached_execution_states: dict[str, str] | None = None
+    cached_execution_messages: dict[str, str] | None = None
+    manual_node_ids: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +231,8 @@ class PipelineRunWorker(QRunnable):
                 source_payloads=self.request.source_payloads,
                 dirty_node_ids=self.request.dirty_node_ids,
                 node_started_callback=self._emit_node_started,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=self.request.manual_node_ids,
             )
         except Exception as exc:
             self.signals.finished.emit(
@@ -256,6 +267,12 @@ class PipelineRunWorker(QRunnable):
                 node_id: list(states)
                 for node_id, states in self.request.cached_node_output_states.items()
             }
+        if self.request.cached_execution_states is not None:
+            pipeline.node_execution_states = dict(self.request.cached_execution_states)
+        if self.request.cached_execution_messages is not None:
+            pipeline.node_execution_messages = dict(
+                self.request.cached_execution_messages
+            )
         pipeline.completed_node_ids = set(self.request.completed_node_ids)
 
 
@@ -2558,6 +2575,17 @@ class VippWidget(QWidget):
         self.selected_title.setStyleSheet("font-weight: 650;")
         self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
         self.thumbnail_checkbox.setChecked(True)
+        self.execution_group = QGroupBox("Execution")
+        self.execution_status_label = QLabel("Automatic")
+        self.execution_status_label.setWordWrap(True)
+        self.auto_recalculate_checkbox = QCheckBox("Auto Recalculate")
+        self.auto_recalculate_notice = QLabel(
+            "Auto Recalculate runs this node after upstream or parameter changes. "
+            "This can be slow on large images."
+        )
+        self.auto_recalculate_notice.setWordWrap(True)
+        self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
+        self.calculate_button = QPushButton("Calculate")
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
@@ -3086,6 +3114,12 @@ class VippWidget(QWidget):
         layout = QVBoxLayout(content)
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
+        execution_layout = QVBoxLayout(self.execution_group)
+        execution_layout.addWidget(self.execution_status_label)
+        execution_layout.addWidget(self.auto_recalculate_checkbox)
+        execution_layout.addWidget(self.auto_recalculate_notice)
+        execution_layout.addWidget(self.calculate_button)
+        layout.addWidget(self.execution_group)
         layout.addWidget(self.parameter_group)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
         auto_form = QFormLayout()
@@ -3174,6 +3208,10 @@ class VippWidget(QWidget):
         self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
+        self.calculate_button.clicked.connect(self._calculate_selected_node)
+        self.auto_recalculate_checkbox.toggled.connect(
+            self._on_auto_recalculate_toggled
+        )
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
         self.thumbnail_checkbox.toggled.connect(
             self._on_selected_preview_toggled,
@@ -3210,6 +3248,7 @@ class VippWidget(QWidget):
             self._insert_existing_node_on_connection
         )
         self.graph_view.pin_requested.connect(self.pin_node)
+        self.graph_view.node_calculate_requested.connect(self._calculate_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.status_message.connect(self.status_label.setText)
@@ -4371,12 +4410,16 @@ class VippWidget(QWidget):
     def _mark_pipeline_dirty(self, node_id: str) -> None:
         if node_id in self.pipeline.nodes:
             self._pending_dirty_node_ids.add(node_id)
+            self.pipeline.mark_manual_descendants_stale({node_id})
+            self._sync_execution_ui()
 
     def _invalidate_pipeline_cache(self) -> None:
         self._pending_dirty_node_ids.clear()
         self._inflight_dirty_node_ids = None
         self._last_pipeline_source_signature = None
         self.pipeline.completed_node_ids.clear()
+        self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
+        self._sync_execution_ui()
 
     def _begin_pipeline_dispatch(self, dirty_node_ids: set[str] | None) -> None:
         """Mark a run as in flight and clear the dirty nodes it covers.
@@ -4781,6 +4824,7 @@ class VippWidget(QWidget):
         self._clear_empty_inspector()
 
     def _clear_empty_inspector(self) -> None:
+        self.execution_group.setHidden(True)
         self.metadata_table.setRowCount(0)
         self.table_group.setHidden(True)
         self.table_preview.setRowCount(0)
@@ -4809,6 +4853,98 @@ class VippWidget(QWidget):
         self._keep_active_pin_on_top()
         self._update_metadata_panel()
         self._update_histogram()
+        self._sync_execution_ui()
+
+    def _calculate_selected_node(self) -> None:
+        self._calculate_node(self._selected_node_id)
+
+    def _calculate_node(self, node_id: str) -> None:
+        if not self.pipeline.is_manual_node(node_id):
+            return
+        self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
+        self.pipeline.node_execution_messages[node_id] = ""
+        self._sync_execution_ui()
+        self.run_pipeline(manual_node_ids={node_id})
+
+    def _on_auto_recalculate_toggled(self, checked: bool) -> None:
+        node_id = self._selected_node_id
+        if not self.pipeline.is_manual_node(node_id):
+            return
+        if self.pipeline.node_auto_recalculate(node_id) == bool(checked):
+            self._sync_execution_ui()
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self.pipeline.set_node_auto_recalculate(node_id, checked)
+        self._push_undo_if_changed(before)
+        self._sync_execution_ui()
+        if checked:
+            state = self.pipeline.node_execution_states.get(
+                node_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+            if state != EXECUTION_READY:
+                self.run_pipeline(manual_node_ids={node_id})
+            self.status_label.setText(
+                f"Auto Recalculate enabled for '{self._node_title(node_id)}'."
+            )
+        else:
+            self.status_label.setText(
+                f"Auto Recalculate disabled for '{self._node_title(node_id)}'."
+            )
+
+    def _sync_execution_ui(self) -> None:
+        for node_id in self.pipeline.nodes:
+            manual = self.pipeline.is_manual_node(node_id)
+            state = self.pipeline.node_execution_states.get(
+                node_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+            message = self.pipeline.node_execution_messages.get(node_id, "")
+            auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
+            self.graph_view.set_node_execution_state(
+                node_id,
+                state,
+                manual=manual,
+                message=message,
+                auto_recalculate=auto_recalculate,
+            )
+
+        node_id = self._selected_node_id
+        if node_id not in self.pipeline.nodes or not self.pipeline.is_manual_node(
+            node_id
+        ):
+            self.execution_group.setHidden(True)
+            return
+        state = self.pipeline.node_execution_states.get(
+            node_id,
+            EXECUTION_NOT_CALCULATED,
+        )
+        message = self.pipeline.node_execution_messages.get(node_id, "")
+        auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
+        self.execution_group.setHidden(False)
+        self.execution_status_label.setText(
+            self._execution_status_text(state, message),
+        )
+        with QSignalBlocker(self.auto_recalculate_checkbox):
+            self.auto_recalculate_checkbox.setChecked(auto_recalculate)
+        self.calculate_button.setEnabled(state != EXECUTION_RUNNING)
+        self.calculate_button.setHidden(auto_recalculate)
+        self.calculate_button.setText(
+            "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
+        )
+
+    @staticmethod
+    def _execution_status_text(state: str, message: str = "") -> str:
+        if state == EXECUTION_READY:
+            return "Cached result ready."
+        if state == EXECUTION_RUNNING:
+            return "Calculating..."
+        if state == EXECUTION_STALE:
+            return message or "Cached result is stale. Recalculate to refresh it."
+        if state == EXECUTION_ERROR:
+            return message or "Calculation failed."
+        return message or "This node calculates only when requested."
 
     def _render_parameters(self, node_id: str) -> None:
         self._clear_parameter_form()
@@ -7072,7 +7208,17 @@ class VippWidget(QWidget):
             f"({lower:.3g} to {upper:.3g})."
         )
 
-    def run_pipeline(self, *, force_sync: bool = False) -> None:
+    def run_pipeline(
+        self,
+        *,
+        force_sync: bool = False,
+        manual_node_ids: set[str] | None = None,
+    ) -> None:
+        manual_node_ids = {
+            node_id
+            for node_id in (manual_node_ids or set())
+            if self.pipeline.is_manual_node(node_id)
+        }
         toolbar_layer = self._selected_input_layer()
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
@@ -7089,6 +7235,7 @@ class VippWidget(QWidget):
             self._update_thumbnails()
             self._update_metadata_panel()
             self._update_histogram()
+            self._sync_execution_ui()
             self.status_label.setText("No image layer selected.")
             return
 
@@ -7112,8 +7259,24 @@ class VippWidget(QWidget):
             input_name,
             source_payloads,
         )
+        source_unchanged = source_signature == self._last_pipeline_source_signature
         dirty_node_ids = self._dirty_nodes_for_run(source_signature)
-        if (not force_sync) and self._should_run_pipeline_in_background(dirty_node_ids):
+        manual_node_ids = self._manual_node_ids_for_run(
+            dirty_node_ids,
+            manual_node_ids,
+            source_unchanged=source_unchanged,
+        )
+        if manual_node_ids and source_unchanged:
+            if dirty_node_ids is None:
+                dirty_node_ids = set(manual_node_ids)
+            else:
+                dirty_node_ids.update(manual_node_ids)
+        if (
+            not force_sync
+        ) and self._should_run_pipeline_in_background(
+            dirty_node_ids,
+            manual_node_ids,
+        ):
             self._start_background_pipeline_run(
                 input_data,
                 input_metadata,
@@ -7123,6 +7286,7 @@ class VippWidget(QWidget):
                 source_label,
                 source_signature,
                 dirty_node_ids,
+                manual_node_ids,
             )
             return
         self._run_pipeline_synchronously(
@@ -7134,7 +7298,27 @@ class VippWidget(QWidget):
             source_label,
             source_signature,
             dirty_node_ids,
+            manual_node_ids,
         )
+
+    def _manual_node_ids_for_run(
+        self,
+        dirty_node_ids: set[str] | None,
+        explicit_manual_node_ids: set[str],
+        *,
+        source_unchanged: bool,
+    ) -> set[str]:
+        manual_node_ids = set(explicit_manual_node_ids)
+        auto_node_ids = self.pipeline.auto_recalculate_node_ids()
+        if not auto_node_ids:
+            return manual_node_ids
+        if not source_unchanged:
+            manual_node_ids.update(auto_node_ids)
+            return manual_node_ids
+        if dirty_node_ids:
+            affected = self.pipeline.descendants_inclusive(dirty_node_ids)
+            manual_node_ids.update(auto_node_ids & affected)
+        return manual_node_ids
 
     def _run_pipeline_synchronously(
         self,
@@ -7146,6 +7330,7 @@ class VippWidget(QWidget):
         source_label: str,
         source_signature: tuple,
         dirty_node_ids: set[str] | None,
+        manual_node_ids: set[str] | None = None,
     ) -> None:
         self._set_pipeline_busy(False)
         self._begin_pipeline_dispatch(dirty_node_ids)
@@ -7156,8 +7341,13 @@ class VippWidget(QWidget):
                 input_name=input_name,
                 source_payloads=source_payloads,
                 dirty_node_ids=dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=manual_node_ids,
             )
         except Exception as exc:
+            for node_id in manual_node_ids or ():
+                self.pipeline.set_node_execution_error(node_id, str(exc))
+            self._sync_execution_ui()
             self.status_label.setText(f"Pipeline error: {exc}")
             return
         autodefault_changed = self._resync_autodefault_nodes()
@@ -7174,6 +7364,7 @@ class VippWidget(QWidget):
                     input_name=input_name,
                     source_payloads=source_payloads,
                     dirty_node_ids=rerun_dirty,
+                    manual_mode=MANUAL_RUN_SKIP,
                 )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
@@ -7187,6 +7378,7 @@ class VippWidget(QWidget):
         self._refresh_pinned_layer_if_active()
         self._update_metadata_panel()
         self._update_histogram()
+        self._sync_execution_ui()
         if source_label:
             self.status_label.setText(
                 f"Graph updated from '{source_label}'. "
@@ -7206,13 +7398,25 @@ class VippWidget(QWidget):
     def _should_run_pipeline_in_background(
         self,
         dirty_node_ids: set[str] | None = None,
+        manual_node_ids: set[str] | None = None,
     ) -> bool:
-        return self._background_processing_node_id(dirty_node_ids) is not None
+        return (
+            self._background_processing_node_id(dirty_node_ids, manual_node_ids)
+            is not None
+        )
 
     def _background_processing_node_id(
         self,
         dirty_node_ids: set[str] | None = None,
+        manual_node_ids: set[str] | None = None,
     ) -> str | None:
+        manual_node_ids = set(manual_node_ids or set())
+        if manual_node_ids:
+            for node_id in self.pipeline.topological_order():
+                if node_id in manual_node_ids:
+                    return node_id
+            return None
+
         if self.background_all_checkbox.isChecked():
             if dirty_node_ids:
                 affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
@@ -7244,8 +7448,13 @@ class VippWidget(QWidget):
         source_label: str,
         source_signature: tuple,
         dirty_node_ids: set[str] | None,
+        manual_node_ids: set[str] | None = None,
     ) -> None:
-        processing_node_id = self._background_processing_node_id(dirty_node_ids)
+        manual_node_ids = set(manual_node_ids or set())
+        processing_node_id = self._background_processing_node_id(
+            dirty_node_ids,
+            manual_node_ids,
+        )
         if self._active_pipeline_run_id is not None:
             self._pipeline_run_pending = True
             self._set_pipeline_busy(
@@ -7277,30 +7486,33 @@ class VippWidget(QWidget):
                 frozenset(dirty_node_ids) if dirty_node_ids is not None else None
             ),
             cached_outputs=(
-                dict(self.pipeline.outputs) if dirty_node_ids is not None else None
+                dict(self.pipeline.outputs)
             ),
             cached_output_states=(
                 dict(self.pipeline.output_states)
-                if dirty_node_ids is not None
-                else None
             ),
             cached_node_outputs=(
                 {
                     node_id: list(outputs)
                     for node_id, outputs in self.pipeline.node_outputs.items()
                 }
-                if dirty_node_ids is not None
-                else None
             ),
             cached_node_output_states=(
                 {
                     node_id: list(states)
                     for node_id, states in self.pipeline.node_output_states.items()
                 }
-                if dirty_node_ids is not None
-                else None
+            ),
+            cached_execution_states=(
+                dict(self.pipeline.node_execution_states)
+            ),
+            cached_execution_messages=(
+                dict(self.pipeline.node_execution_messages)
             ),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+            manual_node_ids=(
+                frozenset(manual_node_ids) if manual_node_ids else None
+            ),
         )
         self._active_pipeline_run_id = run_id
         self._begin_pipeline_dispatch(dirty_node_ids)
@@ -7362,6 +7574,8 @@ class VippWidget(QWidget):
             QTimer.singleShot(0, self.run_pipeline)
             return
         if result.error:
+            self.pipeline.set_node_execution_error(processing_node_id, result.error)
+            self._sync_execution_ui()
             self._set_pipeline_busy(False)
             self.status_label.setText(f"Pipeline error: {result.error}")
             return
@@ -7439,6 +7653,12 @@ class VippWidget(QWidget):
             for node_id, states in result_pipeline.node_output_states.items()
         }
         self.pipeline.completed_node_ids = set(result_pipeline.completed_node_ids)
+        self.pipeline.node_execution_states = dict(
+            result_pipeline.node_execution_states,
+        )
+        self.pipeline.node_execution_messages = dict(
+            result_pipeline.node_execution_messages,
+        )
 
     def _set_pipeline_busy(
         self,
@@ -7453,6 +7673,7 @@ class VippWidget(QWidget):
             self.pipeline_busy_label.setText("Processing")
             self.graph_view.clear_node_processing()
             self._active_pipeline_node_id = None
+            self._sync_execution_ui()
             return
         if node_id is None:
             node_id = self._active_pipeline_node_id
@@ -7462,10 +7683,14 @@ class VippWidget(QWidget):
             self.graph_view.set_node_processing(self._active_pipeline_node_id, False)
         self._active_pipeline_node_id = node_id
         if node_id is not None:
+            if self.pipeline.is_manual_node(node_id):
+                self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
+                self.pipeline.node_execution_messages[node_id] = ""
             title = self._node_title(node_id)
             suffix = " queued" if queued else ""
             self.pipeline_busy_label.setText(f"Processing: {title}{suffix}")
             self.graph_view.set_node_processing(node_id, True, queued=queued)
+            self._sync_execution_ui()
         else:
             self.pipeline_busy_label.setText("Processing graph")
 

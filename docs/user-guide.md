@@ -43,3 +43,30 @@ Recommended for fixed-reference comparisons while navigating dims:
 
 - Follow napari dims: Off
 - Run all in BG: choose based on pipeline size
+
+## Manual Calculation Nodes
+
+Some table-producing nodes are intentionally not recalculated on every
+parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
++ Intensity`, and `Analyze Skeleton`.
+
+When selected, these nodes show an `Execution` panel with `Calculate` or
+`Recalculate`. The same action is available on the node card. If upstream data
+or parameters change after a calculation, the node keeps its last table output
+available downstream but marks it as stale until recalculated. Workflow files do
+not store cached tables, so loading a workflow starts from the node settings and
+the table must be calculated again in the UI. Exported Python scripts calculate
+manual nodes normally during headless runs.
+
+The `Execution` panel also has `Auto Recalculate`. This is off by default. When
+enabled for a manual node, VIPP recalculates that node automatically when
+upstream data or relevant parameters change, and hides the manual
+`Recalculate` button because the node no longer waits for an explicit click.
+Use it only when the node is fast enough for the current image size.
+
+Manual node cards use status colours:
+
+- gray: not calculated;
+- green: calculated and current;
+- orange: cached result is stale;
+- red: calculation failed.

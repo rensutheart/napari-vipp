@@ -14,6 +14,13 @@
   component labels, pruning, and before/after skeleton analysis.
 - Adjusted thumbnail percentile contrast so sparse bright foreground objects
   are not dropped as outliers while low-amplitude background ramps are stretched.
+- Added manual/cached execution for expensive table nodes. `Measure Objects`,
+  `Measure Objects + Intensity`, and `Analyze Skeleton` now expose
+  `Calculate`/`Recalculate`, keep the last result available downstream when
+  stale, and recompute deterministically in headless/export runs.
+- Added per-node `Auto Recalculate` for manual nodes, with a warning that it
+  can be slow on large inputs. Manual node cards now use gray, green, orange,
+  and red state colors for not calculated, ready, stale, and error results.
 
 ## 0.8.2a2 - 2026-06-30
 

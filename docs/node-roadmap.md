@@ -205,34 +205,36 @@ Pandas is intentionally not required for core measurement or export. Optional
 linkage from a label column back to a displayed Labels layer remains future UI
 work.
 
-### Slow Node Execution And Progress State: Not Implemented
+### Slow Node Execution And Progress State: Baseline Implemented
 
-Some future nodes should not execute continuously on every upstream or
-parameter change. Examples include broad measurement families, 3D mesh
-morphology, richer skeleton graph analysis, colocalization/localization over
-large stacks, deconvolution, and expensive background estimation.
+Some nodes should not execute continuously on every upstream or parameter
+change. The baseline manual/cached model is now implemented for
+`Measure Objects`, `Measure Objects + Intensity`, and `Analyze Skeleton`.
+Future examples include 3D mesh morphology, richer skeleton graph analysis,
+colocalization/localization over large stacks, deconvolution, and expensive
+background estimation.
 
-The intended UX model is:
+The implemented UX model is:
 
 - the node card and inspector expose `Calculate` or `Recalculate`;
-- the node can keep its last valid result as its current output, or act as an
-  explicit pass-through checkpoint only when that behavior is named and visible;
+- the inspector exposes `Auto Recalculate`, off by default, for manual nodes
+  that are fast enough to update live for the current data;
+- the node keeps its last valid result as its current output;
 - changing an upstream input or relevant parameter marks the result as stale;
 - stale nodes remain usable downstream but show a visible warning state;
-- active calculations show a progress ring/bar on the card or thumbnail and a
-  status message in the inspector;
-- live nodes that briefly take longer than expected should also show a busy
-  indicator instead of making the interface look frozen;
+- node-card state colours are gray for not calculated, green for current,
+  orange for stale, and red for error;
+- active calculations show the existing background busy ring and inspector
+  status;
 - the UI remains responsive while the operation runs;
-- cancellation and failure states are explicit;
 - exported Python and batch execution recompute deterministically rather than
   depending on an interactive cached value.
 
-The first implementation should probably introduce operation capability flags
-such as `live`, `manual`, and `expensive`, plus a cached-result wrapper that can
-track input fingerprints, parameter fingerprints, progress, stale state, and
-failure messages. Workflow JSON should initially persist the node settings and
-stale/calculated status policy, not large cached arrays or tables.
+Remaining TODO: cancellation, percentage progress for operations that expose
+progress, polished failure recovery, and broader adoption by future expensive
+feature families. Workflow JSON persists node settings and graph structure,
+including the auto-recalculate preference, but deliberately does not store large
+cached arrays or tables.
 
 ### Spatial Scope And Units: Partially Implemented
 
@@ -486,10 +488,10 @@ metadata, and export the result for PCA or other statistical analysis. See
 Table outputs, basic object measurement, intensity measurement, table merge,
 metadata annotation, grouped table summaries, and base skeleton-network
 measurement are now implemented. Skeleton QC outputs and pruning are also
-implemented. The next platform step should be manual/cached
-`Calculate`/`Recalculate` execution for expensive feature families, followed by
-colocalization/localization tables, graph export/richer branch metrics, and 3D
-mesh morphology.
+implemented. Manual/cached `Calculate`/`Recalculate` execution is implemented
+for the first expensive table nodes. Next priorities are skeleton graph export
+and richer branch metrics, 3D mesh morphology, and then
+colocalization/localization tables.
 
 ## Recommended First Milestone
 

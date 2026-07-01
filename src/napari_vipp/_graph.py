@@ -87,6 +87,7 @@ class NodeCard(QFrame):
 
     selected = Signal(str)
     pin_requested = Signal(str)
+    calculate_requested = Signal(str)
 
     def __init__(
         self,
@@ -108,6 +109,10 @@ class NodeCard(QFrame):
         self._processing = False
         self._processing_queued = False
         self._processing_angle = 0
+        self._manual_execution = False
+        self._execution_state = "not_calculated"
+        self._execution_message = ""
+        self._auto_recalculate = False
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(220)
@@ -133,6 +138,16 @@ class NodeCard(QFrame):
         self.metadata_label.setStyleSheet(
             "color: #cbd5e1; font-size: 10px; padding-top: 2px;"
         )
+        self.execution_label = QLabel("")
+        self.execution_label.setWordWrap(True)
+        self.execution_label.setStyleSheet(
+            "color: #fbbf24; font-size: 10px; padding-top: 1px;"
+        )
+        self.calculate_button = QPushButton("Calculate", self)
+        self.calculate_button.clicked.connect(
+            lambda: self.calculate_requested.emit(self.node_id)
+        )
+        self.calculate_button.setVisible(False)
         self.pin_button = QPushButton("Pin", self)
         self.pin_button.clicked.connect(lambda: self.pin_requested.emit(self.node_id))
         self.pin_button.setVisible(False)
@@ -145,6 +160,8 @@ class NodeCard(QFrame):
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview)
         layout.addWidget(self.metadata_label)
+        layout.addWidget(self.execution_label)
+        layout.addWidget(self.calculate_button)
         self._refresh_style()
 
     def mousePressEvent(self, event):  # noqa: N802
@@ -203,6 +220,35 @@ class NodeCard(QFrame):
         self._refresh_style()
         self.update()
 
+    def set_execution_state(
+        self,
+        state: str,
+        *,
+        manual: bool,
+        message: str = "",
+        auto_recalculate: bool = False,
+    ) -> None:
+        self._manual_execution = bool(manual)
+        self._execution_state = str(state)
+        self._execution_message = str(message or "")
+        self._auto_recalculate = bool(auto_recalculate)
+        self.calculate_button.setVisible(
+            self._manual_execution and not self._auto_recalculate
+        )
+        self.calculate_button.setText(
+            "Calculate"
+            if self._execution_state == "not_calculated"
+            else "Recalculate"
+        )
+        if not self._manual_execution:
+            self.execution_label.setVisible(False)
+            self.execution_label.setText("")
+        else:
+            self.execution_label.setVisible(True)
+            self.execution_label.setText(self._execution_summary())
+        self._refresh_style()
+        self.update()
+
     def is_processing(self) -> bool:
         return self._processing
 
@@ -247,6 +293,24 @@ class NodeCard(QFrame):
             border = "#facc15"
             border_width = 4
             background = "#2a271b"
+        if self._manual_execution:
+            if self._execution_state == "ready":
+                border = "#22c55e"
+                background = "#182a20"
+            elif self._execution_state == "stale":
+                border = "#f59e0b"
+                background = "#2a2416"
+            elif self._execution_state == "not_calculated":
+                border = "#64748b"
+                background = "#242932"
+            elif self._execution_state == "error":
+                border = "#ef4444"
+                background = "#2f1d1d"
+            if self._selected:
+                border_width = 3
+            if self._pinned:
+                border = "#facc15"
+                border_width = 4
         if self._processing:
             background = "#303640"
             if not self._pinned and not self._selected:
@@ -256,6 +320,23 @@ class NodeCard(QFrame):
         accent_color = self._category_color
         category_background = self._category_tint
         category_color = self._category_color
+        if self._manual_execution:
+            if self._execution_state == "ready":
+                accent_color = "#22c55e"
+                category_background = "#064e3b"
+                category_color = "#bbf7d0"
+            elif self._execution_state == "stale":
+                accent_color = "#f59e0b"
+                category_background = "#78350f"
+                category_color = "#fde68a"
+            elif self._execution_state == "not_calculated":
+                accent_color = "#94a3b8"
+                category_background = "#334155"
+                category_color = "#cbd5e1"
+            elif self._execution_state == "error":
+                accent_color = "#ef4444"
+                category_background = "#7f1d1d"
+                category_color = "#fecaca"
         if self._processing:
             accent_color = "#94a3b8"
             category_background = "#3a414c"
@@ -294,6 +375,25 @@ class NodeCard(QFrame):
         )
         self.pin_button.setVisible(False)
         self.processing_badge.raise_()
+
+    def _execution_summary(self) -> str:
+        if self._execution_state == "ready":
+            return (
+                "Auto result ready"
+                if self._auto_recalculate
+                else "Cached result ready"
+            )
+        if self._execution_state == "running":
+            return "Calculating..."
+        if self._execution_state == "stale":
+            return (
+                "Auto recalculation pending"
+                if self._auto_recalculate
+                else "Stale cached result"
+            )
+        if self._execution_state == "error":
+            return self._execution_message or "Calculation failed"
+        return "Not calculated"
 
     def _position_processing_badge(self) -> None:
         badge_size = self.processing_badge.size()
@@ -989,6 +1089,7 @@ class PipelineGraphView(QGraphicsView):
     node_moved = Signal(str, object, object)
     node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
+    node_calculate_requested = Signal(str)
     node_create_requested = Signal(str, QPointF)
     node_insert_requested = Signal(str, object, QPointF)
     connection_insert_requested = Signal(object, QPointF)
@@ -1356,6 +1457,7 @@ class PipelineGraphView(QGraphicsView):
         )
         card.selected.connect(self._select_node)
         card.pin_requested.connect(self.pin_requested)
+        card.calculate_requested.connect(self.node_calculate_requested)
         proxy = NodeProxy(
             node.id,
             node.operation_id,
@@ -1513,6 +1615,44 @@ class PipelineGraphView(QGraphicsView):
             self._mark_graph_geometry_changed()
             self.reroute_connections(affected_rect=before.united(after))
             return
+        for connection in proxy.connections:
+            connection.update_path()
+
+    def set_node_execution_state(
+        self,
+        node_id: str,
+        state: str,
+        *,
+        manual: bool,
+        message: str = "",
+        auto_recalculate: bool = False,
+    ) -> None:
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        if (
+            card._manual_execution == bool(manual)
+            and card._execution_state == str(state)
+            and card._execution_message == str(message or "")
+            and card._auto_recalculate == bool(auto_recalculate)
+        ):
+            return
+        before = proxy.sceneBoundingRect()
+        card.set_execution_state(
+            state,
+            manual=manual,
+            message=message,
+            auto_recalculate=auto_recalculate,
+        )
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
+        proxy.update()
         for connection in proxy.connections:
             connection.update_path()
 

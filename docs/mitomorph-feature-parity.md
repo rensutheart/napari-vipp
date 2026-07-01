@@ -35,10 +35,11 @@ Use both focused nodes and selectable measurement groups.
   for feature groups that are conceptually related.
 - Put expensive or dimension-specific computations in separate nodes so users
   can opt into them deliberately.
-- For expensive feature families, use an explicit manual calculation model
-  rather than live recomputation: show `Calculate`/`Recalculate`, progress,
-  stale-state warnings after upstream changes, and the last valid cached result
-  until recomputed.
+- For expensive feature families, use the implemented manual calculation model
+  rather than live recomputation: show `Calculate`/`Recalculate`, stale-state
+  warnings after upstream changes, and the last valid cached result until
+  recomputed. Add cancellation and percentage progress when individual
+  libraries expose that information.
 - Avoid presenting 2D-only measurements as meaningful in 3D. The UI should hide
   or clearly label dimension-specific metrics.
 
@@ -130,7 +131,7 @@ and then assemble them into one analysis-ready table.
 7. Add 3D mesh morphology as an opt-in node because it is more expensive and
    has stronger assumptions about anisotropy, surface extraction, and object
    size.
-8. Add the manual/cached expensive-node execution model before exposing broad
+8. Use the implemented manual/cached expensive-node execution model for broad
    mesh, graph, colocalization, or restoration calculations that would feel
    sluggish if run live.
 9. Add colocalization/localization table nodes that can merge with object

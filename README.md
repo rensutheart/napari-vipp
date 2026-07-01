@@ -416,12 +416,14 @@ Intensity`.
 Near-term development priorities:
 
 - axis-aware channel selectors that show probe names instead of only numbers;
-- manual/cached `Calculate`/`Recalculate` execution for expensive measurements;
-- colocalization/localization table nodes;
+- broader adoption of the implemented manual/cached
+  `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
+  and progress where possible;
 - skeleton graph export and richer branch metrics such as branch-length
   distributions and tortuosity;
 - richer 3D mesh morphology and calibrated physical variants for extended
   length/shape measurements;
+- colocalization/localization table nodes;
 - fluorescence background correction;
 - OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
 - plate/well/field browsing, remote reads, batch execution, and memory-aware

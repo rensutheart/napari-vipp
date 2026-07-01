@@ -157,6 +157,7 @@ class OperationSpec:
     inputs: tuple[InputSpec, ...] = ()
     preserves_input_type: bool = False
     stack_processing_note: str = ""
+    execution_policy: str = "auto"
 
     @property
     def has_input(self) -> bool:
@@ -225,6 +226,17 @@ class ConnectionResult:
     message: str
     removed: tuple[GraphConnection, ...] = ()
     connection: GraphConnection | None = None
+
+
+EXECUTION_READY = "ready"
+EXECUTION_RUNNING = "running"
+EXECUTION_STALE = "stale"
+EXECUTION_ERROR = "error"
+EXECUTION_NOT_CALCULATED = "not_calculated"
+EXECUTION_POLICIES = {"auto", "manual"}
+MANUAL_RUN_CALCULATE = "calculate"
+MANUAL_RUN_SKIP = "skip"
+MANUAL_AUTO_RECALCULATE_PARAM = "_vipp_auto_recalculate"
 
 
 IMAGE_DATA_CATEGORY = "Image Data"
@@ -1642,6 +1654,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         measure_objects,
+        execution_policy="manual",
     ),
     OperationSpec(
         "measure_objects_intensity",
@@ -1685,6 +1698,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             InputSpec("labels", "labels", "Labels"),
             InputSpec("intensity", "image", "Intensity image"),
         ),
+        execution_policy="manual",
     ),
     OperationSpec(
         "analyze_skeleton",
@@ -1707,6 +1721,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         analyze_skeleton,
         subcategory=SKELETON_NETWORK_GROUP,
+        execution_policy="manual",
     ),
     OperationSpec(
         "skeleton_keypoints",
@@ -2420,6 +2435,8 @@ class PrototypePipeline:
         self.node_outputs: dict[str, list[Any]] = {}
         self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
         self.completed_node_ids: set[str] = set()
+        self.node_execution_states: dict[str, str] = {}
+        self.node_execution_messages: dict[str, str] = {}
         self._counters: Counter[str] = Counter()
         self.reset_starter_graph()
 
@@ -2431,6 +2448,10 @@ class PrototypePipeline:
         self.node_outputs = {}
         self.node_output_states = {}
         self.completed_node_ids = set()
+        self.node_execution_states = {
+            node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
+        }
+        self.node_execution_messages = {node_id: "" for node_id in self.nodes}
         self._counters = Counter()
         for node in self.nodes.values():
             self._counters[node.operation_id] += 1
@@ -2456,6 +2477,10 @@ class PrototypePipeline:
         self.node_outputs = {}
         self.node_output_states = {}
         self.completed_node_ids = set()
+        self.node_execution_states = {
+            node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
+        }
+        self.node_execution_messages = {node_id: "" for node_id in self.nodes}
         self._counters = Counter({input_node.operation_id: 1})
 
     def restore_graph(
@@ -2475,6 +2500,10 @@ class PrototypePipeline:
         self.node_outputs = {node_id: [] for node_id in self.nodes}
         self.node_output_states = {node_id: [] for node_id in self.nodes}
         self.completed_node_ids = set()
+        self.node_execution_states = {
+            node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
+        }
+        self.node_execution_messages = {node_id: "" for node_id in self.nodes}
         for connection in self.connections:
             if (
                 connection.source_id not in valid
@@ -2535,6 +2564,8 @@ class PrototypePipeline:
         self.output_states[node.id] = None
         self.node_outputs[node.id] = []
         self.node_output_states[node.id] = []
+        self.node_execution_states[node.id] = EXECUTION_NOT_CALCULATED
+        self.node_execution_messages[node.id] = ""
         return node
 
     def remove_node(self, node_id: str) -> bool:
@@ -2545,6 +2576,8 @@ class PrototypePipeline:
         self.output_states.pop(node_id, None)
         self.node_outputs.pop(node_id, None)
         self.node_output_states.pop(node_id, None)
+        self.node_execution_states.pop(node_id, None)
+        self.node_execution_messages.pop(node_id, None)
         self.connections = [
             connection
             for connection in self.connections
@@ -2714,6 +2747,17 @@ class PrototypePipeline:
     def set_param(self, node_id: str, name: str, value: Any) -> None:
         self.nodes[node_id].params[name] = value
 
+    def node_auto_recalculate(self, node_id: str) -> bool:
+        node = self.nodes.get(node_id)
+        if node is None or not self.is_manual_node(node_id):
+            return False
+        return bool(node.params.get(MANUAL_AUTO_RECALCULATE_PARAM, False))
+
+    def set_node_auto_recalculate(self, node_id: str, enabled: bool) -> None:
+        if node_id not in self.nodes or not self.is_manual_node(node_id):
+            return
+        self.nodes[node_id].params[MANUAL_AUTO_RECALCULATE_PARAM] = bool(enabled)
+
     def _validate_restored_connection(self, connection: GraphConnection) -> None:
         target = self.nodes[connection.target_id]
         input_count = self.input_port_count(connection.target_id)
@@ -2822,6 +2866,104 @@ class PrototypePipeline:
         primary = connections[0]
         return self._resolved_output_state(primary.source_id, primary.source_port)
 
+    def is_manual_node(self, node_id: str) -> bool:
+        node = self.nodes.get(node_id)
+        if node is None:
+            return False
+        return self.operation_spec(node.operation_id).execution_policy == "manual"
+
+    def manual_node_ids(self) -> set[str]:
+        return {node_id for node_id in self.nodes if self.is_manual_node(node_id)}
+
+    def auto_recalculate_node_ids(self) -> set[str]:
+        return {
+            node_id
+            for node_id in self.manual_node_ids()
+            if self.node_auto_recalculate(node_id)
+        }
+
+    def set_node_execution_error(self, node_id: str | None, message: str) -> None:
+        if node_id is None or node_id not in self.nodes:
+            return
+        self.node_execution_states[node_id] = EXECUTION_ERROR
+        self.node_execution_messages[node_id] = str(message)
+
+    def mark_manual_descendants_stale(self, node_ids: Iterable[str]) -> set[str]:
+        """Mark manual nodes downstream of an edit as stale, preserving caches."""
+        affected = self.descendants_inclusive(node_ids)
+        changed: set[str] = set()
+        for node_id in affected:
+            if not self.is_manual_node(node_id):
+                continue
+            if self._has_cached_output(node_id):
+                self.node_execution_states[node_id] = EXECUTION_STALE
+                self.node_execution_messages[node_id] = (
+                    "Upstream data or parameters changed. Recalculate to refresh "
+                    "this cached result."
+                )
+            else:
+                self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
+                self.node_execution_messages[node_id] = (
+                    "This manual node has no result yet."
+                )
+            changed.add(node_id)
+        return changed
+
+    def _has_cached_output(self, node_id: str) -> bool:
+        if self.outputs.get(node_id) is not None:
+            return True
+        return any(output is not None for output in self.node_outputs.get(node_id, ()))
+
+    def _manual_nodes_to_skip(
+        self,
+        candidates: Iterable[str],
+        manual_mode: str,
+        manual_node_ids: Iterable[str] | None,
+    ) -> set[str]:
+        if manual_mode not in {MANUAL_RUN_CALCULATE, MANUAL_RUN_SKIP}:
+            raise ValueError(f"Unknown manual execution mode: {manual_mode!r}.")
+        manual_nodes = self.manual_node_ids() & set(candidates)
+        if manual_mode == MANUAL_RUN_SKIP:
+            selected = set(manual_node_ids or ())
+            return manual_nodes - selected
+        if manual_node_ids is None:
+            return set()
+        return manual_nodes - set(manual_node_ids)
+
+    def _mark_skipped_manual_node(self, node_id: str, *, dirty: bool) -> bool:
+        """Return whether a skipped manual node can satisfy downstream inputs."""
+        has_cached_output = self._has_cached_output(node_id)
+        if has_cached_output:
+            self.node_execution_states[node_id] = (
+                EXECUTION_STALE if dirty else self.node_execution_states.get(
+                    node_id,
+                    EXECUTION_READY,
+                )
+            )
+            if self.node_execution_states[node_id] == EXECUTION_STALE:
+                self.node_execution_messages[node_id] = (
+                    "Cached result is stale. Recalculate to refresh this node."
+                )
+            else:
+                self.node_execution_messages[node_id] = ""
+            return True
+        self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
+        self.node_execution_messages[node_id] = (
+            "Click Calculate to produce this result."
+        )
+        return False
+
+    @staticmethod
+    def _public_params(params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in params.items()
+            if not key.startswith("_vipp_")
+        }
+
+    def _operation_kwargs(self, node: GraphNode) -> dict[str, Any]:
+        return self._public_params(node.params)
+
     def run(
         self,
         input_data,
@@ -2830,25 +2972,90 @@ class PrototypePipeline:
         source_payloads: dict[str, SourcePayload] | None = None,
         dirty_node_ids: Iterable[str] | None = None,
         node_started_callback: Callable[[str], None] | None = None,
+        manual_mode: str = MANUAL_RUN_CALCULATE,
+        manual_node_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
         if dirty_nodes is None:
+            prior_outputs = dict(self.outputs)
+            prior_output_states = dict(self.output_states)
+            prior_node_outputs = {
+                node_id: list(outputs)
+                for node_id, outputs in self.node_outputs.items()
+            }
+            prior_node_output_states = {
+                node_id: list(states)
+                for node_id, states in self.node_output_states.items()
+            }
+            prior_execution_states = dict(self.node_execution_states)
+            prior_execution_messages = dict(self.node_execution_messages)
             self.outputs = {node_id: None for node_id in self.nodes}
             self.output_states = {node_id: None for node_id in self.nodes}
             self.node_outputs = {node_id: [] for node_id in self.nodes}
             self.node_output_states = {node_id: [] for node_id in self.nodes}
+            self.node_execution_states = {
+                node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
+            }
+            self.node_execution_messages = {node_id: "" for node_id in self.nodes}
             remaining = set(self.nodes)
             completed: set[str] = set()
             self.completed_node_ids = set()
         else:
             remaining = self.descendants_inclusive(dirty_nodes)
             self.completed_node_ids.difference_update(remaining)
+            prior_outputs = {}
+            prior_output_states = {}
+            prior_node_outputs = {}
+            prior_node_output_states = {}
+            prior_execution_states = {}
+            prior_execution_messages = {}
+            skipped = self._manual_nodes_to_skip(
+                remaining,
+                manual_mode,
+                manual_node_ids,
+            )
+            remaining.difference_update(skipped)
             for node_id in remaining:
                 self.outputs[node_id] = None
                 self.output_states[node_id] = None
                 self.node_outputs[node_id] = []
                 self.node_output_states[node_id] = []
+                self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
+                self.node_execution_messages[node_id] = ""
+            for node_id in skipped:
+                if self._mark_skipped_manual_node(node_id, dirty=True):
+                    self.completed_node_ids.add(node_id)
             completed = set(self.nodes) - remaining
+
+        if dirty_nodes is None:
+            skipped = self._manual_nodes_to_skip(
+                remaining,
+                manual_mode,
+                manual_node_ids,
+            )
+            remaining.difference_update(skipped)
+            for node_id in skipped:
+                if node_id in prior_outputs:
+                    self.outputs[node_id] = prior_outputs[node_id]
+                    self.output_states[node_id] = prior_output_states.get(node_id)
+                    self.node_outputs[node_id] = prior_node_outputs.get(node_id, [])
+                    self.node_output_states[node_id] = prior_node_output_states.get(
+                        node_id,
+                        [],
+                    )
+                    self.node_execution_states[node_id] = prior_execution_states.get(
+                        node_id,
+                        EXECUTION_NOT_CALCULATED,
+                    )
+                    self.node_execution_messages[node_id] = (
+                        prior_execution_messages.get(node_id, "")
+                    )
+                if self._mark_skipped_manual_node(
+                    node_id,
+                    dirty=self._has_cached_output(node_id),
+                ):
+                    completed.add(node_id)
+                    self.completed_node_ids.add(node_id)
 
         while remaining:
             runnable = [
@@ -2862,18 +3069,30 @@ class PrototypePipeline:
             for node_id in runnable:
                 if node_started_callback is not None:
                     node_started_callback(node_id)
-                results = self._run_node(
-                    node_id,
-                    input_data,
-                    input_metadata,
-                    input_name,
-                    source_payloads or {},
-                )
+                self.node_execution_states[node_id] = EXECUTION_RUNNING
+                self.node_execution_messages[node_id] = ""
+                try:
+                    results = self._run_node(
+                        node_id,
+                        input_data,
+                        input_metadata,
+                        input_name,
+                        source_payloads or {},
+                    )
+                except Exception as exc:
+                    self.set_node_execution_error(node_id, str(exc))
+                    raise
                 self.node_outputs[node_id] = [data for data, _ in results]
                 self.node_output_states[node_id] = [state for _, state in results]
                 primary_output, primary_state = results[0]
                 self.outputs[node_id] = primary_output
                 self.output_states[node_id] = primary_state
+                self.node_execution_states[node_id] = (
+                    EXECUTION_READY
+                    if primary_output is not None
+                    else EXECUTION_NOT_CALCULATED
+                )
+                self.node_execution_messages[node_id] = ""
                 remaining.remove(node_id)
                 completed.add(node_id)
                 self.completed_node_ids.add(node_id)
@@ -2912,6 +3131,10 @@ class PrototypePipeline:
         if set(self.node_outputs) != set(self.nodes):
             return None
         if set(self.node_output_states) != set(self.nodes):
+            return None
+        if set(self.node_execution_states) != set(self.nodes):
+            return None
+        if set(self.node_execution_messages) != set(self.nodes):
             return None
         cached_nodes = set(self.completed_node_ids) & set(self.nodes)
         nodes_to_run = self.descendants_inclusive(dirty_nodes)
@@ -2974,7 +3197,7 @@ class PrototypePipeline:
                 self._resolved_output_state(conn.source_id, conn.source_port)
                 for conn in ordered
             ]
-            kwargs = dict(node.params)
+            kwargs = self._operation_kwargs(node)
             if node.operation_id in SPATIAL_OPERATIONS:
                 spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
                 resolved_spatial_ndim = _resolved_spatial_ndim(
@@ -3057,7 +3280,7 @@ class PrototypePipeline:
         input_state = self._resolved_output_state(
             primary.source_id, primary.source_port
         )
-        kwargs = dict(node.params)
+        kwargs = self._operation_kwargs(node)
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
         if node.operation_id in SPATIAL_OPERATIONS:
@@ -3135,7 +3358,7 @@ class PrototypePipeline:
             input_state,
             operation_id=node.operation_id,
             operation_title=node.title,
-            params=node.params,
+            params=self._public_params(node.params),
         )
         return [(output, state)]
 
@@ -3164,7 +3387,7 @@ class PrototypePipeline:
                 operation_id=node.operation_id,
                 operation_title=node.title,
                 port_name=port.label,
-                params=node.params,
+                params=self._public_params(node.params),
             )
             results.append((data, state))
         return results

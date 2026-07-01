@@ -113,6 +113,34 @@ It handles image-like and table outputs.
   background results;
 - a user-facing "Run all in BG" toggle to force all updates onto the worker.
 
+### Manual / Cached Execution
+
+The first manual/cached execution layer is implemented for table-producing
+expensive nodes:
+
+- `Measure Objects`;
+- `Measure Objects + Intensity`;
+- `Analyze Skeleton`.
+
+These nodes expose `Calculate` or `Recalculate` on both the graph card and the
+inspector. Ordinary live pipeline updates skip them. When a manual node has a
+cached result, downstream nodes can keep using that result; upstream edits mark
+it visibly stale until the user recalculates. The inspector also exposes
+`Auto Recalculate`, off by default, for manual nodes that are fast enough to
+rerun automatically on the current data. When enabled, the explicit recalculate
+button is hidden and affected dirty runs include that manual node. Node-card
+state colours are gray for not calculated, green for current, orange for stale,
+and red for error. Running and failure states are stored per node for UI
+display. Workflow JSON persists graph structure, parameters, and the
+auto-recalculate preference, but not cached arrays or tables. Headless pipeline
+execution and generated Python export calculate manual nodes by default so
+batch output is deterministic.
+
+Still TODO for this platform: cancellation, percentage progress for operations
+that can report it, richer failure recovery, and adoption by future
+colocalization/localization, mesh morphology, deconvolution, and very expensive
+background-estimation nodes.
+
 ### Data State Visibility
 
 Every graph output carries an OME-NGFF-inspired `ImageState` alongside its
@@ -467,18 +495,6 @@ result contracts and careful channel/mask input UI.
 Marker QC polish, optional Multi-Otsu class images, and validation of watershed
 defaults on representative nuclei/cell/object datasets.
 
-### Manual / Cached Execution For Expensive Nodes
-
-The current background execution is automatic and live (incremental cache plus
-coalesced reruns). It is **not** the planned manual mode. Expensive families
-(heavy measurements, colocalization, skeleton graph refinements, 3D mesh
-morphology, deconvolution, large-stack background estimation) should support an
-explicit `Calculate`/`Recalculate` action on the node card and inspector, with:
-busy/progress feedback while running; the last result becoming the node output;
-visual stale state when an upstream input or relevant parameter changes while
-preserving the last valid output; and a defined invalidation model,
-cancellation, batch/export semantics, and persistence policy for cached results.
-
 ### Batch Execution UI
 
 Python export exists, but a real collection-batch UI still needs stable item
@@ -510,11 +526,13 @@ Registration and deconvolution.
 
 ## Near-Term Order
 
-1. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
-2. Colocalization/localization table nodes.
-3. Skeleton graph export and richer branch metrics.
-4. 3D mesh morphology and calibrated physical variants for extended
+1. Adopt manual/cached execution for the next expensive feature families as
+   they are added, including cancellation/progress where libraries expose it.
+2. Skeleton graph export and richer branch metrics.
+3. 3D mesh morphology and calibrated physical variants for extended
    length/shape measurements.
+4. Colocalization/localization table nodes after the measurement/graph platform
+   is stable.
 
 ---
 

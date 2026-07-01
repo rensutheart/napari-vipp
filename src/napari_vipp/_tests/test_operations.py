@@ -94,8 +94,16 @@ from napari_vipp.core.operations import (
     unsharp_mask_filter,
     yen_threshold,
 )
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
+from napari_vipp.core.pipeline import (
+    EXECUTION_NOT_CALCULATED,
+    EXECUTION_READY,
+    EXECUTION_STALE,
+    MANUAL_RUN_SKIP,
+    NODE_LIBRARY_BY_ID,
+    PrototypePipeline,
+)
 from napari_vipp.core.tables import save_table_output, table_from_columns
+from napari_vipp.core.workflow import serialize_workflow
 
 
 def test_vipp_operation_nodes_are_registered():
@@ -695,6 +703,60 @@ def test_pipeline_measure_objects_creates_table_state():
     assert state.row_count == 2
     assert "volume_voxels" in state.columns
     assert state.history[-1] == "Measure Objects: measured 2 objects"
+
+
+def test_pipeline_manual_measurement_nodes_skip_calculate_and_stale_cache():
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[1:4, 1:4] = 10
+    data[6, 6] = 10
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, labels.id)
+    pipeline.connect(labels.id, measurements.id)
+
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        manual_mode=MANUAL_RUN_SKIP,
+    )
+
+    assert outputs[measurements.id] is None
+    assert pipeline.output_states[measurements.id] is None
+    assert (
+        pipeline.node_execution_states[measurements.id]
+        == EXECUTION_NOT_CALCULATED
+    )
+
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        dirty_node_ids={measurements.id},
+        manual_mode=MANUAL_RUN_SKIP,
+        manual_node_ids={measurements.id},
+    )
+    table = outputs[measurements.id]
+
+    assert table.row_count == 2
+    assert pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+
+    pipeline.set_param(threshold.id, "threshold", 15)
+    outputs = pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        dirty_node_ids={threshold.id},
+        manual_mode=MANUAL_RUN_SKIP,
+    )
+
+    assert outputs[measurements.id] is table
+    assert pipeline.node_execution_states[measurements.id] == EXECUTION_STALE
+    workflow = serialize_workflow(pipeline)
+    workflow_text = repr(workflow)
+    assert "node_execution_states" not in workflow_text
+    assert "node_outputs" not in workflow_text
 
 
 def test_pipeline_measure_objects_with_intensity_uses_named_input_ports():
