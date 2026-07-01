@@ -36,6 +36,8 @@ LABEL_OPERATIONS = {
     "expand_labels",
     "h_maxima_markers",
     "label_connected_components",
+    "label_skeleton_branches",
+    "label_skeleton_components",
     "filter_labels_by_property",
     "filter_labels_by_volume",
     "marker_controlled_watershed",

@@ -1117,6 +1117,94 @@ def skeletonize_mask(
     return _apply_spatial_blocks(mask, spatial_ndim, skeletonize_block, dtype=bool)
 
 
+def skeleton_keypoints(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract endpoint, junction, and isolated-node masks from a skeleton."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    return _apply_spatial_blocks_tuple(
+        mask,
+        spatial_ndim,
+        _skeleton_keypoint_masks_block,
+        dtypes=(bool, bool, bool),
+    )
+
+
+def label_skeleton_components(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Label connected skeleton components within each spatial block."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    return _apply_spatial_blocks(
+        mask,
+        spatial_ndim,
+        _label_skeleton_components_block,
+        dtype=np.int32,
+    )
+
+
+def label_skeleton_branches(
+    data,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Label branch paths between skeleton endpoints and junctions."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    return _apply_spatial_blocks(
+        mask,
+        spatial_ndim,
+        _label_skeleton_branches_block,
+        dtype=np.int32,
+    )
+
+
+def prune_skeleton_branches(
+    data,
+    min_branch_length: float = 3.0,
+    iterations: int = 1,
+    remove_isolated: bool = True,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+) -> np.ndarray:
+    """Remove short terminal skeleton branches within each spatial block."""
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+
+    def prune_block(block: np.ndarray) -> np.ndarray:
+        return _prune_skeleton_branches_block(
+            block,
+            min_branch_length=float(min_branch_length),
+            iterations=int(iterations),
+            remove_isolated=bool(remove_isolated),
+        )
+
+    return _apply_spatial_blocks(mask, spatial_ndim, prune_block, dtype=bool)
+
+
 def measure_objects(
     data,
     spatial_mode: str = "Auto from axes",
@@ -3250,6 +3338,31 @@ def _apply_spatial_blocks(
     return result
 
 
+def _apply_spatial_blocks_tuple(
+    arr: np.ndarray,
+    spatial_ndim: int,
+    func: Callable[[np.ndarray], tuple[np.ndarray, ...]],
+    *,
+    dtypes: tuple[object, ...],
+) -> tuple[np.ndarray, ...]:
+    """Apply ``func`` over leading blocks when it returns multiple arrays."""
+    arr = np.asarray(arr)
+    spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+    if arr.ndim <= spatial_ndim:
+        return tuple(
+            np.asarray(value, dtype=dtype)
+            for value, dtype in zip(func(arr), dtypes, strict=True)
+        )
+
+    result = tuple(np.empty(arr.shape, dtype=dtype) for dtype in dtypes)
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    for index in np.ndindex(leading_shape):
+        values = func(arr[index])
+        for output, value in zip(result, values, strict=True):
+            output[index] = value
+    return result
+
+
 def _apply_spatial_blocks_multi(
     arrays: Sequence[np.ndarray],
     spatial_ndim: int,
@@ -3411,6 +3524,212 @@ def _skeletonize_method(method: str) -> str | None:
     return None
 
 
+def _skeleton_adjacency(
+    component: np.ndarray,
+    scales: tuple[float, ...] = (),
+) -> tuple[np.ndarray, list[list[int]], np.ndarray, int, float, float]:
+    component = np.asarray(component, dtype=bool)
+    coords = np.argwhere(component)
+    voxel_count = int(coords.shape[0])
+    adjacency: list[list[int]] = [[] for _ in range(voxel_count)]
+    if voxel_count == 0:
+        return coords, adjacency, np.asarray([], dtype=np.int32), 0, 0.0, 0.0
+
+    scales = _normalized_spatial_scales(component.ndim, scales)
+    index_by_coord = {
+        tuple(int(value) for value in coord): index
+        for index, coord in enumerate(coords)
+    }
+    voxel_graph_edge_count = 0
+    pixel_length = 0.0
+    physical_length = 0.0
+    for index, coord_array in enumerate(coords):
+        coord = tuple(int(value) for value in coord_array)
+        for offset in _half_neighbor_offsets(component.ndim):
+            neighbor = tuple(
+                coord[axis] + offset[axis]
+                for axis in range(component.ndim)
+            )
+            neighbor_index = index_by_coord.get(neighbor)
+            if neighbor_index is None:
+                continue
+            if not _valid_skeleton_edge(component, coord, offset):
+                continue
+            adjacency[index].append(neighbor_index)
+            adjacency[neighbor_index].append(index)
+            voxel_graph_edge_count += 1
+            pixel_length += _offset_length(offset, (1.0,) * component.ndim)
+            physical_length += _offset_length(offset, scales)
+
+    degrees = np.asarray([len(neighbors) for neighbors in adjacency], dtype=np.int32)
+    return (
+        coords,
+        adjacency,
+        degrees,
+        int(voxel_graph_edge_count),
+        float(pixel_length),
+        float(physical_length),
+    )
+
+
+def _skeleton_keypoint_masks_block(
+    block: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    skeleton = np.asarray(block, dtype=bool)
+    endpoints = np.zeros_like(skeleton, dtype=bool)
+    junctions = np.zeros_like(skeleton, dtype=bool)
+    isolated = np.zeros_like(skeleton, dtype=bool)
+    coords, _adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
+        _skeleton_adjacency(skeleton)
+    )
+    for index, coord_array in enumerate(coords):
+        coord = tuple(int(value) for value in coord_array)
+        degree = int(degrees[index])
+        if degree == 0:
+            isolated[coord] = True
+        elif degree == 1:
+            endpoints[coord] = True
+        elif degree >= 3:
+            junctions[coord] = True
+    return endpoints, junctions, isolated
+
+
+def _label_skeleton_components_block(block: np.ndarray) -> np.ndarray:
+    skeleton = np.asarray(block, dtype=bool)
+    structure = ndi.generate_binary_structure(max(skeleton.ndim, 1), skeleton.ndim)
+    labels, _count = ndi.label(skeleton, structure=structure)
+    return labels.astype(np.int32, copy=False)
+
+
+def _skeleton_branch_labels_component(component: np.ndarray) -> np.ndarray:
+    component = np.asarray(component, dtype=bool)
+    labels = np.zeros(component.shape, dtype=np.int32)
+    coords, adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
+        _skeleton_adjacency(component)
+    )
+    if coords.shape[0] <= 1:
+        return labels
+
+    key_nodes = {index for index, degree in enumerate(degrees) if degree != 2}
+    if not key_nodes:
+        labels[component] = 1
+        return labels
+
+    visited: set[tuple[int, int]] = set()
+    next_label = 1
+    for start in sorted(key_nodes):
+        if int(degrees[start]) == 0:
+            continue
+        for neighbor in adjacency[start]:
+            edge = _edge_key(start, neighbor)
+            if edge in visited:
+                continue
+            visited.add(edge)
+            path = [start, neighbor]
+            previous = start
+            current = neighbor
+            while current not in key_nodes:
+                next_nodes = [node for node in adjacency[current] if node != previous]
+                if not next_nodes:
+                    break
+                next_node = next_nodes[0]
+                edge = _edge_key(current, next_node)
+                if edge in visited:
+                    break
+                visited.add(edge)
+                path.append(next_node)
+                previous, current = current, next_node
+
+            assigned = False
+            for node in path:
+                degree = int(degrees[node])
+                if degree == 0 or degree >= 3:
+                    continue
+                coord = tuple(int(value) for value in coords[node])
+                labels[coord] = next_label
+                assigned = True
+            if assigned:
+                next_label += 1
+    return labels
+
+
+def _label_skeleton_branches_block(block: np.ndarray) -> np.ndarray:
+    skeleton = np.asarray(block, dtype=bool)
+    component_labels = _label_skeleton_components_block(skeleton)
+    branch_labels = np.zeros(skeleton.shape, dtype=np.int32)
+    next_label = 1
+    for component_id in range(1, int(component_labels.max()) + 1):
+        component = component_labels == component_id
+        labels = _skeleton_branch_labels_component(component)
+        for local_label in range(1, int(labels.max()) + 1):
+            branch_labels[labels == local_label] = next_label
+            next_label += 1
+    return branch_labels
+
+
+def _trace_terminal_branch(
+    endpoint: int,
+    adjacency: list[list[int]],
+    degrees: np.ndarray,
+) -> tuple[list[int], int, int]:
+    neighbor = adjacency[endpoint][0]
+    path = [endpoint, neighbor]
+    previous = endpoint
+    current = neighbor
+    edge_count = 1
+    while int(degrees[current]) == 2:
+        next_nodes = [node for node in adjacency[current] if node != previous]
+        if not next_nodes:
+            break
+        next_node = next_nodes[0]
+        path.append(next_node)
+        previous, current = current, next_node
+        edge_count += 1
+    return path, current, edge_count
+
+
+def _prune_skeleton_branches_block(
+    block: np.ndarray,
+    *,
+    min_branch_length: float,
+    iterations: int,
+    remove_isolated: bool,
+) -> np.ndarray:
+    skeleton = np.asarray(block, dtype=bool).copy()
+    minimum = max(float(min_branch_length), 0.0)
+    iterations = max(int(iterations), 1)
+    for _iteration in range(iterations):
+        coords, adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
+            _skeleton_adjacency(skeleton)
+        )
+        if coords.shape[0] == 0:
+            break
+
+        remove = np.zeros(coords.shape[0], dtype=bool)
+        if remove_isolated:
+            remove |= degrees == 0
+        for endpoint in np.flatnonzero(degrees == 1):
+            path, terminal_node, edge_count = _trace_terminal_branch(
+                int(endpoint),
+                adjacency,
+                degrees,
+            )
+            if int(degrees[terminal_node]) < 3:
+                continue
+            if float(edge_count) >= minimum:
+                continue
+            for node in path:
+                if int(degrees[node]) < 3:
+                    remove[node] = True
+
+        if not np.any(remove):
+            break
+        for node in np.flatnonzero(remove):
+            coord = tuple(int(value) for value in coords[int(node)])
+            skeleton[coord] = False
+    return skeleton
+
+
 def _skeleton_empty_columns(
     leading_axis_names: tuple[str, ...],
     units: _SkeletonUnits,
@@ -3525,34 +3844,14 @@ def _skeleton_component_graph(
             physical_length=0.0,
         )
 
-    scales = _normalized_spatial_scales(component.ndim, scales)
-    index_by_coord = {
-        tuple(int(value) for value in coord): index
-        for index, coord in enumerate(coords)
-    }
-    adjacency: list[list[int]] = [[] for _ in range(voxel_count)]
-    pixel_length = 0.0
-    physical_length = 0.0
-    voxel_graph_edge_count = 0
-    for index, coord_array in enumerate(coords):
-        coord = tuple(int(value) for value in coord_array)
-        for offset in _half_neighbor_offsets(component.ndim):
-            neighbor = tuple(
-                coord[axis] + offset[axis]
-                for axis in range(component.ndim)
-            )
-            neighbor_index = index_by_coord.get(neighbor)
-            if neighbor_index is None:
-                continue
-            if not _valid_skeleton_edge(component, coord, offset):
-                continue
-            adjacency[index].append(neighbor_index)
-            adjacency[neighbor_index].append(index)
-            voxel_graph_edge_count += 1
-            pixel_length += _offset_length(offset, (1.0,) * component.ndim)
-            physical_length += _offset_length(offset, scales)
-
-    degrees = np.asarray([len(neighbors) for neighbors in adjacency], dtype=np.int32)
+    (
+        _coords,
+        adjacency,
+        degrees,
+        voxel_graph_edge_count,
+        pixel_length,
+        physical_length,
+    ) = _skeleton_adjacency(component, scales)
     isolated_node_count = int(np.count_nonzero(degrees == 0))
     endpoint_count = int(np.count_nonzero(degrees == 1))
     junction_count = int(np.count_nonzero(degrees >= 3))

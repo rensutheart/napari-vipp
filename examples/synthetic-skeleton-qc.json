@@ -1,0 +1,127 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic skeleton network",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 1000
+      }
+    },
+    {
+      "id": "skeleton_keypoints_1",
+      "operation_id": "skeleton_keypoints",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "label_skeleton_components_1",
+      "operation_id": "label_skeleton_components",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "label_skeleton_branches_1",
+      "operation_id": "label_skeleton_branches",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "analyze_skeleton_1",
+      "operation_id": "analyze_skeleton",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "prune_skeleton_branches_1",
+      "operation_id": "prune_skeleton_branches",
+      "params": {
+        "min_branch_length": 2.0,
+        "iterations": 1,
+        "remove_isolated": true,
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "analyze_skeleton_2",
+      "operation_id": "analyze_skeleton",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "input_mode": "Already skeletonized"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "skeleton_keypoints_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_skeleton_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "analyze_skeleton_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "prune_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prune_skeleton_branches_1",
+      "target": "analyze_skeleton_2",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 20.0],
+    "binary_threshold_1": [330.0, 20.0],
+    "skeleton_keypoints_1": [660.0, -180.0],
+    "label_skeleton_components_1": [660.0, 20.0],
+    "label_skeleton_branches_1": [660.0, 220.0],
+    "analyze_skeleton_1": [990.0, -180.0],
+    "prune_skeleton_branches_1": [990.0, 20.0],
+    "analyze_skeleton_2": [1320.0, 20.0]
+  }
+}

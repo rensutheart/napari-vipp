@@ -30,6 +30,7 @@ def make_sample_data():
         _multichannel_volume_sample(z, y, x, rng),
         _time_lapse_sample(z, y, x, rng),
         _measurement_summary_sample(),
+        _skeleton_network_sample(),
     ]
 
 
@@ -136,6 +137,37 @@ def _measurement_summary_sample():
                 "counts and areas for validating measurement summaries."
             ),
             **_ome_image_metadata("TYX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _skeleton_network_sample():
+    """Return a sparse 3D network with known endpoints, branches, and spur."""
+    data = np.zeros((11, 64, 64), dtype=np.uint16)
+    signal = np.uint16(48_000)
+
+    center = (5, 32, 32)
+    data[center[0], center[1], 14:51] = signal
+    data[center[0], 12:45, center[2]] = signal
+    data[2:6, center[1], center[2]] = signal
+    data[6, center[1], center[2]] = signal  # short terminal spur
+
+    data[8, 50, 45:52] = signal  # separate linear component
+    data[9, 10, 10] = signal  # isolated skeleton voxel
+
+    metadata = {
+        "name": "VIPP synthetic skeleton network",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Sparse 3D skeleton-style network with a junction, terminal "
+                "branches, a short spur, a separate component, and an isolated "
+                "voxel for validating skeleton QC and pruning nodes."
+            ),
+            **_ome_image_metadata("ZYX", data.shape),
         },
     }
     return data, metadata, "image"

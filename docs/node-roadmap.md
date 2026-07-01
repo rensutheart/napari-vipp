@@ -1,7 +1,7 @@
 # Bioimage Node Roadmap
 
 Status: working discussion document  
-Last reviewed: 2026-06-23
+Last reviewed: 2026-07-01
 
 This document prioritizes future VIPP nodes for bioimage analysis. It is not a
 commitment to reproduce every function in OpenCV, scikit-image, or SciPy.
@@ -59,7 +59,8 @@ Implementation status:
 - implemented: table-driven property-based label filtering;
 - implemented: selectable extended region-property groups;
 - implemented: table column selection/reordering;
-- next: add skeleton QC masks, branch labels, and short-branch pruning.
+- implemented: skeleton QC masks, component labels, branch labels, and
+  short-branch pruning.
 
 ## Priority Definitions
 
@@ -113,20 +114,23 @@ VIPP already has useful coverage in these areas:
   image/mask/label inspection, and image/mask/label pinning;
 - connected-component labels, pixel/voxel-volume filtering, sequential
   relabeling, table outputs, basic and intensity-aware label-object
-  measurements, table merge/annotation, skeletonization, and skeleton-network
-  measurement tables.
+  measurements, table merge/annotation, skeletonization, skeleton-network
+  measurement tables, skeleton keypoint masks, branch/component labels, and
+  short-branch pruning.
 
 The remaining object-analysis gaps are difficult segmentation, richer
-measurement utilities, skeleton QC outputs, and pruning. VIPP can now label
-separated foreground objects, clean them by size or measured properties,
-measure basic and selected extended label morphology plus intensity,
-skeletonize masks, and measure skeleton components with generic graph metrics,
-but it cannot yet:
+measurement utilities, calibrated physical filtering, graph export, and
+expensive measurement execution control. VIPP can now label separated
+foreground objects, clean them by size or measured properties, measure basic
+and selected extended label morphology plus intensity, skeletonize masks,
+measure skeleton components with generic graph metrics, visualize skeleton
+keypoints/branches/components, and prune short terminal branches, but it cannot
+yet:
 
-- separate touching objects with distance markers and watershed;
-- select/reorder/group result table columns for analysis-ready exports;
-- export explicit branch graphs or visualize endpoints/junctions as QC masks;
-- prune short skeleton branches;
+- provide robust seeded segmentation presets beyond the current watershed
+  building blocks and defaults;
+- export explicit branch graphs or calculate tortuosity/branch-length
+  distributions;
 - use calibrated physical area/volume directly as a filter unit;
 - run expensive metrics or restorations as explicit cached computations with
   progress and stale-result feedback.
@@ -481,10 +485,11 @@ metadata, and export the result for PCA or other statistical analysis. See
 
 Table outputs, basic object measurement, intensity measurement, table merge,
 metadata annotation, grouped table summaries, and base skeleton-network
-measurement are now implemented. Skeleton QC outputs and pruning are the next
-network-analysis step: endpoint masks, junction masks, branch labels,
-component-label images, and removal of terminal branches below a selected
-length.
+measurement are now implemented. Skeleton QC outputs and pruning are also
+implemented. The next platform step should be manual/cached
+`Calculate`/`Recalculate` execution for expensive feature families, followed by
+colocalization/localization tables, graph export/richer branch metrics, and 3D
+mesh morphology.
 
 ## Recommended First Milestone
 
@@ -629,8 +634,12 @@ inputs require nearest-neighbor interpolation.
   endpoint voxels, junction voxels, isolated nodes, graph node/edge counts,
   voxel-graph edge count, cycle count, connected-component context, and
   calibrated length;
+- implemented: Skeleton Keypoints endpoint/junction/isolated-node masks;
+- implemented: Label Skeleton Components and Label Skeleton Branches;
+- implemented: Prune Skeleton Branches for short terminal spurs and isolated
+  skeleton voxels;
 - medial axis;
-- prune short skeleton branches;
+- physical-length pruning units, branch-length distributions, and tortuosity;
 - grayscale erosion, dilation, opening, and closing;
 - label erosion and label-safe expansion;
 - convex hull per object;

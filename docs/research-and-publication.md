@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-06-21
+Last reviewed: 2026-07-01
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -53,7 +53,8 @@ Implemented and covered by automated tests:
   other nodes;
 - first-class table outputs and basic label-object measurements;
 - named typed input ports and intensity-aware per-object measurement tables;
-- generic skeletonization and skeleton-network measurement tables with 2D/3D
+- generic skeletonization, skeleton-network measurement tables, skeleton
+  keypoint masks, branch/component labels, and short-branch pruning with 2D/3D
   graph node, graph edge, isolate, and cycle metrics;
 - metadata-aware 2D/3D label cleanup;
 - OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and NumPy I/O,

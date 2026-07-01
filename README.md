@@ -105,9 +105,11 @@ The plugin contributes synthetic fluorescence-like sample data:
 - `VIPP synthetic multichannel volume`: `CZYX` volume with three probe-like
   channels;
 - `VIPP synthetic time-lapse multichannel`: `TCZYX` time-lapse, multichannel
-  stack.
+  stack;
 - `VIPP synthetic measurement summary`: `TYX` time-series object sample with
-  known per-timepoint object counts and areas.
+  known per-timepoint object counts and areas;
+- `VIPP synthetic skeleton network`: sparse `ZYX` network sample with known
+  endpoints, branches, a junction, a short spur, and an isolated voxel.
 
 The multichannel samples use separate intensity channels, not baked RGB images.
 Graph thumbnails render these as fluorescence-style pseudo-color composites
@@ -220,6 +222,10 @@ The current node catalogue includes:
   - Measure Objects
   - Measure Objects + Intensity
   - Analyze Skeleton
+  - Skeleton Keypoints
+  - Label Skeleton Components
+  - Label Skeleton Branches
+  - Prune Skeleton Branches
   - Merge Tables
   - Select Table Columns
   - Add Metadata Columns
@@ -302,6 +308,9 @@ example workflow
 PCA-oriented table assembly path.
 `examples/synthetic-measurement-summary.json` demonstrates grouped summaries on
 a synthetic time-series object sample with known object counts and areas.
+`examples/synthetic-skeleton-qc.json` demonstrates skeleton keypoint masks,
+component labels, branch labels, pruning, and before/after skeleton analysis on
+the bundled skeleton-network sample.
 
 `Skeletonize` accepts a binary mask and produces a skeleton mask using
 metadata-aware 2D or 3D processing. `Analyze Skeleton` accepts a skeleton mask
@@ -309,8 +318,12 @@ and outputs a per-component table with skeleton voxel count, endpoint voxels,
 junction voxels, isolated nodes, branch/graph edge counts, voxel-graph edge
 count, cycle count, per-block component count, component voxel fraction, and
 skeleton length in pixel/voxel and physical units when scale metadata is
-available. These nodes are generic and are intended for mitochondria, neurites,
-vessels, fibers, hyphae, and other curvilinear structures.
+available. `Skeleton Keypoints` emits separate endpoint, junction, and isolated
+node masks. `Label Skeleton Components` and `Label Skeleton Branches` turn
+network topology into inspectable label images, while `Prune Skeleton Branches`
+removes short terminal spurs and optional isolated skeleton voxels. These nodes
+are generic and are intended for mitochondria, neurites, vessels, fibers,
+hyphae, and other curvilinear structures.
 
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
@@ -403,8 +416,10 @@ Intensity`.
 Near-term development priorities:
 
 - axis-aware channel selectors that show probe names instead of only numbers;
-- skeleton QC feature masks, branch labels, and short-branch pruning;
-- distance transforms, marker generation, and marker-controlled watershed;
+- manual/cached `Calculate`/`Recalculate` execution for expensive measurements;
+- colocalization/localization table nodes;
+- skeleton graph export and richer branch metrics such as branch-length
+  distributions and tortuosity;
 - richer 3D mesh morphology and calibrated physical variants for extended
   length/shape measurements;
 - fluorescence background correction;

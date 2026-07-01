@@ -1,10 +1,10 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-06-28
+Last reviewed: 2026-07-01
 
 This document is the consolidated source of truth for what is **implemented**
 versus **planned**. It was reconciled against the live node registry
-(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 82 nodes) and the widget
+(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 86 nodes) and the widget
 code, so the status labels below reflect the actual codebase rather than older
 intentions.
 
@@ -183,8 +183,9 @@ Counts and names below match the live registry.
 - **Label Operations**: Label Connected Components, Clear Border Objects, Filter
   Labels By Volume, Filter Labels By Property, Relabel Sequential.
 - **Measurements**: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Merge Tables, Add Metadata Columns, Select Table Columns,
-  Summarize Measurements.
+  Skeleton, Skeleton Keypoints, Label Skeleton Components, Label Skeleton
+  Branches, Prune Skeleton Branches, Merge Tables, Add Metadata Columns,
+  Select Table Columns, Summarize Measurements.
 
 A reference label-cleanup workflow is implemented end to end:
 
@@ -444,11 +445,14 @@ changes the 3D viewer spacing as expected.
 ### Skeleton / Network QC
 
 `Skeletonize` and `Analyze Skeleton` are implemented (endpoint, junction,
-isolate, graph-edge, cycle, and connected-component metrics for 2D/3D). Still
-TODO: endpoint masks, junction masks, branch labels, connected
-skeleton-component label images, and short-branch pruning so users can visually
-audit how table metrics were produced; plus richer branch tracing, tortuosity,
-and explicit graph export.
+isolate, graph-edge, cycle, and connected-component metrics for 2D/3D).
+`Skeleton Keypoints` emits endpoint, junction, and isolated-node masks.
+`Label Skeleton Components` and `Label Skeleton Branches` create inspectable
+label images for connected skeleton components and branch paths. `Prune
+Skeleton Branches` removes short terminal spurs and optional isolated skeleton
+voxels. Still TODO: richer branch tracing metrics such as branch-length
+distributions and tortuosity, physical-length pruning units, domain-normalized
+connectivity summaries, and explicit graph export.
 
 ### Colocalization And Localization
 
@@ -506,11 +510,11 @@ Registration and deconvolution.
 
 ## Near-Term Order
 
-1. Skeleton QC masks, branch labels, and short-branch pruning.
-2. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
-3. Colocalization/localization table nodes.
-4. Graph editor usability: insert-node-on-wire, connection insertion menu, and
-   user-initiated auto-structure layout cleanup.
+1. Manual/cached `Calculate`/`Recalculate` execution for expensive nodes.
+2. Colocalization/localization table nodes.
+3. Skeleton graph export and richer branch metrics.
+4. 3D mesh morphology and calibrated physical variants for extended
+   length/shape measurements.
 
 ---
 

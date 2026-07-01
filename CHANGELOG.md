@@ -7,6 +7,13 @@
   deviation, min/max, and quartiles for selected numeric columns.
 - Added a deterministic `VIPP synthetic measurement summary` sample plus an
   example workflow for validating grouped object-count and area summaries.
+- Added skeleton QC and cleanup nodes: `Skeleton Keypoints`, `Label Skeleton
+  Components`, `Label Skeleton Branches`, and `Prune Skeleton Branches`.
+- Added a deterministic `VIPP synthetic skeleton network` sample plus an
+  example workflow for validating skeleton keypoint masks, branch labels,
+  component labels, pruning, and before/after skeleton analysis.
+- Adjusted thumbnail percentile contrast so sparse bright foreground objects
+  are not dropped as outliers while low-amplitude background ramps are stretched.
 
 ## 0.8.2a2 - 2026-06-30
 

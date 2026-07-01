@@ -45,6 +45,8 @@ from napari_vipp.core.operations import (
     hysteresis_threshold,
     isodata_threshold,
     label_connected_components,
+    label_skeleton_branches,
+    label_skeleton_components,
     laplace_filter,
     li_threshold,
     linear_scale_offset,
@@ -66,6 +68,7 @@ from napari_vipp.core.operations import (
     orthogonal_projection,
     otsu_threshold,
     project_image,
+    prune_skeleton_branches,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
@@ -79,6 +82,7 @@ from napari_vipp.core.operations import (
     select_axis_slice,
     select_table_columns,
     set_pixel_size,
+    skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -154,6 +158,10 @@ def test_vipp_operation_nodes_are_registered():
         "measure_objects_intensity",
         "skeletonize",
         "analyze_skeleton",
+        "skeleton_keypoints",
+        "label_skeleton_components",
+        "label_skeleton_branches",
+        "prune_skeleton_branches",
         "assign_channel_colors",
         "merge_tables",
         "add_metadata_columns",
@@ -919,6 +927,75 @@ def test_skeletonize_mask_reduces_binary_objects_to_skeleton():
     assert skeleton.any()
 
 
+def test_skeleton_keypoints_identifies_endpoints_junctions_and_isolates():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+    skeleton[0, 0] = True
+
+    endpoints, junctions, isolated = skeleton_keypoints(
+        skeleton,
+        resolved_spatial_ndim=2,
+    )
+
+    assert endpoints.sum() == 4
+    assert junctions.sum() == 1
+    assert isolated.sum() == 1
+    assert junctions[3, 3]
+    assert isolated[0, 0]
+
+
+def test_label_skeleton_components_labels_connected_skeleton_blocks():
+    skeleton = np.zeros((2, 7, 7), dtype=bool)
+    skeleton[0, 1:6, 3] = True
+    skeleton[0, 3, 1:6] = True
+    skeleton[0, 0, 0] = True
+    skeleton[1, 2:5, 2] = True
+
+    labels = label_skeleton_components(skeleton, resolved_spatial_ndim=2)
+
+    assert labels.dtype == np.int32
+    assert labels[0].max() == 2
+    assert labels[1].max() == 1
+    assert labels[0, 3, 3] == labels[0, 1, 3]
+    assert labels[0, 0, 0] != labels[0, 3, 3]
+
+
+def test_label_skeleton_branches_labels_paths_around_junctions():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    labels = label_skeleton_branches(skeleton, resolved_spatial_ndim=2)
+
+    assert labels.dtype == np.int32
+    assert labels.max() == 4
+    assert labels[3, 3] == 0
+    assert labels[1, 3] != 0
+    assert labels[5, 3] != 0
+    assert labels[3, 1] != 0
+    assert labels[3, 5] != 0
+
+
+def test_prune_skeleton_branches_removes_short_terminal_spurs():
+    skeleton = np.zeros((7, 9), dtype=bool)
+    skeleton[3, 1:8] = True
+    skeleton[1:4, 4] = True
+    skeleton[4, 4] = True
+
+    pruned = prune_skeleton_branches(
+        skeleton,
+        min_branch_length=2,
+        resolved_spatial_ndim=2,
+    )
+
+    assert not pruned[4, 4]
+    assert pruned[1, 4]
+    assert pruned[3, 1]
+    assert pruned[3, 7]
+    assert pruned.sum() == skeleton.sum() - 1
+
+
 def test_analyze_skeleton_reports_plus_shape_topology():
     skeleton = np.zeros((7, 7), dtype=bool)
     skeleton[1:6, 3] = True
@@ -1020,6 +1097,41 @@ def test_pipeline_skeleton_analysis_creates_table_state():
     assert state.kind == "measurement table"
     assert "branch_count" in state.columns
     assert state.history[-1] == "Analyze Skeleton: analyzed 1 component"
+
+
+def test_pipeline_skeleton_keypoints_creates_three_mask_outputs():
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    keypoints = pipeline.add_node("skeleton_keypoints")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, keypoints.id)
+
+    pipeline.run(image, input_metadata={"axes": "YX"})
+    outputs = pipeline.node_outputs[keypoints.id]
+    states = pipeline.node_output_states[keypoints.id]
+
+    assert [int(output.sum()) for output in outputs] == [4, 1, 0]
+    assert [state.kind for state in states] == [
+        "binary mask",
+        "binary mask",
+        "binary mask",
+    ]
+    assert (
+        states[0].history[-1]
+        == "Skeleton Keypoints (Endpoints): extracted Endpoints"
+    )
+    assert (
+        states[1].history[-1]
+        == "Skeleton Keypoints (Junctions): extracted Junctions"
+    )
+    assert (
+        states[2].history[-1]
+        == "Skeleton Keypoints (Isolated nodes): extracted Isolated nodes"
+    )
 
 
 def test_save_output_writes_npy_when_enabled(tmp_path):

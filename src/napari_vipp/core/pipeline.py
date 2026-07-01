@@ -53,6 +53,8 @@ from napari_vipp.core.operations import (
     invert,
     isodata_threshold,
     label_connected_components,
+    label_skeleton_branches,
+    label_skeleton_components,
     laplace_filter,
     li_threshold,
     linear_scale_offset,
@@ -75,6 +77,7 @@ from napari_vipp.core.operations import (
     orthogonal_projection,
     otsu_threshold,
     project_image,
+    prune_skeleton_branches,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
@@ -87,6 +90,7 @@ from napari_vipp.core.operations import (
     select_axis_slice,
     select_table_columns,
     set_pixel_size,
+    skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
     split_channels,
@@ -232,6 +236,7 @@ UTILITIES_GROUP = "Utilities"
 MATH_LOGIC_GROUP = "Math & Logic"
 LABEL_OPERATIONS_CATEGORY = "Label Operations"
 MEASUREMENTS_CATEGORY = "Measurements"
+SKELETON_NETWORK_GROUP = "Skeleton / Network QC"
 FILTERING_CATEGORY = "Filtering"
 SEGMENTATION_CATEGORY = "Segmentation"
 SMOOTHING_DENOISING_GROUP = "Smoothing & Denoising"
@@ -323,6 +328,8 @@ SPATIAL_OPERATIONS = {
     "fill_holes",
     "hysteresis_threshold",
     "h_maxima_markers",
+    "label_skeleton_branches",
+    "label_skeleton_components",
     "label_connected_components",
     "marker_controlled_watershed",
     "filter_labels_by_property",
@@ -332,8 +339,10 @@ SPATIAL_OPERATIONS = {
     "relabel_sequential",
     "remove_small_objects",
     "rolling_ball_background",
+    "prune_skeleton_branches",
     "subtract_background",
     "skeletonize",
+    "skeleton_keypoints",
 }
 
 
@@ -1697,6 +1706,82 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
         ),
         analyze_skeleton,
+        subcategory=SKELETON_NETWORK_GROUP,
+    ),
+    OperationSpec(
+        "skeleton_keypoints",
+        "Skeleton Keypoints",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "mask",
+        (SPATIAL_MODE_PARAMETER,),
+        skeleton_keypoints,
+        subcategory=SKELETON_NETWORK_GROUP,
+        outputs=(
+            OutputSpec("endpoints", "mask", "Endpoints"),
+            OutputSpec("junctions", "mask", "Junctions"),
+            OutputSpec("isolated", "mask", "Isolated nodes"),
+        ),
+    ),
+    OperationSpec(
+        "label_skeleton_components",
+        "Label Skeleton Components",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "labels",
+        (SPATIAL_MODE_PARAMETER,),
+        label_skeleton_components,
+        subcategory=SKELETON_NETWORK_GROUP,
+    ),
+    OperationSpec(
+        "label_skeleton_branches",
+        "Label Skeleton Branches",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "labels",
+        (SPATIAL_MODE_PARAMETER,),
+        label_skeleton_branches,
+        subcategory=SKELETON_NETWORK_GROUP,
+    ),
+    OperationSpec(
+        "prune_skeleton_branches",
+        "Prune Skeleton Branches",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "mask",
+        (
+            ParameterSpec(
+                "min_branch_length",
+                "Minimum terminal branch length (pixels/voxels)",
+                "float",
+                3.0,
+                0.0,
+                100_000.0,
+                1.0,
+                decimals=1,
+            ),
+            ParameterSpec(
+                "iterations",
+                "Pruning passes",
+                "int",
+                1,
+                1,
+                100,
+                1,
+            ),
+            ParameterSpec(
+                "remove_isolated",
+                "Remove isolated skeleton voxels",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            SPATIAL_MODE_PARAMETER,
+        ),
+        prune_skeleton_branches,
+        subcategory=SKELETON_NETWORK_GROUP,
     ),
     OperationSpec(
         "merge_tables",

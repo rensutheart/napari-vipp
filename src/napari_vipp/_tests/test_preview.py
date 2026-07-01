@@ -70,6 +70,23 @@ def test_thumbnail_contrast_modes_include_minmax_and_raw():
     assert minmax[0, 1, 0] == 255
 
 
+def test_percentile_thumbnail_keeps_sparse_foreground_visible_over_low_ramp():
+    yy, xx = np.indices((64, 64), dtype=np.uint16)
+    data = ((yy + xx) % 32).astype(np.uint16)
+    data[18:23, 18:26] = 34_000
+
+    thumb = normalize_thumbnail_with_colormap(
+        data,
+        size=(64, 64),
+        colormap="Gray",
+        contrast_mode="Percentile",
+    )
+
+    assert thumb is not None
+    assert thumb[0, :, 0].max() < 5
+    assert thumb[20, 20, 0] > 200
+
+
 def test_signed_difference_thumbnail_renders_zero_background_black():
     # A Subtract of two boolean masks yields a signed difference image with
     # values in {-1, 0, 1}. The zero background must render black (like the

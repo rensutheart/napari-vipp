@@ -28,6 +28,11 @@ SUMMARY_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-measurement-summary.json"
 )
+SKELETON_QC_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-skeleton-qc.json"
+)
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():
@@ -176,3 +181,42 @@ def test_synthetic_measurement_summary_workflow_loads_and_runs():
     assert [record["area_pixels_min"] for record in records] == [24.0, 12.0, 40.0]
     assert [record["area_pixels_max"] for record in records] == [30.0, 28.0, 40.0]
     assert all(record["condition"] == "summary_validation" for record in records)
+
+
+def test_synthetic_skeleton_qc_workflow_loads_and_runs():
+    workflow = load_workflow(SKELETON_QC_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    keypoint_ports = pipeline.output_ports("skeleton_keypoints_1")
+    assert [port.label for port in keypoint_ports] == [
+        "Endpoints",
+        "Junctions",
+        "Isolated nodes",
+    ]
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic skeleton network"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    keypoint_counts = [
+        int(output.sum()) for output in pipeline.node_outputs["skeleton_keypoints_1"]
+    ]
+    before = outputs["analyze_skeleton_1"]
+    after = outputs["analyze_skeleton_2"]
+
+    assert keypoint_counts == [8, 1, 1]
+    assert outputs["label_skeleton_components_1"].max() == 3
+    assert outputs["label_skeleton_branches_1"].max() == 7
+    assert outputs["prune_skeleton_branches_1"].sum() == np.count_nonzero(data) - 2
+    assert before.row_count == 3
+    assert after.row_count == 2
+    assert sum(record["branch_count"] for record in before.records()) == 7
+    assert sum(record["branch_count"] for record in after.records()) == 6

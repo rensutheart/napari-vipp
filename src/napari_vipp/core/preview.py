@@ -11,6 +11,7 @@ from napari_vipp.core.channel_colors import (
 from napari_vipp.core.metadata import ImageState
 
 RGB_CHANNELS = (3, 4)
+THUMBNAIL_PERCENTILE_RANGE = (0.5, 99.9)
 MONOCHROME_COLORMAPS = (
     "Gray",
     "Viridis",
@@ -386,8 +387,10 @@ def _normalize_uint8(
         lo = float(finite.min())
         hi = float(finite.max())
     else:
-        lo = float(np.percentile(finite, 1))
-        hi = float(np.percentile(finite, 99))
+        lo, hi = (
+            float(value)
+            for value in np.percentile(finite, THUMBNAIL_PERCENTILE_RANGE)
+        )
     if hi <= lo:
         hi = float(finite.max())
         lo = float(finite.min())

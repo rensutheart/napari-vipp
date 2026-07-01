@@ -3,7 +3,7 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-06-20
+Last reviewed: 2026-07-01
 
 It reflects the live codebase after slot-aware multi-input and multi-output
 graphs, workflow persistence, Python export, metadata panels, first-class label
@@ -58,7 +58,7 @@ src/napari_vipp/
   _widget.py           main dock widget and inspector orchestration
   _graph.py            QGraphicsView node canvas, ports, wires, node cards
   _theme.py            category colour tokens
-  _sample_data.py      synthetic ZYX, CZYX, TCZYX, and TYX validation samples
+  _sample_data.py      synthetic ZYX, CZYX, TCZYX, TYX, and skeleton samples
   core/
     pipeline.py        graph model, NODE_LIBRARY, executor
     operations.py      pure processing kernels
@@ -239,8 +239,9 @@ or slice axis is intended.
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential
 - `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Merge Tables, Select Table Columns, Add Metadata Columns,
-  Summarize Measurements
+  Skeleton, Skeleton Keypoints, Label Skeleton Components, Label Skeleton
+  Branches, Prune Skeleton Branches, Merge Tables, Select Table Columns, Add
+  Metadata Columns, Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -334,10 +335,13 @@ a `table` with one row per connected skeleton component. It reports skeleton
 voxel count, endpoint voxels, junction voxels, isolated nodes, simplified
 graph node/edge counts, voxel-graph edge count, cycle count, per-block
 connected-component context, and skeleton length in pixels/voxels plus
-calibrated physical units when spatial scale metadata is available. The first
-graph analyzer deliberately stays generic; mitochondrial-specific
-fragmentation, mesh/surface, and domain-normalized connectivity measurements
-should be separate specialist nodes.
+calibrated physical units when spatial scale metadata is available. `Skeleton
+Keypoints`, `Label Skeleton Components`, `Label Skeleton Branches`, and `Prune
+Skeleton Branches` provide visual QC masks/labels and simple terminal-spur
+cleanup using the same skeleton graph rules. The first graph analyzer
+deliberately stays generic; mitochondrial-specific fragmentation, mesh/surface,
+domain-normalized connectivity measurements, graph export, and richer branch
+metrics should be separate specialist nodes.
 
 The longer-term measurement architecture must support selectable measurement
 families and merged per-object result tables for exploratory statistics such as
@@ -675,7 +679,10 @@ Python export:
 - `VIPP synthetic multichannel volume`: `CZYX`;
 - `VIPP synthetic time-lapse multichannel`: `TCZYX`;
 - `VIPP synthetic measurement summary`: `TYX` time-series objects with known
-  counts and areas.
+  counts and areas;
+- `VIPP synthetic skeleton network`: sparse `ZYX` network with known endpoints,
+  branches, a junction, a short spur, a separate component, and an isolated
+  voxel.
 
 The samples include OME-NGFF-like `multiscales` metadata and VIPP hint keys.
 The time-lapse multichannel sample is preferred as the default when present.
@@ -740,13 +747,15 @@ Implemented now:
   sequential relabeling, and label-volume distribution controls;
 - first-class table outputs, basic label-object measurement, CSV/TSV table
   saving, and generated-script table output saving;
-- generic skeletonization and skeleton-network measurement tables;
+- generic skeletonization, skeleton-network measurement tables, keypoint masks,
+  branch/component labels, and short-branch pruning;
 - standard maximize behavior for detached VIPP windows.
 
 Still incomplete or deliberately future-facing:
 
-- grouped summaries, calibrated extended-length variants, and mesh morphology;
-- skeleton QC feature masks, branch labels, pruning, and graph export;
+- calibrated extended-length variants and mesh morphology;
+- skeleton graph export, richer branch metrics, and physical-length pruning
+  units;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution;

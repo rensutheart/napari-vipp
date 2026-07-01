@@ -1,6 +1,6 @@
 # MitoMorph Feature Parity And Measurement Roadmap
 
-Last reviewed: 2026-06-23
+Last reviewed: 2026-07-01
 
 This document captures the MitoMorph-derived capabilities that should become
 first-class VIPP workflows. The goal is not to copy the old implementation
@@ -72,9 +72,10 @@ Proposed measurement families:
    anisotropic z spacing.
 
 5. **Skeleton And Network Measurements**
-   The base `Skeletonize` and `Analyze Skeleton` nodes are implemented. Future
-   work should add branch length distributions, tortuosity, branch labels,
-   endpoint/junction QC masks, short-branch pruning, explicit graph export, and
+   `Skeletonize`, `Analyze Skeleton`, skeleton keypoint masks,
+   component/branch label images, and short-branch pruning are implemented.
+   Future work should add branch length distributions, tortuosity,
+   physical-length pruning units, explicit graph export, and
    domain-normalized connectedness metrics.
 
 6. **Localization And Colocalization Measurements**
@@ -134,7 +135,7 @@ and then assemble them into one analysis-ready table.
    sluggish if run live.
 9. Add colocalization/localization table nodes that can merge with object
    measurement tables.
-10. Add skeleton QC/pruning/branch-label outputs.
+10. Add skeleton graph export and richer branch/network metrics.
 11. Add mitochondrial event analysis after tracking/association design is in
    place.
 
