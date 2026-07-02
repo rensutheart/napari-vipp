@@ -112,7 +112,11 @@ from napari_vipp.core.metadata import (
     metadata_history_items,
     metadata_table_rows,
 )
-from napari_vipp.core.operations import automatic_threshold_value, save_array_output
+from napari_vipp.core.operations import (
+    NO_TABLE_COLUMNS_VALUE,
+    automatic_threshold_value,
+    save_array_output,
+)
 from napari_vipp.core.pipeline import (
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
     EXECUTION_ERROR,
@@ -2040,6 +2044,218 @@ class ReorderAxesControl(QWidget):
             self.serialized_label.setText(f"Workflow value: {value}")
         else:
             self.serialized_label.setText("Workflow value: input order")
+
+
+class SelectTableColumnsControl(QWidget):
+    """Checklist control for keeping and ordering table columns."""
+
+    valueChanged = Signal(object)
+
+    def __init__(
+        self,
+        columns: list[str] | tuple[str, ...],
+        value: str = "auto",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._columns: tuple[str, ...] = ()
+        self._updating = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(7)
+
+        title = QLabel("Columns to keep")
+        title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Tick columns to include in the output table. Drag or move rows to "
+            "control output order."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #94a3b8;")
+        layout.addWidget(hint)
+
+        self.list_widget = AxisOrderListWidget()
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.setAcceptDrops(True)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setMinimumHeight(130)
+        self.list_widget.setMaximumHeight(260)
+        self.list_widget.orderChanged.connect(self._emit_value_changed)
+        self.list_widget.itemChanged.connect(self._emit_value_changed)
+        self.list_widget.itemSelectionChanged.connect(self._sync_button_state)
+        layout.addWidget(self.list_widget)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        self.select_all_button = QPushButton("Select all")
+        self.deselect_all_button = QPushButton("Deselect all")
+        self.move_up_button = QPushButton("Move up")
+        self.move_down_button = QPushButton("Move down")
+        self.reset_button = QPushButton("Reset order")
+        button_row.addWidget(self.select_all_button)
+        button_row.addWidget(self.deselect_all_button)
+        button_row.addWidget(self.move_up_button)
+        button_row.addWidget(self.move_down_button)
+        button_row.addWidget(self.reset_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setStyleSheet("color: #64748b;")
+        layout.addWidget(self.summary_label)
+
+        self.select_all_button.clicked.connect(lambda: self._set_all_checked(True))
+        self.deselect_all_button.clicked.connect(lambda: self._set_all_checked(False))
+        self.move_up_button.clicked.connect(lambda: self._move_selected(-1))
+        self.move_down_button.clicked.connect(lambda: self._move_selected(1))
+        self.reset_button.clicked.connect(self.reset_order)
+
+        self.set_options(columns, value=value, emit=False)
+
+    def value(self) -> str:
+        selected = self._selected_columns()
+        if not selected:
+            return NO_TABLE_COLUMNS_VALUE
+        if tuple(selected) == self._columns:
+            return "auto"
+        return ",".join(selected)
+
+    def set_options(
+        self,
+        columns: list[str] | tuple[str, ...],
+        value: str = "auto",
+        emit: bool = False,
+    ) -> None:
+        self._updating = True
+        self._columns = tuple(str(column) for column in columns)
+        ordered, selected = self._ordered_columns_from_value(value)
+        self._build_items(ordered, selected)
+        self._updating = False
+        self._sync_button_state()
+        self._sync_summary_label()
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def reset_order(self) -> None:
+        selected = set(self._selected_columns())
+        self._updating = True
+        self._build_items(list(self._columns), selected)
+        self._updating = False
+        self._sync_button_state()
+        self._sync_summary_label()
+        self.valueChanged.emit(self.value())
+
+    def _build_items(self, ordered: list[str], selected: set[str]) -> None:
+        with QSignalBlocker(self.list_widget):
+            self.list_widget.clear()
+            for column in ordered:
+                item = QListWidgetItem(column)
+                item.setData(Qt.UserRole, column)
+                item.setCheckState(
+                    Qt.Checked if column in selected else Qt.Unchecked
+                )
+                item.setSizeHint(QSize(180, 28))
+                item.setToolTip(column)
+                item.setFlags(
+                    item.flags()
+                    | Qt.ItemIsUserCheckable
+                    | Qt.ItemIsDragEnabled
+                    | Qt.ItemIsDropEnabled
+                    | Qt.ItemIsSelectable
+                    | Qt.ItemIsEnabled
+                )
+                self.list_widget.addItem(item)
+            if self.list_widget.count():
+                self.list_widget.setCurrentRow(0)
+
+    def _ordered_columns_from_value(self, value: str) -> tuple[list[str], set[str]]:
+        available = list(self._columns)
+        available_set = set(available)
+        raw = str(value or "auto").strip()
+        if not available:
+            return [], set()
+        if raw.lower() in {"", "auto"}:
+            return available, set(available)
+        if raw.lower() in {NO_TABLE_COLUMNS_VALUE, "none", "<none>"}:
+            return available, set()
+        requested = [
+            column.strip()
+            for column in raw.split(",")
+            if column.strip() and column.strip() in available_set
+        ]
+        selected = set(dict.fromkeys(requested))
+        ordered = list(dict.fromkeys(requested))
+        ordered.extend(column for column in available if column not in selected)
+        return ordered, selected
+
+    def _selected_columns(self) -> list[str]:
+        selected: list[str] = []
+        for row in range(self.list_widget.count()):
+            item = self.list_widget.item(row)
+            if item is not None and item.checkState() == Qt.Checked:
+                selected.append(str(item.data(Qt.UserRole)))
+        return selected
+
+    def _set_all_checked(self, checked: bool) -> None:
+        self._updating = True
+        with QSignalBlocker(self.list_widget):
+            for row in range(self.list_widget.count()):
+                item = self.list_widget.item(row)
+                if item is not None:
+                    item.setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self._updating = False
+        self._sync_summary_label()
+        self.valueChanged.emit(self.value())
+
+    def _move_selected(self, direction: int) -> None:
+        row = self.list_widget.currentRow()
+        if row < 0:
+            return
+        target = row + int(direction)
+        if not 0 <= target < self.list_widget.count():
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(target, item)
+        self.list_widget.setCurrentRow(target)
+        self._emit_value_changed()
+
+    def _sync_button_state(self) -> None:
+        has_columns = self.list_widget.count() > 0
+        row = self.list_widget.currentRow()
+        self.select_all_button.setEnabled(has_columns)
+        self.deselect_all_button.setEnabled(has_columns)
+        self.reset_button.setEnabled(has_columns)
+        self.move_up_button.setEnabled(has_columns and row > 0)
+        self.move_down_button.setEnabled(
+            has_columns and 0 <= row < self.list_widget.count() - 1
+        )
+
+    def _sync_summary_label(self) -> None:
+        total = len(self._columns)
+        selected = len(self._selected_columns())
+        if total <= 0:
+            self.summary_label.setText(
+                "No upstream table columns are available yet. Calculate or connect "
+                "an upstream table-producing node first."
+            )
+            return
+        self.summary_label.setText(f"Selected {selected} of {total} columns.")
+
+    def _emit_value_changed(self, *_args) -> None:
+        self._sync_button_state()
+        self._sync_summary_label()
+        if not self._updating:
+            self.valueChanged.emit(self.value())
 
 
 class PythonSyntaxHighlighter(QSyntaxHighlighter):
@@ -5208,6 +5424,9 @@ class VippWidget(QWidget):
         if node.operation_id == "reorder_axes":
             self._render_reorder_axes_parameters(node_id)
             return
+        if node.operation_id == "select_table_columns":
+            self._render_select_table_columns_parameters(node_id)
+            return
         if node.operation_id == "rescale_axes":
             self._render_rescale_axes_parameters(node_id)
             return
@@ -5420,6 +5639,13 @@ class VippWidget(QWidget):
                 "- Image / distance: elevation image or distance map.\n"
                 "- Markers: non-negative integer seed labels.\n"
                 "- Mask: foreground constraint region (>0 = inside)."
+            )
+        if node.operation_id == "measure_3d_mesh_morphology":
+            return (
+                "3D mesh morphology requires true 3D label input. It uses "
+                "spatial scale metadata for anisotropic Z/Y/X spacing, skips "
+                "tiny objects below the minimum voxel count, and reports failed "
+                "mesh or convex-hull metrics as NaN with a status message."
             )
         return ""
 
@@ -5723,6 +5949,20 @@ class VippWidget(QWidget):
         self.parameter_form.addRow(control)
         self._parameter_widgets["order"] = control
 
+    def _render_select_table_columns_parameters(self, node_id: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        node.params.pop("selection_mode", None)
+        node.params.pop("append_unlisted", None)
+        control = SelectTableColumnsControl(
+            self._input_table_columns_for(node_id),
+            str(node.params.get("columns", "auto")),
+        )
+        self._apply_select_table_columns_params(node_id, control.value())
+        control.valueChanged.connect(self._on_select_table_columns_changed)
+        self.parameter_form.addRow(control)
+        self._parameter_widgets["columns"] = control
+        self.parameter_group.setHidden(False)
+
     def _parameter_value_changed(self, spec, previous, current) -> bool:
         """Return ``True`` only when a parameter value meaningfully changed.
 
@@ -5810,6 +6050,21 @@ class VippWidget(QWidget):
                 )
                 changed = previous != node.params
             return changed
+        if node.operation_id == "select_table_columns":
+            widget = self._parameter_widgets.get("columns")
+            if isinstance(widget, SelectTableColumnsControl):
+                previous = dict(node.params)
+                widget.set_options(
+                    self._input_table_columns_for(self._selected_node_id),
+                    str(node.params.get("columns", "auto")),
+                    emit=False,
+                )
+                self._apply_select_table_columns_params(
+                    self._selected_node_id,
+                    widget.value(),
+                )
+                changed = previous != node.params
+            return changed
         if node.operation_id == "rescale_axes":
             return self._refresh_rescale_axes_controls(self._selected_node_id)
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
@@ -5885,7 +6140,8 @@ class VippWidget(QWidget):
         if (
             node is not None
             and node.operation_id in {"measure_objects", "measure_objects_intensity"}
-            and spec.name == "include_2d_boundary_descriptors"
+            and spec.name
+            in {"include_2d_boundary_descriptors", "include_2d_shape_moments"}
         ):
             return self._input_spatial_count(node_id) >= 3
         if (
@@ -6123,10 +6379,14 @@ class VippWidget(QWidget):
                 "2D per XY slice (advanced)",
                 "3D ZYX volume",
             )
+        elif node is not None and node.operation_id == "measure_3d_mesh_morphology":
+            choices = ("Auto from axes", "3D ZYX")
         else:
             choices = ("Auto from axes", "2D YX", "3D ZYX")
         if self._input_spatial_count(node_id) >= 3:
             return choices
+        if node is not None and node.operation_id == "measure_3d_mesh_morphology":
+            return choices[:1]
         return choices[:2]
 
     def _available_clear_border_modes(self, node_id: str) -> tuple[str, ...]:
@@ -6350,6 +6610,29 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, "order")
         self._apply_reorder_axes_params(self._selected_node_id, value)
+        self._mark_pipeline_dirty(self._selected_node_id)
+        self._debounce_timer.start()
+
+    def _input_table_columns_for(self, node_id: str) -> list[str]:
+        data = self.pipeline.input_data_for_node(node_id)
+        if is_table_data(data):
+            return [str(column) for column in data.columns]
+        state = self.pipeline.input_state_for_node(node_id)
+        columns = getattr(state, "columns", ())
+        return [str(column) for column in columns]
+
+    def _apply_select_table_columns_params(self, node_id: str, value: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        node.params["columns"] = str(value)
+        node.params.pop("selection_mode", None)
+        node.params.pop("append_unlisted", None)
+
+    def _on_select_table_columns_changed(self, value: str) -> None:
+        node = self.pipeline.nodes[self._selected_node_id]
+        if str(node.params.get("columns", "auto")) == str(value):
+            return
+        self._record_parameter_undo(self._selected_node_id, "columns")
+        self._apply_select_table_columns_params(self._selected_node_id, value)
         self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
 

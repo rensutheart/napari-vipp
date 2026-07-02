@@ -35,6 +35,14 @@ def _workflow_args(args: list[str]) -> tuple[Path, str]:
             examples / "red-channel-merged-measurement-table.json",
             "add_metadata_columns_1",
         ),
+        "morphology": (
+            examples / "synthetic-derived-object-morphology.json",
+            "measure_objects_1",
+        ),
+        "mesh": (
+            examples / "synthetic-3d-mesh-morphology.json",
+            "measure_3d_mesh_morphology_1",
+        ),
     }
     if not args:
         return workflows["intensity"]

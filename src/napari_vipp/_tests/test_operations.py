@@ -55,6 +55,7 @@ from napari_vipp.core.operations import (
     logical_xor,
     marker_controlled_watershed,
     mask_image,
+    measure_3d_mesh_morphology,
     measure_objects,
     measure_objects_with_intensity,
     measure_overall_skeleton_network,
@@ -93,6 +94,7 @@ from napari_vipp.core.operations import (
     subtract_background,
     subtract_images,
     summarize_measurements,
+    summarize_skeleton_branches,
     top_hat,
     triangle_threshold,
     unsharp_mask_filter,
@@ -173,6 +175,7 @@ def test_vipp_operation_nodes_are_registered():
         "measure_skeleton_branches",
         "skeleton_graph_tables",
         "measure_overall_skeleton_network",
+        "summarize_skeleton_branches",
         "skeleton_keypoints",
         "skeleton_graph_overlay",
         "label_skeleton_components",
@@ -367,6 +370,8 @@ def test_measure_objects_reports_selected_extended_2d_properties():
         include_shape_descriptors=True,
         include_axis_descriptors=True,
         include_2d_boundary_descriptors=True,
+        include_derived_shape_ratios=True,
+        include_2d_shape_moments=True,
     )
     record = table.records()[0]
 
@@ -383,8 +388,22 @@ def test_measure_objects_reports_selected_extended_2d_properties():
     assert "orientation_radians" in table.columns
     assert record["perimeter_pixels"] > 0
     assert record["perimeter_crofton_pixels"] > 0
+    assert record["axis_ratio_major_minor"] >= 1.0
+    assert record["bbox_axis_0_length_pixels"] == 6.0
+    assert record["bbox_axis_1_length_pixels"] == 6.0
+    assert record["bbox_axis_ratio_0_1"] == 1.0
+    assert record["bbox_fill_fraction"] == 1.0
+    assert record["inertia_eigval_ratio_0_1"] >= 1.0
+    assert 0.0 < record["circularity"] <= 1.0
+    assert record["perimeter_area_ratio"] > 0.0
+    for index in range(7):
+        assert f"hu_moment_{index}" in table.columns
     assert table.unit_for("orientation_radians") == "radians"
+    assert table.unit_for("axis_ratio_major_minor") == "ratio"
+    assert table.unit_for("circularity") == "ratio"
     assert "shape descriptors" in table.table_kind
+    assert "derived shape ratios" in table.table_kind
+    assert "2D shape moments" in table.table_kind
 
 
 def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
@@ -397,6 +416,8 @@ def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
         include_shape_descriptors=True,
         include_axis_descriptors=True,
         include_2d_boundary_descriptors=True,
+        include_derived_shape_ratios=True,
+        include_2d_shape_moments=True,
     )
     record = table.records()[0]
 
@@ -405,11 +426,54 @@ def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
     assert record["filled_volume_voxels"] == 72
     assert record["major_axis_length_voxels"] > 0
     assert record["minor_axis_length_voxels"] > 0
+    assert record["bbox_axis_0_length_voxels"] == 2.0
+    assert record["bbox_axis_1_length_voxels"] == 6.0
+    assert record["bbox_axis_2_length_voxels"] == 6.0
+    assert np.isclose(record["bbox_axis_ratio_0_1"], 1.0 / 3.0)
+    assert record["bbox_fill_fraction"] == 1.0
+    assert "axis_ratio_major_minor" in table.columns
     assert "inertia_tensor_eigval_2" in table.columns
+    assert "inertia_eigval_ratio_0_2" in table.columns
     assert "perimeter_pixels" not in table.columns
     assert "orientation_radians" not in table.columns
     assert "convex_volume_voxels" not in table.columns
+    assert "circularity" not in table.columns
+    assert "hu_moment_0" not in table.columns
     assert table.unit_for("inertia_tensor_eigval_2") == "voxels^2"
+    assert table.unit_for("bbox_axis_0_length_voxels") == "voxels"
+
+
+def test_measure_3d_mesh_morphology_reports_surface_and_failure_status():
+    labels = np.zeros((8, 14, 14), dtype=np.int32)
+    labels[1:6, 1:6, 1:6] = 1
+    labels[6, 11, 11:13] = 2
+
+    table = measure_3d_mesh_morphology(
+        labels,
+        resolved_spatial_ndim=3,
+        minimum_voxel_count=4,
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(2.0, 0.5, 0.5),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+    )
+    records = table.records()
+
+    assert table.row_count == 2
+    assert records[0]["label_id"] == 1
+    assert records[0]["mesh_status"] == "ok"
+    assert records[0]["voxel_count"] == 125
+    assert np.isclose(records[0]["voxel_volume_physical"], 62.5)
+    assert records[0]["mesh_surface_area_physical"] > 0
+    assert records[0]["mesh_volume_physical"] > 0
+    assert records[0]["sphericity"] > 0
+    assert records[0]["solidity_3d"] > 0
+    assert records[0]["physical_unit"] == "micrometer"
+    assert table.unit_for("mesh_surface_area_physical") == "micrometer^2"
+    assert table.unit_for("mesh_volume_physical") == "micrometer^3"
+    assert records[1]["label_id"] == 2
+    assert records[1]["mesh_status"] == "skipped_too_few_voxels"
+    assert np.isnan(records[1]["mesh_volume_physical"])
 
 
 def test_measure_objects_with_intensity_reports_per_label_values():
@@ -444,11 +508,15 @@ def test_measure_objects_with_intensity_can_include_extended_properties():
         [labels, intensity],
         resolved_spatial_ndim=2,
         include_axis_descriptors=True,
+        include_derived_shape_ratios=True,
+        include_2d_shape_moments=True,
     )
     record = table.records()[0]
 
     assert "intensity_mean" in table.columns
     assert "major_axis_length_pixels" in table.columns
+    assert "axis_ratio_major_minor" in table.columns
+    assert "circularity" in table.columns
     assert record["major_axis_length_pixels"] > 0
 
 
@@ -621,6 +689,7 @@ def test_select_table_columns_keeps_drops_and_reorders_columns():
         columns="condition, label_id",
         append_unlisted="yes",
     )
+    empty = select_table_columns(table, columns="__none__")
 
     assert kept.columns == ("intensity_mean", "label_id")
     assert kept.rows[0] == (10.0, 1)
@@ -632,6 +701,8 @@ def test_select_table_columns_keeps_drops_and_reorders_columns():
         "area_pixels",
         "intensity_mean",
     )
+    assert empty.columns == ()
+    assert empty.rows == ((), ())
 
 
 def test_summarize_measurements_groups_by_metadata_and_units():
@@ -705,6 +776,59 @@ def test_summarize_measurements_auto_groups_by_time_index():
     )
     assert summarized.records()[0]["area_pixels_mean"] == 27.0
     assert summarized.records()[1]["area_pixels_mean"] == 40.0
+
+
+def test_summarize_skeleton_branches_groups_branch_distributions():
+    table = table_from_columns(
+        {
+            "t_index": [0, 0, 0, 1],
+            "component_id": [1, 1, 2, 1],
+            "branch_id": [1, 2, 3, 1],
+            "branch_type": [
+                "endpoint_to_junction",
+                "endpoint_to_junction",
+                "isolated",
+                "junction_to_junction",
+            ],
+            "branch_length_pixels": [2.0, 4.0, 0.0, 6.0],
+            "branch_tortuosity": [1.0, 1.2, 0.0, 1.5],
+        },
+        table_kind="Skeleton branches",
+        column_units={"branch_length_pixels": "pixels"},
+    )
+
+    summarized = summarize_skeleton_branches(
+        table,
+        group_by="t_index",
+        statistics="mean,median,std,min,max,q25,q75",
+    )
+    records = summarized.records()
+
+    assert summarized.table_kind == "Skeleton branch summary"
+    assert summarized.unit_for("branch_length_pixels_total") == "pixels"
+    assert summarized.unit_for("branch_tortuosity_mean") == "ratio"
+    assert summarized.columns[:5] == (
+        "t_index",
+        "branch_count",
+        "component_count",
+        "branch_length_pixels_total",
+        "branch_length_pixels_mean",
+    )
+    assert records[0]["t_index"] == 0
+    assert records[0]["branch_count"] == 3
+    assert records[0]["component_count"] == 2
+    assert records[0]["branch_length_pixels_total"] == 6.0
+    assert records[0]["branch_length_pixels_mean"] == 2.0
+    assert np.isclose(records[0]["branch_length_pixels_std"], 2.0)
+    assert records[0]["branch_type_endpoint_to_junction_count"] == 2
+    assert np.isclose(
+        records[0]["branch_type_endpoint_to_junction_fraction"],
+        2.0 / 3.0,
+    )
+    assert records[0]["branch_type_isolated_count"] == 1
+    assert records[1]["t_index"] == 1
+    assert records[1]["branch_count"] == 1
+    assert records[1]["branch_type_junction_to_junction_count"] == 1
 
 
 def test_pipeline_measure_objects_creates_table_state():
@@ -990,6 +1114,35 @@ def test_pipeline_summarizes_measurement_table_by_time_index():
     assert state.history[-1] == "Summarize Measurements: summarized 2 groups"
 
 
+def test_pipeline_summarizes_skeleton_branch_table_by_time_index():
+    data = np.zeros((2, 7, 7), dtype=np.float32)
+    data[:, 1:6, 3] = 1
+    data[0, 3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    branches = pipeline.add_node("measure_skeleton_branches")
+    summarized = pipeline.add_node("summarize_skeleton_branches")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, branches.id)
+    pipeline.connect(branches.id, summarized.id)
+
+    outputs = pipeline.run(data, input_metadata={"axes": "TYX"})
+    table = outputs[summarized.id]
+    state = pipeline.output_states[summarized.id]
+    records = table.records()
+
+    assert table.row_count == 2
+    assert records[0]["t_index"] == 0
+    assert records[0]["branch_count"] == 4
+    assert records[0]["branch_type_endpoint_to_junction_count"] == 4
+    assert records[1]["t_index"] == 1
+    assert records[1]["branch_count"] == 1
+    assert records[1]["branch_type_endpoint_to_endpoint_count"] == 1
+    assert "branch_length_pixels_total" in state.columns
+    assert state.history[-1] == "Summarize Skeleton Branches: summarized 2 groups"
+
+
 def test_save_table_output_writes_csv(tmp_path):
     labels = np.zeros((5, 6), dtype=np.int32)
     labels[1:3, 2:5] = 1
@@ -1183,6 +1336,13 @@ def test_measure_overall_skeleton_network_reports_block_metrics():
     assert record["median_branch_length_pixels"] == 2.0
     assert record["max_branch_length_pixels"] == 2.0
     assert record["network_connectedness_fraction"] == 1.0
+    assert record["branches_per_component"] == 4.0
+    assert record["endpoints_per_component"] == 4.0
+    assert record["junctions_per_component"] == 1.0
+    assert record["branches_per_skeleton_length"] == 0.5
+    assert record["endpoints_per_skeleton_length"] == 0.5
+    assert record["junctions_per_skeleton_length"] == 0.125
+    assert record["isolated_component_fraction"] == 0.0
 
 
 def test_prune_skeleton_branches_removes_short_terminal_spurs():

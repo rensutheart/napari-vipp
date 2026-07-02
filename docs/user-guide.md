@@ -65,8 +65,9 @@ Recommended for fixed-reference comparisons while navigating dims:
 
 Some table-producing nodes are intentionally not recalculated on every
 parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
-+ Intensity`, `Analyze Skeleton`, `Measure Skeleton Branches`,
-`Skeleton Graph Tables`, and `Measure Overall Skeleton Network`.
++ Intensity`, `Measure 3D Mesh Morphology`, `Analyze Skeleton`,
+`Measure Skeleton Branches`, `Skeleton Graph Tables`, and `Measure Overall
+Skeleton Network`.
 
 When selected, these nodes show an `Execution` panel with `Calculate` or
 `Recalculate`. The same action is available on the node card. If upstream data
@@ -92,15 +93,30 @@ Manual node cards use status colours:
 - orange: cached result is stale;
 - red: calculation failed.
 
+## Object And Mesh Morphology
+
+Use `Measure Objects` for standard region/object measurements from a label
+image. Use `Measure Objects + Intensity` when you also need per-object intensity
+statistics from a separate image input.
+
+Use `Measure 3D Mesh Morphology` only for true 3D label images. It extracts
+per-object surfaces with marching cubes, applies carried Z/Y/X scale metadata,
+and reports mesh surface area, mesh volume, sphericity, 3D solidity, convex-hull
+metrics, and status/error columns for objects that are too small or geometrically
+invalid. The node is manual/cached because these calculations are more expensive
+than ordinary regionprops. The reference workflow is
+`examples/synthetic-3d-mesh-morphology.json`.
+
 ## Skeleton Analysis Nodes
 
 The skeleton/network nodes are documented in
 [skeleton-nodes.md](skeleton-nodes.md). That guide explains which nodes expect
 binary masks, which expect already skeletonized masks, which nodes produce
 visual QC outputs, and which nodes produce measurement tables. In brief,
-`Measure Skeleton Branches` produces detailed branch rows, while `Measure
-Overall Skeleton Network` measures whole-network graph metrics directly from a
-skeleton mask. Use
+`Measure Skeleton Branches` produces detailed branch rows, `Summarize Skeleton
+Branches` converts those rows into branch-length/tortuosity distributions and
+branch-type fractions, and `Measure Overall Skeleton Network` measures
+whole-network graph metrics directly from a skeleton mask. Use
 `examples/synthetic-skeleton-qc.json` for a compact skeleton check and
 `examples/synthetic-advanced-skeleton-network.json` for a richer time-indexed
 3D skeleton graph/table stress test.

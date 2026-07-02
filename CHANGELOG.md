@@ -2,11 +2,26 @@
 
 ## Unreleased
 
+## 0.8.3a1 - 2026-07-02
+
 - Added `Summarize Measurements`, a table node that groups measurement rows by
   metadata or axis-index columns and calculates count, mean, median, standard
   deviation, min/max, and quartiles for selected numeric columns.
 - Added a deterministic `VIPP synthetic measurement summary` sample plus an
   example workflow for validating grouped object-count and area summaries.
+- Added derived object morphology groups to `Measure Objects` and
+  `Measure Objects + Intensity`: shape ratios, bounding-box side lengths/aspect
+  ratios, fill fraction, inertia eigenvalue ratios, Crofton-based circularity,
+  perimeter-to-area ratio, and Hu moments.
+- Added a deterministic `VIPP synthetic object morphology` sample plus an
+  example workflow for validating derived shape ratios, circularity, and Hu
+  moments.
+- Added `Measure 3D Mesh Morphology`, a manual/cached true-3D label measurement
+  node for mesh surface area, mesh volume, sphericity, surface-to-volume ratio,
+  convex-hull metrics, 3D solidity, and per-object mesh status/error reporting.
+- Added a deterministic anisotropic `VIPP synthetic 3D mesh morphology` sample
+  plus an example workflow that merges standard object measurements with mesh
+  morphology measurements.
 - Added a responsive `View dims` bar with VIPP-local T/Z/C-style controls that
   synchronize with napari dims and remain usable when napari hides slice sliders
   in 3D view.
@@ -20,9 +35,13 @@
   tortuosity tables.
 - Added `Skeleton Graph Tables`, a manual table node that exports explicit
   graph-node and graph-edge tables from skeleton masks.
+- Added `Summarize Skeleton Branches`, a table node that converts
+  row-per-branch skeleton measurements into grouped length/tortuosity
+  distributions and branch-type count/fraction summaries.
 - Added `Measure Overall Skeleton Network`, a manual table node for per-block
   connectedness, fragmentation, branch-count, and branch-length whole-network
-  metrics.
+  metrics, including normalized per-component and per-length connectivity
+  columns.
 - Added pixel/voxel versus physical-unit thresholding to `Prune Skeleton
   Branches` when pixel-size metadata is available.
 - Fixed `Skeleton Graph Overlay` output metadata so 2D napari inspect/pin
@@ -39,13 +58,14 @@
   component labels, pruning, and before/after skeleton analysis.
 - Added a deterministic `VIPP synthetic advanced skeleton network` sample plus
   an example workflow for validating time-indexed 3D skeleton graph overlays,
-  branch tables, explicit graph node/edge tables, network summaries, pruning,
-  loops, disconnected fragments, and anisotropic physical calibration.
+  branch tables, branch-summary tables, explicit graph node/edge tables,
+  network summaries, pruning, loops, disconnected fragments, and anisotropic
+  physical calibration.
 - Adjusted thumbnail percentile contrast so sparse bright foreground objects
   are not dropped as outliers while low-amplitude background ramps are stretched.
 - Added manual/cached execution for expensive table nodes. `Measure Objects`,
-  `Measure Objects + Intensity`, `Analyze Skeleton`,
-  `Measure Skeleton Branches`, `Skeleton Graph Tables`, and
+  `Measure Objects + Intensity`, `Measure 3D Mesh Morphology`,
+  `Analyze Skeleton`, `Measure Skeleton Branches`, `Skeleton Graph Tables`, and
   `Measure Overall Skeleton Network` now expose `Calculate`/`Recalculate`, keep
   the last result available downstream when stale, and recompute
   deterministically in headless/export runs.

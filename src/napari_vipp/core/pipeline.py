@@ -64,6 +64,7 @@ from napari_vipp.core.operations import (
     marker_controlled_watershed,
     mask_image,
     max_intensity_projection,
+    measure_3d_mesh_morphology,
     measure_objects,
     measure_objects_with_intensity,
     measure_overall_skeleton_network,
@@ -101,6 +102,7 @@ from napari_vipp.core.operations import (
     subtract_background,
     subtract_images,
     summarize_measurements,
+    summarize_skeleton_branches,
     top_hat,
     triangle_threshold,
     unsharp_mask_filter,
@@ -349,6 +351,7 @@ SPATIAL_OPERATIONS = {
     "measure_skeleton_branches",
     "skeleton_graph_tables",
     "measure_overall_skeleton_network",
+    "measure_3d_mesh_morphology",
     "label_connected_components",
     "marker_controlled_watershed",
     "filter_labels_by_property",
@@ -1661,6 +1664,24 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 1,
             ),
+            ParameterSpec(
+                "include_derived_shape_ratios",
+                "Derived shape ratios",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "include_2d_shape_moments",
+                "2D shape moments",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
         ),
         measure_objects,
         execution_policy="manual",
@@ -1700,6 +1721,24 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 1,
             ),
+            ParameterSpec(
+                "include_derived_shape_ratios",
+                "Derived shape ratios",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "include_2d_shape_moments",
+                "2D shape moments",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
         ),
         measure_objects_with_intensity,
         max_inputs=2,
@@ -1707,6 +1746,36 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             InputSpec("labels", "labels", "Labels"),
             InputSpec("intensity", "image", "Intensity image"),
         ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "measure_3d_mesh_morphology",
+        "Measure 3D Mesh Morphology",
+        MEASUREMENTS_CATEGORY,
+        "labels",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "minimum_voxel_count",
+                "Minimum voxel count",
+                "int",
+                16,
+                1,
+                100000,
+                1,
+            ),
+            ParameterSpec(
+                "include_convex_hull_metrics",
+                "Convex hull metrics",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+        ),
+        measure_3d_mesh_morphology,
         execution_policy="manual",
     ),
     OperationSpec(
@@ -1754,6 +1823,35 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         measure_skeleton_branches,
         subcategory=SKELETON_NETWORK_GROUP,
         execution_policy="manual",
+    ),
+    OperationSpec(
+        "summarize_skeleton_branches",
+        "Summarize Skeleton Branches",
+        MEASUREMENTS_CATEGORY,
+        "table",
+        "table",
+        (
+            ParameterSpec(
+                "group_by",
+                "Group by columns (auto or comma-separated)",
+                "text",
+                "auto",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "statistics",
+                "Length/tortuosity statistics",
+                "text",
+                "mean,median,std,min,max,q25,q75",
+                0,
+                0,
+                1,
+            ),
+        ),
+        summarize_skeleton_branches,
+        subcategory=SKELETON_NETWORK_GROUP,
     ),
     OperationSpec(
         "skeleton_graph_tables",
@@ -1994,26 +2092,6 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 0,
                 1,
-            ),
-            ParameterSpec(
-                "selection_mode",
-                "Mode",
-                "choice",
-                "Keep listed columns",
-                0,
-                0,
-                1,
-                choices=("Keep listed columns", "Drop listed columns"),
-            ),
-            ParameterSpec(
-                "append_unlisted",
-                "Append unlisted columns",
-                "choice",
-                "no",
-                0,
-                0,
-                1,
-                choices=("no", "yes"),
             ),
         ),
         select_table_columns,
@@ -3419,6 +3497,7 @@ class PrototypePipeline:
             "measure_skeleton_branches",
             "skeleton_graph_tables",
             "measure_overall_skeleton_network",
+            "measure_3d_mesh_morphology",
         } and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
             kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
@@ -3654,6 +3733,9 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     elif "graph edge" in table_kind:
         noun = "edge" if row_count == 1 else "edges"
         action = "exported"
+    elif "branch summary" in table_kind:
+        noun = "group" if row_count == 1 else "groups"
+        action = "summarized"
     elif "summary" in table_kind:
         if "skeleton" in table_kind or "network" in table_kind:
             noun = "block" if row_count == 1 else "blocks"

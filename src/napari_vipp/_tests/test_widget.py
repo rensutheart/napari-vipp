@@ -23,9 +23,11 @@ from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
     ConnectionInsertDialog,
     FlexibleDoubleSpinBox,
+    SelectTableColumnsControl,
     VippWidget,
 )
 from napari_vipp.core.io import inspect_image_source, read_image
+from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.core.pipeline import (
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
@@ -1721,6 +1723,10 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     assert _palette_child_by_text(
         measurement_skeleton_qc,
         "Measure Skeleton Branches",
+    )
+    assert _palette_child_by_text(
+        measurement_skeleton_qc,
+        "Summarize Skeleton Branches",
     )
     assert _palette_child_by_text(measurement_skeleton_qc, "Skeleton Graph Tables")
     assert _palette_child_by_text(
@@ -4327,11 +4333,59 @@ def test_measure_objects_shows_table_preview_and_saves_csv(qtbot, tmp_path):
     assert widget.thumbnail_checkbox.isHidden()
     assert "include_shape_descriptors" in widget._parameter_widgets
     assert "include_axis_descriptors" in widget._parameter_widgets
+    assert "include_derived_shape_ratios" in widget._parameter_widgets
     assert "include_2d_boundary_descriptors" not in widget._parameter_widgets
+    assert "include_2d_shape_moments" not in widget._parameter_widgets
     widget.graph_view.select_node(labels.id)
     assert not widget.thumbnail_checkbox.isHidden()
     assert widget.thumbnail_checkbox.isEnabled()
     assert "label_id" in path.read_text(encoding="utf-8")
+
+
+def test_select_table_columns_uses_detected_column_checklist(qtbot):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    image[6, 6] = 10
+    viewer = _Viewer(image, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    selected = widget.add_node_from_palette("select_table_columns")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget._connect_nodes(measurements.id, selected.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
+
+    widget.graph_view.select_node(selected.id)
+    control = widget._parameter_widgets["columns"]
+
+    assert isinstance(control, SelectTableColumnsControl)
+    assert "selection_mode" not in widget.pipeline.nodes[selected.id].params
+    assert "append_unlisted" not in widget.pipeline.nodes[selected.id].params
+    assert control.list_widget.count() > 0
+    assert control.list_widget.item(0).text() == "label_id"
+    assert "area_pixels" in [
+        control.list_widget.item(row).text()
+        for row in range(control.list_widget.count())
+    ]
+
+    control.deselect_all_button.click()
+    assert (
+        widget.pipeline.nodes[selected.id].params["columns"]
+        == NO_TABLE_COLUMNS_VALUE
+    )
+    widget.run_pipeline(force_sync=True)
+    assert widget.pipeline.outputs[selected.id].columns == ()
+    assert widget.pipeline.outputs[selected.id].row_count == 2
+
+    control.select_all_button.click()
+    control.reset_button.click()
+    assert widget.pipeline.nodes[selected.id].params["columns"] == "auto"
 
 
 def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):

@@ -30,6 +30,8 @@ def make_sample_data():
         _multichannel_volume_sample(z, y, x, rng),
         _time_lapse_sample(z, y, x, rng),
         _measurement_summary_sample(),
+        _object_morphology_sample(),
+        _mesh_morphology_sample(),
         _skeleton_network_sample(),
         _advanced_skeleton_network_sample(),
     ]
@@ -138,6 +140,107 @@ def _measurement_summary_sample():
                 "counts and areas for validating measurement summaries."
             ),
             **_ome_image_metadata("TYX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _object_morphology_sample():
+    """Return separated 2D objects with varied shapes for morphology metrics."""
+    yy, xx = np.indices((80, 104), dtype=np.float32)
+    data = np.zeros((80, 104), dtype=np.uint16)
+
+    circle = (yy - 20) ** 2 + (xx - 20) ** 2 <= 8**2
+    ellipse = ((yy - 20) / 6) ** 2 + ((xx - 62) / 15) ** 2 <= 1
+    rectangle = (yy >= 46) & (yy < 64) & (xx >= 10) & (xx < 31)
+    concave = ((yy >= 43) & (yy < 68) & (xx >= 58) & (xx < 65)) | (
+        (yy >= 61) & (yy < 68) & (xx >= 58) & (xx < 88)
+    )
+
+    data[circle] = 36_000
+    data[ellipse] = 42_000
+    data[rectangle] = 48_000
+    data[concave] = 54_000
+    background = ((yy + xx) % 64).astype(np.uint16)
+    data += background
+
+    metadata = {
+        "name": "VIPP synthetic object morphology",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Separated 2D circle, ellipse, rectangle, and concave objects "
+                "for validating derived object morphology, circularity, and Hu "
+                "moment measurements."
+            ),
+            **_ome_image_metadata("YX", data.shape),
+        },
+    }
+    return data, metadata, "image"
+
+
+def _mesh_morphology_sample():
+    """Return separated 3D objects for mesh/surface morphology validation."""
+    z, y, x = np.indices((24, 84, 104), dtype=np.float32)
+    data = np.zeros((24, 84, 104), dtype=np.uint16)
+
+    sphere = ((z - 7) / 3.0) ** 2 + ((y - 22) / 10.0) ** 2 + (
+        (x - 22) / 10.0
+    ) ** 2 <= 1
+    ellipsoid = ((z - 13) / 5.0) ** 2 + ((y - 22) / 7.0) ** 2 + (
+        (x - 68) / 15.0
+    ) ** 2 <= 1
+    cuboid = (
+        (z >= 5)
+        & (z < 12)
+        & (y >= 50)
+        & (y < 68)
+        & (x >= 10)
+        & (x < 36)
+    )
+    lobe_left = ((z - 16) / 3.0) ** 2 + ((y - 56) / 9.0) ** 2 + (
+        (x - 62) / 9.0
+    ) ** 2 <= 1
+    lobe_right = ((z - 16) / 3.0) ** 2 + ((y - 56) / 9.0) ** 2 + (
+        (x - 82) / 9.0
+    ) ** 2 <= 1
+    bridge = (
+        (z >= 14)
+        & (z <= 18)
+        & (y >= 52)
+        & (y <= 60)
+        & (x >= 62)
+        & (x <= 82)
+    )
+
+    data[sphere] = 34_000
+    data[ellipsoid] = 40_000
+    data[cuboid] = 46_000
+    data[lobe_left | lobe_right | bridge] = 52_000
+    data[2, 78, 96] = 58_000
+    data[2, 78, 97] = 58_000
+
+    background = ((z * 3 + y + x) % 96).astype(np.uint16)
+    data += background
+
+    metadata_block = _ome_image_metadata("ZYX", data.shape)
+    metadata_block["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [2.0, 0.5, 0.5]
+    metadata = {
+        "name": "VIPP synthetic 3D mesh morphology",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Separated 3D sphere-like, ellipsoid, cuboid, concave dumbbell, "
+                "and tiny objects with anisotropic Z/Y/X scale for validating "
+                "mesh surface, volume, convex hull, and sphericity metrics."
+            ),
+            **metadata_block,
         },
     }
     return data, metadata, "image"

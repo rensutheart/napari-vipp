@@ -55,9 +55,12 @@ Proposed measurement families:
    `Measure Objects + Intensity`: filled and bounding-box area/volume,
    major/minor axis length, inertia tensor eigenvalues, 2D orientation,
    2D eccentricity, 2D perimeter, 2D Crofton perimeter, 2D convex area,
-   2D solidity, and 2D maximum Feret diameter. Remaining work includes Hu
-   moments for 2D, form-factor/circularity-style metrics, calibrated physical
-   variants for extended length/shape columns, and robust 3D mesh morphology.
+   2D solidity, 2D maximum Feret diameter, derived shape ratios, 2D Hu
+   moments, Crofton-based circularity, and perimeter-to-area ratio. Remaining
+   work includes calibrated physical variants for extended length/shape
+   columns and robust 3D mesh morphology.
+   The concrete implementation plan is tracked in
+   [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md).
 
 3. **Intensity Measurements**
    Baseline `labels + intensity image -> table` support is implemented in
@@ -69,15 +72,20 @@ Proposed measurement families:
    Convert each 3D label object to a surface mesh when requested. Measure mesh
    surface area, mesh volume, mesh extents, convex hull surface area, convex
    hull volume, convexity, solidity, sphericity/form factor, principal inertia
-   components, and mesh-derived axis-length ratios. Preserve physical scale and
-   anisotropic z spacing.
+   components where clearly defined, and mesh-derived axis-length ratios.
+   Preserve physical scale and anisotropic z spacing. The first VIPP version
+   should produce a table only and use the existing `scikit-image`/`scipy`
+   stack; `trimesh`, `porespy`, mesh export, and visual panels should come
+   after the numeric metrics are stable and their need is concrete.
 
 5. **Skeleton And Network Measurements**
    `Skeletonize`, `Analyze Skeleton`, skeleton keypoint masks,
    skeleton graph overlays, component/branch label images, short-branch
    pruning, row-per-branch measurements, explicit graph node/edge table export,
-   and per-block network summaries are implemented. Future work should add
-   branch-summary distributions and domain-normalized connectedness metrics.
+   branch-summary distributions, and per-block normalized network summaries
+   are implemented. Future work should add specialist mitochondrial
+   connectedness indices when those metrics have clear biological definitions
+   beyond the generic graph summaries.
 
 6. **Localization And Colocalization Measurements**
    Add table-producing nodes for pixel-based colocalization, object-based
@@ -130,13 +138,15 @@ and then assemble them into one analysis-ready table.
    `Select Table Columns` and `Summarize Measurements`.
 7. Add 3D mesh morphology as an opt-in node because it is more expensive and
    has stronger assumptions about anisotropy, surface extraction, and object
-   size.
+   size. Implemented as `Measure 3D Mesh Morphology`, separate from the cheaper
+   regionprops-derived object measurements.
 8. Use the implemented manual/cached expensive-node execution model for broad
    mesh, graph, colocalization, or restoration calculations that would feel
    sluggish if run live.
 9. Add colocalization/localization table nodes that can merge with object
    measurement tables.
-10. Add skeleton branch-summary tables and domain-specific network metrics.
+10. Add specialist mitochondrial network metrics beyond the implemented
+    skeleton branch-summary tables and normalized overall-network summaries.
 11. Add mitochondrial event analysis after tracking/association design is in
    place.
 

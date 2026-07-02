@@ -124,12 +124,12 @@ measurement execution control. VIPP can now label separated
 foreground objects, clean them by size or measured properties, measure basic
 and selected extended label morphology plus intensity, skeletonize masks,
 measure skeleton components with generic graph metrics, export skeleton graph
-node/edge tables, visualize skeleton keypoints/branches/components, and prune
-short terminal branches, but it cannot yet:
+node/edge tables, summarize skeleton branches, visualize skeleton
+keypoints/branches/components, and prune short terminal branches, but it
+cannot yet:
 
 - provide robust seeded segmentation presets beyond the current watershed
   building blocks and defaults;
-- export explicit branch graphs or calculate branch-summary distributions;
 - use calibrated physical area/volume directly as a filter unit;
 - provide cancellation and percentage progress for long cached metrics or
   restorations.
@@ -439,9 +439,10 @@ annotation are implemented.
 | Implemented | Add Metadata Columns | table -> table | constant treatment, replicate, batch, or condition columns |
 | Implemented | Filter Labels By Property | labels + table -> labels | table-derived label remapping |
 | Implemented | Extended Region Properties | labels -> table | selectable `regionprops_table` property groups |
-| Implemented | Select Table Columns | table -> table | keep/drop/reorder measurement columns |
+| Implemented | Derived Object Morphology | labels -> table | additional `Measure Objects` groups for derived ratios, 2D circularity, and Hu moments |
+| Implemented | Select Table Columns | table -> table | detected-column checklist with Select all/Deselect all and output-order controls |
 | Implemented | Summarize Measurements | table -> table | grouped NumPy statistics for treatment/PCA summaries |
-| Later | 3D Mesh Morphology | labels -> table, optional mesh later | marching cubes plus mesh/convex-hull measurements |
+| Implemented | Measure 3D Mesh Morphology | labels -> table, optional mesh later | `skimage` marching cubes, `skimage` mesh surface area, local mesh-volume helper, and `scipy.spatial.ConvexHull`; defer `trimesh` and `porespy` |
 | Later | Save Table | table -> table | CSV/TSV writer |
 
 The implemented first `Measure Objects` property set is intentionally small:
@@ -467,15 +468,37 @@ measurement nodes. The current groups are:
   eigenvalues for 2D/3D, plus eccentricity and orientation for 2D;
 - 2D boundary descriptors: perimeter and Crofton perimeter, hidden for true 3D
   inputs in the inspector.
+- derived shape ratios: major/minor axis ratio, bounding-box side lengths,
+  bounding-box aspect ratios, fill fraction, and inertia eigenvalue ratios;
+- 2D shape moments: Crofton-based circularity, perimeter-to-area ratio, and Hu
+  moments, hidden for true 3D inputs in the inspector.
 
 `Filter Labels By Property` is implemented as the table-driven cleanup step
 after measurement. It keeps or removes labels using any numeric table column and
 matches stable index columns such as `t_index` back to the corresponding
 non-spatial label block.
 
-Calibrated physical variants for extended length/shape columns remain future
-work. The current extended length and area descriptors are explicitly labeled
-in pixels or voxels.
+`Measure 3D Mesh Morphology` is implemented as the first explicit 3D
+surface-morphology table node. It measures voxel volume, mesh volume, mesh
+surface area, surface-to-volume ratio, equivalent sphere radius/diameter,
+sphericity, mesh extents/extent ratios, optional convex-hull area/volume,
+3D solidity, and surface-area-to-hull-area ratio. The node is manual/cached,
+uses carried Z/Y/X scale metadata, skips tiny labels below the minimum voxel
+count with a row-level status, and records mesh or convex-hull failures as
+`NaN` metrics instead of failing the whole table.
+
+Calibrated physical variants for non-mesh extended length/shape columns remain
+future work. The current extended non-mesh length and area descriptors are
+explicitly labeled in pixels or voxels.
+
+The concrete next morphology plan is tracked in
+[object-mesh-morphology-plan.md](object-mesh-morphology-plan.md). The intended
+split is: cheap derived morphology groups live on the existing measurement
+nodes; first-pass mesh/surface morphology lives in the manual
+`Measure 3D Mesh Morphology` node; next add calibrated physical variants for
+remaining non-mesh length/shape columns and later optional mesh export/preview.
+The first implementation stays within the existing `scikit-image`/`scipy`
+stack; `trimesh` and `porespy` remain deferred optional dependencies.
 
 The intended end state is broader than a single measurement node: users should
 be able to compute selected morphology, intensity, mesh, and skeleton feature
@@ -491,8 +514,9 @@ measurement are now implemented. Skeleton QC outputs and pruning are also
 implemented. Manual/cached `Calculate`/`Recalculate` execution is implemented
 for the first expensive table nodes. Branch-level skeleton measurements and
 RGB graph overlays are implemented. Explicit skeleton graph node/edge export
-and overall-network measurements are implemented. Next priorities are
-branch-summary distributions, 3D mesh morphology, and then
+and overall-network measurements are implemented, including branch-summary
+distributions and normalized connectedness summaries. Next priorities are
+mesh export/preview, calibrated non-mesh shape variants, and then
 colocalization/localization tables.
 
 ## Recommended First Milestone
@@ -648,13 +672,14 @@ inputs require nearest-neighbor interpolation.
   length when metadata is available;
 - implemented: Skeleton Graph Tables for explicit graph node and graph edge
   table export;
+- implemented: Summarize Skeleton Branches for branch-length/tortuosity
+  distributions and branch-type count/fraction summaries;
 - implemented: Measure Overall Skeleton Network for per-block connectedness,
-  fragmentation, branch-count, graph-edge, and branch-length whole-network
-  metrics;
+  fragmentation, branch-count, graph-edge, branch-length, and normalized
+  connectedness whole-network metrics;
 - implemented: physical-unit pruning threshold support in Prune Skeleton
   Branches when pixel-size metadata is available;
 - medial axis;
-- branch-summary distributions;
 - grayscale erosion, dilation, opening, and closing;
 - label erosion and label-safe expansion;
 - convex hull per object;

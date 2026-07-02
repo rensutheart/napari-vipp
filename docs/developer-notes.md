@@ -8,6 +8,7 @@ development questions to the canonical architecture and planning documents.
 - Core architecture: `docs/architecture.md`
 - Implementation planning and priorities: `docs/planning.md`
 - Node roadmap and migration choices: `docs/node-roadmap.md`
+- Object and 3D mesh morphology plan: `docs/object-mesh-morphology-plan.md`
 - I/O behavior contract: `docs/io-user-guide.md`
 - OME architecture and constraints: `docs/ome-io-plan.md`
 

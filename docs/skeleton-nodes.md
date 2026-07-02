@@ -30,7 +30,7 @@ In the node palette, skeleton nodes are grouped by what they produce:
   Skeleton Components`, `Label Skeleton Branches`).
 - **Measurements -> Skeleton / Network QC:** table outputs (`Analyze Skeleton`,
   `Measure Skeleton Branches`, `Skeleton Graph Tables`, `Summarize Skeleton
-  Network`).
+  Branches`, `Measure Overall Skeleton Network`).
 
 ## Recommended Workflows
 
@@ -56,6 +56,15 @@ For branch-level measurements:
 binary mask
   -> Skeletonize
   -> Measure Skeleton Branches
+```
+
+For branch-length distributions and branch-type fractions:
+
+```text
+binary mask
+  -> Skeletonize
+  -> Measure Skeleton Branches
+  -> Summarize Skeleton Branches
 ```
 
 For explicit graph export:
@@ -131,6 +140,20 @@ Checked-in reference workflows:
   coordinates, and calibrated physical length when scale metadata is available.
 - **Execution:** manual/cached. This can produce many rows on dense networks.
 
+### Summarize Skeleton Branches
+
+- **Input:** a table from `Measure Skeleton Branches`.
+- **Output:** table, one row per grouping block. Auto grouping preserves useful
+  context columns such as source, time, channel, and spatial block indices.
+- **Purpose:** Converts row-per-branch measurements into compact distributions
+  suitable for treatment comparison, PCA-style feature extraction, and network
+  QC.
+- **Reports:** branch count, component count, total branch length, selectable
+  length and tortuosity statistics, and branch-type counts/fractions such as
+  endpoint-to-junction or junction-to-junction fractions.
+- **Use when:** you want table-derived branch distributions without manually
+  configuring the generic `Summarize Measurements` node.
+
 ### Skeleton Graph Tables
 
 - **Input:** skeleton mask, or a binary mask if `Input` is set to `Skeletonize
@@ -161,17 +184,22 @@ Checked-in reference workflows:
   fraction, isolated component count, endpoint/junction/isolated-node counts,
   branch and graph-edge counts, cycle count, total skeleton length, branch
   length summaries, mean tortuosity, connectedness fraction, and fragmentation
-  index.
+  index. It also reports normalized connectedness features such as isolated
+  component fraction, branches/endpoints/junctions/cycles per component, and
+  components/branches/endpoints/junctions/cycles per skeleton length or
+  calibrated physical length when available.
 - **Use when:** you want one compact feature row per image, timepoint, channel,
   or other spatial block for treatment comparison, PCA-style analysis, or
   mitochondrial connectedness QC.
 - **Execution:** manual/cached.
 
-Use `Measure Skeleton Branches -> Summarize Measurements` when you specifically
-want table-derived statistics such as mean branch length grouped by timepoint,
-condition, or branch type. Use `Measure Overall Skeleton Network` when you need
-network-level quantities such as connected components, cycles, isolated nodes,
-and largest-component fraction.
+Use `Measure Skeleton Branches -> Summarize Skeleton Branches` when you want
+branch-length distributions and branch-type fractions grouped by image,
+timepoint, channel, condition, or branch type. Use the generic `Summarize
+Measurements` node only when you need custom statistics on arbitrary table
+columns. Use `Measure Overall Skeleton Network` when you need network-level
+quantities such as connected components, cycles, isolated nodes,
+largest-component fraction, and normalized connectedness metrics.
 
 ### Skeleton Keypoints
 

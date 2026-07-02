@@ -23,6 +23,8 @@ Related reference documents:
 - [skeleton-nodes.md](skeleton-nodes.md) for skeleton node usage.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md) for
   MitoMorph-inspired feature parity.
+- [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md) for current
+  object and 3D mesh morphology status plus remaining follow-up work.
 - [research-and-publication.md](research-and-publication.md) for publication
   and evidence tracking.
 
@@ -105,9 +107,11 @@ Implemented:
   results;
 - `Run all in BG` toggle to force graph updates onto the worker;
 - manual/cached execution for expensive table-producing nodes:
-  `Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`,
-  `Measure Skeleton Branches`, `Skeleton Graph Tables`, and
-  `Measure Overall Skeleton Network`;
+  `Measure Objects`, `Measure Objects + Intensity`,
+  `Measure 3D Mesh Morphology`, `Analyze Skeleton`,
+  `Measure Skeleton Branches`, `Skeleton Graph Tables`, and `Measure Overall
+  Skeleton Network`;
+- automatic branch-summary tables from row-per-branch skeleton measurements;
 - graph-card and inspector `Calculate` / `Recalculate` controls;
 - inspector `Auto Recalculate`, off by default, for manual nodes;
 - explicit node execution states: not calculated, current, stale, running, and
@@ -182,6 +186,11 @@ Implemented:
 Implemented:
 
 - object morphology and optional intensity measurements;
+- derived object morphology ratios and 2D shape moments on the object
+  measurement nodes;
+- first-pass true-3D mesh morphology with marching-cubes surface area, mesh
+  volume, sphericity, convex-hull metrics, 3D solidity, anisotropic scale
+  handling, and per-object mesh status/error reporting;
 - table merging, metadata columns, column selection, and grouped summaries;
 - CSV/TSV saving for selected table outputs and exported scripts;
 - skeletonization and skeleton graph analysis for 2D/3D;
@@ -193,10 +202,14 @@ Implemented:
 - RGB skeleton graph overlays;
 - branch-level length, endpoint distance, tortuosity, start/end coordinates,
   and calibrated physical length where available.
+- branch-summary distributions with length/tortuosity statistics and
+  branch-type counts/fractions;
+- domain-normalized skeleton connectedness summaries, including per-component
+  and per-length endpoint/junction/branch/cycle metrics.
 
 ### Implemented Node Catalogue
 
-The live registry currently contains 90 nodes.
+The live registry currently contains 92 nodes.
 
 - **Image Data**: Image Source, Crop Stack, Select Axis Slice, Reorder Axes,
   Set Pixel Size / Units, Rescale Axes, Extract Channel, Combine Channels,
@@ -221,9 +234,10 @@ The live registry currently contains 90 nodes.
 - **Label Operations**: Label Connected Components, Clear Border Objects, Filter
   Labels By Volume, Filter Labels By Property, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches.
-- **Measurements**: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Measure Skeleton Branches, Skeleton Graph Tables, Summarize
-  Skeleton Network, Merge Tables, Add Metadata Columns, Select Table Columns,
+- **Measurements**: Measure Objects, Measure Objects + Intensity,
+  Measure 3D Mesh Morphology, Analyze Skeleton, Measure Skeleton Branches,
+  Summarize Skeleton Branches, Skeleton Graph Tables, Measure Overall Skeleton
+  Network, Merge Tables, Add Metadata Columns, Select Table Columns,
   Summarize Measurements.
 
 ## Validated Reference Workflows
@@ -248,36 +262,44 @@ Implemented reference measurement-summary workflow:
 - deterministic time-series sample;
 - grouped object counts and area summaries.
 
+Implemented reference object/mesh morphology workflows:
+
+- `examples/synthetic-derived-object-morphology.json`;
+- `examples/synthetic-3d-mesh-morphology.json`;
+- deterministic 2D object-shape and anisotropic true-3D object samples covering
+  derived object morphology, 2D moments, mesh surface/volume, convex-hull
+  metrics, 3D solidity, sphericity, and tiny-object mesh failure reporting.
+
 Implemented reference skeleton/network workflows:
 
 - `examples/synthetic-skeleton-qc.json`;
 - `examples/synthetic-advanced-skeleton-network.json`;
 - deterministic sparse 3D skeleton samples covering keypoints, components,
   branch labels, graph overlays, branch tables, graph node/edge tables,
-  summary tables, pruning, disconnected fragments, loops, time-indexed blocks,
-  and anisotropic physical calibration.
+  branch-summary tables, overall-network summary tables, pruning,
+  disconnected fragments, loops, time-indexed blocks, and anisotropic physical
+  calibration.
 
 ## Active TODOs
 
 ### Current Near-Term Order
 
-1. Adopt manual/cached execution for the next expensive feature families as
-   they are added, including cancellation/progress where libraries expose it.
-2. Add skeleton branch-summary distributions and domain-normalized connectivity
-   summaries.
-3. Add richer object morphology and 3D mesh/surface morphology, with calibrated
-   physical variants for length/shape measurements.
-4. Add colocalization/localization table nodes once the measurement and graph
+1. Add calibrated physical variants for non-mesh extended length/shape
+   measurements, plus optional mesh export/preview after the first-pass mesh
+   table node is stable.
+2. Add colocalization/localization table nodes once the measurement and graph
    platform is stable.
-5. Build a real collection-batch UI on top of the existing Python export and
+3. Build a real collection-batch UI on top of the existing Python export and
    source-collection foundations.
+4. Add cancellation/progress for expensive manual/background feature families
+   where libraries expose useful progress hooks.
 
 ### Execution Platform TODOs
 
 - cancellation for running background/manual work;
 - percentage progress for operations that can report it;
 - richer failure recovery and retry behavior;
-- adoption by future colocalization/localization, mesh morphology,
+- adoption by future colocalization/localization, mesh export/preview,
   deconvolution, and very expensive background-estimation nodes;
 - visible progress support for slow nodes without making the UI feel frozen.
 
@@ -334,18 +356,21 @@ Architecture preference for future graph work:
 
 Skeleton and network analysis:
 
-- branch-summary distributions;
-- domain-normalized connectivity summaries for mitochondrial and other network
-  structures.
+- richer skeleton feature families beyond the implemented branch summaries and
+  normalized overall-network metrics, especially specialist mitochondrial
+  connectedness indices that should remain optional rather than forced into
+  the generic nodes;
+- optional graph-library export/analysis hooks for users who want to take the
+  explicit node/edge tables into external network tooling.
 
 Object and mesh morphology:
 
-- richer region/object properties beyond the current measurement set;
-- selectable expensive feature groups so users choose which classes of
-  measurements to calculate;
-- 3D mesh/surface estimates;
-- convexity and surface-derived shape metrics;
+- richer region/object properties beyond the current measurement set, planned
+  as additional checkbox groups on `Measure Objects` and `Measure Objects +
+  Intensity`;
 - calibrated physical variants for extended length/shape measurements;
+- optional mesh export/preview and later specialist mesh metrics after the
+  implemented `Measure 3D Mesh Morphology` table node is stable;
 - final table-combination path suitable for PCA and treatment-group analysis.
 
 Colocalization and localization:
@@ -368,8 +393,9 @@ Segmentation polish:
 Mitochondria-specific analysis:
 
 - network fragmentation metrics;
-- branch-summary distributions tuned for mitochondrial networks;
-- domain-normalized connectivity metrics;
+- specialist branch/network indices tuned for mitochondrial biology beyond the
+  implemented generic branch-summary distributions and domain-normalized
+  connectedness metrics;
 - specialist morphology inspired by the old MitoMorph system without forcing
   mitochondrial assumptions into generic object-measurement nodes.
 

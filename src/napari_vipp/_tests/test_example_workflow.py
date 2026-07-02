@@ -28,6 +28,16 @@ SUMMARY_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-measurement-summary.json"
 )
+DERIVED_MORPHOLOGY_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-derived-object-morphology.json"
+)
+MESH_MORPHOLOGY_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-3d-mesh-morphology.json"
+)
 SKELETON_QC_EXAMPLE_WORKFLOW = (
     Path(__file__).resolve().parents[3]
     / "examples"
@@ -188,6 +198,109 @@ def test_synthetic_measurement_summary_workflow_loads_and_runs():
     assert all(record["condition"] == "summary_validation" for record in records)
 
 
+def test_synthetic_derived_object_morphology_workflow_loads_and_runs():
+    workflow = load_workflow(DERIVED_MORPHOLOGY_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic object morphology"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    measurements = outputs["measure_objects_1"]
+    selected = outputs["select_table_columns_1"]
+    measurement_records = measurements.records()
+
+    assert outputs["label_connected_components_1"].max() == 4
+    assert measurements.row_count == 4
+    for column in (
+        "axis_ratio_major_minor",
+        "bbox_axis_0_length_pixels",
+        "bbox_axis_1_length_pixels",
+        "bbox_fill_fraction",
+        "circularity",
+        "perimeter_area_ratio",
+        "hu_moment_0",
+    ):
+        assert column in measurements.columns
+    assert selected.columns == (
+        "label_id",
+        "area_pixels",
+        "circularity",
+        "axis_ratio_major_minor",
+        "bbox_fill_fraction",
+        "perimeter_area_ratio",
+        "hu_moment_0",
+    )
+    assert selected.row_count == measurements.row_count
+    assert all(record["circularity"] > 0 for record in measurement_records)
+    assert all(record["bbox_fill_fraction"] > 0 for record in measurement_records)
+
+
+def test_synthetic_3d_mesh_morphology_workflow_loads_and_runs():
+    workflow = load_workflow(MESH_MORPHOLOGY_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic 3D mesh morphology"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+    labels = outputs["label_connected_components_1"]
+    measurements = outputs["measure_objects_1"]
+    mesh = outputs["measure_3d_mesh_morphology_1"]
+    merged = outputs["merge_tables_1"]
+    selected = outputs["select_table_columns_1"]
+    mesh_records = mesh.records()
+    ok_records = [
+        record for record in mesh_records if record["mesh_status"] == "ok"
+    ]
+
+    assert labels.max() == 5
+    assert measurements.row_count == 5
+    assert mesh.row_count == 5
+    assert merged.row_count == 5
+    assert selected.row_count == 5
+    assert "voxel_volume_physical" in mesh.columns
+    assert "mesh_surface_area_physical" in mesh.columns
+    assert "convex_hull_volume_physical" in mesh.columns
+    assert any(
+        record["mesh_status"] == "skipped_too_few_voxels"
+        for record in mesh_records
+    )
+    assert len(ok_records) == 4
+    assert all(record["mesh_volume_physical"] > 0 for record in ok_records)
+    assert all(record["mesh_surface_area_physical"] > 0 for record in ok_records)
+    assert max(record["sphericity"] for record in ok_records) > min(
+        record["sphericity"] for record in ok_records
+    )
+    assert min(record["solidity_3d"] for record in ok_records) < 0.95
+    assert selected.columns == (
+        "label_id",
+        "volume_voxels",
+        "volume_physical",
+        "voxel_volume_physical",
+        "mesh_volume_physical",
+        "mesh_surface_area_physical",
+        "sphericity",
+        "solidity_3d",
+        "surface_area_to_volume",
+        "mesh_status",
+    )
+
+
 def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     workflow = load_workflow(SKELETON_QC_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
@@ -223,6 +336,7 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     after = outputs["analyze_skeleton_2"]
     graph_nodes, graph_edges = pipeline.node_outputs["skeleton_graph_tables_1"]
     summary = outputs["measure_overall_skeleton_network_1"]
+    branch_summary = outputs["summarize_skeleton_branches_1"]
 
     assert keypoint_counts == [8, 1, 1]
     assert outputs["label_skeleton_components_1"].max() == 3
@@ -235,6 +349,9 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     assert summary.row_count == 1
     assert summary.records()[0]["component_count"] == 3
     assert summary.records()[0]["branch_count"] == 7
+    assert branch_summary.row_count == 1
+    assert branch_summary.records()[0]["branch_count"] == 8
+    assert branch_summary.records()[0]["branch_type_endpoint_to_junction_count"] == 6
     assert sum(record["branch_count"] for record in before.records()) == 7
     assert sum(record["branch_count"] for record in after.records()) == 6
 
@@ -268,6 +385,8 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     graph_nodes, graph_edges = pipeline.node_outputs["skeleton_graph_tables_1"]
     branch_table = outputs["measure_skeleton_branches_1"]
     pruned_branch_table = outputs["measure_skeleton_branches_2"]
+    branch_summary = outputs["summarize_skeleton_branches_1"]
+    pruned_branch_summary = outputs["summarize_skeleton_branches_2"]
     summary = outputs["measure_overall_skeleton_network_1"]
     pruned_summary = outputs["measure_overall_skeleton_network_2"]
     summary_records = summary.records()
@@ -287,6 +406,17 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     assert graph_edges.row_count > 20
     assert branch_table.row_count >= graph_edges.row_count
     assert pruned_branch_table.row_count <= branch_table.row_count
+    assert branch_summary.row_count == 2
+    assert pruned_branch_summary.row_count == 2
+    assert "branch_length_physical_total" in branch_summary.columns
+    assert sum(record["branch_count"] for record in branch_summary.records()) == (
+        branch_table.row_count
+    )
+    assert sum(
+        record["branch_count"] for record in pruned_branch_summary.records()
+    ) == pruned_branch_table.row_count
+    assert "branches_per_skeleton_length" in summary.columns
+    assert "branches_per_physical_length" in summary.columns
     assert sum(record["cycle_count"] for record in summary_records) >= 3
     assert sum(record["isolated_component_count"] for record in summary_records) >= 3
     assert sum(record["skeleton_voxel_count"] for record in pruned_records) < int(

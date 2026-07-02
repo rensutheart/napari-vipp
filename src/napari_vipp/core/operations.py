@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import combinations, product
@@ -9,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.spatial import ConvexHull, QhullError
 from skimage import (
     feature,
     filters,
@@ -22,6 +25,8 @@ from skimage import (
 from napari_vipp.core.channel_colors import channel_color_table
 from napari_vipp.core.io import write_image
 from napari_vipp.core.tables import TableData, table_from_columns
+
+NO_TABLE_COLUMNS_VALUE = "__none__"
 
 RGB_CHANNELS = (3, 4)
 
@@ -1247,6 +1252,8 @@ def measure_objects(
     include_shape_descriptors: bool = False,
     include_axis_descriptors: bool = False,
     include_2d_boundary_descriptors: bool = False,
+    include_derived_shape_ratios: bool = False,
+    include_2d_shape_moments: bool = False,
     resolved_spatial_ndim: int | None = None,
     axis_names: tuple[str, ...] | None = None,
     axis_types: tuple[str, ...] | None = None,
@@ -1304,6 +1311,8 @@ def measure_objects(
         include_shape_descriptors=include_shape_descriptors,
         include_axis_descriptors=include_axis_descriptors,
         include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
         spatial_ndim=spatial_ndim,
     )
     for leading_index in np.ndindex(leading_shape or (1,)):
@@ -1316,6 +1325,8 @@ def measure_objects(
             include_shape_descriptors=include_shape_descriptors,
             include_axis_descriptors=include_axis_descriptors,
             include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            include_derived_shape_ratios=include_derived_shape_ratios,
+            include_2d_shape_moments=include_2d_shape_moments,
         )
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
@@ -1341,6 +1352,8 @@ def measure_objects(
             include_shape_descriptors=include_shape_descriptors,
             include_axis_descriptors=include_axis_descriptors,
             include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            include_derived_shape_ratios=include_derived_shape_ratios,
+            include_2d_shape_moments=include_2d_shape_moments,
             spatial_ndim=spatial_ndim,
         ),
         source_name=source_name,
@@ -1355,6 +1368,8 @@ def measure_objects_with_intensity(
     include_shape_descriptors: bool = False,
     include_axis_descriptors: bool = False,
     include_2d_boundary_descriptors: bool = False,
+    include_derived_shape_ratios: bool = False,
+    include_2d_shape_moments: bool = False,
     resolved_spatial_ndim: int | None = None,
     axis_names: tuple[str, ...] | None = None,
     axis_types: tuple[str, ...] | None = None,
@@ -1426,6 +1441,8 @@ def measure_objects_with_intensity(
         include_shape_descriptors=include_shape_descriptors,
         include_axis_descriptors=include_axis_descriptors,
         include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
         spatial_ndim=spatial_ndim,
     )
     for leading_index in np.ndindex(leading_shape or (1,)):
@@ -1444,6 +1461,8 @@ def measure_objects_with_intensity(
             include_shape_descriptors=include_shape_descriptors,
             include_axis_descriptors=include_axis_descriptors,
             include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            include_derived_shape_ratios=include_derived_shape_ratios,
+            include_2d_shape_moments=include_2d_shape_moments,
         )
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
@@ -1466,12 +1485,101 @@ def measure_objects_with_intensity(
         include_shape_descriptors=include_shape_descriptors,
         include_axis_descriptors=include_axis_descriptors,
         include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
         spatial_ndim=spatial_ndim,
     )
     return table_from_columns(
         columns,
         name="Object intensity measurements",
         table_kind=table_kind,
+        source_name=source_name,
+        column_units=units.column_units,
+    )
+
+
+def measure_3d_mesh_morphology(
+    data,
+    spatial_mode: str = "Auto from axes",
+    minimum_voxel_count: int = 16,
+    include_convex_hull_metrics: bool = True,
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure 3D mesh/surface morphology for labeled objects."""
+    labels = _validated_labels(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        labels,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    if spatial_ndim != 3:
+        raise ValueError("Measure 3D Mesh Morphology requires true 3D labels.")
+    axis_names = _measurement_axis_names(labels.ndim, axis_names)
+    axis_types = _measurement_axis_types(labels.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(labels.ndim, spatial_ndim, axis_types)
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(labels.ndim - spatial_ndim, labels.ndim))
+    labels_for_measure = np.moveaxis(
+        labels,
+        spatial_axes,
+        tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(labels.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:],
+        fallback=("z", "y", "x"),
+    )
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: labels.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(labels.ndim - spatial_ndim)),
+    )
+    leading_shape = labels_for_measure.shape[: labels.ndim - spatial_ndim]
+    units = _mesh_units(
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+        spatial_axis_names,
+        include_convex_hull_metrics=bool(include_convex_hull_metrics),
+    )
+    columns = _mesh_morphology_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        include_convex_hull_metrics=bool(include_convex_hull_metrics),
+    )
+
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = labels_for_measure[block_index] if leading_shape else labels_for_measure
+        block_columns = _measure_3d_mesh_morphology_block(
+            block,
+            spatial_axis_names,
+            units,
+            minimum_voxel_count=max(int(minimum_voxel_count), 1),
+            include_convex_hull_metrics=bool(include_convex_hull_metrics),
+        )
+        row_count = len(block_columns["label_id"])
+        for axis_position, axis_name in enumerate(leading_axis_names):
+            columns[f"{axis_name}_index"].extend(
+                [int(block_index[axis_position])] * row_count
+            )
+        for name, values in block_columns.items():
+            columns[name].extend(values)
+        columns["physical_unit"].extend([units.length_unit] * row_count)
+
+    return table_from_columns(
+        columns,
+        name="3D mesh morphology measurements",
+        table_kind="3D mesh morphology",
         source_name=source_name,
         column_units=units.column_units,
     )
@@ -1962,8 +2070,15 @@ def select_table_columns(
 ) -> TableData:
     """Keep, drop, or reorder table columns for analysis-ready export."""
     table = _validated_table(data)
-    requested = _parse_table_column_list(columns)
-    if not requested:
+    no_columns_requested = str(columns).strip().lower() in {
+        NO_TABLE_COLUMNS_VALUE,
+        "none",
+        "<none>",
+    }
+    requested = () if no_columns_requested else _parse_table_column_list(columns)
+    if no_columns_requested:
+        selected = []
+    elif not requested:
         selected = list(table.columns)
     else:
         missing = [column for column in requested if column not in table.columns]
@@ -1982,8 +2097,6 @@ def select_table_columns(
                 selected.extend(
                     column for column in table.columns if column not in selected
                 )
-    if not selected:
-        raise ValueError("Select Table Columns would remove every table column.")
     indices = [table.columns.index(column) for column in selected]
     rows = tuple(tuple(row[index] for index in indices) for row in table.rows)
     units = tuple(
@@ -2095,6 +2208,113 @@ def summarize_measurements(
         rows=tuple(rows),
         name="Measurement summary",
         table_kind="Grouped measurement summary",
+        source_name=table.source_name,
+        column_units=tuple(output_units.items()),
+    )
+
+
+BRANCH_TYPE_ORDER = (
+    "endpoint_to_endpoint",
+    "endpoint_to_junction",
+    "junction_to_junction",
+    "cycle",
+    "isolated",
+)
+
+
+def summarize_skeleton_branches(
+    data,
+    group_by: str = "auto",
+    statistics: str = "mean,median,std,min,max,q25,q75",
+) -> TableData:
+    """Summarize a skeleton branch table into per-group branch distributions."""
+    table = _validated_table(data)
+    _validate_skeleton_branch_table(table)
+    group_columns = _summary_group_columns(table, group_by)
+    summary_stats = _summary_statistics(statistics)
+    length_columns = _skeleton_branch_length_columns(table)
+    tortuosity_column = (
+        "branch_tortuosity" if "branch_tortuosity" in table.columns else ""
+    )
+    branch_types = _skeleton_branch_types(table)
+
+    output_columns = list(group_columns) + [
+        "branch_count",
+        "component_count",
+    ]
+    output_units: dict[str, str] = {
+        "branch_count": "count",
+        "component_count": "count",
+    }
+    for column in length_columns:
+        output_columns.append(f"{column}_total")
+        unit = table.unit_for(column)
+        if unit:
+            output_units[f"{column}_total"] = unit
+        for stat in summary_stats:
+            output_column = f"{column}_{stat}"
+            output_columns.append(output_column)
+            if unit and stat != "count":
+                output_units[output_column] = unit
+    if tortuosity_column:
+        for stat in summary_stats:
+            output_columns.append(f"{tortuosity_column}_{stat}")
+            output_units[f"{tortuosity_column}_{stat}"] = "ratio"
+    for branch_type in branch_types:
+        safe_type = _safe_column_token(branch_type)
+        count_column = f"branch_type_{safe_type}_count"
+        fraction_column = f"branch_type_{safe_type}_fraction"
+        output_columns.extend((count_column, fraction_column))
+        output_units[count_column] = "count"
+        output_units[fraction_column] = "fraction"
+
+    records = table.records()
+    grouped_records: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    key_values: dict[tuple[object, ...], tuple[object, ...]] = {}
+    key_order: list[tuple[object, ...]] = []
+    for record in records:
+        raw_key = tuple(record[column] for column in group_columns)
+        key = tuple(_hashable_table_key(value) for value in raw_key)
+        if key not in grouped_records:
+            grouped_records[key] = []
+            key_values[key] = raw_key
+            key_order.append(key)
+        grouped_records[key].append(record)
+
+    rows: list[tuple[object, ...]] = []
+    for key in key_order:
+        group_records = grouped_records[key]
+        branch_count = len(group_records)
+        row: list[object] = list(key_values[key])
+        row.append(branch_count)
+        row.append(_unique_non_empty_count(group_records, "component_id"))
+        for column in length_columns:
+            values = _numeric_values_for_records(group_records, column)
+            row.append(float(np.sum(values)) if values else 0.0)
+            for stat in summary_stats:
+                row.append(_summary_statistic(values, stat))
+        if tortuosity_column:
+            tortuosity_values = _numeric_values_for_records(
+                group_records,
+                tortuosity_column,
+            )
+            for stat in summary_stats:
+                row.append(_summary_statistic(tortuosity_values, stat))
+        type_counts = Counter(
+            str(record.get("branch_type", "") or "")
+            for record in group_records
+        )
+        for branch_type in branch_types:
+            count = int(type_counts.get(branch_type, 0))
+            row.append(count)
+            row.append(float(count / branch_count) if branch_count else 0.0)
+        rows.append(tuple(row))
+
+    return TableData(
+        columns=tuple(output_columns),
+        rows=tuple(rows),
+        name="Skeleton branch summary",
+        table_kind="Skeleton branch summary",
         source_name=table.source_name,
         column_units=tuple(output_units.items()),
     )
@@ -2252,6 +2472,71 @@ def _summary_statistic(values: Sequence[float], statistic: str) -> object:
     if statistic == "q75":
         return float(np.percentile(arr, 75))
     raise ValueError(f"Unsupported summary statistic: {statistic!r}.")
+
+
+def _validate_skeleton_branch_table(table: TableData) -> None:
+    required = {"branch_type"}
+    missing = sorted(column for column in required if column not in table.columns)
+    if missing:
+        raise ValueError(
+            "Summarize Skeleton Branches expects a skeleton branch table. "
+            "Missing column(s): " + ", ".join(missing)
+        )
+    if not _skeleton_branch_length_columns(table):
+        raise ValueError(
+            "Summarize Skeleton Branches could not find a branch length column."
+        )
+
+
+def _skeleton_branch_length_columns(table: TableData) -> tuple[str, ...]:
+    preferred = (
+        "branch_length_physical",
+        "branch_length_voxels",
+        "branch_length_pixels",
+    )
+    return tuple(column for column in preferred if column in table.columns)
+
+
+def _skeleton_branch_types(table: TableData) -> tuple[str, ...]:
+    observed = {
+        str(record.get("branch_type", "") or "")
+        for record in table.records()
+        if str(record.get("branch_type", "") or "")
+    }
+    ordered = [
+        branch_type for branch_type in BRANCH_TYPE_ORDER if branch_type in observed
+    ]
+    ordered.extend(sorted(observed - set(ordered)))
+    return tuple(ordered or BRANCH_TYPE_ORDER)
+
+
+def _numeric_values_for_records(
+    records: Sequence[dict[str, object]],
+    column: str,
+) -> list[float]:
+    return [
+        value
+        for record in records
+        if (value := _table_numeric_value(record.get(column))) is not None
+    ]
+
+
+def _unique_non_empty_count(
+    records: Sequence[dict[str, object]],
+    column: str,
+) -> int:
+    values = {
+        value
+        for record in records
+        if (value := record.get(column, "")) not in {"", None}
+    }
+    return len(values)
+
+
+def _safe_column_token(value: object) -> str:
+    token = re.sub(r"[^0-9a-zA-Z]+", "_", str(value).strip().lower())
+    token = token.strip("_")
+    return token or "unknown"
 
 
 def _validated_table(value) -> TableData:
@@ -3803,6 +4088,16 @@ class _SkeletonUnits:
 
 
 @dataclass(frozen=True)
+class _MeshUnits:
+    scales: tuple[float, float, float]
+    length_unit: str
+    area_unit: str
+    volume_unit: str
+    voxel_volume: float
+    column_units: dict[str, str]
+
+
+@dataclass(frozen=True)
 class _SkeletonBranchTrace:
     branch_id: int
     branch_type: str
@@ -4546,11 +4841,26 @@ def _overall_skeleton_network_empty_columns(
     columns["mean_branch_tortuosity"] = []
     columns["network_connectedness_fraction"] = []
     columns["fragmentation_index"] = []
+    columns["isolated_component_fraction"] = []
+    columns["branches_per_component"] = []
+    columns["endpoints_per_component"] = []
+    columns["junctions_per_component"] = []
+    columns["cycles_per_component"] = []
+    columns["components_per_skeleton_length"] = []
+    columns["branches_per_skeleton_length"] = []
+    columns["endpoints_per_skeleton_length"] = []
+    columns["junctions_per_skeleton_length"] = []
+    columns["cycles_per_skeleton_length"] = []
     if units.physical_column:
         columns[units.physical_column] = []
         columns["mean_branch_length_physical"] = []
         columns["median_branch_length_physical"] = []
         columns["max_branch_length_physical"] = []
+        columns["components_per_physical_length"] = []
+        columns["branches_per_physical_length"] = []
+        columns["endpoints_per_physical_length"] = []
+        columns["junctions_per_physical_length"] = []
+        columns["cycles_per_physical_length"] = []
         columns["physical_unit"] = []
     return columns
 
@@ -4623,6 +4933,10 @@ def _measure_overall_skeleton_network_block(
     fragmentation_index = (
         float(component_count / total_voxel_count) if total_voxel_count else 0.0
     )
+    total_length = float(totals[units.length_column])
+    total_physical_length = (
+        float(totals[units.physical_column]) if units.physical_column else 0.0
+    )
     length_suffix = units.length_column.removeprefix("skeleton_")
     columns["component_count"].append(int(component_count))
     columns["skeleton_voxel_count"].append(total_voxel_count)
@@ -4647,6 +4961,36 @@ def _measure_overall_skeleton_network_block(
     columns["mean_branch_tortuosity"].append(_safe_mean(branch_tortuosities))
     columns["network_connectedness_fraction"].append(largest_fraction)
     columns["fragmentation_index"].append(fragmentation_index)
+    columns["isolated_component_fraction"].append(
+        _safe_ratio(isolated_component_count, component_count)
+    )
+    columns["branches_per_component"].append(
+        _safe_ratio(totals["branch_count"], component_count)
+    )
+    columns["endpoints_per_component"].append(
+        _safe_ratio(totals["endpoint_voxel_count"], component_count)
+    )
+    columns["junctions_per_component"].append(
+        _safe_ratio(totals["junction_voxel_count"], component_count)
+    )
+    columns["cycles_per_component"].append(
+        _safe_ratio(totals["cycle_count"], component_count)
+    )
+    columns["components_per_skeleton_length"].append(
+        _safe_ratio(component_count, total_length)
+    )
+    columns["branches_per_skeleton_length"].append(
+        _safe_ratio(totals["branch_count"], total_length)
+    )
+    columns["endpoints_per_skeleton_length"].append(
+        _safe_ratio(totals["endpoint_voxel_count"], total_length)
+    )
+    columns["junctions_per_skeleton_length"].append(
+        _safe_ratio(totals["junction_voxel_count"], total_length)
+    )
+    columns["cycles_per_skeleton_length"].append(
+        _safe_ratio(totals["cycle_count"], total_length)
+    )
     if units.physical_column:
         columns[units.physical_column].append(totals[units.physical_column])
         columns["mean_branch_length_physical"].append(
@@ -4656,6 +5000,21 @@ def _measure_overall_skeleton_network_block(
             _safe_median(branch_physical_lengths)
         )
         columns["max_branch_length_physical"].append(_safe_max(branch_physical_lengths))
+        columns["components_per_physical_length"].append(
+            _safe_ratio(component_count, total_physical_length)
+        )
+        columns["branches_per_physical_length"].append(
+            _safe_ratio(totals["branch_count"], total_physical_length)
+        )
+        columns["endpoints_per_physical_length"].append(
+            _safe_ratio(totals["endpoint_voxel_count"], total_physical_length)
+        )
+        columns["junctions_per_physical_length"].append(
+            _safe_ratio(totals["junction_voxel_count"], total_physical_length)
+        )
+        columns["cycles_per_physical_length"].append(
+            _safe_ratio(totals["cycle_count"], total_physical_length)
+        )
     return columns
 
 
@@ -4683,12 +5042,27 @@ def _overall_skeleton_network_column_units(units: _SkeletonUnits) -> dict[str, s
         "mean_branch_tortuosity": "ratio",
         "network_connectedness_fraction": "fraction",
         "fragmentation_index": "components/voxel",
+        "isolated_component_fraction": "fraction",
+        "branches_per_component": "count/component",
+        "endpoints_per_component": "count/component",
+        "junctions_per_component": "count/component",
+        "cycles_per_component": "count/component",
+        "components_per_skeleton_length": f"count/{distance_unit}",
+        "branches_per_skeleton_length": f"count/{distance_unit}",
+        "endpoints_per_skeleton_length": f"count/{distance_unit}",
+        "junctions_per_skeleton_length": f"count/{distance_unit}",
+        "cycles_per_skeleton_length": f"count/{distance_unit}",
     }
     if units.physical_column:
         column_units[units.physical_column] = units.unit_label
         column_units["mean_branch_length_physical"] = units.unit_label
         column_units["median_branch_length_physical"] = units.unit_label
         column_units["max_branch_length_physical"] = units.unit_label
+        column_units["components_per_physical_length"] = f"count/{units.unit_label}"
+        column_units["branches_per_physical_length"] = f"count/{units.unit_label}"
+        column_units["endpoints_per_physical_length"] = f"count/{units.unit_label}"
+        column_units["junctions_per_physical_length"] = f"count/{units.unit_label}"
+        column_units["cycles_per_physical_length"] = f"count/{units.unit_label}"
         column_units["physical_unit"] = "text"
     return column_units
 
@@ -4703,6 +5077,11 @@ def _safe_median(values: Sequence[float]) -> float:
 
 def _safe_max(values: Sequence[float]) -> float:
     return float(np.max(values)) if values else 0.0
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    denominator = float(denominator)
+    return float(numerator) / denominator if denominator > 0 else 0.0
 
 
 def _trace_coord(coords: np.ndarray, node: int | None) -> tuple[int, ...]:
@@ -5124,12 +5503,16 @@ def _measure_label_block(
     include_shape_descriptors: bool = False,
     include_axis_descriptors: bool = False,
     include_2d_boundary_descriptors: bool = False,
+    include_derived_shape_ratios: bool = False,
+    include_2d_shape_moments: bool = False,
 ) -> dict[str, list[object]]:
     properties = _regionprops_measurement_properties(
         spatial_ndim,
         include_shape_descriptors=include_shape_descriptors,
         include_axis_descriptors=include_axis_descriptors,
         include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
     )
     raw = measure.regionprops_table(block, properties=properties)
     units = _measurement_units(spatial_ndim, (), ())
@@ -5167,6 +5550,10 @@ def _measure_label_block(
             raw,
             "perimeter_crofton",
         )
+    if include_derived_shape_ratios and spatial_ndim >= 2:
+        _add_derived_shape_ratio_measurements(result, raw, spatial_ndim)
+    if include_2d_shape_moments and spatial_ndim == 2:
+        _add_2d_shape_moment_measurements(result, raw)
     if intensity_block is not None:
         _add_intensity_measurements(result, block, intensity_block)
     return result
@@ -5178,6 +5565,8 @@ def _regionprops_measurement_properties(
     include_shape_descriptors: bool,
     include_axis_descriptors: bool,
     include_2d_boundary_descriptors: bool,
+    include_derived_shape_ratios: bool,
+    include_2d_shape_moments: bool,
 ) -> tuple[str, ...]:
     properties: list[str] = [
         "label",
@@ -5204,6 +5593,17 @@ def _regionprops_measurement_properties(
             properties.extend(("eccentricity", "orientation"))
     if include_2d_boundary_descriptors and spatial_ndim == 2:
         properties.extend(("perimeter", "perimeter_crofton"))
+    if include_derived_shape_ratios and spatial_ndim >= 2:
+        properties.extend(
+            (
+                "area_bbox",
+                "axis_major_length",
+                "axis_minor_length",
+                "inertia_tensor_eigvals",
+            )
+        )
+    if include_2d_shape_moments and spatial_ndim == 2:
+        properties.extend(("moments_hu", "perimeter", "perimeter_crofton"))
     return tuple(dict.fromkeys(properties))
 
 
@@ -5255,6 +5655,72 @@ def _add_axis_descriptor_measurements(
         result["orientation_radians"] = _float_column(raw, "orientation")
 
 
+def _add_derived_shape_ratio_measurements(
+    result: dict[str, list[object]],
+    raw: dict[str, np.ndarray],
+    spatial_ndim: int,
+) -> None:
+    suffix = "voxels" if spatial_ndim >= 3 else "pixels"
+    axis_major = _float_column(raw, "axis_major_length")
+    axis_minor = _float_column(raw, "axis_minor_length")
+    result["axis_ratio_major_minor"] = _ratio_columns(axis_major, axis_minor)
+    bbox_sizes: list[list[float]] = []
+    for axis_index in range(spatial_ndim):
+        minimums = _float_column(raw, f"bbox-{axis_index}")
+        maximums = _float_column(raw, f"bbox-{spatial_ndim + axis_index}")
+        sizes = [
+            float(maximum - minimum)
+            for minimum, maximum in zip(minimums, maximums, strict=False)
+        ]
+        bbox_sizes.append(sizes)
+        result[f"bbox_axis_{axis_index}_length_{suffix}"] = sizes
+    for left in range(spatial_ndim):
+        for right in range(left + 1, spatial_ndim):
+            result[f"bbox_axis_ratio_{left}_{right}"] = _ratio_columns(
+                bbox_sizes[left],
+                bbox_sizes[right],
+            )
+    size_column = _measurement_units(spatial_ndim, (), ()).size_column
+    result["bbox_fill_fraction"] = _ratio_columns(
+        [float(value) for value in result.get(size_column, [])],
+        _float_column(raw, "area_bbox"),
+    )
+    for left in range(spatial_ndim):
+        for right in range(left + 1, spatial_ndim):
+            result[f"inertia_eigval_ratio_{left}_{right}"] = _ratio_columns(
+                _float_column(raw, f"inertia_tensor_eigvals-{left}"),
+                _float_column(raw, f"inertia_tensor_eigvals-{right}"),
+            )
+
+
+def _add_2d_shape_moment_measurements(
+    result: dict[str, list[object]],
+    raw: dict[str, np.ndarray],
+) -> None:
+    areas = [float(value) for value in result.get("area_pixels", [])]
+    perimeters = _float_column(raw, "perimeter")
+    circularity_perimeters = _float_column(raw, "perimeter_crofton")
+    if not circularity_perimeters:
+        circularity_perimeters = perimeters
+    result["circularity"] = [
+        _safe_ratio(4.0 * np.pi * area, perimeter * perimeter)
+        for area, perimeter in zip(areas, circularity_perimeters, strict=False)
+    ]
+    result["perimeter_area_ratio"] = _ratio_columns(perimeters, areas)
+    for index in range(7):
+        result[f"hu_moment_{index}"] = _float_column(raw, f"moments_hu-{index}")
+
+
+def _ratio_columns(
+    numerators: Sequence[float],
+    denominators: Sequence[float],
+) -> list[float]:
+    return [
+        _safe_ratio(float(numerator), float(denominator))
+        for numerator, denominator in zip(numerators, denominators, strict=False)
+    ]
+
+
 def _size_descriptor_column(prefix: str, spatial_ndim: int) -> str:
     if spatial_ndim >= 3:
         return f"{prefix}_volume_voxels"
@@ -5303,6 +5769,327 @@ def _add_intensity_measurements(
     result["intensity_std"] = stds
 
 
+def _mesh_units(
+    axis_scales: Sequence[float | None],
+    axis_units: Sequence[str | None],
+    spatial_axis_names: tuple[str, ...],
+    *,
+    include_convex_hull_metrics: bool,
+) -> _MeshUnits:
+    scales = _normalized_spatial_scales(3, axis_scales)
+    units = [
+        str(value).strip()
+        for value in tuple(axis_units)[-3:]
+        if value not in {None, ""}
+    ]
+    length_unit = _physical_unit_label(units, 1, "voxel")
+    area_unit = _physical_unit_label(units, 2, "voxel^2")
+    volume_unit = _physical_unit_label(units, 3, "voxel^3")
+    column_units = {
+        "label_id": "label",
+        "mesh_status": "text",
+        "mesh_error": "text",
+        "voxel_count": "voxels",
+        "voxel_volume_physical": volume_unit,
+        "mesh_volume_physical": volume_unit,
+        "mesh_surface_area_physical": area_unit,
+        "surface_area_to_volume": f"1/{length_unit}",
+        "equivalent_sphere_radius_physical": length_unit,
+        "equivalent_sphere_diameter_physical": length_unit,
+        "sphericity": "ratio",
+        "physical_unit": "text",
+    }
+    for axis_name in spatial_axis_names:
+        column_units[f"mesh_extent_{axis_name}_physical"] = length_unit
+    for left, right in combinations(spatial_axis_names, 2):
+        column_units[f"mesh_extent_ratio_{left}_{right}"] = "ratio"
+    if include_convex_hull_metrics:
+        column_units.update(
+            {
+                "convex_hull_volume_physical": volume_unit,
+                "convex_hull_surface_area_physical": area_unit,
+                "solidity_3d": "ratio",
+                "surface_area_to_convex_hull_area": "ratio",
+            }
+        )
+    return _MeshUnits(
+        scales=tuple(float(scale) for scale in scales),
+        length_unit=length_unit,
+        area_unit=area_unit,
+        volume_unit=volume_unit,
+        voxel_volume=float(np.prod(scales)),
+        column_units=column_units,
+    )
+
+
+def _mesh_morphology_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    spatial_axis_names: tuple[str, ...],
+    *,
+    include_convex_hull_metrics: bool,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["label_id"] = []
+    columns["mesh_status"] = []
+    columns["mesh_error"] = []
+    columns["voxel_count"] = []
+    columns["voxel_volume_physical"] = []
+    columns["mesh_volume_physical"] = []
+    columns["mesh_surface_area_physical"] = []
+    columns["surface_area_to_volume"] = []
+    columns["equivalent_sphere_radius_physical"] = []
+    columns["equivalent_sphere_diameter_physical"] = []
+    columns["sphericity"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"mesh_extent_{axis_name}_physical"] = []
+    for left, right in combinations(spatial_axis_names, 2):
+        columns[f"mesh_extent_ratio_{left}_{right}"] = []
+    if include_convex_hull_metrics:
+        columns["convex_hull_volume_physical"] = []
+        columns["convex_hull_surface_area_physical"] = []
+        columns["solidity_3d"] = []
+        columns["surface_area_to_convex_hull_area"] = []
+    columns["physical_unit"] = []
+    return columns
+
+
+def _measure_3d_mesh_morphology_block(
+    block: np.ndarray,
+    spatial_axis_names: tuple[str, ...],
+    units: _MeshUnits,
+    *,
+    minimum_voxel_count: int,
+    include_convex_hull_metrics: bool,
+) -> dict[str, list[object]]:
+    block = np.asarray(block)
+    columns = _mesh_morphology_empty_columns(
+        (),
+        spatial_axis_names,
+        include_convex_hull_metrics=include_convex_hull_metrics,
+    )
+    for label_id in _positive_label_ids(block):
+        mask = block == int(label_id)
+        voxel_count = int(np.count_nonzero(mask))
+        base_values = {
+            "label_id": int(label_id),
+            "voxel_count": voxel_count,
+            "voxel_volume_physical": float(voxel_count) * units.voxel_volume,
+        }
+        if voxel_count < int(minimum_voxel_count):
+            _append_mesh_row(
+                columns,
+                spatial_axis_names,
+                include_convex_hull_metrics=include_convex_hull_metrics,
+                **base_values,
+                mesh_status="skipped_too_few_voxels",
+                mesh_error=(
+                    f"voxel_count {voxel_count} is below minimum "
+                    f"{int(minimum_voxel_count)}"
+                ),
+            )
+            continue
+        try:
+            metrics = _mesh_metrics_for_label_mask(mask, spatial_axis_names, units)
+        except Exception as exc:
+            _append_mesh_row(
+                columns,
+                spatial_axis_names,
+                include_convex_hull_metrics=include_convex_hull_metrics,
+                **base_values,
+                mesh_status="mesh_failed",
+                mesh_error=str(exc),
+            )
+            continue
+        if include_convex_hull_metrics:
+            try:
+                metrics.update(_convex_hull_metrics(metrics["mesh_vertices"]))
+                metrics["solidity_3d"] = _nan_ratio(
+                    metrics["mesh_volume_physical"],
+                    metrics["convex_hull_volume_physical"],
+                )
+                metrics["surface_area_to_convex_hull_area"] = _nan_ratio(
+                    metrics["mesh_surface_area_physical"],
+                    metrics["convex_hull_surface_area_physical"],
+                )
+                mesh_status = "ok"
+                mesh_error = ""
+            except (QhullError, ValueError) as exc:
+                mesh_status = "partial_convex_hull_failed"
+                mesh_error = str(exc)
+        else:
+            mesh_status = "ok"
+            mesh_error = ""
+        metrics.pop("mesh_vertices", None)
+        _append_mesh_row(
+            columns,
+            spatial_axis_names,
+            include_convex_hull_metrics=include_convex_hull_metrics,
+            **base_values,
+            **metrics,
+            mesh_status=mesh_status,
+            mesh_error=mesh_error,
+        )
+    return columns
+
+
+def _positive_label_ids(block: np.ndarray) -> list[int]:
+    values = np.unique(block)
+    return [int(value) for value in values if int(value) > 0]
+
+
+def _mesh_metrics_for_label_mask(
+    mask: np.ndarray,
+    spatial_axis_names: tuple[str, ...],
+    units: _MeshUnits,
+) -> dict[str, object]:
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        raise ValueError("label has no voxels")
+    minimum = coords.min(axis=0)
+    maximum = coords.max(axis=0) + 1
+    slices = tuple(
+        slice(int(lo), int(hi))
+        for lo, hi in zip(minimum, maximum, strict=True)
+    )
+    local = mask[slices]
+    padded = np.pad(local.astype(np.float32, copy=False), 1, mode="constant")
+    vertices, faces, _normals, _values = measure.marching_cubes(
+        padded,
+        level=0.5,
+        spacing=units.scales,
+    )
+    if len(vertices) == 0 or len(faces) == 0:
+        raise ValueError("marching cubes produced an empty mesh")
+    surface_area = float(measure.mesh_surface_area(vertices, faces))
+    mesh_volume = abs(_signed_triangle_mesh_volume(vertices, faces))
+    extents = np.ptp(vertices, axis=0)
+    metrics: dict[str, object] = {
+        "mesh_vertices": vertices,
+        "mesh_volume_physical": mesh_volume,
+        "mesh_surface_area_physical": surface_area,
+        "surface_area_to_volume": _nan_ratio(surface_area, mesh_volume),
+        "equivalent_sphere_radius_physical": _equivalent_sphere_radius(mesh_volume),
+        "equivalent_sphere_diameter_physical": 2.0
+        * _equivalent_sphere_radius(mesh_volume),
+        "sphericity": _sphericity(mesh_volume, surface_area),
+    }
+    for axis_name, extent in zip(spatial_axis_names, extents, strict=True):
+        metrics[f"mesh_extent_{axis_name}_physical"] = float(extent)
+    for left_index, right_index in combinations(range(len(spatial_axis_names)), 2):
+        left = spatial_axis_names[left_index]
+        right = spatial_axis_names[right_index]
+        metrics[f"mesh_extent_ratio_{left}_{right}"] = _nan_ratio(
+            float(extents[left_index]),
+            float(extents[right_index]),
+        )
+    return metrics
+
+
+def _signed_triangle_mesh_volume(vertices: np.ndarray, faces: np.ndarray) -> float:
+    triangles = np.asarray(vertices, dtype=np.float64)[np.asarray(faces, dtype=int)]
+    if triangles.size == 0:
+        return 0.0
+    cross = np.cross(triangles[:, 1], triangles[:, 2])
+    return float(np.einsum("ij,ij->", triangles[:, 0], cross) / 6.0)
+
+
+def _convex_hull_metrics(vertices: np.ndarray) -> dict[str, float]:
+    points = np.asarray(vertices, dtype=np.float64)
+    if points.shape[0] < 4:
+        raise ValueError("at least four mesh vertices are required for a 3D hull")
+    hull = ConvexHull(points)
+    return {
+        "convex_hull_volume_physical": float(hull.volume),
+        "convex_hull_surface_area_physical": float(hull.area),
+    }
+
+
+def _append_mesh_row(
+    columns: dict[str, list[object]],
+    spatial_axis_names: tuple[str, ...],
+    *,
+    include_convex_hull_metrics: bool,
+    label_id: int,
+    mesh_status: str,
+    mesh_error: str,
+    voxel_count: int,
+    voxel_volume_physical: float,
+    mesh_volume_physical: float = float("nan"),
+    mesh_surface_area_physical: float = float("nan"),
+    surface_area_to_volume: float = float("nan"),
+    equivalent_sphere_radius_physical: float = float("nan"),
+    equivalent_sphere_diameter_physical: float = float("nan"),
+    sphericity: float = float("nan"),
+    convex_hull_volume_physical: float = float("nan"),
+    convex_hull_surface_area_physical: float = float("nan"),
+    solidity_3d: float = float("nan"),
+    surface_area_to_convex_hull_area: float = float("nan"),
+    **metrics,
+) -> None:
+    columns["label_id"].append(int(label_id))
+    columns["mesh_status"].append(str(mesh_status))
+    columns["mesh_error"].append(str(mesh_error))
+    columns["voxel_count"].append(int(voxel_count))
+    columns["voxel_volume_physical"].append(float(voxel_volume_physical))
+    columns["mesh_volume_physical"].append(float(mesh_volume_physical))
+    columns["mesh_surface_area_physical"].append(float(mesh_surface_area_physical))
+    columns["surface_area_to_volume"].append(float(surface_area_to_volume))
+    columns["equivalent_sphere_radius_physical"].append(
+        float(equivalent_sphere_radius_physical)
+    )
+    columns["equivalent_sphere_diameter_physical"].append(
+        float(equivalent_sphere_diameter_physical)
+    )
+    columns["sphericity"].append(float(sphericity))
+    for axis_name in spatial_axis_names:
+        columns[f"mesh_extent_{axis_name}_physical"].append(
+            float(metrics.get(f"mesh_extent_{axis_name}_physical", float("nan")))
+        )
+    for left, right in combinations(spatial_axis_names, 2):
+        columns[f"mesh_extent_ratio_{left}_{right}"].append(
+            float(metrics.get(f"mesh_extent_ratio_{left}_{right}", float("nan")))
+        )
+    if include_convex_hull_metrics:
+        columns["convex_hull_volume_physical"].append(
+            float(convex_hull_volume_physical)
+        )
+        columns["convex_hull_surface_area_physical"].append(
+            float(convex_hull_surface_area_physical)
+        )
+        columns["solidity_3d"].append(float(solidity_3d))
+        columns["surface_area_to_convex_hull_area"].append(
+            float(surface_area_to_convex_hull_area)
+        )
+
+
+def _nan_ratio(numerator: float, denominator: float) -> float:
+    denominator = float(denominator)
+    if denominator <= 0 or not np.isfinite(denominator):
+        return float("nan")
+    return float(numerator) / denominator
+
+
+def _equivalent_sphere_radius(volume: float) -> float:
+    volume = float(volume)
+    if volume <= 0 or not np.isfinite(volume):
+        return float("nan")
+    return float(((3.0 * volume) / (4.0 * np.pi)) ** (1.0 / 3.0))
+
+
+def _sphericity(volume: float, surface_area: float) -> float:
+    volume = float(volume)
+    surface_area = float(surface_area)
+    if volume <= 0 or surface_area <= 0:
+        return float("nan")
+    return float(
+        (np.pi ** (1.0 / 3.0))
+        * ((6.0 * volume) ** (2.0 / 3.0))
+        / surface_area
+    )
+
+
 def _measurement_empty_columns(
     leading_axis_names: tuple[str, ...],
     spatial_axis_names: tuple[str, ...],
@@ -5312,6 +6099,8 @@ def _measurement_empty_columns(
     include_shape_descriptors: bool = False,
     include_axis_descriptors: bool = False,
     include_2d_boundary_descriptors: bool = False,
+    include_derived_shape_ratios: bool = False,
+    include_2d_shape_moments: bool = False,
     spatial_ndim: int = 2,
 ) -> dict[str, list[object]]:
     columns: dict[str, list[object]] = {}
@@ -5350,6 +6139,23 @@ def _measurement_empty_columns(
     if include_2d_boundary_descriptors and spatial_ndim == 2:
         columns["perimeter_pixels"] = []
         columns["perimeter_crofton_pixels"] = []
+    if include_derived_shape_ratios and spatial_ndim >= 2:
+        suffix = "voxels" if spatial_ndim >= 3 else "pixels"
+        columns["axis_ratio_major_minor"] = []
+        for axis_index in range(spatial_ndim):
+            columns[f"bbox_axis_{axis_index}_length_{suffix}"] = []
+        for left in range(spatial_ndim):
+            for right in range(left + 1, spatial_ndim):
+                columns[f"bbox_axis_ratio_{left}_{right}"] = []
+        columns["bbox_fill_fraction"] = []
+        for left in range(spatial_ndim):
+            for right in range(left + 1, spatial_ndim):
+                columns[f"inertia_eigval_ratio_{left}_{right}"] = []
+    if include_2d_shape_moments and spatial_ndim == 2:
+        columns["circularity"] = []
+        columns["perimeter_area_ratio"] = []
+        for index in range(7):
+            columns[f"hu_moment_{index}"] = []
     if include_intensity:
         columns["intensity_mean"] = []
         columns["intensity_min"] = []
@@ -5424,11 +6230,23 @@ def _measurement_units(
         squared_unit = "voxels^2" if spatial_ndim >= 3 else "pixels^2"
         column_units[f"major_axis_length_{suffix}"] = length_unit
         column_units[f"minor_axis_length_{suffix}"] = length_unit
+        column_units["axis_ratio_major_minor"] = "ratio"
+        for axis_index in range(spatial_ndim):
+            column_units[f"bbox_axis_{axis_index}_length_{suffix}"] = length_unit
         for axis_index in range(spatial_ndim):
             column_units[f"inertia_tensor_eigval_{axis_index}"] = squared_unit
+        for left in range(spatial_ndim):
+            for right in range(left + 1, spatial_ndim):
+                column_units[f"bbox_axis_ratio_{left}_{right}"] = "ratio"
+                column_units[f"inertia_eigval_ratio_{left}_{right}"] = "ratio"
+        column_units["bbox_fill_fraction"] = "fraction"
     column_units["solidity"] = "ratio"
     column_units["eccentricity"] = "ratio"
     column_units["orientation_radians"] = "radians"
+    column_units["circularity"] = "ratio"
+    column_units["perimeter_area_ratio"] = "1/pixel"
+    for index in range(7):
+        column_units[f"hu_moment_{index}"] = "dimensionless"
     if calibrated:
         column_units[physical_column] = unit_label
         column_units["physical_unit"] = "text"
@@ -5460,6 +6278,8 @@ def _measurement_table_kind(
     include_shape_descriptors: bool,
     include_axis_descriptors: bool,
     include_2d_boundary_descriptors: bool,
+    include_derived_shape_ratios: bool,
+    include_2d_shape_moments: bool,
     spatial_ndim: int,
 ) -> str:
     extras: list[str] = []
@@ -5469,6 +6289,10 @@ def _measurement_table_kind(
         extras.append("axis/inertia descriptors")
     if include_2d_boundary_descriptors and spatial_ndim == 2:
         extras.append("2D boundary descriptors")
+    if include_derived_shape_ratios and spatial_ndim >= 2:
+        extras.append("derived shape ratios")
+    if include_2d_shape_moments and spatial_ndim == 2:
+        extras.append("2D shape moments")
     return f"{base} + {', '.join(extras)}" if extras else base
 
 

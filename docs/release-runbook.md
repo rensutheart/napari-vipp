@@ -1,11 +1,11 @@
-# VIPP 0.8.2a2 Alpha Release Runbook
+# VIPP 0.8.3a1 Alpha Release Runbook
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
 
 ## Scope
 
-- Package version: 0.8.2a2
+- Package version: 0.8.3a1
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,7 +25,7 @@ Recommended local tools:
 
 Confirm these are set:
 
-- `pyproject.toml` version is `0.8.2a2`
+- `pyproject.toml` version is `0.8.3a1`
 - `pyproject.toml` classifier includes `Development Status :: 3 - Alpha`
 - `pyproject.toml` license is `LicenseRef-PolyForm-Shield-1.0.0`
 - README has a clear alpha disclaimer
@@ -48,8 +48,8 @@ python -m twine check dist/*
 
 Expected output artifacts:
 
-- `dist/napari_vipp-0.8.2a2.tar.gz`
-- `dist/napari_vipp-0.8.2a2-py3-none-any.whl`
+- `dist/napari_vipp-0.8.3a1.tar.gz`
+- `dist/napari_vipp-0.8.3a1-py3-none-any.whl`
 
 ## 4. Publish To PyPI
 
@@ -64,7 +64,7 @@ python -m twine upload dist/*
 Post-upload validation:
 
 - Open https://pypi.org/project/napari-vipp/
-- Confirm version `0.8.2a2` is visible
+- Confirm version `0.8.3a1` is visible
 - Confirm README renders alpha disclaimer
 - Confirm license metadata shows PolyForm Shield/custom license terms
 
@@ -73,36 +73,39 @@ Post-upload validation:
 Create and push tag:
 
 ```powershell
-git tag -a v0.8.2a2 -m "napari-vipp 0.8.2a2 alpha"
-git push origin v0.8.2a2
+git tag -a v0.8.3a1 -m "napari-vipp 0.8.3a1 alpha"
+git push origin v0.8.3a1
 ```
 
 Create release page in GitHub UI:
 
 1. GitHub repository -> Releases -> Draft a new release
-2. Tag: `v0.8.2a2`
-3. Title: `napari-vipp v0.8.2a2 (Alpha)`
+2. Tag: `v0.8.3a1`
+3. Title: `napari-vipp v0.8.3a1 (Alpha)`
 4. Mark as pre-release: enabled
 5. Add release notes (suggested template below)
 
 Suggested release notes body:
 
 ```markdown
-## napari-vipp v0.8.2a2 (Alpha)
+## napari-vipp v0.8.3a1 (Alpha)
 
 This is an early alpha build and is still in active development.
 
 ### Important
 - Breaking changes are expected between releases.
 - Validate outputs before publication or production use.
-- Licensing changed from BSD 3-Clause to PolyForm Shield License 1.0.0 for this
-  and future releases. Versions through 0.8.2a1 remain BSD 3-Clause.
+- This release remains under PolyForm Shield License 1.0.0. Versions through
+  0.8.2a1 remain BSD 3-Clause.
 
 ### Highlights
-- Changed future-release licensing to PolyForm Shield License 1.0.0.
-- Added commercial-permission guidance for productized redistribution,
-  white-labeling, hosted offerings, and competing products.
-- Added required notice text and `CITATION.cff` citation metadata.
+- Added manual/cached measurement execution with Calculate/Recalculate, stale
+  result state, Auto Recalculate, and Calculate all.
+- Added richer object, skeleton, and 3D mesh morphology table nodes and
+  reference workflows.
+- Added VIPP-local View dims controls synchronized with napari dimensions.
+- Added deterministic synthetic samples for grouped measurements, object
+  morphology, advanced skeleton networks, and 3D mesh morphology.
 ```
 
 ## 6. napari Hub Listing/Refresh
@@ -115,7 +118,7 @@ After PyPI upload:
 2. Check: https://napari-hub.org/plugins/napari-vipp
 3. Confirm:
    - plugin appears
-   - version updates to 0.8.2a2
+   - version updates to 0.8.3a1
    - README/disclaimer is visible
 
 If not updated after indexing delay:
@@ -127,7 +130,7 @@ If not updated after indexing delay:
 ## 7. Post-Release Follow-up
 
 1. Announce alpha status clearly in repository and release channels.
-2. Open a tracking milestone for issues found in 0.8.2 alpha.
+2. Open a tracking milestone for issues found in 0.8.3 alpha.
 3. Plan next versioning strategy.
 
 ## Operator Checklist

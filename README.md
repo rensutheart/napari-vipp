@@ -108,6 +108,10 @@ The plugin contributes synthetic fluorescence-like sample data:
   stack;
 - `VIPP synthetic measurement summary`: `TYX` time-series object sample with
   known per-timepoint object counts and areas;
+- `VIPP synthetic object morphology`: `YX` object sample with circle, ellipse,
+  rectangle, and concave objects for derived shape-ratio and 2D moment checks;
+- `VIPP synthetic 3D mesh morphology`: anisotropic `ZYX` objects for surface
+  area, mesh volume, convex hull, and sphericity checks;
 - `VIPP synthetic skeleton network`: sparse `ZYX` network sample with known
   endpoints, branches, a junction, a short spur, and an isolated voxel.
 
@@ -226,8 +230,12 @@ The current node catalogue includes:
 - Measurements:
   - Measure Objects
   - Measure Objects + Intensity
+  - Measure 3D Mesh Morphology
   - Analyze Skeleton
   - Measure Skeleton Branches
+  - Summarize Skeleton Branches
+  - Skeleton Graph Tables
+  - Measure Overall Skeleton Network
   - Merge Tables
   - Select Table Columns
   - Add Metadata Columns
@@ -282,10 +290,12 @@ an image. The default measurement set includes label ID, pixel/voxel area or
 volume, calibrated physical area or volume when spatial scale metadata is
 available, centroid, bounding box, equivalent diameter, extent, and Euler
 number. Optional checkboxes add shape descriptors, axis/inertia descriptors,
-and 2D boundary descriptors. The 2D boundary group is hidden for true 3D
-inputs because perimeter, Crofton perimeter, orientation, and eccentricity are
-2D concepts in the current implementation. Table outputs show a row preview in
-the inspector and can be saved as CSV or TSV.
+derived shape ratios, and 2D shape moments. The 2D-only groups are hidden for
+true 3D inputs. Derived shape ratios include axis ratios, bounding-box side
+lengths/aspect ratios, fill fraction, and inertia eigenvalue ratios. The 2D
+shape moments group includes Crofton-based circularity, perimeter-to-area
+ratio, and Hu moments. Table outputs show a row preview in the inspector and
+can be saved as CSV or TSV.
 
 `Measure Objects + Intensity` is the first named multi-input measurement node.
 It has separate `Labels` and `Intensity image` input ports, then outputs the
@@ -295,11 +305,23 @@ standard deviation intensity. It exposes the same optional morphology groups as
 `examples/red-channel-object-intensity-measurements.json` demonstrates this
 pattern.
 
+`Measure 3D Mesh Morphology` accepts true 3D labels and produces an opt-in,
+manual/cached table of surface morphology. It uses marching cubes with carried
+Z/Y/X scale metadata, reports voxel volume, mesh volume, mesh surface area,
+surface-to-volume ratio, equivalent sphere size, sphericity, axis-aligned mesh
+extents, optional convex-hull volume/area, 3D solidity, and per-object
+`mesh_status` / `mesh_error` fields. Tiny or invalid objects remain in the
+table with `NaN` mesh metrics instead of failing the whole node. The example
+workflow `examples/synthetic-3d-mesh-morphology.json` demonstrates merging
+standard object measurements with mesh morphology.
+
 `Merge Tables` joins two or more table outputs into a single table. In `auto`
 mode it joins on stable identity columns such as `t_index` and `label_id`; when
 no identity columns are shared, equal-length tables can be joined by row
-position. `Select Table Columns` keeps, drops, or reorders table columns while
-preserving row order and column units. `Add Metadata Columns` appends constant
+position. `Select Table Columns` shows detected upstream columns as a checklist:
+checked columns are kept, rows can be dragged or moved to set output order, and
+Select all/Deselect all buttons make broad edits explicit. It preserves row
+order and column units. `Add Metadata Columns` appends constant
 treatment, replicate, batch, or condition columns before CSV/TSV export.
 `Summarize Measurements` groups table rows by metadata or axis-index columns
 such as `condition`, `replicate`, and `t_index`, then calculates count, mean,
@@ -310,6 +332,12 @@ example workflow
 PCA-oriented table assembly path.
 `examples/synthetic-measurement-summary.json` demonstrates grouped summaries on
 a synthetic time-series object sample with known object counts and areas.
+`examples/synthetic-derived-object-morphology.json` demonstrates the optional
+derived object morphology, circularity, and Hu-moment columns on a deterministic
+2D object-shape sample.
+`examples/synthetic-3d-mesh-morphology.json` demonstrates 3D mesh morphology on
+an anisotropic synthetic object sample and merges the mesh table with ordinary
+object measurements.
 `examples/synthetic-skeleton-qc.json` demonstrates skeleton keypoint masks,
 component labels, branch labels, pruning, and before/after skeleton analysis on
 the bundled skeleton-network sample.
@@ -323,9 +351,14 @@ skeleton length in pixel/voxel and physical units when scale metadata is
 available. `Measure Skeleton Branches` outputs one row per traced graph branch
 with branch type, voxel/edge counts, length, endpoint-to-endpoint distance,
 tortuosity, start/end coordinates, and calibrated physical length when
-available. `Skeleton Keypoints` emits separate endpoint, junction, and isolated
-node masks. `Skeleton Graph Overlay` renders skeleton edges and graph nodes as
-a channel-last RGB QC image with selectable colored-edge or white-edge modes.
+available. `Summarize Skeleton Branches` converts branch tables into grouped
+length/tortuosity distributions and branch-type count/fraction summaries.
+`Measure Overall Skeleton Network` reports compact per-block connectedness,
+fragmentation, cycle, component, branch, and normalized per-component/per-length
+network metrics. `Skeleton Keypoints` emits separate endpoint, junction, and
+isolated node masks. `Skeleton Graph Overlay` renders skeleton edges and graph
+nodes as a channel-last RGB QC image with selectable colored-edge or white-edge
+modes.
 For napari 3D viewing, VIPP displays volumetric RGB outputs as separate
 additive red/green/blue layers because napari's native RGB-volume path is not
 reliable for this use case.
@@ -432,10 +465,10 @@ Near-term development priorities:
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
   and progress where possible;
-- skeleton graph export, branch-summary distributions, and physical-length
-  pruning units;
-- richer 3D mesh morphology and calibrated physical variants for extended
-  length/shape measurements;
+- calibrated physical variants for extended non-mesh length/shape measurements
+  and optional mesh export/preview;
+- specialist mitochondrial network metrics beyond the current generic skeleton
+  branch and overall-network summaries;
 - colocalization/localization table nodes;
 - fluorescence background correction;
 - OME-Zarr pyramids, label colors/properties, and preview-resolution selection;

@@ -240,10 +240,11 @@ or slice axis is intended.
 - `Label Operations`: Label Connected Components, Filter Labels By Volume,
   Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches
-- `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Measure Skeleton Branches, Skeleton Graph Tables, Summarize
-  Skeleton Network, Merge Tables, Select Table Columns, Add Metadata Columns,
-  Summarize Measurements
+- `Measurements`: Measure Objects, Measure Objects + Intensity, Measure 3D
+  Mesh Morphology, Analyze Skeleton, Measure Skeleton Branches, Summarize
+  Skeleton Branches, Skeleton Graph Tables, Measure Overall Skeleton Network,
+  Merge Tables, Select Table Columns, Add Metadata Columns, Summarize
+  Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -291,11 +292,14 @@ calibrated physical area or volume when spatial scale metadata is available,
 centroid, bounding box, equivalent diameter, extent, and Euler number. Leading
 time/channel or other non-spatial axes become index columns so repeated label
 IDs remain distinguishable across frames. Optional checkbox groups add
-shape descriptors, axis/inertia descriptors, and 2D boundary descriptors. The
-2D boundary group is hidden when the connected input resolves to true 3D,
-because perimeter, orientation, and eccentricity are not currently meaningful
-as generic 3D measurements. The first 3D-safe extension includes bounding-box
-volume, filled volume, major/minor axis length, and inertia tensor eigenvalues.
+shape descriptors, axis/inertia descriptors, 2D boundary descriptors, derived
+shape ratios, and 2D shape moments. The 2D-only groups are hidden when the
+connected input resolves to true 3D. Derived shape ratios include axis ratios,
+bounding-box side lengths/aspect ratios, fill fraction, and inertia eigenvalue
+ratios. The 2D shape moments group includes Crofton-based circularity,
+perimeter-to-area ratio, and Hu moments. The 3D-safe extensions include
+bounding-box volume, filled volume, major/minor axis length, inertia tensor
+eigenvalues, and derived 3D shape ratios.
 
 `Measure Objects + Intensity` is the first named heterogeneous-input node. It
 declares separate `Labels` and `Intensity image` input slots, requires matching
@@ -305,6 +309,16 @@ It exposes the same optional morphology groups as `Measure Objects`. The same
 `InputSpec` mechanism is intended for watershed, colocalization, and other
 heterogeneous-input nodes.
 
+`Measure 3D Mesh Morphology` is a manual/cached `labels -> table` node for
+surface-based 3D object morphology. It requires true 3D spatial labels, uses
+`skimage.measure.marching_cubes` with carried Z/Y/X spacing, computes mesh
+surface area with `skimage.measure.mesh_surface_area`, computes mesh volume
+with a local signed triangle-volume helper, and optionally computes convex-hull
+area/volume with `scipy.spatial.ConvexHull`. It emits one row per object per
+leading axis block and preserves identity columns such as `t_index` and
+`label_id`. Tiny, flat, or otherwise invalid objects are not dropped; their
+mesh columns are `NaN` and `mesh_status` / `mesh_error` explain the failure.
+
 `Merge Tables` accepts a variable number of `table` inputs and emits a joined
 `table`. The `input_count` parameter controls visible/required input ports.
 `auto` join keys use shared stable identity columns such as `t_index`,
@@ -313,10 +327,12 @@ identity columns overlap and all tables have the same row count, the node falls
 back to row-position joining. Duplicate non-key columns from later tables are
 suffixes such as `_table2` so no source column is silently overwritten.
 
-`Select Table Columns` accepts one `table` input and emits a table with columns
-kept, dropped, or moved to the front according to a comma-separated column
-list. It preserves row order and column units, and errors on missing columns so
-batch exports fail explicitly when an upstream table schema changes.
+`Select Table Columns` accepts one `table` input and emits a table containing
+the checked upstream columns in the displayed order. The inspector lists
+detected columns with checkboxes, Select all/Deselect all buttons, and row
+reordering controls; workflows store the compact ordered `columns` value. It
+preserves row order and column units, and errors on missing explicit columns so
+batch exports fail clearly when an upstream table schema changes.
 
 `Add Metadata Columns` accepts one `table` input and appends constant
 user-supplied `name=value` columns, intended for treatment, replicate, batch,
@@ -340,16 +356,18 @@ connected-component context, and skeleton length in pixels/voxels plus
 calibrated physical units when spatial scale metadata is available. `Measure
 Skeleton Branches` emits one table row per traced branch with branch type,
 length, endpoint-to-endpoint distance, tortuosity, start/end coordinates, and
-calibrated physical length when possible. `Skeleton Graph Tables` exports
-explicit graph-node and graph-edge tables. `Measure Overall Skeleton Network`
-emits per-block connectedness, fragmentation, branch-count, and branch-length
-whole-network metrics. `Skeleton Keypoints`, `Skeleton Graph Overlay`, `Label
-Skeleton Components`, `Label Skeleton Branches`, and `Prune Skeleton Branches`
-provide visual QC masks/RGB overlays/labels and terminal-spur cleanup using the
-same skeleton graph rules. The first graph analyzers deliberately stay generic;
-mitochondrial-specific mesh/surface, domain-normalized connectivity
-measurements, and richer branch-summary distributions should be separate
-specialist nodes.
+calibrated physical length when possible. `Summarize Skeleton Branches`
+converts those row-per-branch tables into grouped branch-count, length,
+tortuosity, and branch-type count/fraction distributions. `Skeleton Graph
+Tables` exports explicit graph-node and graph-edge tables. `Measure Overall
+Skeleton Network` emits per-block connectedness, fragmentation, branch-count,
+branch-length, and normalized per-component/per-length whole-network metrics.
+`Skeleton Keypoints`, `Skeleton Graph Overlay`, `Label Skeleton Components`,
+`Label Skeleton Branches`, and `Prune Skeleton Branches` provide visual QC
+masks/RGB overlays/labels and terminal-spur cleanup using the same skeleton
+graph rules. The first graph analyzers deliberately stay generic;
+mitochondrial-specific mesh/surface and specialist network indices should be
+separate optional nodes.
 
 The longer-term measurement architecture must support selectable measurement
 families and merged per-object result tables for exploratory statistics such as
@@ -706,6 +724,11 @@ Python export:
 - `VIPP synthetic time-lapse multichannel`: `TCZYX`;
 - `VIPP synthetic measurement summary`: `TYX` time-series objects with known
   counts and areas;
+- `VIPP synthetic object morphology`: `YX` separated circle, ellipse,
+  rectangle, and concave objects for derived morphology validation;
+- `VIPP synthetic 3D mesh morphology`: anisotropic `ZYX` sphere-like,
+  ellipsoid, cuboid, concave dumbbell, and tiny objects for mesh morphology
+  validation;
 - `VIPP synthetic skeleton network`: sparse `ZYX` network with known endpoints,
   branches, a junction, a short spur, a separate component, and an isolated
   voxel;
@@ -790,15 +813,17 @@ Implemented now:
   output is deterministic and does not depend on UI caches. Workflow JSON
   persists node settings but does not serialize cached arrays or tables;
 - generic skeletonization, skeleton-network and skeleton-branch measurement
-  tables, keypoint masks, RGB graph overlays, branch/component labels, and
-  short-branch pruning;
+  tables, branch-summary distributions, normalized connectedness summaries,
+  keypoint masks, RGB graph overlays, branch/component labels, and short-branch
+  pruning;
+- first-pass 3D mesh morphology tables using marching cubes and convex hulls;
 - standard maximize behavior for detached VIPP windows.
 
 Still incomplete or deliberately future-facing:
 
-- calibrated extended-length variants and mesh morphology;
-- branch-summary distributions, domain-specific network metrics, and
-  cancellation/percentage progress for long manual calculations;
+- calibrated extended-length variants outside the mesh-specific table;
+- specialist domain-specific network metrics and cancellation/percentage
+  progress for long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution;
