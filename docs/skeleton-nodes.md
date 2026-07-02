@@ -29,7 +29,8 @@ In the node palette, skeleton nodes are grouped by what they produce:
 - **Label Operations -> Skeleton / Network QC:** skeleton label images (`Label
   Skeleton Components`, `Label Skeleton Branches`).
 - **Measurements -> Skeleton / Network QC:** table outputs (`Analyze Skeleton`,
-  `Measure Skeleton Branches`).
+  `Measure Skeleton Branches`, `Skeleton Graph Tables`, `Summarize Skeleton
+  Network`).
 
 ## Recommended Workflows
 
@@ -57,6 +58,22 @@ binary mask
   -> Measure Skeleton Branches
 ```
 
+For explicit graph export:
+
+```text
+binary mask
+  -> Skeletonize
+  -> Skeleton Graph Tables
+```
+
+For whole-network measurements per image, channel, or timepoint:
+
+```text
+binary mask
+  -> Skeletonize
+  -> Measure Overall Skeleton Network
+```
+
 For spur cleanup:
 
 ```text
@@ -65,6 +82,16 @@ binary mask
   -> Prune Skeleton Branches
   -> Analyze Skeleton / Measure Skeleton Branches
 ```
+
+Checked-in reference workflows:
+
+- `examples/synthetic-skeleton-qc.json`: compact `ZYX` skeleton QC workflow
+  with one junction-rich component, a separate component, a spur, and an
+  isolated voxel.
+- `examples/synthetic-advanced-skeleton-network.json`: richer `TZYX`
+  stress-test workflow with looped components, many junctions, branch tables,
+  graph node/edge tables, before/after pruning summaries, RGB overlays, and
+  anisotropic physical calibration.
 
 ## Node Reference
 
@@ -103,6 +130,48 @@ binary mask
   count, branch length, endpoint-to-endpoint distance, tortuosity, start/end
   coordinates, and calibrated physical length when scale metadata is available.
 - **Execution:** manual/cached. This can produce many rows on dense networks.
+
+### Skeleton Graph Tables
+
+- **Input:** skeleton mask, or a binary mask if `Input` is set to `Skeletonize
+  first`.
+- **Output:** two table outputs: graph nodes and graph edges.
+- **Purpose:** Exports the explicit graph representation for downstream network
+  analysis, plotting, or external graph tools.
+- **Node table reports:** component ID, graph node ID, node type, node degree,
+  skeleton voxel index, and spatial coordinates.
+- **Edge table reports:** component ID, edge ID, start/end node IDs, branch
+  type, branch voxel count, branch edge count, path length, endpoint distance,
+  tortuosity, start/end coordinates, and calibrated physical length when scale
+  metadata is available.
+- **Execution:** manual/cached. This is the most direct table export of the
+  skeleton graph.
+
+### Measure Overall Skeleton Network
+
+- **Input:** skeleton mask, or a binary mask if `Input` is set to `Skeletonize
+  first`.
+- **Output:** table, one row per analyzed spatial block, such as one image,
+  timepoint, channel, or slice depending on spatial processing.
+- **Purpose:** Measures whole-network topology directly from the skeleton mask.
+  This is not just a table summary of `Measure Skeleton Branches`; it computes
+  component-level and graph-level metrics that require the original skeleton
+  graph.
+- **Reports:** component count, skeleton voxel count, largest-component
+  fraction, isolated component count, endpoint/junction/isolated-node counts,
+  branch and graph-edge counts, cycle count, total skeleton length, branch
+  length summaries, mean tortuosity, connectedness fraction, and fragmentation
+  index.
+- **Use when:** you want one compact feature row per image, timepoint, channel,
+  or other spatial block for treatment comparison, PCA-style analysis, or
+  mitochondrial connectedness QC.
+- **Execution:** manual/cached.
+
+Use `Measure Skeleton Branches -> Summarize Measurements` when you specifically
+want table-derived statistics such as mean branch length grouped by timepoint,
+condition, or branch type. Use `Measure Overall Skeleton Network` when you need
+network-level quantities such as connected components, cycles, isolated nodes,
+and largest-component fraction.
 
 ### Skeleton Keypoints
 
@@ -147,10 +216,13 @@ binary mask
 - **Output:** binary skeleton mask.
 - **Purpose:** Removes short terminal spurs and optional isolated skeleton
   voxels.
+- **Key settings:** minimum terminal branch length, length units
+  (`Pixels/voxels` or `Physical units`), pruning passes, isolated-voxel removal,
+  and 2D/3D spatial processing.
 - **Use when:** thresholding or skeletonization creates small terminal artifacts
   that inflate endpoint and branch counts.
-- **Current limitation:** minimum branch length is currently in pixel/voxel
-  graph-edge units. Physical-unit pruning is planned.
+- **Physical units:** require pixel-size/axis-scale metadata. If no calibration
+  exists, physical-unit pruning behaves like unit spacing.
 
 ## Interpreting Graph Terms
 

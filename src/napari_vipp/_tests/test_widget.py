@@ -1722,6 +1722,11 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
         measurement_skeleton_qc,
         "Measure Skeleton Branches",
     )
+    assert _palette_child_by_text(measurement_skeleton_qc, "Skeleton Graph Tables")
+    assert _palette_child_by_text(
+        measurement_skeleton_qc,
+        "Measure Overall Skeleton Network",
+    )
 
 
 def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
@@ -4377,6 +4382,66 @@ def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):
 
     assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_STALE
     assert widget.pipeline.outputs[measurements.id].row_count == 0
+
+
+def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    image[6, 6] = 10
+    viewer = _Viewer(image, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    intensity = widget.add_node_from_palette("measure_objects_intensity")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget._connect_nodes(labels.id, intensity.id, target_port=0)
+    widget._connect_nodes("input", intensity.id, target_port=1)
+
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.calculate_all_button.text() == "Calculate all"
+    assert widget.pipeline.node_execution_states[measurements.id] == (
+        EXECUTION_NOT_CALCULATED
+    )
+    assert widget.pipeline.node_execution_states[intensity.id] == (
+        EXECUTION_NOT_CALCULATED
+    )
+    assert widget._manual_node_ids_needing_calculation() == {
+        measurements.id,
+        intensity.id,
+    }
+
+    widget.calculate_all_button.click()
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_READY
+    assert widget.pipeline.outputs[measurements.id].row_count == 2
+    assert widget.pipeline.outputs[intensity.id].row_count == 2
+    assert widget._manual_node_ids_needing_calculation() == set()
+
+    widget.pipeline.set_param(threshold.id, "threshold", 20)
+    widget._mark_pipeline_dirty(threshold.id)
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_STALE
+    assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_STALE
+    assert widget._manual_node_ids_needing_calculation() == {
+        measurements.id,
+        intensity.id,
+    }
+
+    widget.calculate_all_button.click()
+
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_READY
+    assert widget.pipeline.outputs[measurements.id].row_count == 0
+    assert widget.pipeline.outputs[intensity.id].row_count == 0
 
 
 def test_save_selected_output_dialog_defaults_to_ome_tiff(qtbot, monkeypatch, tmp_path):

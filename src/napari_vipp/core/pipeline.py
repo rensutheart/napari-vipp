@@ -66,6 +66,7 @@ from napari_vipp.core.operations import (
     max_intensity_projection,
     measure_objects,
     measure_objects_with_intensity,
+    measure_overall_skeleton_network,
     measure_skeleton_branches,
     median_filter,
     merge_tables,
@@ -92,6 +93,7 @@ from napari_vipp.core.operations import (
     select_table_columns,
     set_pixel_size,
     skeleton_graph_overlay,
+    skeleton_graph_tables,
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
@@ -345,6 +347,8 @@ SPATIAL_OPERATIONS = {
     "label_skeleton_branches",
     "label_skeleton_components",
     "measure_skeleton_branches",
+    "skeleton_graph_tables",
+    "measure_overall_skeleton_network",
     "label_connected_components",
     "marker_controlled_watershed",
     "filter_labels_by_property",
@@ -1752,6 +1756,56 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "skeleton_graph_tables",
+        "Skeleton Graph Tables",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "input_mode",
+                "Input",
+                "choice",
+                "Already skeletonized",
+                0,
+                0,
+                1,
+                choices=("Already skeletonized", "Skeletonize first"),
+            ),
+        ),
+        skeleton_graph_tables,
+        subcategory=SKELETON_NETWORK_GROUP,
+        outputs=(
+            OutputSpec("nodes", "table", "Graph nodes"),
+            OutputSpec("edges", "table", "Graph edges"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "measure_overall_skeleton_network",
+        "Measure Overall Skeleton Network",
+        MEASUREMENTS_CATEGORY,
+        "mask",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "input_mode",
+                "Input",
+                "choice",
+                "Already skeletonized",
+                0,
+                0,
+                1,
+                choices=("Already skeletonized", "Skeletonize first"),
+            ),
+        ),
+        measure_overall_skeleton_network,
+        subcategory=SKELETON_NETWORK_GROUP,
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "skeleton_keypoints",
         "Skeleton Keypoints",
         "Morphology",
@@ -1822,13 +1876,23 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec(
                 "min_branch_length",
-                "Minimum terminal branch length (pixels/voxels)",
+                "Minimum terminal branch length",
                 "float",
                 3.0,
                 0.0,
                 100_000.0,
                 1.0,
                 decimals=1,
+            ),
+            ParameterSpec(
+                "length_units",
+                "Length units",
+                "choice",
+                "Pixels/voxels",
+                0,
+                0,
+                1,
+                choices=("Pixels/voxels", "Physical units"),
             ),
             ParameterSpec(
                 "iterations",
@@ -3205,7 +3269,7 @@ class PrototypePipeline:
         input_metadata: dict | None,
         input_name: str,
         source_payloads: dict[str, SourcePayload],
-    ) -> list[tuple[Any, ImageState | None]]:
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         port_count = len(self.output_ports(node_id))
@@ -3353,12 +3417,20 @@ class PrototypePipeline:
             "measure_objects",
             "analyze_skeleton",
             "measure_skeleton_branches",
+            "skeleton_graph_tables",
+            "measure_overall_skeleton_network",
         } and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
             kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
             kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
             kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
             kwargs["source_name"] = input_state.source_name
+        if node.operation_id == "prune_skeleton_branches" and isinstance(
+            input_state,
+            ImageState,
+        ):
+            kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
+            kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
         if node.operation_id == "reorder_axes" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if (
@@ -3424,7 +3496,7 @@ class PrototypePipeline:
         spec: OperationSpec,
         outputs_seq: Any,
         input_state: ImageState | None,
-    ) -> list[tuple[Any, ImageState | None]]:
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
         arrays = list(outputs_seq)
         if spec.output_factory is not None:
             ports: tuple[OutputSpec, ...] = spec.output_factory(len(arrays))
@@ -3436,6 +3508,15 @@ class PrototypePipeline:
             data = arrays[index] if index < len(arrays) else None
             if data is None:
                 results.append((None, None))
+                continue
+            if port.output_type == "table" or spec.output_type == "table":
+                label = f"{node.title} ({port.label})"
+                state = table_state_from_data(
+                    data,
+                    history=_table_history(input_state, label, data),
+                    source_name=getattr(input_state, "source_name", ""),
+                )
+                results.append((data, state))
                 continue
             state = transform_split_output_state(
                 data,
@@ -3567,7 +3648,22 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
     prior = _combined_history(states)
     row_count = getattr(table, "row_count", 0)
     table_kind = str(getattr(table, "table_kind", "")).lower()
-    if "branch" in table_kind:
+    if "graph node" in table_kind:
+        noun = "node" if row_count == 1 else "nodes"
+        action = "exported"
+    elif "graph edge" in table_kind:
+        noun = "edge" if row_count == 1 else "edges"
+        action = "exported"
+    elif "summary" in table_kind:
+        if "skeleton" in table_kind or "network" in table_kind:
+            noun = "block" if row_count == 1 else "blocks"
+        else:
+            noun = "group" if row_count == 1 else "groups"
+        action = "summarized"
+    elif "overall skeleton network" in table_kind:
+        noun = "block" if row_count == 1 else "blocks"
+        action = "measured"
+    elif "branch" in table_kind:
         noun = "branch" if row_count == 1 else "branches"
         action = "measured"
     elif "skeleton" in table_kind:
@@ -3577,9 +3673,6 @@ def _table_history(input_states, operation_title: str, table) -> tuple[str, ...]
         column_count = getattr(table, "column_count", 0)
         noun = "column" if column_count == 1 else "columns"
         return prior + (f"{operation_title}: selected {column_count} {noun}",)
-    elif "summary" in table_kind:
-        noun = "group" if row_count == 1 else "groups"
-        action = "summarized"
     elif "metadata" in table_kind:
         noun = "row" if row_count == 1 else "rows"
         action = "annotated"

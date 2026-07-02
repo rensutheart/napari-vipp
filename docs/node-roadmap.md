@@ -119,13 +119,13 @@ VIPP already has useful coverage in these areas:
   short-branch pruning.
 
 The remaining object-analysis gaps are difficult segmentation, richer
-measurement utilities, calibrated physical filtering, graph export, and
-expensive measurement execution control. VIPP can now label separated
+measurement utilities, calibrated physical filtering, and broader expensive
+measurement execution control. VIPP can now label separated
 foreground objects, clean them by size or measured properties, measure basic
 and selected extended label morphology plus intensity, skeletonize masks,
-measure skeleton components with generic graph metrics, visualize skeleton
-keypoints/branches/components, and prune short terminal branches, but it cannot
-yet:
+measure skeleton components with generic graph metrics, export skeleton graph
+node/edge tables, visualize skeleton keypoints/branches/components, and prune
+short terminal branches, but it cannot yet:
 
 - provide robust seeded segmentation presets beyond the current watershed
   building blocks and defaults;
@@ -209,9 +209,10 @@ work.
 Some nodes should not execute continuously on every upstream or parameter
 change. The baseline manual/cached model is now implemented for
 `Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`, and
-`Measure Skeleton Branches`. Future examples include 3D mesh morphology,
-colocalization/localization over large stacks, deconvolution, and expensive
-background estimation.
+`Measure Skeleton Branches`, `Skeleton Graph Tables`, and `Summarize Skeleton
+Network`. Future examples include 3D mesh morphology, colocalization/
+localization over large stacks, deconvolution, and expensive background
+estimation.
 
 The implemented UX model is:
 
@@ -489,8 +490,9 @@ metadata annotation, grouped table summaries, and base skeleton-network
 measurement are now implemented. Skeleton QC outputs and pruning are also
 implemented. Manual/cached `Calculate`/`Recalculate` execution is implemented
 for the first expensive table nodes. Branch-level skeleton measurements and
-RGB graph overlays are implemented. Next priorities are explicit skeleton graph
-export, branch-summary distributions, 3D mesh morphology, and then
+RGB graph overlays are implemented. Explicit skeleton graph node/edge export
+and overall-network measurements are implemented. Next priorities are
+branch-summary distributions, 3D mesh morphology, and then
 colocalization/localization tables.
 
 ## Recommended First Milestone
@@ -644,8 +646,15 @@ inputs require nearest-neighbor interpolation.
 - implemented: Measure Skeleton Branches for row-per-branch length,
   endpoint-distance, tortuosity, start/end coordinates, and calibrated physical
   length when metadata is available;
+- implemented: Skeleton Graph Tables for explicit graph node and graph edge
+  table export;
+- implemented: Measure Overall Skeleton Network for per-block connectedness,
+  fragmentation, branch-count, graph-edge, and branch-length whole-network
+  metrics;
+- implemented: physical-unit pruning threshold support in Prune Skeleton
+  Branches when pixel-size metadata is available;
 - medial axis;
-- physical-length pruning units and branch-summary distributions;
+- branch-summary distributions;
 - grayscale erosion, dilation, opening, and closing;
 - label erosion and label-safe expansion;
 - convex hull per object;
@@ -830,8 +839,8 @@ skeleton/graph measurements; volume filtering alone is not sufficient. The
 generic `Skeletonize` and `Analyze Skeleton` nodes now cover the first shared
 network metrics, including graph edges, isolate counts, and cycle counts in 3D.
 Future mitochondrial-specific work should add validated fragmentation,
-domain-normalized connectedness, branch graph export, and mesh/surface metrics
-only where the biological assumptions are explicit.
+domain-normalized connectedness, branch-distribution summaries, and
+mesh/surface metrics only where the biological assumptions are explicit.
 
 The old MitoMorph implementation used `regionprops`, mesh-like surface/volume
 estimates, skeletonization, and graph analysis. Treat that as inspiration for a

@@ -1206,10 +1206,13 @@ def skeleton_graph_overlay(
 def prune_skeleton_branches(
     data,
     min_branch_length: float = 3.0,
+    length_units: str = "Pixels/voxels",
     iterations: int = 1,
     remove_isolated: bool = True,
     spatial_mode: str = "Auto from axes",
     resolved_spatial_ndim: int | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
 ) -> np.ndarray:
     """Remove short terminal skeleton branches within each spatial block."""
     mask = _to_bool_mask(data)
@@ -1218,6 +1221,11 @@ def prune_skeleton_branches(
         spatial_mode,
         resolved_spatial_ndim,
     )
+    del axis_units  # axis_scales carry the numeric conversion used for pruning.
+    scales = _normalized_spatial_scales(
+        spatial_ndim,
+        tuple(axis_scales or ())[-spatial_ndim:],
+    )
 
     def prune_block(block: np.ndarray) -> np.ndarray:
         return _prune_skeleton_branches_block(
@@ -1225,6 +1233,8 @@ def prune_skeleton_branches(
             min_branch_length=float(min_branch_length),
             iterations=int(iterations),
             remove_isolated=bool(remove_isolated),
+            length_units=length_units,
+            scales=scales,
         )
 
     return _apply_spatial_blocks(mask, spatial_ndim, prune_block, dtype=bool)
@@ -1639,6 +1649,164 @@ def measure_skeleton_branches(
         table_kind="Skeleton branches",
         source_name=source_name,
         column_units=_skeleton_branch_column_units(units),
+    )
+
+
+def skeleton_graph_tables(
+    data,
+    spatial_mode: str = "Auto from axes",
+    input_mode: str = "Already skeletonized",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> tuple[TableData, TableData]:
+    """Export explicit skeleton graph node and edge tables."""
+    (
+        mask_for_analysis,
+        _spatial_ndim,
+        leading_axis_names,
+        spatial_axis_names,
+        leading_shape,
+        units,
+    ) = _skeleton_table_context(
+        data,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    should_skeletonize = str(input_mode).strip().lower().startswith("skeletonize")
+    node_columns = _skeleton_graph_node_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+    )
+    edge_columns = _skeleton_graph_edge_empty_columns(
+        leading_axis_names,
+        spatial_axis_names,
+        units,
+    )
+    if units.physical_column:
+        node_columns["physical_unit"] = []
+
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = (
+            mask_for_analysis[block_index]
+            if leading_shape
+            else mask_for_analysis
+        )
+        skeleton = (
+            morphology.skeletonize(block).astype(bool)
+            if should_skeletonize
+            else block.astype(bool, copy=False)
+        )
+        block_nodes, block_edges = _skeleton_graph_tables_block(
+            skeleton,
+            units,
+            spatial_axis_names,
+        )
+        _extend_skeleton_block_columns(
+            node_columns,
+            block_nodes,
+            leading_axis_names,
+            block_index,
+        )
+        _extend_skeleton_block_columns(
+            edge_columns,
+            block_edges,
+            leading_axis_names,
+            block_index,
+        )
+        if units.physical_column:
+            node_columns["physical_unit"].extend(
+                [units.unit_label] * len(block_nodes["component_id"])
+            )
+            edge_columns["physical_unit"].extend(
+                [units.unit_label] * len(block_edges["component_id"])
+            )
+
+    return (
+        table_from_columns(
+            node_columns,
+            name="Skeleton graph nodes",
+            table_kind="Skeleton graph nodes",
+            source_name=source_name,
+            column_units=_skeleton_graph_node_column_units(units),
+        ),
+        table_from_columns(
+            edge_columns,
+            name="Skeleton graph edges",
+            table_kind="Skeleton graph edges",
+            source_name=source_name,
+            column_units=_skeleton_graph_edge_column_units(units),
+        ),
+    )
+
+
+def measure_overall_skeleton_network(
+    data,
+    spatial_mode: str = "Auto from axes",
+    input_mode: str = "Already skeletonized",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure whole-skeleton network topology per spatial block."""
+    (
+        mask_for_analysis,
+        _spatial_ndim,
+        leading_axis_names,
+        _spatial_axis_names,
+        leading_shape,
+        units,
+    ) = _skeleton_table_context(
+        data,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    should_skeletonize = str(input_mode).strip().lower().startswith("skeletonize")
+    columns = _overall_skeleton_network_empty_columns(leading_axis_names, units)
+
+    for leading_index in np.ndindex(leading_shape or (1,)):
+        block_index = () if not leading_shape else leading_index
+        block = (
+            mask_for_analysis[block_index]
+            if leading_shape
+            else mask_for_analysis
+        )
+        skeleton = (
+            morphology.skeletonize(block).astype(bool)
+            if should_skeletonize
+            else block.astype(bool, copy=False)
+        )
+        block_columns = _measure_overall_skeleton_network_block(skeleton, units)
+        _extend_skeleton_block_columns(
+            columns,
+            block_columns,
+            leading_axis_names,
+            block_index,
+        )
+        if units.physical_column:
+            columns["physical_unit"].extend([units.unit_label])
+
+    return table_from_columns(
+        columns,
+        name="Overall skeleton network measurements",
+        table_kind="Overall skeleton network",
+        source_name=source_name,
+        column_units=_overall_skeleton_network_column_units(units),
     )
 
 
@@ -3905,13 +4073,17 @@ def _prune_skeleton_branches_block(
     min_branch_length: float,
     iterations: int,
     remove_isolated: bool,
+    length_units: str = "Pixels/voxels",
+    scales: tuple[float, ...] = (),
 ) -> np.ndarray:
     skeleton = np.asarray(block, dtype=bool).copy()
     minimum = max(float(min_branch_length), 0.0)
     iterations = max(int(iterations), 1)
+    use_physical = str(length_units).strip().lower().startswith("physical")
+    scales = _normalized_spatial_scales(skeleton.ndim, scales)
     for _iteration in range(iterations):
         coords, adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
-            _skeleton_adjacency(skeleton)
+            _skeleton_adjacency(skeleton, scales)
         )
         if coords.shape[0] == 0:
             break
@@ -3927,7 +4099,17 @@ def _prune_skeleton_branches_block(
             )
             if int(degrees[terminal_node]) < 3:
                 continue
-            if float(edge_count) >= minimum:
+            trace = _skeleton_branch_trace_from_path(
+                0,
+                "",
+                path,
+                coords,
+                scales,
+            )
+            branch_length = (
+                trace.physical_length if use_physical else trace.pixel_length
+            )
+            if float(branch_length) >= minimum:
                 continue
             for node in path:
                 if int(degrees[node]) < 3:
@@ -3939,6 +4121,88 @@ def _prune_skeleton_branches_block(
             coord = tuple(int(value) for value in coords[int(node)])
             skeleton[coord] = False
     return skeleton
+
+
+def _skeleton_table_context(
+    data,
+    *,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+    axis_names: tuple[str, ...] | None,
+    axis_types: tuple[str, ...] | None,
+    axis_scales: tuple[float, ...] | None,
+    axis_units: tuple[str | None, ...] | None,
+) -> tuple[
+    np.ndarray,
+    int,
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[int, ...],
+    _SkeletonUnits,
+]:
+    mask = _to_bool_mask(data)
+    spatial_ndim = _resolved_spatial_ndim(
+        mask,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    has_axis_names = axis_names is not None and len(axis_names) == mask.ndim
+    axis_names = _measurement_axis_names(mask.ndim, axis_names)
+    axis_types = _measurement_axis_types(mask.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
+    mask_for_analysis = np.moveaxis(
+        mask,
+        spatial_axes,
+        tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
+    )
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(mask.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
+    moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[: mask.ndim - spatial_ndim],
+        fallback=tuple(f"axis_{index}" for index in range(mask.ndim - spatial_ndim)),
+    )
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:]
+        if has_axis_names
+        else tuple("" for _axis in range(spatial_ndim)),
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_shape = mask_for_analysis.shape[: mask.ndim - spatial_ndim]
+    units = _skeleton_units(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+        moved_axis_units[-spatial_ndim:],
+    )
+    return (
+        mask_for_analysis,
+        spatial_ndim,
+        leading_axis_names,
+        spatial_axis_names,
+        leading_shape,
+        units,
+    )
+
+
+def _extend_skeleton_block_columns(
+    columns: dict[str, list[object]],
+    block_columns: dict[str, list[object]],
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+) -> None:
+    row_count = len(next(iter(block_columns.values()), []))
+    for axis_position, axis_name in enumerate(leading_axis_names):
+        columns[f"{axis_name}_index"].extend(
+            [int(block_index[axis_position])] * row_count
+        )
+    for name, values in block_columns.items():
+        columns[name].extend(values)
 
 
 def _skeleton_empty_columns(
@@ -4090,6 +4354,355 @@ def _measure_skeleton_branches_block(
                 columns[f"end_{axis_name}"].append(end_coord[axis_index])
             global_branch_id += 1
     return columns
+
+
+def _skeleton_graph_node_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    spatial_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["component_id"] = []
+    columns["node_id"] = []
+    columns["node_type"] = []
+    columns["node_degree"] = []
+    columns["skeleton_voxel_index"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"{axis_name}_coord"] = []
+    return columns
+
+
+def _skeleton_graph_edge_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    spatial_axis_names: tuple[str, ...],
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["component_id"] = []
+    columns["edge_id"] = []
+    columns["start_node_id"] = []
+    columns["end_node_id"] = []
+    columns["branch_type"] = []
+    columns["branch_voxel_count"] = []
+    columns["branch_edge_count"] = []
+    columns[_branch_length_column(units)] = []
+    columns[_branch_euclidean_column(units)] = []
+    columns["branch_tortuosity"] = []
+    if units.physical_column:
+        columns["branch_length_physical"] = []
+        columns["branch_euclidean_distance_physical"] = []
+        columns["physical_unit"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"start_{axis_name}"] = []
+    for axis_name in spatial_axis_names:
+        columns[f"end_{axis_name}"] = []
+    return columns
+
+
+def _skeleton_graph_tables_block(
+    skeleton: np.ndarray,
+    units: _SkeletonUnits,
+    spatial_axis_names: tuple[str, ...],
+) -> tuple[dict[str, list[object]], dict[str, list[object]]]:
+    skeleton = np.asarray(skeleton, dtype=bool)
+    ndim = skeleton.ndim
+    structure = ndi.generate_binary_structure(ndim, ndim)
+    component_labels, component_count = ndi.label(skeleton, structure=structure)
+    node_columns = _skeleton_graph_node_empty_columns((), spatial_axis_names)
+    edge_columns = _skeleton_graph_edge_empty_columns((), spatial_axis_names, units)
+
+    global_node_id = 1
+    global_edge_id = 1
+    for component_id in range(1, component_count + 1):
+        component = component_labels == component_id
+        coords, adjacency, degrees, _edge_count, _pixel_length, _physical_length = (
+            _skeleton_adjacency(component, units.scales)
+        )
+        graph_node_by_voxel_index: dict[int, int] = {}
+        for voxel_index, degree in enumerate(degrees):
+            degree = int(degree)
+            if degree == 2:
+                continue
+            graph_node_by_voxel_index[int(voxel_index)] = global_node_id
+            coord = _trace_coord(coords, int(voxel_index))
+            node_columns["component_id"].append(int(component_id))
+            node_columns["node_id"].append(int(global_node_id))
+            node_columns["node_type"].append(_skeleton_node_type(degree))
+            node_columns["node_degree"].append(degree)
+            node_columns["skeleton_voxel_index"].append(int(voxel_index))
+            for axis_index, axis_name in enumerate(spatial_axis_names):
+                node_columns[f"{axis_name}_coord"].append(coord[axis_index])
+            global_node_id += 1
+
+        _coords, traces = _skeleton_branch_traces(component, units.scales)
+        for trace in traces:
+            if trace.edge_count <= 0:
+                continue
+            start_node_id = (
+                graph_node_by_voxel_index.get(int(trace.start_node), 0)
+                if trace.start_node is not None
+                else 0
+            )
+            end_node_id = (
+                graph_node_by_voxel_index.get(int(trace.end_node), 0)
+                if trace.end_node is not None
+                else 0
+            )
+            edge_columns["component_id"].append(int(component_id))
+            edge_columns["edge_id"].append(int(global_edge_id))
+            edge_columns["start_node_id"].append(int(start_node_id))
+            edge_columns["end_node_id"].append(int(end_node_id))
+            edge_columns["branch_type"].append(trace.branch_type)
+            edge_columns["branch_voxel_count"].append(len(trace.path))
+            edge_columns["branch_edge_count"].append(trace.edge_count)
+            edge_columns[_branch_length_column(units)].append(trace.pixel_length)
+            edge_columns[_branch_euclidean_column(units)].append(
+                trace.euclidean_pixel_distance
+            )
+            denominator = trace.euclidean_pixel_distance
+            edge_columns["branch_tortuosity"].append(
+                float(trace.pixel_length / denominator)
+                if denominator > 0
+                else 0.0
+            )
+            if units.physical_column:
+                edge_columns["branch_length_physical"].append(trace.physical_length)
+                edge_columns["branch_euclidean_distance_physical"].append(
+                    trace.euclidean_physical_distance
+                )
+            start_coord = _trace_coord(coords, trace.start_node)
+            end_coord = _trace_coord(coords, trace.end_node)
+            for axis_index, axis_name in enumerate(spatial_axis_names):
+                edge_columns[f"start_{axis_name}"].append(start_coord[axis_index])
+            for axis_index, axis_name in enumerate(spatial_axis_names):
+                edge_columns[f"end_{axis_name}"].append(end_coord[axis_index])
+            global_edge_id += 1
+
+    return node_columns, edge_columns
+
+
+def _skeleton_graph_node_column_units(units: _SkeletonUnits) -> dict[str, str]:
+    column_units = {
+        "component_id": "id",
+        "node_id": "id",
+        "node_degree": "count",
+        "skeleton_voxel_index": "index",
+    }
+    if units.physical_column:
+        column_units["physical_unit"] = "text"
+    return column_units
+
+
+def _skeleton_graph_edge_column_units(units: _SkeletonUnits) -> dict[str, str]:
+    column_units = {
+        "component_id": "id",
+        "edge_id": "id",
+        "start_node_id": "id",
+        "end_node_id": "id",
+        "branch_voxel_count": "voxels",
+        "branch_edge_count": "count",
+        _branch_length_column(units): (
+            "voxels" if units.length_column.endswith("voxels") else "pixels"
+        ),
+        _branch_euclidean_column(units): (
+            "voxels" if units.length_column.endswith("voxels") else "pixels"
+        ),
+        "branch_tortuosity": "ratio",
+    }
+    if units.physical_column:
+        column_units["branch_length_physical"] = units.unit_label
+        column_units["branch_euclidean_distance_physical"] = units.unit_label
+        column_units["physical_unit"] = "text"
+    return column_units
+
+
+def _overall_skeleton_network_empty_columns(
+    leading_axis_names: tuple[str, ...],
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    columns: dict[str, list[object]] = {}
+    for axis_name in leading_axis_names:
+        columns[f"{axis_name}_index"] = []
+    columns["component_count"] = []
+    columns["skeleton_voxel_count"] = []
+    columns["largest_component_voxel_count"] = []
+    columns["largest_component_voxel_fraction"] = []
+    columns["isolated_component_count"] = []
+    columns["endpoint_voxel_count"] = []
+    columns["junction_voxel_count"] = []
+    columns["isolated_node_count"] = []
+    columns["branch_count"] = []
+    columns["graph_node_count"] = []
+    columns["graph_edge_count"] = []
+    columns["voxel_graph_edge_count"] = []
+    columns["cycle_count"] = []
+    columns[units.length_column] = []
+    columns[f"mean_branch_{units.length_column.removeprefix('skeleton_')}"] = []
+    columns[f"median_branch_{units.length_column.removeprefix('skeleton_')}"] = []
+    columns[f"max_branch_{units.length_column.removeprefix('skeleton_')}"] = []
+    columns["mean_branch_tortuosity"] = []
+    columns["network_connectedness_fraction"] = []
+    columns["fragmentation_index"] = []
+    if units.physical_column:
+        columns[units.physical_column] = []
+        columns["mean_branch_length_physical"] = []
+        columns["median_branch_length_physical"] = []
+        columns["max_branch_length_physical"] = []
+        columns["physical_unit"] = []
+    return columns
+
+
+def _measure_overall_skeleton_network_block(
+    skeleton: np.ndarray,
+    units: _SkeletonUnits,
+) -> dict[str, list[object]]:
+    skeleton = np.asarray(skeleton, dtype=bool)
+    ndim = skeleton.ndim
+    structure = ndi.generate_binary_structure(ndim, ndim)
+    component_labels, component_count = ndi.label(skeleton, structure=structure)
+    total_voxel_count = int(np.count_nonzero(skeleton))
+    columns = _overall_skeleton_network_empty_columns((), units)
+    component_voxel_counts: list[int] = []
+    branch_lengths: list[float] = []
+    branch_physical_lengths: list[float] = []
+    branch_tortuosities: list[float] = []
+    totals = {
+        "endpoint_voxel_count": 0,
+        "junction_voxel_count": 0,
+        "isolated_node_count": 0,
+        "branch_count": 0,
+        "graph_node_count": 0,
+        "graph_edge_count": 0,
+        "voxel_graph_edge_count": 0,
+        "cycle_count": 0,
+        units.length_column: 0.0,
+    }
+    if units.physical_column:
+        totals[units.physical_column] = 0.0
+
+    isolated_component_count = 0
+    for component_id in range(1, component_count + 1):
+        component = component_labels == component_id
+        graph = _skeleton_component_graph(component, units.scales)
+        component_voxel_counts.append(graph.voxel_count)
+        isolated_component_count += int(
+            graph.voxel_count == 1 and graph.isolated_node_count == 1
+        )
+        totals["endpoint_voxel_count"] += graph.endpoint_count
+        totals["junction_voxel_count"] += graph.junction_count
+        totals["isolated_node_count"] += graph.isolated_node_count
+        totals["branch_count"] += graph.branch_count
+        totals["graph_node_count"] += graph.graph_node_count
+        totals["graph_edge_count"] += graph.graph_edge_count
+        totals["voxel_graph_edge_count"] += graph.voxel_graph_edge_count
+        totals["cycle_count"] += graph.cycle_count
+        totals[units.length_column] += graph.pixel_length
+        if units.physical_column:
+            totals[units.physical_column] += graph.physical_length
+
+        _coords, traces = _skeleton_branch_traces(component, units.scales)
+        for trace in traces:
+            if trace.edge_count <= 0:
+                continue
+            branch_lengths.append(float(trace.pixel_length))
+            branch_physical_lengths.append(float(trace.physical_length))
+            if trace.euclidean_pixel_distance > 0:
+                branch_tortuosities.append(
+                    float(trace.pixel_length / trace.euclidean_pixel_distance)
+                )
+
+    largest_component_voxel_count = max(component_voxel_counts, default=0)
+    largest_fraction = (
+        float(largest_component_voxel_count / total_voxel_count)
+        if total_voxel_count
+        else 0.0
+    )
+    fragmentation_index = (
+        float(component_count / total_voxel_count) if total_voxel_count else 0.0
+    )
+    length_suffix = units.length_column.removeprefix("skeleton_")
+    columns["component_count"].append(int(component_count))
+    columns["skeleton_voxel_count"].append(total_voxel_count)
+    columns["largest_component_voxel_count"].append(largest_component_voxel_count)
+    columns["largest_component_voxel_fraction"].append(largest_fraction)
+    columns["isolated_component_count"].append(int(isolated_component_count))
+    for name in (
+        "endpoint_voxel_count",
+        "junction_voxel_count",
+        "isolated_node_count",
+        "branch_count",
+        "graph_node_count",
+        "graph_edge_count",
+        "voxel_graph_edge_count",
+        "cycle_count",
+        units.length_column,
+    ):
+        columns[name].append(totals[name])
+    columns[f"mean_branch_{length_suffix}"].append(_safe_mean(branch_lengths))
+    columns[f"median_branch_{length_suffix}"].append(_safe_median(branch_lengths))
+    columns[f"max_branch_{length_suffix}"].append(_safe_max(branch_lengths))
+    columns["mean_branch_tortuosity"].append(_safe_mean(branch_tortuosities))
+    columns["network_connectedness_fraction"].append(largest_fraction)
+    columns["fragmentation_index"].append(fragmentation_index)
+    if units.physical_column:
+        columns[units.physical_column].append(totals[units.physical_column])
+        columns["mean_branch_length_physical"].append(
+            _safe_mean(branch_physical_lengths)
+        )
+        columns["median_branch_length_physical"].append(
+            _safe_median(branch_physical_lengths)
+        )
+        columns["max_branch_length_physical"].append(_safe_max(branch_physical_lengths))
+    return columns
+
+
+def _overall_skeleton_network_column_units(units: _SkeletonUnits) -> dict[str, str]:
+    distance_unit = "voxels" if units.length_column.endswith("voxels") else "pixels"
+    length_suffix = units.length_column.removeprefix("skeleton_")
+    column_units = {
+        "component_count": "count",
+        "skeleton_voxel_count": "voxels",
+        "largest_component_voxel_count": "voxels",
+        "largest_component_voxel_fraction": "fraction",
+        "isolated_component_count": "count",
+        "endpoint_voxel_count": "voxels",
+        "junction_voxel_count": "voxels",
+        "isolated_node_count": "count",
+        "branch_count": "count",
+        "graph_node_count": "count",
+        "graph_edge_count": "count",
+        "voxel_graph_edge_count": "count",
+        "cycle_count": "count",
+        units.length_column: distance_unit,
+        f"mean_branch_{length_suffix}": distance_unit,
+        f"median_branch_{length_suffix}": distance_unit,
+        f"max_branch_{length_suffix}": distance_unit,
+        "mean_branch_tortuosity": "ratio",
+        "network_connectedness_fraction": "fraction",
+        "fragmentation_index": "components/voxel",
+    }
+    if units.physical_column:
+        column_units[units.physical_column] = units.unit_label
+        column_units["mean_branch_length_physical"] = units.unit_label
+        column_units["median_branch_length_physical"] = units.unit_label
+        column_units["max_branch_length_physical"] = units.unit_label
+        column_units["physical_unit"] = "text"
+    return column_units
+
+
+def _safe_mean(values: Sequence[float]) -> float:
+    return float(np.mean(values)) if values else 0.0
+
+
+def _safe_median(values: Sequence[float]) -> float:
+    return float(np.median(values)) if values else 0.0
+
+
+def _safe_max(values: Sequence[float]) -> float:
+    return float(np.max(values)) if values else 0.0
 
 
 def _trace_coord(coords: np.ndarray, node: int | None) -> tuple[int, ...]:

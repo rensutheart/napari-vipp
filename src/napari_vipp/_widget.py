@@ -2660,6 +2660,10 @@ class VippWidget(QWidget):
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
         )
         self.refresh_button = QPushButton("Refresh")
+        self.calculate_all_button = QPushButton("Calculate all")
+        self.calculate_all_button.setToolTip(
+            "Calculate every manual node that is not current."
+        )
         self.undo_action = QAction(
             _toolbar_icon("undo"),
             "Undo",
@@ -3074,6 +3078,7 @@ class VippWidget(QWidget):
         action_separator = _toolbar_separator()
         input_row.addWidget(action_separator)
         input_row.addWidget(self.refresh_button)
+        input_row.addWidget(self.calculate_all_button)
         input_row.addWidget(self.auto_structure_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
@@ -3387,6 +3392,7 @@ class VippWidget(QWidget):
         self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
+        self.calculate_all_button.clicked.connect(self._calculate_all_nodes)
         self.undo_action.triggered.connect(self.undo)
         self.redo_action.triggered.connect(self.redo)
         self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
@@ -5070,6 +5076,32 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_messages[node_id] = ""
         self._sync_execution_ui()
         self.run_pipeline(manual_node_ids={node_id})
+
+    def _calculate_all_nodes(self) -> None:
+        node_ids = self._manual_node_ids_needing_calculation()
+        if not node_ids:
+            self.status_label.setText("No manual nodes need calculation.")
+            return
+        for node_id in node_ids:
+            self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
+            self.pipeline.node_execution_messages[node_id] = ""
+        self._sync_execution_ui()
+        self.status_label.setText(
+            f"Calculating {len(node_ids)} manual node"
+            f"{'' if len(node_ids) == 1 else 's'}..."
+        )
+        self.run_pipeline(manual_node_ids=node_ids)
+
+    def _manual_node_ids_needing_calculation(self) -> set[str]:
+        return {
+            node_id
+            for node_id in self.pipeline.manual_node_ids()
+            if self.pipeline.node_execution_states.get(
+                node_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+            not in {EXECUTION_READY, EXECUTION_RUNNING}
+        }
 
     def _on_auto_recalculate_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id

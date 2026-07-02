@@ -241,8 +241,9 @@ or slice axis is intended.
   Filter Labels By Property, Clear Border Objects, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches
 - `Measurements`: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Measure Skeleton Branches, Merge Tables, Select Table Columns, Add
-  Metadata Columns, Summarize Measurements
+  Skeleton, Measure Skeleton Branches, Skeleton Graph Tables, Summarize
+  Skeleton Network, Merge Tables, Select Table Columns, Add Metadata Columns,
+  Summarize Measurements
 
 `labels` is a first-class graph type for non-negative integer object IDs with
 zero as background. It is distinct from a boolean `mask` and an integer
@@ -339,13 +340,16 @@ connected-component context, and skeleton length in pixels/voxels plus
 calibrated physical units when spatial scale metadata is available. `Measure
 Skeleton Branches` emits one table row per traced branch with branch type,
 length, endpoint-to-endpoint distance, tortuosity, start/end coordinates, and
-calibrated physical length when possible. `Skeleton Keypoints`, `Skeleton Graph
-Overlay`, `Label Skeleton Components`, `Label Skeleton Branches`, and `Prune
-Skeleton Branches` provide visual QC masks/RGB overlays/labels and simple
-terminal-spur cleanup using the same skeleton graph rules. The first graph
-analyzers deliberately stay generic; mitochondrial-specific fragmentation,
-mesh/surface, domain-normalized connectivity measurements, graph export, and
-summary branch distributions should be separate specialist nodes.
+calibrated physical length when possible. `Skeleton Graph Tables` exports
+explicit graph-node and graph-edge tables. `Measure Overall Skeleton Network`
+emits per-block connectedness, fragmentation, branch-count, and branch-length
+whole-network metrics. `Skeleton Keypoints`, `Skeleton Graph Overlay`, `Label
+Skeleton Components`, `Label Skeleton Branches`, and `Prune Skeleton Branches`
+provide visual QC masks/RGB overlays/labels and terminal-spur cleanup using the
+same skeleton graph rules. The first graph analyzers deliberately stay generic;
+mitochondrial-specific mesh/surface, domain-normalized connectivity
+measurements, and richer branch-summary distributions should be separate
+specialist nodes.
 
 The longer-term measurement architecture must support selectable measurement
 families and merged per-object result tables for exploratory statistics such as
@@ -704,7 +708,10 @@ Python export:
   counts and areas;
 - `VIPP synthetic skeleton network`: sparse `ZYX` network with known endpoints,
   branches, a junction, a short spur, a separate component, and an isolated
-  voxel.
+  voxel;
+- `VIPP synthetic advanced skeleton network`: two-timepoint `TZYX` sparse
+  skeleton network with looped components, many junctions, separate fragments,
+  terminal spurs, isolated voxels, and anisotropic spatial calibration.
 
 The samples include OME-NGFF-like `multiscales` metadata and VIPP hint keys.
 The time-lapse multichannel sample is preferred as the default when present.
@@ -790,8 +797,8 @@ Implemented now:
 Still incomplete or deliberately future-facing:
 
 - calibrated extended-length variants and mesh morphology;
-- skeleton graph export, branch-summary distributions, physical-length pruning
-  units, and cancellation/percentage progress for long manual calculations;
+- branch-summary distributions, domain-specific network metrics, and
+  cancellation/percentage progress for long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
   execution;

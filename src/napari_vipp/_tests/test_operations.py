@@ -57,6 +57,7 @@ from napari_vipp.core.operations import (
     mask_image,
     measure_objects,
     measure_objects_with_intensity,
+    measure_overall_skeleton_network,
     measure_skeleton_branches,
     median_filter,
     merge_tables,
@@ -84,6 +85,7 @@ from napari_vipp.core.operations import (
     select_table_columns,
     set_pixel_size,
     skeleton_graph_overlay,
+    skeleton_graph_tables,
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
@@ -169,6 +171,8 @@ def test_vipp_operation_nodes_are_registered():
         "skeletonize",
         "analyze_skeleton",
         "measure_skeleton_branches",
+        "skeleton_graph_tables",
+        "measure_overall_skeleton_network",
         "skeleton_keypoints",
         "skeleton_graph_overlay",
         "label_skeleton_components",
@@ -1127,6 +1131,60 @@ def test_measure_skeleton_branches_reports_branch_lengths_and_tortuosity():
     assert {"start_y", "start_x", "end_y", "end_x"} <= set(table.columns)
 
 
+def test_skeleton_graph_tables_export_nodes_and_edges():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    node_table, edge_table = skeleton_graph_tables(
+        skeleton,
+        resolved_spatial_ndim=2,
+    )
+    node_records = node_table.records()
+    edge_records = edge_table.records()
+
+    assert node_table.table_kind == "Skeleton graph nodes"
+    assert edge_table.table_kind == "Skeleton graph edges"
+    assert node_table.row_count == 5
+    assert edge_table.row_count == 4
+    assert {record["node_type"] for record in node_records} == {
+        "endpoint",
+        "junction",
+    }
+    assert sum(record["node_type"] == "junction" for record in node_records) == 1
+    assert {record["branch_type"] for record in edge_records} == {
+        "endpoint_to_junction"
+    }
+    assert all(record["start_node_id"] > 0 for record in edge_records)
+    assert all(record["end_node_id"] > 0 for record in edge_records)
+    assert all(record["branch_length_pixels"] == 2.0 for record in edge_records)
+    assert {"y_coord", "x_coord"} <= set(node_table.columns)
+
+
+def test_measure_overall_skeleton_network_reports_block_metrics():
+    skeleton = np.zeros((7, 7), dtype=bool)
+    skeleton[1:6, 3] = True
+    skeleton[3, 1:6] = True
+
+    table = measure_overall_skeleton_network(skeleton, resolved_spatial_ndim=2)
+    record = table.records()[0]
+
+    assert table.row_count == 1
+    assert table.table_kind == "Overall skeleton network"
+    assert record["component_count"] == 1
+    assert record["skeleton_voxel_count"] == 9
+    assert record["largest_component_voxel_fraction"] == 1.0
+    assert record["endpoint_voxel_count"] == 4
+    assert record["junction_voxel_count"] == 1
+    assert record["branch_count"] == 4
+    assert record["graph_edge_count"] == 4
+    assert record["skeleton_length_pixels"] == 8.0
+    assert record["mean_branch_length_pixels"] == 2.0
+    assert record["median_branch_length_pixels"] == 2.0
+    assert record["max_branch_length_pixels"] == 2.0
+    assert record["network_connectedness_fraction"] == 1.0
+
+
 def test_prune_skeleton_branches_removes_short_terminal_spurs():
     skeleton = np.zeros((7, 9), dtype=bool)
     skeleton[3, 1:8] = True
@@ -1144,6 +1202,32 @@ def test_prune_skeleton_branches_removes_short_terminal_spurs():
     assert pruned[3, 1]
     assert pruned[3, 7]
     assert pruned.sum() == skeleton.sum() - 1
+
+
+def test_prune_skeleton_branches_can_threshold_in_physical_units():
+    skeleton = np.zeros((7, 9), dtype=bool)
+    skeleton[3, 1:8] = True
+    skeleton[1:4, 4] = True
+    skeleton[4, 4] = True
+
+    pixel_pruned = prune_skeleton_branches(
+        skeleton,
+        min_branch_length=0.75,
+        length_units="Pixels/voxels",
+        resolved_spatial_ndim=2,
+        axis_scales=(0.5, 0.5),
+    )
+    physical_pruned = prune_skeleton_branches(
+        skeleton,
+        min_branch_length=0.75,
+        length_units="Physical units",
+        resolved_spatial_ndim=2,
+        axis_scales=(0.5, 0.5),
+    )
+
+    assert pixel_pruned[4, 4]
+    assert not physical_pruned[4, 4]
+    assert physical_pruned.sum() == skeleton.sum() - 1
 
 
 def test_analyze_skeleton_reports_plus_shape_topology():
@@ -1269,6 +1353,55 @@ def test_pipeline_skeleton_branch_measurement_creates_table_state():
     assert state.table_kind == "Skeleton branches"
     assert "branch_length_pixels" in state.columns
     assert state.history[-1] == "Measure Skeleton Branches: measured 4 branches"
+
+
+def test_pipeline_skeleton_graph_tables_create_two_table_states():
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    graph_tables = pipeline.add_node("skeleton_graph_tables")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, graph_tables.id)
+
+    pipeline.run(image, input_metadata={"axes": "YX"})
+    outputs = pipeline.node_outputs[graph_tables.id]
+    states = pipeline.node_output_states[graph_tables.id]
+
+    assert [table.row_count for table in outputs] == [5, 4]
+    assert [state.table_kind for state in states] == [
+        "Skeleton graph nodes",
+        "Skeleton graph edges",
+    ]
+    assert states[0].history[-1] == (
+        "Skeleton Graph Tables (Graph nodes): exported 5 nodes"
+    )
+    assert states[1].history[-1] == (
+        "Skeleton Graph Tables (Graph edges): exported 4 edges"
+    )
+
+
+def test_pipeline_measure_overall_skeleton_network_creates_table_state():
+    image = np.zeros((7, 7), dtype=np.float32)
+    image[1:6, 3] = 1
+    image[3, 1:6] = 1
+    pipeline = PrototypePipeline()
+    threshold = pipeline.add_node("binary_threshold")
+    summary = pipeline.add_node("measure_overall_skeleton_network")
+    pipeline.set_param(threshold.id, "threshold", 0.5)
+    pipeline.connect("input", threshold.id)
+    pipeline.connect(threshold.id, summary.id)
+
+    outputs = pipeline.run(image, input_metadata={"axes": "YX"})
+    table = outputs[summary.id]
+    state = pipeline.output_states[summary.id]
+
+    assert table.row_count == 1
+    assert state.table_kind == "Overall skeleton network"
+    assert "network_connectedness_fraction" in state.columns
+    assert state.history[-1] == "Measure Overall Skeleton Network: measured 1 block"
 
 
 def test_pipeline_skeleton_keypoints_creates_three_mask_outputs():

@@ -33,6 +33,11 @@ SKELETON_QC_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-skeleton-qc.json"
 )
+ADVANCED_SKELETON_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-advanced-skeleton-network.json"
+)
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():
@@ -194,6 +199,11 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
         "Junctions",
         "Isolated nodes",
     ]
+    graph_table_ports = pipeline.output_ports("skeleton_graph_tables_1")
+    assert [port.label for port in graph_table_ports] == [
+        "Graph nodes",
+        "Graph edges",
+    ]
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -211,6 +221,8 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     ]
     before = outputs["analyze_skeleton_1"]
     after = outputs["analyze_skeleton_2"]
+    graph_nodes, graph_edges = pipeline.node_outputs["skeleton_graph_tables_1"]
+    summary = outputs["measure_overall_skeleton_network_1"]
 
     assert keypoint_counts == [8, 1, 1]
     assert outputs["label_skeleton_components_1"].max() == 3
@@ -218,5 +230,66 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     assert outputs["prune_skeleton_branches_1"].sum() == np.count_nonzero(data) - 2
     assert before.row_count == 3
     assert after.row_count == 2
+    assert graph_nodes.row_count == 10
+    assert graph_edges.row_count == 7
+    assert summary.row_count == 1
+    assert summary.records()[0]["component_count"] == 3
+    assert summary.records()[0]["branch_count"] == 7
     assert sum(record["branch_count"] for record in before.records()) == 7
     assert sum(record["branch_count"] for record in after.records()) == 6
+
+
+def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
+    workflow = load_workflow(ADVANCED_SKELETON_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    graph_table_ports = pipeline.output_ports("skeleton_graph_tables_1")
+    assert [port.label for port in graph_table_ports] == [
+        "Graph nodes",
+        "Graph edges",
+    ]
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic advanced skeleton network"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    binary = outputs["binary_threshold_1"]
+    keypoint_counts = [
+        int(output.sum()) for output in pipeline.node_outputs["skeleton_keypoints_1"]
+    ]
+    graph_nodes, graph_edges = pipeline.node_outputs["skeleton_graph_tables_1"]
+    branch_table = outputs["measure_skeleton_branches_1"]
+    pruned_branch_table = outputs["measure_skeleton_branches_2"]
+    summary = outputs["measure_overall_skeleton_network_1"]
+    pruned_summary = outputs["measure_overall_skeleton_network_2"]
+    summary_records = summary.records()
+    pruned_records = pruned_summary.records()
+
+    assert binary.shape == data.shape
+    assert outputs["skeleton_graph_overlay_1"].shape == data.shape + (3,)
+    assert outputs["skeleton_graph_overlay_2"].shape == data.shape + (3,)
+    assert outputs["label_skeleton_components_1"].max() >= 6
+    assert outputs["label_skeleton_branches_1"].max() >= 20
+    assert all(count > 0 for count in keypoint_counts)
+    assert summary.row_count == 2
+    assert pruned_summary.row_count == 2
+    assert "t_index" in summary.columns
+    assert "skeleton_length_physical" in summary.columns
+    assert graph_nodes.row_count > 30
+    assert graph_edges.row_count > 20
+    assert branch_table.row_count >= graph_edges.row_count
+    assert pruned_branch_table.row_count <= branch_table.row_count
+    assert sum(record["cycle_count"] for record in summary_records) >= 3
+    assert sum(record["isolated_component_count"] for record in summary_records) >= 3
+    assert sum(record["skeleton_voxel_count"] for record in pruned_records) < int(
+        np.count_nonzero(binary)
+    )
+    assert all(record["physical_unit"] == "micrometer" for record in summary_records)

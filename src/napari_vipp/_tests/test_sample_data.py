@@ -23,13 +23,21 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic time-lapse multichannel",
         "VIPP synthetic measurement summary",
         "VIPP synthetic skeleton network",
+        "VIPP synthetic advanced skeleton network",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
     assert shapes[2] == (5, 3, 12, 96, 128)
     assert shapes[3] == (3, 64, 64)
     assert shapes[4] == (11, 64, 64)
-    assert axis_orders == ["ZYX", "CZYX", "TCZYX", "TYX", "ZYX"]
-    assert preferred_flags == [False, False, True, False, False]
+    assert shapes[5] == (2, 17, 96, 96)
+    assert axis_orders == ["ZYX", "CZYX", "TCZYX", "TYX", "ZYX", "TZYX"]
+    assert preferred_flags == [False, False, True, False, False, False]
     assert samples[0][1]["visible"] is False
     assert samples[1][1]["visible"] is False
+
+    advanced_metadata = samples[5][1]["metadata"]
+    advanced_scale = advanced_metadata["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"]
+    assert advanced_scale == [1.0, 1.2, 0.25, 0.25]

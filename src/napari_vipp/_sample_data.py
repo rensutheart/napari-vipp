@@ -31,6 +31,7 @@ def make_sample_data():
         _time_lapse_sample(z, y, x, rng),
         _measurement_summary_sample(),
         _skeleton_network_sample(),
+        _advanced_skeleton_network_sample(),
     ]
 
 
@@ -171,6 +172,101 @@ def _skeleton_network_sample():
         },
     }
     return data, metadata, "image"
+
+
+def _advanced_skeleton_network_sample():
+    """Return a multi-timepoint 3D skeleton with loops, branches, and fragments."""
+    data = np.zeros((2, 17, 96, 96), dtype=np.uint16)
+    signal = np.uint16(52_000)
+
+    # Frame 0: a connected loop/cross network with 3D branches, a separate
+    # Y-shaped fragment, a pure cycle, short spurs, and an isolated voxel.
+    _draw_rectangle_zyx(data[0], z=8, y0=22, y1=66, x0=22, x1=72, value=signal)
+    _draw_line_zyx(data[0], (8, 22, 47), (8, 66, 47), signal)
+    _draw_line_zyx(data[0], (8, 44, 22), (8, 44, 72), signal)
+    _draw_line_zyx(data[0], (3, 44, 47), (13, 44, 47), signal)
+    _draw_line_zyx(data[0], (8, 44, 47), (3, 33, 34), signal)
+    _draw_line_zyx(data[0], (8, 44, 47), (13, 58, 64), signal)
+    _draw_line_zyx(data[0], (8, 22, 47), (8, 14, 47), signal)
+    _draw_line_zyx(data[0], (8, 66, 72), (8, 70, 76), signal)
+
+    _draw_line_zyx(data[0], (5, 76, 12), (5, 76, 34), signal)
+    _draw_line_zyx(data[0], (5, 76, 23), (5, 66, 18), signal)
+    _draw_line_zyx(data[0], (5, 76, 23), (9, 83, 29), signal)
+    _draw_rectangle_zyx(data[0], z=13, y0=10, y1=22, x0=76, x1=88, value=signal)
+    _draw_line_zyx(data[0], (2, 88, 6), (2, 88, 15), signal)
+    _draw_line_zyx(data[0], (2, 88, 11), (4, 92, 11), signal)
+    _draw_line_zyx(data[0], (1, 5, 5), (1, 5, 13), signal)
+    _draw_line_zyx(data[0], (1, 5, 9), (1, 10, 9), signal)
+    data[0, 15, 88, 88] = signal
+
+    # Frame 1: a shifted, more fragmented version with two looped components,
+    # a long 3D trunk, several terminal branches, and isolated noise voxels.
+    _draw_rectangle_zyx(data[1], z=7, y0=18, y1=58, x0=18, x1=58, value=signal)
+    _draw_line_zyx(data[1], (7, 38, 18), (7, 38, 58), signal)
+    _draw_line_zyx(data[1], (2, 38, 38), (14, 38, 38), signal)
+    _draw_line_zyx(data[1], (7, 38, 38), (2, 24, 24), signal)
+    _draw_line_zyx(data[1], (7, 38, 38), (12, 52, 54), signal)
+    _draw_line_zyx(data[1], (7, 18, 38), (7, 10, 32), signal)
+    _draw_line_zyx(data[1], (7, 58, 58), (7, 64, 66), signal)
+
+    _draw_rectangle_zyx(data[1], z=11, y0=58, y1=78, x0=64, x1=84, value=signal)
+    _draw_line_zyx(data[1], (11, 68, 64), (11, 68, 84), signal)
+    _draw_line_zyx(data[1], (11, 68, 74), (15, 84, 74), signal)
+    _draw_line_zyx(data[1], (3, 78, 18), (3, 88, 18), signal)
+    data[1, 1, 88, 88] = signal
+    data[1, 15, 8, 86] = signal
+
+    metadata_block = _ome_image_metadata("TZYX", data.shape)
+    metadata_block["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [1.0, 1.2, 0.25, 0.25]
+    metadata = {
+        "name": "VIPP synthetic advanced skeleton network",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Two-timepoint sparse 3D skeleton-style network with loops, "
+                "junction-rich grid components, 3D terminal branches, separate "
+                "fragments, short spurs, isolated voxels, and anisotropic "
+                "spatial calibration for stress-testing skeleton graph outputs."
+            ),
+            **metadata_block,
+        },
+    }
+    return data, metadata, "image"
+
+
+def _draw_line_zyx(
+    target: np.ndarray,
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+    value: np.uint16,
+) -> None:
+    start_array = np.asarray(start, dtype=np.float32)
+    end_array = np.asarray(end, dtype=np.float32)
+    steps = int(np.max(np.abs(end_array - start_array))) + 1
+    for point in np.linspace(start_array, end_array, steps):
+        z_index, y_index, x_index = np.rint(point).astype(int)
+        target[z_index, y_index, x_index] = value
+
+
+def _draw_rectangle_zyx(
+    target: np.ndarray,
+    *,
+    z: int,
+    y0: int,
+    y1: int,
+    x0: int,
+    x1: int,
+    value: np.uint16,
+) -> None:
+    _draw_line_zyx(target, (z, y0, x0), (z, y0, x1), value)
+    _draw_line_zyx(target, (z, y1, x0), (z, y1, x1), value)
+    _draw_line_zyx(target, (z, y0, x0), (z, y1, x0), value)
+    _draw_line_zyx(target, (z, y0, x1), (z, y1, x1), value)
 
 
 def _ome_image_metadata(axis_order: str, shape: tuple[int, ...]) -> dict:

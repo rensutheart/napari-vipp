@@ -65,7 +65,8 @@ Recommended for fixed-reference comparisons while navigating dims:
 
 Some table-producing nodes are intentionally not recalculated on every
 parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
-+ Intensity`, `Analyze Skeleton`, and `Measure Skeleton Branches`.
++ Intensity`, `Analyze Skeleton`, `Measure Skeleton Branches`,
+`Skeleton Graph Tables`, and `Measure Overall Skeleton Network`.
 
 When selected, these nodes show an `Execution` panel with `Calculate` or
 `Recalculate`. The same action is available on the node card. If upstream data
@@ -74,6 +75,9 @@ available downstream but marks it as stale until recalculated. Workflow files do
 not store cached tables, so loading a workflow starts from the node settings and
 the table must be calculated again in the UI. Exported Python scripts calculate
 manual nodes normally during headless runs.
+
+The toolbar `Calculate all` button recalculates every manual node that is not
+current, including never-calculated, stale, or errored manual nodes.
 
 The `Execution` panel also has `Auto Recalculate`. This is off by default. When
 enabled for a manual node, VIPP recalculates that node automatically when
@@ -93,4 +97,10 @@ Manual node cards use status colours:
 The skeleton/network nodes are documented in
 [skeleton-nodes.md](skeleton-nodes.md). That guide explains which nodes expect
 binary masks, which expect already skeletonized masks, which nodes produce
-visual QC outputs, and which nodes produce measurement tables.
+visual QC outputs, and which nodes produce measurement tables. In brief,
+`Measure Skeleton Branches` produces detailed branch rows, while `Measure
+Overall Skeleton Network` measures whole-network graph metrics directly from a
+skeleton mask. Use
+`examples/synthetic-skeleton-qc.json` for a compact skeleton check and
+`examples/synthetic-advanced-skeleton-network.json` for a richer time-indexed
+3D skeleton graph/table stress test.

@@ -105,8 +105,9 @@ Implemented:
   results;
 - `Run all in BG` toggle to force graph updates onto the worker;
 - manual/cached execution for expensive table-producing nodes:
-  `Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`, and
-  `Measure Skeleton Branches`;
+  `Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`,
+  `Measure Skeleton Branches`, `Skeleton Graph Tables`, and
+  `Measure Overall Skeleton Network`;
 - graph-card and inspector `Calculate` / `Recalculate` controls;
 - inspector `Auto Recalculate`, off by default, for manual nodes;
 - explicit node execution states: not calculated, current, stale, running, and
@@ -195,7 +196,7 @@ Implemented:
 
 ### Implemented Node Catalogue
 
-The live registry currently contains 88 nodes.
+The live registry currently contains 90 nodes.
 
 - **Image Data**: Image Source, Crop Stack, Select Axis Slice, Reorder Axes,
   Set Pixel Size / Units, Rescale Axes, Extract Channel, Combine Channels,
@@ -221,8 +222,9 @@ The live registry currently contains 88 nodes.
   Labels By Volume, Filter Labels By Property, Relabel Sequential, Label
   Skeleton Components, Label Skeleton Branches.
 - **Measurements**: Measure Objects, Measure Objects + Intensity, Analyze
-  Skeleton, Measure Skeleton Branches, Merge Tables, Add Metadata Columns,
-  Select Table Columns, Summarize Measurements.
+  Skeleton, Measure Skeleton Branches, Skeleton Graph Tables, Summarize
+  Skeleton Network, Merge Tables, Add Metadata Columns, Select Table Columns,
+  Summarize Measurements.
 
 ## Validated Reference Workflows
 
@@ -246,14 +248,23 @@ Implemented reference measurement-summary workflow:
 - deterministic time-series sample;
 - grouped object counts and area summaries.
 
+Implemented reference skeleton/network workflows:
+
+- `examples/synthetic-skeleton-qc.json`;
+- `examples/synthetic-advanced-skeleton-network.json`;
+- deterministic sparse 3D skeleton samples covering keypoints, components,
+  branch labels, graph overlays, branch tables, graph node/edge tables,
+  summary tables, pruning, disconnected fragments, loops, time-indexed blocks,
+  and anisotropic physical calibration.
+
 ## Active TODOs
 
 ### Current Near-Term Order
 
 1. Adopt manual/cached execution for the next expensive feature families as
    they are added, including cancellation/progress where libraries expose it.
-2. Add skeleton graph export, branch-summary distributions, physical-length
-   pruning units, and domain-normalized connectivity summaries.
+2. Add skeleton branch-summary distributions and domain-normalized connectivity
+   summaries.
 3. Add richer object morphology and 3D mesh/surface morphology, with calibrated
    physical variants for length/shape measurements.
 4. Add colocalization/localization table nodes once the measurement and graph
@@ -323,9 +334,7 @@ Architecture preference for future graph work:
 
 Skeleton and network analysis:
 
-- explicit graph export;
 - branch-summary distributions;
-- physical-length pruning units;
 - domain-normalized connectivity summaries for mitochondrial and other network
   structures.
 

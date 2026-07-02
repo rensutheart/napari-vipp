@@ -9,7 +9,7 @@
         "source_mode": "sample",
         "layer_name": "",
         "file_path": "",
-        "sample_name": "VIPP synthetic skeleton network",
+        "sample_name": "VIPP synthetic advanced skeleton network",
         "series_index": 0,
         "channel_colors": "",
         "binding_mode": "single item"
@@ -20,6 +20,15 @@
       "operation_id": "binary_threshold",
       "params": {
         "threshold": 1000
+      }
+    },
+    {
+      "id": "skeleton_graph_overlay_1",
+      "operation_id": "skeleton_graph_overlay",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "display_mode": "Colored edges + colored nodes",
+        "node_size": 2
       }
     },
     {
@@ -52,6 +61,14 @@
       }
     },
     {
+      "id": "measure_skeleton_branches_1",
+      "operation_id": "measure_skeleton_branches",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
       "id": "skeleton_graph_tables_1",
       "operation_id": "skeleton_graph_tables",
       "params": {
@@ -71,16 +88,33 @@
       "id": "prune_skeleton_branches_1",
       "operation_id": "prune_skeleton_branches",
       "params": {
-        "min_branch_length": 2.0,
+        "min_branch_length": 5.0,
         "length_units": "Pixels/voxels",
-        "iterations": 1,
+        "iterations": 2,
         "remove_isolated": true,
         "spatial_mode": "3D ZYX"
       }
     },
     {
-      "id": "analyze_skeleton_2",
-      "operation_id": "analyze_skeleton",
+      "id": "skeleton_graph_overlay_2",
+      "operation_id": "skeleton_graph_overlay",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "display_mode": "White edges + colored nodes",
+        "node_size": 2
+      }
+    },
+    {
+      "id": "measure_skeleton_branches_2",
+      "operation_id": "measure_skeleton_branches",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "input_mode": "Already skeletonized"
+      }
+    },
+    {
+      "id": "measure_overall_skeleton_network_2",
+      "operation_id": "measure_overall_skeleton_network",
       "params": {
         "spatial_mode": "3D ZYX",
         "input_mode": "Already skeletonized"
@@ -91,6 +125,12 @@
     {
       "source": "input",
       "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "skeleton_graph_overlay_1",
       "target_port": 0,
       "source_port": 0
     },
@@ -120,6 +160,12 @@
     },
     {
       "source": "binary_threshold_1",
+      "target": "measure_skeleton_branches_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
       "target": "skeleton_graph_tables_1",
       "target_port": 0,
       "source_port": 0
@@ -138,21 +184,37 @@
     },
     {
       "source": "prune_skeleton_branches_1",
-      "target": "analyze_skeleton_2",
+      "target": "skeleton_graph_overlay_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prune_skeleton_branches_1",
+      "target": "measure_skeleton_branches_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prune_skeleton_branches_1",
+      "target": "measure_overall_skeleton_network_2",
       "target_port": 0,
       "source_port": 0
     }
   ],
   "positions": {
-    "input": [0.0, 20.0],
-    "binary_threshold_1": [330.0, 20.0],
-    "skeleton_keypoints_1": [660.0, -180.0],
-    "label_skeleton_components_1": [660.0, 20.0],
-    "label_skeleton_branches_1": [660.0, 220.0],
-    "analyze_skeleton_1": [990.0, -180.0],
-    "skeleton_graph_tables_1": [990.0, 20.0],
-    "measure_overall_skeleton_network_1": [990.0, 220.0],
-    "prune_skeleton_branches_1": [1320.0, 20.0],
-    "analyze_skeleton_2": [1650.0, 20.0]
+    "input": [0.0, 40.0],
+    "binary_threshold_1": [330.0, 40.0],
+    "skeleton_graph_overlay_1": [660.0, -260.0],
+    "skeleton_keypoints_1": [660.0, -60.0],
+    "label_skeleton_components_1": [660.0, 140.0],
+    "label_skeleton_branches_1": [660.0, 340.0],
+    "analyze_skeleton_1": [990.0, -260.0],
+    "measure_skeleton_branches_1": [990.0, -60.0],
+    "skeleton_graph_tables_1": [990.0, 140.0],
+    "measure_overall_skeleton_network_1": [990.0, 340.0],
+    "prune_skeleton_branches_1": [1320.0, 40.0],
+    "skeleton_graph_overlay_2": [1650.0, -160.0],
+    "measure_skeleton_branches_2": [1650.0, 40.0],
+    "measure_overall_skeleton_network_2": [1650.0, 240.0]
   }
 }

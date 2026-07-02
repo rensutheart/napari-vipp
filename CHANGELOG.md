@@ -18,6 +18,13 @@
 - Added `Skeleton Graph Overlay` for RGB edge/node visualization and
   `Measure Skeleton Branches` for row-per-branch length, endpoint, and
   tortuosity tables.
+- Added `Skeleton Graph Tables`, a manual table node that exports explicit
+  graph-node and graph-edge tables from skeleton masks.
+- Added `Measure Overall Skeleton Network`, a manual table node for per-block
+  connectedness, fragmentation, branch-count, and branch-length whole-network
+  metrics.
+- Added pixel/voxel versus physical-unit thresholding to `Prune Skeleton
+  Branches` when pixel-size metadata is available.
 - Fixed `Skeleton Graph Overlay` output metadata so 2D napari inspect/pin
   layers display the result as channel-last RGB instead of grayscale.
 - Display volumetric RGB outputs as separate additive red/green/blue napari
@@ -30,16 +37,23 @@
 - Added a deterministic `VIPP synthetic skeleton network` sample plus an
   example workflow for validating skeleton keypoint masks, branch labels,
   component labels, pruning, and before/after skeleton analysis.
+- Added a deterministic `VIPP synthetic advanced skeleton network` sample plus
+  an example workflow for validating time-indexed 3D skeleton graph overlays,
+  branch tables, explicit graph node/edge tables, network summaries, pruning,
+  loops, disconnected fragments, and anisotropic physical calibration.
 - Adjusted thumbnail percentile contrast so sparse bright foreground objects
   are not dropped as outliers while low-amplitude background ramps are stretched.
 - Added manual/cached execution for expensive table nodes. `Measure Objects`,
-  `Measure Objects + Intensity`, `Analyze Skeleton`, and
-  `Measure Skeleton Branches` now expose `Calculate`/`Recalculate`, keep the
-  last result available downstream when stale, and recompute deterministically
-  in headless/export runs.
+  `Measure Objects + Intensity`, `Analyze Skeleton`,
+  `Measure Skeleton Branches`, `Skeleton Graph Tables`, and
+  `Measure Overall Skeleton Network` now expose `Calculate`/`Recalculate`, keep
+  the last result available downstream when stale, and recompute
+  deterministically in headless/export runs.
 - Added per-node `Auto Recalculate` for manual nodes, with a warning that it
   can be slow on large inputs. Manual node cards now use gray, green, orange,
   and red state colors for not calculated, ready, stale, and error results.
+- Added a toolbar `Calculate all` button that calculates all manual nodes whose
+  cached results are missing, stale, or errored.
 
 ## 0.8.2a2 - 2026-06-30
 
