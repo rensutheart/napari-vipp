@@ -473,6 +473,19 @@ sliders 1, 2, 3, and 4. Napari-layer source payloads therefore rewrite
 both `dims.events.current_step` and `dims.events.point`, using a bound method
 instead of an anonymous callback so the subscription remains alive.
 
+`ViewDimsBar` is the VIPP-local dimension navigator. It builds controls from the
+active image context, preferring the pinned node, then the selected image node,
+then the input image. It exposes semantic non-XY axes with size greater than one
+(`T`, `Z`, `C`, etc.). Controls are keyed by canonical/source axis, not merely
+by the currently displayed layer-axis position. When the active node has dropped
+an axis, such as Split Channels removing `C`, the bar maps the remaining `Z`
+control back to the raw napari axis that still represents source `Z`. For nodes
+with a local axis length different from the viewer axis length, it displays the
+local range and maps to napari by relative position. The bar writes changes
+through `viewer.dims.set_current_step` rather than maintaining a parallel
+coordinate state, and has its own responsive behavior: full inline sliders,
+compact spin boxes, then a `View dims...` popup menu.
+
 Important nuance: channel pseudo-colour is carried metadata, not pixel data.
 OME source colours, Image Source overrides, Combine Channels choices, and the
 `Assign Channel Colors` node all write `ChannelMetadata.color`. The underlying

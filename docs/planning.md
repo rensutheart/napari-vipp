@@ -1,195 +1,201 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-07-01
+Last reviewed: 2026-07-02
 
-This document is the consolidated source of truth for what is **implemented**
-versus **planned**. It was reconciled against the live node registry
-(`napari_vipp.core.pipeline.NODE_LIBRARY`, currently 88 nodes) and the widget
-code, so the status labels below reflect the actual codebase rather than older
-intentions.
+This document is the consolidated planning source of truth. It separates
+implemented behavior from active TODOs so future development can start from the
+right place without re-reading old discussion history.
 
-For the prioritized algorithm and node catalogue, see
-[node-roadmap.md](node-roadmap.md). For implementation details, see
-[architecture.md](architecture.md). The proposed first-class OME import/export
-architecture is in [ome-io-plan.md](ome-io-plan.md). Current user-facing format
-behavior is in [io-user-guide.md](io-user-guide.md), and research evidence is
-tracked in [research-and-publication.md](research-and-publication.md).
-Skeleton node usage is documented in [skeleton-nodes.md](skeleton-nodes.md).
-MitoMorph-derived high-dimensional feature extraction and table-combination
-requirements are tracked in
-[mitomorph-feature-parity.md](mitomorph-feature-parity.md).
+Status labels used below:
+
+- **Implemented**: present in the codebase and covered by normal operation.
+- **Partial**: useful behavior exists, but known planned work remains.
+- **TODO**: not implemented yet.
+- **Later**: deliberately deferred until the core workflow platform is more
+  stable.
+
+Related reference documents:
+
+- [architecture.md](architecture.md) for implementation architecture.
+- [node-roadmap.md](node-roadmap.md) for prioritized node ideas.
+- [ome-io-plan.md](ome-io-plan.md) for OME import/export decisions.
+- [io-user-guide.md](io-user-guide.md) for current file-format behavior.
+- [skeleton-nodes.md](skeleton-nodes.md) for skeleton node usage.
+- [mitomorph-feature-parity.md](mitomorph-feature-parity.md) for
+  MitoMorph-inspired feature parity.
+- [research-and-publication.md](research-and-publication.md) for publication
+  and evidence tracking.
 
 ## Product Direction
 
 The graph is the primary work surface. A useful VIPP feature should form part
-of a reproducible bioimage workflow, not merely add another isolated image
-filter.
+of a reproducible bioimage workflow, not merely add an isolated image filter.
 
-The target first-class workflow families are:
+First-class workflow families:
 
 - nuclei and cell segmentation;
 - puncta and spot analysis;
 - mitochondrial object and network analysis;
-- pixel-based and object-based colocalization;
+- pixel-based and object-based colocalization/localization;
 - 2D images and true 3D fluorescence z-stacks.
 
-Registration and deconvolution remain later milestones.
+Registration and deconvolution are important, but remain later milestones.
 
----
+## Implemented Capabilities
 
-## Implemented
+### Graph Editing And Layout
 
-### Graph Editing
+Implemented:
 
-- a large pan/zoom canvas with movable node cards and auto-expanding scene;
-- node creation from the searchable, grouped palette;
-- node and connection deletion;
-- node right-click menus for deletion, code inspection, duplication, and
-  contextual Pin/Unpin;
-- click-to-connect and drag-to-connect wiring;
-- visual compatible/incompatible drop feedback;
-- widened connector hit targets for easier selection/right-clicking;
-- drag a palette node onto a connector to insert it on that connection, with
-  pulsing/glowing insertion preview;
-- right-click a connector and choose `Insert node here...` to open a filtered
-  compatible-node picker;
-- phase-1 insert-on-wire modes: full splice for unambiguous one-input/one-output
-  nodes, partial upstream-only insertion for single-input/multi-output nodes,
-  and place-in-gap for ambiguous nodes;
-- local make-room movement of the target/downstream side during insert-on-wire;
-- cycle and port-type rejection;
+- searchable grouped node palette;
+- movable node cards on a pan/zoom canvas with auto-expanding scene bounds;
+- node and connection deletion without deleting attached nodes accidentally;
+- widened connector hit targets for easier selection, deletion, and context
+  menus;
+- click-to-connect and drag-to-connect wiring with compatible/incompatible drop
+  feedback;
+- cycle rejection and port-type validation;
 - slot-aware multi-input connections;
 - per-port multi-output connections;
 - dynamic Split Channels output counts;
-- connector updates while nodes move;
+- connector rerouting while nodes move;
+- right-click node menus for Delete, Inspect Code, Duplicate Node, and
+  contextual Pin/Unpin;
+- code inspection dialogs with Python syntax highlighting;
 - undo/redo for graph and parameter edits;
-- one-shot `Auto structure graph` layout cleanup with undo;
-- staged responsive toolbar compaction for narrow dock layouts: checkboxes,
-  dropdowns, then zoom controls collapse into `Settings` as space runs out;
-- save/load of canvas positions.
+- save/load of canvas positions;
+- one-shot `Auto structure graph` command with undo;
+- responsive toolbars that progressively collapse controls into `Settings`;
+- insert-on-wire by dragging a palette node, dragging an existing loose node,
+  or using `Insert node here...` from the connector context menu;
+- insert-on-wire full splice for one-input/one-output nodes;
+- partial upstream-only insert for single-input/multi-output nodes such as
+  Split Channels;
+- place-in-gap behavior for ambiguous multi-input/multi-output nodes;
+- deterministic local make-room movement for insert-on-wire, shifting only the
+  target/downstream side as needed.
 
-### Workflow Persistence
+### Workflow Persistence, Export, And Batch Foundation
 
-Portable JSON workflow persistence (version 1) stores:
+Implemented:
 
-- stable node and operation ids;
-- parameter values;
-- source and target node ids;
-- target input slots and source output slots;
-- canvas positions;
-- workflow type and version.
-
-Loading derives titles, categories, and port contracts from the installed node
-library. The loader accepts only the current workflow type and version and
-rejects unknown operations, malformed nodes, duplicate ids, invalid positions,
-and dangling or multiply occupied connections with a clear error.
-
-Image Source selections, including file paths and napari layer names, are saved
-as ordinary node parameters. The checked-in example
-[`examples/otsu-red-channel-labels.json`](../examples/otsu-red-channel-labels.json)
-demonstrates the current format.
-
-### Python Export And Headless Batch
-
-Python export is generated from the same graph model used by the UI. The
-generated script:
-
-- imports pure functions from `napari_vipp.core.operations`;
-- reconstructs slot-aware multi-input and multi-output routing;
-- exposes `run_pipeline()`;
-- exposes a folder-oriented `batch_process()` helper;
-- provides a command-line entry point;
-- saves terminal graph outputs.
+- portable version-1 JSON workflow files;
+- stable node ids, operation ids, parameter values, source/target ids, input
+  slots, output slots, and canvas positions;
+- strict loading that rejects unknown operations, malformed nodes, duplicate
+  ids, invalid positions, dangling connections, and multiply occupied slots;
+- Image Source parameters persisted as ordinary workflow parameters;
+- Python export generated from the same graph model used by the UI;
+- exported `run_pipeline()` and folder-oriented `batch_process()`;
+- command-line entry point for exported scripts;
+- terminal graph outputs saved by generated scripts;
+- image-like and table outputs handled by the exporter.
 
 The exporter is headless but still requires the `napari-vipp` Python package.
-It handles image-like and table outputs.
 
-### Background Execution
+### Execution Model
+
+Implemented:
 
 - background-thread execution for known slow image-processing graphs;
-- a global indeterminate processing indicator;
+- global indeterminate processing indicator;
 - per-node busy rings for the slow node that triggered background execution;
-- incremental dirty-node caching of prior outputs/states;
-- coalesced reruns while a long calculation is active, discarding stale
-  background results;
-- a user-facing "Run all in BG" toggle to force all updates onto the worker.
+- dirty-node caching of prior outputs and states;
+- coalesced reruns while a long calculation is active, discarding stale worker
+  results;
+- `Run all in BG` toggle to force graph updates onto the worker;
+- manual/cached execution for expensive table-producing nodes:
+  `Measure Objects`, `Measure Objects + Intensity`, `Analyze Skeleton`, and
+  `Measure Skeleton Branches`;
+- graph-card and inspector `Calculate` / `Recalculate` controls;
+- inspector `Auto Recalculate`, off by default, for manual nodes;
+- explicit node execution states: not calculated, current, stale, running, and
+  error;
+- node-card state colours: gray for not calculated, green for current, orange
+  for stale, and red for error;
+- workflow persistence of the auto-recalculate preference.
 
-### Manual / Cached Execution
+Generated Python export and headless pipeline execution calculate manual nodes
+by default so batch output is deterministic.
 
-The first manual/cached execution layer is implemented for table-producing
-expensive nodes:
+### Data State And Metadata
 
-- `Measure Objects`;
-- `Measure Objects + Intensity`;
-- `Analyze Skeleton`;
-- `Measure Skeleton Branches`.
+Implemented:
 
-These nodes expose `Calculate` or `Recalculate` on both the graph card and the
-inspector. Ordinary live pipeline updates skip them. When a manual node has a
-cached result, downstream nodes can keep using that result; upstream edits mark
-it visibly stale until the user recalculates. The inspector also exposes
-`Auto Recalculate`, off by default, for manual nodes that are fast enough to
-rerun automatically on the current data. When enabled, the explicit recalculate
-button is hidden and affected dirty runs include that manual node. Node-card
-state colours are gray for not calculated, green for current, orange for stale,
-and red for error. Running and failure states are stored per node for UI
-display. Workflow JSON persists graph structure, parameters, and the
-auto-recalculate preference, but not cached arrays or tables. Headless pipeline
-execution and generated Python export calculate manual nodes by default so
-batch output is deterministic.
+- OME-NGFF-inspired `ImageState` carried with every image-like output;
+- `TableState` carried with every table output;
+- shape, dtype, semantic axes, axis types, units, scale, origin, image kind,
+  value summaries, bit-depth summaries, source metadata, and operation history;
+- OME-NGFF-like `multiscales` metadata when available;
+- inferred axes for plain arrays with UI indication that inference was used;
+- table row count, column count, stable column names, units where known, source,
+  measurement set, and history;
+- table outputs shown in the inspector and excluded from image thumbnails and
+  histograms;
+- explicit axis and dtype nodes: `Convert Dtype`, `Select Axis Slice`,
+  `Reorder Axes`, `Set Pixel Size / Units`, and `Rescale Axes`;
+- physical scale/units following the moved or rescaled data axis;
+- channel and time metadata remaining attached to their data.
 
-Still TODO for this platform: cancellation, percentage progress for operations
-that can report it, richer failure recovery, and adoption by future
-colocalization/localization, mesh morphology, deconvolution, and very expensive
-background-estimation nodes.
+### Preview, Inspection, And Display
 
-### Data State Visibility
+Implemented:
 
-Every graph output carries an OME-NGFF-inspired `ImageState` alongside its
-array, or a `TableState` alongside table outputs.
+- per-node thumbnails with Slice/MIP modes;
+- global thumbnail show/hide;
+- thumbnail contrast modes: min-max, percentile, and raw;
+- monochrome thumbnail colormap selection;
+- RGB/multichannel thumbnail rendering with channel colors;
+- input histograms for thresholding and intensity nodes where relevant;
+- output image and label histograms;
+- clearer 2D versus stack histogram labeling;
+- label volume distribution histogram with log-volume-axis option;
+- image/mask/label/RGB pinning as persistent napari preview layers;
+- pinned-node outline on the graph;
+- optional `Follow napari dims`;
+- VIPP-local `View dims` controls for non-XY semantic axes such as T, Z, and C;
+- bidirectional synchronization between VIPP-local dims and napari dims;
+- canonical axis mapping through dropped axes and rescaled axes, so selecting a
+  downstream node such as Split Channels -> Gaussian Blur still moves the same
+  source Z/T/C position;
+- compact/menu view-dims layout for narrow dock widths;
+- preservation of napari layer scale for `Set Pixel Size / Units` and
+  `Rescale Axes`.
 
-Image state includes shape, dtype, semantic axes and axis types, units/scale/
-origin where available, image/mask/labels/RGB/multichannel kind, value and
-bit-depth summaries, and source/operation history. OME-NGFF-like `multiscales`
-metadata is used when available; plain arrays fall back to inferred axes, and
-the UI identifies that inference.
+### OME And Raster I/O
 
-Table state includes row count, column count, stable column names, column units
-where known, source, measurement set, and operation history. Table outputs are
-shown in the inspector, hidden from image thumbnails/histograms, and can be
-saved as CSV or TSV.
+Implemented:
 
-Type conversion and axis handling are explicit graph operations: `Convert
-Dtype` (rescale/clip/preserve-cast), `Select Axis Slice` (retain ranges, remove
-axes), `Reorder Axes` (draggable axis list, compact axis-order string), and
-`Rescale Axes`. Physical scale and units follow the moved data axis while
-channel and time metadata stay attached to their data.
-
-### Preview, Thumbnails, And Dims
-
-- per-node thumbnails with Slice/MIP/projection modes and contrast controls;
-- image and label histograms, including clearer 2D versus stack threshold
-  labeling;
-- image/mask/label pinning as persistent napari preview layers;
-- optional "Follow napari dims" so thumbnails and histograms track the slider;
-- cross-node slice mapping: nodes with the same Z length use the exact napari
-  index, while nodes with a different Z length (for example through `Rescale
-  Axes`) use the equivalent relative position.
-
-### OME / Raster I/O Foundation
-
-- shared headless reader/writer registry and normalized dataset metadata;
+- shared headless reader/writer registry;
+- normalized dataset metadata;
 - OME-TIFF, ImageJ TIFF, and conventional TIFF import/export;
-- common raster import and 2D raster export;
+- common raster import including PNG/JPEG-style formats;
+- 2D raster export for standard formats when output is 2D;
 - local OME-Zarr 0.4/0.5 image import/export with lazy Dask reads;
 - OME-Zarr label-group import/export via image-plus-label analysis packages;
-- adaptive image/series selection and stored collection-binding intent.
+- adaptive image/series selection;
+- stored collection-binding intent.
 
-See [ome-io-plan.md](ome-io-plan.md) for accepted decisions and status.
+### Tables, Measurements, And Skeleton Analysis
 
-### Implemented Node Catalogue (88 nodes)
+Implemented:
 
-Counts and names below match the live registry.
+- object morphology and optional intensity measurements;
+- table merging, metadata columns, column selection, and grouped summaries;
+- CSV/TSV saving for selected table outputs and exported scripts;
+- skeletonization and skeleton graph analysis for 2D/3D;
+- endpoint, junction, isolate, edge, cycle, and connected-component skeleton
+  metrics;
+- skeleton keypoint masks;
+- skeleton component and branch labels;
+- terminal spur pruning;
+- RGB skeleton graph overlays;
+- branch-level length, endpoint distance, tortuosity, start/end coordinates,
+  and calibrated physical length where available.
+
+### Implemented Node Catalogue
+
+The live registry currently contains 88 nodes.
 
 - **Image Data**: Image Source, Crop Stack, Select Axis Slice, Reorder Axes,
   Set Pixel Size / Units, Rescale Axes, Extract Channel, Combine Channels,
@@ -218,7 +224,9 @@ Counts and names below match the live registry.
   Skeleton, Measure Skeleton Branches, Merge Tables, Add Metadata Columns,
   Select Table Columns, Summarize Measurements.
 
-A reference label-cleanup workflow is implemented end to end:
+## Validated Reference Workflows
+
+Implemented reference label-cleanup workflow:
 
 ```text
 image
@@ -232,316 +240,197 @@ image
   -> cleaned labels
 ```
 
----
+Implemented reference measurement-summary workflow:
 
-## Planned / TODO
+- `examples/synthetic-measurement-summary.json`;
+- deterministic time-series sample;
+- grouped object counts and area summaries.
 
-Items are grouped by area. None of the following are implemented yet unless
-explicitly noted as partial.
+## Active TODOs
 
-### Graph Editor Usability
-
-The main design rule is that VIPP should not move existing nodes behind the
-user's back. Manual graph editing keeps node positions exactly where they are.
-Only an explicit auto-structure command or mode is allowed to reposition
-existing nodes globally. The exception is an explicit insert-on-wire gesture:
-when the user drops or inserts a node on a specific wire, VIPP may locally move
-the target-side nodes just far enough to make a readable gap for the inserted
-node. That local make-room shift is part of the same undoable insert action.
-New loose nodes may be placed at the user's drop/click location, at the midpoint
-of a selected wire, or at the current palette-suggested position.
-
-**Insert Node Between Connected Nodes.** Splice a new or loose existing node
-into an existing connection without manual delete-and-rewire. Phase 1 is
-implemented for dragging a palette node onto an existing connector,
-right-clicking a connector and choosing `Insert node here...`, and dragging an
-already-existing loose node onto a wire. These entry points share the same
-validation, local make-room, undo, and pipeline-run behavior.
-
-Drag/drop affordance:
-
-- Connector interaction should have a wide hit target independent of the visual
-  line width. The line can remain visually thin, but selection, right-click, and
-  drop detection should use a stroked hit path wide enough for trackpads.
-- When a palette node is dragged over a compatible wire, the wire should enter a
-  clear insertion-preview state: brighter color, pulsing/glowing or dashed
-  overlay, and a status message such as `Drop to insert Gaussian Blur between
-  Image Source and Otsu Threshold`. Avoid fast flicker; use a readable pulse.
-- If the hovered wire cannot accept the node, use an incompatible state and do
-  not perform a splice on drop. The fallback is ordinary node placement.
-
-Implementation details:
-
-- Represent the candidate wire by full connection identity:
-  `source_id`, `source_port`, `target_id`, and `target_port`.
-- Hit-test wires using the actual Bezier path plus a small tolerance, with
-  hover highlighting while dragging palette items. If multiple wires are close,
-  use the nearest wire; if ambiguous, require the right-click menu path.
-- Validate the insertion mode before mutating the model. A full splice requires
-  an unambiguous upstream input and downstream output. Partial or manual
-  insertions should make only the safe connections described below. Whenever an
-  existing connection is replaced, the original `source_port` and `target_port`
-  must be preserved.
-- Phase 1 has three insertion modes:
-  - **Full splice.** If the inserted operation has exactly one compatible input
-    and exactly one declared output, remove the original connection, connect
-    `source -> inserted`, connect `inserted -> target`, run once, and push one
-    undo entry. This is the common linear pipeline case.
-  - **Partial insert.** If the inserted operation has one unambiguous compatible
-    input but multiple outputs, remove the original connection and connect only
-    `source -> inserted`. Leave the downstream target disconnected so the user
-    manually chooses the correct output port. This covers nodes such as
-    `Split Channels`.
-  - **Place-in-gap.** If even the input side is ambiguous, do not guess. Create
-    the node in the opened gap, leave connections unchanged or reject the insert
-    with clear feedback depending on whether the node can participate in the
-    connection at all. This avoids silently wiring multi-input/multi-output
-    nodes incorrectly.
-- Phase 2 can add an output/input chooser for ambiguous cases. The chooser
-  should be explicit rather than assuming a port.
-- Perform all insertion modes atomically: capture an undo snapshot, add the new
-  node, apply the local make-room shift, edit the affected connection(s), run
-  the pipeline once when connectivity changed, and push one undo entry. If any
-  required step fails, restore the original graph and positions.
-- Local make-room should be deterministic and limited. For the first
-  implementation, keep the source-side nodes fixed, place the new node at the
-  drop point or wire midpoint, and shift the target node plus its downstream
-  descendants away from the source by roughly `inserted_node_width + padding`
-  along the dominant source-to-target direction. This creates space without
-  invoking global auto-structure.
-
-Tests should cover a simple chain splice, incompatible splices leaving the graph
-unchanged, preservation of multi-port `source_port`/`target_port`, undo/redo as
-one step, local make-room moving only the target/downstream side, partial insert
-for a single-input/multi-output node, and deletion of a connection without
-deleting attached nodes.
-
-**User-Initiated Automatic Layout Cleanup.** The explicit `Auto structure graph`
-command is implemented as a one-shot cleanup. It tidies a messy workflow on
-demand and never runs as an automatic side effect of adding, duplicating,
-inserting, deleting, or connecting nodes.
-
-Implemented phase 1 layout:
-
-- Use the pipeline's acyclic graph to assign source-to-sink columns.
-- Order nodes inside each column to reduce edge crossings, using barycentric
-  sweeps or a similarly stable heuristic.
-- Account for actual node-card sizes, port locations, and padding so cards do
-  not overlap.
-- Place disconnected components in separate lanes.
-- Apply the resulting positions through the existing saved-position mechanism.
-- Treat the relayout as one undoable action. Undo restores the previous
-  coordinates without changing graph connectivity.
-
-Phase 2 can add an Obsidian-like live structure mode:
-
-- Seed from the layered layout, then relax positions with springs on edges and
-  repulsion between nodes.
-- Animate node movement for readability using Qt animation or timer-based
-  interpolation.
-- When live structure mode is disabled, freeze the current coordinates and save
-  them like normal manual positions.
-- Consider optional pinned/anchored nodes later, but keep the first version
-  simple: one-shot auto-structure plus undo.
-
-Architectural notes:
-
-- Keep layout computation in a pure helper module, for example
-  `core/graph_layout.py`, taking node records, edge records, and measured card
-  sizes and returning `{node_id: (x, y)}`. The Qt graph view should only measure,
-  animate/apply, and redraw connectors.
-- Add a graph-view method such as `apply_node_positions(positions,
-  animate=False)` so layout, workflow restore, and future live relaxation use
-  the same position-application path.
-- Add a widget-level splice method such as `_insert_node_on_connection(...)` so
-  palette drop, connection menu, and future AI-assisted graph editing can reuse
-  the same validation, rollback, undo, and pipeline-run behavior.
-- Avoid workflow-schema churn for phase 1; existing saved canvas positions are
-  enough. Only introduce schema fields later if live layout needs persistent
-  layout mode or anchored-node metadata.
-
-**Other refinements.** Graph annotations/notes, alignment guides, snap-to-grid,
-manual local "make room downstream" commands, minimap/navigation aids, and
-optional edge labels for multi-port workflows.
-
-### AI-Assisted Pipeline Authoring
-
-Let the user describe a pipeline in natural language and have an AI model
-assemble it on the canvas from the existing nodes, so the result is a normal,
-fully interactive VIPP graph whose steps can be inspected, reparametrized, and
-swapped like any hand-built workflow. The user can optionally attach context
-(for example the already-added Image Source nodes or sample images) and then
-ask for either a brand-new pipeline or a modification of an existing one. This
-is a large, forward-looking direction; nothing here is implemented yet.
-
-**First milestone: generate a new pipeline from a description.** Given a text
-prompt plus optional source context, the model returns a workflow that lands on
-the canvas. Modification of an existing graph (described changes, added
-branches) is a follow-on milestone built on the same machinery.
-
-**Output via the validating loader.** The model emits a workflow JSON in the
-existing version-1 format and it is applied through the current validating
-loader rather than mutating the graph model directly. This constrains the model
-to real operation ids, real port contracts, and the existing connection rules
-(cycle/port-type rejection, slot occupancy), and any invalid graph is rejected
-with the same clear errors as a hand-edited file. The model's job is reduced to
-"produce a valid `workflow.json` using the declared node catalogue."
-
-**Context priming.** Useful generation requires giving the model substantial
-grounding before it can produce anything valid: the full node catalogue with
-operation ids, titles, categories, and human descriptions; each node's
-parameters with types/ranges/defaults; the port contracts and which output
-kinds (image/mask/labels/table) connect to which inputs; the connection and
-slot rules; the workflow JSON schema and a few worked examples; and, where
-helpful, the `ImageState`/`TableState` contract so the model can reason about
-axes, kinds, and table shapes. Most of this can be generated directly from the
-live registry so the prompt context stays in sync with the codebase.
-
-**Data sharing controls (privacy).** By default only text is sent: the prompt,
-the generated node-catalogue context, and the workflow schema. Sending anything
-derived from the user's images is strictly opt-in and per-request under the
-user's control, with two escalating levels: `ImageState`/`TableState` metadata
-(shape, dtype, axes, value summaries) for the active sources, and downsampled
-thumbnails of sample images for stronger visual grounding. Full-resolution
-pixels are not sent.
-
-**Provider configuration.** Support both user-supplied API keys for hosted
-providers (e.g. OpenAI, Anthropic) and local/self-hosted models (e.g. Ollama),
-behind a small provider abstraction so the rest of the feature is
-provider-agnostic. Keys are user-managed and never persisted into workflow
-files.
-
-**Black-box / custom nodes for unsupported steps.** When a requested step has
-no matching existing node, the model may propose a custom node that wraps the
-missing functionality and still behaves like a normal node on the graph
-(typed ports, parameters, inspectable, swappable), acting as a small black box
-in an otherwise standard pipeline. Because such a node implies AI-generated code
-running locally against the user's data, the execution policy is **user-
-configurable**, with options spanning: require human review and explicit
-approval of the generated code before it runs (default); run it in a
-restricted/sandboxed environment; or trust-and-run automatically. Custom-node
-generation is a separate, gated mechanism from ordinary catalogue-only
-generation, and any code surfaced to the user is shown in full.
-
-**Open questions.** How custom nodes serialize and round-trip in `workflow.json`
-(and whether their code is embedded, referenced, or regenerated); how to make
-generation deterministic/reproducible enough for publication; how to validate
-that a generated graph actually runs before committing it to the canvas; cost
-and rate-limit handling; and how to let the user iterate conversationally
-("now add a colocalization branch") while keeping the canvas as the source of
-truth.
-
-### Workflow Persistence Gaps
-
-Not yet stored: per-node thumbnail visibility; inspector and histogram UI state;
-graph notes/annotations; environment/package provenance; YAML format. Workflow
-files do not embed input data, rebase paths, or package assets for portable
-sharing.
-
-### Preview / Dims Usability
-
-Add VIPP-local Z/T/C sliders to the workflow UI and keep them synchronized with
-napari's dims state. The main reason is 3D viewing: when napari is in 3D mode,
-the usual Z slider is no longer directly available, which makes it awkward to
-choose the thumbnail slice or inspect a specific plane from within VIPP.
-Requirements: expose whichever semantic axes are present (at least Z, T, and C
-where applicable); keep them bidirectionally synced with napari's own dims so a
-change in either place updates the other; preserve the existing "Follow napari
-dims" behavior for thumbnails and histograms; and make sure thumbnail slice
-selection remains easy even when napari's native slider UI is hidden by 3D
-view.
-
-### Calibration / Napari Display Regression
-
-Resolved 2026-06-28. The regression was in the final napari layer handoff:
-`Set Pixel Size / Units` and `Rescale Axes` were updating `ImageState.axes`
-correctly, but generated inspect/pinned layers only stored that state as
-metadata and did not apply it to the napari layer `scale` property. Inspect and
-pinned layer creation/refresh now derive napari layer scale from carried
-`ImageState` metadata, so setting Z step size to 10 while leaving X/Y at 1
-changes the 3D viewer spacing as expected.
-
-### Table Analysis
-
-- **Grouped table summaries** (`Summarize Measurements`): implemented. It
-  groups merged morphology/intensity/skeleton tables by metadata or axis-index
-  columns and calculates count, mean, median, standard deviation, min/max, and
-  quartiles for selected numeric columns. The synthetic workflow
-  `examples/synthetic-measurement-summary.json` validates grouped object counts
-  and area summaries on a deterministic time-series sample.
-- **Calibrated physical variants** for extended length/shape measurements.
-- A dedicated `Save Table` node is intentionally deferred: selected table
-  outputs and exported scripts already write CSV/TSV.
-
-### Skeleton / Network QC
-
-`Skeletonize` and `Analyze Skeleton` are implemented (endpoint, junction,
-isolate, graph-edge, cycle, and connected-component metrics for 2D/3D).
-`Skeleton Keypoints` emits endpoint, junction, and isolated-node masks.
-`Label Skeleton Components` and `Label Skeleton Branches` create inspectable
-label images for connected skeleton components and branch paths. `Prune
-Skeleton Branches` removes short terminal spurs and optional isolated skeleton
-voxels. `Skeleton Graph Overlay` renders RGB edge/node QC overlays, and
-`Measure Skeleton Branches` reports row-per-branch length, endpoint distance,
-tortuosity, start/end coordinates, and calibrated physical length when
-available. Still TODO: explicit graph export, branch-summary distributions,
-physical-length pruning units, and domain-normalized connectivity summaries.
-
-### Colocalization And Localization
-
-Pixel-based and object-based colocalization/localization nodes producing scalar
-or table outputs (not synthetic images by default): Pearson/Manders channel
-metrics, object overlap/association tables, nearest-object distances, event
-localization, and optional mask/ROI-restricted measurements. Needs scalar/table
-result contracts and careful channel/mask input UI.
-
-### Segmentation Polish
-
-Marker QC polish, optional Multi-Otsu class images, and validation of watershed
-defaults on representative nuclei/cell/object datasets.
-
-### Batch Execution UI
-
-Python export exists, but a real collection-batch UI still needs stable item
-identities, output templates, source collections, per-item provenance, multiple
-independently bound sources, and explicit iteration over semantic axes.
-
-### OME I/O Next
-
-1. generated pyramids and preview-resolution selection;
-2. label colors and label-property tables in OME-Zarr;
-3. collection batch execution with stable item identities and output templates;
-4. plate/well/field browsing and anonymous HTTP reads;
-5. operation capability declarations and memory-aware lazy materialization.
-
-### Mitochondria-Specific Measurements
-
-Treat the old MitoMorph code as inspiration for future specialist nodes:
-mesh/surface estimates, convexity, branch-summary distributions,
-domain-normalized connectivity, and network fragmentation, without forcing
-these assumptions into the generic `Measure Objects` node. The larger goal is
-broad selectable feature extraction for downstream PCA/treatment-group
-analysis;
-see [mitomorph-feature-parity.md](mitomorph-feature-parity.md).
-
-### Later Milestones
-
-Registration and deconvolution.
-
----
-
-## Near-Term Order
+### Current Near-Term Order
 
 1. Adopt manual/cached execution for the next expensive feature families as
    they are added, including cancellation/progress where libraries expose it.
-2. Skeleton graph export, branch-summary distributions, and physical-length
-   pruning units.
-3. 3D mesh morphology and calibrated physical variants for extended
-   length/shape measurements.
-4. Colocalization/localization table nodes after the measurement/graph platform
-   is stable.
+2. Add skeleton graph export, branch-summary distributions, physical-length
+   pruning units, and domain-normalized connectivity summaries.
+3. Add richer object morphology and 3D mesh/surface morphology, with calibrated
+   physical variants for length/shape measurements.
+4. Add colocalization/localization table nodes once the measurement and graph
+   platform is stable.
+5. Build a real collection-batch UI on top of the existing Python export and
+   source-collection foundations.
 
----
+### Execution Platform TODOs
+
+- cancellation for running background/manual work;
+- percentage progress for operations that can report it;
+- richer failure recovery and retry behavior;
+- adoption by future colocalization/localization, mesh morphology,
+  deconvolution, and very expensive background-estimation nodes;
+- visible progress support for slow nodes without making the UI feel frozen.
+
+### Graph Editor TODOs
+
+- phase-2 insert-on-wire chooser for ambiguous input/output ports;
+- Obsidian-like live structure mode with optional animation;
+- optional pinned/anchored nodes for live layout;
+- graph annotations/notes;
+- alignment guides and snap-to-grid;
+- manual local "make room downstream" command;
+- minimap/navigation aids;
+- optional edge labels for multi-port workflows.
+
+Architecture preference for future graph work:
+
+- keep layout computation in a pure helper module such as
+  `core/graph_layout.py`;
+- expose graph-view position application through one method so workflow restore,
+  auto-structure, and future live layout share the same path;
+- keep insert-on-wire validation and rollback centralized so palette drops,
+  connector menus, and AI-assisted graph edits use the same behavior.
+
+### Workflow Persistence And Provenance TODOs
+
+- persist per-node thumbnail visibility;
+- persist inspector and histogram UI state;
+- persist graph notes/annotations;
+- record environment/package provenance;
+- optional YAML workflow format;
+- portable sharing that rebases paths or packages required input assets;
+- `batch_config.yaml` for reproducible collection processing.
+
+### Preview, Display, And Scalability TODOs
+
+- tune responsive breakpoints after testing more dock sizes;
+- decide whether compact menus remember their last open position;
+- generated OME-Zarr pyramids;
+- preview-resolution selection;
+- large-data thumbnail/histogram strategies that avoid expensive full-array
+  materialization;
+- operation capability declarations for memory-aware lazy materialization.
+
+### OME And Collection I/O TODOs
+
+- OME-Zarr label colors;
+- OME-Zarr label-property tables;
+- collection batch execution with stable item identities and output templates;
+- multiple independently bound sources;
+- plate/well/field browsing;
+- anonymous HTTP reads.
+
+### Analysis Node TODOs
+
+Skeleton and network analysis:
+
+- explicit graph export;
+- branch-summary distributions;
+- physical-length pruning units;
+- domain-normalized connectivity summaries for mitochondrial and other network
+  structures.
+
+Object and mesh morphology:
+
+- richer region/object properties beyond the current measurement set;
+- selectable expensive feature groups so users choose which classes of
+  measurements to calculate;
+- 3D mesh/surface estimates;
+- convexity and surface-derived shape metrics;
+- calibrated physical variants for extended length/shape measurements;
+- final table-combination path suitable for PCA and treatment-group analysis.
+
+Colocalization and localization:
+
+- Pearson and Manders pixel-based channel metrics;
+- object overlap and association tables;
+- nearest-object distance tables;
+- event localization against objects, masks, or ROIs;
+- mask/ROI-restricted measurements;
+- scalar/table result contracts;
+- channel and mask input UI designed to avoid ambiguous wiring.
+
+Segmentation polish:
+
+- marker QC improvements;
+- optional Multi-Otsu class images;
+- watershed default validation on representative nuclei, cell, puncta, and
+  mitochondrial datasets.
+
+Mitochondria-specific analysis:
+
+- network fragmentation metrics;
+- branch-summary distributions tuned for mitochondrial networks;
+- domain-normalized connectivity metrics;
+- specialist morphology inspired by the old MitoMorph system without forcing
+  mitochondrial assumptions into generic object-measurement nodes.
+
+### Batch Execution UI TODOs
+
+- stable item identities;
+- source collections;
+- output templates;
+- per-item provenance;
+- multiple independently bound sources;
+- explicit iteration over semantic axes.
+
+### AI-Assisted Pipeline Authoring TODOs
+
+Goal: let the user describe a pipeline in natural language and have an AI model
+assemble a normal, inspectable VIPP graph on the canvas.
+
+First milestone:
+
+- generate a new workflow JSON from a text prompt and optional source context;
+- apply it through the existing validating loader;
+- constrain generated graphs to real operation ids, real port contracts, and
+  existing connection rules.
+
+Required model context:
+
+- live node catalogue with operation ids, titles, categories, and descriptions;
+- parameter types, ranges, defaults, and human labels;
+- port contracts and compatible output/input kinds;
+- connection and slot rules;
+- workflow JSON schema;
+- worked examples;
+- `ImageState` and `TableState` contracts where relevant.
+
+Data sharing controls:
+
+- default to text-only prompts and generated registry/schema context;
+- opt-in sharing of `ImageState`/`TableState` metadata;
+- opt-in sharing of downsampled thumbnails for visual grounding;
+- do not send full-resolution pixels.
+
+Provider configuration:
+
+- user-supplied hosted provider keys, such as OpenAI or Anthropic;
+- local/self-hosted providers, such as Ollama;
+- provider abstraction so the graph feature is provider-agnostic;
+- keys user-managed and never serialized into workflow files.
+
+Custom or black-box node generation:
+
+- allow proposals when the requested step has no existing VIPP node;
+- expose generated code to the user in full;
+- require human review and explicit approval by default;
+- leave room for sandboxed execution or trust-and-run modes as explicit user
+  choices;
+- decide how custom nodes serialize and round-trip.
+
+Open questions:
+
+- deterministic/reproducible generation suitable for publication;
+- validating that generated graphs actually run before committing them;
+- cost and rate-limit handling;
+- conversational graph edits while keeping the canvas as source of truth.
+
+## Later Milestones
+
+- registration;
+- deconvolution;
+- model-backed segmentation;
+- advanced stitching/alignment workflows.
 
 ## Planned Artifacts
 
@@ -551,5 +440,5 @@ Registration and deconvolution.
 | exported `pipeline.py` | Implemented |
 | example label workflow JSON | Implemented |
 | measurement CSV/TSV | Implemented |
-| `batch_config.yaml` | Not implemented |
-| environment/provenance manifest | Not implemented |
+| `batch_config.yaml` | TODO |
+| environment/provenance manifest | TODO |

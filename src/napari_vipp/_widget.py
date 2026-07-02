@@ -177,6 +177,17 @@ class AxisSliceOption:
 
 
 @dataclass(frozen=True)
+class ViewDimAxis:
+    """One semantic non-XY axis exposed in the VIPP-local view controls."""
+
+    name: str
+    label: str
+    step_axis: int
+    size: int
+    value: int
+
+
+@dataclass(frozen=True)
 class WorkflowHistorySnapshot:
     workflow: dict
     selected_node_id: str
@@ -2387,6 +2398,182 @@ class SidePanelToggleButton(QToolButton):
         return 1 if self._expanded else -1
 
 
+class ViewDimAxisControl(QWidget):
+    """Responsive slider/spin control for one semantic viewer dimension."""
+
+    value_changed = Signal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._axis: ViewDimAxis | None = None
+        self._syncing = False
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self.label = QLabel("")
+        self.label.setMinimumWidth(18)
+        self.label.setStyleSheet("font-weight: 650; color: #cbd5e1;")
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimumWidth(120)
+        self.slider.setSingleStep(1)
+        self.slider.setPageStep(1)
+        self.spin = QSpinBox()
+        self.spin.setMinimumWidth(54)
+        self.spin.setButtonSymbols(QSpinBox.NoButtons)
+        self.range_label = QLabel("/0")
+        self.range_label.setStyleSheet("color: #94a3b8;")
+
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider, 1)
+        layout.addWidget(self.spin)
+        layout.addWidget(self.range_label)
+
+        self.slider.valueChanged.connect(self._on_slider_value_changed)
+        self.spin.valueChanged.connect(self._on_spin_value_changed)
+
+    def set_axis(self, axis: ViewDimAxis) -> None:
+        self._axis = axis
+        maximum = max(int(axis.size) - 1, 0)
+        with _control_signal_blockers((self.slider, self.spin)):
+            self.label.setText(axis.label)
+            self.label.setToolTip(f"{axis.name} axis")
+            self.slider.setRange(0, maximum)
+            self.slider.setValue(int(np.clip(axis.value, 0, maximum)))
+            self.spin.setRange(0, maximum)
+            self.spin.setValue(int(np.clip(axis.value, 0, maximum)))
+            self.range_label.setText(f"/{maximum}")
+        self.setToolTip(f"{axis.name} axis, {int(axis.size)} positions")
+
+    def set_display_mode(self, mode: str) -> None:
+        compact = mode == "compact"
+        self.slider.setVisible(not compact)
+        self.range_label.setVisible(True)
+
+    def _on_slider_value_changed(self, value: int) -> None:
+        if self._syncing or self._axis is None:
+            return
+        with QSignalBlocker(self.spin):
+            self.spin.setValue(int(value))
+        self.value_changed.emit(int(self._axis.step_axis), int(value))
+
+    def _on_spin_value_changed(self, value: int) -> None:
+        if self._syncing or self._axis is None:
+            return
+        with QSignalBlocker(self.slider):
+            self.slider.setValue(int(value))
+        self.value_changed.emit(int(self._axis.step_axis), int(value))
+
+
+class ViewDimsBar(QWidget):
+    """VIPP-local T/Z/C-style navigation controls synchronized to napari dims."""
+
+    value_changed = Signal(int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._axes: tuple[ViewDimAxis, ...] = ()
+        self._controls: list[ViewDimAxisControl] = []
+        self._responsive_mode: str | None = None
+
+        self.setObjectName("ViewDimsBar")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setStyleSheet(
+            "#ViewDimsBar {"
+            " background: #20262f;"
+            " border: 1px solid #374151;"
+            " border-radius: 5px;"
+            " padding: 2px;"
+            "}"
+        )
+
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(6, 3, 6, 3)
+        self._layout.setSpacing(6)
+
+        self.title_label = QLabel("View dims")
+        self.title_label.setStyleSheet("font-weight: 650; color: #e5e7eb;")
+        self._layout.addWidget(self.title_label)
+
+        self.menu_button = QToolButton()
+        self.menu_button.setText("View dims...")
+        self.menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.menu_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.menu_button.setToolTip("Open full T/Z/C view sliders.")
+        self.menu = QMenu(self.menu_button)
+        self.menu.aboutToShow.connect(self._populate_menu)
+        self.menu_button.setMenu(self.menu)
+        self._layout.addStretch(1)
+        self._layout.addWidget(self.menu_button)
+        self.setHidden(True)
+
+    def set_axes(self, axes: list[ViewDimAxis] | tuple[ViewDimAxis, ...]) -> None:
+        self._axes = tuple(axes)
+        self.setVisible(bool(self._axes))
+        self._ensure_control_count(len(self._axes))
+        for control, axis in zip(self._controls, self._axes, strict=False):
+            control.set_axis(axis)
+            control.setVisible(True)
+        for control in self._controls[len(self._axes) :]:
+            control.setVisible(False)
+        self.sync_responsive_mode()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self.sync_responsive_mode()
+
+    def sync_responsive_mode(self) -> None:
+        if not self._axes:
+            return
+        width = max(int(self.width()), 1)
+        full_width = 190 + 220 * len(self._axes)
+        compact_width = 160 + 86 * len(self._axes)
+        if width >= full_width:
+            mode = "full"
+        elif width >= compact_width:
+            mode = "compact"
+        else:
+            mode = "menu"
+        if mode == self._responsive_mode:
+            return
+        self._responsive_mode = mode
+        self.title_label.setVisible(mode != "menu")
+        active_controls = self._controls[: len(self._axes)]
+        for control in self._controls:
+            control.set_display_mode("compact" if mode == "compact" else "full")
+            control.setVisible(mode != "menu" and control in active_controls)
+        self.menu_button.setVisible(mode != "full")
+        self.menu_button.setText("Sliders..." if mode == "compact" else "View dims...")
+
+    def _ensure_control_count(self, count: int) -> None:
+        while len(self._controls) < count:
+            control = ViewDimAxisControl(self)
+            control.value_changed.connect(self.value_changed.emit)
+            self._controls.append(control)
+            self._layout.insertWidget(max(self._layout.count() - 2, 1), control, 1)
+
+    def _populate_menu(self) -> None:
+        self.menu.clear()
+        if not self._axes:
+            action = QAction("No view dimensions", self.menu)
+            action.setEnabled(False)
+            self.menu.addAction(action)
+            return
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        for axis in self._axes:
+            control = ViewDimAxisControl(container)
+            control.set_axis(axis)
+            control.set_display_mode("full")
+            control.value_changed.connect(self.value_changed.emit)
+            layout.addWidget(control)
+        action = QWidgetAction(self.menu)
+        action.setDefaultWidget(container)
+        self.menu.addAction(action)
+
+
 class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
@@ -2428,6 +2615,7 @@ class VippWidget(QWidget):
         self._toolbar_dropdown_widgets: list[QWidget] = []
         self._toolbar_zoom_widgets: list[QWidget] = []
         self._toolbar_settings_widgets: list[QWidget] = []
+        self._syncing_view_dims_bar = False
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -2528,6 +2716,7 @@ class VippWidget(QWidget):
             "Run all pipeline updates in background. "
             "When off, only known-slower operations use background processing."
         )
+        self.view_dims_bar = ViewDimsBar()
         self.pipeline_busy_label = QLabel("Processing")
         self.pipeline_busy_label.setStyleSheet("color: #93c5fd; font-weight: 650;")
         self.pipeline_busy_bar = QProgressBar()
@@ -2690,6 +2879,7 @@ class VippWidget(QWidget):
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._sync_toolbar_responsive_mode()
+        self.view_dims_bar.sync_responsive_mode()
 
     def eventFilter(self, watched, event):  # noqa: N802
         dock = self._dock_widget()
@@ -2934,6 +3124,7 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.pipeline_busy_bar)
         workflow_row.addWidget(self.version_label)
         root.addLayout(workflow_row)
+        root.addWidget(self.view_dims_bar)
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.addWidget(self.palette_panel)
@@ -3211,9 +3402,10 @@ class VippWidget(QWidget):
         self.thumbnail_colormap_combo.currentTextChanged.connect(
             self._update_thumbnails
         )
-        self.follow_dims_checkbox.toggled.connect(self._update_thumbnails)
+        self.follow_dims_checkbox.toggled.connect(self._on_follow_dims_toggled)
         self.graph_zoom_slider.valueChanged.connect(self._on_graph_zoom_slider_changed)
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
+        self.view_dims_bar.value_changed.connect(self._on_view_dim_changed)
         self.calculate_button.clicked.connect(self._calculate_selected_node)
         self.auto_recalculate_checkbox.toggled.connect(
             self._on_auto_recalculate_toggled
@@ -3300,6 +3492,12 @@ class VippWidget(QWidget):
         )
         with QSignalBlocker(self.graph_zoom_slider):
             self.graph_zoom_slider.setValue(clipped)
+
+    def _on_follow_dims_toggled(self, _checked: bool) -> None:
+        self._update_thumbnails()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_view_dims_bar()
 
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
@@ -4857,6 +5055,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._inspect_selected_node()
         self._keep_active_pin_on_top()
+        self._sync_view_dims_bar()
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
@@ -7239,6 +7438,7 @@ class VippWidget(QWidget):
             self._restore_hidden_input_layers()
             self.pipeline.run(None)
             self._update_thumbnails()
+            self._sync_view_dims_bar()
             self._update_metadata_panel()
             self._update_histogram()
             self._sync_execution_ui()
@@ -7382,6 +7582,7 @@ class VippWidget(QWidget):
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()
         self._refresh_pinned_layer_if_active()
+        self._sync_view_dims_bar()
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
@@ -7700,7 +7901,183 @@ class VippWidget(QWidget):
         else:
             self.pipeline_busy_label.setText("Processing graph")
 
+    def _sync_view_dims_bar(self) -> None:
+        if self._syncing_view_dims_bar:
+            return
+        self._syncing_view_dims_bar = True
+        try:
+            self.view_dims_bar.set_axes(self._view_dim_axes())
+        finally:
+            self._syncing_view_dims_bar = False
+
+    def _view_dim_axes(self) -> list[ViewDimAxis]:
+        state = self._view_dims_state()
+        if state is None or not getattr(state, "axes", None):
+            return []
+        current_step = self._current_step()
+        if current_step is None:
+            return []
+        current_nsteps = self._current_step_nsteps()
+        axes: list[ViewDimAxis] = []
+        for axis_index, (axis, size) in enumerate(
+            zip(state.axes, state.shape, strict=False)
+        ):
+            axis_name = str(getattr(axis, "name", "")).lower()
+            if axis_name in {"x", "y", "rgb", "rgba"} or int(size) <= 1:
+                continue
+            step_axis = self._state_axis_to_step_axis(state, axis_index, current_step)
+            if step_axis is None or step_axis < 0:
+                continue
+            step_size = (
+                int(current_nsteps[step_axis])
+                if current_nsteps is not None and step_axis < len(current_nsteps)
+                else int(size)
+            )
+            step_value = (
+                int(current_step[step_axis]) if step_axis < len(current_step) else 0
+            )
+            value = _local_dim_value_from_viewer(
+                step_value,
+                axis_size=int(size),
+                viewer_axis_size=step_size,
+            )
+            label = axis_name.upper() if len(axis_name) == 1 else str(axis.name)
+            axes.append(
+                ViewDimAxis(
+                    name=str(axis.name),
+                    label=label,
+                    step_axis=int(step_axis),
+                    size=int(size),
+                    value=value,
+                )
+            )
+        return axes
+
+    def _view_dims_state(self):
+        if self._active_pinned_node_id in self.pipeline.output_states:
+            data = self.pipeline.outputs.get(self._active_pinned_node_id)
+            state = self.pipeline.output_states.get(self._active_pinned_node_id)
+            if state is not None and data is not None and not is_table_data(data):
+                return state
+        data = self.pipeline.outputs.get(self._selected_node_id)
+        state = self.pipeline.output_states.get(self._selected_node_id)
+        if state is not None and data is not None and not is_table_data(data):
+            return state
+        data = self.pipeline.outputs.get("input")
+        state = self.pipeline.output_states.get("input")
+        if state is not None and data is not None and not is_table_data(data):
+            return state
+        return None
+
+    def _on_view_dim_changed(self, step_axis: int, local_value: int) -> None:
+        if self._syncing_view_dims_bar:
+            return
+        matching_axis = next(
+            (
+                axis
+                for axis in self._view_dim_axes()
+                if int(axis.step_axis) == int(step_axis)
+            ),
+            None,
+        )
+        if matching_axis is None:
+            return
+        current_nsteps = self._current_step_nsteps()
+        step_size = (
+            int(current_nsteps[int(step_axis)])
+            if current_nsteps is not None and int(step_axis) < len(current_nsteps)
+            else int(matching_axis.size)
+        )
+        step_value = _viewer_dim_value_from_local(
+            int(local_value),
+            axis_size=int(matching_axis.size),
+            viewer_axis_size=step_size,
+        )
+        self._set_current_step_axis(int(step_axis), step_value)
+        self._sync_view_dims_bar()
+
+    def _set_raw_current_step(self, axis: int, value: int) -> None:
+        try:
+            self.viewer.dims.set_current_step(int(axis), int(value))
+            return
+        except Exception:
+            pass
+        try:
+            current = list(self.viewer.dims.current_step)
+            while len(current) <= int(axis):
+                current.append(0)
+            current[int(axis)] = int(value)
+            self.viewer.dims.current_step = tuple(current)
+            try:
+                self.viewer.dims.events.current_step.emit()
+            except Exception:
+                pass
+        except Exception:
+            return
+
+    def _state_axis_to_step_axis(
+        self,
+        state,
+        axis_index: int,
+        current_step: tuple,
+    ) -> int | None:
+        try:
+            source_axis = state.axes[axis_index].source_axis
+        except Exception:
+            source_axis = None
+        if source_axis is not None:
+            return int(source_axis)
+        visible_indices = [
+            index
+            for index, axis in enumerate(getattr(state, "axes", ()))
+            if str(getattr(axis, "name", "")).lower() not in {"rgb", "rgba"}
+        ]
+        if axis_index not in visible_indices:
+            return None
+        offset = max(len(tuple(current_step)) - len(visible_indices), 0)
+        return offset + visible_indices.index(axis_index)
+
+    def _set_current_step_axis(self, step_axis: int, value: int) -> None:
+        raw_axis = self._raw_axis_for_current_step_axis(step_axis)
+        self._set_raw_current_step(raw_axis, int(value))
+
+    def _raw_axis_for_current_step_axis(self, step_axis: int) -> int:
+        raw_step = self._raw_current_step()
+        if raw_step is None:
+            return int(step_axis)
+        layer = self._layer_by_name(self._inspect_layer_name)
+        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
+        if not isinstance(metadata, dict):
+            return int(step_axis)
+        node_id = metadata.get("node_id")
+        state = self.pipeline.output_states.get(node_id)
+        axes = tuple(getattr(state, "axes", ()))
+        if not axes:
+            return int(step_axis)
+        display_axis_indices = [
+            index
+            for index, axis in enumerate(axes)
+            if not _state_axis_hidden_from_napari_dims(axis, metadata)
+        ]
+        if not display_axis_indices:
+            return int(step_axis)
+        offset = max(len(tuple(raw_step)) - len(display_axis_indices), 0)
+        for display_position, state_axis_index in enumerate(display_axis_indices):
+            raw_axis = offset + display_position
+            if raw_axis < 0 or raw_axis >= len(raw_step):
+                continue
+            try:
+                source_axis = axes[state_axis_index].source_axis
+            except Exception:
+                source_axis = None
+            if source_axis is None:
+                source_axis = state_axis_index
+            if int(source_axis) == int(step_axis):
+                return int(raw_axis)
+        return int(step_axis)
+
     def _on_dims_changed(self, _event=None) -> None:
+        self._sync_view_dims_bar()
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
@@ -8261,6 +8638,7 @@ class VippWidget(QWidget):
         self._move_generated_layers_to_top(layer_name)
         self._active_pinned_node_id = node_id
         self._sync_pin_ui()
+        self._sync_view_dims_bar()
 
     def _clear_active_pin(self, status: bool) -> None:
         title = (
@@ -8272,6 +8650,7 @@ class VippWidget(QWidget):
             self._remove_layer(layer)
         self._active_pinned_node_id = None
         self._sync_pin_ui()
+        self._sync_view_dims_bar()
         if status and title is not None:
             self.status_label.setText(f"Unpinned '{title}'.")
 
@@ -8415,6 +8794,8 @@ class VippWidget(QWidget):
             if axis < len(nsteps):
                 upper = max(int(nsteps[axis]) - 1, 0)
                 value = int(np.clip(value, 0, upper))
+            if axis < len(current) and int(current[axis]) == int(value):
+                continue
             try:
                 dims.set_current_step(axis, int(value))
             except Exception:
@@ -9269,6 +9650,42 @@ def _rgb_channel_contrast_limits(data) -> tuple[float, float] | None:
     if np.issubdtype(arr.dtype, np.integer):
         return (0.0, high)
     return (0.0, max(high, 1.0))
+
+
+def _local_dim_value_from_viewer(
+    viewer_value: int,
+    *,
+    axis_size: int,
+    viewer_axis_size: int,
+) -> int:
+    axis_size = max(int(axis_size), 1)
+    viewer_axis_size = max(int(viewer_axis_size), 1)
+    if axis_size == viewer_axis_size:
+        return int(np.clip(viewer_value, 0, axis_size - 1))
+    source_max = max(viewer_axis_size - 1, 0)
+    target_max = max(axis_size - 1, 0)
+    if source_max <= 0 or target_max <= 0:
+        return 0
+    ratio = float(np.clip(viewer_value, 0, source_max)) / float(source_max)
+    return int(np.clip(round(ratio * target_max), 0, target_max))
+
+
+def _viewer_dim_value_from_local(
+    local_value: int,
+    *,
+    axis_size: int,
+    viewer_axis_size: int,
+) -> int:
+    axis_size = max(int(axis_size), 1)
+    viewer_axis_size = max(int(viewer_axis_size), 1)
+    if axis_size == viewer_axis_size:
+        return int(np.clip(local_value, 0, viewer_axis_size - 1))
+    source_max = max(axis_size - 1, 0)
+    target_max = max(viewer_axis_size - 1, 0)
+    if source_max <= 0 or target_max <= 0:
+        return 0
+    ratio = float(np.clip(local_value, 0, source_max)) / float(source_max)
+    return int(np.clip(round(ratio * target_max), 0, target_max))
 
 
 def _histogram_source(

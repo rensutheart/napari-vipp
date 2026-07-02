@@ -7,6 +7,12 @@
   deviation, min/max, and quartiles for selected numeric columns.
 - Added a deterministic `VIPP synthetic measurement summary` sample plus an
   example workflow for validating grouped object-count and area summaries.
+- Added a responsive `View dims` bar with VIPP-local T/Z/C-style controls that
+  synchronize with napari dims and remain usable when napari hides slice sliders
+  in 3D view.
+- Fixed `View dims` synchronization for downstream nodes that drop axes, such as
+  Split Channels -> Gaussian Blur, so the VIPP Z/T/C controls continue driving
+  the same source napari dimension.
 - Added skeleton QC and cleanup nodes: `Skeleton Keypoints`, `Label Skeleton
   Components`, `Label Skeleton Branches`, and `Prune Skeleton Branches`.
 - Added `Skeleton Graph Overlay` for RGB edge/node visualization and

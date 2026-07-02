@@ -5,12 +5,29 @@ view.
 
 ## Toolbar Controls
 
+### View dims
+
+When the active image has non-XY axes such as `T`, `Z`, or `C`, VIPP shows a
+`View dims` bar above the graph. These controls mirror napari's dimension
+sliders and remain usable when napari's own Z slider is hidden in 3D view.
+
+Moving a VIPP slider updates the napari viewer. Moving a napari slider updates
+the VIPP slider. For downstream nodes whose axis length differs from the source
+image, for example after `Rescale Axes`, VIPP shows the node's local axis range
+and maps it to the equivalent relative napari position. For nodes that drop an
+axis, for example `Split Channels`, VIPP still maps the remaining axes back to
+their original source dimensions, so the `Z` control continues to scrub the same
+stack axis downstream.
+
+In narrow dock layouts, the bar first hides the full sliders, then collapses to
+a `View dims...` menu containing the same controls.
+
 ### Follow napari dims
 
 - On (default): previews, slice histograms, and the Current view metadata track
-  the current napari dims position (for example T and Z).
+  the current napari/VIPP dims position (for example T and Z).
 - Off: these panels use a stable/default sampling context instead of following
-  napari sliders.
+  napari or VIPP sliders.
 
 Use On for normal interactive work. Use Off when you want a stable reference
 view while scrubbing dims or comparing parameter changes.

@@ -62,9 +62,26 @@ class _DimsEvents:
 
 
 class _Dims:
-    def __init__(self):
-        self.current_step = (0, 0, 0)
+    def __init__(self, shape=(4, 16, 18)):
+        self.nsteps = tuple(int(size) for size in shape)
+        self.current_step = tuple(0 for _ in self.nsteps)
         self.events = _DimsEvents()
+
+    def set_current_step(self, axis, value):
+        current = list(self.current_step)
+        while len(current) <= int(axis):
+            current.append(0)
+        upper = (
+            max(int(self.nsteps[int(axis)]) - 1, 0)
+            if int(axis) < len(self.nsteps)
+            else int(value)
+        )
+        new_value = int(np.clip(value, 0, upper))
+        if current[int(axis)] == new_value:
+            return
+        current[int(axis)] = new_value
+        self.current_step = tuple(current)
+        self.events.current_step.emit()
 
 
 class _Layer:
@@ -109,7 +126,7 @@ class _Viewer:
         if data is None:
             data = np.zeros((4, 16, 18), dtype=np.float32)
         self.layers = _LayerList([_Layer(data, "input volume", metadata=metadata)])
-        self.dims = _Dims()
+        self.dims = _Dims(np.asarray(data).shape)
 
     def add_image(self, data, **kwargs):
         layer = _Layer(
@@ -198,6 +215,13 @@ def _metadata_value(widget, label):
         if label_item is not None and label_item.text() == label:
             return value_item.text() if value_item is not None else ""
     raise AssertionError(f"Metadata row not found: {label}")
+
+
+def _view_dim_control(widget, label):
+    for control in widget.view_dims_bar._controls:
+        if control.label.text() == label:
+            return control
+    raise AssertionError(f"View dim control not found: {label}")
 
 
 def _graph_view_center(view):
@@ -569,6 +593,153 @@ def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer.dims.events.current_step.emit()
 
     assert _metadata_value(widget, "Current view") == "t=4/4, c=0/2, z=1/3"
+
+
+def test_view_dims_bar_exposes_semantic_axes_and_syncs_napari(qtbot):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    viewer.dims.current_step = (1, 2, 3, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert not widget.view_dims_bar.isHidden()
+    view_axes = [
+        (axis.label, axis.size, axis.value) for axis in widget.view_dims_bar._axes
+    ]
+    assert view_axes == [
+        ("T", 5, 1),
+        ("C", 3, 2),
+        ("Z", 4, 3),
+    ]
+
+    z_control = _view_dim_control(widget, "Z")
+    z_control.spin.setValue(1)
+
+    assert viewer.dims.current_step == (1, 2, 1, 0, 0)
+    assert _metadata_value(widget, "Current view") == "t=1/4, c=2/2, z=1/3"
+
+    viewer.dims.set_current_step(0, 4)
+
+    assert _view_dim_control(widget, "T").spin.value() == 4
+    assert _metadata_value(widget, "Current view") == "t=4/4, c=2/2, z=1/3"
+
+
+def test_view_dims_bar_syncs_after_selecting_axis_dropped_node(qtbot):
+    viewer = _Viewer(
+        np.zeros((3, 12, 16, 18), dtype=np.uint16),
+        metadata={"axes": "CZYX"},
+    )
+    viewer.dims.current_step = (1, 4, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    blur = widget.add_node_from_palette("gaussian_blur")
+    widget._connect_nodes("input", split.id)
+    widget._connect_nodes(split.id, blur.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(blur.id)
+
+    view_axes = [
+        (axis.label, axis.size, axis.value) for axis in widget.view_dims_bar._axes
+    ]
+    assert view_axes == [
+        ("Z", 12, 4),
+    ]
+
+    _view_dim_control(widget, "Z").spin.setValue(7)
+
+    assert viewer.dims.current_step == (1, 7, 0, 0)
+    assert _metadata_value(widget, "Current view") == "z=7/11"
+
+
+def test_view_dims_bar_hides_for_plain_2d_images(qtbot):
+    viewer = _Viewer(np.zeros((16, 18), dtype=np.uint16), metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("input")
+
+    assert widget.view_dims_bar.isHidden()
+    assert widget.view_dims_bar._axes == ()
+
+
+def test_view_dims_bar_responsive_modes(qtbot):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.view_dims_bar.resize(1000, 32)
+    widget.view_dims_bar.sync_responsive_mode()
+    assert not widget.view_dims_bar.menu_button.isVisible()
+    assert not _view_dim_control(widget, "Z").slider.isHidden()
+
+    widget.view_dims_bar.resize(450, 32)
+    widget.view_dims_bar.sync_responsive_mode()
+    assert not widget.view_dims_bar.menu_button.isHidden()
+    assert _view_dim_control(widget, "Z").slider.isHidden()
+    assert not _view_dim_control(widget, "Z").spin.isHidden()
+
+    widget.view_dims_bar.resize(260, 32)
+    widget.view_dims_bar.sync_responsive_mode()
+    assert not widget.view_dims_bar.menu_button.isHidden()
+    assert _view_dim_control(widget, "Z").isHidden()
+
+
+def test_view_dims_bar_maps_rescaled_axis_values_to_viewer_steps(qtbot):
+    viewer = _Viewer(np.zeros((12, 16, 18), dtype=np.uint16), metadata={"axes": "ZYX"})
+    viewer.dims.current_step = (11, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_axes")
+    widget.pipeline.set_param(node.id, "z_scale", 0.5)
+    widget._connect_nodes("input", node.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(node.id)
+
+    assert widget.pipeline.outputs[node.id].shape[0] == 6
+    view_axes = [
+        (axis.label, axis.size, axis.value) for axis in widget.view_dims_bar._axes
+    ]
+    assert view_axes == [
+        ("Z", 6, 5),
+    ]
+
+    _view_dim_control(widget, "Z").spin.setValue(3)
+
+    assert viewer.dims.current_step[0] == 7
+
+
+def test_view_dims_bar_uses_pinned_image_context_first(qtbot):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    projection = widget.add_node_from_palette("mip")
+    widget._connect_nodes("input", projection.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("input")
+
+    assert [axis.label for axis in widget.view_dims_bar._axes] == ["T", "C", "Z"]
+
+    widget.pin_node(projection.id)
+
+    assert [axis.label for axis in widget.view_dims_bar._axes] == ["C", "Z"]
+
+    widget.pin_node(projection.id)
+
+    assert [axis.label for axis in widget.view_dims_bar._axes] == ["T", "C", "Z"]
 
 
 def test_napari_layer_source_axes_are_right_aligned_to_viewer_dims(qtbot):
