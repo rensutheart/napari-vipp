@@ -32,6 +32,9 @@ from napari_vipp.core.operations import (
     clear_border_objects,
     clip_intensity,
     closing,
+    colocalization_metrics,
+    colocalization_threshold_values,
+    colocalized_voxels,
     combine_channels,
     composite_to_rgb,
     convert_dtype,
@@ -81,6 +84,7 @@ from napari_vipp.core.operations import (
     otsu_threshold,
     project_image,
     prune_skeleton_branches,
+    racc_index,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
@@ -255,6 +259,7 @@ MATH_LOGIC_GROUP = "Math & Logic"
 LABEL_OPERATIONS_CATEGORY = "Label Operations"
 MEASUREMENTS_CATEGORY = "Measurements"
 SKELETON_NETWORK_GROUP = "Skeleton / Network QC"
+COLOCALIZATION_CATEGORY = "Colocalization & Spatial Analysis"
 FILTERING_CATEGORY = "Filtering"
 SEGMENTATION_CATEGORY = "Segmentation"
 SMOOTHING_DENOISING_GROUP = "Smoothing & Denoising"
@@ -275,6 +280,14 @@ GLOBAL_THRESHOLD_OPERATIONS = {
     "yen_threshold",
     "isodata_threshold",
     "minimum_threshold",
+}
+COLOCALIZATION_THRESHOLD_OPERATIONS = {
+    "colocalization_metrics",
+    "masked_colocalization_metrics",
+    "colocalized_voxels",
+    "masked_colocalized_voxels",
+    "racc_index",
+    "masked_racc_index",
 }
 
 SOURCE_PARAMETERS = (
@@ -2016,6 +2029,411 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=SKELETON_NETWORK_GROUP,
     ),
     OperationSpec(
+        "colocalization_metrics",
+        "Colocalization Metrics",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "table",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+        ),
+        colocalization_metrics,
+        max_inputs=2,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "masked_colocalization_metrics",
+        "Masked Colocalization Metrics",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "table",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+        ),
+        colocalization_metrics,
+        max_inputs=3,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+            InputSpec("roi_mask", "mask_or_labels", "ROI mask"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "colocalized_voxels",
+        "Colocalized Voxels",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "display_mode",
+                "Display mode",
+                "choice",
+                "White overlay on channels",
+                0,
+                0,
+                1,
+                choices=(
+                    "White overlay on channels",
+                    "White on black",
+                    "Channel colors only",
+                ),
+            ),
+            ParameterSpec(
+                "channel_1_color",
+                "Channel 1 colour",
+                "choice",
+                "Red",
+                0,
+                0,
+                1,
+                choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+            ),
+            ParameterSpec(
+                "channel_2_color",
+                "Channel 2 colour",
+                "choice",
+                "Green",
+                0,
+                0,
+                1,
+                choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+            ),
+        ),
+        colocalized_voxels,
+        max_inputs=2,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
+    ),
+    OperationSpec(
+        "masked_colocalized_voxels",
+        "Masked Colocalized Voxels",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "display_mode",
+                "Display mode",
+                "choice",
+                "White overlay on channels",
+                0,
+                0,
+                1,
+                choices=(
+                    "White overlay on channels",
+                    "White on black",
+                    "Channel colors only",
+                ),
+            ),
+            ParameterSpec(
+                "channel_1_color",
+                "Channel 1 colour",
+                "choice",
+                "Red",
+                0,
+                0,
+                1,
+                choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+            ),
+            ParameterSpec(
+                "channel_2_color",
+                "Channel 2 colour",
+                "choice",
+                "Green",
+                0,
+                0,
+                1,
+                choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+            ),
+        ),
+        colocalized_voxels,
+        max_inputs=3,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+            InputSpec("roi_mask", "mask_or_labels", "ROI mask"),
+        ),
+    ),
+    OperationSpec(
+        "racc_index",
+        "RACC Index",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "theta_degrees",
+                "Theta (degrees)",
+                "float",
+                45.0,
+                0.0,
+                89.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "include_percentile",
+                "Included percentile",
+                "float",
+                99.0,
+                1.0,
+                100.0,
+                0.5,
+                2,
+            ),
+            ParameterSpec(
+                "output_dtype",
+                "Output dtype",
+                "choice",
+                "float32",
+                0,
+                0,
+                1,
+                choices=("float32", "uint8"),
+            ),
+        ),
+        racc_index,
+        max_inputs=2,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "masked_racc_index",
+        "Masked RACC Index",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "theta_degrees",
+                "Theta (degrees)",
+                "float",
+                45.0,
+                0.0,
+                89.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "include_percentile",
+                "Included percentile",
+                "float",
+                99.0,
+                1.0,
+                100.0,
+                0.5,
+                2,
+            ),
+            ParameterSpec(
+                "output_dtype",
+                "Output dtype",
+                "choice",
+                "float32",
+                0,
+                0,
+                1,
+                choices=("float32", "uint8"),
+            ),
+        ),
+        racc_index,
+        max_inputs=3,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+            InputSpec("roi_mask", "mask_or_labels", "ROI mask"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "merge_tables",
         "Merge Tables",
         MEASUREMENTS_CATEGORY,
@@ -3056,6 +3474,15 @@ class PrototypePipeline:
         primary = connections[0]
         return self._resolved_output(primary.source_id, primary.source_port)
 
+    def input_data_by_port_for_node(self, node_id: str) -> dict[int, Any]:
+        return {
+            int(connection.target_port): self._resolved_output(
+                connection.source_id,
+                connection.source_port,
+            )
+            for connection in self._input_connections(node_id)
+        }
+
     def input_state_for_node(self, node_id: str) -> ImageState | None:
         connections = self._input_connections(node_id)
         if not connections:
@@ -3160,6 +3587,28 @@ class PrototypePipeline:
 
     def _operation_kwargs(self, node: GraphNode) -> dict[str, Any]:
         return self._public_params(node.params)
+
+    def _sync_colocalization_costes_thresholds(
+        self,
+        node: GraphNode,
+        inputs: list[Any],
+        kwargs: dict[str, Any],
+    ) -> None:
+        if node.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS:
+            return
+        if not str(kwargs.get("threshold_mode", "Manual")).lower().startswith("costes"):
+            return
+        threshold_1, threshold_2 = colocalization_threshold_values(
+            inputs,
+            threshold_mode=kwargs.get("threshold_mode", "Costes auto"),
+            channel_1_threshold=kwargs.get("channel_1_threshold", 25.0),
+            channel_2_threshold=kwargs.get("channel_2_threshold", 25.0),
+            intensity_max=kwargs.get("intensity_max", 255.0),
+        )
+        kwargs["channel_1_threshold"] = float(threshold_1)
+        kwargs["channel_2_threshold"] = float(threshold_2)
+        node.params["channel_1_threshold"] = float(threshold_1)
+        node.params["channel_2_threshold"] = float(threshold_2)
 
     def run(
         self,
@@ -3451,6 +3900,11 @@ class PrototypePipeline:
                     kwargs["axis_types"] = tuple(
                         axis.type for axis in labels_state.axes
                     )
+            self._sync_colocalization_costes_thresholds(
+                node,
+                source_outputs,
+                kwargs,
+            )
             output = spec.function(source_outputs, **kwargs)
             if spec.output_type == "table":
                 history = _table_history(input_states, node.title, output)

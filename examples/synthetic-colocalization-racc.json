@@ -1,0 +1,218 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic colocalization",
+        "series_index": 0,
+        "channel_colors": "Red,Green",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 0
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 5000
+      }
+    },
+    {
+      "id": "colocalized_voxels_1",
+      "operation_id": "colocalized_voxels",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "colocalization_metrics_1",
+      "operation_id": "colocalization_metrics",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "racc_index_1",
+      "operation_id": "racc_index",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "theta_degrees": 45,
+        "include_percentile": 99,
+        "output_dtype": "float32"
+      }
+    },
+    {
+      "id": "masked_colocalized_voxels_1",
+      "operation_id": "masked_colocalized_voxels",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "display_mode": "White overlay on channels",
+        "channel_1_color": "Red",
+        "channel_2_color": "Green"
+      }
+    },
+    {
+      "id": "masked_colocalization_metrics_1",
+      "operation_id": "masked_colocalization_metrics",
+      "params": {
+        "threshold_mode": "Costes auto",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "masked_racc_index_1",
+      "operation_id": "masked_racc_index",
+      "params": {
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35,
+        "theta_degrees": 45,
+        "include_percentile": 99,
+        "output_dtype": "float32"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "racc_index_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "racc_index_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalized_voxels_1",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_colocalization_metrics_1",
+      "target_port": 2,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_racc_index_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "masked_racc_index_1",
+      "target_port": 1,
+      "source_port": 1
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "masked_racc_index_1",
+      "target_port": 2,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 20.0],
+    "split_channels_1": [330.0, 20.0],
+    "binary_threshold_1": [660.0, -180.0],
+    "colocalized_voxels_1": [660.0, 80.0],
+    "colocalization_metrics_1": [990.0, -40.0],
+    "racc_index_1": [990.0, 180.0],
+    "masked_colocalized_voxels_1": [1320.0, -180.0],
+    "masked_colocalization_metrics_1": [1650.0, -270.0],
+    "masked_racc_index_1": [1650.0, -40.0]
+  },
+  "view": {
+    "zoom": 1.0,
+    "pan": [0.0, 0.0]
+  }
+}

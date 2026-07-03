@@ -48,6 +48,11 @@ ADVANCED_SKELETON_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-advanced-skeleton-network.json"
 )
+COLOCALIZATION_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-colocalization-racc.json"
+)
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():
@@ -423,3 +428,69 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
         np.count_nonzero(binary)
     )
     assert all(record["physical_unit"] == "micrometer" for record in summary_records)
+
+
+def test_synthetic_colocalization_workflow_loads_and_runs():
+    workflow = load_workflow(COLOCALIZATION_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic colocalization"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    overlay = outputs["colocalized_voxels_1"]
+    metrics = outputs["colocalization_metrics_1"]
+    racc = outputs["racc_index_1"]
+    roi_mask = outputs["binary_threshold_1"]
+    masked_overlay = outputs["masked_colocalized_voxels_1"]
+    masked_metrics = outputs["masked_colocalization_metrics_1"]
+    masked_racc = outputs["masked_racc_index_1"]
+    record = metrics.records()[0]
+    masked_record = masked_metrics.records()[0]
+
+    assert (
+        pipeline.input_ports("colocalization_metrics_1")[0].label
+        == "Channel 1 image"
+    )
+    assert (
+        pipeline.input_ports("masked_colocalization_metrics_1")[2].label
+        == "ROI mask"
+    )
+    assert overlay.shape == data.shape[1:] + (3,)
+    assert overlay.dtype == np.float32
+    assert roi_mask.shape == data.shape[1:]
+    assert roi_mask.dtype == bool
+    assert masked_overlay.shape == data.shape[1:] + (3,)
+    assert metrics.row_count == 1
+    assert masked_metrics.row_count == 1
+    assert record["colocalized_voxels"] > 0
+    assert record["channel_1_positive_voxels"] > record["colocalized_voxels"]
+    assert record["channel_2_positive_voxels"] > record["colocalized_voxels"]
+    assert "manders_m1" in metrics.columns
+    assert masked_record["mask_restricted"] is True
+    assert masked_record["total_voxels"] == int(np.count_nonzero(roi_mask))
+    assert masked_record["colocalized_voxels"] > 0
+    assert racc.shape == data.shape[1:]
+    assert racc.dtype == np.float32
+    assert float(racc.max()) > 0.0
+    assert masked_racc.shape == data.shape[1:]
+    assert masked_racc.dtype == np.float32
+    assert float(masked_racc.max()) > 0.0
+    assert not np.isclose(
+        pipeline.nodes["colocalization_metrics_1"].params["channel_1_threshold"],
+        35,
+    )
+    assert not np.isclose(
+        pipeline.nodes["masked_colocalization_metrics_1"].params[
+            "channel_1_threshold"
+        ],
+        35,
+    )

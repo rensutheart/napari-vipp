@@ -25,6 +25,10 @@ from napari_vipp.core.operations import (
     clear_border_objects,
     clip_intensity,
     closing,
+    colocalization_metrics,
+    colocalization_scatter_plot,
+    colocalization_threshold_values,
+    colocalized_voxels,
     combine_channels,
     composite_to_rgb,
     convert_dtype,
@@ -72,6 +76,7 @@ from napari_vipp.core.operations import (
     otsu_threshold,
     project_image,
     prune_skeleton_branches,
+    racc_index,
     ratio_image,
     relabel_sequential,
     remove_small_objects,
@@ -182,6 +187,12 @@ def test_vipp_operation_nodes_are_registered():
         "label_skeleton_branches",
         "prune_skeleton_branches",
         "assign_channel_colors",
+        "colocalization_metrics",
+        "masked_colocalization_metrics",
+        "colocalized_voxels",
+        "masked_colocalized_voxels",
+        "racc_index",
+        "masked_racc_index",
         "merge_tables",
         "add_metadata_columns",
         "select_table_columns",
@@ -703,6 +714,106 @@ def test_select_table_columns_keeps_drops_and_reorders_columns():
     )
     assert empty.columns == ()
     assert empty.rows == ((), ())
+
+
+def test_colocalization_metrics_overlay_scatter_and_racc_outputs():
+    channel_1 = np.zeros((5, 6), dtype=np.uint16)
+    channel_2 = np.zeros((5, 6), dtype=np.uint16)
+    channel_1[1:3, 1:3] = np.asarray([[80, 100], [120, 140]], dtype=np.uint16)
+    channel_2[1:3, 1:3] = np.asarray([[90, 110], [130, 150]], dtype=np.uint16)
+    channel_1[3, 1] = 150
+    channel_2[3, 4] = 150
+
+    table = colocalization_metrics(
+        [channel_1, channel_2],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+    )
+    record = table.records()[0]
+
+    assert table.table_kind == "colocalization metrics"
+    assert record["threshold_mode"] == "Manual"
+    assert record["colocalized_voxels"] == 4
+    assert record["channel_1_positive_voxels"] == 5
+    assert record["channel_2_positive_voxels"] == 5
+    assert np.isclose(record["colocalized_fraction"], 4 / 30)
+    assert record["manders_m1"] > 0
+    assert record["manders_m2"] > 0
+
+    roi = np.zeros_like(channel_1, dtype=bool)
+    roi[1:4, 1:4] = True
+    masked_table = colocalization_metrics(
+        [channel_1, channel_2, roi],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+    )
+    masked_record = masked_table.records()[0]
+    assert masked_record["mask_restricted"] is True
+    assert masked_record["total_voxels"] == int(np.count_nonzero(roi))
+    assert masked_record["colocalized_voxels"] == 4
+
+    costes = colocalization_metrics(
+        [channel_1, channel_2],
+        threshold_mode="Costes auto",
+    )
+    costes_record = costes.records()[0]
+    assert 0 <= costes_record["channel_1_threshold"] <= 255
+    assert 0 <= costes_record["channel_2_threshold"] <= 255
+    assert costes_record["costes_iterations"] >= 0
+    threshold_1, threshold_2 = colocalization_threshold_values(
+        [channel_1, channel_2],
+        threshold_mode="Costes auto",
+    )
+    assert np.isclose(costes_record["channel_1_threshold"], threshold_1)
+    assert np.isclose(costes_record["channel_2_threshold"], threshold_2)
+
+    overlay = colocalized_voxels(
+        [channel_1, channel_2],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+        display_mode="White on black",
+    )
+    assert overlay.shape == channel_1.shape + (3,)
+    assert overlay.dtype == np.float32
+    assert np.allclose(overlay[1, 1], (1.0, 1.0, 1.0))
+    assert np.allclose(overlay[3, 1], (0.0, 0.0, 0.0))
+    masked_overlay = colocalized_voxels(
+        [channel_1, channel_2, roi],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+        display_mode="Channel colors only",
+    )
+    assert masked_overlay.shape == channel_1.shape + (3,)
+    assert np.allclose(masked_overlay[0, 0], (0.0, 0.0, 0.0))
+    assert float(masked_overlay[1, 1].max()) > 0.0
+
+    scatter = colocalization_scatter_plot(
+        [channel_1, channel_2],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+        bins=64,
+    )
+    assert scatter.shape == (512, 512, 3)
+    assert scatter.dtype == np.float32
+    assert float(scatter.max()) <= 1.0
+
+    index = racc_index(
+        [channel_1, channel_2],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+    )
+    assert index.shape == channel_1.shape
+    assert index.dtype == np.float32
+    assert float(index.max()) > 0.0
+    assert index[3, 1] == 0.0
+    masked_index = racc_index(
+        [channel_1, channel_2, roi],
+        channel_1_threshold=20,
+        channel_2_threshold=20,
+    )
+    assert masked_index.shape == channel_1.shape
+    assert masked_index[0, 0] == 0.0
+    assert masked_index[3, 4] == 0.0
 
 
 def test_summarize_measurements_groups_by_metadata_and_units():

@@ -22,7 +22,7 @@ from skimage import (
     transform,
 )
 
-from napari_vipp.core.channel_colors import channel_color_table
+from napari_vipp.core.channel_colors import channel_color_table, color_value_to_rgb
 from napari_vipp.core.io import write_image
 from napari_vipp.core.tables import TableData, table_from_columns
 
@@ -3019,6 +3019,239 @@ def split_channels(data, preview_channel: int = 0) -> list[np.ndarray]:
     moved = np.moveaxis(arr, axis, -1)
     count = moved.shape[-1]
     return [moved[..., index].copy() for index in range(count)]
+
+
+def colocalization_threshold_values(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    intensity_max: float = 255.0,
+) -> tuple[float, float]:
+    """Return the threshold pair used by a colocalization node."""
+    ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    threshold_1, threshold_2, _costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    return threshold_1, threshold_2
+
+
+def colocalization_normalized_inputs(
+    inputs,
+    intensity_max: float = 255.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, ...]]:
+    """Return normalized channel arrays and optional ROI mask for UI diagnostics."""
+    return _coloc_normalized_inputs_and_mask(inputs, intensity_max=intensity_max)
+
+
+def colocalization_metrics(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    intensity_max: float = 255.0,
+) -> TableData:
+    """Measure whole-image two-channel colocalization using normalized thresholds."""
+    ch1, ch2, roi_mask, warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    threshold_1, threshold_2, costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    if roi_mask is None:
+        roi_mask = np.ones(ch1.shape, dtype=bool)
+    roi_voxels = int(np.count_nonzero(roi_mask))
+    positive_1 = (ch1 >= threshold_1) & roi_mask
+    positive_2 = (ch2 >= threshold_2) & roi_mask
+    overlap = positive_1 & positive_2
+
+    sum_1_positive = float(np.sum(ch1[positive_1], dtype=np.float64))
+    sum_2_positive = float(np.sum(ch2[positive_2], dtype=np.float64))
+    sum_1_overlap = float(np.sum(ch1[overlap], dtype=np.float64))
+    sum_2_overlap = float(np.sum(ch2[overlap], dtype=np.float64))
+
+    columns = {
+        "threshold_mode": [str(threshold_mode)],
+        "channel_1_threshold": [float(threshold_1)],
+        "channel_2_threshold": [float(threshold_2)],
+        "threshold_units": [f"normalized_0_{_format_coloc_max(intensity_max)}"],
+        "mask_restricted": [roi_voxels != int(ch1.size)],
+        "total_voxels": [roi_voxels],
+        "channel_1_positive_voxels": [int(np.count_nonzero(positive_1))],
+        "channel_2_positive_voxels": [int(np.count_nonzero(positive_2))],
+        "colocalized_voxels": [int(np.count_nonzero(overlap))],
+        "colocalized_fraction": [
+            _safe_fraction(np.count_nonzero(overlap), roi_voxels)
+        ],
+        "pearson_all": [_pearson(ch1[roi_mask], ch2[roi_mask])],
+        "pearson_colocalized": [_pearson(ch1[overlap], ch2[overlap])],
+        "manders_m1": [_safe_fraction(sum_1_overlap, sum_1_positive)],
+        "manders_m2": [_safe_fraction(sum_2_overlap, sum_2_positive)],
+        "overlap_coefficient_all": [
+            _overlap_coefficient(ch1[roi_mask], ch2[roi_mask])
+        ],
+        "overlap_coefficient_colocalized": [
+            _overlap_coefficient(ch1[overlap], ch2[overlap])
+        ],
+        "channel_1_positive_sum": [sum_1_positive],
+        "channel_2_positive_sum": [sum_2_positive],
+        "colocalized_channel_1_sum": [sum_1_overlap],
+        "colocalized_channel_2_sum": [sum_2_overlap],
+        "costes_slope": [float("nan") if costes is None else costes["slope"]],
+        "costes_intercept": [
+            float("nan") if costes is None else costes["intercept"]
+        ],
+        "costes_pearson_below": [
+            float("nan") if costes is None else costes["pearson_below"]
+        ],
+        "costes_iterations": [0 if costes is None else int(costes["iterations"])],
+        "normalization_warnings": ["; ".join(warnings)],
+    }
+    return table_from_columns(
+        columns,
+        name="Colocalization metrics",
+        table_kind="colocalization metrics",
+        column_units={
+            "channel_1_threshold": f"normalized_0_{_format_coloc_max(intensity_max)}",
+            "channel_2_threshold": f"normalized_0_{_format_coloc_max(intensity_max)}",
+            "total_voxels": "voxels",
+            "channel_1_positive_voxels": "voxels",
+            "channel_2_positive_voxels": "voxels",
+            "colocalized_voxels": "voxels",
+        },
+    )
+
+
+def colocalized_voxels(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    display_mode: str = "White overlay on channels",
+    channel_1_color: str = "Red",
+    channel_2_color: str = "Green",
+    intensity_max: float = 255.0,
+) -> np.ndarray:
+    """Render threshold-colocalized voxels as a channel-last RGB image."""
+    ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    threshold_1, threshold_2, _costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    return _coloc_voxel_overlay(
+        ch1,
+        ch2,
+        threshold_1=threshold_1,
+        threshold_2=threshold_2,
+        display_mode=display_mode,
+        channel_1_color=channel_1_color,
+        channel_2_color=channel_2_color,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+
+
+def colocalization_scatter_plot(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    bins: int = 128,
+    log_counts: bool = True,
+    intensity_max: float = 255.0,
+) -> np.ndarray:
+    """Render a two-channel scatter-density image with threshold guides."""
+    ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    threshold_1, threshold_2, _costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    return _coloc_scatter_plot_image(
+        ch1,
+        ch2,
+        threshold_1=threshold_1,
+        threshold_2=threshold_2,
+        bins=bins,
+        log_counts=log_counts,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+
+
+def racc_index(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    theta_degrees: float = 45.0,
+    include_percentile: float = 99.0,
+    intensity_max: float = 255.0,
+    output_dtype: str = "float32",
+) -> np.ndarray:
+    """Compute a RACC-like index image from two thresholded channels.
+
+    The core calculation follows the same numerical model as the separate RACC
+    napari plugin, but is exposed here as a VIPP graph node so it can be
+    chained with VIPP preprocessing and export.
+    """
+    ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    threshold_1, threshold_2, _costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    output = _racc_index_image(
+        ch1,
+        ch2,
+        threshold_1=threshold_1,
+        threshold_2=threshold_2,
+        theta_degrees=theta_degrees,
+        include_percentile=include_percentile,
+        intensity_max=intensity_max,
+        roi_mask=roi_mask,
+    )
+    if str(output_dtype).strip().lower() == "uint8":
+        return np.round(np.clip(output, 0.0, 1.0) * 255.0).astype(np.uint8)
+    return output.astype(np.float32, copy=False)
 
 
 
@@ -7263,6 +7496,572 @@ def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:
             return np.ones(values.shape, dtype=np.float32)
         return np.zeros(values.shape, dtype=np.float32)
     return np.clip((values - lo) / (hi - lo), 0, 1).astype(np.float32)
+
+
+def _coloc_normalized_inputs(
+    inputs,
+    *,
+    intensity_max: float,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    ch1, ch2, _roi_mask, warnings = _coloc_normalized_inputs_and_mask(
+        inputs,
+        intensity_max=intensity_max,
+    )
+    return ch1, ch2, warnings
+
+
+def _coloc_normalized_inputs_and_mask(
+    inputs,
+    *,
+    intensity_max: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, ...]]:
+    values = list(inputs)
+    if len(values) < 2:
+        raise ValueError("Colocalization nodes require two image inputs.")
+    ch1 = _coloc_reduce_to_intensity(values[0])
+    ch2 = _coloc_reduce_to_intensity(values[1])
+    ch1, ch2, warnings = _normalize_coloc_channels(
+        ch1,
+        ch2,
+        output_max=intensity_max,
+    )
+    roi_mask = None
+    if len(values) >= 3 and values[2] is not None:
+        roi_mask = np.asarray(values[2]) > 0
+        if roi_mask.shape != ch1.shape:
+            raise ValueError(
+                f"ROI mask shape {roi_mask.shape} does not match channels {ch1.shape}."
+            )
+    return ch1, ch2, roi_mask, warnings
+
+
+def _coloc_reduce_to_intensity(data) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.ndim < 2:
+        raise ValueError("Colocalization nodes require at least 2D image data.")
+    if arr.ndim >= 3 and arr.shape[-1] in RGB_CHANNELS:
+        return np.max(arr[..., :3], axis=-1)
+    return arr
+
+
+def _normalize_coloc_channels(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    output_max: float,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    ch1 = np.asarray(channel_1, dtype=np.float32)
+    ch2 = np.asarray(channel_2, dtype=np.float32)
+    if ch1.shape != ch2.shape:
+        raise ValueError(f"Input shapes differ: {ch1.shape} vs {ch2.shape}.")
+    if not np.isfinite(ch1).any() or not np.isfinite(ch2).any():
+        raise ValueError("Both channels must contain finite values.")
+
+    output_max = max(float(output_max), 1.0)
+    warnings: list[str] = []
+    max_intensity = float(np.nanmax([np.nanmax(ch1), np.nanmax(ch2)]))
+    min_intensity = float(np.nanmin([np.nanmin(ch1), np.nanmin(ch2)]))
+    if min_intensity < 0:
+        warnings.append("Negative intensities were clipped to zero.")
+        ch1 = np.clip(ch1, 0.0, None)
+        ch2 = np.clip(ch2, 0.0, None)
+        max_intensity = float(np.nanmax([np.nanmax(ch1), np.nanmax(ch2)]))
+    if max_intensity <= 0:
+        raise ValueError("Both channels are empty or zero-valued.")
+    if max_intensity <= 1.0:
+        scale = output_max
+        warnings.append(
+            f"Input appeared normalized; scaled jointly to 0..{output_max:g}."
+        )
+    elif max_intensity > output_max:
+        scale = output_max / max_intensity
+        warnings.append(
+            f"Input maximum {max_intensity:g} exceeded {output_max:g}; "
+            f"scaled jointly to 0..{output_max:g}."
+        )
+    else:
+        scale = 1.0
+
+    ch1 = np.nan_to_num(ch1 * scale, nan=0.0, posinf=output_max, neginf=0.0)
+    ch2 = np.nan_to_num(ch2 * scale, nan=0.0, posinf=output_max, neginf=0.0)
+    return (
+        np.clip(ch1, 0.0, output_max).astype(np.float32, copy=False),
+        np.clip(ch2, 0.0, output_max).astype(np.float32, copy=False),
+        tuple(warnings),
+    )
+
+
+def _coloc_thresholds(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    *,
+    threshold_mode: str,
+    channel_1_threshold: float,
+    channel_2_threshold: float,
+    intensity_max: float,
+    roi_mask: np.ndarray | None = None,
+) -> tuple[float, float, dict[str, float] | None]:
+    mode = str(threshold_mode).strip().lower()
+    if mode.startswith("costes"):
+        threshold_ch1 = ch1[roi_mask] if roi_mask is not None else ch1
+        threshold_ch2 = ch2[roi_mask] if roi_mask is not None else ch2
+        costes = _costes_thresholds(
+            threshold_ch1,
+            threshold_ch2,
+            intensity_max=float(intensity_max),
+        )
+        return costes["threshold_1"], costes["threshold_2"], costes
+    return (
+        _clamp(float(channel_1_threshold), 0.0, float(intensity_max)),
+        _clamp(float(channel_2_threshold), 0.0, float(intensity_max)),
+        None,
+    )
+
+
+def _costes_thresholds(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    intensity_max: float,
+    max_iterations: int = 100,
+    tolerance: float = 1.0,
+) -> dict[str, float]:
+    if channel_1.size < 2:
+        raise ValueError("Costes thresholding requires at least two voxels.")
+    mean_x, mean_y, var_xx, var_yy, var_xy = _channel_moments(
+        channel_1,
+        channel_2,
+    )
+    slope = _costes_regression_slope(var_xx, var_yy, var_xy)
+    intercept = mean_y - slope * mean_x
+
+    max_x = float(np.nanmax(channel_1))
+    max_y = float(np.nanmax(channel_2))
+    min_x = float(np.nanmin(channel_1))
+    min_y = float(np.nanmin(channel_2))
+
+    if -1.0 < slope < 1.0:
+        threshold = abs(max_x + min_x) * 0.5
+        previous_threshold = max_x
+
+        def map_threshold(value: float) -> tuple[float, float]:
+            return value, value * slope + intercept
+
+    else:
+        threshold = abs(max_y + min_y) * 0.5
+        previous_threshold = max_y
+
+        def map_threshold(value: float) -> tuple[float, float]:
+            return (value - intercept) / slope, value
+
+    diff = abs(threshold - previous_threshold)
+    pearson_below = float("nan")
+    iterations = 0
+    threshold_1 = threshold_2 = 0.0
+    while iterations <= max_iterations and diff >= tolerance:
+        threshold_1, threshold_2 = map_threshold(threshold)
+        threshold_1 = _clamp(threshold_1, 0.0, intensity_max)
+        threshold_2 = _clamp(threshold_2, 0.0, intensity_max)
+        pearson_below = _pearson_below_threshold(
+            channel_1,
+            channel_2,
+            threshold_1,
+            threshold_2,
+        )
+        previous_threshold, old_diff = threshold, diff
+        if np.isfinite(pearson_below) and pearson_below > 0:
+            threshold -= old_diff * 0.5
+        else:
+            threshold += old_diff * 0.5
+        diff = abs(threshold - previous_threshold)
+        iterations += 1
+
+    threshold_1, threshold_2 = map_threshold(threshold)
+    threshold_1 = float(_round_and_clamp(threshold_1, 0.0, intensity_max))
+    threshold_2 = float(_round_and_clamp(threshold_2, 0.0, intensity_max))
+    pearson_below = _pearson_below_threshold(
+        channel_1,
+        channel_2,
+        threshold_1,
+        threshold_2,
+    )
+    return {
+        "threshold_1": threshold_1,
+        "threshold_2": threshold_2,
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "pearson_below": float(pearson_below),
+        "iterations": int(iterations),
+    }
+
+
+def _channel_moments(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+) -> tuple[float, float, float, float, float]:
+    n = float(channel_1.size)
+    sum_x = float(np.sum(channel_1, dtype=np.float64))
+    sum_y = float(np.sum(channel_2, dtype=np.float64))
+    mean_x = sum_x / n
+    mean_y = sum_y / n
+    sum_xx = float(np.sum(channel_1 * channel_1, dtype=np.float64))
+    sum_yy = float(np.sum(channel_2 * channel_2, dtype=np.float64))
+    sum_xy = float(np.sum(channel_1 * channel_2, dtype=np.float64))
+    var_xx = max(sum_xx / n - mean_x * mean_x, 0.0)
+    var_yy = max(sum_yy / n - mean_y * mean_y, 0.0)
+    var_xy = sum_xy / n - mean_x * mean_y
+    return mean_x, mean_y, var_xx, var_yy, var_xy
+
+
+def _costes_regression_slope(var_xx: float, var_yy: float, var_xy: float) -> float:
+    eps = np.finfo(float).eps
+    if abs(var_xy) <= eps:
+        if var_xx > eps and var_yy > eps:
+            return float(np.sqrt(var_yy / var_xx))
+        return 1.0
+    delta = var_yy - var_xx
+    root = float(np.sqrt(delta * delta + 4.0 * var_xy * var_xy))
+    slope = (delta + root) / (2.0 * var_xy)
+    if not np.isfinite(slope) or abs(slope) <= eps:
+        raise ValueError("Could not fit a Costes regression slope.")
+    return float(slope)
+
+
+def _pearson_below_threshold(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    threshold_1: float,
+    threshold_2: float,
+) -> float:
+    mask = (channel_1 < threshold_1) | (channel_2 < threshold_2)
+    count = int(np.count_nonzero(mask))
+    if count < 2:
+        return float("nan")
+    inv_count = 1.0 / count
+    sum_x = float(np.sum(channel_1, where=mask, dtype=np.float64))
+    sum_y = float(np.sum(channel_2, where=mask, dtype=np.float64))
+    sum_xx = float(np.sum(channel_1 * channel_1, where=mask, dtype=np.float64))
+    sum_yy = float(np.sum(channel_2 * channel_2, where=mask, dtype=np.float64))
+    sum_xy = float(np.sum(channel_1 * channel_2, where=mask, dtype=np.float64))
+    numerator = sum_xy - sum_x * sum_y * inv_count
+    denom_x = sum_xx - sum_x * sum_x * inv_count
+    denom_y = sum_yy - sum_y * sum_y * inv_count
+    denominator = denom_x * denom_y
+    if denominator <= np.finfo(float).eps:
+        return float("nan")
+    return float(numerator / np.sqrt(denominator))
+
+
+def _pearson(channel_1: np.ndarray, channel_2: np.ndarray) -> float:
+    x = np.asarray(channel_1, dtype=np.float64).ravel()
+    y = np.asarray(channel_2, dtype=np.float64).ravel()
+    if x.size < 2 or y.size < 2:
+        return float("nan")
+    x = x - float(np.mean(x))
+    y = y - float(np.mean(y))
+    denom = float(np.sqrt(np.sum(x * x) * np.sum(y * y)))
+    if denom <= np.finfo(float).eps:
+        return float("nan")
+    return float(np.sum(x * y) / denom)
+
+
+def _overlap_coefficient(channel_1: np.ndarray, channel_2: np.ndarray) -> float:
+    x = np.asarray(channel_1, dtype=np.float64).ravel()
+    y = np.asarray(channel_2, dtype=np.float64).ravel()
+    if x.size == 0 or y.size == 0:
+        return float("nan")
+    denom = float(np.sqrt(np.sum(x * x) * np.sum(y * y)))
+    if denom <= np.finfo(float).eps:
+        return float("nan")
+    return float(np.sum(x * y) / denom)
+
+
+def _safe_fraction(numerator, denominator) -> float:
+    denominator = float(denominator)
+    if denominator <= np.finfo(float).eps:
+        return float("nan")
+    return float(numerator) / denominator
+
+
+def _format_coloc_max(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{float(value):g}"
+
+
+def _coloc_voxel_overlay(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    display_mode: str,
+    channel_1_color: str,
+    channel_2_color: str,
+    intensity_max: float,
+    roi_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    if roi_mask is None:
+        roi_mask = np.ones(ch1.shape, dtype=bool)
+    mask = (ch1 >= threshold_1) & (ch2 >= threshold_2) & roi_mask
+    ch1_unit = np.clip(ch1 / float(intensity_max), 0.0, 1.0)
+    ch2_unit = np.clip(ch2 / float(intensity_max), 0.0, 1.0)
+    color_1 = _coloc_color(channel_1_color, fallback="red")
+    color_2 = _coloc_color(channel_2_color, fallback="green")
+    colored = (
+        ch1_unit[..., np.newaxis] * color_1
+        + ch2_unit[..., np.newaxis] * color_2
+    )
+    colored = np.clip(colored, 0.0, 1.0).astype(np.float32, copy=False)
+    colored[~roi_mask] = 0.0
+
+    mode = str(display_mode).strip().lower()
+    if "white on black" in mode:
+        output = np.zeros(ch1.shape + (3,), dtype=np.float32)
+        output[mask] = (1.0, 1.0, 1.0)
+        return output
+    if "channel colors only" in mode:
+        output = np.zeros(ch1.shape + (3,), dtype=np.float32)
+        output[mask] = colored[mask]
+        return output
+
+    output = colored.copy()
+    output[mask] = (1.0, 1.0, 1.0)
+    return output
+
+
+def _coloc_color(value: str, *, fallback: str) -> np.ndarray:
+    color = color_value_to_rgb(value)
+    if color is None:
+        color = color_value_to_rgb(fallback)
+    if color is None:
+        color = np.ones(3, dtype=np.float32)
+    return np.asarray(color, dtype=np.float32)
+
+
+def _coloc_scatter_plot_image(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    bins: int,
+    log_counts: bool,
+    intensity_max: float,
+    roi_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    bins = int(np.clip(int(bins), 32, 512))
+    values_1 = ch1[roi_mask] if roi_mask is not None else np.ravel(ch1)
+    values_2 = ch2[roi_mask] if roi_mask is not None else np.ravel(ch2)
+    hist, _, _ = np.histogram2d(
+        np.ravel(values_1),
+        np.ravel(values_2),
+        bins=bins,
+        range=((0.0, float(intensity_max)), (0.0, float(intensity_max))),
+    )
+    counts = hist.T
+    if bool(log_counts):
+        counts = np.log1p(counts)
+    max_count = float(np.max(counts))
+    values = counts / max_count if max_count > 0 else counts
+    values = np.flipud(values)
+
+    image = np.zeros((bins, bins, 3), dtype=np.float32)
+    image[..., 2] = 0.20 + 0.65 * values
+    image[..., 1] = 0.08 + 0.90 * values
+    image[..., 0] = 0.75 * np.sqrt(values)
+    image[values <= 0] = (0.02, 0.03, 0.07)
+
+    x_pos = int(
+        np.clip(
+            round(threshold_1 / float(intensity_max) * (bins - 1)),
+            0,
+            bins - 1,
+        )
+    )
+    y_pos = bins - 1 - int(
+        np.clip(round(threshold_2 / float(intensity_max) * (bins - 1)), 0, bins - 1)
+    )
+    image[:, x_pos : x_pos + 1] = (1.0, 0.20, 0.20)
+    image[y_pos : y_pos + 1, :] = (0.20, 1.0, 0.20)
+    image[max(y_pos - 1, 0) : y_pos + 2, max(x_pos - 1, 0) : x_pos + 2] = (
+        1.0,
+        1.0,
+        1.0,
+    )
+
+    if image.shape[:2] != (512, 512):
+        image = transform.resize(
+            image,
+            (512, 512, 3),
+            order=0,
+            preserve_range=True,
+            anti_aliasing=False,
+        )
+    return image.astype(np.float32, copy=False)
+
+
+def _racc_index_image(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    theta_degrees: float,
+    include_percentile: float,
+    intensity_max: float,
+    roi_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    theta_degrees = float(theta_degrees)
+    include_percentile = float(include_percentile)
+    if not 0 <= theta_degrees < 90:
+        raise ValueError("RACC theta must satisfy 0 <= theta < 90.")
+    if not 0 < include_percentile <= 100:
+        raise ValueError("RACC included percentile must satisfy 0 < p <= 100.")
+
+    if roi_mask is None:
+        roi_mask = np.ones(ch1.shape, dtype=bool)
+    mask = (ch1 >= threshold_1) & (ch2 >= threshold_2) & roi_mask
+    overlap_voxels = int(np.count_nonzero(mask))
+    if overlap_voxels < 2:
+        raise ValueError(
+            "Fewer than two voxels pass both channel thresholds; RACC is undefined."
+        )
+
+    x = ch1[mask].astype(np.float64, copy=False)
+    y = ch2[mask].astype(np.float64, copy=False)
+    mean_x = float(np.mean(x))
+    mean_y = float(np.mean(y))
+    covariance = np.cov(x, y)
+    var_xx = float(covariance[0, 0])
+    var_yy = float(covariance[1, 1])
+    var_xy = float(covariance[0, 1])
+    slope = _positive_deming_slope(var_xx, var_yy, var_xy)
+    intercept = mean_y - slope * mean_x
+
+    p0 = _line_threshold_intersection(threshold_1, threshold_2, slope, intercept)
+    p1 = _line_intensity_intersection(float(intensity_max), slope, intercept)
+    points = np.column_stack((x, y))
+    t_full = _projection_fraction(points, p0, p1)
+    distances = _normalized_line_distance(points, p0, p1, float(intensity_max))
+
+    percentile_fraction = include_percentile / 100.0
+    t_max = float(np.quantile(t_full, percentile_fraction))
+    if not np.isfinite(t_max):
+        raise ValueError("Could not calculate RACC pmax from the overlap population.")
+    t_max = max(t_max, np.finfo(float).eps)
+    pmax = (p0[0] + t_max * (p1[0] - p0[0]), p0[1] + t_max * (p1[1] - p0[1]))
+    distance_threshold = float(np.quantile(distances, percentile_fraction))
+    return _calculate_racc_index(
+        ch1,
+        ch2,
+        mask,
+        p0,
+        pmax,
+        distance_threshold,
+        theta_degrees,
+        float(intensity_max),
+    )
+
+
+def _positive_deming_slope(var_xx: float, var_yy: float, var_xy: float) -> float:
+    eps = np.finfo(float).eps
+    if abs(var_xy) <= eps:
+        if var_xx > eps and var_yy > eps:
+            return float(np.sqrt(var_yy / var_xx))
+        return 1.0
+    delta = var_yy - var_xx
+    root = float(np.sqrt(delta * delta + 4.0 * var_xy * var_xy))
+    if var_xy >= 0:
+        slope = (delta + root) / (2.0 * var_xy)
+    else:
+        slope = (delta - root) / (2.0 * var_xy)
+    if not np.isfinite(slope) or slope <= 0:
+        raise ValueError("Could not fit a positive RACC regression slope.")
+    return float(slope)
+
+
+def _line_threshold_intersection(
+    threshold_1: float,
+    threshold_2: float,
+    slope: float,
+    intercept: float,
+) -> tuple[float, float]:
+    y_at_threshold_1 = threshold_1 * slope + intercept
+    if threshold_2 <= y_at_threshold_1:
+        return (float(threshold_1), float(y_at_threshold_1))
+    return (float((threshold_2 - intercept) / slope), float(threshold_2))
+
+
+def _line_intensity_intersection(
+    intensity_max: float,
+    slope: float,
+    intercept: float,
+) -> tuple[float, float]:
+    if intercept >= intensity_max * (1.0 - slope):
+        return (float((intensity_max - intercept) / slope), float(intensity_max))
+    return (float(intensity_max), float(intensity_max * slope + intercept))
+
+
+def _projection_fraction(
+    points: np.ndarray,
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+) -> np.ndarray:
+    p0_arr = np.asarray(p0, dtype=np.float64)
+    vector = np.asarray(p1, dtype=np.float64) - p0_arr
+    denom = float(np.dot(vector, vector))
+    if denom <= np.finfo(float).eps:
+        raise ValueError("Regression line has degenerate endpoints.")
+    return ((points - p0_arr) @ vector) / denom
+
+
+def _normalized_line_distance(
+    points: np.ndarray,
+    p0: tuple[float, float],
+    p1: tuple[float, float],
+    intensity_max: float,
+) -> np.ndarray:
+    p0_arr = np.asarray(p0, dtype=np.float64)
+    vector = np.asarray(p1, dtype=np.float64) - p0_arr
+    norm = float(np.linalg.norm(vector))
+    if norm <= np.finfo(float).eps:
+        raise ValueError("Regression line has degenerate endpoints.")
+    relative = points - p0_arr
+    distance = np.abs(vector[0] * relative[:, 1] - vector[1] * relative[:, 0]) / norm
+    return distance / intensity_max
+
+
+def _calculate_racc_index(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    mask: np.ndarray,
+    p0: tuple[float, float],
+    pmax: tuple[float, float],
+    distance_threshold: float,
+    theta_degrees: float,
+    intensity_max: float,
+) -> np.ndarray:
+    output = np.zeros(channel_1.shape, dtype=np.float32)
+    if not np.any(mask):
+        return output
+    x = channel_1[mask].astype(np.float64, copy=False)
+    y = channel_2[mask].astype(np.float64, copy=False)
+    points = np.column_stack((x, y))
+    t = _projection_fraction(points, p0, pmax)
+    distances = _normalized_line_distance(points, p0, pmax, intensity_max)
+    theta = np.deg2rad(theta_degrees)
+    values = np.minimum(t, 1.0) - distances * np.tan(theta)
+    values[(t <= 0.0) | (distances > distance_threshold)] = 0.0
+    values = np.clip(values, 0.0, 1.0)
+    output[mask] = values.astype(np.float32, copy=False)
+    return output
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return float(min(max(value, lower), upper))
+
+
+def _round_and_clamp(value: float, lower: float, upper: float) -> int:
+    return int(_clamp(np.floor(value + 0.5), lower, upper))
 
 
 def _default_rgb_channel_indices(

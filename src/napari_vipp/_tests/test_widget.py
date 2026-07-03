@@ -1887,6 +1887,61 @@ def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
     assert not np.isclose(stack_markers["threshold"], slice_markers["threshold"])
 
 
+def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
+    data = np.zeros((2, 16, 16), dtype=np.uint16)
+    data[0, 3:11, 3:11] = 6000
+    data[1, 6:14, 6:14] = 6500
+    data[0, 1:4, 11:14] = 3500
+    data[1, 11:14, 1:4] = 3500
+    viewer = _Viewer(data, metadata={"axes": "CYX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget.pipeline.set_param(coloc.id, "threshold_mode", "Costes auto")
+    widget.pipeline.set_param(coloc.id, "channel_1_color", "Blue")
+    widget.pipeline.set_param(coloc.id, "channel_2_color", "Yellow")
+    widget._connect_nodes("input", split.id)
+    widget._connect_nodes(split.id, coloc.id, source_port=0, target_port=0)
+    widget._connect_nodes(split.id, coloc.id, source_port=1, target_port=1)
+
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(coloc.id)
+
+    assert not widget.colocalization_scatter_group.isHidden()
+    assert widget.colocalization_scatter_plot._image is not None
+    assert widget.colocalization_scatter_plot._channel_1_color.name() == "#0000ff"
+    assert widget.colocalization_scatter_plot._channel_2_color.name() == "#ffff00"
+    assert widget.colocalization_scatter_plot.minimumHeight() == 300
+    assert widget.colocalization_scatter_summary.minimumHeight() == 42
+    assert widget.colocalization_scatter_summary.maximumHeight() == 42
+    assert widget.colocalization_scatter_colormap_combo.currentText() == "Viridis"
+    widget.colocalization_scatter_plot.resize(620, 260)
+    plot_rect = widget.colocalization_scatter_plot._plot_rect()
+    assert plot_rect.width() == plot_rect.height()
+    assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Costes auto"
+    assert 0 <= widget.pipeline.nodes[coloc.id].params["channel_1_threshold"] <= 255
+    assert 0 <= widget.pipeline.nodes[coloc.id].params["channel_2_threshold"] <= 255
+    assert not np.isclose(
+        widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
+        25.0,
+    )
+
+    widget._on_colocalization_scatter_threshold_changed(1, 12.5)
+    widget._debounce_timer.stop()
+
+    assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Manual"
+    assert np.isclose(
+        widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
+        12.5,
+    )
+    widget.colocalization_scatter_colormap_combo.setCurrentText("Magma")
+
+    assert widget.colocalization_scatter_plot._colormap == "Magma"
+
+
 def test_palette_search_filters_nodes_fuzzily(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

@@ -66,8 +66,9 @@ Recommended for fixed-reference comparisons while navigating dims:
 Some table-producing nodes are intentionally not recalculated on every
 parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
 + Intensity`, `Measure 3D Mesh Morphology`, `Analyze Skeleton`,
-`Measure Skeleton Branches`, `Skeleton Graph Tables`, and `Measure Overall
-Skeleton Network`.
+`Measure Skeleton Branches`, `Skeleton Graph Tables`, `Measure Overall
+Skeleton Network`, `Colocalization Metrics`, `Masked Colocalization Metrics`,
+`RACC Index`, and `Masked RACC Index`.
 
 When selected, these nodes show an `Execution` panel with `Calculate` or
 `Recalculate`. The same action is available on the node card. If upstream data
@@ -106,6 +107,33 @@ metrics, and status/error columns for objects that are too small or geometricall
 invalid. The node is manual/cached because these calculations are more expensive
 than ordinary regionprops. The reference workflow is
 `examples/synthetic-3d-mesh-morphology.json`.
+
+The broader object, mesh, skeleton, and table-composition contract is documented
+in [measurement-workflows.md](measurement-workflows.md). The bundled workflow
+examples are indexed in [../examples/README.md](../examples/README.md).
+
+## Colocalization And RACC Nodes
+
+First-pass colocalization nodes live under `Colocalization & Spatial Analysis`.
+Connect two same-shaped channel images, usually from `Split Channels`, into the
+named `Channel 1 image` and `Channel 2 image` ports.
+
+Manual thresholds are normalized `0..255` values. VIPP jointly scales the two
+input channels into this range before calculating metrics, inspector scatter
+views, colocalized-voxel views, or RACC. `Costes auto` can be selected instead
+of manual thresholds; the calculated Costes thresholds are written back into the
+threshold controls so the values are visible.
+
+When a colocalization threshold node is selected, the inspector shows a scatter
+density panel with red/green threshold guide lines. Dragging a guide line
+switches that node to manual thresholds and updates the corresponding threshold
+value. Masked variants add a third `ROI mask` input and restrict metrics,
+scatter display, colocalized voxels, and RACC output to that mask.
+
+`Colocalization Metrics`, `Masked Colocalization Metrics`, `RACC Index`, and
+`Masked RACC Index` are manual/cached nodes. `Colocalized Voxels` and `Masked
+Colocalized Voxels` are live visual feedback nodes for threshold tuning. The
+reference workflow is `examples/synthetic-colocalization-racc.json`.
 
 ## Skeleton Analysis Nodes
 

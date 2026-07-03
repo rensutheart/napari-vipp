@@ -26,6 +26,7 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "VIPP synthetic 3D mesh morphology",
         "VIPP synthetic skeleton network",
         "VIPP synthetic advanced skeleton network",
+        "VIPP synthetic colocalization",
     ]
     assert shapes[0] == (12, 96, 128)
     assert shapes[1] == (3, 12, 96, 128)
@@ -35,8 +36,29 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
     assert shapes[5] == (24, 84, 104)
     assert shapes[6] == (11, 64, 64)
     assert shapes[7] == (2, 17, 96, 96)
-    assert axis_orders == ["ZYX", "CZYX", "TCZYX", "TYX", "YX", "ZYX", "ZYX", "TZYX"]
-    assert preferred_flags == [False, False, True, False, False, False, False, False]
+    assert shapes[8] == (2, 10, 80, 96)
+    assert axis_orders == [
+        "ZYX",
+        "CZYX",
+        "TCZYX",
+        "TYX",
+        "YX",
+        "ZYX",
+        "ZYX",
+        "TZYX",
+        "CZYX",
+    ]
+    assert preferred_flags == [
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
     assert samples[0][1]["visible"] is False
     assert samples[1][1]["visible"] is False
 

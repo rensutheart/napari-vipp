@@ -116,7 +116,10 @@ VIPP already has useful coverage in these areas:
   relabeling, table outputs, basic and intensity-aware label-object
   measurements, table merge/annotation, skeletonization, skeleton-network
   measurement tables, skeleton keypoint masks, branch/component labels, and
-  short-branch pruning.
+  short-branch pruning;
+- first-pass pixel-based colocalization: Pearson/Manders/overlap metrics,
+  thresholded colocalized-voxel RGB views, inspector scatter-density threshold
+  controls, RACC index images, and masked/ROI-restricted variants.
 
 The remaining object-analysis gaps are difficult segmentation, richer
 measurement utilities, calibrated physical filtering, and broader expensive
@@ -509,15 +512,14 @@ metadata, and export the result for PCA or other statistical analysis. See
 ## Next Implementation Recommendation
 
 Table outputs, basic object measurement, intensity measurement, table merge,
-metadata annotation, grouped table summaries, and base skeleton-network
-measurement are now implemented. Skeleton QC outputs and pruning are also
-implemented. Manual/cached `Calculate`/`Recalculate` execution is implemented
-for the first expensive table nodes. Branch-level skeleton measurements and
-RGB graph overlays are implemented. Explicit skeleton graph node/edge export
-and overall-network measurements are implemented, including branch-summary
-distributions and normalized connectedness summaries. Next priorities are
-mesh export/preview, calibrated non-mesh shape variants, and then
-colocalization/localization tables.
+metadata annotation, grouped table summaries, skeleton/network measurement,
+branch summaries, overall-network summaries, first-pass 3D mesh morphology, and
+first-pass pixel colocalization/RACC are now implemented. Manual/cached
+`Calculate`/`Recalculate` execution is implemented for the first expensive
+table nodes. The next colocalization work should add per-object label-aware
+tables and object-association/localization outputs.
+Non-blocking measurement follow-up remains mesh export/preview and calibrated
+physical variants for extended non-mesh shape columns.
 
 ## Recommended First Milestone
 
@@ -883,16 +885,21 @@ Pixel-based:
 channel A + channel B + optional ROI mask
   -> Pearson / Manders metrics
   -> result table
+  -> optional colocalized-voxel/RACC images
 
 Object-based:
+labels + channel A + channel B
+  -> one colocalization row per object
+  -> merge with object morphology/intensity tables
+
+Object association:
 labels A + labels B
-  -> overlap, nearest-neighbor distance, or object association
+  -> overlap, nearest-neighbor distance, or matched objects
   -> result table and optional matched labels
 ```
 
-Colocalization therefore follows table outputs and benefits from labels, but
-does not require registration in its first version when channels are already
-spatially aligned.
+The unrestricted and ROI-masked pixel-based versions are implemented.
+Per-object colocalization and object association remain TODO.
 
 ### Time-Lapse Drift Correction
 

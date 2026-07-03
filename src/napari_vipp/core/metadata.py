@@ -1010,6 +1010,8 @@ def _multi_input_axes(
         axes = list(first_axes)
         axes.insert(channel_index, AxisMetadata(name="c", type="channel"))
         return tuple(axes)
+    if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
+        return _composite_to_rgb_axes(first_axes, arr.ndim)
     return first_axes if arr.ndim == len(first_axes) else infer_axis_metadata(arr)
 
 
@@ -1072,6 +1074,8 @@ def _multi_input_channels(
     operation_id: str,
     params: dict[str, Any],
 ) -> tuple[ChannelMetadata, ...]:
+    if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
+        return ()
     if operation_id != "combine_channels":
         return states[0].channels
     channels: list[ChannelMetadata] = []
@@ -1619,6 +1623,16 @@ def _multi_input_history(
         mode = str(params.get("image_mode", "Distance map (invert)"))
         spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
         return f"{operation_title}: {mode}, {spatial_mode}"
+    if operation_id in {"colocalization_metrics", "masked_colocalization_metrics"}:
+        mode = str(params.get("threshold_mode", "Manual"))
+        return f"{operation_title}: two-channel metrics, {mode} thresholds"
+    if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
+        mode = str(params.get("threshold_mode", "Manual"))
+        display = str(params.get("display_mode", "White overlay on channels"))
+        return f"{operation_title}: {display}, {mode} thresholds"
+    if operation_id in {"racc_index", "masked_racc_index"}:
+        mode = str(params.get("threshold_mode", "Manual"))
+        return f"{operation_title}: RACC index, {mode} thresholds"
     return f"{operation_title}: combined {count} inputs"
 
 

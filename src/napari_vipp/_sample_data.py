@@ -34,6 +34,7 @@ def make_sample_data():
         _mesh_morphology_sample(),
         _skeleton_network_sample(),
         _advanced_skeleton_network_sample(),
+        _colocalization_sample(rng),
     ]
 
 
@@ -335,6 +336,87 @@ def _advanced_skeleton_network_sample():
                 "junction-rich grid components, 3D terminal branches, separate "
                 "fragments, short spurs, isolated voxels, and anisotropic "
                 "spatial calibration for stress-testing skeleton graph outputs."
+            ),
+            **metadata_block,
+        },
+    }
+    return data, metadata, "image"
+
+
+def _colocalization_sample(rng):
+    """Return two-channel 3D structures with known partial colocalization."""
+    z, y, x = np.indices((10, 80, 96), dtype=np.float32)
+    data = np.zeros((2, 10, 80, 96), dtype=np.float32)
+
+    channel_1_shared = (
+        ((z - 4.5) / 2.4) ** 2
+        + ((y - 39) / 13.0) ** 2
+        + ((x - 42) / 15.0) ** 2
+        <= 1
+    )
+    channel_2_shared = (
+        ((z - 4.5) / 2.4) ** 2
+        + ((y - 41) / 13.0) ** 2
+        + ((x - 50) / 15.0) ** 2
+        <= 1
+    )
+    channel_1_only = (
+        ((z - 3.0) / 1.8) ** 2
+        + ((y - 20) / 7.0) ** 2
+        + ((x - 24) / 7.0) ** 2
+        <= 1
+    )
+    channel_2_only = (
+        ((z - 6.5) / 2.0) ** 2
+        + ((y - 58) / 8.0) ** 2
+        + ((x - 72) / 9.0) ** 2
+        <= 1
+    )
+    channel_1_puncta = (
+        ((z - 7) / 1.1) ** 2
+        + ((y - 24) / 3.0) ** 2
+        + ((x - 70) / 3.0) ** 2
+        <= 1
+    )
+    channel_2_puncta = (
+        ((z - 7) / 1.1) ** 2
+        + ((y - 27) / 3.0) ** 2
+        + ((x - 73) / 3.0) ** 2
+        <= 1
+    )
+
+    data[0, channel_1_shared] = 0.72
+    data[1, channel_2_shared] = 0.78
+    data[0, channel_1_only] = 0.86
+    data[1, channel_2_only] = 0.82
+    data[0, channel_1_puncta] = 0.95
+    data[1, channel_2_puncta] = 0.90
+
+    gradient = (x / max(float(x.max()), 1.0)) * 0.05
+    data[0] += gradient
+    data[1] += np.flip(gradient, axis=-1)
+    data += rng.normal(0.0, 0.018, size=data.shape)
+    data = (np.clip(data, 0.0, 1.0) * 65535).astype(np.uint16)
+
+    metadata_block = _ome_image_metadata("CZYX", data.shape)
+    metadata_block["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [1.0, 1.0, 0.35, 0.35]
+    metadata = {
+        "name": "VIPP synthetic colocalization",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "channel_names": [
+                "Channel 1 partial-overlap objects",
+                "Channel 2 partial-overlap objects",
+            ],
+            "description": (
+                "Two-channel 3D fluorescence sample with one partially "
+                "overlapping object pair, single-channel-only objects, offset "
+                "puncta, background gradients, and noise for validating "
+                "colocalization thresholds, overlays, scatter plots, and RACC."
             ),
             **metadata_block,
         },

@@ -1,6 +1,6 @@
 # napari-vipp Planning Notes
 
-Last reviewed: 2026-07-02
+Last reviewed: 2026-07-03
 
 This document is the consolidated planning source of truth. It separates
 implemented behavior from active TODOs so future development can start from the
@@ -20,6 +20,10 @@ Related reference documents:
 - [node-roadmap.md](node-roadmap.md) for prioritized node ideas.
 - [ome-io-plan.md](ome-io-plan.md) for OME import/export decisions.
 - [io-user-guide.md](io-user-guide.md) for current file-format behavior.
+- [measurement-workflows.md](measurement-workflows.md) for object, mesh,
+  skeleton, and table-composition workflow guidance.
+- [colocalization-racc-plan.md](colocalization-racc-plan.md) for the current
+  colocalization/RACC implementation plan.
 - [skeleton-nodes.md](skeleton-nodes.md) for skeleton node usage.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md) for
   MitoMorph-inspired feature parity.
@@ -166,6 +170,9 @@ Implemented:
 - compact/menu view-dims layout for narrow dock widths;
 - preservation of napari layer scale for `Set Pixel Size / Units` and
   `Rescale Axes`.
+- native colocalization scatter inspection with square axes, endpoint axis
+  labels, selectable density colormap, log-count display, channel-coloured
+  draggable threshold lines, and stable layout while thresholds are dragged.
 
 ### OME And Raster I/O
 
@@ -206,10 +213,14 @@ Implemented:
   branch-type counts/fractions;
 - domain-normalized skeleton connectedness summaries, including per-component
   and per-length endpoint/junction/branch/cycle metrics.
+- first-pass two-channel colocalization metrics, thresholded colocalized-voxel
+  visualization, Costes threshold write-back, inspector scatter-density
+  threshold controls, RACC index images, and masked/ROI-restricted variants of
+  the same node family.
 
 ### Implemented Node Catalogue
 
-The live registry currently contains 92 nodes.
+The live registry currently contains 98 nodes.
 
 - **Image Data**: Image Source, Crop Stack, Select Axis Slice, Reorder Axes,
   Set Pixel Size / Units, Rescale Axes, Extract Channel, Combine Channels,
@@ -239,6 +250,9 @@ The live registry currently contains 92 nodes.
   Summarize Skeleton Branches, Skeleton Graph Tables, Measure Overall Skeleton
   Network, Merge Tables, Add Metadata Columns, Select Table Columns,
   Summarize Measurements.
+- **Colocalization & Spatial Analysis**: Colocalization Metrics, Masked
+  Colocalization Metrics, Colocalized Voxels, Masked Colocalized Voxels, RACC
+  Index, Masked RACC Index.
 
 ## Validated Reference Workflows
 
@@ -280,18 +294,64 @@ Implemented reference skeleton/network workflows:
   disconnected fragments, loops, time-indexed blocks, and anisotropic physical
   calibration.
 
+Implemented reference colocalization/RACC workflow:
+
+- `examples/synthetic-colocalization-racc.json`;
+- deterministic two-channel `CZYX` sample covering partial overlap,
+  single-channel-only structures, offset puncta, background gradients,
+  inspector scatter threshold guides, colocalized-voxel overlays, whole-image
+  and ROI-masked metrics, and RACC index output.
+
+## Recently Completed Milestone
+
+### Pixel Colocalization And RACC First Pass
+
+Implemented:
+
+- `Colocalization Metrics`, `Colocalized Voxels`, and `RACC Index` for
+  unrestricted same-shaped two-channel inputs.
+- `Masked Colocalization Metrics`, `Masked Colocalized Voxels`, and `Masked
+  RACC Index` for ROI-restricted pixel/voxel analysis.
+- Manual thresholding and `Costes auto` thresholding in normalized `0..255`
+  intensity units.
+- Costes-derived thresholds written back into the visible node parameters, so
+  the automatic threshold choice is inspectable and reproducible.
+- A native inspector scatter panel on colocalization threshold nodes, replacing
+  the earlier separate scatter graph node idea.
+- Interactive scatter threshold dragging that switches the node to manual
+  thresholds and updates the corresponding threshold parameter.
+- Scatter-panel UX polish: square X/Y plot area, axis start/end labels,
+  rotated channel-2 axis label, channel-coloured threshold lines, selectable
+  density colormap, log-count toggle, and stable layout while dragging.
+- Deterministic synthetic colocalization sample and example workflow:
+  `examples/synthetic-colocalization-racc.json`.
+- Tests covering colocalization metrics, overlays, RACC output, ROI masking,
+  Costes threshold write-back, inspector scatter interaction, and the example
+  workflow.
+
+This completes the first pixel-based colocalization/RACC batch. The remaining
+colocalization work should now move from whole-image/ROI pixel metrics toward
+object-level tables and localization/association outputs.
+
 ## Active TODOs
 
 ### Current Near-Term Order
 
-1. Add calibrated physical variants for non-mesh extended length/shape
+1. Add per-object colocalization/localization tables against label objects.
+   Start with a label-aware two-channel metric node that outputs one row per
+   object and joins cleanly with object morphology/intensity tables via
+   `label_id` and leading axis indices.
+2. Add object association outputs. This should cover label-overlap tables,
+   nearest-object distance tables, and event/puncta localization against
+   labels, masks, or ROIs.
+3. Add publication-facing method documentation for Pearson, Manders, overlap
+   coefficient, Costes thresholding, RACC, and ROI restriction assumptions.
+4. Add calibrated physical variants for non-mesh extended length/shape
    measurements, plus optional mesh export/preview after the first-pass mesh
    table node is stable.
-2. Add colocalization/localization table nodes once the measurement and graph
-   platform is stable.
-3. Build a real collection-batch UI on top of the existing Python export and
+5. Build a real collection-batch UI on top of the existing Python export and
    source-collection foundations.
-4. Add cancellation/progress for expensive manual/background feature families
+6. Add cancellation/progress for expensive manual/background feature families
    where libraries expose useful progress hooks.
 
 ### Execution Platform TODOs
@@ -375,11 +435,10 @@ Object and mesh morphology:
 
 Colocalization and localization:
 
-- Pearson and Manders pixel-based channel metrics;
+- per-object colocalization tables against label objects;
 - object overlap and association tables;
 - nearest-object distance tables;
 - event localization against objects, masks, or ROIs;
-- mask/ROI-restricted measurements;
 - scalar/table result contracts;
 - channel and mask input UI designed to avoid ambiguous wiring.
 

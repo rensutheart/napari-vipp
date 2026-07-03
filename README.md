@@ -132,6 +132,10 @@ File > Open Sample > VIPP synthetic microscopy samples
 ## Documentation
 
 - End-user workflow usage: `docs/user-guide.md`
+- Measurement/table workflow guide: `docs/measurement-workflows.md`
+- Colocalization/RACC plan: `docs/colocalization-racc-plan.md`
+- Bundled example workflow index: `examples/README.md`
+- Skeleton-specific node guide: `docs/skeleton-nodes.md`
 - Operator tips and performance tuning: `docs/operator-tips.md`
 - Developer and architecture notes: `docs/developer-notes.md`
 
@@ -240,6 +244,13 @@ The current node catalogue includes:
   - Select Table Columns
   - Add Metadata Columns
   - Summarize Measurements
+- Colocalization & Spatial Analysis:
+  - Colocalization Metrics
+  - Masked Colocalization Metrics
+  - Colocalized Voxels
+  - Masked Colocalized Voxels
+  - RACC Index
+  - Masked RACC Index
 
 Histogram-based automatic threshold nodes show `Threshold uses` on stack inputs.
 `Stack histogram` computes one cutoff from the whole grayscale input and applies
@@ -461,6 +472,7 @@ Intensity`.
 
 Near-term development priorities:
 
+- per-object colocalization/localization tables and object-association outputs;
 - axis-aware channel selectors that show probe names instead of only numbers;
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
@@ -469,7 +481,6 @@ Near-term development priorities:
   and optional mesh export/preview;
 - specialist mitochondrial network metrics beyond the current generic skeleton
   branch and overall-network summaries;
-- colocalization/localization table nodes;
 - fluorescence background correction;
 - OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
 - plate/well/field browsing, remote reads, batch execution, and memory-aware

@@ -34,6 +34,7 @@ from qtpy.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QImage,
     QKeySequence,
     QPainter,
     QPainterPath,
@@ -90,6 +91,7 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_HEX,
     FLUORESCENCE_COLORS,
     channel_color_labels_from_metadata,
+    color_value_to_rgb,
 )
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_layout import (
@@ -115,6 +117,8 @@ from napari_vipp.core.metadata import (
 from napari_vipp.core.operations import (
     NO_TABLE_COLUMNS_VALUE,
     automatic_threshold_value,
+    colocalization_normalized_inputs,
+    colocalization_threshold_values,
     save_array_output,
 )
 from napari_vipp.core.pipeline import (
@@ -135,6 +139,7 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.preview import (
     MONOCHROME_COLORMAPS,
     THUMBNAIL_CONTRAST_MODES,
+    _apply_monochrome_colormap,
     make_preview,
     normalize_thumbnail_with_colormap,
 )
@@ -307,6 +312,23 @@ INPUT_HISTOGRAM_OPERATIONS = {
     "hysteresis_threshold",
     "rescale_intensity",
 } | GLOBAL_THRESHOLD_OPERATIONS
+COLOCALIZATION_THRESHOLD_OPERATIONS = {
+    "colocalization_metrics",
+    "masked_colocalization_metrics",
+    "colocalized_voxels",
+    "masked_colocalized_voxels",
+    "racc_index",
+    "masked_racc_index",
+}
+COLOCALIZATION_SCATTER_OPERATIONS = COLOCALIZATION_THRESHOLD_OPERATIONS
+COLOCALIZATION_SCATTER_COLORMAPS = (
+    "Viridis",
+    "Magma",
+    "Inferno",
+    "Plasma",
+    "Cividis",
+    "Gray",
+)
 BACKGROUND_PIPELINE_OPERATIONS = {
     "euclidean_distance_transform",
     "gaussian_blur_3d",
@@ -2554,6 +2576,322 @@ class HistogramPlot(QWidget):
         return float((value - minimum) / (maximum - minimum))
 
 
+class ColocalizationScatterPlot(QWidget):
+    """Interactive two-channel scatter-density plot with threshold guides."""
+
+    thresholdChanged = Signal(int, float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image: QImage | None = None
+        self._threshold_1 = 25.0
+        self._threshold_2 = 25.0
+        self._intensity_max = 255.0
+        self._channel_1_color = QColor("#ef4444")
+        self._channel_2_color = QColor("#22c55e")
+        self._colormap = "Viridis"
+        self._summary = ""
+        self._drag_axis: int | None = None
+        self.setMinimumHeight(300)
+        self.setMouseTracking(True)
+
+    def set_scatter(
+        self,
+        channel_1: np.ndarray | None,
+        channel_2: np.ndarray | None,
+        *,
+        threshold_1: float,
+        threshold_2: float,
+        roi_mask: np.ndarray | None = None,
+        intensity_max: float = 255.0,
+        channel_1_color: object = "Red",
+        channel_2_color: object = "Green",
+        colormap: str = "Viridis",
+        log_counts: bool = True,
+        bins: int = 192,
+        summary: str = "",
+    ) -> None:
+        self._threshold_1 = float(threshold_1)
+        self._threshold_2 = float(threshold_2)
+        self._intensity_max = max(float(intensity_max), 1.0)
+        self._channel_1_color = _qcolor_from_channel_color(
+            channel_1_color,
+            fallback="#ef4444",
+        )
+        self._channel_2_color = _qcolor_from_channel_color(
+            channel_2_color,
+            fallback="#22c55e",
+        )
+        self._colormap = str(colormap or "Viridis")
+        self._summary = str(summary)
+        self._image = self._scatter_image(
+            channel_1,
+            channel_2,
+            roi_mask=roi_mask,
+            log_counts=log_counts,
+            bins=bins,
+        )
+        self.update()
+
+    def clear(self, message: str = "Connect two channel inputs.") -> None:
+        self._image = None
+        self._summary = message
+        self.update()
+
+    def paintEvent(self, event):  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        painter.fillRect(rect, QColor("#111827"))
+        painter.setPen(QPen(QColor("#374151"), 1))
+        painter.drawRect(rect)
+
+        plot_rect = self._plot_rect()
+        if self._image is None:
+            painter.setPen(QColor("#9ca3af"))
+            painter.drawText(rect, Qt.AlignCenter, self._summary or "No data")
+            painter.end()
+            return
+
+        painter.drawImage(plot_rect, self._image)
+        painter.setPen(QPen(QColor("#64748b"), 1.2))
+        painter.drawRect(plot_rect)
+        self._draw_thresholds(painter, plot_rect)
+        self._draw_labels(painter, rect, plot_rect)
+        painter.end()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        plot_rect = self._plot_rect()
+        point = _event_position(event)
+        if not plot_rect.contains(point):
+            return
+        vertical_x = self._x_from_value(self._threshold_1, plot_rect)
+        horizontal_y = self._y_from_value(self._threshold_2, plot_rect)
+        dx = abs(point.x() - vertical_x)
+        dy = abs(point.y() - horizontal_y)
+        self._drag_axis = 1 if dx <= dy else 2
+        self._emit_threshold_from_point(point, plot_rect)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_axis is None:
+            return
+        point = _event_position(event)
+        self._emit_threshold_from_point(point, self._plot_rect())
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_axis is not None:
+            point = _event_position(event)
+            self._emit_threshold_from_point(point, self._plot_rect())
+        self._drag_axis = None
+
+    def _emit_threshold_from_point(self, point, plot_rect: QRect) -> None:
+        if self._drag_axis == 1:
+            value = self._value_from_x(point.x(), plot_rect)
+            self._threshold_1 = value
+            self.thresholdChanged.emit(1, value)
+        elif self._drag_axis == 2:
+            value = self._value_from_y(point.y(), plot_rect)
+            self._threshold_2 = value
+            self.thresholdChanged.emit(2, value)
+        self.update()
+
+    def _scatter_image(
+        self,
+        channel_1: np.ndarray | None,
+        channel_2: np.ndarray | None,
+        *,
+        roi_mask: np.ndarray | None,
+        log_counts: bool,
+        bins: int,
+    ) -> QImage | None:
+        if channel_1 is None or channel_2 is None:
+            return None
+        ch1 = np.asarray(channel_1, dtype=np.float32)
+        ch2 = np.asarray(channel_2, dtype=np.float32)
+        if ch1.shape != ch2.shape or ch1.size == 0:
+            return None
+        if roi_mask is not None:
+            roi = np.asarray(roi_mask, dtype=bool)
+            if roi.shape != ch1.shape:
+                return None
+            x_values = ch1[roi]
+            y_values = ch2[roi]
+        else:
+            x_values = ch1.ravel()
+            y_values = ch2.ravel()
+        finite = np.isfinite(x_values) & np.isfinite(y_values)
+        x_values = x_values[finite]
+        y_values = y_values[finite]
+        if x_values.size == 0:
+            return None
+        if x_values.size > 500_000:
+            stride = int(np.ceil(x_values.size / 500_000))
+            x_values = x_values[::stride]
+            y_values = y_values[::stride]
+        bins = int(np.clip(int(bins), 32, 512))
+        hist, _x_edges, _y_edges = np.histogram2d(
+            x_values,
+            y_values,
+            bins=bins,
+            range=((0.0, self._intensity_max), (0.0, self._intensity_max)),
+        )
+        values = hist.T
+        if bool(log_counts):
+            values = np.log1p(values)
+        maximum = float(np.max(values))
+        if maximum > 0:
+            values = values / maximum
+        values = np.flipud(values)
+        gray = np.clip(np.rint(np.sqrt(values) * 255.0), 0, 255).astype(np.uint8)
+        rgb = _apply_monochrome_colormap(gray, self._colormap)
+        rgb[values <= 0] = (4, 7, 15)
+        return QImage(
+            rgb.data,
+            rgb.shape[1],
+            rgb.shape[0],
+            int(rgb.strides[0]),
+            QImage.Format_RGB888,
+        ).copy()
+
+    def _draw_thresholds(self, painter: QPainter, plot_rect: QRect) -> None:
+        x = self._x_from_value(self._threshold_1, plot_rect)
+        y = self._y_from_value(self._threshold_2, plot_rect)
+        painter.setPen(QPen(self._channel_1_color, 2.0, Qt.DashLine))
+        painter.drawLine(x, plot_rect.top(), x, plot_rect.bottom())
+        painter.setPen(QPen(self._channel_2_color, 2.0, Qt.DashLine))
+        painter.drawLine(plot_rect.left(), y, plot_rect.right(), y)
+        painter.setPen(QPen(QColor("#f8fafc"), 1.5))
+        painter.drawEllipse(QPointF(float(x), float(y)), 3.5, 3.5)
+
+    def _draw_labels(self, painter: QPainter, rect: QRect, plot_rect: QRect) -> None:
+        metrics = painter.fontMetrics()
+        axis_color = QColor("#9ca3af")
+        zero_label = _format_histogram_label(0.0)
+        max_label = _format_histogram_label(self._intensity_max)
+
+        painter.setPen(axis_color)
+        axis_value_y = plot_rect.bottom() + metrics.ascent() + 6
+        painter.drawText(plot_rect.left(), axis_value_y, zero_label)
+        painter.drawText(
+            plot_rect.right() - metrics.horizontalAdvance(max_label),
+            axis_value_y,
+            max_label,
+        )
+
+        x_label = "Ch 1 intensity"
+        painter.drawText(
+            plot_rect.center().x() - metrics.horizontalAdvance(x_label) // 2,
+            axis_value_y + metrics.height(),
+            x_label,
+        )
+
+        y_value_x = plot_rect.left() - metrics.horizontalAdvance(max_label) - 8
+        painter.drawText(y_value_x, plot_rect.top() + metrics.ascent(), max_label)
+        painter.drawText(
+            plot_rect.left() - metrics.horizontalAdvance(zero_label) - 8,
+            plot_rect.bottom(),
+            zero_label,
+        )
+
+        y_label = "Ch 2 intensity"
+        painter.save()
+        painter.translate(
+            plot_rect.left() - 42,
+            plot_rect.center().y() + metrics.horizontalAdvance(y_label) // 2,
+        )
+        painter.rotate(-90)
+        painter.setPen(axis_color)
+        painter.drawText(0, 0, y_label)
+        painter.restore()
+
+        t1_text = f"T1 {_format_histogram_label(self._threshold_1)}"
+        t1_width = metrics.horizontalAdvance(t1_text)
+        t1_x = int(
+            np.clip(
+                self._x_from_value(self._threshold_1, plot_rect) + 4,
+                plot_rect.left() + 2,
+                plot_rect.right() - t1_width - 2,
+            )
+        )
+        painter.setPen(self._channel_1_color)
+        painter.drawText(t1_x, plot_rect.bottom() - 4, t1_text)
+
+        t2_text = f"T2 {_format_histogram_label(self._threshold_2)}"
+        t2_y = int(
+            np.clip(
+                self._y_from_value(self._threshold_2, plot_rect) - 4,
+                plot_rect.top() + metrics.ascent() + 2,
+                plot_rect.bottom() - 4,
+            )
+        )
+        painter.setPen(self._channel_2_color)
+        painter.drawText(
+            plot_rect.left() + 3,
+            t2_y,
+            t2_text,
+        )
+
+        if self._summary:
+            summary_width = metrics.horizontalAdvance(self._summary)
+            painter.setPen(axis_color)
+            painter.drawText(
+                max(plot_rect.left(), plot_rect.right() - summary_width),
+                plot_rect.top() + metrics.ascent() + 2,
+                self._summary,
+            )
+
+    def _plot_rect(self) -> QRect:
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        metrics = self.fontMetrics()
+        max_label = _format_histogram_label(self._intensity_max)
+        left_margin = max(56, metrics.horizontalAdvance(max_label) + 22)
+        right_margin = 10
+        top_margin = 8
+        bottom_margin = metrics.height() * 2 + 12
+        available_width = max(1, rect.width() - left_margin - right_margin)
+        available_height = max(1, rect.height() - top_margin - bottom_margin)
+        side = max(1, min(available_width, available_height))
+        x = rect.left() + left_margin + (available_width - side) // 2
+        y = rect.top() + top_margin + (available_height - side) // 2
+        return QRect(x, y, side, side)
+
+    def _x_from_value(self, value: float, plot_rect: QRect) -> int:
+        fraction = float(np.clip(value / self._intensity_max, 0.0, 1.0))
+        return plot_rect.left() + int(round(fraction * max(plot_rect.width(), 1)))
+
+    def _y_from_value(self, value: float, plot_rect: QRect) -> int:
+        fraction = float(np.clip(value / self._intensity_max, 0.0, 1.0))
+        return plot_rect.bottom() - int(round(fraction * max(plot_rect.height(), 1)))
+
+    def _value_from_x(self, x: int, plot_rect: QRect) -> float:
+        fraction = (float(x) - plot_rect.left()) / max(plot_rect.width(), 1)
+        return float(np.clip(fraction, 0.0, 1.0) * self._intensity_max)
+
+    def _value_from_y(self, y: int, plot_rect: QRect) -> float:
+        fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height(), 1)
+        return float(np.clip(fraction, 0.0, 1.0) * self._intensity_max)
+
+
+def _event_position(event):
+    if hasattr(event, "position"):
+        return event.position().toPoint()
+    return event.pos()
+
+
+def _qcolor_from_channel_color(value, *, fallback: str) -> QColor:
+    if isinstance(value, QColor):
+        return QColor(value)
+    rgb = color_value_to_rgb(value)
+    if rgb is None:
+        rgb = color_value_to_rgb(CHANNEL_COLOR_HEX.get(str(value).strip().lower()))
+    if rgb is None:
+        return QColor(fallback)
+    values = np.clip(np.rint(np.asarray(rgb, dtype=np.float32) * 255.0), 0, 255)
+    return QColor(int(values[0]), int(values[1]), int(values[2]))
+
+
 class SidePanelToggleButton(QToolButton):
     """Compact glyph button for showing or hiding a side panel."""
 
@@ -2993,6 +3331,7 @@ class VippWidget(QWidget):
         self.execution_group = QGroupBox("Execution")
         self.execution_status_label = QLabel("Automatic")
         self.execution_status_label.setWordWrap(True)
+        self.execution_status_label.setMinimumHeight(34)
         self.auto_recalculate_checkbox = QCheckBox("Auto Recalculate")
         self.auto_recalculate_notice = QLabel(
             "Auto Recalculate runs this node after upstream or parameter changes. "
@@ -3073,6 +3412,20 @@ class VippWidget(QWidget):
         self.label_volume_log_checkbox.setChecked(True)
         self.label_volume_plot = HistogramPlot()
         self.label_volume_group.setHidden(True)
+        self.colocalization_scatter_group = QGroupBox("Colocalization Scatter")
+        self.colocalization_scatter_summary = QLabel(
+            "Connect two channel inputs."
+        )
+        self.colocalization_scatter_summary.setWordWrap(True)
+        self.colocalization_scatter_summary.setFixedHeight(42)
+        self.colocalization_scatter_colormap_combo = QComboBox()
+        self.colocalization_scatter_colormap_combo.addItems(
+            COLOCALIZATION_SCATTER_COLORMAPS
+        )
+        self.colocalization_scatter_log_checkbox = QCheckBox("Log count scale")
+        self.colocalization_scatter_log_checkbox.setChecked(True)
+        self.colocalization_scatter_plot = ColocalizationScatterPlot()
+        self.colocalization_scatter_group.setHidden(True)
 
         self.pin_button = QPushButton("Pin selected")
         self.save_button = QPushButton("Save selected output...")
@@ -3548,6 +3901,27 @@ class VippWidget(QWidget):
         auto_layout.addLayout(auto_form)
         auto_layout.addWidget(self.auto_contrast_button)
         layout.addWidget(self.auto_contrast_group)
+        colocalization_scatter_layout = QVBoxLayout(
+            self.colocalization_scatter_group
+        )
+        colocalization_scatter_layout.addWidget(self.colocalization_scatter_summary)
+        colocalization_scatter_controls = QWidget()
+        colocalization_scatter_controls_layout = QHBoxLayout(
+            colocalization_scatter_controls
+        )
+        colocalization_scatter_controls_layout.setContentsMargins(0, 0, 0, 0)
+        colocalization_scatter_controls_layout.setSpacing(8)
+        colocalization_scatter_controls_layout.addWidget(QLabel("Colormap"))
+        colocalization_scatter_controls_layout.addWidget(
+            self.colocalization_scatter_colormap_combo
+        )
+        colocalization_scatter_controls_layout.addWidget(
+            self.colocalization_scatter_log_checkbox
+        )
+        colocalization_scatter_controls_layout.addStretch(1)
+        colocalization_scatter_layout.addWidget(colocalization_scatter_controls)
+        colocalization_scatter_layout.addWidget(self.colocalization_scatter_plot)
+        layout.addWidget(self.colocalization_scatter_group)
         label_volume_layout = QVBoxLayout(self.label_volume_group)
         label_volume_layout.addWidget(self.label_volume_summary)
         label_volume_layout.addWidget(self.label_volume_log_checkbox)
@@ -3646,6 +4020,15 @@ class VippWidget(QWidget):
         )
         self.label_volume_log_checkbox.toggled.connect(
             self._update_label_volume_histogram
+        )
+        self.colocalization_scatter_log_checkbox.toggled.connect(
+            self._update_colocalization_scatter
+        )
+        self.colocalization_scatter_colormap_combo.currentTextChanged.connect(
+            self._update_colocalization_scatter
+        )
+        self.colocalization_scatter_plot.thresholdChanged.connect(
+            self._on_colocalization_scatter_threshold_changed
         )
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.save_button.clicked.connect(self._save_selected_output_dialog)
@@ -5258,6 +5641,9 @@ class VippWidget(QWidget):
         self.history_label.setText("No history yet.")
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
+        self.colocalization_scatter_group.setHidden(True)
+        self.colocalization_scatter_summary.setText("Connect two channel inputs.")
+        self.colocalization_scatter_plot.clear()
         self.rescale_input_histogram_group.setHidden(True)
         self.rescale_input_histogram_scope_row.setHidden(True)
         self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
@@ -6160,6 +6546,12 @@ class VippWidget(QWidget):
 
     def _parameter_uses_numeric_entry_only(self, node_id: str, spec) -> bool:
         node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
+            and spec.name in {"channel_1_threshold", "channel_2_threshold"}
+        ):
+            return True
         return (
             node is not None
             and node.operation_id == "set_pixel_size"
@@ -7636,6 +8028,18 @@ class VippWidget(QWidget):
             self._sync_node_input_ports(self._selected_node_id)
         if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
+        if node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS:
+            if name == "threshold_mode" and str(value).lower().startswith("costes"):
+                self._sync_colocalization_costes_thresholds(
+                    self._selected_node_id,
+                    update_controls=True,
+                )
+            if name in {
+                "threshold_mode",
+                "channel_1_threshold",
+                "channel_2_threshold",
+            }:
+                self._update_colocalization_scatter()
         if name == "spatial_mode":
             self._update_fill_holes_scope_note()
         if name in {"min_volume", "max_volume", "spatial_mode"}:
@@ -8538,6 +8942,7 @@ class VippWidget(QWidget):
 
     def _update_histogram(self) -> None:
         self._update_label_volume_histogram()
+        self._update_colocalization_scatter()
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None:
             self.rescale_input_histogram_group.setHidden(True)
@@ -8581,6 +8986,178 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
         )
+
+    def _update_colocalization_scatter(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        visible = (
+            node is not None
+            and node.operation_id in COLOCALIZATION_SCATTER_OPERATIONS
+        )
+        self.colocalization_scatter_group.setHidden(not visible)
+        if not visible or node is None:
+            self.colocalization_scatter_summary.setText("Connect two channel inputs.")
+            self.colocalization_scatter_plot.clear()
+            return
+
+        inputs = self._colocalization_inputs_for_node(node.id)
+        if inputs is None:
+            self.colocalization_scatter_summary.setText(
+                "Connect all required channel and ROI inputs."
+            )
+            self.colocalization_scatter_plot.clear(
+                "Connect all required channel and ROI inputs."
+            )
+            return
+        try:
+            ch1, ch2, roi_mask, warnings = colocalization_normalized_inputs(inputs)
+            if str(node.params.get("threshold_mode", "Manual")).lower().startswith(
+                "costes"
+            ):
+                self._sync_colocalization_costes_thresholds(
+                    node.id,
+                    update_controls=True,
+                )
+            threshold_1 = _safe_float(node.params.get("channel_1_threshold"), 25.0)
+            threshold_2 = _safe_float(node.params.get("channel_2_threshold"), 25.0)
+        except Exception as exc:
+            message = f"Scatter unavailable: {exc}"
+            self.colocalization_scatter_summary.setText(message)
+            self.colocalization_scatter_plot.clear(message)
+            return
+
+        roi_voxels = (
+            int(np.count_nonzero(roi_mask)) if roi_mask is not None else ch1.size
+        )
+        coloc_voxels = int(
+            np.count_nonzero(
+                (ch1 >= threshold_1)
+                & (ch2 >= threshold_2)
+                & (roi_mask if roi_mask is not None else True)
+            )
+        )
+        mode = str(node.params.get("threshold_mode", "Manual"))
+        summary = (
+            f"{mode} thresholds. Drag threshold lines to switch to manual "
+            "thresholds."
+        )
+        if warnings:
+            summary += " " + "; ".join(warnings)
+        self.colocalization_scatter_summary.setText(summary)
+        self.colocalization_scatter_plot.set_scatter(
+            ch1,
+            ch2,
+            threshold_1=threshold_1,
+            threshold_2=threshold_2,
+            roi_mask=roi_mask,
+            channel_1_color=node.params.get("channel_1_color", "Red"),
+            channel_2_color=node.params.get("channel_2_color", "Green"),
+            colormap=self.colocalization_scatter_colormap_combo.currentText(),
+            log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
+            summary=f"{coloc_voxels}/{roi_voxels}",
+        )
+
+    def _colocalization_inputs_for_node(self, node_id: str) -> list[object] | None:
+        ports = self.pipeline.input_ports(node_id)
+        if len(ports) < 2:
+            return None
+        data_by_port = self.pipeline.input_data_by_port_for_node(node_id)
+        required = len(ports)
+        inputs = [data_by_port.get(index) for index in range(required)]
+        if any(value is None for value in inputs):
+            return None
+        return inputs
+
+    def _sync_colocalization_costes_thresholds(
+        self,
+        node_id: str,
+        *,
+        update_controls: bool,
+    ) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS:
+            return False
+        if not str(node.params.get("threshold_mode", "Manual")).lower().startswith(
+            "costes"
+        ):
+            return False
+        inputs = self._colocalization_inputs_for_node(node_id)
+        if inputs is None:
+            return False
+        try:
+            threshold_1, threshold_2 = colocalization_threshold_values(
+                inputs,
+                threshold_mode=node.params.get("threshold_mode", "Costes auto"),
+                channel_1_threshold=node.params.get("channel_1_threshold", 25.0),
+                channel_2_threshold=node.params.get("channel_2_threshold", 25.0),
+            )
+        except Exception:
+            return False
+        changed = False
+        for name, value in (
+            ("channel_1_threshold", threshold_1),
+            ("channel_2_threshold", threshold_2),
+        ):
+            value = float(value)
+            if not np.isclose(float(node.params.get(name, np.nan)), value):
+                node.params[name] = value
+                changed = True
+            if update_controls:
+                self._set_parameter_control_value(node_id, name, value)
+        return changed
+
+    def _set_parameter_control_value(
+        self,
+        node_id: str,
+        name: str,
+        value,
+    ) -> None:
+        widget = self._parameter_widgets.get(name)
+        if widget is None:
+            return
+        specs = {
+            spec.name: spec for spec in self.pipeline.node_parameter_specs(node_id)
+        }
+        spec = specs.get(name)
+        if spec is None:
+            return
+        spec = self._effective_parameter_spec(node_id, spec)
+        bounds = self._parameter_bounds_for(node_id, spec)
+        widget.set_bounds(bounds, value, emit=False)
+
+    def _on_colocalization_scatter_threshold_changed(
+        self,
+        channel_index: int,
+        value: float,
+    ) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or node.operation_id not in COLOCALIZATION_THRESHOLD_OPERATIONS:
+            return
+        name = (
+            "channel_1_threshold"
+            if int(channel_index) == 1
+            else "channel_2_threshold"
+        )
+        value = float(np.round(float(value), 2))
+        changed = False
+        if node.params.get("threshold_mode") != "Manual":
+            self._record_parameter_undo(self._selected_node_id, "threshold_mode")
+            self.pipeline.set_param(self._selected_node_id, "threshold_mode", "Manual")
+            self._set_parameter_control_value(
+                self._selected_node_id,
+                "threshold_mode",
+                "Manual",
+            )
+            changed = True
+        if not np.isclose(float(node.params.get(name, np.nan)), value):
+            self._record_parameter_undo(self._selected_node_id, name)
+            self.pipeline.set_param(self._selected_node_id, name, value)
+            self._set_parameter_control_value(self._selected_node_id, name, value)
+            changed = True
+        if not changed:
+            return
+        self._mark_pipeline_dirty(self._selected_node_id)
+        self._update_colocalization_scatter()
+        self._debounce_timer.start()
 
     def _update_rescale_input_histogram(
         self,
