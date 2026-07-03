@@ -365,6 +365,23 @@ object-level tables and localization/association outputs.
 
 ### Graph Editor TODOs
 
+- **Port tunnels / named wires**: allow a user to label an output port or input
+  port and reuse that named connection elsewhere on the graph without drawing a
+  long visible edge. This is especially important for colocalization workflows,
+  where the same two split-channel outputs repeatedly feed metrics, overlays,
+  RACC, ROI-restricted variants, and future per-object nodes.
+  - Output tunnel: mark a node output as a named source such as `Ch1` or `Ch2`;
+    downstream tunnel receivers can subscribe to that source as if a normal
+    wire were connected.
+  - Input tunnel: mark a node input as consuming a named source, keeping the
+    port contract and type validation identical to explicit wiring.
+  - The graph should render compact tunnel badges/labels at the participating
+    ports and avoid drawing full-length edges unless the user asks to reveal
+    them.
+  - Workflow JSON and Python export must serialize tunnels as ordinary graph
+    semantics, not UI-only state, so batch execution remains reproducible.
+  - Validation must still reject ambiguous names, incompatible port types,
+    cycles, and missing tunnel sources.
 - phase-2 insert-on-wire chooser for ambiguous input/output ports;
 - Obsidian-like live structure mode with optional animation;
 - optional pinned/anchored nodes for live layout;
