@@ -133,7 +133,17 @@ scatter display, colocalized voxels, and RACC output to that mask.
 `Colocalization Metrics`, `Masked Colocalization Metrics`, `RACC Index`, and
 `Masked RACC Index` are manual/cached nodes. `Colocalized Voxels` and `Masked
 Colocalized Voxels` are live visual feedback nodes for threshold tuning. The
-reference workflow is `examples/synthetic-colocalization-racc.json`.
+pixel/RACC reference workflow is `examples/synthetic-colocalization-racc.json`.
+
+Object-aware colocalization nodes are also available in the same category.
+Use `Object Colocalization Metrics` when you have object labels plus two
+matching channel images and want one table row per object. Use `Label Overlap
+Association`, `Nearest Object Distance`, and `Event Localization` for
+label-label overlap, nearest-neighbor association, and puncta/event assignment
+against labels, masks, or ROIs. These nodes output tables designed to merge
+with `Measure Objects` and `Measure Objects + Intensity` through `label_id`
+and leading axis index columns. The object-table reference workflow is
+`examples/synthetic-object-colocalization-association.json`.
 
 ## Skeleton Analysis Nodes
 

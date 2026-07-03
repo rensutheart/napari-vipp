@@ -43,6 +43,7 @@ from napari_vipp.core.operations import (
     dilate,
     erode,
     euclidean_distance_transform,
+    event_localization,
     expand_labels_image,
     extract_channel,
     fill_holes,
@@ -56,6 +57,7 @@ from napari_vipp.core.operations import (
     invert,
     isodata_threshold,
     label_connected_components,
+    label_overlap_association,
     label_skeleton_branches,
     label_skeleton_components,
     laplace_filter,
@@ -76,9 +78,11 @@ from napari_vipp.core.operations import (
     merge_tables,
     minimum_threshold,
     morphological_gradient,
+    nearest_object_distance,
     niblack_threshold,
     non_local_means_filter,
     normalize_image,
+    object_colocalization_metrics,
     opening,
     orthogonal_projection,
     otsu_threshold,
@@ -289,6 +293,13 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "racc_index",
     "masked_racc_index",
 }
+LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
+    "event_localization",
+    "label_overlap_association",
+    "measure_objects_intensity",
+    "nearest_object_distance",
+    "object_colocalization_metrics",
+}
 
 SOURCE_PARAMETERS = (
     ParameterSpec(
@@ -356,15 +367,19 @@ SPATIAL_OPERATIONS = {
     "clear_border_objects",
     "euclidean_distance_transform",
     "expand_labels",
+    "event_localization",
     "fill_holes",
     "hysteresis_threshold",
     "h_maxima_markers",
+    "label_overlap_association",
     "label_skeleton_branches",
     "label_skeleton_components",
     "measure_skeleton_branches",
     "skeleton_graph_tables",
     "measure_overall_skeleton_network",
     "measure_3d_mesh_morphology",
+    "nearest_object_distance",
+    "object_colocalization_metrics",
     "label_connected_components",
     "marker_controlled_watershed",
     "filter_labels_by_property",
@@ -2434,6 +2449,99 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "object_colocalization_metrics",
+        "Object Colocalization Metrics",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "table",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "threshold_mode",
+                "Thresholds",
+                "choice",
+                "Manual",
+                0,
+                0,
+                1,
+                choices=("Manual", "Costes auto"),
+            ),
+            ParameterSpec(
+                "channel_1_threshold",
+                "Channel 1 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+            ParameterSpec(
+                "channel_2_threshold",
+                "Channel 2 threshold (0-255)",
+                "float",
+                25.0,
+                0.0,
+                255.0,
+                1.0,
+                2,
+            ),
+        ),
+        object_colocalization_metrics,
+        max_inputs=3,
+        inputs=(
+            InputSpec("labels", "mask_or_labels", "Object labels"),
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "label_overlap_association",
+        "Label Overlap Association",
+        COLOCALIZATION_CATEGORY,
+        "mask_or_labels",
+        "table",
+        (SPATIAL_MODE_PARAMETER,),
+        label_overlap_association,
+        max_inputs=2,
+        inputs=(
+            InputSpec("reference", "mask_or_labels", "Reference labels"),
+            InputSpec("target", "mask_or_labels", "Target labels"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "nearest_object_distance",
+        "Nearest Object Distance",
+        COLOCALIZATION_CATEGORY,
+        "mask_or_labels",
+        "table",
+        (SPATIAL_MODE_PARAMETER,),
+        nearest_object_distance,
+        max_inputs=2,
+        inputs=(
+            InputSpec("reference", "mask_or_labels", "Reference labels"),
+            InputSpec("target", "mask_or_labels", "Target labels"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "event_localization",
+        "Event Localization",
+        COLOCALIZATION_CATEGORY,
+        "mask_or_labels",
+        "table",
+        (SPATIAL_MODE_PARAMETER,),
+        event_localization,
+        max_inputs=2,
+        inputs=(
+            InputSpec("events", "mask_or_labels", "Events / puncta"),
+            InputSpec("regions", "mask_or_labels", "Regions / ROIs"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "merge_tables",
         "Merge Tables",
         MEASUREMENTS_CATEGORY,
@@ -3859,7 +3967,7 @@ class PrototypePipeline:
                 )
                 kwargs["channel_axis"] = derived_axis
                 node.params["channel_axis"] = derived_axis
-            if node.operation_id == "measure_objects_intensity":
+            if node.operation_id in LABEL_METADATA_MULTI_INPUT_OPERATIONS:
                 labels_state = input_states[0]
                 spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
                 resolved_spatial_ndim = _resolved_spatial_ndim(

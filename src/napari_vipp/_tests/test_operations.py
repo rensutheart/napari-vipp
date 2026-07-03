@@ -37,6 +37,7 @@ from napari_vipp.core.operations import (
     dilate,
     erode,
     euclidean_distance_transform,
+    event_localization,
     expand_labels_image,
     extract_channel,
     fill_holes,
@@ -49,6 +50,7 @@ from napari_vipp.core.operations import (
     hysteresis_threshold,
     isodata_threshold,
     label_connected_components,
+    label_overlap_association,
     label_skeleton_branches,
     label_skeleton_components,
     laplace_filter,
@@ -68,9 +70,11 @@ from napari_vipp.core.operations import (
     merge_tables,
     minimum_threshold,
     morphological_gradient,
+    nearest_object_distance,
     niblack_threshold,
     non_local_means_filter,
     normalize_image,
+    object_colocalization_metrics,
     opening,
     orthogonal_projection,
     otsu_threshold,
@@ -193,6 +197,10 @@ def test_vipp_operation_nodes_are_registered():
         "masked_colocalized_voxels",
         "racc_index",
         "masked_racc_index",
+        "object_colocalization_metrics",
+        "label_overlap_association",
+        "nearest_object_distance",
+        "event_localization",
         "merge_tables",
         "add_metadata_columns",
         "select_table_columns",
@@ -814,6 +822,103 @@ def test_colocalization_metrics_overlay_scatter_and_racc_outputs():
     assert masked_index.shape == channel_1.shape
     assert masked_index[0, 0] == 0.0
     assert masked_index[3, 4] == 0.0
+
+
+def test_object_colocalization_and_association_tables():
+    labels = np.zeros((5, 6), dtype=np.int32)
+    labels[1:3, 1:3] = 1
+    labels[3:5, 3:5] = 2
+    channel_1 = np.zeros_like(labels, dtype=np.uint16)
+    channel_2 = np.zeros_like(labels, dtype=np.uint16)
+    channel_1[labels == 1] = 100
+    channel_2[labels == 1] = 80
+    channel_1[labels == 2] = 100
+
+    stacked_labels = np.stack([labels, labels])
+    stacked_channel_1 = np.stack([channel_1, channel_1])
+    stacked_channel_2 = np.stack([channel_2, channel_2])
+    object_table = object_colocalization_metrics(
+        [stacked_labels, stacked_channel_1, stacked_channel_2],
+        channel_1_threshold=50,
+        channel_2_threshold=50,
+        spatial_mode="2D YX",
+        axis_names=("t", "y", "x"),
+        axis_types=("time", "space", "space"),
+    )
+    object_records = object_table.records()
+    label_1 = next(
+        record
+        for record in object_records
+        if record["t_index"] == 0 and record["label_id"] == 1
+    )
+    label_2 = next(
+        record
+        for record in object_records
+        if record["t_index"] == 0 and record["label_id"] == 2
+    )
+
+    assert object_table.table_kind == "per-object colocalization metrics"
+    assert object_table.columns[:2] == ("t_index", "label_id")
+    assert object_table.row_count == 4
+    assert label_1["object_voxels"] == 4
+    assert label_1["colocalized_voxels"] == 4
+    assert np.isclose(label_1["manders_m1"], 1.0)
+    assert np.isclose(label_1["manders_m2"], 1.0)
+    assert label_2["channel_1_positive_voxels"] == 4
+    assert label_2["channel_2_positive_voxels"] == 0
+    assert label_2["colocalized_voxels"] == 0
+
+    target = np.zeros_like(labels)
+    target[1:3, 1:2] = 5
+    target[3:5, 4:6] = 6
+    overlap_table = label_overlap_association(
+        [labels, target],
+        spatial_mode="2D YX",
+    )
+    overlap_records = {
+        (record["label_id"], record["target_label_id"]): record
+        for record in overlap_table.records()
+    }
+    assert overlap_table.table_kind == "label overlap association"
+    assert overlap_records[(1, 5)]["overlap_voxels"] == 2
+    assert np.isclose(
+        overlap_records[(1, 5)]["reference_overlap_fraction"],
+        0.5,
+    )
+    assert np.isclose(overlap_records[(2, 6)]["intersection_over_union"], 2 / 6)
+
+    distance_table = nearest_object_distance(
+        [labels, target],
+        spatial_mode="2D YX",
+        axis_names=("y", "x"),
+        axis_types=("space", "space"),
+        axis_scales=(0.5, 2.0),
+        axis_units=("micrometer", "micrometer"),
+    )
+    distance_records = {
+        record["label_id"]: record for record in distance_table.records()
+    }
+    assert distance_table.table_kind == "nearest object distance"
+    assert distance_records[1]["nearest_label_id"] == 5
+    assert np.isclose(distance_records[1]["centroid_distance_pixels"], 0.5)
+    assert np.isclose(distance_records[1]["centroid_distance_physical"], 1.0)
+    assert distance_records[1]["physical_unit"] == "micrometer"
+
+    events = np.zeros_like(labels)
+    events[1, 1] = 1
+    events[0, 0] = 2
+    localization_table = event_localization(
+        [events, labels],
+        spatial_mode="2D YX",
+    )
+    localization_records = {
+        record["event_id"]: record for record in localization_table.records()
+    }
+    assert localization_table.table_kind == "event localization"
+    assert localization_records[1]["region_label_id"] == 1
+    assert localization_records[1]["in_region"] is True
+    assert localization_records[2]["region_label_id"] == 0
+    assert localization_records[2]["in_region"] is False
 
 
 def test_summarize_measurements_groups_by_metadata_and_units():

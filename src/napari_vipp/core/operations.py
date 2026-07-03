@@ -3138,6 +3138,344 @@ def colocalization_metrics(
     )
 
 
+def object_colocalization_metrics(
+    inputs,
+    threshold_mode: str = "Manual",
+    channel_1_threshold: float = 25.0,
+    channel_2_threshold: float = 25.0,
+    intensity_max: float = 255.0,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure two-channel colocalization for each labeled object."""
+    values = list(inputs)
+    if len(values) < 3:
+        raise ValueError(
+            "Object colocalization requires labels plus two channel image inputs."
+        )
+    label_source = np.asarray(values[0])
+    context = _spatial_table_context(
+        label_source,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    labels = _objects_from_mask_or_labels(label_source, context=context)
+    ch1_raw = _coloc_reduce_to_intensity(values[1])
+    ch2_raw = _coloc_reduce_to_intensity(values[2])
+    if labels.shape != ch1_raw.shape or labels.shape != ch2_raw.shape:
+        raise ValueError(
+            "Object colocalization requires labels and channels with matching "
+            f"shapes; got {labels.shape}, {ch1_raw.shape}, and {ch2_raw.shape}."
+        )
+
+    ch1, ch2, warnings = _normalize_coloc_channels(
+        ch1_raw,
+        ch2_raw,
+        output_max=float(intensity_max),
+    )
+    foreground = labels > 0
+    threshold_1, threshold_2, costes = _coloc_thresholds(
+        ch1,
+        ch2,
+        threshold_mode=threshold_mode,
+        channel_1_threshold=channel_1_threshold,
+        channel_2_threshold=channel_2_threshold,
+        intensity_max=intensity_max,
+        roi_mask=foreground if np.count_nonzero(foreground) else None,
+    )
+    labels_for_measure = _move_to_spatial_last(
+        labels,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    ch1_for_measure = _move_to_spatial_last(
+        ch1,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    ch2_for_measure = _move_to_spatial_last(
+        ch2,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+
+    columns = _object_colocalization_columns(context.leading_axis_names)
+    for leading_index in np.ndindex(context.leading_shape or (1,)):
+        block_index = () if not context.leading_shape else leading_index
+        label_block = (
+            labels_for_measure[block_index]
+            if context.leading_shape
+            else labels_for_measure
+        )
+        ch1_block = (
+            ch1_for_measure[block_index] if context.leading_shape else ch1_for_measure
+        )
+        ch2_block = (
+            ch2_for_measure[block_index] if context.leading_shape else ch2_for_measure
+        )
+        _append_object_colocalization_rows(
+            columns,
+            context.leading_axis_names,
+            block_index,
+            label_block,
+            ch1_block,
+            ch2_block,
+            threshold_mode=threshold_mode,
+            threshold_1=threshold_1,
+            threshold_2=threshold_2,
+            intensity_max=intensity_max,
+            costes=costes,
+            warnings=warnings,
+        )
+
+    threshold_unit = f"normalized_0_{_format_coloc_max(intensity_max)}"
+    return table_from_columns(
+        columns,
+        name="Object colocalization metrics",
+        table_kind="per-object colocalization metrics",
+        source_name=source_name,
+        column_units={
+            "channel_1_threshold": threshold_unit,
+            "channel_2_threshold": threshold_unit,
+            "object_voxels": "voxels",
+            "channel_1_positive_voxels": "voxels",
+            "channel_2_positive_voxels": "voxels",
+            "colocalized_voxels": "voxels",
+            "colocalized_fraction": "fraction",
+            "manders_m1": "fraction",
+            "manders_m2": "fraction",
+            "channel_1_positive_sum": "intensity",
+            "channel_2_positive_sum": "intensity",
+            "colocalized_channel_1_sum": "intensity",
+            "colocalized_channel_2_sum": "intensity",
+        },
+    )
+
+
+def label_overlap_association(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Return one row for each overlapping reference/target label pair."""
+    reference_source, target_source, context = _label_pair_inputs_and_context(
+        inputs,
+        "Label overlap association requires reference and target label inputs.",
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    reference = _objects_from_mask_or_labels(reference_source, context=context)
+    target = _objects_from_mask_or_labels(target_source, context=context)
+    reference_for_measure = _move_to_spatial_last(
+        reference,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    target_for_measure = _move_to_spatial_last(
+        target,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    columns = _label_overlap_columns(context.leading_axis_names)
+    for leading_index in np.ndindex(context.leading_shape or (1,)):
+        block_index = () if not context.leading_shape else leading_index
+        reference_block = (
+            reference_for_measure[block_index]
+            if context.leading_shape
+            else reference_for_measure
+        )
+        target_block = (
+            target_for_measure[block_index]
+            if context.leading_shape
+            else target_for_measure
+        )
+        _append_label_overlap_rows(
+            columns,
+            context.leading_axis_names,
+            block_index,
+            reference_block,
+            target_block,
+        )
+    return table_from_columns(
+        columns,
+        name="Label overlap association",
+        table_kind="label overlap association",
+        source_name=source_name,
+        column_units={
+            "reference_voxels": "voxels",
+            "target_voxels": "voxels",
+            "overlap_voxels": "voxels",
+            "reference_overlap_fraction": "fraction",
+            "target_overlap_fraction": "fraction",
+            "intersection_over_union": "fraction",
+        },
+    )
+
+
+def nearest_object_distance(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Measure nearest target-object centroid distance for each reference label."""
+    reference_source, target_source, context = _label_pair_inputs_and_context(
+        inputs,
+        "Nearest object distance requires reference and target label inputs.",
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    reference = _objects_from_mask_or_labels(reference_source, context=context)
+    target = _objects_from_mask_or_labels(target_source, context=context)
+    reference_for_measure = _move_to_spatial_last(
+        reference,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    target_for_measure = _move_to_spatial_last(
+        target,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    columns = _nearest_distance_columns(context)
+    for leading_index in np.ndindex(context.leading_shape or (1,)):
+        block_index = () if not context.leading_shape else leading_index
+        reference_block = (
+            reference_for_measure[block_index]
+            if context.leading_shape
+            else reference_for_measure
+        )
+        target_block = (
+            target_for_measure[block_index]
+            if context.leading_shape
+            else target_for_measure
+        )
+        _append_nearest_distance_rows(
+            columns,
+            context,
+            block_index,
+            reference_block,
+            target_block,
+        )
+    units = {"centroid_distance_pixels": "pixels"}
+    if context.has_physical_calibration:
+        units["centroid_distance_physical"] = context.physical_unit
+        units["physical_unit"] = "text"
+    return table_from_columns(
+        columns,
+        name="Nearest object distance",
+        table_kind="nearest object distance",
+        source_name=source_name,
+        column_units=units,
+    )
+
+
+def event_localization(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    resolved_spatial_ndim: int | None = None,
+    axis_names: tuple[str, ...] | None = None,
+    axis_types: tuple[str, ...] | None = None,
+    axis_scales: tuple[float, ...] | None = None,
+    axis_units: tuple[str | None, ...] | None = None,
+    source_name: str = "",
+) -> TableData:
+    """Assign event/puncta objects to overlapping labels, masks, or ROIs."""
+    values = list(inputs)
+    if len(values) < 2:
+        raise ValueError("Event localization requires event and region inputs.")
+    event_source = np.asarray(values[0])
+    region_source = np.asarray(values[1])
+    if event_source.shape != region_source.shape:
+        raise ValueError(
+            "Event localization inputs must have matching shapes; got "
+            f"{event_source.shape} and {region_source.shape}."
+        )
+    context = _spatial_table_context(
+        event_source,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    events = _event_objects_from_mask_or_labels(event_source, context=context)
+    regions = _regions_from_mask_or_labels(region_source)
+    if events.shape != regions.shape:
+        raise ValueError(
+            "Event localization inputs must have matching shapes; got "
+            f"{events.shape} and {regions.shape}."
+        )
+    events_for_measure = _move_to_spatial_last(
+        events,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    regions_for_measure = _move_to_spatial_last(
+        regions,
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    columns = _event_localization_columns(context.leading_axis_names)
+    for leading_index in np.ndindex(context.leading_shape or (1,)):
+        block_index = () if not context.leading_shape else leading_index
+        event_block = (
+            events_for_measure[block_index]
+            if context.leading_shape
+            else events_for_measure
+        )
+        region_block = (
+            regions_for_measure[block_index]
+            if context.leading_shape
+            else regions_for_measure
+        )
+        _append_event_localization_rows(
+            columns,
+            context.leading_axis_names,
+            block_index,
+            event_block,
+            region_block,
+        )
+    return table_from_columns(
+        columns,
+        name="Event localization",
+        table_kind="event localization",
+        source_name=source_name,
+        column_units={
+            "event_voxels": "voxels",
+            "overlap_voxels": "voxels",
+            "event_overlap_fraction": "fraction",
+        },
+    )
+
+
 def colocalized_voxels(
     inputs,
     threshold_mode: str = "Manual",
@@ -4309,6 +4647,18 @@ class _MeasurementUnits:
     scale_product: float
     unit_label: str
     column_units: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _SpatialTableContext:
+    spatial_ndim: int
+    spatial_axes: tuple[int, ...]
+    leading_axis_names: tuple[str, ...]
+    spatial_axis_names: tuple[str, ...]
+    leading_shape: tuple[int, ...]
+    spatial_scales: tuple[float, ...]
+    physical_unit: str
+    has_physical_calibration: bool
 
 
 @dataclass(frozen=True)
@@ -7616,6 +7966,502 @@ def _coloc_thresholds(
         _clamp(float(channel_2_threshold), 0.0, float(intensity_max)),
         None,
     )
+
+
+def _spatial_table_context(
+    reference: np.ndarray,
+    *,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+    axis_names: tuple[str, ...] | None,
+    axis_types: tuple[str, ...] | None,
+    axis_scales: tuple[float, ...] | None,
+    axis_units: tuple[str | None, ...] | None,
+) -> _SpatialTableContext:
+    spatial_ndim = _resolved_spatial_ndim(
+        reference,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    axis_names = _measurement_axis_names(reference.ndim, axis_names)
+    axis_types = _measurement_axis_types(reference.ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        reference.ndim,
+        spatial_ndim,
+        axis_types,
+    )
+    if len(spatial_axes) != spatial_ndim:
+        spatial_axes = tuple(range(reference.ndim - spatial_ndim, reference.ndim))
+    moved_axis_names = tuple(
+        axis_names[index]
+        for index in range(reference.ndim)
+        if index not in spatial_axes
+    ) + tuple(axis_names[index] for index in spatial_axes)
+    moved_axis_scales = _reordered_axis_values(
+        axis_scales,
+        reference.ndim,
+        spatial_axes,
+    )
+    moved_axis_units = _reordered_axis_values(
+        axis_units,
+        reference.ndim,
+        spatial_axes,
+    )
+    leading_axis_count = reference.ndim - spatial_ndim
+    spatial_axis_names = _safe_axis_column_names(
+        moved_axis_names[-spatial_ndim:],
+        fallback=("z", "y", "x")[-spatial_ndim:],
+    )
+    leading_axis_names = _safe_axis_column_names(
+        moved_axis_names[:leading_axis_count],
+        fallback=tuple(f"axis_{index}" for index in range(leading_axis_count)),
+    )
+    moved_reference = _move_to_spatial_last(reference, spatial_axes, spatial_ndim)
+    spatial_scales = _normalized_spatial_scales(
+        spatial_ndim,
+        moved_axis_scales[-spatial_ndim:],
+    )
+    unit_values = tuple(
+        str(unit).strip()
+        for unit in moved_axis_units[-spatial_ndim:]
+        if unit not in {None, ""}
+    )
+    calibrated = any(abs(scale - 1.0) > 1e-12 for scale in spatial_scales) or bool(
+        unit_values
+    )
+    physical_unit = _spatial_length_unit_label(unit_values)
+    return _SpatialTableContext(
+        spatial_ndim=spatial_ndim,
+        spatial_axes=spatial_axes,
+        leading_axis_names=leading_axis_names,
+        spatial_axis_names=spatial_axis_names,
+        leading_shape=moved_reference.shape[:leading_axis_count],
+        spatial_scales=spatial_scales,
+        physical_unit=physical_unit,
+        has_physical_calibration=calibrated,
+    )
+
+
+def _move_to_spatial_last(
+    arr: np.ndarray,
+    spatial_axes: tuple[int, ...],
+    spatial_ndim: int,
+) -> np.ndarray:
+    target_axes = tuple(range(arr.ndim - spatial_ndim, arr.ndim))
+    return np.moveaxis(arr, spatial_axes, target_axes)
+
+
+def _spatial_length_unit_label(units: Sequence[str]) -> str:
+    units = tuple(unit for unit in units if str(unit).strip())
+    if not units:
+        return "pixels"
+    if len(set(units)) == 1:
+        return units[0]
+    return "physical units"
+
+
+def _label_pair_inputs_and_context(
+    inputs,
+    message: str,
+    *,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+    axis_names: tuple[str, ...] | None,
+    axis_types: tuple[str, ...] | None,
+    axis_scales: tuple[float, ...] | None,
+    axis_units: tuple[str | None, ...] | None,
+) -> tuple[np.ndarray, np.ndarray, _SpatialTableContext]:
+    values = list(inputs)
+    if len(values) < 2:
+        raise ValueError(message)
+    first = np.asarray(values[0])
+    second = np.asarray(values[1])
+    if first.shape != second.shape:
+        raise ValueError(
+            f"Label-like inputs must have matching shapes; got {first.shape} "
+            f"and {second.shape}."
+        )
+    context = _spatial_table_context(
+        first,
+        spatial_mode=spatial_mode,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_names=axis_names,
+        axis_types=axis_types,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+    )
+    return first, second, context
+
+
+def _objects_from_mask_or_labels(
+    data,
+    *,
+    context: _SpatialTableContext | None = None,
+) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.dtype == bool or _is_binary_label_like(arr):
+        if context is not None:
+            return _label_binary_spatial_blocks(arr > 0, context)
+        return measure.label(arr > 0).astype(np.int32, copy=False)
+    return _validated_labels(arr)
+
+
+def _event_objects_from_mask_or_labels(
+    data,
+    *,
+    context: _SpatialTableContext | None = None,
+) -> np.ndarray:
+    return _objects_from_mask_or_labels(data, context=context)
+
+
+def _regions_from_mask_or_labels(data) -> np.ndarray:
+    arr = np.asarray(data)
+    if arr.dtype == bool or _is_binary_label_like(arr):
+        return (arr > 0).astype(np.int32, copy=False)
+    return _validated_labels(arr)
+
+
+def _is_binary_label_like(arr: np.ndarray) -> bool:
+    if not np.issubdtype(arr.dtype, np.integer) or arr.size == 0:
+        return False
+    values = np.unique(arr)
+    return bool(np.all((values == 0) | (values == 1)))
+
+
+def _label_binary_spatial_blocks(
+    mask: np.ndarray,
+    context: _SpatialTableContext,
+) -> np.ndarray:
+    moved = _move_to_spatial_last(
+        np.asarray(mask, dtype=bool),
+        context.spatial_axes,
+        context.spatial_ndim,
+    )
+    labelled = np.zeros(moved.shape, dtype=np.int32)
+    for leading_index in np.ndindex(context.leading_shape or (1,)):
+        block_index = () if not context.leading_shape else leading_index
+        block = moved[block_index] if context.leading_shape else moved
+        block_labels = measure.label(block).astype(np.int32, copy=False)
+        if context.leading_shape:
+            labelled[block_index] = block_labels
+        else:
+            labelled = block_labels
+    target_axes = tuple(range(mask.ndim - context.spatial_ndim, mask.ndim))
+    return np.moveaxis(labelled, target_axes, context.spatial_axes)
+
+
+def _object_colocalization_columns(
+    leading_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    columns = _leading_index_columns(leading_axis_names)
+    columns.update(
+        {
+            "label_id": [],
+            "threshold_mode": [],
+            "channel_1_threshold": [],
+            "channel_2_threshold": [],
+            "threshold_units": [],
+            "object_voxels": [],
+            "channel_1_positive_voxels": [],
+            "channel_2_positive_voxels": [],
+            "colocalized_voxels": [],
+            "colocalized_fraction": [],
+            "pearson_object": [],
+            "pearson_colocalized": [],
+            "manders_m1": [],
+            "manders_m2": [],
+            "overlap_coefficient_object": [],
+            "overlap_coefficient_colocalized": [],
+            "channel_1_positive_sum": [],
+            "channel_2_positive_sum": [],
+            "colocalized_channel_1_sum": [],
+            "colocalized_channel_2_sum": [],
+            "costes_slope": [],
+            "costes_intercept": [],
+            "costes_pearson_below": [],
+            "costes_iterations": [],
+            "normalization_warnings": [],
+        }
+    )
+    return columns
+
+
+def _append_object_colocalization_rows(
+    columns: dict[str, list[object]],
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+    labels: np.ndarray,
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    *,
+    threshold_mode: str,
+    threshold_1: float,
+    threshold_2: float,
+    intensity_max: float,
+    costes: dict[str, float] | None,
+    warnings: tuple[str, ...],
+) -> None:
+    threshold_units = f"normalized_0_{_format_coloc_max(intensity_max)}"
+    warning_text = "; ".join(warnings)
+    for label_id in _positive_label_ids(labels):
+        object_mask = labels == label_id
+        object_voxels = int(np.count_nonzero(object_mask))
+        positive_1 = object_mask & (ch1 >= threshold_1)
+        positive_2 = object_mask & (ch2 >= threshold_2)
+        overlap = positive_1 & positive_2
+        sum_1_positive = float(np.sum(ch1[positive_1], dtype=np.float64))
+        sum_2_positive = float(np.sum(ch2[positive_2], dtype=np.float64))
+        sum_1_overlap = float(np.sum(ch1[overlap], dtype=np.float64))
+        sum_2_overlap = float(np.sum(ch2[overlap], dtype=np.float64))
+        _append_leading_index_values(columns, leading_axis_names, block_index)
+        columns["label_id"].append(int(label_id))
+        columns["threshold_mode"].append(str(threshold_mode))
+        columns["channel_1_threshold"].append(float(threshold_1))
+        columns["channel_2_threshold"].append(float(threshold_2))
+        columns["threshold_units"].append(threshold_units)
+        columns["object_voxels"].append(object_voxels)
+        columns["channel_1_positive_voxels"].append(int(np.count_nonzero(positive_1)))
+        columns["channel_2_positive_voxels"].append(int(np.count_nonzero(positive_2)))
+        columns["colocalized_voxels"].append(int(np.count_nonzero(overlap)))
+        columns["colocalized_fraction"].append(
+            _safe_fraction(np.count_nonzero(overlap), object_voxels)
+        )
+        columns["pearson_object"].append(_pearson(ch1[object_mask], ch2[object_mask]))
+        columns["pearson_colocalized"].append(_pearson(ch1[overlap], ch2[overlap]))
+        columns["manders_m1"].append(_safe_fraction(sum_1_overlap, sum_1_positive))
+        columns["manders_m2"].append(_safe_fraction(sum_2_overlap, sum_2_positive))
+        columns["overlap_coefficient_object"].append(
+            _overlap_coefficient(ch1[object_mask], ch2[object_mask])
+        )
+        columns["overlap_coefficient_colocalized"].append(
+            _overlap_coefficient(ch1[overlap], ch2[overlap])
+        )
+        columns["channel_1_positive_sum"].append(sum_1_positive)
+        columns["channel_2_positive_sum"].append(sum_2_positive)
+        columns["colocalized_channel_1_sum"].append(sum_1_overlap)
+        columns["colocalized_channel_2_sum"].append(sum_2_overlap)
+        columns["costes_slope"].append(
+            float("nan") if costes is None else float(costes["slope"])
+        )
+        columns["costes_intercept"].append(
+            float("nan") if costes is None else float(costes["intercept"])
+        )
+        columns["costes_pearson_below"].append(
+            float("nan") if costes is None else float(costes["pearson_below"])
+        )
+        columns["costes_iterations"].append(
+            0 if costes is None else int(costes["iterations"])
+        )
+        columns["normalization_warnings"].append(warning_text)
+
+
+def _label_overlap_columns(
+    leading_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    columns = _leading_index_columns(leading_axis_names)
+    columns.update(
+        {
+            "label_id": [],
+            "target_label_id": [],
+            "reference_voxels": [],
+            "target_voxels": [],
+            "overlap_voxels": [],
+            "reference_overlap_fraction": [],
+            "target_overlap_fraction": [],
+            "intersection_over_union": [],
+        }
+    )
+    return columns
+
+
+def _append_label_overlap_rows(
+    columns: dict[str, list[object]],
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+    reference: np.ndarray,
+    target: np.ndarray,
+) -> None:
+    reference_counts = _positive_label_counts(reference)
+    target_counts = _positive_label_counts(target)
+    pair_counts = _positive_pair_counts(reference, target)
+    for reference_id, target_id in sorted(pair_counts):
+        overlap_voxels = int(pair_counts[(reference_id, target_id)])
+        reference_voxels = int(reference_counts.get(reference_id, 0))
+        target_voxels = int(target_counts.get(target_id, 0))
+        union = reference_voxels + target_voxels - overlap_voxels
+        _append_leading_index_values(columns, leading_axis_names, block_index)
+        columns["label_id"].append(int(reference_id))
+        columns["target_label_id"].append(int(target_id))
+        columns["reference_voxels"].append(reference_voxels)
+        columns["target_voxels"].append(target_voxels)
+        columns["overlap_voxels"].append(overlap_voxels)
+        columns["reference_overlap_fraction"].append(
+            _safe_fraction(overlap_voxels, reference_voxels)
+        )
+        columns["target_overlap_fraction"].append(
+            _safe_fraction(overlap_voxels, target_voxels)
+        )
+        columns["intersection_over_union"].append(_safe_fraction(overlap_voxels, union))
+
+
+def _nearest_distance_columns(
+    context: _SpatialTableContext,
+) -> dict[str, list[object]]:
+    columns = _leading_index_columns(context.leading_axis_names)
+    columns.update(
+        {
+            "label_id": [],
+            "nearest_label_id": [],
+            "centroid_distance_pixels": [],
+        }
+    )
+    if context.has_physical_calibration:
+        columns["centroid_distance_physical"] = []
+        columns["physical_unit"] = []
+    return columns
+
+
+def _append_nearest_distance_rows(
+    columns: dict[str, list[object]],
+    context: _SpatialTableContext,
+    block_index: tuple[int, ...],
+    reference: np.ndarray,
+    target: np.ndarray,
+) -> None:
+    reference_centroids = _label_centroids(reference)
+    target_centroids = _label_centroids(target)
+    target_ids = sorted(target_centroids)
+    target_points = (
+        np.asarray([target_centroids[label_id] for label_id in target_ids])
+        if target_ids
+        else np.empty((0, context.spatial_ndim), dtype=np.float64)
+    )
+    scales = np.asarray(context.spatial_scales, dtype=np.float64)
+    for label_id in sorted(reference_centroids):
+        centroid = reference_centroids[label_id]
+        if target_points.size:
+            deltas = target_points - centroid
+            pixel_distances = np.linalg.norm(deltas, axis=1)
+            nearest_index = int(np.argmin(pixel_distances))
+            nearest_label_id = int(target_ids[nearest_index])
+            pixel_distance = float(pixel_distances[nearest_index])
+            physical_distance = float(np.linalg.norm(deltas[nearest_index] * scales))
+        else:
+            nearest_label_id = 0
+            pixel_distance = float("nan")
+            physical_distance = float("nan")
+        _append_leading_index_values(
+            columns,
+            context.leading_axis_names,
+            block_index,
+        )
+        columns["label_id"].append(int(label_id))
+        columns["nearest_label_id"].append(nearest_label_id)
+        columns["centroid_distance_pixels"].append(pixel_distance)
+        if context.has_physical_calibration:
+            columns["centroid_distance_physical"].append(physical_distance)
+            columns["physical_unit"].append(context.physical_unit)
+
+
+def _event_localization_columns(
+    leading_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    columns = _leading_index_columns(leading_axis_names)
+    columns.update(
+        {
+            "event_id": [],
+            "event_voxels": [],
+            "region_label_id": [],
+            "overlap_voxels": [],
+            "event_overlap_fraction": [],
+            "in_region": [],
+        }
+    )
+    return columns
+
+
+def _append_event_localization_rows(
+    columns: dict[str, list[object]],
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+    events: np.ndarray,
+    regions: np.ndarray,
+) -> None:
+    event_counts = _positive_label_counts(events)
+    overlaps_by_event: dict[int, list[tuple[int, int]]] = {}
+    for (event_id, region_id), count in _positive_pair_counts(events, regions).items():
+        overlaps_by_event.setdefault(int(event_id), []).append(
+            (int(region_id), int(count))
+        )
+    for event_id in sorted(event_counts):
+        overlaps = sorted(
+            overlaps_by_event.get(event_id, ()),
+            key=lambda item: (-item[1], item[0]),
+        )
+        if overlaps:
+            region_label_id, overlap_voxels = overlaps[0]
+        else:
+            region_label_id, overlap_voxels = 0, 0
+        event_voxels = int(event_counts[event_id])
+        _append_leading_index_values(columns, leading_axis_names, block_index)
+        columns["event_id"].append(int(event_id))
+        columns["event_voxels"].append(event_voxels)
+        columns["region_label_id"].append(int(region_label_id))
+        columns["overlap_voxels"].append(int(overlap_voxels))
+        columns["event_overlap_fraction"].append(
+            _safe_fraction(overlap_voxels, event_voxels)
+        )
+        columns["in_region"].append(bool(overlap_voxels > 0))
+
+
+def _leading_index_columns(
+    leading_axis_names: tuple[str, ...],
+) -> dict[str, list[object]]:
+    return {f"{axis_name}_index": [] for axis_name in leading_axis_names}
+
+
+def _append_leading_index_values(
+    columns: dict[str, list[object]],
+    leading_axis_names: tuple[str, ...],
+    block_index: tuple[int, ...],
+) -> None:
+    for axis_position, axis_name in enumerate(leading_axis_names):
+        columns[f"{axis_name}_index"].append(int(block_index[axis_position]))
+
+
+def _positive_label_counts(block: np.ndarray) -> dict[int, int]:
+    positive = np.asarray(block)[np.asarray(block) > 0]
+    if positive.size == 0:
+        return {}
+    values, counts = np.unique(positive, return_counts=True)
+    return {int(value): int(count) for value, count in zip(values, counts, strict=True)}
+
+
+def _positive_pair_counts(
+    first: np.ndarray,
+    second: np.ndarray,
+) -> dict[tuple[int, int], int]:
+    mask = (first > 0) & (second > 0)
+    if not np.any(mask):
+        return {}
+    pairs = zip(
+        first[mask].astype(int).flat,
+        second[mask].astype(int).flat,
+        strict=True,
+    )
+    return dict(Counter((int(left), int(right)) for left, right in pairs))
+
+
+def _label_centroids(block: np.ndarray) -> dict[int, np.ndarray]:
+    mask = block > 0
+    if not np.any(mask):
+        return {}
+    coords = np.argwhere(mask).astype(np.float64)
+    label_values = block[mask].astype(int)
+    centroids: dict[int, np.ndarray] = {}
+    for label_id in sorted(set(int(value) for value in label_values.flat)):
+        centroids[int(label_id)] = coords[label_values == label_id].mean(axis=0)
+    return centroids
 
 
 def _costes_thresholds(

@@ -43,6 +43,10 @@ def _workflow_args(args: list[str]) -> tuple[Path, str]:
             examples / "synthetic-3d-mesh-morphology.json",
             "measure_3d_mesh_morphology_1",
         ),
+        "object-coloc": (
+            examples / "synthetic-object-colocalization-association.json",
+            "object_colocalization_metrics_1",
+        ),
     }
     if not args:
         return workflows["intensity"]

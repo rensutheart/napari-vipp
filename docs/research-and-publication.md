@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-07-01
+Last reviewed: 2026-07-03
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -52,6 +52,9 @@ Implemented and covered by automated tests:
 - image/mask/label pinning as persistent napari preview layers while editing
   other nodes;
 - first-class table outputs and basic label-object measurements;
+- two-channel colocalization metrics, Costes thresholding, RACC-like index
+  outputs, ROI-restricted variants, object-restricted colocalization tables,
+  label-overlap association, nearest-object distances, and event localization;
 - named typed input ports and intensity-aware per-object measurement tables;
 - generic skeletonization, skeleton-network measurement tables, skeleton
   keypoint masks, branch/component labels, and short-branch pruning with 2D/3D
@@ -126,6 +129,9 @@ Use these persistent roles:
 - `docs/planning.md`: current priorities and milestones;
 - `docs/node-roadmap.md`: algorithm/node prioritization;
 - `docs/architecture.md`: developer implementation reference;
+- `docs/colocalization-method-notes.md`: publication-facing method definitions
+  for implemented colocalization, RACC-like, ROI, object-restricted, and
+  object-association calculations;
 - `docs/ome-io-plan.md`: accepted scientific I/O architecture and status;
 - this file: research questions, evidence, benchmarks, and publication record.
 

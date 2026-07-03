@@ -3,8 +3,8 @@
 Last reviewed: 2026-07-03
 
 This document tracks the VIPP colocalization phase. The goal is to support
-transparent two-channel colocalization workflows first, then extend toward
-per-object analysis, and deeper RACC interop.
+transparent two-channel colocalization workflows, per-object/object-association
+tables, and deeper RACC interop.
 
 ## Scope And Terminology
 
@@ -25,7 +25,7 @@ manual thresholding, Costes thresholding, scatter plotting, colocalized-voxel
 display, and RACC. This keeps threshold behavior stable across `uint8`,
 `uint16`, and normalized float inputs.
 
-## Implemented First Batches
+## Implemented Batches
 
 Implemented nodes live under **Colocalization & Spatial Analysis**:
 
@@ -37,6 +37,10 @@ Implemented nodes live under **Colocalization & Spatial Analysis**:
 | `Masked Colocalization Metrics` | Table | Same metric family as `Colocalization Metrics`, restricted to a third ROI mask input. Manual/cached by default. |
 | `Masked Colocalized Voxels` | RGB image | Same visual threshold feedback as `Colocalized Voxels`, but zeroes voxels outside the ROI mask. |
 | `Masked RACC Index` | Image | Same RACC-like scalar image as `RACC Index`, restricted to the ROI mask. Manual/cached by default. |
+| `Object Colocalization Metrics` | Table | Label-aware two-channel metrics, one row per object, with `label_id`, leading axis indices, thresholds, voxel counts, Pearson, Manders, overlap coefficients, intensity sums, and Costes diagnostics. Manual/cached by default. |
+| `Label Overlap Association` | Table | One row per overlapping reference/target label pair with overlap voxel counts, reference/target overlap fractions, and intersection-over-union. Manual/cached by default. |
+| `Nearest Object Distance` | Table | One row per reference label with the nearest target label and centroid distance in pixels, plus physical distance when axis calibration is available. Manual/cached by default. |
+| `Event Localization` | Table | Event/puncta objects assigned to dominant overlapping labels, masks, or ROIs with event voxel counts and overlap fractions. Manual/cached by default. |
 
 Selected colocalization threshold nodes show a native inspector scatter panel.
 The panel renders channel-1 versus channel-2 scatter density, uses a log-count
@@ -56,6 +60,7 @@ Bundled validation data:
 Example workflow:
 
 - `examples/synthetic-colocalization-racc.json`
+- `examples/synthetic-object-colocalization-association.json`
 
 ## RACC Relationship
 
@@ -75,34 +80,30 @@ separate napari plugin for the focused interactive RACC workflow unless a
 shared library package is later created. The current VIPP implementation should
 therefore not silently vendor the entire RACC plugin UI.
 
+Current dependency status: VIPP does not depend on the standalone RACC plugin.
+RACC is not listed in `pyproject.toml`; `RACC Index` and `Masked RACC Index`
+use VIPP's own implementation in `napari_vipp.core.operations`.
+
 Important policy note: the RACC plugin README includes license/patent notices.
 Before copying more RACC code wholesale or making a public release that markets
 RACC functionality, the release notes and documentation should explicitly state
 the license/patent status and attribution.
 
+Publication-facing method documentation is now captured in
+[colocalization-method-notes.md](colocalization-method-notes.md). It documents
+the implemented Pearson, Manders, Costes, RACC-like, ROI-restricted,
+object-restricted, and object-association assumptions used by VIPP.
+
 ## Next Batches
 
-1. **Per-object colocalization**
-   - Add a label-aware node with inputs: labels, channel 1, channel 2.
-   - Output one table row per label object with the same metric family.
-   - Use label ids and leading axes so rows merge cleanly with object
-     morphology/intensity tables.
-
-2. **Object association and localization**
-   - Add label-label overlap and nearest-object distance tables.
-   - Add event/puncta localization against labels, masks, or ROIs.
-   - Keep these as table outputs so they can merge with object morphology and
-     intensity measurements.
-
-3. **RACC interop**
+1. **RACC interop**
    - Decide whether to extract a small shared RACC core package or keep VIPP
      and RACC as separate packages with duplicated, attributed numerical
      routines.
    - Consider an action to send selected VIPP channel outputs to the RACC
      plugin when both plugins are installed.
 
-4. **Publication documentation**
-   - Add method definitions for Pearson, Manders, overlap coefficient, Costes,
-     and RACC.
+2. **Validation figure/notebook**
    - Add a validation notebook or scripted test figure based on the synthetic
-     colocalization sample.
+     colocalization sample when preparing manuscript figures or benchmark
+     supplements.

@@ -24,6 +24,8 @@ Related reference documents:
   skeleton, and table-composition workflow guidance.
 - [colocalization-racc-plan.md](colocalization-racc-plan.md) for the current
   colocalization/RACC implementation plan.
+- [colocalization-method-notes.md](colocalization-method-notes.md) for
+  publication-facing colocalization method documentation.
 - [skeleton-nodes.md](skeleton-nodes.md) for skeleton node usage.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md) for
   MitoMorph-inspired feature parity.
@@ -252,7 +254,8 @@ The live registry currently contains 98 nodes.
   Summarize Measurements.
 - **Colocalization & Spatial Analysis**: Colocalization Metrics, Masked
   Colocalization Metrics, Colocalized Voxels, Masked Colocalized Voxels, RACC
-  Index, Masked RACC Index.
+  Index, Masked RACC Index, Object Colocalization Metrics, Label Overlap
+  Association, Nearest Object Distance, Event Localization.
 
 ## Validated Reference Workflows
 
@@ -297,10 +300,13 @@ Implemented reference skeleton/network workflows:
 Implemented reference colocalization/RACC workflow:
 
 - `examples/synthetic-colocalization-racc.json`;
+- `examples/synthetic-object-colocalization-association.json`;
 - deterministic two-channel `CZYX` sample covering partial overlap,
   single-channel-only structures, offset puncta, background gradients,
   inspector scatter threshold guides, colocalized-voxel overlays, whole-image
-  and ROI-masked metrics, and RACC index output.
+  and ROI-masked metrics, RACC index output, object-level colocalization rows,
+  label-overlap association, nearest-object distances, event localization, and
+  merged morphology/colocalization tables.
 
 ## Recently Completed Milestone
 
@@ -325,33 +331,47 @@ Implemented:
   density colormap, log-count toggle, and stable layout while dragging.
 - Deterministic synthetic colocalization sample and example workflow:
   `examples/synthetic-colocalization-racc.json`.
+- Deterministic object-aware colocalization example workflow:
+  `examples/synthetic-object-colocalization-association.json`.
 - Tests covering colocalization metrics, overlays, RACC output, ROI masking,
   Costes threshold write-back, inspector scatter interaction, and the example
   workflow.
 
-This completes the first pixel-based colocalization/RACC batch. The remaining
-colocalization work should now move from whole-image/ROI pixel metrics toward
-object-level tables and localization/association outputs.
+This completed the first pixel-based colocalization/RACC batch. The
+object-level and association-table batch is now tracked below as implemented.
+
+### Object Colocalization And Association Tables
+
+Implemented:
+
+- `Object Colocalization Metrics`: label-aware two-channel metrics with one row
+  per object, `label_id`, leading axis indices, Pearson, Manders, overlap
+  coefficients, threshold voxel counts, intensity sums, and Costes diagnostics.
+- `Label Overlap Association`: label-label overlap rows with reference/target
+  label ids, overlap voxel counts, overlap fractions, and intersection over
+  union.
+- `Nearest Object Distance`: nearest target-object centroid distance per
+  reference label, including calibrated physical distance when axis metadata is
+  available.
+- `Event Localization`: event/puncta-to-region table rows for labels, masks, or
+  ROIs, reporting dominant overlapping region and event overlap fraction.
+- Tests covering the object colocalization, overlap association,
+  nearest-distance, and event-localization table contracts.
+- Publication-facing method documentation for Pearson, Manders, overlap
+  coefficient, Costes thresholding, RACC-like index, ROI restriction,
+  object-restricted analysis, and object association assumptions:
+  [colocalization-method-notes.md](colocalization-method-notes.md).
 
 ## Active TODOs
 
 ### Current Near-Term Order
 
-1. Add per-object colocalization/localization tables against label objects.
-   Start with a label-aware two-channel metric node that outputs one row per
-   object and joins cleanly with object morphology/intensity tables via
-   `label_id` and leading axis indices.
-2. Add object association outputs. This should cover label-overlap tables,
-   nearest-object distance tables, and event/puncta localization against
-   labels, masks, or ROIs.
-3. Add publication-facing method documentation for Pearson, Manders, overlap
-   coefficient, Costes thresholding, RACC, and ROI restriction assumptions.
-4. Add calibrated physical variants for non-mesh extended length/shape
+1. Add calibrated physical variants for non-mesh extended length/shape
    measurements, plus optional mesh export/preview after the first-pass mesh
    table node is stable.
-5. Build a real collection-batch UI on top of the existing Python export and
+2. Build a real collection-batch UI on top of the existing Python export and
    source-collection foundations.
-6. Add cancellation/progress for expensive manual/background feature families
+3. Add cancellation/progress for expensive manual/background feature families
    where libraries expose useful progress hooks.
 
 ### Execution Platform TODOs
@@ -359,7 +379,7 @@ object-level tables and localization/association outputs.
 - cancellation for running background/manual work;
 - percentage progress for operations that can report it;
 - richer failure recovery and retry behavior;
-- adoption by future colocalization/localization, mesh export/preview,
+- adoption by additional colocalization/localization, mesh export/preview,
   deconvolution, and very expensive background-estimation nodes;
 - visible progress support for slow nodes without making the UI feel frozen.
 
@@ -369,7 +389,7 @@ object-level tables and localization/association outputs.
   port and reuse that named connection elsewhere on the graph without drawing a
   long visible edge. This is especially important for colocalization workflows,
   where the same two split-channel outputs repeatedly feed metrics, overlays,
-  RACC, ROI-restricted variants, and future per-object nodes.
+  RACC, ROI-restricted variants, and object-level table workflows.
   - Output tunnel: mark a node output as a named source such as `Ch1` or `Ch2`;
     downstream tunnel receivers can subscribe to that source as if a normal
     wire were connected.
@@ -452,12 +472,10 @@ Object and mesh morphology:
 
 Colocalization and localization:
 
-- per-object colocalization tables against label objects;
-- object overlap and association tables;
-- nearest-object distance tables;
-- event localization against objects, masks, or ROIs;
-- scalar/table result contracts;
-- channel and mask input UI designed to avoid ambiguous wiring.
+- optional validation notebook or scripted figure using the synthetic
+  colocalization sample;
+- deeper RACC interop decisions if VIPP and the standalone RACC plugin should
+  share a numerical core.
 
 Segmentation polish:
 

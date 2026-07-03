@@ -898,8 +898,10 @@ labels A + labels B
   -> result table and optional matched labels
 ```
 
-The unrestricted and ROI-masked pixel-based versions are implemented.
-Per-object colocalization and object association remain TODO.
+The unrestricted, ROI-masked, per-object, label-overlap, nearest-distance, and
+event-localization table versions are implemented. Future work should focus on
+publication-facing method notes, validation figures/notebooks, and optional
+RACC interop with the standalone RACC plugin.
 
 ### Time-Lapse Drift Correction
 

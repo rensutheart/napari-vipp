@@ -53,6 +53,11 @@ COLOCALIZATION_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-colocalization-racc.json"
 )
+OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-object-colocalization-association.json"
+)
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():
@@ -494,3 +499,55 @@ def test_synthetic_colocalization_workflow_loads_and_runs():
         ],
         35,
     )
+
+
+def test_synthetic_object_colocalization_workflow_loads_and_runs():
+    workflow = load_workflow(OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic colocalization"
+    )
+    outputs = pipeline.run(
+        data,
+        input_metadata=layer_kwargs["metadata"],
+        input_name=layer_kwargs["name"],
+    )
+
+    labels_1 = outputs["label_connected_components_1"]
+    labels_2 = outputs["label_connected_components_2"]
+    measurements = outputs["measure_objects_1"]
+    object_metrics = outputs["object_colocalization_metrics_1"]
+    overlaps = outputs["label_overlap_association_1"]
+    distances = outputs["nearest_object_distance_1"]
+    localization = outputs["event_localization_1"]
+    merged = outputs["merge_tables_1"]
+
+    assert labels_1.max() == 3
+    assert labels_2.max() == 3
+    assert measurements.row_count == 3
+    assert object_metrics.table_kind == "per-object colocalization metrics"
+    assert object_metrics.row_count == 3
+    assert "manders_m1" in object_metrics.columns
+    assert all(
+        record["object_voxels"] > 0 for record in object_metrics.records()
+    )
+    assert overlaps.table_kind == "label overlap association"
+    assert overlaps.row_count == 2
+    assert all(record["overlap_voxels"] > 0 for record in overlaps.records())
+    assert distances.table_kind == "nearest object distance"
+    assert distances.row_count == 3
+    assert "centroid_distance_physical" in distances.columns
+    assert all(
+        record["nearest_label_id"] > 0 for record in distances.records()
+    )
+    assert localization.table_kind == "event localization"
+    assert localization.row_count == 3
+    assert any(record["in_region"] is True for record in localization.records())
+    assert any(record["in_region"] is False for record in localization.records())
+    assert merged.row_count == measurements.row_count
+    assert "volume_voxels" in merged.columns
+    assert "colocalized_voxels" in merged.columns

@@ -1,0 +1,231 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic colocalization",
+        "series_index": 0,
+        "channel_colors": "Red,Green",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 0
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 8000
+      }
+    },
+    {
+      "id": "binary_threshold_2",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 8000
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "label_connected_components_2",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "measurement_set": "Basic morphology",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "object_colocalization_metrics_1",
+      "operation_id": "object_colocalization_metrics",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "threshold_mode": "Manual",
+        "channel_1_threshold": 35,
+        "channel_2_threshold": 35
+      }
+    },
+    {
+      "id": "label_overlap_association_1",
+      "operation_id": "label_overlap_association",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "nearest_object_distance_1",
+      "operation_id": "nearest_object_distance",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "event_localization_1",
+      "operation_id": "event_localization",
+      "params": {
+        "spatial_mode": "3D ZYX"
+      }
+    },
+    {
+      "id": "merge_tables_1",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "auto"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "binary_threshold_2",
+      "target_port": 0,
+      "source_port": 1
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_2",
+      "target": "label_connected_components_2",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "object_colocalization_metrics_1",
+      "target_port": 2,
+      "source_port": 1
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "label_overlap_association_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_2",
+      "target": "label_overlap_association_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "nearest_object_distance_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_2",
+      "target": "nearest_object_distance_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_2",
+      "target": "event_localization_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "event_localization_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "merge_tables_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "object_colocalization_metrics_1",
+      "target": "merge_tables_1",
+      "target_port": 1,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 80.0],
+    "split_channels_1": [310.0, 80.0],
+    "binary_threshold_1": [620.0, -120.0],
+    "binary_threshold_2": [620.0, 280.0],
+    "label_connected_components_1": [930.0, -120.0],
+    "label_connected_components_2": [930.0, 280.0],
+    "measure_objects_1": [1240.0, -320.0],
+    "object_colocalization_metrics_1": [1240.0, -80.0],
+    "label_overlap_association_1": [1240.0, 160.0],
+    "nearest_object_distance_1": [1240.0, 400.0],
+    "event_localization_1": [1550.0, 280.0],
+    "merge_tables_1": [1550.0, -220.0]
+  },
+  "view": {
+    "zoom": 0.85,
+    "pan": [0.0, 0.0]
+  }
+}

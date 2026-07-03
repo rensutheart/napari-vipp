@@ -148,14 +148,15 @@ labels
 ```
 
 This is the current path for PCA/treatment-group style analysis. The table
-nodes are deliberately generic so future colocalization/localization tables can
-join through the same identity and metadata columns.
+nodes are deliberately generic so colocalization/localization tables can join
+through the same identity and metadata columns.
 
-Colocalization has now started as a separate analysis family. The first-pass
-workflow outputs whole-image and ROI-masked metrics, inspector scatter-density
-threshold controls, thresholded colocalized-voxel images, and RACC index
-images. Future per-object colocalization tables should still join through the
-same table-composition path described above.
+Colocalization is a separate analysis family. The current workflow outputs
+whole-image and ROI-masked metrics, inspector scatter-density threshold
+controls, thresholded colocalized-voxel images, RACC index images, and
+object-aware tables. `Object Colocalization Metrics`, `Label Overlap
+Association`, `Nearest Object Distance`, and `Event Localization` are designed
+to join through the same table-composition path described above.
 
 ## Reference Workflows
 
@@ -169,7 +170,8 @@ The key measurement examples are:
 - `synthetic-3d-mesh-morphology.json`;
 - `synthetic-skeleton-qc.json`;
 - `synthetic-advanced-skeleton-network.json`;
-- `synthetic-colocalization-racc.json`.
+- `synthetic-colocalization-racc.json`;
+- `synthetic-object-colocalization-association.json`.
 
 ## Current Wrap-Up Status
 
@@ -182,6 +184,8 @@ Completed for this phase:
 - table merge, metadata annotation, column selection, and grouped summaries;
 - first-pass pixel colocalization/RACC metrics, masked/ROI-restricted variants,
   and visual outputs;
+- per-object colocalization, object association, nearest-distance, and
+  event-localization tables;
 - deterministic synthetic validation samples;
 - example workflows for each major measurement family;
 - full example-workflow tests.
@@ -191,5 +195,4 @@ Remaining non-blocking follow-up:
 - calibrated physical variants for extended non-mesh length/shape columns;
 - optional mesh export/preview;
 - specialist mitochondrial network indices;
-- per-object colocalization tables;
 - cancellation and percentage progress for long manual calculations.

@@ -144,7 +144,8 @@ and then assemble them into one analysis-ready table.
    mesh, graph, colocalization, or restoration calculations that would feel
    sluggish if run live.
 9. Add colocalization/localization table nodes that can merge with object
-   measurement tables.
+   measurement tables. Implemented as object colocalization, label-overlap,
+   nearest-distance, and event-localization table nodes.
 10. Add specialist mitochondrial network metrics beyond the implemented
     skeleton branch-summary tables and normalized overall-network summaries.
 11. Add mitochondrial event analysis after tracking/association design is in
