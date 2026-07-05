@@ -2527,6 +2527,8 @@ class PythonSyntaxHighlighter(QSyntaxHighlighter):
 class HistogramPlot(QWidget):
     """Compact histogram display for the selected node output."""
 
+    markerChanged = Signal(str, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._counts = np.array([], dtype=np.float32)
@@ -2538,7 +2540,10 @@ class HistogramPlot(QWidget):
         self._x_range: tuple[float, float] | None = None
         self._x_scale = "linear"
         self._markers: list[tuple[str, float, QColor]] = []
+        self._draggable_markers: set[str] = set()
+        self._drag_marker: str | None = None
         self.setMinimumHeight(120)
+        self.setMouseTracking(True)
 
     def set_histogram(
         self,
@@ -2548,6 +2553,7 @@ class HistogramPlot(QWidget):
         colors: list[QColor] | None = None,
         markers: list[tuple[str, float, QColor]] | None = None,
         x_scale: str = "linear",
+        draggable_markers: set[str] | None = None,
     ) -> None:
         self._counts = (
             np.asarray(counts, dtype=np.float32)
@@ -2569,6 +2575,10 @@ class HistogramPlot(QWidget):
         self._x_range = x_range
         self._x_scale = x_scale
         self._markers = markers or []
+        marker_labels = {label for label, _value, _color in self._markers}
+        self._draggable_markers = set(draggable_markers or set()) & marker_labels
+        if self._drag_marker not in self._draggable_markers:
+            self._drag_marker = None
         if x_range is None or self._series_counts.size == 0:
             self._x_min_label = ""
             self._x_max_label = ""
@@ -2620,6 +2630,28 @@ class HistogramPlot(QWidget):
                 self._x_max_label,
             )
         painter.end()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        marker = self._marker_at_point(_event_position(event))
+        if marker is None:
+            return
+        self._drag_marker = marker
+        self._emit_marker_from_point(marker, _event_position(event))
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        point = _event_position(event)
+        if self._drag_marker is not None:
+            self._emit_marker_from_point(self._drag_marker, point)
+            return
+        if self._marker_at_point(point) is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(Qt.SizeHorCursor)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_marker is not None:
+            self._emit_marker_from_point(self._drag_marker, _event_position(event))
+        self._drag_marker = None
 
     def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
         painter.setPen(QPen(QColor("#64748b"), 1.2))
@@ -2702,6 +2734,63 @@ class HistogramPlot(QWidget):
             shifted_maximum = maximum - minimum
             return float(np.log1p(shifted_value) / np.log1p(max(shifted_maximum, 1.0)))
         return float((value - minimum) / (maximum - minimum))
+
+    def _plot_rect(self) -> QRect:
+        rect = self.rect().adjusted(8, 8, -8, -8)
+        label_height = self.fontMetrics().height() + 5
+        plot_frame = rect.adjusted(0, 0, 0, -label_height)
+        return plot_frame.adjusted(10, 8, -8, -10)
+
+    def _marker_at_point(self, point) -> str | None:
+        if not self._draggable_markers or self._x_range is None:
+            return None
+        plot_rect = self._plot_rect()
+        if not plot_rect.adjusted(-8, 0, 8, 0).contains(point):
+            return None
+        candidates: list[tuple[float, str]] = []
+        for label, value, _color in self._markers:
+            if label not in self._draggable_markers:
+                continue
+            x = plot_rect.left() + self._x_fraction(value) * max(plot_rect.width(), 1)
+            distance = abs(float(point.x()) - float(x))
+            if distance <= 8.0:
+                candidates.append((distance, label))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
+
+    def _emit_marker_from_point(self, label: str, point) -> None:
+        if self._x_range is None:
+            return
+        value = self._value_from_x(float(point.x()), self._plot_rect())
+        self._replace_marker_value(label, value)
+        self.markerChanged.emit(label, value)
+        self.update()
+
+    def _replace_marker_value(self, label: str, value: float) -> None:
+        self._markers = [
+            (
+                marker_label,
+                float(value) if marker_label == label else marker_value,
+                color,
+            )
+            for marker_label, marker_value, color in self._markers
+        ]
+
+    def _value_from_x(self, x: float, plot_rect: QRect) -> float:
+        if self._x_range is None:
+            return 0.0
+        minimum, maximum = self._x_range
+        if maximum <= minimum:
+            return float(minimum)
+        width = max(float(plot_rect.width()), 1.0)
+        fraction = float(np.clip((float(x) - plot_rect.left()) / width, 0.0, 1.0))
+        if self._x_scale == "log":
+            shifted_maximum = maximum - minimum
+            shifted = np.expm1(fraction * np.log1p(max(shifted_maximum, 1.0)))
+            return float(np.clip(minimum + shifted, minimum, maximum))
+        return float(minimum + fraction * (maximum - minimum))
 
 
 class ColocalizationScatterPlot(QWidget):
@@ -4161,8 +4250,14 @@ class VippWidget(QWidget):
         self.rescale_input_histogram_log_checkbox.toggled.connect(
             self._update_histogram
         )
+        self.rescale_input_histogram_plot.markerChanged.connect(
+            self._on_input_histogram_marker_changed
+        )
         self.label_volume_log_checkbox.toggled.connect(
             self._update_label_volume_histogram
+        )
+        self.label_volume_plot.markerChanged.connect(
+            self._on_label_volume_marker_changed
         )
         self.colocalization_scatter_log_checkbox.toggled.connect(
             self._update_colocalization_scatter
@@ -9727,6 +9822,108 @@ class VippWidget(QWidget):
         self._update_colocalization_scatter()
         self._debounce_timer.start()
 
+    def _on_input_histogram_marker_changed(self, label: str, value: float) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        name = _input_histogram_marker_parameter(node.operation_id, label)
+        if name is None:
+            return
+        value = self._paired_histogram_marker_value(node_id, name, value)
+        value = self._coerce_histogram_parameter_value(node_id, name, value)
+        if not self._set_histogram_parameter_value(node_id, name, value):
+            return
+        if node.operation_id == "rescale_intensity":
+            if self._sync_rescale_cutoff_parameters(node_id, name):
+                self._refresh_rescale_cutoff_widgets(node_id)
+        self._mark_pipeline_dirty(node_id)
+        self._update_rescale_input_histogram(
+            node_id,
+            self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+        )
+        self._debounce_timer.start()
+
+    def _on_label_volume_marker_changed(self, label: str, value: float) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "filter_labels_by_volume":
+            return
+        name = {"min": "min_volume", "max": "max_volume"}.get(str(label))
+        if name is None:
+            return
+        value = self._paired_histogram_marker_value(node_id, name, value)
+        value = self._coerce_histogram_parameter_value(node_id, name, value)
+        if not self._set_histogram_parameter_value(node_id, name, value):
+            return
+        self._mark_pipeline_dirty(node_id)
+        self._update_label_volume_histogram()
+        self._debounce_timer.start()
+
+    def _set_histogram_parameter_value(self, node_id: str, name: str, value) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        spec = self._parameter_spec_by_name(node_id, name)
+        if node is None or spec is None:
+            return False
+        if not self._parameter_value_changed(spec, node.params.get(name), value):
+            return False
+        self._record_parameter_undo(node_id, name)
+        self.pipeline.set_param(node_id, name, value)
+        self._set_parameter_control_value(node_id, name, value)
+        return True
+
+    def _coerce_histogram_parameter_value(self, node_id: str, name: str, value):
+        spec = self._parameter_spec_by_name(node_id, name)
+        if spec is None:
+            return float(value)
+        spec = self._effective_parameter_spec(node_id, spec)
+        bounds = self._parameter_bounds_for(node_id, spec)
+        minimum = (
+            bounds.minimum if bounds.entry_minimum is None else bounds.entry_minimum
+        )
+        maximum = (
+            bounds.maximum if bounds.entry_maximum is None else bounds.entry_maximum
+        )
+        numeric = float(np.clip(float(value), float(minimum), float(maximum)))
+        if spec.kind == "int":
+            return int(round(numeric))
+        decimals = max(int(getattr(spec, "decimals", 2) or 0), 0)
+        return float(round(numeric, decimals))
+
+    def _paired_histogram_marker_value(
+        self,
+        node_id: str,
+        name: str,
+        value: float,
+    ) -> float:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return float(value)
+        pair = {
+            "in_low_value": ("in_high_value", "low"),
+            "in_high_value": ("in_low_value", "high"),
+            "minimum": ("maximum", "low"),
+            "maximum": ("minimum", "high"),
+            "low_threshold": ("high_threshold", "low"),
+            "high_threshold": ("low_threshold", "high"),
+            "min_volume": ("max_volume", "low"),
+            "max_volume": ("min_volume", "high"),
+        }.get(name)
+        if pair is None:
+            return float(value)
+        other_name, role = pair
+        other = node.params.get(other_name)
+        if other is None:
+            return float(value)
+        other_value = _safe_float(other, np.nan)
+        if not np.isfinite(other_value):
+            return float(value)
+        if name == "min_volume" and int(round(other_value)) <= 0:
+            return float(value)
+        if role == "low":
+            return float(min(float(value), other_value))
+        return float(max(float(value), other_value))
+
     def _update_rescale_input_histogram(
         self,
         node_id: str,
@@ -9796,6 +9993,7 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
             markers=markers,
+            draggable_markers=_input_histogram_draggable_markers(node.operation_id),
         )
 
     def _update_table_preview(self) -> None:
@@ -9888,6 +10086,7 @@ class VippWidget(QWidget):
             colors=[QColor("#f472b6")],
             markers=markers,
             x_scale=x_scale,
+            draggable_markers={"min", "max"},
         )
 
     def _label_filter_spatial_ndim(
@@ -10965,6 +11164,31 @@ def _input_histogram_markers(
             return []
         return [("threshold", float(value), QColor("#f59e0b"))]
     return []
+
+
+def _input_histogram_draggable_markers(operation_id: str) -> set[str]:
+    if operation_id == "rescale_intensity":
+        return {"low", "high"}
+    if operation_id == "clip_intensity":
+        return {"min", "max"}
+    if operation_id == "binary_threshold":
+        return {"threshold"}
+    if operation_id == "hysteresis_threshold":
+        return {"low", "high"}
+    return set()
+
+
+def _input_histogram_marker_parameter(operation_id: str, label: str) -> str | None:
+    label = str(label)
+    if operation_id == "rescale_intensity":
+        return {"low": "in_low_value", "high": "in_high_value"}.get(label)
+    if operation_id == "clip_intensity":
+        return {"min": "minimum", "max": "maximum"}.get(label)
+    if operation_id == "binary_threshold":
+        return "threshold" if label == "threshold" else None
+    if operation_id == "hysteresis_threshold":
+        return {"low": "low_threshold", "high": "high_threshold"}.get(label)
+    return None
 
 
 def _threshold_histogram_scope_label(scope: str) -> str:

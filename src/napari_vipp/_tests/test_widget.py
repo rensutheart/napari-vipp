@@ -6,8 +6,8 @@ from dataclasses import replace
 import imageio.v3 as iio
 import numpy as np
 import tifffile
-from qtpy.QtCore import QEvent, QPointF, QSignalBlocker, Qt
-from qtpy.QtGui import QKeySequence, QMouseEvent
+from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt
+from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -24,6 +24,7 @@ from napari_vipp._widget import (
     CollectionBatchDialog,
     ConnectionInsertDialog,
     FlexibleDoubleSpinBox,
+    HistogramPlot,
     SelectTableColumnsControl,
     VippWidget,
 )
@@ -274,6 +275,40 @@ def test_flexible_double_spinbox_shows_compact_float_text(qtbot):
 
     box.setValue(0.0)
     assert box.text() == "0"
+
+
+def test_histogram_plot_dragging_marker_emits_histogram_value(qtbot):
+    plot = HistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(240, 160)
+    plot.set_histogram(
+        np.ones(32, dtype=np.float32),
+        log_scale=False,
+        x_range=(0.0, 100.0),
+        markers=[("threshold", 50.0, QColor("#f59e0b"))],
+        draggable_markers={"threshold"},
+    )
+    plot.show()
+    captured = []
+    plot.markerChanged.connect(
+        lambda label, value: captured.append((str(label), float(value)))
+    )
+
+    rect = plot._plot_rect()
+    y = rect.center().y()
+    start = QPoint(
+        rect.left() + int(round(plot._x_fraction(50.0) * rect.width())),
+        y,
+    )
+    end = QPoint(rect.left() + int(round(0.75 * rect.width())), y)
+
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=end)
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=end)
+
+    assert captured
+    assert captured[-1][0] == "threshold"
+    assert np.isclose(captured[-1][1], 75.0, atol=1.0)
 
 
 def test_widget_builds_graph_and_inspects_node(qtbot):
@@ -1184,6 +1219,15 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
     assert widget.label_volume_plot._counts.sum() == volumes.size
     assert widget.label_volume_plot._x_scale == "linear"
     assert widget.label_volume_plot._x_range == (0.0, float(volumes.max()))
+
+    widget._on_label_volume_marker_changed("min", 24.3)
+
+    assert widget.pipeline.nodes[filtered.id].params["min_volume"] == 24
+    assert widget._parameter_widgets["min_volume"].value() == 24
+    assert [
+        (label, value)
+        for label, value, _color in widget.label_volume_plot._markers
+    ][0] == ("min", 24.0)
 
     widget._parameter_widgets["min_volume"].value_box.setValue(20)
     widget._parameter_widgets["max_volume"].value_box.setValue(50)
@@ -2371,6 +2415,19 @@ def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ][1] == ("high", 127.5)
 
+    widget._on_input_histogram_marker_changed("low", 32.0)
+
+    assert widget.pipeline.nodes[node.id].params["in_low_value"] == 32.0
+    assert widget._parameter_widgets["in_low_value"].value() == 32.0
+    assert np.isclose(
+        widget.pipeline.nodes[node.id].params["in_low_percentile"],
+        12.549019607843137,
+    )
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ][0] == ("low", 32.0)
+
 
 def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbot):
     data = np.arange(100, dtype=np.uint16).reshape(1, 10, 10)
@@ -2404,6 +2461,15 @@ def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbo
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ][0] == ("min", 25.0)
 
+    widget._on_input_histogram_marker_changed("max", 75.0)
+
+    assert widget.pipeline.nodes[node.id].params["maximum"] == 75.0
+    assert widget._parameter_widgets["maximum"].value() == 75.0
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ][1] == ("max", 75.0)
+
 
 def test_binary_threshold_shows_input_histogram_marker(qtbot):
     data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
@@ -2425,6 +2491,15 @@ def test_binary_threshold_shows_input_histogram_marker(qtbot):
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ] == [("threshold", 128.0)]
 
+    widget._on_input_histogram_marker_changed("threshold", 64.0)
+
+    assert widget.pipeline.nodes[node.id].params["threshold"] == 64.0
+    assert widget._parameter_widgets["threshold"].value() == 64.0
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("threshold", 64.0)]
+
 
 def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
     viewer = _Viewer(np.arange(256, dtype=np.uint8).reshape(16, 16))
@@ -2443,6 +2518,15 @@ def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ] == [("low", 64.0), ("high", 192.0)]
+
+    widget._on_input_histogram_marker_changed("low", 96.0)
+
+    assert widget.pipeline.nodes[node.id].params["low_threshold"] == 96.0
+    assert widget._parameter_widgets["low_threshold"].value() == 96.0
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("low", 96.0), ("high", 192.0)]
 
 
 def test_selected_node_shows_output_metadata(qtbot):
