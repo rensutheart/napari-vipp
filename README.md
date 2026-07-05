@@ -482,7 +482,8 @@ Intensity`.
 
 Near-term development priorities:
 
-- cancellation and progress for long-running background/manual operations;
+- cooperative mid-operation cancellation/progress for long-running
+  background/manual operations;
 - axis-aware channel selectors that show probe names instead of only numbers;
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation

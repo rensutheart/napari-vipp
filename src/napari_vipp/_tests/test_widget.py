@@ -3444,6 +3444,32 @@ def test_discarded_inflight_run_requeues_dirty_nodes(qtbot):
     assert widget._inflight_dirty_node_ids is None
 
 
+def test_cancel_background_run_requeues_dirty_nodes(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._active_pipeline_run_id = 123
+    widget._pipeline_run_pending = True
+    widget._pipeline_run_context[123] = (None, "input volume", "gaussian", None, None)
+    widget._inflight_dirty_node_ids = {"gaussian"}
+    widget._set_pipeline_busy(True, "gaussian", queued=True)
+
+    assert not widget.pipeline_cancel_button.isHidden()
+    assert widget.graph_view._cards["gaussian"].is_processing()
+
+    widget._cancel_background_pipeline_run()
+
+    assert widget._active_pipeline_run_id is None
+    assert widget._pipeline_run_pending is False
+    assert 123 not in widget._pipeline_run_context
+    assert "gaussian" in widget._pending_dirty_node_ids
+    assert widget._inflight_dirty_node_ids is None
+    assert widget.pipeline_cancel_button.isHidden()
+    assert not widget.graph_view._cards["gaussian"].is_processing()
+    assert "result will be ignored" in widget.status_label.text()
+
+
 def test_autodefault_rerun_starts_at_changed_node_not_original_dirty(
     qtbot, monkeypatch
 ):

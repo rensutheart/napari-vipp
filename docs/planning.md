@@ -117,6 +117,8 @@ Implemented:
 - dirty-node caching of prior outputs and states;
 - coalesced reruns while a long calculation is active, discarding stale worker
   results;
+- `Cancel` control for active background processing, which clears queued reruns,
+  requeues the dirty graph nodes, and ignores the eventual worker result;
 - `Run all in BG` toggle to force graph updates onto the worker;
 - manual/cached execution for expensive table-producing nodes:
   `Measure Objects`, `Measure Objects + Intensity`,
@@ -390,14 +392,14 @@ Implemented:
 
 ### Current Near-Term Order
 
-1. Add cancellation/progress for expensive manual/background feature families
-   where libraries expose useful progress hooks.
+1. Add cooperative mid-operation cancellation/progress for expensive
+   manual/background feature families where libraries expose useful hooks.
 2. Extend the first-pass batch UI with stable item identities, output
    templates, and multiple independently bound sources.
 
 ### Execution Platform TODOs
 
-- cancellation for running background/manual work;
+- cooperative cancellation inside long-running operation functions;
 - percentage progress for operations that can report it;
 - richer failure recovery and retry behavior;
 - adoption by additional colocalization/localization, mesh export/preview,

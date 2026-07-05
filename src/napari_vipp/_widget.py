@@ -3383,6 +3383,12 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setTextVisible(False)
         self.pipeline_busy_bar.setFixedWidth(96)
         self.pipeline_busy_bar.setFixedHeight(12)
+        self.pipeline_cancel_button = QPushButton("Cancel")
+        self.pipeline_cancel_button.setToolTip(
+            "Cancel queued background reruns and ignore the active result. "
+            "The operation already running in a worker may finish in the background."
+        )
+        self.pipeline_cancel_button.setVisible(False)
         self.pipeline_busy_label.setVisible(False)
         self.pipeline_busy_bar.setVisible(False)
         self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
@@ -3798,6 +3804,7 @@ class VippWidget(QWidget):
         workflow_row.addStretch(1)
         workflow_row.addWidget(self.pipeline_busy_label)
         workflow_row.addWidget(self.pipeline_busy_bar)
+        workflow_row.addWidget(self.pipeline_cancel_button)
         workflow_row.addWidget(self.version_label)
         root.addLayout(workflow_row)
         root.addWidget(self.view_dims_bar)
@@ -4092,6 +4099,7 @@ class VippWidget(QWidget):
         self.export_button.clicked.connect(self._export_python_dialog)
         self.batch_button.clicked.connect(self._batch_collection_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
+        self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
@@ -5292,7 +5300,7 @@ class VippWidget(QWidget):
             saved.append(target)
 
         batch_source_ids = self._batch_collection_source_node_ids(batch_pipeline)
-        self._set_pipeline_busy(True)
+        self._set_pipeline_busy(True, cancelable=False)
         try:
             for index, source in enumerate(sources, start=1):
                 self.status_label.setText(
@@ -8917,15 +8925,35 @@ class VippWidget(QWidget):
             result_pipeline.node_execution_messages,
         )
 
+    def _cancel_background_pipeline_run(self) -> None:
+        run_id = self._active_pipeline_run_id
+        if run_id is None:
+            self._pipeline_run_pending = False
+            self._set_pipeline_busy(False)
+            self.status_label.setText("No background run is active.")
+            return
+
+        self._active_pipeline_run_id = None
+        self._pipeline_run_pending = False
+        self._pipeline_run_context.pop(run_id, None)
+        self._requeue_inflight_dirty_nodes()
+        self._set_pipeline_busy(False)
+        self.status_label.setText(
+            "Canceled background processing. The current worker may finish in "
+            "the background, but its result will be ignored."
+        )
+
     def _set_pipeline_busy(
         self,
         busy: bool,
         node_id: str | None = None,
         *,
         queued: bool = False,
+        cancelable: bool = True,
     ) -> None:
         self.pipeline_busy_label.setVisible(busy)
         self.pipeline_busy_bar.setVisible(busy)
+        self.pipeline_cancel_button.setVisible(busy and cancelable)
         if not busy:
             self.pipeline_busy_label.setText("Processing")
             self.graph_view.clear_node_processing()

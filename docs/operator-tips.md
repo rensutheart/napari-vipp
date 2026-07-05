@@ -21,6 +21,13 @@ Use `Run all in BG` off when:
 - edits are usually small and fast;
 - reducing per-run orchestration overhead is more important than progress UI.
 
+The toolbar `Cancel` button appears while a background graph update is active.
+It cancels queued reruns, marks the in-flight dirty nodes as pending again, and
+ignores the active worker result when it eventually returns. It does not forcibly
+terminate a NumPy, SciPy, or scikit-image function that is already executing
+inside the worker thread, so CPU use may continue briefly after the UI reports
+the cancellation.
+
 ## Preview and Dims Strategy
 
 `Follow napari dims` controls whether previews and slice-based histograms track
