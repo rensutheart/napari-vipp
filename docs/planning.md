@@ -115,13 +115,17 @@ The exporter is headless but still requires the `napari-vipp` Python package.
 Implemented:
 
 - background-thread execution for known slow image-processing graphs;
-- global indeterminate processing indicator;
+- global indeterminate or percentage processing indicator;
 - per-node busy rings for the slow node that triggered background execution;
 - dirty-node caching of prior outputs and states;
 - coalesced reruns while a long calculation is active, discarding stale worker
   results;
 - `Cancel` control for active background processing, which clears queued reruns,
-  requeues the dirty graph nodes, and ignores the eventual worker result;
+  requeues the dirty graph nodes, cooperatively asks cancellable operations to
+  stop, and ignores any stale worker result;
+- cooperative operation progress/cancellation for rolling-ball/subtract
+  background block processing, rescale-axes runs, and 3D mesh-morphology label
+  loops;
 - `Run all in BG` toggle to force graph updates onto the worker;
 - manual/cached execution for expensive table-producing nodes:
   `Measure Objects`, `Measure Objects + Intensity`,
@@ -395,15 +399,15 @@ Implemented:
 
 ### Current Near-Term Order
 
-1. Add cooperative mid-operation cancellation/progress for expensive
+1. Extend cooperative mid-operation cancellation/progress to more expensive
    manual/background feature families where libraries expose useful hooks.
 2. Extend the first-pass batch UI with stable item identities, output
    templates, and multiple independently bound sources.
 
 ### Execution Platform TODOs
 
-- cooperative cancellation inside long-running operation functions;
-- percentage progress for operations that can report it;
+- broader cooperative cancellation inside long-running operation functions;
+- percentage progress for additional operations that can report it;
 - richer failure recovery and retry behavior;
 - adoption by additional colocalization/localization, mesh export/preview,
   deconvolution, and very expensive background-estimation nodes;

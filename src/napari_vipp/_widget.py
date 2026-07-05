@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect as py_inspect
 import re
 import textwrap
+import threading
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -143,6 +144,7 @@ from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail_with_colormap,
 )
+from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
@@ -229,6 +231,7 @@ class PipelineRunRequest:
     cached_execution_states: dict[str, str] | None = None
     cached_execution_messages: dict[str, str] | None = None
     manual_node_ids: frozenset[str] | None = None
+    cancel_event: threading.Event | None = None
 
 
 @dataclass(frozen=True)
@@ -237,10 +240,12 @@ class PipelineRunResult:
     workflow: dict
     pipeline: PrototypePipeline | None = None
     error: str = ""
+    cancelled: bool = False
 
 
 class PipelineRunSignals(QObject):
     node_started = Signal(object)
+    progress = Signal(object)
     finished = Signal(object)
 
 
@@ -265,9 +270,21 @@ class PipelineRunWorker(QRunnable):
                 source_payloads=self.request.source_payloads,
                 dirty_node_ids=self.request.dirty_node_ids,
                 node_started_callback=self._emit_node_started,
+                progress_callback=self._emit_progress,
+                cancel_callback=self._is_cancelled,
                 manual_mode=MANUAL_RUN_SKIP,
                 manual_node_ids=self.request.manual_node_ids,
             )
+        except OperationCancelled as exc:
+            self.signals.finished.emit(
+                PipelineRunResult(
+                    self.request.run_id,
+                    self.request.workflow,
+                    error=str(exc),
+                    cancelled=True,
+                )
+            )
+            return
         except Exception as exc:
             self.signals.finished.emit(
                 PipelineRunResult(
@@ -283,6 +300,20 @@ class PipelineRunWorker(QRunnable):
 
     def _emit_node_started(self, node_id: str) -> None:
         self.signals.node_started.emit((self.request.run_id, node_id))
+
+    def _emit_progress(
+        self,
+        node_id: str,
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        self.signals.progress.emit(
+            (self.request.run_id, node_id, int(current), int(total), str(message))
+        )
+
+    def _is_cancelled(self) -> bool:
+        return bool(self.request.cancel_event and self.request.cancel_event.is_set())
 
     def _hydrate_cached_pipeline_outputs(self, pipeline: PrototypePipeline) -> None:
         if self.request.dirty_node_ids is None:
@@ -3430,6 +3461,7 @@ class VippWidget(QWidget):
         self._active_pipeline_node_id: str | None = None
         self._pipeline_run_pending = False
         self._pipeline_run_context: dict[int, tuple] = {}
+        self._pipeline_cancel_events: dict[int, threading.Event] = {}
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
@@ -8878,6 +8910,7 @@ class VippWidget(QWidget):
         self._pipeline_run_serial += 1
         run_id = self._pipeline_run_serial
         workflow = deepcopy(serialize_workflow(self.pipeline))
+        cancel_event = threading.Event()
         request = PipelineRunRequest(
             run_id=run_id,
             workflow=workflow,
@@ -8916,8 +8949,10 @@ class VippWidget(QWidget):
             manual_node_ids=(
                 frozenset(manual_node_ids) if manual_node_ids else None
             ),
+            cancel_event=cancel_event,
         )
         self._active_pipeline_run_id = run_id
+        self._pipeline_cancel_events[run_id] = cancel_event
         self._begin_pipeline_dispatch(dirty_node_ids)
         self._pipeline_run_context[run_id] = (
             primary_layer,
@@ -8935,6 +8970,7 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Processing '{title}' in background...")
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
+        worker.signals.progress.connect(self._on_background_pipeline_progress)
         worker.signals.finished.connect(self._on_background_pipeline_finished)
         self._pipeline_thread_pool.start(worker)
 
@@ -8951,10 +8987,34 @@ class VippWidget(QWidget):
         suffix = "; latest edit queued" if self._pipeline_run_pending else ""
         self.status_label.setText(f"Processing '{title}' in background{suffix}...")
 
+    def _on_background_pipeline_progress(self, payload: object) -> None:
+        try:
+            run_id, node_id, current, total, message = payload
+        except Exception:
+            return
+        if run_id != self._active_pipeline_run_id:
+            return
+        node_id = str(node_id)
+        title = self._node_title(node_id) if node_id in self.pipeline.nodes else "graph"
+        total = int(total)
+        current = int(current)
+        if total > 0:
+            self.pipeline_busy_bar.setRange(0, total)
+            self.pipeline_busy_bar.setValue(max(min(current, total), 0))
+            self.pipeline_busy_bar.setTextVisible(True)
+            self.pipeline_busy_bar.setFormat("%p%")
+        else:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
+        detail = f": {message}" if str(message).strip() else ""
+        suffix = "; latest edit queued" if self._pipeline_run_pending else ""
+        self.pipeline_busy_label.setText(f"Processing: {title}{detail}{suffix}")
+
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
         if result.run_id != self._active_pipeline_run_id:
             return
         self._active_pipeline_run_id = None
+        self._pipeline_cancel_events.pop(result.run_id, None)
         (
             primary_layer,
             source_label,
@@ -8975,6 +9035,10 @@ class VippWidget(QWidget):
                 "Restarting background processing with latest edit."
             )
             QTimer.singleShot(0, self.run_pipeline)
+            return
+        if result.cancelled:
+            self._set_pipeline_busy(False)
+            self.status_label.setText("Background processing canceled.")
             return
         if result.error:
             self.pipeline.set_node_execution_error(processing_node_id, result.error)
@@ -9071,6 +9135,9 @@ class VippWidget(QWidget):
             self.status_label.setText("No background run is active.")
             return
 
+        event = self._pipeline_cancel_events.pop(run_id, None)
+        if event is not None:
+            event.set()
         self._active_pipeline_run_id = None
         self._pipeline_run_pending = False
         self._pipeline_run_context.pop(run_id, None)
@@ -9094,10 +9161,14 @@ class VippWidget(QWidget):
         self.pipeline_cancel_button.setVisible(busy and cancelable)
         if not busy:
             self.pipeline_busy_label.setText("Processing")
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
             self.graph_view.clear_node_processing()
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
             return
+        self.pipeline_busy_bar.setRange(0, 0)
+        self.pipeline_busy_bar.setTextVisible(False)
         if node_id is None:
             node_id = self._active_pipeline_node_id
         if node_id not in self.pipeline.nodes:

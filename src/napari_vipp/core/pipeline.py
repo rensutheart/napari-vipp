@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -117,6 +118,7 @@ from napari_vipp.core.operations import (
     unsharp_mask_filter,
     yen_threshold,
 )
+from napari_vipp.core.progress import ProgressContext
 from napari_vipp.core.tables import TableState, table_state_from_data
 
 
@@ -3778,6 +3780,8 @@ class PrototypePipeline:
         source_payloads: dict[str, SourcePayload] | None = None,
         dirty_node_ids: Iterable[str] | None = None,
         node_started_callback: Callable[[str], None] | None = None,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
         manual_mode: str = MANUAL_RUN_CALCULATE,
         manual_node_ids: Iterable[str] | None = None,
     ) -> dict[str, Any]:
@@ -3884,6 +3888,8 @@ class PrototypePipeline:
                         input_metadata,
                         input_name,
                         source_payloads or {},
+                        progress_callback,
+                        cancel_callback,
                     )
                 except Exception as exc:
                     self.set_node_execution_error(node_id, str(exc))
@@ -3956,6 +3962,8 @@ class PrototypePipeline:
         input_metadata: dict | None,
         input_name: str,
         source_payloads: dict[str, SourcePayload],
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
@@ -4004,6 +4012,13 @@ class PrototypePipeline:
                 for conn in ordered
             ]
             kwargs = self._operation_kwargs(node)
+            self._inject_progress_context(
+                spec,
+                kwargs,
+                node_id,
+                progress_callback,
+                cancel_callback,
+            )
             if node.operation_id in SPATIAL_OPERATIONS:
                 spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
                 resolved_spatial_ndim = _resolved_spatial_ndim(
@@ -4092,6 +4107,13 @@ class PrototypePipeline:
             primary.source_id, primary.source_port
         )
         kwargs = self._operation_kwargs(node)
+        self._inject_progress_context(
+            spec,
+            kwargs,
+            node_id,
+            progress_callback,
+            cancel_callback,
+        )
         if node.operation_id == "save_output":
             kwargs["image_state"] = input_state
         if node.operation_id in SPATIAL_OPERATIONS:
@@ -4184,6 +4206,32 @@ class PrototypePipeline:
             params=self._public_params(node.params),
         )
         return [(output, state)]
+
+    def _inject_progress_context(
+        self,
+        spec: OperationSpec,
+        kwargs: dict[str, Any],
+        node_id: str,
+        progress_callback: Callable[[str, int, int, str], None] | None,
+        cancel_callback: Callable[[], bool] | None,
+    ) -> None:
+        if spec.function is None:
+            return
+        if "progress" not in inspect.signature(spec.function).parameters:
+            return
+        kwargs["progress"] = ProgressContext(
+            cancelled=cancel_callback,
+            reporter=(
+                None
+                if progress_callback is None
+                else lambda update: progress_callback(
+                    node_id,
+                    update.current,
+                    update.total,
+                    update.message,
+                )
+            ),
+        )
 
     def _split_node_outputs(
         self,

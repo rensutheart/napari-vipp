@@ -490,12 +490,11 @@ Intensity`.
 
 Near-term development priorities:
 
-- cooperative mid-operation cancellation/progress for long-running
+- broader cooperative mid-operation cancellation/progress for long-running
   background/manual operations;
 - axis-aware channel selectors that show probe names instead of only numbers;
 - broader adoption of the implemented manual/cached
-  `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
-  and progress where possible;
+  `Calculate`/`Recalculate` model for future expensive nodes;
 - optional mesh export/preview after a surface-output graph contract is
   designed;
 - specialist mitochondrial network metrics beyond the current generic skeleton

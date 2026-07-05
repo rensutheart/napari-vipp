@@ -23,10 +23,12 @@ Use `Run all in BG` off when:
 
 The toolbar `Cancel` button appears while a background graph update is active.
 It cancels queued reruns, marks the in-flight dirty nodes as pending again, and
-ignores the active worker result when it eventually returns. It does not forcibly
-terminate a NumPy, SciPy, or scikit-image function that is already executing
-inside the worker thread, so CPU use may continue briefly after the UI reports
-the cancellation.
+asks cooperative operations to stop. Rolling-ball/subtract-background block
+processing, rescale axes, and 3D mesh morphology now report progress and check
+for cancellation between internal work units. VIPP still cannot forcibly
+terminate a NumPy, SciPy, or scikit-image call that is already executing inside
+the worker thread, so CPU use may continue briefly while the current work unit
+finishes.
 
 ## Preview and Dims Strategy
 

@@ -149,11 +149,14 @@ nodes gather inputs in `target_port` order and require all ports from
 
 The widget can dispatch eligible graph runs to a single background worker
 thread. The active worker reports node-start events for the global busy
-indicator and per-node processing state. The toolbar `Cancel` control clears
-queued reruns, requeues in-flight dirty nodes, and ignores the worker result
-when it returns. It does not forcibly interrupt a NumPy/SciPy/scikit-image call
-already executing inside that worker; true mid-operation cancellation requires
-future cooperative hooks inside expensive operations.
+indicator and per-node processing state. Operations that accept a
+`ProgressContext` can also report determinate progress and check a worker-owned
+cancel event between internal work units. This is currently wired for
+rolling-ball/subtract-background block processing, `rescale_axes`, and 3D mesh
+morphology label loops. The toolbar `Cancel` control clears queued reruns,
+requeues in-flight dirty nodes, requests cooperative cancellation, and ignores
+stale worker results. It still cannot forcibly interrupt a NumPy/SciPy/
+scikit-image call already executing inside that worker.
 
 Special execution cases:
 
@@ -859,7 +862,7 @@ Implemented now:
 Still incomplete or deliberately future-facing:
 
 - calibrated extended-length variants outside the mesh-specific table;
-- specialist domain-specific network metrics and cooperative
+- specialist domain-specific network metrics and broader cooperative
   cancellation/percentage progress inside long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch

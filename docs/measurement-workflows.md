@@ -203,4 +203,5 @@ Remaining non-blocking follow-up:
 
 - optional mesh export/preview;
 - specialist mitochondrial network indices;
-- cancellation and percentage progress for long manual calculations.
+- broader cancellation and percentage progress coverage for long manual
+  calculations.

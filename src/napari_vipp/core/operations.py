@@ -222,6 +222,7 @@ def rolling_ball_background(
     disable_smoothing: bool = False,
     spatial_mode: str = "2D YX",
     resolved_spatial_ndim: int | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Estimate smooth background with a Fiji/ImageJ-style rolling ball."""
     arr = np.asarray(data)
@@ -234,6 +235,7 @@ def rolling_ball_background(
         disable_smoothing=disable_smoothing,
         spatial_mode=spatial_mode,
         resolved_spatial_ndim=resolved_spatial_ndim,
+        progress=progress,
     )
     return _restore_numeric_dtype(background, arr)
 
@@ -246,6 +248,7 @@ def subtract_background(
     clip_negative: bool = True,
     spatial_mode: str = "2D YX",
     resolved_spatial_ndim: int | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Subtract a rolling-ball background estimate while preserving dtype."""
     arr = np.asarray(data)
@@ -258,6 +261,7 @@ def subtract_background(
         disable_smoothing=disable_smoothing,
         spatial_mode=spatial_mode,
         resolved_spatial_ndim=resolved_spatial_ndim,
+        progress=progress,
     )
     values = arr.astype(background.dtype, copy=False)
     if bool(light_background):
@@ -1513,6 +1517,7 @@ def measure_3d_mesh_morphology(
     axis_scales: tuple[float, ...] | None = None,
     axis_units: tuple[str | None, ...] | None = None,
     source_name: str = "",
+    progress=None,
 ) -> TableData:
     """Measure 3D mesh/surface morphology for labeled objects."""
     labels = _validated_labels(data)
@@ -1561,16 +1566,30 @@ def measure_3d_mesh_morphology(
         include_convex_hull_metrics=bool(include_convex_hull_metrics),
     )
 
+    block_items = []
+    total_labels = 0
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
         block = labels_for_measure[block_index] if leading_shape else labels_for_measure
+        label_ids = _positive_label_ids(block)
+        total_labels += len(label_ids)
+        block_items.append((block_index, block, label_ids))
+    if progress is not None:
+        progress.report(0, max(total_labels, 1), "Preparing mesh measurements")
+    completed_labels = 0
+    for block_index, block, label_ids in block_items:
         block_columns = _measure_3d_mesh_morphology_block(
             block,
             spatial_axis_names,
             units,
             minimum_voxel_count=max(int(minimum_voxel_count), 1),
             include_convex_hull_metrics=bool(include_convex_hull_metrics),
+            label_ids=label_ids,
+            progress=progress,
+            progress_start=completed_labels,
+            progress_total=max(total_labels, 1),
         )
+        completed_labels += len(label_ids)
         row_count = len(block_columns["label_id"])
         for axis_position, axis_name in enumerate(leading_axis_names):
             columns[f"{axis_name}_index"].extend(
@@ -1579,6 +1598,8 @@ def measure_3d_mesh_morphology(
         for name, values in block_columns.items():
             columns[name].extend(values)
         columns["physical_unit"].extend([units.length_unit] * row_count)
+    if progress is not None:
+        progress.report(max(total_labels, 1), max(total_labels, 1), "Mesh complete")
 
     return table_from_columns(
         columns,
@@ -4175,6 +4196,7 @@ def rescale_axes(
     axis_names: Sequence[str] = (),
     axis_types: Sequence[str] = (),
     input_kind: str = "",
+    progress=None,
 ) -> np.ndarray:
     """Resample spatial X/Y/Z axes by scale factors or explicit output sizes."""
     arr = np.asarray(data)
@@ -4211,6 +4233,8 @@ def rescale_axes(
     output_shape = tuple(output_shape)
     if output_shape == arr.shape:
         return arr.copy()
+    if progress is not None:
+        progress.report(0, 1, "Resampling axes")
 
     semantic = _rescale_semantic_kind(arr, input_kind)
     order = _resize_order(interpolation, semantic)
@@ -4228,6 +4252,8 @@ def rescale_axes(
         preserve_range=True,
         anti_aliasing=anti_alias,
     )
+    if progress is not None:
+        progress.report(1, 1, "Resampling complete")
     return _restore_rescaled_axes_dtype(resized, arr, semantic)
 
 
@@ -4486,17 +4512,46 @@ def _apply_spatial_blocks(
     func: Callable[[np.ndarray], np.ndarray],
     *,
     dtype,
+    progress=None,
+    progress_start: int = 0,
+    progress_total: int | None = None,
+    progress_message: str = "",
 ) -> np.ndarray:
     """Apply ``func`` independently over leading non-spatial dimensions."""
     spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+    block_count = _spatial_block_count(arr, spatial_ndim)
+    denominator = int(progress_total or block_count)
+    completed = 0
+    if progress is not None:
+        progress.report(progress_start, denominator, progress_message)
     if arr.ndim <= spatial_ndim:
-        return np.asarray(func(arr), dtype=dtype)
+        result = np.asarray(func(arr), dtype=dtype)
+        if progress is not None:
+            progress.report(progress_start + 1, denominator, progress_message)
+        return result
 
     result = np.empty(arr.shape, dtype=dtype)
     leading_shape = arr.shape[: arr.ndim - spatial_ndim]
     for index in np.ndindex(leading_shape):
+        if progress is not None:
+            progress.check_cancelled()
         result[index] = func(arr[index])
+        completed += 1
+        if progress is not None:
+            progress.report(
+                progress_start + completed,
+                denominator,
+                progress_message,
+            )
     return result
+
+
+def _spatial_block_count(arr: np.ndarray, spatial_ndim: int) -> int:
+    arr = np.asarray(arr)
+    spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
+    if arr.ndim <= spatial_ndim:
+        return 1
+    return int(np.prod(arr.shape[: arr.ndim - spatial_ndim], dtype=np.int64))
 
 
 def _apply_spatial_blocks_tuple(
@@ -4574,6 +4629,7 @@ def _estimate_rolling_ball_background(
     disable_smoothing: bool,
     spatial_mode: str,
     resolved_spatial_ndim: int | None,
+    progress=None,
 ) -> np.ndarray:
     arr = np.asarray(arr)
     if arr.ndim == 0:
@@ -4587,6 +4643,8 @@ def _estimate_rolling_ball_background(
     output_dtype = np.float64 if arr.dtype == np.float64 else np.float32
 
     def estimate(block: np.ndarray) -> np.ndarray:
+        if progress is not None:
+            progress.check_cancelled()
         return _rolling_ball_background_block(
             block,
             radius_pixels=radius_pixels,
@@ -4596,17 +4654,31 @@ def _estimate_rolling_ball_background(
         )
 
     if _has_channel_axis(arr):
+        block_ndim = min(spatial_ndim, max(arr.ndim - 1, 1))
+        block_count = _spatial_block_count(arr[..., 0], block_ndim)
+        total = max(block_count * int(arr.shape[-1]), 1)
         channels = [
             _apply_spatial_blocks(
                 arr[..., channel],
-                min(spatial_ndim, max(arr.ndim - 1, 1)),
+                block_ndim,
                 estimate,
                 dtype=output_dtype,
+                progress=progress,
+                progress_start=channel * block_count,
+                progress_total=total,
+                progress_message=f"Rolling-ball channel {channel + 1}",
             )
             for channel in range(arr.shape[-1])
         ]
         return np.stack(channels, axis=-1).astype(output_dtype, copy=False)
-    return _apply_spatial_blocks(arr, spatial_ndim, estimate, dtype=output_dtype)
+    return _apply_spatial_blocks(
+        arr,
+        spatial_ndim,
+        estimate,
+        dtype=output_dtype,
+        progress=progress,
+        progress_message="Rolling-ball background",
+    )
 
 
 def _rolling_ball_background_block(
@@ -6695,6 +6767,10 @@ def _measure_3d_mesh_morphology_block(
     *,
     minimum_voxel_count: int,
     include_convex_hull_metrics: bool,
+    label_ids: Sequence[int] | None = None,
+    progress=None,
+    progress_start: int = 0,
+    progress_total: int | None = None,
 ) -> dict[str, list[object]]:
     block = np.asarray(block)
     columns = _mesh_morphology_empty_columns(
@@ -6702,7 +6778,20 @@ def _measure_3d_mesh_morphology_block(
         spatial_axis_names,
         include_convex_hull_metrics=include_convex_hull_metrics,
     )
-    for label_id in _positive_label_ids(block):
+    labels = list(label_ids) if label_ids is not None else _positive_label_ids(block)
+    total = int(progress_total or max(len(labels), 1))
+
+    def report_label_done(offset: int, label_id: int) -> None:
+        if progress is not None:
+            progress.report(
+                progress_start + offset,
+                total,
+                f"Measured label {int(label_id)}",
+            )
+
+    for offset, label_id in enumerate(labels, start=1):
+        if progress is not None:
+            progress.check_cancelled()
         mask = block == int(label_id)
         voxel_count = int(np.count_nonzero(mask))
         base_values = {
@@ -6722,6 +6811,7 @@ def _measure_3d_mesh_morphology_block(
                     f"{int(minimum_voxel_count)}"
                 ),
             )
+            report_label_done(offset, label_id)
             continue
         try:
             metrics = _mesh_metrics_for_label_mask(mask, spatial_axis_names, units)
@@ -6734,6 +6824,7 @@ def _measure_3d_mesh_morphology_block(
                 mesh_status="mesh_failed",
                 mesh_error=str(exc),
             )
+            report_label_done(offset, label_id)
             continue
         if include_convex_hull_metrics:
             try:
@@ -6764,6 +6855,7 @@ def _measure_3d_mesh_morphology_block(
             mesh_status=mesh_status,
             mesh_error=mesh_error,
         )
+        report_label_done(offset, label_id)
     return columns
 
 

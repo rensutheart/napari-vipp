@@ -233,11 +233,11 @@ The implemented UX model is:
 - exported Python and batch execution recompute deterministically rather than
   depending on an interactive cached value.
 
-Remaining TODO: cancellation, percentage progress for operations that expose
-progress, polished failure recovery, and broader adoption by future expensive
-feature families. Workflow JSON persists node settings and graph structure,
-including the auto-recalculate preference, but deliberately does not store large
-cached arrays or tables.
+Remaining TODO: broader cooperative cancellation/progress coverage, polished
+failure recovery, and broader adoption by future expensive feature families.
+Workflow JSON persists node settings and graph structure, including the
+auto-recalculate preference, but deliberately does not store large cached arrays
+or tables.
 
 ### Spatial Scope And Units: Partially Implemented
 

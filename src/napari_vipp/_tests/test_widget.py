@@ -3471,6 +3471,27 @@ def test_cancel_background_run_requeues_dirty_nodes(qtbot):
     assert "result will be ignored" in widget.status_label.text()
 
 
+def test_background_progress_updates_busy_bar(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._active_pipeline_run_id = 321
+    widget._set_pipeline_busy(True, "gaussian")
+
+    widget._on_background_pipeline_progress(
+        (321, "gaussian", 2, 5, "Rolling-ball background")
+    )
+
+    assert widget.pipeline_busy_bar.minimum() == 0
+    assert widget.pipeline_busy_bar.maximum() == 5
+    assert widget.pipeline_busy_bar.value() == 2
+    assert widget.pipeline_busy_bar.isTextVisible()
+    assert "Rolling-ball background" in widget.pipeline_busy_label.text()
+
+    widget._set_pipeline_busy(False)
+
+
 def test_autodefault_rerun_starts_at_changed_node_not_original_dirty(
     qtbot, monkeypatch
 ):

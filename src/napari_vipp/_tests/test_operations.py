@@ -117,6 +117,7 @@ from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
 )
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import save_table_output, table_from_columns
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -2116,6 +2117,39 @@ def test_rolling_ball_background_processes_rgb_stack_channels_independently():
     assert corrected[0, :, :, 1].max() == 0
     assert corrected[1, 10, 10, 1] > 100
     assert corrected[1, :, :, 0].max() == 0
+
+
+def test_rolling_ball_background_reports_progress_and_cancels():
+    data = np.zeros((3, 15, 15), dtype=np.uint8)
+    data[:, 7, 7] = 200
+    updates = []
+    state = {"cancel": False}
+
+    def report(update):
+        updates.append((update.current, update.total, update.message))
+        if update.current >= 1:
+            state["cancel"] = True
+
+    progress = ProgressContext(
+        cancelled=lambda: state["cancel"],
+        reporter=report,
+    )
+
+    try:
+        subtract_background(
+            data,
+            radius=3,
+            disable_smoothing=True,
+            spatial_mode="2D YX",
+            progress=progress,
+        )
+    except OperationCancelled:
+        pass
+    else:
+        raise AssertionError("Expected cooperative cancellation.")
+
+    assert updates[0] == (0, 3, "Rolling-ball background")
+    assert updates[1] == (1, 3, "Rolling-ball background")
 
 
 def test_subtract_background_pipeline_records_metadata_history():

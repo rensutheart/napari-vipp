@@ -28,7 +28,9 @@ Background processing and progress behavior are coordinated in
 - dirty-node tracking;
 - background allow-list logic;
 - optional all-background mode;
-- queueing and rerun coalescing.
+- queueing and rerun coalescing;
+- cooperative progress and cancellation events passed into operation functions
+  through `napari_vipp.core.progress.ProgressContext`.
 
 Operational recommendations for users are documented separately in
 `docs/operator-tips.md`.
