@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.9.0a1 - 2026-07-05
+
+- Added colocalization workflows for masked pixel metrics, threshold scatter
+  inspection, RACC-style outputs, object colocalization metrics, and object
+  association tables.
+- Added publication-facing colocalization method notes for Pearson, Manders,
+  Costes, RACC, and object-association assumptions.
+- Added analytical phantom validation for calibrated 2D/3D morphology on
+  rectangles, cuboids, spheres, ellipsoids, and anisotropic voxel sizes.
+- Added a local collection batch runner that executes workflows over matched
+  folder inputs and writes reproducibility artifacts.
+- Added explicit `Batch Output` nodes so workflows can mark exactly which
+  images, labels, masks, or tables should be saved during batch runs.
+- Added background-run cancellation controls, cooperative progress/cancellation
+  for long operations, and determinate toolbar progress where operations report
+  work units.
+- Added draggable histogram threshold markers for rescale intensity, clip,
+  binary threshold, hysteresis threshold, and label-volume filtering.
+- Added focused tests for the new colocalization, validation, batch-output,
+  progress, and histogram-marker workflows.
+
 ## 0.8.3a1 - 2026-07-02
 
 - Added `Summarize Measurements`, a table node that groups measurement rows by
