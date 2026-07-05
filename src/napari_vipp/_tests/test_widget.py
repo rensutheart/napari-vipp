@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
+    CollectionBatchDialog,
     ConnectionInsertDialog,
     FlexibleDoubleSpinBox,
     SelectTableColumnsControl,
@@ -4608,6 +4609,50 @@ def test_save_selected_output_dialog_allows_raster_for_2d_output(
     assert "PNG image" in captured["filters"]
     assert path.exists()
     assert iio.imread(path).ndim == 2
+
+
+def test_collection_batch_dialog_defaults(qtbot):
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+
+    values = dialog.values()
+
+    assert "*.ome.tif" in values["pattern"]
+    assert values["image_format"] == "ome-tiff"
+    assert values["save_workflow_snapshot"] is True
+    assert values["save_python_script"] is True
+
+
+def test_run_collection_batch_writes_terminal_outputs(qtbot, tmp_path):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    first = np.zeros((3, 8, 9), dtype=np.uint8)
+    second = np.zeros((3, 8, 9), dtype=np.uint8)
+    first[:, 2:6, 3:7] = 200
+    second[:, 1:4, 1:5] = 220
+    tifffile.imwrite(input_dir / "field_a.ome.tif", first, photometric="minisblack")
+    tifffile.imwrite(input_dir / "field_b.tif", second, photometric="minisblack")
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    saved = widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.ome.tif;*.tif",
+        image_format="npy",
+        save_workflow_snapshot=True,
+        save_python_script=True,
+    )
+
+    saved_names = {path.name for path in saved}
+    assert "vipp_batch_workflow.json" in saved_names
+    assert "vipp_batch_pipeline.py" in saved_names
+    assert "field_a__Otsu_Threshold-threshold.npy" in saved_names
+    assert "field_b__Otsu_Threshold-threshold.npy" in saved_names
+    assert np.load(output_dir / "field_a__Otsu_Threshold-threshold.npy").dtype == bool
+    assert "Batch 2/2" in widget.status_label.text()
 
 
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):

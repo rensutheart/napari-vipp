@@ -31,9 +31,12 @@ Ordinary raster formats are also available as export targets only for 2D
 intensity images and 2D RGB/RGBA images. Use OME-TIFF, ImageJ TIFF, TIFF,
 OME-Zarr, or NPY for stacks, metadata-rich outputs, and exact numeric exchange.
 
-`Binding: collection` currently records future batch intent and uses the
-selected series as the interactive representative. It does not yet execute a
-batch.
+`Binding: collection` marks an Image Source node as the per-item source for
+`Run batch...`. Interactively it still uses the selected file or series as the
+representative item; in the batch dialog VIPP binds each matched folder item to
+that source node and runs the same graph once per item. If no Image Source node
+is marked as a collection, the first Image Source node is used as the folder
+input for convenience.
 
 ## Export Choices
 
@@ -48,6 +51,26 @@ batch.
 
 ImageJ TIFF cannot safely represent 32-bit integer label IDs. Use conventional
 TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
+
+## Collection Batch Runs
+
+`Run batch...` executes the current graph over a local folder of image files.
+The dialog accepts an input folder, output folder, one or more glob patterns
+separated by semicolons, and an image output format. VIPP saves every terminal
+graph output for every matched item. Image-like outputs use the selected image
+format; table outputs are saved as CSV.
+
+The dialog can also write two reproducibility companions into the output
+folder:
+
+- `vipp_batch_workflow.json`: the workflow graph and node positions;
+- `vipp_batch_pipeline.py`: the same headless Python export used by
+  `Export Python...`.
+
+Current batch execution is intentionally local-file oriented. It does not yet
+provide stable plate/well/field identities, custom output templates, per-item
+provenance manifests, multiple independently paired source collections, or
+iteration over semantic axes such as each timepoint or each channel.
 
 ## Export OME Analysis Dataset
 
@@ -86,5 +109,5 @@ presented as editable output metadata.
 - OME-Zarr pyramid generation and preview-level selection are not exposed.
 - The graph still materializes lazy arrays when an eager processing node or
   preview requires NumPy data.
-- Plate/well/field browsing, remote URIs, and collection batch execution remain
-  planned work.
+- Plate/well/field browsing, remote URIs, and richer multi-source collection
+  batch execution remain planned work.

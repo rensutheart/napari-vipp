@@ -57,6 +57,8 @@ The prototype currently supports:
 - connecting nodes by dragging or click-to-connect from output to input ports;
 - explicit image source nodes for napari layers, files, or bundled samples;
 - quick selected-output saving plus graph-level save nodes;
+- first-pass folder batch UI that binds collection Image Source nodes per file
+  and saves terminal graph outputs;
 - per-node thumbnails with global show/hide, `Slice`/`MIP` preview modes,
   contrast modes (`Percentile`, `Min-max`, `Raw`), and monochrome colormaps;
 - optional per-node thumbnail disabling for heavier workflows;
@@ -480,8 +482,7 @@ Intensity`.
 
 Near-term development priorities:
 
-- collection-batch UI on top of the current Python export and source-collection
-  foundations;
+- cancellation and progress for long-running background/manual operations;
 - axis-aware channel selectors that show probe names instead of only numbers;
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
@@ -492,10 +493,10 @@ Near-term development priorities:
   branch and overall-network summaries;
 - fluorescence background correction;
 - OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
-- plate/well/field browsing, remote reads, batch execution, and memory-aware
-  lazy execution;
+- plate/well/field browsing, remote reads, richer batch execution, and
+  memory-aware lazy execution;
 - richer non-image outputs, including points and scalar summaries;
-- batch execution over files, positions, channels, z-slices, and timepoints.
+- batch execution over positions, channels, z-slices, and timepoints.
 
 See `docs/user-guide.md` for end-user operation guidance,
 `docs/operator-tips.md` for operator-focused tuning,

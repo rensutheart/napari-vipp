@@ -157,6 +157,14 @@ _RGB_VOLUME_CHANNELS = (
     (2, "Blue", "blue"),
 )
 
+_BATCH_PATTERN_SEPARATORS = re.compile(r"[;,\n]+")
+_BATCH_IMAGE_FORMAT_SUFFIXES = {
+    "ome-tiff": ".ome.tif",
+    "imagej-tiff": ".tif",
+    "tiff": ".tif",
+    "npy": ".npy",
+}
+
 if TYPE_CHECKING:
     import napari
 
@@ -1362,6 +1370,95 @@ class ImageSourceControl(QWidget):
         self.binding_combo.setVisible(file_mode)
         self.source_summary.setVisible(file_mode and bool(self.source_summary.text()))
         self.sample_row.setVisible(mode == "sample")
+
+
+class CollectionBatchDialog(QDialog):
+    """Small front door for running a workflow over a folder of images."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Run collection batch")
+        self.setMinimumWidth(520)
+
+        self.input_edit = QLineEdit()
+        self.output_edit = QLineEdit()
+        self.pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["ome-tiff", "imagej-tiff", "tiff", "npy"])
+        self.workflow_checkbox = QCheckBox("Save workflow JSON")
+        self.workflow_checkbox.setChecked(True)
+        self.script_checkbox = QCheckBox("Save exported Python script")
+        self.script_checkbox.setChecked(True)
+
+        input_button = QPushButton("Folder...")
+        output_button = QPushButton("Folder...")
+        input_button.clicked.connect(self._browse_input)
+        output_button.clicked.connect(self._browse_output)
+
+        input_row = QWidget()
+        input_layout = QHBoxLayout(input_row)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.addWidget(self.input_edit, 1)
+        input_layout.addWidget(input_button)
+
+        output_row = QWidget()
+        output_layout = QHBoxLayout(output_row)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        output_layout.addWidget(self.output_edit, 1)
+        output_layout.addWidget(output_button)
+
+        form = QFormLayout()
+        form.addRow("Input folder", input_row)
+        form.addRow("Output folder", output_row)
+        form.addRow("File pattern", self.pattern_edit)
+        form.addRow("Image output format", self.format_combo)
+        form.addRow("", self.workflow_checkbox)
+        form.addRow("", self.script_checkbox)
+
+        help_label = QLabel(
+            "Runs the graph once per matched file and saves terminal node outputs. "
+            "Tables are written as CSV."
+        )
+        help_label.setWordWrap(True)
+        help_label.setStyleSheet("color: #94a3b8;")
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Run batch")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(help_label)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, object]:
+        return {
+            "input_dir": self.input_edit.text(),
+            "output_dir": self.output_edit.text(),
+            "pattern": self.pattern_edit.text(),
+            "image_format": self.format_combo.currentText(),
+            "save_workflow_snapshot": self.workflow_checkbox.isChecked(),
+            "save_python_script": self.script_checkbox.isChecked(),
+        }
+
+    def _browse_input(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select batch input folder",
+            self.input_edit.text(),
+        )
+        if path:
+            self.input_edit.setText(path)
+
+    def _browse_output(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select batch output folder",
+            self.output_edit.text(),
+        )
+        if path:
+            self.output_edit.setText(path)
 
 
 class AxisIntervalSlider(QWidget):
@@ -3247,6 +3344,10 @@ class VippWidget(QWidget):
         self.save_workflow_button = QPushButton("Save workflow...")
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
+        self.batch_button = QPushButton("Run batch...")
+        self.batch_button.setToolTip(
+            "Run the current workflow over a folder of image files."
+        )
         self.export_ome_button = QPushButton("Export OME dataset...")
         self.settings_menu_button = QToolButton()
         self.settings_menu_button.setText("Settings")
@@ -3690,6 +3791,7 @@ class VippWidget(QWidget):
         workflow_separator = _toolbar_separator()
         workflow_row.addWidget(workflow_separator)
         workflow_row.addWidget(self.export_button)
+        workflow_row.addWidget(self.batch_button)
         workflow_row.addWidget(self.export_ome_button)
         export_separator = _toolbar_separator()
         workflow_row.addWidget(export_separator)
@@ -3988,6 +4090,7 @@ class VippWidget(QWidget):
         self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
         self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
         self.export_button.clicked.connect(self._export_python_dialog)
+        self.batch_button.clicked.connect(self._batch_collection_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
@@ -5125,6 +5228,234 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Export failed: {exc}")
             return
         self.status_label.setText(f"Pipeline exported to {target.name}.")
+
+    def _batch_collection_dialog(self) -> None:
+        dialog = CollectionBatchDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values()
+        try:
+            saved = self._run_collection_batch(**values)
+        except Exception as exc:
+            self._set_pipeline_busy(False)
+            self.status_label.setText(f"Batch failed: {exc}")
+            return
+        self.status_label.setText(
+            f"Batch completed with {len(saved)} saved file(s) in "
+            f"{Path(str(values['output_dir'])).expanduser()}."
+        )
+
+    def _run_collection_batch(
+        self,
+        input_dir: str | Path,
+        output_dir: str | Path,
+        pattern: str = "*.tif",
+        image_format: str = "ome-tiff",
+        save_workflow_snapshot: bool = True,
+        save_python_script: bool = True,
+    ) -> list[Path]:
+        input_path = Path(input_dir).expanduser()
+        output_path = Path(output_dir).expanduser()
+        if not input_path.is_dir():
+            raise ValueError("Batch input folder does not exist.")
+        if not str(output_path):
+            raise ValueError("Batch output folder cannot be blank.")
+        sources = self._iter_batch_source_paths(input_path, pattern)
+        if not sources:
+            raise ValueError("No files matched the batch pattern.")
+
+        output_path.mkdir(parents=True, exist_ok=True)
+        positions = self.graph_view.node_positions()
+        workflow = serialize_workflow(self.pipeline, positions)
+        restored = deserialize_workflow(workflow)
+        batch_pipeline = PrototypePipeline()
+        batch_pipeline.restore_graph(restored["nodes"], restored["connections"])
+        terminal_ids = self._terminal_node_ids(batch_pipeline)
+        if not terminal_ids:
+            raise ValueError("The workflow has no terminal outputs to save.")
+
+        saved: list[Path] = []
+        if save_workflow_snapshot:
+            saved.append(
+                save_workflow(
+                    output_path / "vipp_batch_workflow.json",
+                    self.pipeline,
+                    positions,
+                )
+            )
+        if save_python_script:
+            target = output_path / "vipp_batch_pipeline.py"
+            target.write_text(
+                export_pipeline_to_python(self.pipeline),
+                encoding="utf-8",
+            )
+            saved.append(target)
+
+        batch_source_ids = self._batch_collection_source_node_ids(batch_pipeline)
+        self._set_pipeline_busy(True)
+        try:
+            for index, source in enumerate(sources, start=1):
+                self.status_label.setText(
+                    f"Batch {index}/{len(sources)}: processing {source.name}."
+                )
+                source_payloads = self._batch_source_payloads_for_path(
+                    source,
+                    batch_source_ids,
+                )
+                batch_pipeline.run(
+                    None,
+                    input_metadata=None,
+                    input_name="",
+                    source_payloads=source_payloads,
+                )
+                for node_id in terminal_ids:
+                    data = batch_pipeline.outputs.get(node_id)
+                    if data is None:
+                        continue
+                    target = self._batch_output_path(
+                        output_path,
+                        source,
+                        batch_pipeline,
+                        node_id,
+                        data,
+                        image_format,
+                    )
+                    saved.append(
+                        self._save_batch_output(
+                            data,
+                            target,
+                            image_format=image_format,
+                            image_state=batch_pipeline.output_states.get(node_id),
+                        )
+                    )
+        finally:
+            self._set_pipeline_busy(False)
+        return saved
+
+    def _iter_batch_source_paths(
+        self,
+        input_dir: Path,
+        pattern: str,
+    ) -> list[Path]:
+        patterns = [
+            item.strip()
+            for item in _BATCH_PATTERN_SEPARATORS.split(str(pattern))
+            if item.strip()
+        ] or ["*.tif"]
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for item in patterns:
+            for path in sorted(input_dir.glob(item)):
+                if not path.is_file() or path in seen:
+                    continue
+                seen.add(path)
+                paths.append(path)
+        return paths
+
+    def _batch_collection_source_node_ids(
+        self,
+        pipeline: PrototypePipeline,
+    ) -> set[str]:
+        source_ids = [
+            node_id
+            for node_id in pipeline.topological_order()
+            if pipeline.nodes[node_id].operation_id == "input"
+        ]
+        collection_ids = {
+            node_id
+            for node_id in source_ids
+            if str(
+                pipeline.nodes[node_id].params.get("binding_mode", "single item")
+            )
+            == "collection"
+        }
+        if collection_ids:
+            return collection_ids
+        return {source_ids[0]} if source_ids else set()
+
+    def _batch_source_payloads_for_path(
+        self,
+        path: Path,
+        batch_source_ids: set[str],
+    ) -> dict[str, SourcePayload]:
+        payloads: dict[str, SourcePayload] = {}
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input":
+                continue
+            if node_id in batch_source_ids:
+                payloads[node_id] = self._batch_file_payload(path, node)
+                continue
+            payload, _layer = self._resolve_source_payload(node)
+            if payload is not None:
+                payloads[node_id] = payload
+        return payloads
+
+    def _batch_file_payload(self, path: Path, node) -> SourcePayload:
+        dataset = read_image(
+            path,
+            series_index=int(node.params.get("series_index", 0)),
+        )
+        return SourcePayload(
+            dataset.data,
+            {"vipp_source_path": str(path)},
+            dataset.selected_series.name or path.name,
+            dataset.image_state,
+        )
+
+    def _terminal_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
+        order = pipeline.topological_order()
+        consumed = {connection.source_id for connection in pipeline.connections}
+        terminals = [node_id for node_id in order if node_id not in consumed]
+        return terminals or list(order)
+
+    def _batch_output_path(
+        self,
+        output_dir: Path,
+        source_path: Path,
+        pipeline: PrototypePipeline,
+        node_id: str,
+        data,
+        image_format: str,
+    ) -> Path:
+        title = pipeline.nodes[node_id].title
+        slug = self._safe_batch_filename(f"{title}-{node_id}")
+        suffix = ".csv" if is_table_data(data) else self._batch_image_suffix(
+            image_format
+        )
+        return output_dir / f"{self._batch_source_stem(source_path)}__{slug}{suffix}"
+
+    def _save_batch_output(
+        self,
+        data,
+        path: Path,
+        *,
+        image_format: str,
+        image_state,
+    ) -> Path:
+        if is_table_data(data):
+            return save_table_output(data, path, format="csv", overwrite=True)
+        return save_array_output(
+            data,
+            path,
+            format=image_format,
+            overwrite=True,
+            image_state=image_state,
+        )
+
+    def _batch_image_suffix(self, image_format: str) -> str:
+        return _BATCH_IMAGE_FORMAT_SUFFIXES.get(str(image_format), ".ome.tif")
+
+    def _batch_source_stem(self, path: Path) -> str:
+        name = path.name
+        lower = name.lower()
+        for suffix in (".ome.tiff", ".ome.tif", ".tiff", ".tif"):
+            if lower.endswith(suffix):
+                return self._safe_batch_filename(name[: -len(suffix)])
+        return self._safe_batch_filename(path.stem)
+
+    def _safe_batch_filename(self, value: str) -> str:
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
+        return safe or "output"
 
     def _export_ome_dataset_dialog(self) -> None:
         reference_id = self._default_analysis_reference_node()

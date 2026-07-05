@@ -100,6 +100,10 @@ Implemented:
 - command-line entry point for exported scripts;
 - terminal graph outputs saved by generated scripts;
 - image-like and table outputs handled by the exporter.
+- first-pass `Run batch...` UI that runs a workflow once per matched file in a
+  folder, binds collection Image Source nodes per item, saves terminal image
+  outputs and table outputs, and optionally writes a workflow JSON snapshot plus
+  exported Python script next to the results.
 
 The exporter is headless but still requires the `napari-vipp` Python package.
 
@@ -386,10 +390,10 @@ Implemented:
 
 ### Current Near-Term Order
 
-1. Build a real collection-batch UI on top of the existing Python export and
-   source-collection foundations.
-2. Add cancellation/progress for expensive manual/background feature families
+1. Add cancellation/progress for expensive manual/background feature families
    where libraries expose useful progress hooks.
+2. Extend the first-pass batch UI with stable item identities, output
+   templates, and multiple independently bound sources.
 
 ### Execution Platform TODOs
 
@@ -461,7 +465,8 @@ Architecture preference for future graph work:
 
 - OME-Zarr label colors;
 - OME-Zarr label-property tables;
-- collection batch execution with stable item identities and output templates;
+- richer collection batch execution with stable item identities and output
+  templates;
 - multiple independently bound sources;
 - plate/well/field browsing;
 - anonymous HTTP reads.
@@ -512,7 +517,6 @@ Mitochondria-specific analysis:
 ### Batch Execution UI TODOs
 
 - stable item identities;
-- source collections;
 - output templates;
 - per-item provenance;
 - multiple independently bound sources;

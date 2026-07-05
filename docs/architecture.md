@@ -724,6 +724,22 @@ Python export:
 - `combine_channels` exports using stored `channel_axis`; if a composite node
   has not run yet and lacks that derived axis, export emits a NOTE comment.
 
+Collection batch UI:
+
+- `VippWidget._run_collection_batch()` clones the current workflow model before
+  execution, so folder processing does not replace the live canvas outputs with
+  the last processed file.
+- Image Source nodes with `Binding: collection` are rebound to each matched
+  file. If none are marked as collections, the first Image Source node is used
+  as the folder input for convenience.
+- Terminal graph outputs are saved for each source item. Image-like outputs use
+  the selected batch image format; table outputs are saved as CSV.
+- The dialog can write `vipp_batch_workflow.json` and
+  `vipp_batch_pipeline.py` beside the results for reproducibility.
+- This is a local-folder first pass. Stable item identities, output templates,
+  per-item provenance manifests, semantic-axis iteration, and multiple
+  independently paired source collections remain future work.
+
 ## Sample Data
 
 `_sample_data.py` contributes:
@@ -835,9 +851,10 @@ Still incomplete or deliberately future-facing:
   progress for long manual calculations;
 - OME-Zarr pyramids, label colors/properties, and HCS plate/well/field browsing;
 - operation-level lazy execution, remote URI reads, and collection batch
-  execution;
+  execution beyond the first-pass local folder UI;
 - richer channel/probe naming and colour metadata from real microscopy files;
-- batch execution UI beyond the exported Python script;
+- richer batch execution UI for paired source collections, output templates, and
+  per-item provenance;
 - plugin/template generation for arbitrary new analysis nodes.
 
 When continuing work, prefer this order: implement data behaviour in `core/`,
