@@ -193,7 +193,7 @@ The palette grouping comes from each `OperationSpec.category` and
 The current high-level groups are:
 
 - `Image Data`
-  - `Source & Output`: Image Source, Save Image
+  - `Source & Output`: Image Source, Save Image, Batch Output
   - `Axes & Regions`: Crop Stack, Select Axis Slice, Reorder Axes
   - `Channels & Composites`: Extract Channel, Combine Channels, Split Channels,
     Composite → RGB
@@ -740,13 +740,17 @@ Collection batch UI:
 - Image Source nodes with `Binding: collection` are rebound to each matched
   file. If none are marked as collections, the first Image Source node is used
   as the folder input for convenience.
-- Terminal graph outputs are saved for each source item. Image-like outputs use
-  the selected batch image format; table outputs are saved as CSV.
+- `Batch Output` nodes are the authoritative save markers. They pass data
+  through during normal graph execution and provide tag, format, subfolder,
+  filename-template, and overwrite controls for batch saves.
+- If a graph has no `Batch Output` nodes, terminal graph outputs are saved as a
+  compatibility fallback. Image-like fallback outputs use the selected batch
+  image format; table fallback outputs are saved as CSV.
 - The dialog can write `vipp_batch_workflow.json` and
   `vipp_batch_pipeline.py` beside the results for reproducibility.
-- This is a local-folder first pass. Stable item identities, output templates,
-  per-item provenance manifests, semantic-axis iteration, and multiple
-  independently paired source collections remain future work.
+- This is a local-folder first pass. Stable item identities, per-item
+  provenance manifests, semantic-axis iteration, and multiple independently
+  paired source collections remain future work.
 
 ## Sample Data
 

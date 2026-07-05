@@ -58,7 +58,8 @@ The prototype currently supports:
 - explicit image source nodes for napari layers, files, or bundled samples;
 - quick selected-output saving plus graph-level save nodes;
 - first-pass folder batch UI that binds collection Image Source nodes per file
-  and saves terminal graph outputs;
+  and saves explicit `Batch Output` nodes, with terminal graph outputs as a
+  fallback;
 - per-node thumbnails with global show/hide, `Slice`/`MIP` preview modes,
   contrast modes (`Percentile`, `Min-max`, `Raw`), and monochrome colormaps;
 - optional per-node thumbnail disabling for heavier workflows;
@@ -149,6 +150,7 @@ The current node catalogue includes:
   - Source & Output:
     - Image Source
     - Save Image
+    - Batch Output
   - Axes & Regions:
     - Crop Stack
     - Select Axis Slice
@@ -435,6 +437,12 @@ node; that dialog defaults to TIFF but also allows `.npy` and PNG/JPEG-style
 formats when the selected output is 2D. TIFF output is written in ImageJ
 hyperstack format when axis metadata is available, and binary masks are saved
 as 8-bit `0`/`255` values.
+
+For batch workflows, add `Batch Output` nodes to the images, masks, labels, or
+tables that should be written by `Run batch...`. Each marker is pass-through in
+the graph and can define a filename tag, optional subfolder, filename template,
+format override, and overwrite behavior. If no `Batch Output` nodes are present,
+batch execution falls back to saving terminal graph outputs.
 
 ## Development
 

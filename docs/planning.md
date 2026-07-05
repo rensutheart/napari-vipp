@@ -99,11 +99,14 @@ Implemented:
 - exported `run_pipeline()` and folder-oriented `batch_process()`;
 - command-line entry point for exported scripts;
 - terminal graph outputs saved by generated scripts;
-- image-like and table outputs handled by the exporter.
+- image-like and table outputs handled by the exporter;
+- explicit `Batch Output` pass-through marker nodes with tag, format,
+  subfolder, filename-template, and overwrite controls;
 - first-pass `Run batch...` UI that runs a workflow once per matched file in a
-  folder, binds collection Image Source nodes per item, saves terminal image
-  outputs and table outputs, and optionally writes a workflow JSON snapshot plus
-  exported Python script next to the results.
+  folder, binds collection Image Source nodes per item, saves explicit
+  `Batch Output` nodes when present, falls back to terminal outputs otherwise,
+  and optionally writes a workflow JSON snapshot plus exported Python script
+  next to the results.
 
 The exporter is headless but still requires the `napari-vipp` Python package.
 
@@ -230,13 +233,13 @@ Implemented:
 
 ### Implemented Node Catalogue
 
-The live registry currently contains 98 nodes.
+The live registry currently contains 99 nodes.
 
 - **Image Data**: Image Source, Crop Stack, Select Axis Slice, Reorder Axes,
   Set Pixel Size / Units, Rescale Axes, Extract Channel, Combine Channels,
   Split Channels, Composite -> RGB, Assign Channel Colors, Calculate New Image,
   Add, Subtract, Ratio, Mask Image, Logical AND, Logical OR, Logical XOR,
-  Convert Dtype, Invert, Save Image.
+  Convert Dtype, Invert, Save Image, Batch Output.
 - **Intensity & Contrast**: Linear Scale + Offset, Gamma Correction, Rescale
   Intensity, Normalize, Clip.
 - **Filtering**: Average Blur, Gaussian Blur, Gaussian Blur 3D, Median Filter,

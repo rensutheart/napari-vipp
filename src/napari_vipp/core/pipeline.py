@@ -24,6 +24,7 @@ from napari_vipp.core.operations import (
     assign_channel_colors,
     auto_watershed_from_mask,
     average_blur,
+    batch_output,
     bilateral_filter,
     binary_threshold,
     black_hat,
@@ -3067,6 +3068,57 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         subcategory=SOURCE_OUTPUT_GROUP,
     ),
     OperationSpec(
+        "batch_output",
+        "Batch Output",
+        IMAGE_DATA_CATEGORY,
+        "any",
+        "any",
+        (
+            ParameterSpec("tag", "Tag", "text", "output", 0, 0, 1),
+            ParameterSpec(
+                "format",
+                "Format",
+                "choice",
+                "batch default",
+                0,
+                0,
+                1,
+                choices=(
+                    "batch default",
+                    "ome-tiff",
+                    "imagej-tiff",
+                    "tiff",
+                    "npy",
+                    "csv",
+                    "tsv",
+                ),
+            ),
+            ParameterSpec("subfolder", "Subfolder", "text", "", 0, 0, 1),
+            ParameterSpec(
+                "filename_template",
+                "Filename template",
+                "text",
+                "{source_stem}__{tag}",
+                0,
+                0,
+                1,
+            ),
+            ParameterSpec(
+                "overwrite",
+                "Overwrite",
+                "choice",
+                "batch default",
+                0,
+                0,
+                1,
+                choices=("batch default", "yes", "no"),
+            ),
+        ),
+        batch_output,
+        subcategory=SOURCE_OUTPUT_GROUP,
+        preserves_input_type=True,
+    ),
+    OperationSpec(
         "convert_dtype",
         "Convert Dtype",
         IMAGE_DATA_CATEGORY,
@@ -4114,6 +4166,8 @@ class PrototypePipeline:
         output = spec.function(source_output, **kwargs)
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
+        if node.operation_id == "batch_output":
+            return [(output, input_state)]
         if spec.output_type == "table":
             history = _table_history(input_state, node.title, output)
             state = table_state_from_data(

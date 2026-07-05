@@ -77,6 +77,25 @@ def test_export_handles_multi_input_nodes():
     assert "add_images([v_input, v_gaussian]" in code
 
 
+def test_export_prefers_explicit_batch_output_nodes():
+    pipeline = _starter_pipeline()
+    marker = pipeline.add_node("batch_output")
+    pipeline.set_param(marker.id, "tag", "blurred")
+    pipeline.connect("gaussian", marker.id)
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](
+        np.random.rand(4, 8, 8).astype(np.float32)
+    )
+
+    assert "batch_output(" in code
+    assert namespace["OUTPUT_NODES"] == (marker.id,)
+    assert results[marker.id].shape == (4, 8, 8)
+    assert "threshold" in results
+
+
 def test_export_includes_subtract_background_node():
     pipeline = PrototypePipeline()
     node = pipeline.add_node("subtract_background")

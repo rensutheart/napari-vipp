@@ -3944,6 +3944,18 @@ def save_output(
     return arr
 
 
+def batch_output(
+    data,
+    tag: str = "output",
+    format: str = "batch default",
+    subfolder: str = "",
+    filename_template: str = "{source_stem}__{tag}",
+    overwrite: str = "batch default",
+):
+    """Pass data through while marking it as an explicit batch output."""
+    return data
+
+
 def _imagej_tiff_payload(arr: np.ndarray, image_state) -> tuple[np.ndarray, str]:
     writable = _tiff_writable_array(arr)
     axes = _imagej_axes_for(writable, image_state)

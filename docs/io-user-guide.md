@@ -56,9 +56,25 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 
 `Run batch...` executes the current graph over a local folder of image files.
 The dialog accepts an input folder, output folder, one or more glob patterns
-separated by semicolons, and an image output format. VIPP saves every terminal
-graph output for every matched item. Image-like outputs use the selected image
-format; table outputs are saved as CSV.
+separated by semicolons, and an image output format. Add `Batch Output` nodes
+to mark the exact images, masks, labels, RGB outputs, or tables that should be
+saved. Each `Batch Output` marker is pass-through during normal graph execution
+and can define a tag, optional subfolder, filename template, format override,
+and overwrite behavior.
+
+If the graph has no `Batch Output` nodes, VIPP falls back to saving terminal
+graph outputs for every matched item. Image-like fallback outputs use the
+dialog format; table fallback outputs are saved as CSV.
+
+Default explicit-output naming is:
+
+```text
+{source_stem}__{tag}
+```
+
+Supported filename-template fields are `{source_stem}`, `{tag}`, `{node_id}`,
+and `{node_title}`. VIPP appends the appropriate extension unless the template
+already includes a known image or table extension.
 
 The dialog can also write two reproducibility companions into the output
 folder:
@@ -68,9 +84,9 @@ folder:
   `Export Python...`.
 
 Current batch execution is intentionally local-file oriented. It does not yet
-provide stable plate/well/field identities, custom output templates, per-item
-provenance manifests, multiple independently paired source collections, or
-iteration over semantic axes such as each timepoint or each channel.
+provide stable plate/well/field identities, per-item provenance manifests,
+multiple independently paired source collections, or iteration over semantic
+axes such as each timepoint or each channel.
 
 ## Export OME Analysis Dataset
 

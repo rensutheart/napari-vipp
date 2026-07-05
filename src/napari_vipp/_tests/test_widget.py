@@ -1342,6 +1342,7 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
 
     assert _palette_child_by_text(source_output, "Image Source")
     assert _palette_child_by_text(source_output, "Save Image")
+    assert _palette_child_by_text(source_output, "Batch Output")
     assert _palette_child_by_text(axes_regions, "Crop Stack")
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
     assert _palette_child_by_text(axes_regions, "Reorder Axes")
@@ -4679,6 +4680,47 @@ def test_run_collection_batch_writes_terminal_outputs(qtbot, tmp_path):
     assert "field_b__Otsu_Threshold-threshold.npy" in saved_names
     assert np.load(output_dir / "field_a__Otsu_Threshold-threshold.npy").dtype == bool
     assert "Batch 2/2" in widget.status_label.text()
+
+
+def test_run_collection_batch_prefers_explicit_batch_outputs(qtbot, tmp_path):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    image = np.zeros((3, 8, 9), dtype=np.uint8)
+    image[:, 2:6, 3:7] = 200
+    tifffile.imwrite(input_dir / "field_a.tif", image, photometric="minisblack")
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("gaussian", batch_output.id)
+    widget.pipeline.set_param(batch_output.id, "tag", "blurred")
+    widget.pipeline.set_param(batch_output.id, "format", "npy")
+    widget.pipeline.set_param(batch_output.id, "subfolder", "images/blurred")
+    widget.pipeline.set_param(
+        batch_output.id,
+        "filename_template",
+        "{source_stem}_{tag}",
+    )
+
+    saved = widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.tif",
+        image_format="ome-tiff",
+        save_workflow_snapshot=False,
+        save_python_script=False,
+    )
+
+    saved_names = {path.name for path in saved}
+    assert saved_names == {"field_a_blurred.npy"}
+    explicit_path = output_dir / "images" / "blurred" / "field_a_blurred.npy"
+    terminal_path = output_dir / "field_a__Otsu_Threshold-threshold.ome.tif"
+    assert explicit_path.exists()
+    assert not terminal_path.exists()
+    saved_array = np.load(explicit_path)
+    assert saved_array.shape == image.shape
+    assert saved_array.dtype == image.dtype
 
 
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):

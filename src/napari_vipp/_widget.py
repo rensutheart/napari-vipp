@@ -1416,8 +1416,8 @@ class CollectionBatchDialog(QDialog):
         form.addRow("", self.script_checkbox)
 
         help_label = QLabel(
-            "Runs the graph once per matched file and saves terminal node outputs. "
-            "Tables are written as CSV."
+            "Add Batch Output nodes to mark the images or tables to save. "
+            "If none are present, terminal graph outputs are saved as a fallback."
         )
         help_label.setWordWrap(True)
         help_label.setStyleSheet("color: #94a3b8;")
@@ -5278,9 +5278,9 @@ class VippWidget(QWidget):
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
         batch_pipeline.restore_graph(restored["nodes"], restored["connections"])
-        terminal_ids = self._terminal_node_ids(batch_pipeline)
-        if not terminal_ids:
-            raise ValueError("The workflow has no terminal outputs to save.")
+        output_node_ids = self._batch_saved_node_ids(batch_pipeline)
+        if not output_node_ids:
+            raise ValueError("The workflow has no outputs to save.")
 
         saved: list[Path] = []
         if save_workflow_snapshot:
@@ -5316,7 +5316,7 @@ class VippWidget(QWidget):
                     input_name="",
                     source_payloads=source_payloads,
                 )
-                for node_id in terminal_ids:
+                for node_id in output_node_ids:
                     data = batch_pipeline.outputs.get(node_id)
                     if data is None:
                         continue
@@ -5332,7 +5332,20 @@ class VippWidget(QWidget):
                         self._save_batch_output(
                             data,
                             target,
-                            image_format=image_format,
+                            image_format=self._batch_node_image_format(
+                                batch_pipeline,
+                                node_id,
+                                data,
+                                image_format,
+                            ),
+                            table_format=self._batch_node_table_format(
+                                batch_pipeline,
+                                node_id,
+                            ),
+                            overwrite=self._batch_node_overwrite(
+                                batch_pipeline,
+                                node_id,
+                            ),
                             image_state=batch_pipeline.output_states.get(node_id),
                         )
                     )
@@ -5416,6 +5429,17 @@ class VippWidget(QWidget):
         terminals = [node_id for node_id in order if node_id not in consumed]
         return terminals or list(order)
 
+    def _batch_output_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
+        return [
+            node_id
+            for node_id in pipeline.topological_order()
+            if pipeline.nodes[node_id].operation_id == "batch_output"
+        ]
+
+    def _batch_saved_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
+        explicit = self._batch_output_node_ids(pipeline)
+        return explicit if explicit else self._terminal_node_ids(pipeline)
+
     def _batch_output_path(
         self,
         output_dir: Path,
@@ -5425,12 +5449,27 @@ class VippWidget(QWidget):
         data,
         image_format: str,
     ) -> Path:
-        title = pipeline.nodes[node_id].title
-        slug = self._safe_batch_filename(f"{title}-{node_id}")
-        suffix = ".csv" if is_table_data(data) else self._batch_image_suffix(
-            image_format
+        node = pipeline.nodes[node_id]
+        params = node.params if node.operation_id == "batch_output" else {}
+        source_stem = self._batch_source_stem(source_path)
+        tag = self._batch_output_tag(pipeline, node_id)
+        template = str(
+            params.get("filename_template", "{source_stem}__{tag}")
+            or "{source_stem}__{tag}"
         )
-        return output_dir / f"{self._batch_source_stem(source_path)}__{slug}{suffix}"
+        filename = self._format_batch_filename_template(
+            template,
+            {
+                "source_stem": source_stem,
+                "tag": tag,
+                "node_id": self._safe_batch_filename(node_id),
+                "node_title": self._safe_batch_filename(node.title),
+            },
+        )
+        suffix = self._batch_output_suffix(pipeline, node_id, data, image_format)
+        if not self._batch_filename_has_known_suffix(filename):
+            filename = f"{filename}{suffix}"
+        return self._batch_output_folder(output_dir, params) / filename
 
     def _save_batch_output(
         self,
@@ -5438,16 +5477,115 @@ class VippWidget(QWidget):
         path: Path,
         *,
         image_format: str,
+        table_format: str = "csv",
+        overwrite: bool = True,
         image_state,
     ) -> Path:
         if is_table_data(data):
-            return save_table_output(data, path, format="csv", overwrite=True)
+            return save_table_output(
+                data,
+                path,
+                format=table_format,
+                overwrite=overwrite,
+            )
         return save_array_output(
             data,
             path,
             format=image_format,
-            overwrite=True,
+            overwrite=overwrite,
             image_state=image_state,
+        )
+
+    def _batch_output_tag(self, pipeline: PrototypePipeline, node_id: str) -> str:
+        node = pipeline.nodes[node_id]
+        if node.operation_id == "batch_output":
+            raw = str(node.params.get("tag", "")).strip()
+            return self._safe_batch_filename(raw or node_id)
+        return self._safe_batch_filename(f"{node.title}-{node_id}")
+
+    def _batch_node_image_format(
+        self,
+        pipeline: PrototypePipeline,
+        node_id: str,
+        data,
+        batch_default: str,
+    ) -> str:
+        if is_table_data(data):
+            return batch_default
+        selected = str(
+            pipeline.nodes[node_id].params.get("format", "batch default")
+        ).strip()
+        if selected in {"", "batch default", "csv", "tsv"}:
+            return batch_default
+        return selected
+
+    def _batch_node_table_format(
+        self,
+        pipeline: PrototypePipeline,
+        node_id: str,
+    ) -> str:
+        selected = str(
+            pipeline.nodes[node_id].params.get("format", "batch default")
+        ).strip()
+        return selected if selected in {"csv", "tsv"} else "csv"
+
+    def _batch_node_overwrite(
+        self,
+        pipeline: PrototypePipeline,
+        node_id: str,
+    ) -> bool:
+        selected = str(
+            pipeline.nodes[node_id].params.get("overwrite", "batch default")
+        ).strip()
+        if selected == "no":
+            return False
+        return True
+
+    def _batch_output_suffix(
+        self,
+        pipeline: PrototypePipeline,
+        node_id: str,
+        data,
+        batch_default: str,
+    ) -> str:
+        if is_table_data(data):
+            format = self._batch_node_table_format(pipeline, node_id)
+            return ".tsv" if format == "tsv" else ".csv"
+        return self._batch_image_suffix(
+            self._batch_node_image_format(pipeline, node_id, data, batch_default)
+        )
+
+    def _batch_output_folder(self, output_dir: Path, params: dict) -> Path:
+        raw = str(params.get("subfolder", "")).strip()
+        if not raw:
+            return output_dir
+        folder = output_dir
+        for part in re.split(r"[\\/]+", raw):
+            safe = self._safe_batch_filename(part)
+            if safe:
+                folder /= safe
+        return folder
+
+    def _format_batch_filename_template(
+        self,
+        template: str,
+        values: dict[str, str],
+    ) -> str:
+        try:
+            filename = template.format(**values)
+        except Exception:
+            filename = "{source_stem}__{tag}".format(**values)
+        parts = [
+            self._safe_batch_filename(part)
+            for part in re.split(r"[\\/]+", filename)
+            if part
+        ]
+        return "_".join(part for part in parts if part) or values["tag"]
+
+    def _batch_filename_has_known_suffix(self, filename: str) -> bool:
+        lower = filename.lower()
+        return lower.endswith(
+            (".ome.tif", ".ome.tiff", ".tif", ".tiff", ".npy", ".csv", ".tsv")
         )
 
     def _batch_image_suffix(self, image_format: str) -> str:

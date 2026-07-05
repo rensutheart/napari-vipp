@@ -267,6 +267,13 @@ def _build_main(source_ids: list[str]) -> str:
 
 
 def _terminal_nodes(pipeline: PrototypePipeline, order: list[str]) -> list[str]:
+    explicit = [
+        node_id
+        for node_id in order
+        if pipeline.nodes[node_id].operation_id == "batch_output"
+    ]
+    if explicit:
+        return explicit
     consumed = {connection.source_id for connection in pipeline.connections}
     terminals = [node_id for node_id in order if node_id not in consumed]
     return terminals or list(order)
