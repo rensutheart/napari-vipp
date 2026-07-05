@@ -301,6 +301,15 @@ perimeter-to-area ratio, and Hu moments. The 3D-safe extensions include
 bounding-box volume, filled volume, major/minor axis length, inertia tensor
 eigenvalues, and derived 3D shape ratios.
 
+When spatial scale metadata is available, `Measure Objects` and `Measure
+Objects + Intensity` also emit calibrated physical variants for extended
+non-mesh measurements: centroid and bounding-box coordinates, equivalent
+diameter, bounding/fill size, 2D convex area, maximum Feret diameter,
+major/minor axis length, bounding-box side lengths, and inertia tensor
+eigenvalues. Physical 2D perimeter and Crofton perimeter are emitted only for
+isotropic spacing; anisotropic 2D physical perimeter columns remain `NaN`
+instead of using an ambiguous scalar scale.
+
 `Measure Objects + Intensity` is the first named heterogeneous-input node. It
 declares separate `Labels` and `Intensity image` input slots, requires matching
 array shapes in the first implementation, and emits the basic morphology table

@@ -425,6 +425,77 @@ def test_measure_objects_reports_selected_extended_2d_properties():
     assert "2D shape moments" in table.table_kind
 
 
+def test_measure_objects_reports_calibrated_extended_2d_properties():
+    labels = np.zeros((4, 6), dtype=np.int32)
+    labels[1:3, 2:5] = 1
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=2,
+        axis_names=("y", "x"),
+        axis_types=("space", "space"),
+        axis_scales=(2.0, 2.0),
+        axis_units=("micrometer", "micrometer"),
+        include_shape_descriptors=True,
+        include_axis_descriptors=True,
+        include_2d_boundary_descriptors=True,
+        include_derived_shape_ratios=True,
+        include_2d_shape_moments=True,
+    )
+    record = table.records()[0]
+
+    assert np.isclose(record["area_physical"], 24.0)
+    assert record["physical_unit"] == "micrometer^2"
+    assert np.isclose(record["equivalent_diameter_physical"], np.sqrt(96.0 / np.pi))
+    assert np.isclose(record["centroid_y_physical"], 3.0)
+    assert np.isclose(record["centroid_x_physical"], 6.0)
+    assert np.isclose(record["bbox_y_min_physical"], 2.0)
+    assert np.isclose(record["bbox_x_max_physical"], 10.0)
+    assert np.isclose(record["bbox_area_physical"], 24.0)
+    assert np.isclose(record["filled_area_physical"], 24.0)
+    assert np.isclose(record["convex_area_physical"], 24.0)
+    assert np.isclose(
+        record["feret_diameter_max_physical"],
+        record["feret_diameter_max_pixels"] * 2.0,
+    )
+    assert np.isclose(
+        record["major_axis_length_physical"],
+        record["major_axis_length_pixels"] * 2.0,
+    )
+    assert np.isclose(record["bbox_axis_0_length_physical"], 4.0)
+    assert np.isclose(record["bbox_axis_1_length_physical"], 6.0)
+    assert np.isclose(record["perimeter_physical"], 12.0)
+    assert np.isclose(record["perimeter_area_ratio_physical"], 0.5)
+    assert table.unit_for("equivalent_diameter_physical") == "micrometer"
+    assert table.unit_for("bbox_area_physical") == "micrometer^2"
+    assert table.unit_for("major_axis_length_physical") == "micrometer"
+    assert table.unit_for("perimeter_area_ratio_physical") == "1/micrometer"
+
+
+def test_measure_objects_marks_anisotropic_2d_perimeter_physical_as_nan():
+    labels = np.zeros((4, 6), dtype=np.int32)
+    labels[1:3, 2:5] = 1
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=2,
+        axis_names=("y", "x"),
+        axis_types=("space", "space"),
+        axis_scales=(0.5, 2.0),
+        axis_units=("micrometer", "micrometer"),
+        include_2d_boundary_descriptors=True,
+        include_2d_shape_moments=True,
+    )
+    record = table.records()[0]
+
+    assert np.isclose(record["area_physical"], 6.0)
+    assert np.isclose(record["centroid_y_physical"], 0.75)
+    assert np.isclose(record["centroid_x_physical"], 6.0)
+    assert np.isnan(record["perimeter_physical"])
+    assert np.isnan(record["perimeter_crofton_physical"])
+    assert np.isnan(record["perimeter_area_ratio_physical"])
+
+
 def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
     labels = np.zeros((4, 12, 12), dtype=np.int32)
     labels[1:3, 2:8, 3:9] = 1
@@ -460,6 +531,42 @@ def test_measure_objects_omits_2d_only_properties_for_3d_measurements():
     assert "hu_moment_0" not in table.columns
     assert table.unit_for("inertia_tensor_eigval_2") == "voxels^2"
     assert table.unit_for("bbox_axis_0_length_voxels") == "voxels"
+
+
+def test_measure_objects_reports_calibrated_extended_3d_properties():
+    labels = np.zeros((4, 12, 12), dtype=np.int32)
+    labels[1:3, 2:8, 3:9] = 1
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=3,
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(2.0, 0.5, 0.25),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+        include_shape_descriptors=True,
+        include_axis_descriptors=True,
+        include_derived_shape_ratios=True,
+    )
+    record = table.records()[0]
+
+    assert record["volume_voxels"] == 72
+    assert np.isclose(record["volume_physical"], 18.0)
+    assert record["physical_unit"] == "micrometer^3"
+    expected_equivalent = 2.0 * ((3.0 * 18.0) / (4.0 * np.pi)) ** (1.0 / 3.0)
+    assert np.isclose(record["equivalent_diameter_physical"], expected_equivalent)
+    assert np.isclose(record["bbox_volume_physical"], 18.0)
+    assert np.isclose(record["filled_volume_physical"], 18.0)
+    assert np.isclose(record["bbox_axis_0_length_physical"], 4.0)
+    assert np.isclose(record["bbox_axis_1_length_physical"], 3.0)
+    assert np.isclose(record["bbox_axis_2_length_physical"], 1.5)
+    assert record["major_axis_length_physical"] > 0.0
+    assert record["minor_axis_length_physical"] > 0.0
+    assert record["inertia_tensor_eigval_0_physical"] >= 0.0
+    assert table.unit_for("equivalent_diameter_physical") == "micrometer"
+    assert table.unit_for("bbox_volume_physical") == "micrometer^3"
+    assert table.unit_for("bbox_axis_0_length_physical") == "micrometer"
+    assert table.unit_for("inertia_tensor_eigval_0_physical") == "micrometer^2"
 
 
 def test_measure_3d_mesh_morphology_reports_surface_and_failure_status():

@@ -22,6 +22,8 @@ Related reference documents:
 - [io-user-guide.md](io-user-guide.md) for current file-format behavior.
 - [measurement-workflows.md](measurement-workflows.md) for object, mesh,
   skeleton, and table-composition workflow guidance.
+- [analytical-phantom-validation.md](analytical-phantom-validation.md) for
+  deterministic calibrated morphology phantom validation.
 - [colocalization-racc-plan.md](colocalization-racc-plan.md) for the current
   colocalization/RACC implementation plan.
 - [colocalization-method-notes.md](colocalization-method-notes.md) for
@@ -362,16 +364,31 @@ Implemented:
   object-restricted analysis, and object association assumptions:
   [colocalization-method-notes.md](colocalization-method-notes.md).
 
+### Calibrated Extended Object Morphology
+
+Implemented:
+
+- calibrated physical centroid and bounding-box coordinate columns when spatial
+  scale metadata is available;
+- calibrated equivalent diameter, bounding/fill size, 2D convex area, maximum
+  Feret diameter, major/minor axis length, bounding-box side lengths, and
+  inertia tensor eigenvalues for `Measure Objects` and `Measure Objects +
+  Intensity`;
+- isotropic 2D physical perimeter, Crofton perimeter, and perimeter-to-area
+  ratio, with anisotropic 2D physical perimeter columns left as `NaN` rather
+  than estimated from an ambiguous scalar scale;
+- regression tests covering calibrated 2D and 3D extended morphology columns;
+- analytical phantom validation report covering exact rectangle/cuboid phantoms
+  and tolerance-based sphere/ellipsoid phantoms:
+  [analytical-phantom-validation.md](analytical-phantom-validation.md).
+
 ## Active TODOs
 
 ### Current Near-Term Order
 
-1. Add calibrated physical variants for non-mesh extended length/shape
-   measurements, plus optional mesh export/preview after the first-pass mesh
-   table node is stable.
-2. Build a real collection-batch UI on top of the existing Python export and
+1. Build a real collection-batch UI on top of the existing Python export and
    source-collection foundations.
-3. Add cancellation/progress for expensive manual/background feature families
+2. Add cancellation/progress for expensive manual/background feature families
    where libraries expose useful progress hooks.
 
 ### Execution Platform TODOs
@@ -465,9 +482,8 @@ Object and mesh morphology:
 - richer region/object properties beyond the current measurement set, planned
   as additional checkbox groups on `Measure Objects` and `Measure Objects +
   Intensity`;
-- calibrated physical variants for extended length/shape measurements;
-- optional mesh export/preview and later specialist mesh metrics after the
-  implemented `Measure 3D Mesh Morphology` table node is stable;
+- optional mesh export/preview and later specialist mesh metrics after a
+  surface-output contract is designed for the graph;
 - final table-combination path suitable for PCA and treatment-group analysis.
 
 Colocalization and localization:

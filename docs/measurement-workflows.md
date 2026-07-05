@@ -68,9 +68,16 @@ Optional groups add:
 - 2D boundary descriptors;
 - 2D shape moments.
 
-Physical area or volume columns are emitted when pixel-size metadata is
-available. Extended non-mesh length columns are still intentionally named in
-pixels or voxels unless their physical calibration is explicit and defensible.
+Physical columns are emitted when pixel-size metadata is available. In addition
+to physical area or volume, VIPP reports calibrated centroid and bounding-box
+coordinates, equivalent diameter, bounding/fill size, maximum Feret diameter,
+major/minor axis length, bounding-box side lengths, and inertia eigenvalues
+where those values are available from spacing-aware region measurements.
+Isotropic 2D inputs also report physical perimeter, physical Crofton perimeter,
+and physical perimeter-to-area ratio. For anisotropic 2D pixels, physical
+perimeter columns remain `NaN` rather than using a misleading scalar scale.
+The analytical phantom validation report is
+[analytical-phantom-validation.md](analytical-phantom-validation.md).
 
 Use `Measure Objects + Intensity` when the same labels should also be measured
 against a matching intensity image. It uses named `Labels` and `Intensity image`
@@ -181,6 +188,8 @@ Completed for this phase:
 - table CSV/TSV saving;
 - object, intensity, skeleton, branch, graph, summary, and 3D mesh morphology
   measurements;
+- calibrated physical variants for extended non-mesh object morphology;
+- analytical phantom validation for calibrated morphology;
 - table merge, metadata annotation, column selection, and grouped summaries;
 - first-pass pixel colocalization/RACC metrics, masked/ROI-restricted variants,
   and visual outputs;
@@ -192,7 +201,6 @@ Completed for this phase:
 
 Remaining non-blocking follow-up:
 
-- calibrated physical variants for extended non-mesh length/shape columns;
 - optional mesh export/preview;
 - specialist mitochondrial network indices;
 - cancellation and percentage progress for long manual calculations.

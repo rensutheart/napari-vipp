@@ -55,7 +55,6 @@ Already implemented:
 
 The current gap is not "run regionprops". The gap is:
 
-- calibrated physical variants of more existing morphology columns;
 - optional mesh export/preview and later specialist mesh metrics beyond the
   implemented first-pass table measurements.
 
@@ -75,9 +74,9 @@ surface feature family explicit.
 
 ## Phase 1: Richer Regionprops-Derived Object Morphology
 
-Status: derived shape ratios and 2D shape moments are implemented as checkbox
-groups on `Measure Objects` and `Measure Objects + Intensity`. Calibrated
-physical variants remain future work.
+Status: derived shape ratios, 2D shape moments, and calibrated physical variants
+are implemented as checkbox groups/metadata-aware columns on `Measure Objects`
+and `Measure Objects + Intensity`.
 
 Implemented groups:
 
@@ -96,23 +95,27 @@ Implemented groups:
   - Hu moments as separate columns `hu_moment_0` ... `hu_moment_6`;
   - keep 2D-only features hidden/disabled for true 3D spatial blocks.
 
-Future group:
+Implemented calibrated physical variants:
 
 - **Calibrated physical variants**
   - physical centroid coordinates;
-  - physical bounding-box side lengths;
+  - physical bounding-box min/max coordinates and side lengths;
   - physical equivalent diameter;
-  - physical major/minor axis lengths where scale assumptions are valid;
-  - physical perimeter for 2D when pixel spacing is isotropic or when a clear
-    calibrated estimator is available.
+  - physical bounding-box and filled area/volume;
+  - physical 2D convex area and maximum Feret diameter;
+  - physical major/minor axis lengths;
+  - physical inertia tensor eigenvalues;
+  - physical perimeter, Crofton perimeter, and perimeter-to-area ratio for
+    isotropic 2D pixels.
 
 Implementation notes:
 
 - Preserve stable identity columns: source, leading axis indices, and
   `label_id`.
 - Avoid silently reporting misleading calibrated lengths under anisotropic
-  spacing. Prefer explicit `*_pixels`/`*_voxels` names until the physical
-  calculation is defensible.
+  spacing. Physical 2D perimeter columns remain `NaN` for anisotropic pixels
+  because `skimage.measure.regionprops_table` only supports perimeter with
+  isotropic spacing.
 - Keep invalid measurements as `NaN` plus clear documentation, rather than
   dropping rows or columns.
 

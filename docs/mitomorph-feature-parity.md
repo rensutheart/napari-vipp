@@ -56,9 +56,9 @@ Proposed measurement families:
    major/minor axis length, inertia tensor eigenvalues, 2D orientation,
    2D eccentricity, 2D perimeter, 2D Crofton perimeter, 2D convex area,
    2D solidity, 2D maximum Feret diameter, derived shape ratios, 2D Hu
-   moments, Crofton-based circularity, and perimeter-to-area ratio. Remaining
-   work includes calibrated physical variants for extended length/shape
-   columns and robust 3D mesh morphology.
+   moments, Crofton-based circularity, perimeter-to-area ratio, and calibrated
+   physical variants for supported extended length/shape columns. Robust 3D
+   mesh morphology is implemented as a separate table node.
    The concrete implementation plan is tracked in
    [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md).
 

@@ -305,8 +305,16 @@ derived shape ratios, and 2D shape moments. The 2D-only groups are hidden for
 true 3D inputs. Derived shape ratios include axis ratios, bounding-box side
 lengths/aspect ratios, fill fraction, and inertia eigenvalue ratios. The 2D
 shape moments group includes Crofton-based circularity, perimeter-to-area
-ratio, and Hu moments. Table outputs show a row preview in the inspector and
-can be saved as CSV or TSV.
+ratio, and Hu moments. When spatial scale metadata is available, VIPP also
+reports calibrated physical variants for extended object morphology columns
+such as centroids, bounding-box coordinates and side lengths, equivalent
+diameter, Feret diameter, major/minor axis length, and inertia eigenvalues.
+Isotropic 2D inputs also report physical perimeter variants; anisotropic 2D
+physical perimeter values are left as `NaN` rather than guessed from one scale.
+The calibrated morphology checks are documented in
+`docs/analytical-phantom-validation.md`.
+Table outputs show a row preview in the inspector and can be saved as CSV or
+TSV.
 
 `Measure Objects + Intensity` is the first named multi-input measurement node.
 It has separate `Labels` and `Intensity image` input ports, then outputs the
@@ -472,13 +480,14 @@ Intensity`.
 
 Near-term development priorities:
 
-- per-object colocalization/localization tables and object-association outputs;
+- collection-batch UI on top of the current Python export and source-collection
+  foundations;
 - axis-aware channel selectors that show probe names instead of only numbers;
 - broader adoption of the implemented manual/cached
   `Calculate`/`Recalculate` model for future expensive nodes, with cancellation
   and progress where possible;
-- calibrated physical variants for extended non-mesh length/shape measurements
-  and optional mesh export/preview;
+- optional mesh export/preview after a surface-output graph contract is
+  designed;
 - specialist mitochondrial network metrics beyond the current generic skeleton
   branch and overall-network summaries;
 - fluorescence background correction;

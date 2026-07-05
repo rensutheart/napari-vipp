@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-07-03
+Last reviewed: 2026-07-04
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -52,6 +52,12 @@ Implemented and covered by automated tests:
 - image/mask/label pinning as persistent napari preview layers while editing
   other nodes;
 - first-class table outputs and basic label-object measurements;
+- calibrated extended object morphology columns for physical centroids,
+  bounding boxes, equivalent diameters, selected object lengths/areas/volumes,
+  and defensible 2D physical perimeter variants;
+- analytical phantom validation for calibrated morphology using exact
+  rectangle/cuboid phantoms plus tolerance-based sphere/ellipsoid phantoms:
+  [analytical-phantom-validation.md](analytical-phantom-validation.md);
 - two-channel colocalization metrics, Costes thresholding, RACC-like index
   outputs, ROI-restricted variants, object-restricted colocalization tables,
   label-overlap association, nearest-object distances, and event localization;
@@ -129,6 +135,8 @@ Use these persistent roles:
 - `docs/planning.md`: current priorities and milestones;
 - `docs/node-roadmap.md`: algorithm/node prioritization;
 - `docs/architecture.md`: developer implementation reference;
+- `docs/analytical-phantom-validation.md`: deterministic analytical phantom
+  validation report for calibrated object and mesh morphology measurements;
 - `docs/colocalization-method-notes.md`: publication-facing method definitions
   for implemented colocalization, RACC-like, ROI, object-restricted, and
   object-association calculations;

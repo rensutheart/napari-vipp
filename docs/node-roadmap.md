@@ -490,16 +490,20 @@ uses carried Z/Y/X scale metadata, skips tiny labels below the minimum voxel
 count with a row-level status, and records mesh or convex-hull failures as
 `NaN` metrics instead of failing the whole table.
 
-Calibrated physical variants for non-mesh extended length/shape columns remain
-future work. The current extended non-mesh length and area descriptors are
-explicitly labeled in pixels or voxels.
+Calibrated physical variants for non-mesh extended length/shape columns are
+implemented when spatial scale metadata is available. VIPP now reports physical
+centroids, bounding-box coordinates and side lengths, equivalent diameter,
+bounding/fill size, Feret diameter, major/minor axis length, and inertia
+eigenvalues. Isotropic 2D inputs also report physical perimeter variants;
+anisotropic 2D perimeter columns remain `NaN` rather than using a misleading
+scalar estimate.
 
 The concrete next morphology plan is tracked in
 [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md). The intended
 split is: cheap derived morphology groups live on the existing measurement
 nodes; first-pass mesh/surface morphology lives in the manual
-`Measure 3D Mesh Morphology` node; next add calibrated physical variants for
-remaining non-mesh length/shape columns and later optional mesh export/preview.
+`Measure 3D Mesh Morphology` node; later optional mesh export/preview should
+wait until the graph has a proper surface-output contract.
 The first implementation stays within the existing `scikit-image`/`scipy`
 stack; `trimesh` and `porespy` remain deferred optional dependencies.
 
@@ -514,12 +518,11 @@ metadata, and export the result for PCA or other statistical analysis. See
 Table outputs, basic object measurement, intensity measurement, table merge,
 metadata annotation, grouped table summaries, skeleton/network measurement,
 branch summaries, overall-network summaries, first-pass 3D mesh morphology, and
-first-pass pixel colocalization/RACC are now implemented. Manual/cached
-`Calculate`/`Recalculate` execution is implemented for the first expensive
-table nodes. The next colocalization work should add per-object label-aware
-tables and object-association/localization outputs.
-Non-blocking measurement follow-up remains mesh export/preview and calibrated
-physical variants for extended non-mesh shape columns.
+first-pass pixel colocalization/RACC, object-aware colocalization/association
+tables, and calibrated extended object morphology are now implemented.
+Manual/cached `Calculate`/`Recalculate` execution is implemented for the first
+expensive table nodes. Non-blocking measurement follow-up remains
+mesh export/preview after a proper surface-output contract exists.
 
 ## Recommended First Milestone
 

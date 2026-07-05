@@ -1322,6 +1322,8 @@ def measure_objects(
             block,
             spatial_axis_names,
             spatial_ndim,
+            axis_scales=moved_axis_scales[-spatial_ndim:],
+            has_physical_calibration=bool(units.physical_column),
             include_shape_descriptors=include_shape_descriptors,
             include_axis_descriptors=include_axis_descriptors,
             include_2d_boundary_descriptors=include_2d_boundary_descriptors,
@@ -1458,6 +1460,8 @@ def measure_objects_with_intensity(
             spatial_axis_names,
             spatial_ndim,
             intensity_block=intensity_block,
+            axis_scales=moved_axis_scales[-spatial_ndim:],
+            has_physical_calibration=bool(units.physical_column),
             include_shape_descriptors=include_shape_descriptors,
             include_axis_descriptors=include_axis_descriptors,
             include_2d_boundary_descriptors=include_2d_boundary_descriptors,
@@ -4645,6 +4649,9 @@ class _MeasurementUnits:
     equivalent_diameter_column: str
     physical_column: str
     scale_product: float
+    scales: tuple[float, ...]
+    length_unit: str
+    area_unit: str
     unit_label: str
     column_units: dict[str, str]
 
@@ -6083,6 +6090,8 @@ def _measure_label_block(
     spatial_axis_names: tuple[str, ...],
     spatial_ndim: int,
     intensity_block: np.ndarray | None = None,
+    axis_scales: Sequence[float | None] = (),
+    has_physical_calibration: bool = False,
     include_shape_descriptors: bool = False,
     include_axis_descriptors: bool = False,
     include_2d_boundary_descriptors: bool = False,
@@ -6098,6 +6107,17 @@ def _measure_label_block(
         include_2d_shape_moments=include_2d_shape_moments,
     )
     raw = measure.regionprops_table(block, properties=properties)
+    scales = _normalized_spatial_scales(spatial_ndim, axis_scales)
+    physical_raw = _calibrated_regionprops_table(
+        block,
+        spatial_ndim,
+        scales,
+        include_shape_descriptors=include_shape_descriptors,
+        include_axis_descriptors=include_axis_descriptors,
+        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+        include_derived_shape_ratios=include_derived_shape_ratios,
+        include_2d_shape_moments=include_2d_shape_moments,
+    ) if has_physical_calibration else {}
     units = _measurement_units(spatial_ndim, (), ())
     result: dict[str, list[object]] = {
         "label_id": [int(value) for value in raw.get("label", [])],
@@ -6119,6 +6139,20 @@ def _measure_label_block(
     result[units.equivalent_diameter_column] = [
         float(value) for value in raw.get("equivalent_diameter_area", [])
     ]
+    if has_physical_calibration:
+        _add_calibrated_measurements(
+            result,
+            raw,
+            physical_raw,
+            spatial_axis_names,
+            spatial_ndim,
+            scales,
+            include_shape_descriptors=include_shape_descriptors,
+            include_axis_descriptors=include_axis_descriptors,
+            include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            include_derived_shape_ratios=include_derived_shape_ratios,
+            include_2d_shape_moments=include_2d_shape_moments,
+        )
     result["extent"] = [float(value) for value in raw.get("extent", [])]
     result["euler_number"] = [
         int(value) for value in raw.get("euler_number", [])
@@ -6188,6 +6222,202 @@ def _regionprops_measurement_properties(
     if include_2d_shape_moments and spatial_ndim == 2:
         properties.extend(("moments_hu", "perimeter", "perimeter_crofton"))
     return tuple(dict.fromkeys(properties))
+
+
+def _calibrated_regionprops_table(
+    block: np.ndarray,
+    spatial_ndim: int,
+    scales: tuple[float, ...],
+    *,
+    include_shape_descriptors: bool,
+    include_axis_descriptors: bool,
+    include_2d_boundary_descriptors: bool,
+    include_derived_shape_ratios: bool,
+    include_2d_shape_moments: bool,
+) -> dict[str, np.ndarray]:
+    properties: list[str] = [
+        "label",
+        "area",
+        "centroid",
+        "equivalent_diameter_area",
+    ]
+    if include_shape_descriptors:
+        properties.extend(("area_bbox", "area_filled"))
+        if spatial_ndim == 2:
+            properties.extend(("area_convex", "feret_diameter_max"))
+    if include_axis_descriptors and spatial_ndim >= 2:
+        properties.extend(
+            (
+                "axis_major_length",
+                "axis_minor_length",
+                "inertia_tensor_eigvals",
+            )
+        )
+    if (
+        spatial_ndim == 2
+        and (include_2d_boundary_descriptors or include_2d_shape_moments)
+        and _scales_are_isotropic(scales)
+    ):
+        properties.extend(("perimeter", "perimeter_crofton"))
+
+    unique_properties = tuple(dict.fromkeys(properties))
+    if not unique_properties:
+        return {}
+    try:
+        return measure.regionprops_table(
+            block,
+            properties=unique_properties,
+            spacing=scales,
+        )
+    except NotImplementedError:
+        safe_properties = tuple(
+            property_name
+            for property_name in unique_properties
+            if property_name not in {"perimeter", "perimeter_crofton"}
+        )
+        return measure.regionprops_table(
+            block,
+            properties=safe_properties,
+            spacing=scales,
+        )
+
+
+def _add_calibrated_measurements(
+    result: dict[str, list[object]],
+    raw: dict[str, np.ndarray],
+    physical_raw: dict[str, np.ndarray],
+    spatial_axis_names: tuple[str, ...],
+    spatial_ndim: int,
+    scales: tuple[float, ...],
+    *,
+    include_shape_descriptors: bool,
+    include_axis_descriptors: bool,
+    include_2d_boundary_descriptors: bool,
+    include_derived_shape_ratios: bool,
+    include_2d_shape_moments: bool,
+) -> None:
+    row_count = len(result.get("label_id", []))
+    result["equivalent_diameter_physical"] = _float_or_nan_column(
+        physical_raw,
+        "equivalent_diameter_area",
+        row_count,
+    )
+    for axis_index, axis_name in enumerate(spatial_axis_names):
+        scale = float(scales[axis_index])
+        result[f"centroid_{axis_name}_physical"] = _float_or_scaled_column(
+            physical_raw,
+            f"centroid-{axis_index}",
+            raw,
+            f"centroid-{axis_index}",
+            scale,
+            row_count,
+        )
+        result[f"bbox_{axis_name}_min_physical"] = [
+            float(value) * scale for value in _float_column(raw, f"bbox-{axis_index}")
+        ]
+        bbox_index = spatial_ndim + axis_index
+        result[f"bbox_{axis_name}_max_physical"] = [
+            float(value) * scale for value in _float_column(raw, f"bbox-{bbox_index}")
+        ]
+    if include_shape_descriptors:
+        result[_physical_size_descriptor_column("bbox", spatial_ndim)] = (
+            _float_or_nan_column(physical_raw, "area_bbox", row_count)
+        )
+        result[_physical_size_descriptor_column("filled", spatial_ndim)] = (
+            _float_or_nan_column(physical_raw, "area_filled", row_count)
+        )
+        if spatial_ndim == 2:
+            result["convex_area_physical"] = _float_or_nan_column(
+                physical_raw,
+                "area_convex",
+                row_count,
+            )
+            result["feret_diameter_max_physical"] = _float_or_nan_column(
+                physical_raw,
+                "feret_diameter_max",
+                row_count,
+            )
+    if include_axis_descriptors and spatial_ndim >= 2:
+        result["major_axis_length_physical"] = _float_or_nan_column(
+            physical_raw,
+            "axis_major_length",
+            row_count,
+        )
+        result["minor_axis_length_physical"] = _float_or_nan_column(
+            physical_raw,
+            "axis_minor_length",
+            row_count,
+        )
+        for axis_index in range(spatial_ndim):
+            result[f"inertia_tensor_eigval_{axis_index}_physical"] = (
+                _float_or_nan_column(
+                    physical_raw,
+                    f"inertia_tensor_eigvals-{axis_index}",
+                    row_count,
+                )
+            )
+    if include_2d_boundary_descriptors and spatial_ndim == 2:
+        result["perimeter_physical"] = _float_or_nan_column(
+            physical_raw,
+            "perimeter",
+            row_count,
+        )
+        result["perimeter_crofton_physical"] = _float_or_nan_column(
+            physical_raw,
+            "perimeter_crofton",
+            row_count,
+        )
+    if include_derived_shape_ratios and spatial_ndim >= 2:
+        for axis_index in range(spatial_ndim):
+            scale = float(scales[axis_index])
+            result[f"bbox_axis_{axis_index}_length_physical"] = [
+                float(maximum - minimum) * scale
+                for minimum, maximum in zip(
+                    _float_column(raw, f"bbox-{axis_index}"),
+                    _float_column(raw, f"bbox-{spatial_ndim + axis_index}"),
+                    strict=False,
+                )
+            ]
+    if include_2d_shape_moments and spatial_ndim == 2:
+        perimeter = _float_or_nan_column(physical_raw, "perimeter", row_count)
+        areas = _float_or_nan_column(physical_raw, "area", row_count)
+        result["perimeter_area_ratio_physical"] = _ratio_columns(perimeter, areas)
+
+
+def _float_or_nan_column(
+    raw: dict[str, np.ndarray],
+    name: str,
+    row_count: int,
+) -> list[float]:
+    values = _float_column(raw, name)
+    if values:
+        return values
+    return [float("nan")] * int(row_count)
+
+
+def _float_or_scaled_column(
+    primary: dict[str, np.ndarray],
+    primary_name: str,
+    fallback: dict[str, np.ndarray],
+    fallback_name: str,
+    scale: float,
+    row_count: int,
+) -> list[float]:
+    values = _float_column(primary, primary_name)
+    if values:
+        return values
+    fallback_values = _float_column(fallback, fallback_name)
+    if fallback_values:
+        return [float(value) * float(scale) for value in fallback_values]
+    return [float("nan")] * int(row_count)
+
+
+def _scales_are_isotropic(scales: Sequence[float]) -> bool:
+    values = [float(value) for value in scales]
+    if not values:
+        return True
+    first = values[0]
+    return all(abs(value - first) <= 1e-12 for value in values[1:])
 
 
 def _add_shape_descriptor_measurements(
@@ -6310,6 +6540,14 @@ def _size_descriptor_column(prefix: str, spatial_ndim: int) -> str:
     if spatial_ndim == 2:
         return f"{prefix}_area_pixels"
     return f"{prefix}_length_pixels"
+
+
+def _physical_size_descriptor_column(prefix: str, spatial_ndim: int) -> str:
+    if spatial_ndim >= 3:
+        return f"{prefix}_volume_physical"
+    if spatial_ndim == 2:
+        return f"{prefix}_area_physical"
+    return f"{prefix}_length_physical"
 
 
 def _float_column(raw: dict[str, np.ndarray], name: str) -> list[float]:
@@ -6701,32 +6939,76 @@ def _measurement_empty_columns(
     for axis_name in spatial_axis_names:
         columns[f"bbox_{axis_name}_max"] = []
     columns[units.equivalent_diameter_column] = []
+    if units.physical_column:
+        columns["equivalent_diameter_physical"] = []
+        units.column_units["equivalent_diameter_physical"] = units.length_unit
+        for axis_name in spatial_axis_names:
+            columns[f"centroid_{axis_name}_physical"] = []
+            columns[f"bbox_{axis_name}_min_physical"] = []
+            columns[f"bbox_{axis_name}_max_physical"] = []
+            units.column_units[f"centroid_{axis_name}_physical"] = units.length_unit
+            units.column_units[f"bbox_{axis_name}_min_physical"] = units.length_unit
+            units.column_units[f"bbox_{axis_name}_max_physical"] = units.length_unit
     columns["extent"] = []
     columns["euler_number"] = []
     if include_shape_descriptors:
         columns[_size_descriptor_column("bbox", spatial_ndim)] = []
         columns[_size_descriptor_column("filled", spatial_ndim)] = []
+        if units.physical_column:
+            columns[_physical_size_descriptor_column("bbox", spatial_ndim)] = []
+            columns[_physical_size_descriptor_column("filled", spatial_ndim)] = []
+            units.column_units[
+                _physical_size_descriptor_column("bbox", spatial_ndim)
+            ] = units.unit_label
+            units.column_units[
+                _physical_size_descriptor_column("filled", spatial_ndim)
+            ] = units.unit_label
         if spatial_ndim == 2:
             columns["convex_area_pixels"] = []
             columns["solidity"] = []
             columns["feret_diameter_max_pixels"] = []
+            if units.physical_column:
+                columns["convex_area_physical"] = []
+                columns["feret_diameter_max_physical"] = []
+                units.column_units["convex_area_physical"] = units.unit_label
+                units.column_units["feret_diameter_max_physical"] = units.length_unit
     if include_axis_descriptors and spatial_ndim >= 2:
         suffix = "voxels" if spatial_ndim >= 3 else "pixels"
         columns[f"major_axis_length_{suffix}"] = []
         columns[f"minor_axis_length_{suffix}"] = []
+        if units.physical_column:
+            columns["major_axis_length_physical"] = []
+            columns["minor_axis_length_physical"] = []
+            units.column_units["major_axis_length_physical"] = units.length_unit
+            units.column_units["minor_axis_length_physical"] = units.length_unit
         for axis_index in range(spatial_ndim):
             columns[f"inertia_tensor_eigval_{axis_index}"] = []
+            if units.physical_column:
+                columns[f"inertia_tensor_eigval_{axis_index}_physical"] = []
+                units.column_units[
+                    f"inertia_tensor_eigval_{axis_index}_physical"
+                ] = units.area_unit
         if spatial_ndim == 2:
             columns["eccentricity"] = []
             columns["orientation_radians"] = []
     if include_2d_boundary_descriptors and spatial_ndim == 2:
         columns["perimeter_pixels"] = []
         columns["perimeter_crofton_pixels"] = []
+        if units.physical_column:
+            columns["perimeter_physical"] = []
+            columns["perimeter_crofton_physical"] = []
+            units.column_units["perimeter_physical"] = units.length_unit
+            units.column_units["perimeter_crofton_physical"] = units.length_unit
     if include_derived_shape_ratios and spatial_ndim >= 2:
         suffix = "voxels" if spatial_ndim >= 3 else "pixels"
         columns["axis_ratio_major_minor"] = []
         for axis_index in range(spatial_ndim):
             columns[f"bbox_axis_{axis_index}_length_{suffix}"] = []
+            if units.physical_column:
+                columns[f"bbox_axis_{axis_index}_length_physical"] = []
+                units.column_units[
+                    f"bbox_axis_{axis_index}_length_physical"
+                ] = units.length_unit
         for left in range(spatial_ndim):
             for right in range(left + 1, spatial_ndim):
                 columns[f"bbox_axis_ratio_{left}_{right}"] = []
@@ -6737,6 +7019,11 @@ def _measurement_empty_columns(
     if include_2d_shape_moments and spatial_ndim == 2:
         columns["circularity"] = []
         columns["perimeter_area_ratio"] = []
+        if units.physical_column:
+            columns["perimeter_area_ratio_physical"] = []
+            units.column_units[
+                "perimeter_area_ratio_physical"
+            ] = f"1/{units.length_unit}"
         for index in range(7):
             columns[f"hu_moment_{index}"] = []
     if include_intensity:
@@ -6782,6 +7069,10 @@ def _measurement_units(
     ]
     calibrated = any(abs(scale - 1.0) > 1e-12 for scale in scales) or bool(units)
     scale_product = float(np.prod(scales)) if scales else 1.0
+    length_default = "voxel" if spatial_ndim >= 3 else "pixel"
+    area_default = "voxel^2" if spatial_ndim >= 3 else "pixel^2"
+    length_unit = _physical_unit_label(units, 1, length_default)
+    area_unit = _physical_unit_label(units, 2, area_default)
     unit_label = _physical_unit_label(units, spatial_ndim, default_unit)
     column_units = {
         size_column: "voxels" if spatial_ndim >= 3 else "pixels",
@@ -6809,13 +7100,15 @@ def _measurement_units(
         )
     if spatial_ndim >= 2:
         suffix = "voxels" if spatial_ndim >= 3 else "pixels"
-        length_unit = "voxels" if spatial_ndim >= 3 else "pixels"
+        discrete_length_unit = "voxels" if spatial_ndim >= 3 else "pixels"
         squared_unit = "voxels^2" if spatial_ndim >= 3 else "pixels^2"
-        column_units[f"major_axis_length_{suffix}"] = length_unit
-        column_units[f"minor_axis_length_{suffix}"] = length_unit
+        column_units[f"major_axis_length_{suffix}"] = discrete_length_unit
+        column_units[f"minor_axis_length_{suffix}"] = discrete_length_unit
         column_units["axis_ratio_major_minor"] = "ratio"
         for axis_index in range(spatial_ndim):
-            column_units[f"bbox_axis_{axis_index}_length_{suffix}"] = length_unit
+            column_units[f"bbox_axis_{axis_index}_length_{suffix}"] = (
+                discrete_length_unit
+            )
         for axis_index in range(spatial_ndim):
             column_units[f"inertia_tensor_eigval_{axis_index}"] = squared_unit
         for left in range(spatial_ndim):
@@ -6841,6 +7134,9 @@ def _measurement_units(
         equivalent_diameter_column=equivalent_column,
         physical_column=physical_column,
         scale_product=scale_product,
+        scales=tuple(float(scale) for scale in scales),
+        length_unit=length_unit,
+        area_unit=area_unit,
         unit_label=unit_label,
         column_units=column_units,
     )
