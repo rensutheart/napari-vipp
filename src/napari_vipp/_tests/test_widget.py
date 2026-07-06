@@ -11,6 +11,7 @@ from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
+    QGraphicsItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -3902,6 +3903,7 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     assert output_badge.kind == "output"
     assert output_badge._label == "Raw"
     assert output_badge.pos().x() > 0
+    assert not output_badge.flags() & QGraphicsItem.ItemIgnoresTransformations
 
     widget._connect_input_to_tunnel("Raw", "gaussian", 0)
 
@@ -3920,6 +3922,7 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     assert input_badge.kind == "input"
     assert input_badge._label == "Raw"
     assert input_badge.pos().x() < 0
+    assert not input_badge.flags() & QGraphicsItem.ItemIgnoresTransformations
 
     widget.undo()
 
@@ -3933,6 +3936,87 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     widget.undo()
 
     assert widget.pipeline.output_tunnel("Raw") is None
+
+
+def test_tunnel_management_summary_highlight_and_rename(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(widget, "_prompt_tunnel_name", lambda *_args: "Raw")
+    widget._create_output_tunnel("input", 0)
+    widget._connect_input_to_tunnel("Raw", "gaussian", 0)
+
+    summaries = widget._tunnel_summaries()
+    assert len(summaries) == 1
+    assert summaries[0].name == "Raw"
+    assert summaries[0].source_id == "input"
+    assert summaries[0].source_title == "Image Source"
+    assert summaries[0].subscriber_count == 1
+    assert summaries[0].subscribers == (("gaussian", "Gaussian Blur", 0),)
+
+    widget._show_tunnel_manager()
+    dialog = widget._tunnel_manager_dialog
+    assert dialog is not None
+    assert dialog.table.rowCount() == 1
+    assert dialog.table.item(0, 0).text() == "Raw"
+    dialog.filter_edit.setText("gauss")
+    assert dialog.table.rowCount() == 1
+    dialog.filter_edit.setText("missing")
+    assert dialog.table.rowCount() == 0
+    assert dialog.selected_tunnel_name() == ""
+    dialog.filter_edit.clear()
+    assert dialog.table.rowCount() == 1
+
+    widget.pipeline.add_output_tunnel("Mask", "threshold", 0)
+    widget._sync_port_tunnels()
+    widget._highlight_output_tunnel("Raw")
+    assert widget.graph_view._active_tunnel_name == "Raw"
+    assert (
+        widget.graph_view._proxies["input"]
+        .output_port_at(0)
+        ._tunnel_highlight_role
+        == "source"
+    )
+    assert (
+        widget.graph_view._proxies["gaussian"]
+        .input_port_at(0)
+        ._tunnel_highlight_role
+        == "subscriber"
+    )
+    assert (
+        widget.graph_view._proxies["threshold"]
+        .output_port_at(0)
+        ._tunnel_highlight_role
+        == "dimmed"
+    )
+    assert widget.graph_view._proxies["threshold"].opacity() < 1.0
+    widget.pipeline.remove_output_tunnel("Mask")
+    widget._sync_port_tunnels()
+
+    assert widget._rename_output_tunnel_to("Raw", "Reference")
+    assert widget.pipeline.output_tunnel("Raw") is None
+    assert widget.pipeline.output_tunnel("Reference") is not None
+    connection = widget.pipeline.tunnel_connection_for_input("gaussian", 0)
+    assert connection is not None
+    assert connection.tunnel_name == "Reference"
+    assert (
+        widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label
+        == "Reference"
+    )
+    assert (
+        widget.graph_view._proxies["gaussian"].input_port_at(0)._tunnel_label
+        == "Reference"
+    )
+    assert widget._tunnel_summaries()[0].name == "Reference"
+    assert dialog.table.item(0, 0).text() == "Reference"
+
+    widget._remove_output_tunnel("Reference")
+    assert widget.pipeline.output_tunnel("Reference") is None
+    assert widget.pipeline.tunnel_connection_for_input("gaussian", 0) is None
+    assert widget.graph_view._active_tunnel_name == ""
+    assert widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == ""
+    assert dialog.table.rowCount() == 0
 
 
 def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
@@ -4340,7 +4424,7 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
-    assert widget.auto_structure_button.text() == "Structure"
+    assert widget.auto_structure_button.text() == "Auto structure graph"
 
     widget.resize(1400, 600)
     widget._sync_toolbar_responsive_mode()
@@ -4368,8 +4452,10 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget.resize(widget.TOOLBAR_HIDE_CHECKBOXES_WIDTH + 100, 600)
     widget._sync_toolbar_responsive_mode()
 
-    assert widget.settings_menu_button.isHidden()
-    assert widget.global_thumbnail_checkbox.isHidden() is False
+    assert widget.settings_menu_button.isHidden() is False
+    assert widget.global_thumbnail_checkbox.isHidden()
+    assert widget.background_all_checkbox.isHidden()
+    assert widget.follow_dims_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden() is False
     assert widget.thumbnail_contrast_combo.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False

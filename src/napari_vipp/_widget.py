@@ -208,6 +208,20 @@ class ViewDimAxis:
 
 
 @dataclass(frozen=True)
+class TunnelSummary:
+    name: str
+    source_id: str
+    source_title: str
+    source_port: int
+    output_type: str
+    subscribers: tuple[tuple[str, str, int], ...]
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self.subscribers)
+
+
+@dataclass(frozen=True)
 class BatchSourceBinding:
     node_id: str
     title: str
@@ -3522,6 +3536,179 @@ class ViewDimsBar(QWidget):
         self.menu.addAction(action)
 
 
+class TunnelManagerDialog(QDialog):
+    """Small non-modal panel for auditing and managing named tunnels."""
+
+    tunnelSelected = Signal(str)
+    focusSourceRequested = Signal(str)
+    revealRequested = Signal(str)
+    renameRequested = Signal(str)
+    deleteRequested = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows: tuple[TunnelSummary, ...] = ()
+        self.setWindowTitle("VIPP Tunnels")
+        self.resize(740, 320)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter tunnels, sources, or subscribers")
+        layout.addWidget(self.filter_edit)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Tunnel", "Source", "Type", "Subscribers", "Subscriber nodes"],
+        )
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table, 1)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(6)
+        self.focus_button = QPushButton("Focus source")
+        self.reveal_button = QPushButton("Reveal subscribers")
+        self.rename_button = QPushButton("Rename...")
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.setToolTip("Remove the tunnel and clear its subscribers.")
+        button_row.addWidget(self.focus_button)
+        button_row.addWidget(self.reveal_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.rename_button)
+        button_row.addWidget(self.delete_button)
+        layout.addLayout(button_row)
+
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.rejected.connect(self.close)
+        layout.addWidget(close_buttons)
+
+        self.filter_edit.textChanged.connect(self._on_filter_changed)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        self.table.itemDoubleClicked.connect(lambda _item: self._emit_reveal())
+        self.focus_button.clicked.connect(self._emit_focus)
+        self.reveal_button.clicked.connect(self._emit_reveal)
+        self.rename_button.clicked.connect(self._emit_rename)
+        self.delete_button.clicked.connect(self._emit_delete)
+        self._sync_button_state()
+
+    def set_tunnels(self, rows: tuple[TunnelSummary, ...]) -> None:
+        selected = self.selected_tunnel_name()
+        self._rows = tuple(rows)
+        self._populate_table(selected)
+
+    def _populate_table(self, selected: str = "") -> None:
+        rows = self._filtered_rows()
+        self.table.setRowCount(len(rows))
+        for row, summary in enumerate(rows):
+            subscribers = ", ".join(
+                f"{title} input {port + 1}"
+                for _node_id, title, port in summary.subscribers
+            )
+            values = [
+                summary.name,
+                f"{summary.source_title} output {summary.source_port + 1}",
+                summary.output_type,
+                str(summary.subscriber_count),
+                subscribers or "none",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setData(Qt.UserRole, summary.name)
+                self.table.setItem(row, column, item)
+        self.table.resizeColumnsToContents()
+        self._restore_selection(selected)
+        self._sync_button_state()
+
+    def _filtered_rows(self) -> tuple[TunnelSummary, ...]:
+        query = _normalize_search_text(self.filter_edit.text())
+        if not query:
+            return self._rows
+        matches: list[TunnelSummary] = []
+        for summary in self._rows:
+            subscriber_text = " ".join(
+                title for _node_id, title, _port in summary.subscribers
+            )
+            haystack = _normalize_search_text(
+                f"{summary.name} {summary.source_title} {summary.output_type} "
+                f"{subscriber_text}"
+            )
+            if _fuzzy_match(query, haystack):
+                matches.append(summary)
+        return tuple(matches)
+
+    def selected_tunnel_name(self) -> str:
+        selected = self.table.selectedItems()
+        if not selected:
+            return ""
+        return str(selected[0].data(Qt.UserRole) or "")
+
+    def select_tunnel(self, name: str) -> None:
+        self._restore_selection(str(name or "").strip())
+        self._sync_button_state()
+
+    def _restore_selection(self, name: str) -> None:
+        if self.table.rowCount() == 0:
+            self.table.clearSelection()
+            return
+        target_row = 0 if not name else -1
+        if name:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is not None and item.data(Qt.UserRole) == name:
+                    target_row = row
+                    break
+        if target_row < 0:
+            self.table.clearSelection()
+            return
+        self.table.selectRow(target_row)
+
+    def _on_filter_changed(self) -> None:
+        self._populate_table(self.selected_tunnel_name())
+
+    def _on_selection_changed(self) -> None:
+        self._sync_button_state()
+        name = self.selected_tunnel_name()
+        if name:
+            self.tunnelSelected.emit(name)
+
+    def _sync_button_state(self) -> None:
+        has_selection = bool(self.selected_tunnel_name())
+        for button in (
+            self.focus_button,
+            self.reveal_button,
+            self.rename_button,
+            self.delete_button,
+        ):
+            button.setEnabled(has_selection)
+
+    def _emit_focus(self) -> None:
+        name = self.selected_tunnel_name()
+        if name:
+            self.focusSourceRequested.emit(name)
+
+    def _emit_reveal(self) -> None:
+        name = self.selected_tunnel_name()
+        if name:
+            self.revealRequested.emit(name)
+
+    def _emit_rename(self) -> None:
+        name = self.selected_tunnel_name()
+        if name:
+            self.renameRequested.emit(name)
+
+    def _emit_delete(self) -> None:
+        name = self.selected_tunnel_name()
+        if name:
+            self.deleteRequested.emit(name)
+
+
 class VippWidget(QWidget):
     """Visual node workflow composer hosted inside napari."""
 
@@ -3564,6 +3751,7 @@ class VippWidget(QWidget):
         self._toolbar_zoom_widgets: list[QWidget] = []
         self._toolbar_settings_widgets: list[QWidget] = []
         self._syncing_view_dims_bar = False
+        self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -3603,6 +3791,10 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.setToolTip("Reset graph zoom to the default 100%.")
 
         self.new_workflow_button = QPushButton("New workflow...")
+        self.tunnel_manager_button = QPushButton("Tunnels...")
+        self.tunnel_manager_button.setToolTip(
+            "Manage named graph tunnels and reveal their subscribers.",
+        )
         self.auto_structure_button = QPushButton("Auto structure graph")
         self.auto_structure_button.setToolTip(
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
@@ -4030,8 +4222,6 @@ class VippWidget(QWidget):
         input_row.addWidget(self.layer_combo, 1)
         thumbnail_separator = _toolbar_separator()
         input_row.addWidget(thumbnail_separator)
-        input_row.addWidget(self.global_thumbnail_checkbox)
-        input_row.addWidget(self.background_all_checkbox)
         preview_label = QLabel("Preview")
         input_row.addWidget(preview_label)
         input_row.addWidget(self.preview_mode_combo)
@@ -4041,7 +4231,6 @@ class VippWidget(QWidget):
         mono_label = QLabel("Mono")
         input_row.addWidget(mono_label)
         input_row.addWidget(self.thumbnail_colormap_combo)
-        input_row.addWidget(self.follow_dims_checkbox)
         zoom_separator = _toolbar_separator()
         input_row.addWidget(zoom_separator)
         zoom_label = QLabel("Zoom")
@@ -4054,17 +4243,20 @@ class VippWidget(QWidget):
         input_row.addWidget(self.refresh_button)
         input_row.addWidget(self.calculate_all_button)
         input_row.addWidget(self.auto_structure_button)
+        input_row.addWidget(self.tunnel_manager_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
         compact_separator = _toolbar_separator(6)
         input_row.addWidget(compact_separator)
         input_row.addWidget(self.settings_menu_button)
         root.addLayout(input_row)
-        self._toolbar_checkbox_widgets = [
+        self._toolbar_checkbox_widgets = []
+        for widget in (
             self.global_thumbnail_checkbox,
             self.background_all_checkbox,
             self.follow_dims_checkbox,
-        ]
+        ):
+            widget.setVisible(False)
         self._toolbar_dropdown_widgets = [
             thumbnail_separator,
             preview_label,
@@ -4123,9 +4315,9 @@ class VippWidget(QWidget):
 
     def _sync_toolbar_responsive_mode(self) -> None:
         width = int(self.width())
-        hide_checkboxes = 0 < width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH
         hide_dropdowns = 0 < width < self.TOOLBAR_HIDE_DROPDOWNS_WIDTH
         hide_zoom = 0 < width < self.TOOLBAR_HIDE_ZOOM_WIDTH
+        hide_checkboxes = True
         stage = (hide_checkboxes, hide_dropdowns, hide_zoom)
         if stage == self._toolbar_compact_stage:
             return
@@ -4136,12 +4328,12 @@ class VippWidget(QWidget):
             widget.setVisible(not hide_dropdowns)
         for widget in self._toolbar_zoom_widgets:
             widget.setVisible(not hide_zoom)
-        show_settings = hide_checkboxes or hide_dropdowns or hide_zoom
         for widget in self._toolbar_settings_widgets:
-            widget.setVisible(show_settings)
-        self.layer_combo.setMinimumWidth(140 if show_settings else 220)
+            widget.setVisible(True)
+        compact = hide_dropdowns or hide_zoom
+        self.layer_combo.setMinimumWidth(140 if compact else 220)
         self.auto_structure_button.setText(
-            "Structure" if show_settings else "Auto structure graph"
+            "Structure" if compact else "Auto structure graph"
         )
 
     def _populate_settings_toolbar_menu(self) -> None:
@@ -4153,23 +4345,22 @@ class VippWidget(QWidget):
             False,
         )
         added_section = False
-        if hide_checkboxes:
-            self._add_checkbox_menu_action(
-                menu,
-                "Show thumbnails",
-                self.global_thumbnail_checkbox,
-            )
-            self._add_checkbox_menu_action(
-                menu,
-                "Run all in background",
-                self.background_all_checkbox,
-            )
-            self._add_checkbox_menu_action(
-                menu,
-                "Follow napari dims",
-                self.follow_dims_checkbox,
-            )
-            added_section = True
+        self._add_checkbox_menu_action(
+            menu,
+            "Show thumbnails",
+            self.global_thumbnail_checkbox,
+        )
+        self._add_checkbox_menu_action(
+            menu,
+            "Run all in background",
+            self.background_all_checkbox,
+        )
+        self._add_checkbox_menu_action(
+            menu,
+            "Follow napari dims",
+            self.follow_dims_checkbox,
+        )
+        added_section = True
         if hide_dropdowns:
             if added_section:
                 menu.addSeparator()
@@ -4397,6 +4588,7 @@ class VippWidget(QWidget):
         self.export_button.clicked.connect(self._export_python_dialog)
         self.batch_button.clicked.connect(self._batch_collection_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
+        self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
@@ -4470,6 +4662,7 @@ class VippWidget(QWidget):
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.port_context_requested.connect(self._show_port_context_menu)
+        self.graph_view.tunnel_selected.connect(self._on_graph_tunnel_selected)
         self.graph_view.status_message.connect(self.status_label.setText)
         self.graph_view.zoom_changed.connect(self._sync_graph_zoom_controls)
 
@@ -6534,6 +6727,105 @@ class VippWidget(QWidget):
         self._source_inspection_cache[cache_key] = (modified, inspection)
         return inspection
 
+    def _show_tunnel_manager(self) -> None:
+        dialog = self._tunnel_manager_dialog
+        if dialog is None:
+            dialog = TunnelManagerDialog(self)
+            dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+            dialog.destroyed.connect(
+                lambda *_args: setattr(self, "_tunnel_manager_dialog", None)
+            )
+            dialog.tunnelSelected.connect(self._highlight_output_tunnel)
+            dialog.focusSourceRequested.connect(self._focus_tunnel_source)
+            dialog.revealRequested.connect(self._reveal_output_tunnel)
+            dialog.renameRequested.connect(self._rename_output_tunnel)
+            dialog.deleteRequested.connect(self._remove_output_tunnel)
+            self._tunnel_manager_dialog = dialog
+        self._refresh_tunnel_manager()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _refresh_tunnel_manager(self) -> None:
+        dialog = self._tunnel_manager_dialog
+        if dialog is not None:
+            dialog.set_tunnels(self._tunnel_summaries())
+
+    def _tunnel_summaries(self) -> tuple[TunnelSummary, ...]:
+        rows: list[TunnelSummary] = []
+        for tunnel in self.pipeline.output_tunnel_list():
+            source_node = self.pipeline.nodes.get(tunnel.source_id)
+            if source_node is None:
+                continue
+            ports = self.pipeline.output_ports(tunnel.source_id)
+            output_type = "unknown"
+            if 0 <= tunnel.source_port < len(ports):
+                output_type = ports[tunnel.source_port].output_type
+            subscribers = tuple(
+                (
+                    connection.target_id,
+                    self._node_title(connection.target_id),
+                    int(connection.target_port),
+                )
+                for connection in self.pipeline.connections
+                if connection.tunnel_name == tunnel.name
+                and connection.target_id in self.pipeline.nodes
+            )
+            rows.append(
+                TunnelSummary(
+                    tunnel.name,
+                    tunnel.source_id,
+                    source_node.title,
+                    int(tunnel.source_port),
+                    output_type,
+                    subscribers,
+                )
+            )
+        return tuple(rows)
+
+    def _on_graph_tunnel_selected(self, name: str) -> None:
+        tunnel_name = str(name or "").strip()
+        if not tunnel_name:
+            return
+        self.status_label.setText(self._tunnel_status_text(tunnel_name))
+        if self._tunnel_manager_dialog is not None:
+            self._tunnel_manager_dialog.select_tunnel(tunnel_name)
+
+    def _highlight_output_tunnel(self, name: str) -> None:
+        tunnel_name = str(name or "").strip()
+        if not tunnel_name:
+            return
+        self.graph_view.highlight_tunnel(tunnel_name, sticky=True)
+        self.status_label.setText(self._tunnel_status_text(tunnel_name))
+
+    def _reveal_output_tunnel(self, name: str) -> None:
+        tunnel_name = str(name or "").strip()
+        if not tunnel_name:
+            return
+        self.graph_view.reveal_tunnel(tunnel_name)
+        self.status_label.setText(self._tunnel_status_text(tunnel_name))
+
+    def _focus_tunnel_source(self, name: str) -> None:
+        tunnel = self.pipeline.output_tunnel(name)
+        if tunnel is None:
+            return
+        self.graph_view.focus_node(tunnel.source_id)
+        self.status_label.setText(
+            f"Focused tunnel '{tunnel.name}' source "
+            f"'{self._node_title(tunnel.source_id)}'."
+        )
+
+    def _tunnel_status_text(self, name: str) -> str:
+        for summary in self._tunnel_summaries():
+            if summary.name == name:
+                plural = "input" if summary.subscriber_count == 1 else "inputs"
+                return (
+                    f"Tunnel '{summary.name}': {summary.source_title} output "
+                    f"{summary.source_port + 1} -> "
+                    f"{summary.subscriber_count} {plural}."
+                )
+        return f"Tunnel '{name}'."
+
     def _show_port_context_menu(
         self,
         kind: str,
@@ -6558,15 +6850,28 @@ class VippWidget(QWidget):
         menu = QMenu(self)
         if tunnel is None:
             create_action = menu.addAction("Create output tunnel...")
+            manage_action = menu.addAction("Manage tunnels...")
             action = menu.exec(global_pos)
             if action == create_action:
                 self._create_output_tunnel(node_id, port_index)
+            elif action == manage_action:
+                self._show_tunnel_manager()
             return
 
+        reveal_action = menu.addAction(f"Reveal tunnel '{tunnel.name}'")
+        focus_action = menu.addAction("Focus source")
+        manage_action = menu.addAction("Manage tunnels...")
+        menu.addSeparator()
         rename_action = menu.addAction(f"Rename tunnel '{tunnel.name}'...")
         remove_action = menu.addAction(f"Remove tunnel '{tunnel.name}'")
         action = menu.exec(global_pos)
-        if action == rename_action:
+        if action == reveal_action:
+            self._reveal_output_tunnel(tunnel.name)
+        elif action == focus_action:
+            self._focus_tunnel_source(tunnel.name)
+        elif action == manage_action:
+            self._show_tunnel_manager()
+        elif action == rename_action:
             self._rename_output_tunnel(tunnel.name)
         elif action == remove_action:
             self._remove_output_tunnel(tunnel.name)
@@ -6581,6 +6886,14 @@ class VippWidget(QWidget):
         compatible = self.pipeline.compatible_output_tunnels(node_id, port_index)
         menu = QMenu(self)
         tunnel_actions = {}
+        reveal_action = None
+        rename_action = None
+        manage_action = None
+        if current is not None:
+            reveal_action = menu.addAction(f"Reveal tunnel '{current.tunnel_name}'")
+            rename_action = menu.addAction(f"Rename tunnel '{current.tunnel_name}'...")
+            manage_action = menu.addAction("Manage tunnels...")
+            menu.addSeparator()
         if compatible:
             use_menu = menu.addMenu("Use tunnel")
             for tunnel in compatible:
@@ -6600,7 +6913,13 @@ class VippWidget(QWidget):
             clear_action = menu.addAction(f"Clear tunnel '{current.tunnel_name}'")
 
         action = menu.exec(global_pos)
-        if action in tunnel_actions:
+        if reveal_action is not None and action == reveal_action:
+            self._reveal_output_tunnel(current.tunnel_name)
+        elif rename_action is not None and action == rename_action:
+            self._rename_output_tunnel(current.tunnel_name)
+        elif manage_action is not None and action == manage_action:
+            self._show_tunnel_manager()
+        elif action in tunnel_actions:
             self._connect_input_to_tunnel(
                 tunnel_actions[action],
                 node_id,
@@ -6632,22 +6951,28 @@ class VippWidget(QWidget):
         name = self._prompt_tunnel_name("Rename Output Tunnel", old_name)
         if not name or name == old_name:
             return
+        self._rename_output_tunnel_to(old_name, name)
+
+    def _rename_output_tunnel_to(self, old_name: str, name: str) -> bool:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         try:
             tunnel = self.pipeline.rename_output_tunnel(old_name, name)
         except ValueError as exc:
             self.status_label.setText(str(exc))
-            return
+            return False
         self._sync_port_tunnels()
         self._push_undo_if_changed(before)
+        self._highlight_output_tunnel(tunnel.name)
         self.status_label.setText(f"Renamed tunnel '{old_name}' to '{tunnel.name}'.")
+        return True
 
     def _remove_output_tunnel(self, name: str) -> None:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         removed = self.pipeline.remove_output_tunnel(name)
         self._sync_port_tunnels()
+        self.graph_view.clear_tunnel_highlight(sticky=True)
         if removed:
             self._invalidate_pipeline_cache()
             self.run_pipeline()
@@ -6724,6 +7049,7 @@ class VippWidget(QWidget):
             self.pipeline.output_tunnel_list(),
             self.pipeline.connections,
         )
+        self._refresh_tunnel_manager()
 
     def _connect_nodes(
         self,

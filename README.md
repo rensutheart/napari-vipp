@@ -496,23 +496,19 @@ Intensity`.
 
 ## Roadmap
 
-Near-term development priorities:
+The current versioned alpha roadmap is maintained in
+`docs/planning.md`. Planned next minor milestones are:
 
-- broader cooperative mid-operation cancellation/progress for long-running
-  background/manual operations;
-- axis-aware channel selectors that show probe names instead of only numbers;
-- broader adoption of the implemented manual/cached
-  `Calculate`/`Recalculate` model for future expensive nodes;
-- optional mesh export/preview after a surface-output graph contract is
-  designed;
-- specialist mitochondrial network metrics beyond the current generic skeleton
-  branch and overall-network summaries;
-- fluorescence background correction;
-- OME-Zarr pyramids, label colors/properties, and preview-resolution selection;
-- plate/well/field browsing, remote reads, richer batch execution, and
-  memory-aware lazy execution;
-- richer non-image outputs, including points and scalar summaries;
-- batch execution over positions, channels, z-slices, and timepoints.
+- `0.10.0a1`: graph readability, tunnel management, graph search/focus, and
+  large-workflow editing polish. Graph notes follow after tunnels;
+  minimap/navigation is deferred until very large workflows justify it;
+- `0.11.0a1`: batch configuration, output manifests, semantic-axis iteration,
+  and per-item provenance;
+- `0.12.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and
+  large-data strategy;
+- `0.13.0a1`: scientific validation reports for colocalization, object
+  association, watershed separation, and skeleton/network analysis;
+- `0.14.0a1`: AI-assisted pipeline authoring through validated workflow JSON.
 
 See `docs/user-guide.md` for end-user operation guidance,
 `docs/operator-tips.md` for operator-focused tuning,

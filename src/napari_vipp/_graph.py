@@ -424,10 +424,10 @@ class TunnelBadgeItem(QGraphicsItem):
         super().__init__(parent)
         self.kind = kind
         self._label = ""
+        self._highlight_role = ""
         self._font = QFont()
         self._font.setPointSizeF(8.5)
         self.setZValue(36)
-        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         self.setAcceptedMouseButtons(Qt.NoButton)
         self.hide()
 
@@ -437,6 +437,13 @@ class TunnelBadgeItem(QGraphicsItem):
             return
         self.prepareGeometryChange()
         self._label = cleaned
+        self.update()
+
+    def set_highlight_role(self, role: str) -> None:
+        role = role if role in {"source", "subscriber", "dimmed"} else ""
+        if role == self._highlight_role:
+            return
+        self._highlight_role = role
         self.update()
 
     def boundingRect(self) -> QRectF:  # noqa: N802
@@ -457,8 +464,24 @@ class TunnelBadgeItem(QGraphicsItem):
 
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setFont(self._font)
-        painter.setPen(QPen(QColor("#93c5fd"), 1.3))
-        painter.setBrush(QColor(15, 23, 42, 210))
+        pen_color = QColor("#93c5fd")
+        fill_color = QColor(15, 23, 42, 210)
+        if self._highlight_role == "source":
+            pen_color = QColor("#fbbf24")
+            fill_color = QColor(69, 42, 8, 230)
+        elif self._highlight_role == "subscriber":
+            pen_color = QColor("#60a5fa")
+            fill_color = QColor(18, 43, 84, 230)
+        elif self._highlight_role == "dimmed":
+            pen_color = QColor("#64748b")
+            fill_color = QColor(15, 23, 42, 150)
+        pen_width = 1.3
+        if self._highlight_role in {"source", "subscriber"}:
+            pen_width = 1.7
+        elif self._highlight_role == "dimmed":
+            pen_width = 1.1
+        painter.setPen(QPen(pen_color, pen_width))
+        painter.setBrush(fill_color)
 
         if self.kind == "output":
             wire_start = self._margin
@@ -516,9 +539,23 @@ class TunnelBadgeItem(QGraphicsItem):
     ) -> None:
         body_width = width - self._tip_width
         text_rect = QRectF(x + 1.0, y, body_width - 2.0, height)
-        painter.setPen(QColor("#dbeafe"))
+        text_color = QColor("#dbeafe")
+        if self._highlight_role == "source":
+            text_color = QColor("#fef3c7")
+        elif self._highlight_role == "subscriber":
+            text_color = QColor("#eff6ff")
+        elif self._highlight_role == "dimmed":
+            text_color = QColor("#94a3b8")
+        painter.setPen(text_color)
         painter.drawText(text_rect, Qt.AlignCenter, self._label)
-        painter.setPen(QPen(QColor("#93c5fd"), 1.3))
+        if self._highlight_role == "source":
+            painter.setPen(QPen(QColor("#fbbf24"), 1.7))
+        elif self._highlight_role == "subscriber":
+            painter.setPen(QPen(QColor("#60a5fa"), 1.7))
+        elif self._highlight_role == "dimmed":
+            painter.setPen(QPen(QColor("#64748b"), 1.2))
+        else:
+            painter.setPen(QPen(QColor("#93c5fd"), 1.3))
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -555,6 +592,7 @@ class PortItem(QGraphicsEllipseItem):
         self._hovered = False
         self._active = False
         self._drop_state: str | None = None
+        self._tunnel_highlight_role = ""
         self._tunnel_badge = TunnelBadgeItem(self.kind, self)
         self._refresh_style()
 
@@ -580,6 +618,7 @@ class PortItem(QGraphicsEllipseItem):
     def set_tunnel_label(self, label: str) -> None:
         self._tunnel_label = str(label or "").strip()
         if not self._tunnel_label:
+            self.set_tunnel_highlight_role("")
             self._tunnel_badge.set_label("")
             self._tunnel_badge.hide()
             self._update_tooltip()
@@ -588,6 +627,15 @@ class PortItem(QGraphicsEllipseItem):
         self._position_tunnel_badge()
         self._tunnel_badge.show()
         self._update_tooltip()
+
+    def set_tunnel_highlight_role(self, role: str) -> None:
+        role = role if role in {"source", "subscriber", "dimmed"} else ""
+        if role == self._tunnel_highlight_role:
+            return
+        self._tunnel_highlight_role = role
+        self._tunnel_badge.set_highlight_role(role)
+        self.setOpacity(0.34 if role == "dimmed" else 1.0)
+        self._refresh_style()
 
     def hoverEnterEvent(self, event):  # noqa: N802
         self._hovered = True
@@ -661,6 +709,17 @@ class PortItem(QGraphicsEllipseItem):
             radius = self.target_radius
             pen_color = "#bfdbfe"
             pen_width = 2.4
+        if self._tunnel_highlight_role == "dimmed":
+            pen_color = "#475569"
+            pen_width = 1.4
+        elif self._tunnel_highlight_role:
+            radius = max(radius, self.hover_radius)
+            pen_color = (
+                "#fbbf24"
+                if self._tunnel_highlight_role == "source"
+                else "#93c5fd"
+            )
+            pen_width = 3.0
         if self._drop_state == "compatible":
             radius = self.target_radius
             pen_color = "#f9fafb"
@@ -1237,6 +1296,7 @@ class PipelineGraphView(QGraphicsView):
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
     port_context_requested = Signal(str, str, int, object)
+    tunnel_selected = Signal(str)
     status_message = Signal(str)
     zoom_changed = Signal(float)
 
@@ -1280,6 +1340,10 @@ class PipelineGraphView(QGraphicsView):
         self._connection_pulse_timer.timeout.connect(
             self._advance_connection_insert_pulse
         )
+        self._tunnel_source_ports: dict[str, PortItem] = {}
+        self._tunnel_subscriber_ports: dict[str, list[PortItem]] = {}
+        self._active_tunnel_name = ""
+        self._hover_tunnel_name = ""
 
     def build_graph(
         self,
@@ -1303,6 +1367,9 @@ class PipelineGraphView(QGraphicsView):
         self._pending_wire = None
         self._highlighted_input_port = None
         self._clear_connection_insert_preview()
+        self._tunnel_source_ports.clear()
+        self._tunnel_subscriber_ports.clear()
+        self._hover_tunnel_name = ""
 
         default_positions = {
             "input": QPointF(0, 20),
@@ -1647,6 +1714,8 @@ class PipelineGraphView(QGraphicsView):
         item.update_path()
 
     def set_port_tunnels(self, output_tunnels=(), connections=()) -> None:
+        self._tunnel_source_ports.clear()
+        self._tunnel_subscriber_ports.clear()
         for proxy in self._proxies.values():
             for port in proxy.input_ports:
                 port.set_tunnel_label("")
@@ -1654,12 +1723,17 @@ class PipelineGraphView(QGraphicsView):
                 port.set_tunnel_label("")
 
         for tunnel in output_tunnels or ():
+            tunnel_name = str(getattr(tunnel, "name", "") or "").strip()
+            if not tunnel_name:
+                continue
             source = self._proxies.get(getattr(tunnel, "source_id", ""))
             if source is None:
                 continue
             port = source.output_port_at(getattr(tunnel, "source_port", 0))
             if port is not None:
-                port.set_tunnel_label(str(getattr(tunnel, "name", "")))
+                port.set_tunnel_label(tunnel_name)
+                self._tunnel_source_ports[tunnel_name] = port
+                self._tunnel_subscriber_ports.setdefault(tunnel_name, [])
 
         for connection in connections or ():
             tunnel_name = str(getattr(connection, "tunnel_name", "") or "").strip()
@@ -1671,6 +1745,90 @@ class PipelineGraphView(QGraphicsView):
             port = target.input_port_at(getattr(connection, "target_port", 0))
             if port is not None:
                 port.set_tunnel_label(tunnel_name)
+                self._tunnel_subscriber_ports.setdefault(tunnel_name, []).append(port)
+        self._apply_tunnel_highlight()
+
+    def highlight_tunnel(self, name: str, *, sticky: bool = True) -> None:
+        tunnel_name = str(name or "").strip()
+        if tunnel_name and tunnel_name not in self._tunnel_source_ports:
+            tunnel_name = ""
+        if sticky:
+            self._active_tunnel_name = tunnel_name
+        else:
+            self._hover_tunnel_name = tunnel_name
+        self._apply_tunnel_highlight()
+        if tunnel_name and sticky:
+            self.tunnel_selected.emit(tunnel_name)
+
+    def clear_tunnel_highlight(self, *, sticky: bool = True) -> None:
+        if sticky:
+            self._active_tunnel_name = ""
+        else:
+            self._hover_tunnel_name = ""
+        self._apply_tunnel_highlight()
+
+    def reveal_tunnel(self, name: str) -> None:
+        tunnel_name = str(name or "").strip()
+        self.highlight_tunnel(tunnel_name, sticky=True)
+        ports = self._ports_for_tunnel(tunnel_name)
+        if not ports:
+            return
+        rect = ports[0].sceneBoundingRect()
+        for port in ports[1:]:
+            rect = rect.united(port.sceneBoundingRect())
+        for port in ports:
+            parent = port.parentItem()
+            if parent is not None:
+                rect = rect.united(parent.sceneBoundingRect())
+        self._ensure_scene_space_for_rect(rect.adjusted(-160, -120, 160, 120))
+        self.centerOn(rect.center())
+
+    def focus_node(self, node_id: str) -> None:
+        proxy = self._proxies.get(node_id)
+        if proxy is None:
+            return
+        self._select_node(node_id)
+        self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
+        self.centerOn(proxy.sceneBoundingRect().center())
+
+    def _effective_tunnel_highlight(self) -> str:
+        return self._active_tunnel_name or self._hover_tunnel_name
+
+    def _ports_for_tunnel(self, name: str) -> list[PortItem]:
+        ports: list[PortItem] = []
+        source = self._tunnel_source_ports.get(name)
+        if source is not None:
+            ports.append(source)
+        ports.extend(self._tunnel_subscriber_ports.get(name, ()))
+        return ports
+
+    def _apply_tunnel_highlight(self) -> None:
+        active = self._effective_tunnel_highlight()
+        if active and active not in self._tunnel_source_ports:
+            self._active_tunnel_name = ""
+            self._hover_tunnel_name = ""
+            active = ""
+        active_node_ids: set[str] = set()
+        for name, source in self._tunnel_source_ports.items():
+            role = ""
+            if active:
+                role = "source" if name == active else "dimmed"
+            source.set_tunnel_highlight_role(role)
+            if name == active:
+                active_node_ids.add(source.node_id)
+        for name, ports in self._tunnel_subscriber_ports.items():
+            for port in ports:
+                role = ""
+                if active:
+                    role = "subscriber" if name == active else "dimmed"
+                port.set_tunnel_highlight_role(role)
+                if name == active:
+                    active_node_ids.add(port.node_id)
+        for node_id, proxy in self._proxies.items():
+            proxy.setOpacity(1.0 if not active or node_id in active_node_ids else 0.38)
+        for connection in self._connections:
+            connection.setOpacity(0.18 if active else 1.0)
+        self.scene.update()
 
     def remove_node(self, node_id: str) -> None:
         proxy = self._proxies.get(node_id)
@@ -2020,6 +2178,14 @@ class PipelineGraphView(QGraphicsView):
     def mousePressEvent(self, event):  # noqa: N802
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
+        if event.button() == Qt.LeftButton:
+            tunnel_name = self._tunnel_badge_name_at_view_pos(pos)
+            if tunnel_name:
+                self.highlight_tunnel(tunnel_name, sticky=True)
+                event.accept()
+                return
+            if background_click and self._active_tunnel_name:
+                self.clear_tunnel_highlight(sticky=True)
         if event.button() == Qt.RightButton:
             port = self._port_at_view_pos(pos)
             if port is not None:
@@ -2065,6 +2231,10 @@ class PipelineGraphView(QGraphicsView):
             self._ensure_scene_space_for_rect(self.mapToScene(self.viewport().rect()).boundingRect())
             event.accept()
             return
+        if self._pending_source is None and not self._active_tunnel_name:
+            tunnel_name = self._tunnel_name_at_view_pos(_point_from_event(event))
+            if tunnel_name != self._hover_tunnel_name:
+                self.highlight_tunnel(tunnel_name, sticky=False)
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
@@ -2141,6 +2311,24 @@ class PipelineGraphView(QGraphicsView):
                     return current
                 current = current.parentItem()
         return None
+
+    def _tunnel_name_at_view_pos(self, pos: QPoint) -> str:
+        port = self._port_at_view_pos(pos)
+        if port is None:
+            return ""
+        return str(getattr(port, "_tunnel_label", "") or "").strip()
+
+    def _tunnel_badge_name_at_view_pos(self, pos: QPoint) -> str:
+        scene_pos = self.mapToScene(pos)
+        for item in self.scene.items(scene_pos):
+            if not isinstance(item, TunnelBadgeItem):
+                continue
+            current = item.parentItem()
+            while current is not None:
+                if isinstance(current, PortItem):
+                    return str(getattr(current, "_tunnel_label", "") or "").strip()
+                current = current.parentItem()
+        return ""
 
     def _connection_at(self, scene_pos: QPointF) -> ConnectionItem | None:
         candidates: list[tuple[float, ConnectionItem]] = []

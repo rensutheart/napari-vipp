@@ -68,6 +68,14 @@ connection: it occupies that input slot, replaces any previous connection to
 that slot, respects data-type compatibility, rejects cycles, runs in batch mode,
 and is saved with the workflow.
 
+To inspect tunnel usage:
+
+1. Click a tunnel badge to highlight its source and all subscribed inputs.
+2. Right-click a tunneled port to reveal subscribers, rename the tunnel, remove
+   it, or open the tunnel manager.
+3. Use the toolbar `Tunnels...` button to filter, audit, focus, reveal, rename,
+   or delete named sources from one table.
+
 ## When To Use Which Mode
 
 Recommended default for most users:
