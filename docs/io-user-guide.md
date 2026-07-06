@@ -54,17 +54,31 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 
 ## Collection Batch Runs
 
-`Run batch...` executes the current graph over a local folder of image files.
-The dialog accepts an input folder, output folder, one or more glob patterns
-separated by semicolons, and an image output format. Add `Batch Output` nodes
-to mark the exact images, masks, labels, RGB outputs, or tables that should be
-saved. Each `Batch Output` marker is pass-through during normal graph execution
-and can define a tag, optional subfolder, filename template, format override,
-and overwrite behavior.
+`Run batch...` executes the current graph over local image collections. The
+dialog shows one source row for each `Image Source` node in the workflow. Bind a
+source row to a folder and one or more glob patterns, separated by semicolons,
+when that node should receive a different file for every batch item. Leave a
+source row blank when that source should keep its current fixed layer, file, or
+sample data.
 
-If the graph has no `Batch Output` nodes, VIPP falls back to saving terminal
-graph outputs for every matched item. Image-like fallback outputs use the
-dialog format; table fallback outputs are saved as CSV.
+When multiple source rows are bound, VIPP sorts the matched files for each row
+and pairs them by position. Each bound source must match the same number of
+files, so item 1 uses the first file from every bound source, item 2 uses the
+second file from every bound source, and so on. The first bound source is the
+primary source used for default naming. Each item gets a stable batch index
+(`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
+
+Use `Preview batch` before running to check the item ids, bound source files,
+and planned output filenames. The preview does not execute the image-processing
+graph; it only resolves the file pairing and output paths.
+
+Add `Batch Output` nodes to mark the exact images, masks, labels, RGB outputs,
+or tables that should be saved. Each `Batch Output` marker is pass-through
+during normal graph execution and can define a tag, optional subfolder, filename
+template, format override, and overwrite behavior. If the graph has no
+`Batch Output` nodes, VIPP falls back to saving terminal graph outputs for every
+matched item. Image-like fallback outputs use the dialog format; table fallback
+outputs are saved as CSV.
 
 Default explicit-output naming is:
 
@@ -72,9 +86,10 @@ Default explicit-output naming is:
 {source_stem}__{tag}
 ```
 
-Supported filename-template fields are `{source_stem}`, `{tag}`, `{node_id}`,
-and `{node_title}`. VIPP appends the appropriate extension unless the template
-already includes a known image or table extension.
+Supported filename-template fields are `{batch_id}`, `{batch_index}`,
+`{source_name}`, `{source_stem}`, `{primary_source_stem}`, `{tag}`,
+`{node_id}`, and `{node_title}`. VIPP appends the appropriate extension unless
+the template already includes a known image or table extension.
 
 The dialog can also write two reproducibility companions into the output
 folder:
@@ -84,9 +99,9 @@ folder:
   `Export Python...`.
 
 Current batch execution is intentionally local-file oriented. It does not yet
-provide stable plate/well/field identities, per-item provenance manifests,
-multiple independently paired source collections, or iteration over semantic
-axes such as each timepoint or each channel.
+provide stable plate/well/field identities, per-item provenance manifests, HCS
+plate traversal, or iteration over semantic axes such as each timepoint or each
+channel.
 
 ## Export OME Analysis Dataset
 

@@ -740,20 +740,29 @@ Collection batch UI:
 - `VippWidget._run_collection_batch()` clones the current workflow model before
   execution, so folder processing does not replace the live canvas outputs with
   the last processed file.
-- Image Source nodes with `Binding: collection` are rebound to each matched
-  file. If none are marked as collections, the first Image Source node is used
-  as the folder input for convenience.
+- `CollectionBatchDialog` lists every `Image Source` node as a possible batch
+  source binding. Blank rows keep their normal fixed layer/file/sample source.
+- `BatchSourceBinding` stores the node id, display title, folder, and glob
+  pattern for one collection-bound source. `BatchItem` stores a stable item
+  index/id plus the source path assigned to every bound source. `BatchPreviewRow`
+  is the non-executing dry-run representation shown by `Preview batch`.
+- When several sources are bound, matched paths are sorted per source and paired
+  by position. All bound sources must match the same number of files. The first
+  bound source becomes the primary source for default naming.
 - `Batch Output` nodes are the authoritative save markers. They pass data
   through during normal graph execution and provide tag, format, subfolder,
   filename-template, and overwrite controls for batch saves.
+- Filename templates can use batch-aware fields including `{batch_id}`,
+  `{batch_index}`, `{source_name}`, `{source_stem}`, `{primary_source_stem}`,
+  `{tag}`, `{node_id}`, and `{node_title}`.
 - If a graph has no `Batch Output` nodes, terminal graph outputs are saved as a
   compatibility fallback. Image-like fallback outputs use the selected batch
   image format; table fallback outputs are saved as CSV.
 - The dialog can write `vipp_batch_workflow.json` and
   `vipp_batch_pipeline.py` beside the results for reproducibility.
-- This is a local-folder first pass. Stable item identities, per-item
-  provenance manifests, semantic-axis iteration, and multiple independently
-  paired source collections remain future work.
+- This is a local-folder first pass. Per-item provenance manifests,
+  plate/well/field identities, HCS traversal, and semantic-axis iteration remain
+  future work.
 
 ## Sample Data
 

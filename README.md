@@ -441,8 +441,14 @@ as 8-bit `0`/`255` values.
 For batch workflows, add `Batch Output` nodes to the images, masks, labels, or
 tables that should be written by `Run batch...`. Each marker is pass-through in
 the graph and can define a filename tag, optional subfolder, filename template,
-format override, and overwrite behavior. If no `Batch Output` nodes are present,
-batch execution falls back to saving terminal graph outputs.
+format override, and overwrite behavior. The batch dialog can bind each
+`Image Source` node to its own folder/pattern pair; bound sources are matched by
+sorted file order and must contain the same number of files. `Preview batch`
+shows the stable batch ids, paired source files, and planned outputs before the
+graph is executed. If no `Batch Output` nodes are present, batch execution falls
+back to saving terminal graph outputs. Filename templates can use `{batch_id}`,
+`{batch_index}`, `{source_name}`, `{source_stem}`, `{primary_source_stem}`,
+`{tag}`, `{node_id}`, and `{node_title}`.
 
 ## Development
 

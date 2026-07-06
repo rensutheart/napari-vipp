@@ -4750,6 +4750,8 @@ def test_collection_batch_dialog_defaults(qtbot):
     values = dialog.values()
 
     assert "*.ome.tif" in values["pattern"]
+    assert values["source_bindings"][0]["node_id"] == "input"
+    assert "*.ome.tif" in values["source_bindings"][0]["pattern"]
     assert values["image_format"] == "ome-tiff"
     assert values["save_workflow_snapshot"] is True
     assert values["save_python_script"] is True
@@ -4826,6 +4828,123 @@ def test_run_collection_batch_prefers_explicit_batch_outputs(qtbot, tmp_path):
     saved_array = np.load(explicit_path)
     assert saved_array.shape == image.shape
     assert saved_array.dtype == image.dtype
+
+
+def test_run_collection_batch_supports_independent_source_bindings(qtbot, tmp_path):
+    primary_dir = tmp_path / "primary"
+    mask_dir = tmp_path / "masks"
+    output_dir = tmp_path / "outputs"
+    primary_dir.mkdir()
+    mask_dir.mkdir()
+    first = np.zeros((3, 8, 9), dtype=np.uint8)
+    second = np.zeros((3, 8, 9), dtype=np.uint8)
+    first[:, 2:6, 3:7] = 120
+    second[:, 1:4, 1:5] = 220
+    first_mask = np.zeros((3, 8, 9), dtype=np.uint8)
+    second_mask = np.zeros((3, 8, 9), dtype=np.uint8)
+    first_mask[:, 0:2, 0:3] = 33
+    second_mask[:, 5:7, 6:9] = 77
+    tifffile.imwrite(primary_dir / "field_a.tif", first, photometric="minisblack")
+    tifffile.imwrite(primary_dir / "field_b.tif", second, photometric="minisblack")
+    tifffile.imwrite(mask_dir / "mask_a.tif", first_mask, photometric="minisblack")
+    tifffile.imwrite(mask_dir / "mask_b.tif", second_mask, photometric="minisblack")
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    secondary = widget.add_node_from_palette("input")
+    output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes(secondary.id, output.id)
+    widget.pipeline.set_param(output.id, "tag", "secondary")
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget.pipeline.set_param(
+        output.id,
+        "filename_template",
+        "{batch_index}_{source_stem}_{tag}",
+    )
+    source_bindings = [
+        {
+            "node_id": "input",
+            "input_dir": str(primary_dir),
+            "pattern": "*.tif",
+        },
+        {
+            "node_id": secondary.id,
+            "input_dir": str(mask_dir),
+            "pattern": "*.tif",
+        },
+    ]
+
+    preview = widget._preview_collection_batch(
+        "",
+        output_dir,
+        image_format="ome-tiff",
+        source_bindings=source_bindings,
+    )
+
+    assert [row.batch_id for row in preview] == ["0001_field_a", "0002_field_b"]
+    assert preview[0].sources["input"].name == "field_a.tif"
+    assert preview[0].sources[secondary.id].name == "mask_a.tif"
+    assert preview[0].outputs[0].name == "0001_field_a_secondary.npy"
+
+    saved = widget._run_collection_batch(
+        "",
+        output_dir,
+        image_format="ome-tiff",
+        save_workflow_snapshot=False,
+        save_python_script=False,
+        source_bindings=source_bindings,
+    )
+
+    assert {path.name for path in saved} == {
+        "0001_field_a_secondary.npy",
+        "0002_field_b_secondary.npy",
+    }
+    np.testing.assert_array_equal(
+        np.load(output_dir / "0001_field_a_secondary.npy"),
+        first_mask,
+    )
+    np.testing.assert_array_equal(
+        np.load(output_dir / "0002_field_b_secondary.npy"),
+        second_mask,
+    )
+
+
+def test_collection_batch_rejects_mismatched_source_binding_counts(qtbot, tmp_path):
+    primary_dir = tmp_path / "primary"
+    mask_dir = tmp_path / "masks"
+    output_dir = tmp_path / "outputs"
+    primary_dir.mkdir()
+    mask_dir.mkdir()
+    image = np.zeros((3, 8, 9), dtype=np.uint8)
+    tifffile.imwrite(primary_dir / "field_a.tif", image, photometric="minisblack")
+    tifffile.imwrite(primary_dir / "field_b.tif", image, photometric="minisblack")
+    tifffile.imwrite(mask_dir / "mask_a.tif", image, photometric="minisblack")
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    secondary = widget.add_node_from_palette("input")
+
+    try:
+        widget._preview_collection_batch(
+            "",
+            output_dir,
+            source_bindings=[
+                {
+                    "node_id": "input",
+                    "input_dir": str(primary_dir),
+                    "pattern": "*.tif",
+                },
+                {
+                    "node_id": secondary.id,
+                    "input_dir": str(mask_dir),
+                    "pattern": "*.tif",
+                },
+            ],
+        )
+    except ValueError as exc:
+        assert "same number" in str(exc)
+    else:
+        raise AssertionError("Expected mismatched batch source counts to fail.")
 
 
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):

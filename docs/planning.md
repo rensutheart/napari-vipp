@@ -102,11 +102,12 @@ Implemented:
 - image-like and table outputs handled by the exporter;
 - explicit `Batch Output` pass-through marker nodes with tag, format,
   subfolder, filename-template, and overwrite controls;
-- first-pass `Run batch...` UI that runs a workflow once per matched file in a
-  folder, binds collection Image Source nodes per item, saves explicit
-  `Batch Output` nodes when present, falls back to terminal outputs otherwise,
-  and optionally writes a workflow JSON snapshot plus exported Python script
-  next to the results.
+- first-pass `Run batch...` UI that runs a workflow once per matched batch
+  item, supports independently bound Image Source collections, provides stable
+  batch indices/ids plus dry-run output previews, saves explicit `Batch Output`
+  nodes when present, falls back to terminal outputs otherwise, and optionally
+  writes a workflow JSON snapshot plus exported Python script next to the
+  results.
 
 The exporter is headless but still requires the `napari-vipp` Python package.
 
@@ -401,8 +402,11 @@ Implemented:
 
 1. Extend cooperative mid-operation cancellation/progress to more expensive
    manual/background feature families where libraries expose useful hooks.
-2. Extend the first-pass batch UI with stable item identities, output
-   templates, and multiple independently bound sources.
+2. Add graph port tunnels / named wires for reusable channel, mask, ROI, and
+   reference-image sources in dense analysis workflows.
+3. Extend batch execution beyond local sorted-file collections toward HCS-style
+   plate/well/field traversal, semantic-axis iteration, and per-item provenance
+   manifests.
 
 ### Execution Platform TODOs
 
@@ -525,10 +529,14 @@ Mitochondria-specific analysis:
 
 ### Batch Execution UI TODOs
 
-- stable item identities;
-- output templates;
-- per-item provenance;
-- multiple independently bound sources;
+- implemented: stable batch indices/ids;
+- implemented: output templates for explicit `Batch Output` nodes;
+- implemented: multiple independently bound source collections matched by
+  sorted file order;
+- implemented: dry-run preview of batch item identities, source pairings, and
+  planned output filenames;
+- per-item provenance manifests;
+- HCS/plate/well/field-aware source traversal;
 - explicit iteration over semantic axes.
 
 ### AI-Assisted Pipeline Authoring TODOs
