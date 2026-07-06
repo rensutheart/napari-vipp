@@ -55,6 +55,8 @@ The prototype currently supports:
 - draggable node cards with input/output ports and curved connectors;
 - adding nodes from a categorized, fuzzy-searchable node library;
 - connecting nodes by dragging or click-to-connect from output to input ports;
+- named port tunnels for reusing channel, mask, ROI, or reference-image outputs
+  without drawing long repeated wires;
 - explicit image source nodes for napari layers, files, or bundled samples;
 - quick selected-output saving plus graph-level save nodes;
 - first-pass folder batch UI that binds collection Image Source nodes per file

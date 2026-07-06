@@ -86,6 +86,41 @@ def test_workflow_preserves_multi_input_target_ports(tmp_path):
     assert ports[("gaussian", composite.id)] == 0
 
 
+def test_workflow_preserves_named_tunnels(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    median = pipeline.add_node("median_filter")
+    tunnel = pipeline.add_output_tunnel("Raw reference", "input", 0)
+    result = pipeline.connect_to_tunnel(tunnel.name, median.id)
+    assert result.success
+
+    path = save_workflow(tmp_path / "tunnels.json", pipeline, {})
+    document = serialize_workflow(pipeline)
+
+    assert document["tunnels"] == [
+        {"name": "Raw reference", "source": "input", "source_port": 0}
+    ]
+    assert any(
+        connection.get("tunnel") == "Raw reference"
+        and connection["source"] == "input"
+        and connection["target"] == median.id
+        for connection in document["connections"]
+    )
+
+    workflow = load_workflow(path)
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow["output_tunnels"],
+    )
+
+    assert restored.output_tunnel("Raw reference") == tunnel
+    assert restored.tunnel_connection_for_input(median.id, 0) is not None
+    outputs = restored.run(np.random.rand(4, 8, 8).astype(np.float32))
+    assert outputs[median.id] is not None
+
+
 def test_unknown_operation_is_rejected():
     pipeline = _build_pipeline()
     document = serialize_workflow(pipeline)
@@ -134,6 +169,25 @@ def test_non_integer_connection_port_is_rejected():
     document["connections"][0]["target_port"] = "0"
 
     with pytest.raises(ValueError, match="target_port.*must be an integer"):
+        deserialize_workflow(document)
+
+
+def test_duplicate_tunnel_names_are_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["tunnels"] = [
+        {"name": "Ch1", "source": "input", "source_port": 0},
+        {"name": "ch1", "source": "gaussian", "source_port": 0},
+    ]
+
+    with pytest.raises(ValueError, match="duplicate tunnel name"):
+        deserialize_workflow(document)
+
+
+def test_unknown_tunnel_connection_is_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["connections"][0]["tunnel"] = "Missing"
+
+    with pytest.raises(ValueError, match="unknown tunnel"):
         deserialize_workflow(document)
 
 

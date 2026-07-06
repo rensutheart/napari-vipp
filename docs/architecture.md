@@ -98,7 +98,8 @@ Important dataclasses:
 | `OutputSpec` | Declares one output port of a node: `name`, `output_type`, and optional display `title`. |
 | `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, `max_inputs`, optional named `inputs`, optional static `outputs`, optional dynamic `output_factory`, and whether outputs preserve the connected input type. |
 | `GraphNode` | A node instance with a stable id, operation id, resolved display/type fields, mutable `params`, and `max_inputs`. |
-| `GraphConnection` | A directed edge from `source_id` to `target_id`, including the target input slot as `target_port` and the source output slot as `source_port`. |
+| `GraphConnection` | A directed edge from `source_id` to `target_id`, including the target input slot as `target_port`, the source output slot as `source_port`, and optional `tunnel_name` metadata for hidden named-wire connections. |
+| `OutputTunnel` | A named source bound to one output port. Input ports can subscribe to it through a tunnel-marked `GraphConnection`. |
 | `ConnectionResult` | Returned by `connect()`: success flag, message, created connection, and any replaced/removed connections. |
 | `SourcePayload` | Data, optional layer metadata, name, and optional reader-built `ImageState` injected into source nodes. |
 | `TableData` / `TableState` | Non-image output data and metadata used by measurement nodes and CSV/TSV export. |
@@ -117,6 +118,11 @@ Key behaviours:
   `target_port` auto-fills the first free compatible slot; connecting to an
   occupied slot replaces that slot only. `source_port` selects
   which output of a multi-output node feeds the edge.
+- `add_output_tunnel(name, source_id, source_port)` labels one output port as a
+  reusable named source. `connect_to_tunnel(name, target_id, target_port)`
+  creates a normal typed/cycle-checked connection marked with that tunnel name.
+  Tunnel connections execute, serialize, and export like ordinary connections,
+  but the graph view hides the long wire and shows compact badges at both ports.
 - `disconnect(source_id, target_id, target_port=None)` removes either a specific
   slot connection or all matching source-target connections when no slot is
   supplied.
@@ -599,8 +605,8 @@ Main classes:
 | `PipelineGraphView` | Canvas, pan/zoom, drag/drop node creation, wire creation/removal, selection, delete-key handling, and node context menus. |
 | `NodeProxy` | Movable graphics item wrapping a `NodeCard`; owns the visual input/output ports (one or more output ports for multi-output nodes). |
 | `NodeCard` | Embedded widget with category tint, title, thumbnail, and compact metadata. Pin state is represented by card styling; Pin/Unpin actions live in the inspector and node context menu. |
-| `PortItem` | Input/output port circle with hover/drop feedback and optional accent colour/label. Multi-input and multi-output nodes have several ports. |
-| `ConnectionItem` | Curved wire storing source id, target id, `target_port`, and `source_port`. |
+| `PortItem` | Input/output port circle with hover/drop feedback, optional accent colour/label, and optional tunnel badge. Multi-input and multi-output nodes have several ports. |
+| `ConnectionItem` | Curved visible wire storing source id, target id, `target_port`, and `source_port`. Tunnel-marked connections are not drawn as `ConnectionItem`s. |
 
 Right-clicking a node opens a context menu with Delete, Inspect Code, Duplicate
 Node, and, for image/mask/label-producing nodes, Pin or Unpin. Duplicate Node
@@ -609,6 +615,14 @@ near the original; it does not infer connections. Inspect Code opens a
 read-only dialog containing node metadata, connected input references, a
 single-node call shape, and the pure operation function source when available,
 with lightweight Python syntax highlighting.
+
+Right-clicking an output port can create, rename, or remove a named output
+tunnel. Right-clicking an input port can subscribe that input to any compatible
+named output tunnel, replacing the current input slot connection if needed.
+Tunnels are intended for dense workflows where a channel, mask, ROI, or
+reference image feeds many downstream nodes. They remain explicit graph
+semantics: the connection occupies the target input slot, is type-checked,
+rejects cycles, participates in execution, and is saved in workflow JSON.
 
 Signals to `VippWidget`:
 
@@ -620,6 +634,7 @@ Signals to `VippWidget`:
 - `node_create_requested(operation_id, scene_position)`
 - `connection_requested(source_id, target_id, target_port, source_port)`
 - `connection_removed(source_id, target_id, target_port)`
+- `port_context_requested(kind, node_id, port_index, global_position)`
 - `status_message(text)`
 
 Slot-aware connections are important. The graph must never treat all wires into
@@ -710,14 +725,17 @@ Graph-level output:
 Workflow persistence:
 
 - `core/workflow.py` serializes nodes, params, connections including
-  `target_port` and `source_port`, and canvas positions to JSON.
+  `target_port`, `source_port`, optional tunnel names, output tunnel
+  definitions, and canvas positions to JSON.
 - Workflow version 1 does not yet store preview visibility, inspector state,
   graph notes, environment provenance, or YAML.
 - Image Source paths and layer names are serialized as literal parameters;
   input files are not embedded and paths are not rebased for portable sharing.
 - The loader requires the current type and version and rejects unknown
   operations, malformed records, duplicate node ids, invalid positions, and
-  dangling or multiply occupied connections.
+  dangling or multiply occupied connections. It also rejects duplicate tunnel
+  names, tunnel connections without a declared source, and tunnel connections
+  whose stored source/output does not match the named source.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
 - `VippWidget.load_workflow_file()` provides the non-dialog load path used by
   the example launcher.

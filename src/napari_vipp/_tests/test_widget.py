@@ -3886,6 +3886,47 @@ def test_palette_adds_node_and_connects_branch(qtbot):
     assert widget.pipeline.outputs[node.id] is not None
 
 
+def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(widget, "_prompt_tunnel_name", lambda *_args: "Raw")
+    widget._create_output_tunnel("input", 0)
+
+    assert widget.pipeline.output_tunnel("Raw") is not None
+    assert (
+        widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == "Raw"
+    )
+
+    widget._connect_input_to_tunnel("Raw", "gaussian", 0)
+
+    connection = widget.pipeline.tunnel_connection_for_input("gaussian", 0)
+    assert connection is not None
+    assert connection.source_id == "input"
+    assert connection.tunnel_name == "Raw"
+    assert not any(
+        item.source_id == "input" and item.target_id == "gaussian"
+        for item in widget.graph_view._connections
+    )
+    assert (
+        widget.graph_view._proxies["gaussian"].input_port_at(0)._tunnel_label == "Raw"
+    )
+
+    widget.undo()
+
+    assert widget.pipeline.output_tunnel("Raw") is not None
+    assert widget.pipeline.tunnel_connection_for_input("gaussian", 0) is None
+    assert any(
+        item.source_id == "input" and item.target_id == "gaussian"
+        for item in widget.graph_view._connections
+    )
+
+    widget.undo()
+
+    assert widget.pipeline.output_tunnel("Raw") is None
+
+
 def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

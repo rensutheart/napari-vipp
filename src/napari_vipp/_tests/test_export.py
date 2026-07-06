@@ -77,6 +77,23 @@ def test_export_handles_multi_input_nodes():
     assert "add_images([v_input, v_gaussian]" in code
 
 
+def test_export_compiles_named_tunnel_connections_as_normal_inputs():
+    pipeline = _starter_pipeline()
+    median = pipeline.add_node("median_filter")
+    pipeline.add_output_tunnel("Raw", "input", 0)
+    result = pipeline.connect_to_tunnel("Raw", median.id)
+    assert result.success
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.random.rand(4, 8, 8).astype(np.float32)
+    results = namespace["run_pipeline"](image)
+
+    assert "median_filter(v_input" in code
+    assert results[median.id].shape == image.shape
+
+
 def test_export_prefers_explicit_batch_output_nodes():
     pipeline = _starter_pipeline()
     marker = pipeline.add_node("batch_output")

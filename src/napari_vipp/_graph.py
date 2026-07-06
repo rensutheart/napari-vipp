@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsProxyWidget,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
     QLabel,
     QMenu,
@@ -433,6 +434,7 @@ class PortItem(QGraphicsEllipseItem):
         self.port_index = int(port_index)
         self.label = label
         self.accent_color = accent_color
+        self._tunnel_label = ""
         self.setParentItem(parent)
         self.setZValue(30)
         self.setCursor(Qt.CrossCursor)
@@ -441,6 +443,11 @@ class PortItem(QGraphicsEllipseItem):
         self._hovered = False
         self._active = False
         self._drop_state: str | None = None
+        self._tunnel_badge = QGraphicsSimpleTextItem(self)
+        self._tunnel_badge.setZValue(36)
+        self._tunnel_badge.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self._tunnel_badge.setBrush(QColor("#bfdbfe"))
+        self._tunnel_badge.hide()
         self._refresh_style()
 
     def set_data_type(self, data_type: str) -> None:
@@ -461,6 +468,17 @@ class PortItem(QGraphicsEllipseItem):
     def set_drop_state(self, state: str | None) -> None:
         self._drop_state = state
         self._refresh_style()
+
+    def set_tunnel_label(self, label: str) -> None:
+        self._tunnel_label = str(label or "").strip()
+        if not self._tunnel_label:
+            self._tunnel_badge.hide()
+            self._update_tooltip()
+            return
+        self._tunnel_badge.setText(self._tunnel_label)
+        self._position_tunnel_badge()
+        self._tunnel_badge.show()
+        self._update_tooltip()
 
     def hoverEnterEvent(self, event):  # noqa: N802
         self._hovered = True
@@ -554,7 +572,17 @@ class PortItem(QGraphicsEllipseItem):
             name = "output"
         if self.label:
             name = f"{name}: {self.label}"
-        self.setToolTip(f"{name} ({self.data_type})")
+        tunnel = f"\nTunnel: {self._tunnel_label}" if self._tunnel_label else ""
+        self.setToolTip(f"{name} ({self.data_type}){tunnel}")
+
+    def _position_tunnel_badge(self) -> None:
+        rect = self._tunnel_badge.boundingRect()
+        y = -rect.height() / 2.0
+        if self.kind == "output":
+            x = self.target_radius + 5.0
+        else:
+            x = -rect.width() - self.target_radius - 5.0
+        self._tunnel_badge.setPos(x, y)
 
 
 class NodeProxy(QGraphicsProxyWidget):
@@ -1095,6 +1123,7 @@ class PipelineGraphView(QGraphicsView):
     connection_insert_requested = Signal(object, QPointF)
     connection_requested = Signal(str, str, int, int)
     connection_removed = Signal(str, str, int)
+    port_context_requested = Signal(str, str, int, object)
     status_message = Signal(str)
     zoom_changed = Signal(float)
 
@@ -1145,6 +1174,7 @@ class PipelineGraphView(QGraphicsView):
         connections,
         positions=None,
         *,
+        output_tunnels=(),
         preserve_view: bool = False,
     ) -> None:
         preserved_center = self.mapToScene(self.viewport().rect().center())
@@ -1174,12 +1204,15 @@ class PipelineGraphView(QGraphicsView):
             self.add_node(node, point)
 
         for connection in connections:
+            if getattr(connection, "tunnel_name", ""):
+                continue
             self.add_connection(
                 connection.source_id,
                 connection.target_id,
                 connection.target_port,
                 getattr(connection, "source_port", 0),
             )
+        self.set_port_tunnels(output_tunnels, connections)
 
         graph_rect = self.scene.itemsBoundingRect()
         scene_rect = graph_rect.adjusted(-1600, -1200, 1800, 1200)
@@ -1499,6 +1532,32 @@ class PipelineGraphView(QGraphicsView):
         target.connections.append(item)
         self._connections.append(item)
         item.update_path()
+
+    def set_port_tunnels(self, output_tunnels=(), connections=()) -> None:
+        for proxy in self._proxies.values():
+            for port in proxy.input_ports:
+                port.set_tunnel_label("")
+            for port in proxy.output_ports:
+                port.set_tunnel_label("")
+
+        for tunnel in output_tunnels or ():
+            source = self._proxies.get(getattr(tunnel, "source_id", ""))
+            if source is None:
+                continue
+            port = source.output_port_at(getattr(tunnel, "source_port", 0))
+            if port is not None:
+                port.set_tunnel_label(str(getattr(tunnel, "name", "")))
+
+        for connection in connections or ():
+            tunnel_name = str(getattr(connection, "tunnel_name", "") or "").strip()
+            if not tunnel_name:
+                continue
+            target = self._proxies.get(getattr(connection, "target_id", ""))
+            if target is None:
+                continue
+            port = target.input_port_at(getattr(connection, "target_port", 0))
+            if port is not None:
+                port.set_tunnel_label(tunnel_name)
 
     def remove_node(self, node_id: str) -> None:
         proxy = self._proxies.get(node_id)
@@ -1849,6 +1908,16 @@ class PipelineGraphView(QGraphicsView):
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
         if event.button() == Qt.RightButton:
+            port = self._port_at_view_pos(pos)
+            if port is not None:
+                self.port_context_requested.emit(
+                    port.kind,
+                    port.node_id,
+                    port.port_index,
+                    _global_pos_from_event(event),
+                )
+                event.accept()
+                return
             node_id = self._node_id_at_view_pos(pos)
             if node_id is not None:
                 self._select_node(node_id)
@@ -1948,6 +2017,16 @@ class PipelineGraphView(QGraphicsView):
         for item in self.scene.items(scene_pos):
             if isinstance(item, PortItem) and item.kind == "input":
                 return item
+        return None
+
+    def _port_at_view_pos(self, pos: QPoint) -> PortItem | None:
+        scene_pos = self.mapToScene(pos)
+        for item in self.scene.items(scene_pos):
+            current = item
+            while current is not None:
+                if isinstance(current, PortItem):
+                    return current
+                current = current.parentItem()
         return None
 
     def _connection_at(self, scene_pos: QPointF) -> ConnectionItem | None:

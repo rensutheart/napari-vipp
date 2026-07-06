@@ -44,6 +44,30 @@ run.
 For small or very fast edits, Run all in BG can add overhead. If updates feel
 slower for simple operations, switch it off.
 
+## Named Port Tunnels
+
+Named port tunnels are hidden wires for outputs that are reused many times,
+such as split fluorescence channels, masks, ROIs, or the original reference
+image. They keep dense graphs readable without changing the calculation.
+
+To create one:
+
+1. Right-click an output port.
+2. Choose `Create output tunnel...`.
+3. Give it a short name such as `Ch1`, `DAPI`, `Mask`, or `Reference`.
+
+To use one:
+
+1. Right-click a compatible input port.
+2. Choose `Use tunnel`.
+3. Select the named source.
+
+The graph shows compact tunnel badges on the source output and subscribed input
+ports instead of drawing the long wire. A tunnel still behaves like a real
+connection: it occupies that input slot, replaces any previous connection to
+that slot, respects data-type compatibility, rejects cycles, runs in batch mode,
+and is saved with the workflow.
+
 ## When To Use Which Mode
 
 Recommended default for most users:

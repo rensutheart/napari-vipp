@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -234,6 +235,14 @@ class GraphConnection:
     source_id: str
     target_id: str
     target_port: int = 0
+    source_port: int = 0
+    tunnel_name: str = ""
+
+
+@dataclass(frozen=True)
+class OutputTunnel:
+    name: str
+    source_id: str
     source_port: int = 0
 
 
@@ -3211,6 +3220,7 @@ class PrototypePipeline:
         self.output_states: dict[str, ImageState | TableState | None] = {}
         self.node_outputs: dict[str, list[Any]] = {}
         self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
+        self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
@@ -3224,6 +3234,7 @@ class PrototypePipeline:
         self.output_states = {}
         self.node_outputs = {}
         self.node_output_states = {}
+        self.output_tunnels = {}
         self.completed_node_ids = set()
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
@@ -3253,6 +3264,7 @@ class PrototypePipeline:
         self.output_states = {}
         self.node_outputs = {}
         self.node_output_states = {}
+        self.output_tunnels = {}
         self.completed_node_ids = set()
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
@@ -3264,6 +3276,7 @@ class PrototypePipeline:
         self,
         nodes: Iterable[GraphNode],
         connections: Iterable[GraphConnection],
+        output_tunnels: Iterable[OutputTunnel] | None = None,
     ) -> None:
         """Replace the current graph with deserialized nodes and connections."""
         node_list = list(nodes)
@@ -3276,11 +3289,14 @@ class PrototypePipeline:
         self.output_states = {node_id: None for node_id in self.nodes}
         self.node_outputs = {node_id: [] for node_id in self.nodes}
         self.node_output_states = {node_id: [] for node_id in self.nodes}
+        self.output_tunnels = {}
         self.completed_node_ids = set()
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
         self.node_execution_messages = {node_id: "" for node_id in self.nodes}
+        for tunnel in output_tunnels or ():
+            self._restore_output_tunnel(tunnel)
         for connection in self.connections:
             if (
                 connection.source_id not in valid
@@ -3348,6 +3364,11 @@ class PrototypePipeline:
     def remove_node(self, node_id: str) -> bool:
         if node_id not in self.nodes:
             return False
+        removed_tunnels = {
+            tunnel.name
+            for tunnel in self.output_tunnels.values()
+            if tunnel.source_id == node_id
+        }
         del self.nodes[node_id]
         self.outputs.pop(node_id, None)
         self.output_states.pop(node_id, None)
@@ -3355,10 +3376,13 @@ class PrototypePipeline:
         self.node_output_states.pop(node_id, None)
         self.node_execution_states.pop(node_id, None)
         self.node_execution_messages.pop(node_id, None)
+        for tunnel_name in removed_tunnels:
+            self.output_tunnels.pop(_tunnel_key(tunnel_name), None)
         self.connections = [
             connection
             for connection in self.connections
             if connection.source_id != node_id and connection.target_id != node_id
+            and connection.tunnel_name not in removed_tunnels
         ]
         return True
 
@@ -3368,6 +3392,7 @@ class PrototypePipeline:
         target_id: str,
         target_port: int | None = None,
         source_port: int = 0,
+        tunnel_name: str = "",
     ) -> ConnectionResult:
         if source_id not in self.nodes or target_id not in self.nodes:
             return ConnectionResult(False, "Cannot connect missing nodes.")
@@ -3381,6 +3406,19 @@ class PrototypePipeline:
         if not 0 <= source_port < len(source_ports):
             return ConnectionResult(False, "That node does not have that output.")
         source_output_type = source_ports[source_port].output_type
+        tunnel_name = _clean_tunnel_name(tunnel_name)
+        if tunnel_name:
+            tunnel = self.output_tunnel(tunnel_name)
+            if tunnel is None:
+                return ConnectionResult(False, f"Unknown tunnel '{tunnel_name}'.")
+            if tunnel.source_id != source_id or tunnel.source_port != source_port:
+                return ConnectionResult(
+                    False,
+                    (
+                        f"Tunnel '{tunnel.name}' is not assigned to that output "
+                        "port."
+                    ),
+                )
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
@@ -3442,7 +3480,13 @@ class PrototypePipeline:
                 for existing in self.connections
                 if existing.target_id != target_id
             ]
-        connection = GraphConnection(source_id, target_id, port, source_port)
+        connection = GraphConnection(
+            source_id,
+            target_id,
+            port,
+            source_port,
+            tunnel_name,
+        )
         if connection in self.connections:
             return ConnectionResult(
                 True,
@@ -3452,10 +3496,130 @@ class PrototypePipeline:
         self.connections.append(connection)
         return ConnectionResult(
             True,
-            "Connected nodes.",
+            f"Connected input to tunnel '{tunnel_name}'."
+            if tunnel_name
+            else "Connected nodes.",
             removed,
             connection,
         )
+
+    def add_output_tunnel(
+        self,
+        name: str,
+        source_id: str,
+        source_port: int = 0,
+    ) -> OutputTunnel:
+        tunnel = OutputTunnel(_clean_tunnel_name(name), source_id, int(source_port))
+        self._validate_new_output_tunnel(tunnel)
+        self.output_tunnels[_tunnel_key(tunnel.name)] = tunnel
+        return tunnel
+
+    def rename_output_tunnel(self, old_name: str, new_name: str) -> OutputTunnel:
+        old_key = _tunnel_key(old_name)
+        current = self.output_tunnels.get(old_key)
+        if current is None:
+            raise ValueError(f"Unknown tunnel '{_clean_tunnel_name(old_name)}'.")
+        renamed = OutputTunnel(
+            _clean_tunnel_name(new_name),
+            current.source_id,
+            current.source_port,
+        )
+        self._validate_new_output_tunnel(renamed, allow_replace_key=old_key)
+        self.output_tunnels.pop(old_key, None)
+        self.output_tunnels[_tunnel_key(renamed.name)] = renamed
+        self.connections = [
+            replace(connection, tunnel_name=renamed.name)
+            if connection.tunnel_name == current.name
+            else connection
+            for connection in self.connections
+        ]
+        return renamed
+
+    def remove_output_tunnel(self, name: str) -> tuple[GraphConnection, ...]:
+        key = _tunnel_key(name)
+        tunnel = self.output_tunnels.pop(key, None)
+        if tunnel is None:
+            return ()
+        removed = tuple(
+            connection
+            for connection in self.connections
+            if connection.tunnel_name == tunnel.name
+        )
+        if removed:
+            self.connections = [
+                connection
+                for connection in self.connections
+                if connection not in removed
+            ]
+        return removed
+
+    def connect_to_tunnel(
+        self,
+        name: str,
+        target_id: str,
+        target_port: int | None = None,
+    ) -> ConnectionResult:
+        tunnel = self.output_tunnel(name)
+        if tunnel is None:
+            return ConnectionResult(False, f"Unknown tunnel '{name}'.")
+        return self.connect(
+            tunnel.source_id,
+            target_id,
+            target_port,
+            tunnel.source_port,
+            tunnel.name,
+        )
+
+    def output_tunnel(self, name: str) -> OutputTunnel | None:
+        return self.output_tunnels.get(_tunnel_key(name))
+
+    def output_tunnel_for_port(
+        self,
+        source_id: str,
+        source_port: int = 0,
+    ) -> OutputTunnel | None:
+        for tunnel in self.output_tunnels.values():
+            if tunnel.source_id == source_id and tunnel.source_port == int(source_port):
+                return tunnel
+        return None
+
+    def output_tunnel_list(self) -> tuple[OutputTunnel, ...]:
+        return tuple(sorted(self.output_tunnels.values(), key=lambda item: item.name))
+
+    def tunnel_connection_for_input(
+        self,
+        target_id: str,
+        target_port: int = 0,
+    ) -> GraphConnection | None:
+        for connection in self.connections:
+            if (
+                connection.target_id == target_id
+                and connection.target_port == int(target_port)
+                and connection.tunnel_name
+            ):
+                return connection
+        return None
+
+    def compatible_output_tunnels(
+        self,
+        target_id: str,
+        target_port: int = 0,
+    ) -> tuple[OutputTunnel, ...]:
+        target = self.nodes.get(target_id)
+        if target is None or not target.has_input:
+            return ()
+        target_type = self._input_type_for_port(target, int(target_port))
+        compatible: list[OutputTunnel] = []
+        for tunnel in self.output_tunnel_list():
+            if tunnel.source_id == target_id:
+                continue
+            source_ports = self.output_ports(tunnel.source_id)
+            if not 0 <= tunnel.source_port < len(source_ports):
+                continue
+            source_type = source_ports[tunnel.source_port].output_type
+            if self._types_compatible(source_type, target_type):
+                compatible.append(tunnel)
+        return tuple(compatible)
 
     def disconnect(
         self,
@@ -3513,6 +3677,21 @@ class PrototypePipeline:
             for connection in self.connections
             if connection.source_id == node_id and connection.source_port >= count
         )
+        removed_tunnels = tuple(
+            tunnel
+            for tunnel in self.output_tunnels.values()
+            if tunnel.source_id == node_id and tunnel.source_port >= count
+        )
+        if removed_tunnels:
+            removed_tunnel_names = {tunnel.name for tunnel in removed_tunnels}
+            removed = removed + tuple(
+                connection
+                for connection in self.connections
+                if connection.tunnel_name in removed_tunnel_names
+                and connection not in removed
+            )
+            for tunnel in removed_tunnels:
+                self.output_tunnels.pop(_tunnel_key(tunnel.name), None)
         if removed:
             self.connections = [
                 connection
@@ -3557,6 +3736,59 @@ class PrototypePipeline:
                 f"Cannot restore {source_type} output to {target_type} input: "
                 f"{connection.source_id!r} -> {connection.target_id!r}."
             )
+        if connection.tunnel_name:
+            tunnel = self.output_tunnel(connection.tunnel_name)
+            if tunnel is None:
+                raise ValueError(
+                    f"Connection references unknown tunnel "
+                    f"{connection.tunnel_name!r}."
+                )
+            if (
+                tunnel.source_id != connection.source_id
+                or tunnel.source_port != connection.source_port
+            ):
+                raise ValueError(
+                    f"Connection tunnel {connection.tunnel_name!r} does not match "
+                    "its declared source output."
+                )
+
+    def _restore_output_tunnel(self, tunnel: OutputTunnel) -> None:
+        self._validate_new_output_tunnel(tunnel)
+        self.output_tunnels[_tunnel_key(tunnel.name)] = tunnel
+
+    def _validate_new_output_tunnel(
+        self,
+        tunnel: OutputTunnel,
+        *,
+        allow_replace_key: str | None = None,
+    ) -> None:
+        if not tunnel.name:
+            raise ValueError("Tunnel name cannot be blank.")
+        key = _tunnel_key(tunnel.name)
+        if key in self.output_tunnels and key != allow_replace_key:
+            raise ValueError(f"Tunnel '{tunnel.name}' already exists.")
+        if tunnel.source_id not in self.nodes:
+            raise ValueError(
+                f"Tunnel '{tunnel.name}' references missing source "
+                f"{tunnel.source_id!r}."
+            )
+        source_ports = self.output_ports(tunnel.source_id)
+        if not 0 <= tunnel.source_port < len(source_ports):
+            raise ValueError(
+                f"Tunnel '{tunnel.name}' references output {tunnel.source_port}, "
+                f"but {tunnel.source_id!r} has {len(source_ports)} output port(s)."
+            )
+        for existing_key, existing in self.output_tunnels.items():
+            if existing_key == allow_replace_key:
+                continue
+            if (
+                existing.source_id == tunnel.source_id
+                and existing.source_port == tunnel.source_port
+            ):
+                raise ValueError(
+                    f"Output {tunnel.source_id!r} port {tunnel.source_port} "
+                    f"already has tunnel '{existing.name}'."
+                )
 
     def operation_spec(self, operation_id: str) -> OperationSpec:
         return NODE_LIBRARY_BY_ID[operation_id]
@@ -4509,6 +4741,14 @@ def _clone_node(node: GraphNode) -> GraphNode:
         dict(node.params),
         node.max_inputs,
     )
+
+
+def _clean_tunnel_name(name: str) -> str:
+    return re.sub(r"\s+", " ", str(name or "").strip())
+
+
+def _tunnel_key(name: str) -> str:
+    return _clean_tunnel_name(name).casefold()
 
 
 def _default_combined_channel_axis(input_state: ImageState | None) -> int:

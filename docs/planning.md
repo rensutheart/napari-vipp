@@ -67,6 +67,8 @@ Implemented:
 - cycle rejection and port-type validation;
 - slot-aware multi-input connections;
 - per-port multi-output connections;
+- named port tunnels for reusing channel, mask, ROI, or reference-image outputs
+  without drawing repeated long wires;
 - dynamic Split Channels output counts;
 - connector rerouting while nodes move;
 - right-click node menus for Delete, Inspect Code, Duplicate Node, and
@@ -92,6 +94,8 @@ Implemented:
 - portable version-1 JSON workflow files;
 - stable node ids, operation ids, parameter values, source/target ids, input
   slots, output slots, and canvas positions;
+- named output tunnel definitions and tunnel-marked connections persisted in
+  workflow JSON;
 - strict loading that rejects unknown operations, malformed nodes, duplicate
   ids, invalid positions, dangling connections, and multiply occupied slots;
 - Image Source parameters persisted as ordinary workflow parameters;
@@ -402,11 +406,10 @@ Implemented:
 
 1. Extend cooperative mid-operation cancellation/progress to more expensive
    manual/background feature families where libraries expose useful hooks.
-2. Add graph port tunnels / named wires for reusable channel, mask, ROI, and
-   reference-image sources in dense analysis workflows.
-3. Extend batch execution beyond local sorted-file collections toward HCS-style
+2. Extend batch execution beyond local sorted-file collections toward HCS-style
    plate/well/field traversal, semantic-axis iteration, and per-item provenance
    manifests.
+3. Add graph notes/minimap/navigation polish for very large workflows.
 
 ### Execution Platform TODOs
 
@@ -419,23 +422,8 @@ Implemented:
 
 ### Graph Editor TODOs
 
-- **Port tunnels / named wires**: allow a user to label an output port or input
-  port and reuse that named connection elsewhere on the graph without drawing a
-  long visible edge. This is especially important for colocalization workflows,
-  where the same two split-channel outputs repeatedly feed metrics, overlays,
-  RACC, ROI-restricted variants, and object-level table workflows.
-  - Output tunnel: mark a node output as a named source such as `Ch1` or `Ch2`;
-    downstream tunnel receivers can subscribe to that source as if a normal
-    wire were connected.
-  - Input tunnel: mark a node input as consuming a named source, keeping the
-    port contract and type validation identical to explicit wiring.
-  - The graph should render compact tunnel badges/labels at the participating
-    ports and avoid drawing full-length edges unless the user asks to reveal
-    them.
-  - Workflow JSON and Python export must serialize tunnels as ordinary graph
-    semantics, not UI-only state, so batch execution remains reproducible.
-  - Validation must still reject ambiguous names, incompatible port types,
-    cycles, and missing tunnel sources.
+- tunnel polish: optional reveal/highlight of all subscribers to a named tunnel;
+- tunnel management panel if dense workflows grow beyond right-click menus;
 - phase-2 insert-on-wire chooser for ambiguous input/output ports;
 - Obsidian-like live structure mode with optional animation;
 - optional pinned/anchored nodes for live layout;
@@ -478,10 +466,9 @@ Architecture preference for future graph work:
 
 - OME-Zarr label colors;
 - OME-Zarr label-property tables;
-- richer collection batch execution with stable item identities and output
-  templates;
-- multiple independently bound sources;
 - plate/well/field browsing;
+- per-item provenance manifests;
+- semantic-axis iteration;
 - anonymous HTTP reads.
 
 ### Analysis Node TODOs
@@ -526,18 +513,6 @@ Mitochondria-specific analysis:
   connectedness metrics;
 - specialist morphology inspired by the old MitoMorph system without forcing
   mitochondrial assumptions into generic object-measurement nodes.
-
-### Batch Execution UI TODOs
-
-- implemented: stable batch indices/ids;
-- implemented: output templates for explicit `Batch Output` nodes;
-- implemented: multiple independently bound source collections matched by
-  sorted file order;
-- implemented: dry-run preview of batch item identities, source pairings, and
-  planned output filenames;
-- per-item provenance manifests;
-- HCS/plate/well/field-aware source traversal;
-- explicit iteration over semantic axes.
 
 ### AI-Assisted Pipeline Authoring TODOs
 

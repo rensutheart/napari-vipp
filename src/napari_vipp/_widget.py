@@ -57,6 +57,7 @@ from qtpy.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -285,7 +286,11 @@ class PipelineRunWorker(QRunnable):
         try:
             workflow = deserialize_workflow(deepcopy(self.request.workflow))
             pipeline = PrototypePipeline()
-            pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+            pipeline.restore_graph(
+                workflow["nodes"],
+                workflow["connections"],
+                workflow.get("output_tunnels", ()),
+            )
             self._hydrate_cached_pipeline_outputs(pipeline)
             pipeline.run(
                 self.request.input_data,
@@ -4464,6 +4469,7 @@ class VippWidget(QWidget):
         self.graph_view.node_calculate_requested.connect(self._calculate_node)
         self.graph_view.connection_requested.connect(self._connect_nodes)
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
+        self.graph_view.port_context_requested.connect(self._show_port_context_menu)
         self.graph_view.status_message.connect(self.status_label.setText)
         self.graph_view.zoom_changed.connect(self._sync_graph_zoom_controls)
 
@@ -4605,6 +4611,7 @@ class VippWidget(QWidget):
             self.pipeline.restore_graph(
                 workflow["nodes"],
                 workflow["connections"],
+                workflow.get("output_tunnels", ()),
             )
             valid_node_ids = set(self.pipeline.nodes)
             self._preview_disabled_node_ids = (
@@ -4625,6 +4632,7 @@ class VippWidget(QWidget):
                 self.pipeline.nodes.values(),
                 self.pipeline.connections,
                 workflow["positions"],
+                output_tunnels=self.pipeline.output_tunnel_list(),
                 preserve_view=True,
             )
             self._sync_all_input_ports()
@@ -5059,12 +5067,14 @@ class VippWidget(QWidget):
                 notify=False,
             )
         if result.connection is not None:
-            self.graph_view.add_connection(
-                result.connection.source_id,
-                result.connection.target_id,
-                result.connection.target_port,
-                result.connection.source_port,
-            )
+            if not getattr(result.connection, "tunnel_name", ""):
+                self.graph_view.add_connection(
+                    result.connection.source_id,
+                    result.connection.target_id,
+                    result.connection.target_port,
+                    result.connection.source_port,
+                )
+        self._sync_port_tunnels()
 
     @staticmethod
     def _normalize_connection_key(connection_key) -> tuple[str, str, int, int]:
@@ -5449,6 +5459,7 @@ class VippWidget(QWidget):
         self.graph_view.build_graph(
             self.pipeline.nodes.values(),
             self.pipeline.connections,
+            output_tunnels=self.pipeline.output_tunnel_list(),
         )
         self._sync_pin_ui()
         self._sync_all_input_ports()
@@ -5495,7 +5506,11 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         source = Path(path).expanduser()
         workflow = load_workflow(source)
-        self.pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+        self.pipeline.restore_graph(
+            workflow["nodes"],
+            workflow["connections"],
+            workflow.get("output_tunnels", ()),
+        )
         self._preview_disabled_node_ids.clear()
         self._clip_auto_input_ranges.clear()
         self._rescale_auto_input_cutoffs.clear()
@@ -5505,6 +5520,7 @@ class VippWidget(QWidget):
             self.pipeline.nodes.values(),
             self.pipeline.connections,
             workflow["positions"],
+            output_tunnels=self.pipeline.output_tunnel_list(),
         )
         self._sync_pin_ui()
         self._sync_all_input_ports()
@@ -5576,7 +5592,11 @@ class VippWidget(QWidget):
         workflow = serialize_workflow(self.pipeline, positions)
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
-        batch_pipeline.restore_graph(restored["nodes"], restored["connections"])
+        batch_pipeline.restore_graph(
+            restored["nodes"],
+            restored["connections"],
+            restored.get("output_tunnels", ()),
+        )
         output_node_ids = self._batch_saved_node_ids(batch_pipeline)
         if not output_node_ids:
             raise ValueError("The workflow has no outputs to save.")
@@ -5680,7 +5700,11 @@ class VippWidget(QWidget):
         workflow = serialize_workflow(self.pipeline, self.graph_view.node_positions())
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
-        batch_pipeline.restore_graph(restored["nodes"], restored["connections"])
+        batch_pipeline.restore_graph(
+            restored["nodes"],
+            restored["connections"],
+            restored.get("output_tunnels", ()),
+        )
         output_node_ids = self._batch_saved_node_ids(batch_pipeline)
         if not output_node_ids:
             raise ValueError("The workflow has no outputs to save.")
@@ -6510,6 +6534,197 @@ class VippWidget(QWidget):
         self._source_inspection_cache[cache_key] = (modified, inspection)
         return inspection
 
+    def _show_port_context_menu(
+        self,
+        kind: str,
+        node_id: str,
+        port_index: int,
+        global_pos,
+    ) -> None:
+        if node_id not in self.pipeline.nodes:
+            return
+        if kind == "output":
+            self._show_output_tunnel_menu(node_id, port_index, global_pos)
+        elif kind == "input":
+            self._show_input_tunnel_menu(node_id, port_index, global_pos)
+
+    def _show_output_tunnel_menu(
+        self,
+        node_id: str,
+        port_index: int,
+        global_pos,
+    ) -> None:
+        tunnel = self.pipeline.output_tunnel_for_port(node_id, port_index)
+        menu = QMenu(self)
+        if tunnel is None:
+            create_action = menu.addAction("Create output tunnel...")
+            action = menu.exec(global_pos)
+            if action == create_action:
+                self._create_output_tunnel(node_id, port_index)
+            return
+
+        rename_action = menu.addAction(f"Rename tunnel '{tunnel.name}'...")
+        remove_action = menu.addAction(f"Remove tunnel '{tunnel.name}'")
+        action = menu.exec(global_pos)
+        if action == rename_action:
+            self._rename_output_tunnel(tunnel.name)
+        elif action == remove_action:
+            self._remove_output_tunnel(tunnel.name)
+
+    def _show_input_tunnel_menu(
+        self,
+        node_id: str,
+        port_index: int,
+        global_pos,
+    ) -> None:
+        current = self.pipeline.tunnel_connection_for_input(node_id, port_index)
+        compatible = self.pipeline.compatible_output_tunnels(node_id, port_index)
+        menu = QMenu(self)
+        tunnel_actions = {}
+        if compatible:
+            use_menu = menu.addMenu("Use tunnel")
+            for tunnel in compatible:
+                action = use_menu.addAction(tunnel.name)
+                action.setCheckable(True)
+                action.setChecked(
+                    current is not None and current.tunnel_name == tunnel.name
+                )
+                tunnel_actions[action] = tunnel.name
+        else:
+            action = menu.addAction("No compatible output tunnels")
+            action.setEnabled(False)
+
+        clear_action = None
+        if current is not None:
+            menu.addSeparator()
+            clear_action = menu.addAction(f"Clear tunnel '{current.tunnel_name}'")
+
+        action = menu.exec(global_pos)
+        if action in tunnel_actions:
+            self._connect_input_to_tunnel(
+                tunnel_actions[action],
+                node_id,
+                port_index,
+            )
+        elif clear_action is not None and action == clear_action:
+            self._clear_input_tunnel(node_id, port_index)
+
+    def _create_output_tunnel(self, node_id: str, port_index: int) -> None:
+        default = self._suggest_tunnel_name(node_id, port_index)
+        name = self._prompt_tunnel_name("Create Output Tunnel", default)
+        if not name:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        try:
+            tunnel = self.pipeline.add_output_tunnel(name, node_id, port_index)
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+        self._sync_port_tunnels()
+        self._push_undo_if_changed(before)
+        self.status_label.setText(
+            f"Created tunnel '{tunnel.name}' from "
+            f"'{self._node_title(node_id)}' output {port_index + 1}."
+        )
+
+    def _rename_output_tunnel(self, old_name: str) -> None:
+        name = self._prompt_tunnel_name("Rename Output Tunnel", old_name)
+        if not name or name == old_name:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        try:
+            tunnel = self.pipeline.rename_output_tunnel(old_name, name)
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return
+        self._sync_port_tunnels()
+        self._push_undo_if_changed(before)
+        self.status_label.setText(f"Renamed tunnel '{old_name}' to '{tunnel.name}'.")
+
+    def _remove_output_tunnel(self, name: str) -> None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        removed = self.pipeline.remove_output_tunnel(name)
+        self._sync_port_tunnels()
+        if removed:
+            self._invalidate_pipeline_cache()
+            self.run_pipeline()
+        self._push_undo_if_changed(before)
+        self.status_label.setText(f"Removed tunnel '{name}'.")
+
+    def _connect_input_to_tunnel(
+        self,
+        name: str,
+        node_id: str,
+        port_index: int,
+    ) -> None:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        result = self.pipeline.connect_to_tunnel(name, node_id, port_index)
+        if not result.success:
+            self.status_label.setText(result.message)
+            return
+        self._apply_connection_result_to_graph(result)
+        self._invalidate_pipeline_cache()
+        self.run_pipeline()
+        self._push_undo_if_changed(before)
+        self.status_label.setText(result.message)
+
+    def _clear_input_tunnel(self, node_id: str, port_index: int) -> None:
+        connection = self.pipeline.tunnel_connection_for_input(node_id, port_index)
+        if connection is None:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        if self.pipeline.disconnect(
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+        ):
+            self._sync_port_tunnels()
+            self._invalidate_pipeline_cache()
+            self.run_pipeline()
+            self._push_undo_if_changed(before)
+            self.status_label.setText(
+                f"Cleared tunnel '{connection.tunnel_name}' from "
+                f"'{self._node_title(node_id)}' input {port_index + 1}."
+            )
+
+    def _prompt_tunnel_name(self, title: str, default: str) -> str:
+        text, ok = QInputDialog.getText(
+            self,
+            title,
+            "Tunnel name:",
+            QLineEdit.Normal,
+            default,
+        )
+        return str(text or "").strip() if ok else ""
+
+    def _suggest_tunnel_name(self, node_id: str, port_index: int) -> str:
+        node = self.pipeline.nodes[node_id]
+        ports = self.pipeline.output_ports(node_id)
+        label = ""
+        if 0 <= port_index < len(ports):
+            label = str(ports[port_index].label or "").strip()
+        base = label if label and label.lower() != "out" else node.title
+        existing = {
+            tunnel.name.casefold() for tunnel in self.pipeline.output_tunnel_list()
+        }
+        candidate = base
+        suffix = 2
+        while candidate.casefold() in existing:
+            candidate = f"{base} {suffix}"
+            suffix += 1
+        return candidate
+
+    def _sync_port_tunnels(self) -> None:
+        self.graph_view.set_port_tunnels(
+            self.pipeline.output_tunnel_list(),
+            self.pipeline.connections,
+        )
+
     def _connect_nodes(
         self,
         source_id: str,
@@ -6523,20 +6738,7 @@ class VippWidget(QWidget):
         if not result.success:
             self.status_label.setText(result.message)
             return
-        for connection in result.removed:
-            self.graph_view.remove_connection(
-                connection.source_id,
-                connection.target_id,
-                target_port=connection.target_port,
-                notify=False,
-            )
-        if result.connection is not None:
-            self.graph_view.add_connection(
-                result.connection.source_id,
-                result.connection.target_id,
-                result.connection.target_port,
-                result.connection.source_port,
-            )
+        self._apply_connection_result_to_graph(result)
         self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -6551,6 +6753,7 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         if self.pipeline.disconnect(source_id, target_id, target_port):
+            self._sync_port_tunnels()
             self._invalidate_pipeline_cache()
             self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -6569,6 +6772,7 @@ class VippWidget(QWidget):
         if not self.pipeline.remove_node(node_id):
             return
         self.graph_view.remove_node(node_id)
+        self._sync_port_tunnels()
         self._preview_disabled_node_ids.discard(node_id)
         self._clip_auto_input_ranges.pop(node_id, None)
         self._rescale_auto_input_cutoffs.pop(node_id, None)
@@ -8057,6 +8261,7 @@ class VippWidget(QWidget):
             graph_colors,
             [node.input_type or "array"] * len(colors),
         )
+        self._sync_port_tunnels()
 
     def _sync_node_input_ports(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
@@ -8073,6 +8278,7 @@ class VippWidget(QWidget):
             [None for _port in input_ports],
             [port.input_type for port in input_ports],
         )
+        self._sync_port_tunnels()
 
     def _sync_node_output_ports(self, node_id: str) -> None:
         spec = self.pipeline.operation_spec(self.pipeline.nodes[node_id].operation_id)
@@ -8091,6 +8297,7 @@ class VippWidget(QWidget):
             colors,
             data_types,
         )
+        self._sync_port_tunnels()
 
     @staticmethod
     def _output_port_color(index: int, port) -> str | None:
@@ -8109,10 +8316,12 @@ class VippWidget(QWidget):
     def _sync_all_output_ports(self) -> None:
         for node_id in self.pipeline.nodes:
             self._sync_node_output_ports(node_id)
+        self._sync_port_tunnels()
 
     def _sync_all_input_ports(self) -> None:
         for node_id in self.pipeline.nodes:
             self._sync_node_input_ports(node_id)
+        self._sync_port_tunnels()
 
     def _refresh_dynamic_output_ports(self) -> None:
         """Resync graph ports for nodes whose output count varies per run.

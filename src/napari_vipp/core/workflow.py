@@ -17,6 +17,7 @@ from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
     GraphConnection,
     GraphNode,
+    OutputTunnel,
     PrototypePipeline,
 )
 
@@ -42,8 +43,21 @@ def serialize_workflow(
                 "target": connection.target_id,
                 "target_port": connection.target_port,
                 "source_port": connection.source_port,
+                **(
+                    {"tunnel": connection.tunnel_name}
+                    if connection.tunnel_name
+                    else {}
+                ),
             }
             for connection in pipeline.connections
+        ],
+        "tunnels": [
+            {
+                "name": tunnel.name,
+                "source": tunnel.source_id,
+                "source_port": tunnel.source_port,
+            }
+            for tunnel in pipeline.output_tunnel_list()
         ],
         "positions": {
             node_id: [float(x), float(y)] for node_id, (x, y) in positions.items()
@@ -80,6 +94,38 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         raise ValueError("Workflow contains duplicate node ids.")
 
     node_id_set = set(node_ids)
+    raw_tunnels = data.get("tunnels", [])
+    if not isinstance(raw_tunnels, list):
+        raise ValueError("Workflow tunnels must be a list.")
+    output_tunnels: list[OutputTunnel] = []
+    tunnel_names: set[str] = set()
+    tunnel_sources: dict[str, tuple[str, int]] = {}
+    occupied_outputs: set[tuple[str, int]] = set()
+    for index, raw in enumerate(raw_tunnels):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Tunnel {index} must be an object.")
+        name = _required_text(raw, "name", f"tunnel {index}")
+        key = _tunnel_key(name)
+        if key in tunnel_names:
+            raise ValueError(f"Workflow contains duplicate tunnel name {name!r}.")
+        source = _required_text(raw, "source", f"tunnel {index}")
+        if source not in node_id_set:
+            raise ValueError(
+                f"Tunnel {index} references missing source node {source!r}."
+            )
+        source_port = _required_non_negative_int(
+            raw, "source_port", f"tunnel {index}"
+        )
+        source_slot = (source, source_port)
+        if source_slot in occupied_outputs:
+            raise ValueError(
+                f"Multiple tunnels are assigned to {source!r} output {source_port}."
+            )
+        tunnel_names.add(key)
+        occupied_outputs.add(source_slot)
+        tunnel_sources[key] = source_slot
+        output_tunnels.append(OutputTunnel(name.strip(), source, source_port))
+
     raw_connections = data.get("connections")
     if not isinstance(raw_connections, list):
         raise ValueError("Workflow connections must be a list.")
@@ -101,13 +147,29 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         source_port = _required_non_negative_int(
             raw, "source_port", f"connection {index}"
         )
+        tunnel_name = ""
+        if "tunnel" in raw:
+            tunnel_name = _required_text(raw, "tunnel", f"connection {index}")
+            tunnel_key = _tunnel_key(tunnel_name)
+            if tunnel_key not in tunnel_sources:
+                raise ValueError(
+                    f"Connection {index} references unknown tunnel "
+                    f"{tunnel_name!r}."
+                )
+            if tunnel_sources[tunnel_key] != (source, source_port):
+                raise ValueError(
+                    f"Connection {index} tunnel {tunnel_name!r} does not match "
+                    "its declared source output."
+                )
         target_slot = (target, target_port)
         if target_slot in occupied_inputs:
             raise ValueError(
                 f"Multiple connections target {target!r} input {target_port}."
             )
         occupied_inputs.add(target_slot)
-        connections.append(GraphConnection(source, target, target_port, source_port))
+        connections.append(
+            GraphConnection(source, target, target_port, source_port, tunnel_name)
+        )
 
     positions: dict[str, Position] = {}
     raw_positions = data.get("positions")
@@ -127,7 +189,12 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
             raise ValueError(f"Position for {node_id!r} must contain numeric x and y.")
         positions[node_id] = (float(value[0]), float(value[1]))
 
-    return {"nodes": nodes, "connections": connections, "positions": positions}
+    return {
+        "nodes": nodes,
+        "connections": connections,
+        "positions": positions,
+        "output_tunnels": output_tunnels,
+    }
 
 
 def save_workflow(
@@ -205,3 +272,7 @@ def _required_non_negative_int(
     if value < 0:
         raise ValueError(f"{context.capitalize()} {key!r} must be non-negative.")
     return value
+
+
+def _tunnel_key(name: str) -> str:
+    return str(name or "").strip().casefold()
