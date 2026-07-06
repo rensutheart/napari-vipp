@@ -3898,6 +3898,10 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     assert (
         widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == "Raw"
     )
+    output_badge = widget.graph_view._proxies["input"].output_port_at(0)._tunnel_badge
+    assert output_badge.kind == "output"
+    assert output_badge._label == "Raw"
+    assert output_badge.pos().x() > 0
 
     widget._connect_input_to_tunnel("Raw", "gaussian", 0)
 
@@ -3912,6 +3916,10 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     assert (
         widget.graph_view._proxies["gaussian"].input_port_at(0)._tunnel_label == "Raw"
     )
+    input_badge = widget.graph_view._proxies["gaussian"].input_port_at(0)._tunnel_badge
+    assert input_badge.kind == "input"
+    assert input_badge._label == "Raw"
+    assert input_badge.pos().x() < 0
 
     widget.undo()
 

@@ -8,6 +8,8 @@ import numpy as np
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from qtpy.QtGui import (
     QColor,
+    QFont,
+    QFontMetricsF,
     QImage,
     QPainter,
     QPainterPath,
@@ -23,7 +25,6 @@ from qtpy.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsProxyWidget,
     QGraphicsScene,
-    QGraphicsSimpleTextItem,
     QGraphicsView,
     QLabel,
     QMenu,
@@ -409,6 +410,117 @@ class NodeCard(QFrame):
         self.processing_badge.raise_()
 
 
+class TunnelBadgeItem(QGraphicsItem):
+    """Compact schematic-style badge for named graph tunnels."""
+
+    _connector_length = 14.0
+    _tip_width = 12.0
+    _minimum_body_width = 42.0
+    _padding_x = 9.0
+    _height = 22.0
+    _margin = 1.0
+
+    def __init__(self, kind: str, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self._label = ""
+        self._font = QFont()
+        self._font.setPointSizeF(8.5)
+        self.setZValue(36)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.hide()
+
+    def set_label(self, label: str) -> None:
+        cleaned = str(label or "").strip()
+        if cleaned == self._label:
+            return
+        self.prepareGeometryChange()
+        self._label = cleaned
+        self.update()
+
+    def boundingRect(self) -> QRectF:  # noqa: N802
+        if not self._label:
+            return QRectF()
+        width = self._connector_length + self._tag_width() + self._margin * 2.0
+        height = self._tag_height() + self._margin * 2.0
+        return QRectF(0.0, 0.0, width, height)
+
+    def paint(self, painter, option, widget=None):  # noqa: N802
+        if not self._label:
+            return
+        rect = self.boundingRect()
+        tag_width = self._tag_width()
+        tag_height = self._tag_height()
+        tag_y = rect.center().y() - tag_height / 2.0
+        wire_y = rect.center().y()
+
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setFont(self._font)
+        painter.setPen(QPen(QColor("#93c5fd"), 1.3))
+        painter.setBrush(QColor(15, 23, 42, 210))
+
+        if self.kind == "output":
+            wire_start = self._margin
+            tag_x = self._margin + self._connector_length
+            painter.drawLine(QPointF(wire_start, wire_y), QPointF(tag_x, wire_y))
+            self._draw_net_port(painter, tag_x, tag_y, tag_width, tag_height)
+            self._draw_label(painter, tag_x, tag_y, tag_width, tag_height)
+            return
+
+        tag_x = self._margin
+        wire_start = tag_x + tag_width
+        wire_end = wire_start + self._connector_length
+        self._draw_net_port(painter, tag_x, tag_y, tag_width, tag_height)
+        painter.drawLine(QPointF(wire_start, wire_y), QPointF(wire_end, wire_y))
+        self._draw_label(painter, tag_x, tag_y, tag_width, tag_height)
+
+    def _tag_width(self) -> float:
+        metrics = QFontMetricsF(self._font)
+        body_width = max(
+            self._minimum_body_width,
+            metrics.horizontalAdvance(self._label) + self._padding_x * 2.0,
+        )
+        return body_width + self._tip_width
+
+    def _tag_height(self) -> float:
+        metrics = QFontMetricsF(self._font)
+        return max(self._height, metrics.height() + 5.0)
+
+    def _draw_net_port(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        body_width = width - self._tip_width
+        mid_y = y + height / 2.0
+        path = QPainterPath()
+        path.moveTo(x, y)
+        path.lineTo(x + body_width, y)
+        path.lineTo(x + width, mid_y)
+        path.lineTo(x + body_width, y + height)
+        path.lineTo(x, y + height)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+    def _draw_label(
+        self,
+        painter: QPainter,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        body_width = width - self._tip_width
+        text_rect = QRectF(x + 1.0, y, body_width - 2.0, height)
+        painter.setPen(QColor("#dbeafe"))
+        painter.drawText(text_rect, Qt.AlignCenter, self._label)
+        painter.setPen(QPen(QColor("#93c5fd"), 1.3))
+
+
 class PortItem(QGraphicsEllipseItem):
     """Clickable node port used for graph connections."""
 
@@ -443,11 +555,7 @@ class PortItem(QGraphicsEllipseItem):
         self._hovered = False
         self._active = False
         self._drop_state: str | None = None
-        self._tunnel_badge = QGraphicsSimpleTextItem(self)
-        self._tunnel_badge.setZValue(36)
-        self._tunnel_badge.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        self._tunnel_badge.setBrush(QColor("#bfdbfe"))
-        self._tunnel_badge.hide()
+        self._tunnel_badge = TunnelBadgeItem(self.kind, self)
         self._refresh_style()
 
     def set_data_type(self, data_type: str) -> None:
@@ -472,10 +580,11 @@ class PortItem(QGraphicsEllipseItem):
     def set_tunnel_label(self, label: str) -> None:
         self._tunnel_label = str(label or "").strip()
         if not self._tunnel_label:
+            self._tunnel_badge.set_label("")
             self._tunnel_badge.hide()
             self._update_tooltip()
             return
-        self._tunnel_badge.setText(self._tunnel_label)
+        self._tunnel_badge.set_label(self._tunnel_label)
         self._position_tunnel_badge()
         self._tunnel_badge.show()
         self._update_tooltip()
@@ -563,6 +672,8 @@ class PortItem(QGraphicsEllipseItem):
         self.setRect(-radius, -radius, radius * 2, radius * 2)
         self.setBrush(QColor(color))
         self.setPen(QPen(QColor(pen_color), pen_width))
+        if self._tunnel_label:
+            self._position_tunnel_badge(radius)
 
     def _update_tooltip(self) -> None:
         name = self.kind
@@ -575,13 +686,15 @@ class PortItem(QGraphicsEllipseItem):
         tunnel = f"\nTunnel: {self._tunnel_label}" if self._tunnel_label else ""
         self.setToolTip(f"{name} ({self.data_type}){tunnel}")
 
-    def _position_tunnel_badge(self) -> None:
+    def _position_tunnel_badge(self, port_radius: float | None = None) -> None:
         rect = self._tunnel_badge.boundingRect()
+        if port_radius is None:
+            port_radius = max(self.rect().width(), self.rect().height()) / 2.0
         y = -rect.height() / 2.0
         if self.kind == "output":
-            x = self.target_radius + 5.0
+            x = port_radius + 1.0
         else:
-            x = -rect.width() - self.target_radius - 5.0
+            x = -rect.width() - port_radius - 1.0
         self._tunnel_badge.setPos(x, y)
 
 
