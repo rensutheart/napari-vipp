@@ -30,8 +30,8 @@ Other workflows can be loaded from the VIPP toolbar with `Load workflow...`.
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
 | `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
 | `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
-| `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path: split channels, ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
-| `synthetic-object-colocalization-association.json` | `VIPP synthetic colocalization` | Object-aware colocalization and association review path: thresholded channel labels, object colocalization rows, label overlap, nearest-object distances, event localization, and merged morphology/colocalization tables. |
+| `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
+| `synthetic-object-colocalization-association.json` | `VIPP synthetic colocalization` | Object-aware colocalization and association review path using named red/green channel tunnels: thresholded channel labels, object colocalization rows, label overlap, nearest-object distances, event localization, and merged morphology/colocalization tables. |
 
 ## Validation Expectations
 
@@ -61,4 +61,5 @@ The current measurement/morphology phase is represented by:
 Together these cover object morphology, intensity per object, table merging,
 metadata annotation, grouped summaries, skeleton/network measurements, 3D mesh
 morphology, first-pass pixel colocalization/RACC outputs with ROI-masked
-variants, and object-aware colocalization/association tables.
+variants, named channel tunnels, and object-aware colocalization/association
+tables.

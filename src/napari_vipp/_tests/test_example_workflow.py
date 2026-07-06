@@ -60,10 +60,18 @@ OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW = (
 )
 
 
+def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
+    pipeline.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow.get("output_tunnels", ()),
+    )
+
+
 def test_otsu_red_channel_label_workflow_loads_and_runs():
     workflow = load_workflow(EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     split_ports = pipeline.output_ports("split_channels_1")
     assert [port.output_type for port in split_ports] == ["mask", "mask", "mask"]
@@ -101,7 +109,7 @@ def test_otsu_red_channel_label_workflow_loads_and_runs():
 def test_red_channel_intensity_measurement_workflow_loads_and_runs():
     workflow = load_workflow(INTENSITY_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     input_ports = pipeline.input_ports("measure_objects_intensity_1")
     assert [port.name for port in input_ports] == ["labels", "intensity"]
@@ -135,7 +143,7 @@ def test_red_channel_intensity_measurement_workflow_loads_and_runs():
 def test_red_channel_merged_measurement_table_workflow_loads_and_runs():
     workflow = load_workflow(MERGED_TABLE_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     input_ports = pipeline.input_ports("merge_tables_1")
     assert len(input_ports) == 2
@@ -172,7 +180,7 @@ def test_red_channel_merged_measurement_table_workflow_loads_and_runs():
 def test_synthetic_measurement_summary_workflow_loads_and_runs():
     workflow = load_workflow(SUMMARY_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -211,7 +219,7 @@ def test_synthetic_measurement_summary_workflow_loads_and_runs():
 def test_synthetic_derived_object_morphology_workflow_loads_and_runs():
     workflow = load_workflow(DERIVED_MORPHOLOGY_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -256,7 +264,7 @@ def test_synthetic_derived_object_morphology_workflow_loads_and_runs():
 def test_synthetic_3d_mesh_morphology_workflow_loads_and_runs():
     workflow = load_workflow(MESH_MORPHOLOGY_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -314,7 +322,7 @@ def test_synthetic_3d_mesh_morphology_workflow_loads_and_runs():
 def test_synthetic_skeleton_qc_workflow_loads_and_runs():
     workflow = load_workflow(SKELETON_QC_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     keypoint_ports = pipeline.output_ports("skeleton_keypoints_1")
     assert [port.label for port in keypoint_ports] == [
@@ -369,7 +377,7 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
 def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
     workflow = load_workflow(ADVANCED_SKELETON_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
 
     graph_table_ports = pipeline.output_ports("skeleton_graph_tables_1")
     assert [port.label for port in graph_table_ports] == [
@@ -438,7 +446,19 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
 def test_synthetic_colocalization_workflow_loads_and_runs():
     workflow = load_workflow(COLOCALIZATION_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
+
+    red_tunnel = pipeline.output_tunnel("Red channel")
+    green_tunnel = pipeline.output_tunnel("Green channel")
+    assert red_tunnel is not None
+    assert green_tunnel is not None
+    assert (red_tunnel.source_id, red_tunnel.source_port) == ("split_channels_1", 0)
+    assert (green_tunnel.source_id, green_tunnel.source_port) == (
+        "split_channels_1",
+        1,
+    )
+    assert pipeline.tunnel_connection_for_input("colocalization_metrics_1", 0)
+    assert pipeline.tunnel_connection_for_input("colocalization_metrics_1", 1)
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -504,7 +524,12 @@ def test_synthetic_colocalization_workflow_loads_and_runs():
 def test_synthetic_object_colocalization_workflow_loads_and_runs():
     workflow = load_workflow(OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
-    pipeline.restore_graph(workflow["nodes"], workflow["connections"])
+    _restore_workflow(pipeline, workflow)
+
+    assert pipeline.output_tunnel("Red channel") is not None
+    assert pipeline.output_tunnel("Green channel") is not None
+    assert pipeline.tunnel_connection_for_input("object_colocalization_metrics_1", 1)
+    assert pipeline.tunnel_connection_for_input("object_colocalization_metrics_1", 2)
 
     data, layer_kwargs, _layer_type = next(
         sample

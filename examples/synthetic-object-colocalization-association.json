@@ -117,13 +117,15 @@
       "source": "split_channels_1",
       "target": "binary_threshold_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "binary_threshold_2",
       "target_port": 0,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "binary_threshold_1",
@@ -153,13 +155,15 @@
       "source": "split_channels_1",
       "target": "object_colocalization_metrics_1",
       "target_port": 1,
-      "source_port": 0
+      "source_port": 0,
+      "tunnel": "Red channel"
     },
     {
       "source": "split_channels_1",
       "target": "object_colocalization_metrics_1",
       "target_port": 2,
-      "source_port": 1
+      "source_port": 1,
+      "tunnel": "Green channel"
     },
     {
       "source": "label_connected_components_1",
@@ -208,6 +212,18 @@
       "target": "merge_tables_1",
       "target_port": 1,
       "source_port": 0
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Red channel",
+      "source": "split_channels_1",
+      "source_port": 0
+    },
+    {
+      "name": "Green channel",
+      "source": "split_channels_1",
+      "source_port": 1
     }
   ],
   "positions": {
