@@ -222,6 +222,26 @@ class TunnelSummary:
 
 
 @dataclass(frozen=True)
+class GraphNoteState:
+    id: str
+    text: str
+    position: tuple[float, float]
+    width: float = 240.0
+    attached_node: str = ""
+
+    def to_workflow_dict(self) -> dict:
+        result = {
+            "id": self.id,
+            "text": self.text,
+            "position": [float(self.position[0]), float(self.position[1])],
+            "width": float(self.width),
+        }
+        if self.attached_node:
+            result["attached_node"] = self.attached_node
+        return result
+
+
+@dataclass(frozen=True)
 class BatchSourceBinding:
     node_id: str
     title: str
@@ -3752,6 +3772,7 @@ class VippWidget(QWidget):
         self._toolbar_settings_widgets: list[QWidget] = []
         self._syncing_view_dims_bar = False
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
+        self._graph_notes: dict[str, GraphNoteState] = {}
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -3795,6 +3816,8 @@ class VippWidget(QWidget):
         self.tunnel_manager_button.setToolTip(
             "Manage named graph tunnels and reveal their subscribers.",
         )
+        self.add_note_button = QPushButton("Add note")
+        self.add_note_button.setToolTip("Add a movable note to the graph canvas.")
         self.auto_structure_button = QPushButton("Auto structure graph")
         self.auto_structure_button.setToolTip(
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
@@ -4244,6 +4267,7 @@ class VippWidget(QWidget):
         input_row.addWidget(self.calculate_all_button)
         input_row.addWidget(self.auto_structure_button)
         input_row.addWidget(self.tunnel_manager_button)
+        input_row.addWidget(self.add_note_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
         compact_separator = _toolbar_separator(6)
@@ -4589,6 +4613,9 @@ class VippWidget(QWidget):
         self.batch_button.clicked.connect(self._batch_collection_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
+        self.add_note_button.clicked.connect(
+            lambda _checked=False: self._add_graph_note()
+        )
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
@@ -4663,6 +4690,9 @@ class VippWidget(QWidget):
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.port_context_requested.connect(self._show_port_context_menu)
         self.graph_view.tunnel_selected.connect(self._on_graph_tunnel_selected)
+        self.graph_view.note_moved.connect(self._on_graph_note_moved)
+        self.graph_view.note_edit_requested.connect(self._edit_graph_note)
+        self.graph_view.note_delete_requested.connect(self._delete_graph_note)
         self.graph_view.status_message.connect(self.status_label.setText)
         self.graph_view.zoom_changed.connect(self._sync_graph_zoom_controls)
 
@@ -4742,6 +4772,7 @@ class VippWidget(QWidget):
     def _current_history_snapshot(
         self,
         positions: dict[str, tuple[float, float]] | None = None,
+        notes_override: list[dict] | None = None,
     ) -> WorkflowHistorySnapshot:
         if positions is None:
             positions = self.graph_view.node_positions()
@@ -4752,7 +4783,15 @@ class VippWidget(QWidget):
             else None
         )
         return WorkflowHistorySnapshot(
-            workflow=deepcopy(serialize_workflow(self.pipeline, positions)),
+            workflow=deepcopy(
+                serialize_workflow(
+                    self.pipeline,
+                    positions,
+                    self._graph_note_documents()
+                    if notes_override is None
+                    else notes_override,
+                )
+            ),
             selected_node_id=(
                 self._selected_node_id
                 if self._selected_node_id in valid_node_ids
@@ -4806,6 +4845,7 @@ class VippWidget(QWidget):
                 workflow["connections"],
                 workflow.get("output_tunnels", ()),
             )
+            self._restore_graph_notes(workflow.get("notes", ()))
             valid_node_ids = set(self.pipeline.nodes)
             self._preview_disabled_node_ids = (
                 set(snapshot.preview_disabled_node_ids) & valid_node_ids
@@ -4826,6 +4866,7 @@ class VippWidget(QWidget):
                 self.pipeline.connections,
                 workflow["positions"],
                 output_tunnels=self.pipeline.output_tunnel_list(),
+                notes=self._graph_note_documents(use_view_positions=False),
                 preserve_view=True,
             )
             self._sync_all_input_ports()
@@ -5640,6 +5681,7 @@ class VippWidget(QWidget):
         self._clip_auto_input_ranges.clear()
         self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
+        self._graph_notes.clear()
         self._clear_active_pin(status=False)
         self._build_graph_from_pipeline()
         self._select_node("input")
@@ -5653,6 +5695,7 @@ class VippWidget(QWidget):
             self.pipeline.nodes.values(),
             self.pipeline.connections,
             output_tunnels=self.pipeline.output_tunnel_list(),
+            notes=self._graph_note_documents(use_view_positions=False),
         )
         self._sync_pin_ui()
         self._sync_all_input_ports()
@@ -5671,7 +5714,12 @@ class VippWidget(QWidget):
             path += ".json"
         try:
             positions = self.graph_view.node_positions()
-            saved = save_workflow(path, self.pipeline, positions)
+            saved = save_workflow(
+                path,
+                self.pipeline,
+                positions,
+                self._graph_note_documents(),
+            )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
             return
@@ -5708,12 +5756,14 @@ class VippWidget(QWidget):
         self._clip_auto_input_ranges.clear()
         self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
+        self._restore_graph_notes(workflow.get("notes", ()))
         self._clear_active_pin(status=False)
         self.graph_view.build_graph(
             self.pipeline.nodes.values(),
             self.pipeline.connections,
             workflow["positions"],
             output_tunnels=self.pipeline.output_tunnel_list(),
+            notes=self._graph_note_documents(use_view_positions=False),
         )
         self._sync_pin_ui()
         self._sync_all_input_ports()
@@ -5782,7 +5832,11 @@ class VippWidget(QWidget):
 
         output_path.mkdir(parents=True, exist_ok=True)
         positions = self.graph_view.node_positions()
-        workflow = serialize_workflow(self.pipeline, positions)
+        workflow = serialize_workflow(
+            self.pipeline,
+            positions,
+            self._graph_note_documents(),
+        )
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
         batch_pipeline.restore_graph(
@@ -5808,6 +5862,7 @@ class VippWidget(QWidget):
                     output_path / "vipp_batch_workflow.json",
                     self.pipeline,
                     positions,
+                    self._graph_note_documents(),
                 )
             )
         if save_python_script:
@@ -5890,7 +5945,11 @@ class VippWidget(QWidget):
         output_path = Path(output_text).expanduser()
         if not output_text:
             raise ValueError("Batch output folder cannot be blank.")
-        workflow = serialize_workflow(self.pipeline, self.graph_view.node_positions())
+        workflow = serialize_workflow(
+            self.pipeline,
+            self.graph_view.node_positions(),
+            self._graph_note_documents(),
+        )
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
         batch_pipeline.restore_graph(
@@ -6726,6 +6785,131 @@ class VippWidget(QWidget):
         inspection = inspect_image_source(source_path)
         self._source_inspection_cache[cache_key] = (modified, inspection)
         return inspection
+
+    def _graph_note_documents(self, *, use_view_positions: bool = True) -> list[dict]:
+        positions = self.graph_view.note_positions() if use_view_positions else {}
+        documents: list[dict] = []
+        for note in self._graph_notes.values():
+            position = positions.get(note.id, note.position)
+            documents.append(replace(note, position=position).to_workflow_dict())
+        return documents
+
+    def _restore_graph_notes(self, notes) -> None:
+        restored: dict[str, GraphNoteState] = {}
+        for raw in notes or ():
+            note_id = str(raw.get("id", "")).strip()
+            if not note_id:
+                continue
+            position = tuple(raw.get("position", (0.0, 0.0)))
+            restored[note_id] = GraphNoteState(
+                note_id,
+                str(raw.get("text", "")),
+                (float(position[0]), float(position[1])),
+                float(raw.get("width", 240.0)),
+                str(raw.get("attached_node", "") or ""),
+            )
+        self._graph_notes = restored
+
+    def _next_graph_note_id(self) -> str:
+        index = 1
+        while f"note_{index}" in self._graph_notes:
+            index += 1
+        return f"note_{index}"
+
+    def _add_graph_note(
+        self,
+        text: str = "Note",
+        position: QPointF | None = None,
+        *,
+        width: float = 240.0,
+    ) -> str:
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        note_id = self._next_graph_note_id()
+        point = position or self.graph_view.suggest_note_position()
+        note = GraphNoteState(
+            note_id,
+            str(text),
+            (float(point.x()), float(point.y())),
+            float(width),
+        )
+        self._graph_notes[note_id] = note
+        self.graph_view.add_note(note.id, note.text, point, width=note.width)
+        self.graph_view.select_note(note_id)
+        self._push_undo_if_changed(before)
+        self.status_label.setText("Added graph note.")
+        return note_id
+
+    def _edit_graph_note(self, note_id: str) -> None:
+        note = self._graph_notes.get(note_id)
+        if note is None:
+            return
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            "Edit Graph Note",
+            "Note:",
+            note.text,
+        )
+        if ok:
+            self._set_graph_note_text(note_id, str(text))
+
+    def _set_graph_note_text(self, note_id: str, text: str) -> None:
+        note = self._graph_notes.get(note_id)
+        if note is None or note.text == text:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self._graph_notes[note_id] = replace(note, text=str(text))
+        self.graph_view.set_note_text(note_id, text)
+        self._push_undo_if_changed(before)
+        self.status_label.setText("Updated graph note.")
+
+    def _delete_graph_note(self, note_id: str) -> None:
+        if note_id not in self._graph_notes:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self._graph_notes.pop(note_id, None)
+        self.graph_view.remove_note(note_id)
+        self._push_undo_if_changed(before)
+        self.status_label.setText("Deleted graph note.")
+
+    def _on_graph_note_moved(
+        self,
+        note_id: str,
+        old_pos: QPointF,
+        new_pos: QPointF,
+    ) -> None:
+        note = self._graph_notes.get(note_id)
+        if note is None:
+            return
+        new_position = (float(new_pos.x()), float(new_pos.y()))
+        if (
+            abs(note.position[0] - new_position[0])
+            + abs(note.position[1] - new_position[1])
+            < 0.001
+        ):
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot(
+            notes_override=[
+                item.to_workflow_dict()
+                for item in self._graph_notes.values()
+                if item.id != note_id
+            ]
+            + [
+                replace(
+                    note,
+                    position=(float(old_pos.x()), float(old_pos.y())),
+                ).to_workflow_dict()
+            ],
+        )
+        self._graph_notes[note_id] = replace(
+            note,
+            position=new_position,
+        )
+        self._push_undo_if_changed(before)
+        self.status_label.setText("Moved graph note.")
 
     def _show_tunnel_manager(self) -> None:
         dialog = self._tunnel_manager_dialog

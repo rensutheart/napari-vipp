@@ -76,6 +76,19 @@ To inspect tunnel usage:
 3. Use the toolbar `Tunnels...` button to filter, audit, focus, reveal, rename,
    or delete named sources from one table.
 
+## Graph Notes
+
+Use `Add note` to place a movable annotation on the graph canvas. Notes are for
+workflow reasoning, reminders, interpretation comments, or marking alternatives;
+they do not run as pipeline nodes and do not affect outputs.
+
+Notes can be moved like nodes. Double-click a note, or right-click it and choose
+`Edit note...`, to change the text. Select a note and press Delete, or use the
+note context menu, to remove it. Note creation, movement, text edits, and
+deletion are included in undo/redo.
+
+Notes are saved in workflow JSON and reload at the same canvas position.
+
 ## When To Use Which Mode
 
 Recommended default for most users:

@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
     QGraphicsPathItem,
     QGraphicsProxyWidget,
     QGraphicsScene,
+    QGraphicsTextItem,
     QGraphicsView,
     QLabel,
     QMenu,
@@ -556,6 +557,83 @@ class TunnelBadgeItem(QGraphicsItem):
             painter.setPen(QPen(QColor("#64748b"), 1.2))
         else:
             painter.setPen(QPen(QColor("#93c5fd"), 1.3))
+
+
+class GraphNoteItem(QGraphicsTextItem):
+    """Movable canvas annotation that does not participate in pipeline execution."""
+
+    DEFAULT_WIDTH = 240.0
+
+    def __init__(self, note_id: str, text: str, width: float = DEFAULT_WIDTH):
+        super().__init__()
+        self.note_id = str(note_id)
+        self._drag_start_pos: QPointF | None = None
+        self.setPlainText(str(text or ""))
+        self.setTextWidth(max(float(width), 140.0))
+        self.document().setDocumentMargin(8.0)
+        font = QFont()
+        font.setPointSizeF(9.0)
+        self.setFont(font)
+        self.setDefaultTextColor(QColor("#f8fafc"))
+        self.setZValue(28)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setCursor(Qt.OpenHandCursor)
+
+    def set_text(self, text: str) -> None:
+        if text == self.toPlainText():
+            return
+        self.setPlainText(str(text))
+
+    def paint(self, painter, option, widget=None):  # noqa: N802
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.boundingRect()
+        fill = QColor(51, 65, 85, 230)
+        border = QColor("#fbbf24") if self.isSelected() else QColor("#64748b")
+        painter.setBrush(fill)
+        painter.setPen(QPen(border, 1.4 if self.isSelected() else 1.0))
+        painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), 5.0, 5.0)
+        super().paint(painter, option, widget)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self._drag_start_pos = QPointF(self.pos())
+            self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        start_pos = self._drag_start_pos
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton:
+            self.setCursor(Qt.OpenHandCursor)
+            self._drag_start_pos = None
+            if start_pos is not None and not _points_close(start_pos, self.pos()):
+                view = _view_for_scene(self.scene())
+                if view is not None:
+                    view.note_moved.emit(self.note_id, start_pos, QPointF(self.pos()))
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            view = _view_for_scene(self.scene())
+            if view is not None:
+                view.note_edit_requested.emit(self.note_id)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        view = _view_for_scene(self.scene())
+        if view is None:
+            return
+        menu = QMenu()
+        edit_action = menu.addAction("Edit note...")
+        delete_action = menu.addAction("Delete note")
+        action = _exec_menu(menu, event.screenPos())
+        if action == edit_action:
+            view.note_edit_requested.emit(self.note_id)
+        elif action == delete_action:
+            view.note_delete_requested.emit(self.note_id)
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -1297,6 +1375,9 @@ class PipelineGraphView(QGraphicsView):
     connection_removed = Signal(str, str, int)
     port_context_requested = Signal(str, str, int, object)
     tunnel_selected = Signal(str)
+    note_moved = Signal(str, object, object)
+    note_edit_requested = Signal(str)
+    note_delete_requested = Signal(str)
     status_message = Signal(str)
     zoom_changed = Signal(float)
 
@@ -1344,6 +1425,7 @@ class PipelineGraphView(QGraphicsView):
         self._tunnel_subscriber_ports: dict[str, list[PortItem]] = {}
         self._active_tunnel_name = ""
         self._hover_tunnel_name = ""
+        self._notes: dict[str, GraphNoteItem] = {}
 
     def build_graph(
         self,
@@ -1352,6 +1434,7 @@ class PipelineGraphView(QGraphicsView):
         positions=None,
         *,
         output_tunnels=(),
+        notes=(),
         preserve_view: bool = False,
     ) -> None:
         preserved_center = self.mapToScene(self.viewport().rect().center())
@@ -1363,6 +1446,7 @@ class PipelineGraphView(QGraphicsView):
         self._proxies.clear()
         self._cards.clear()
         self._connections.clear()
+        self._notes.clear()
         self._pending_source = None
         self._pending_wire = None
         self._highlighted_input_port = None
@@ -1393,6 +1477,7 @@ class PipelineGraphView(QGraphicsView):
                 getattr(connection, "source_port", 0),
             )
         self.set_port_tunnels(output_tunnels, connections)
+        self.set_notes(notes)
 
         graph_rect = self.scene.itemsBoundingRect()
         scene_rect = graph_rect.adjusted(-1600, -1200, 1800, 1200)
@@ -1460,6 +1545,80 @@ class PipelineGraphView(QGraphicsView):
             pos = proxy.pos()
             positions[node_id] = (float(pos.x()), float(pos.y()))
         return positions
+
+    def note_positions(self) -> dict[str, tuple[float, float]]:
+        """Return the current scene position of each graph note by id."""
+        positions: dict[str, tuple[float, float]] = {}
+        for note_id, item in self._notes.items():
+            pos = item.pos()
+            positions[note_id] = (float(pos.x()), float(pos.y()))
+        return positions
+
+    def add_note(
+        self,
+        note_id: str,
+        text: str,
+        position: QPointF,
+        *,
+        width: float = GraphNoteItem.DEFAULT_WIDTH,
+    ) -> None:
+        if not note_id:
+            return
+        existing = self._notes.get(note_id)
+        if existing is not None:
+            existing.set_text(text)
+            existing.setTextWidth(max(float(width), 140.0))
+            existing.setPos(position)
+            self._ensure_scene_space_for_rect(existing.sceneBoundingRect())
+            return
+        item = GraphNoteItem(note_id, text, width)
+        self.scene.addItem(item)
+        item.setPos(position)
+        self._notes[note_id] = item
+        self._ensure_scene_space_for_rect(item.sceneBoundingRect())
+
+    def set_notes(self, notes) -> None:
+        for item in list(self._notes.values()):
+            if item.scene() is not None:
+                self.scene.removeItem(item)
+        self._notes.clear()
+        for note in notes or ():
+            if isinstance(note, Mapping):
+                note_id = str(note.get("id", "")).strip()
+                text = str(note.get("text", ""))
+                position = _to_pointf(note.get("position"))
+                width = float(note.get("width", GraphNoteItem.DEFAULT_WIDTH))
+            else:
+                note_id = str(getattr(note, "id", "")).strip()
+                text = str(getattr(note, "text", ""))
+                position = _to_pointf(getattr(note, "position", None))
+                width = float(getattr(note, "width", GraphNoteItem.DEFAULT_WIDTH))
+            if position is None:
+                continue
+            self.add_note(note_id, text, position, width=width)
+
+    def set_note_text(self, note_id: str, text: str) -> None:
+        item = self._notes.get(note_id)
+        if item is not None:
+            item.set_text(text)
+
+    def remove_note(self, note_id: str) -> None:
+        item = self._notes.pop(note_id, None)
+        if item is not None and item.scene() is not None:
+            self.scene.removeItem(item)
+
+    def select_note(self, note_id: str) -> None:
+        item = self._notes.get(note_id)
+        if item is None:
+            return
+        for other in self._notes.values():
+            other.setSelected(other is item)
+        self._ensure_scene_space_for_rect(item.sceneBoundingRect())
+        self.centerOn(item.sceneBoundingRect().center())
+
+    def suggest_note_position(self) -> QPointF:
+        center = self.mapToScene(self.viewport().rect().center())
+        return QPointF(center.x() - 120.0, center.y() - 45.0)
 
     def node_position(self, node_id: str) -> QPointF | None:
         proxy = self._proxies.get(node_id)
@@ -2135,6 +2294,17 @@ class PipelineGraphView(QGraphicsView):
             for item in selected_connections:
                 self.delete_connection_item(item, notify=True)
             if selected_connections:
+                event.accept()
+                return
+
+            selected_notes = [
+                item
+                for item in self.scene.selectedItems()
+                if isinstance(item, GraphNoteItem)
+            ]
+            for item in selected_notes:
+                self.note_delete_requested.emit(item.note_id)
+            if selected_notes:
                 event.accept()
                 return
 

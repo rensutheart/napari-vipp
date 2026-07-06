@@ -60,7 +60,7 @@ Current public release: `0.9.0a1`.
 
 Current `main` adds post-release graph polish, including named-tunnel example
 workflows, schematic net-port tunnel badges, tunnel reveal/highlight, and a
-first-pass tunnel manager.
+first-pass tunnel manager plus saved graph notes.
 
 ### Workflow Platform
 
@@ -75,8 +75,10 @@ Implemented enough to build on:
 - insert-on-wire behavior with local make-room movement;
 - connector rerouting around nodes;
 - named port tunnels for reused channel, mask, ROI, and reference-image sources;
+- saved graph notes/annotations with canvas positions;
 - auto-structure command;
-- portable workflow JSON, canvas positions, named tunnels, and strict loading;
+- portable workflow JSON, canvas positions, named tunnels, graph notes, and
+  strict loading;
 - Python export and a first-pass batch runner;
 - explicit `Batch Output` nodes for image/table outputs that matter.
 
@@ -160,9 +162,10 @@ These are the active areas that should guide work after `0.9.0a1`.
 1. Large graph usability
 
    Very large workflows need better tunnel management, graph notes, search, and
-   layout tools. The graph is the product surface, so visual readability is not
-   cosmetic. Minimap/navigation remains useful, but it is a later scale feature
-   rather than part of the first `0.10.0a1` pass.
+   layout tools. Tunnel management and graph notes now have first-pass support;
+   search and layout polish remain active. The graph is the product surface, so
+   visual readability is not cosmetic. Minimap/navigation remains useful, but it
+   is a later scale feature rather than part of the first `0.10.0a1` pass.
 
 2. Reproducible batch and provenance
 
@@ -204,7 +207,8 @@ Implemented in current `main`:
 - tunnel subscriber reveal/highlight: select a tunnel and show every input that
   consumes it;
 - tunnel management panel for filtering, renaming, deleting, focusing, and
-  auditing named sources.
+  auditing named sources;
+- graph notes/annotations saved in workflow JSON with canvas position.
 
 Planned features:
 
@@ -216,17 +220,13 @@ Planned features:
 - example workflow update showing dense colocalization or measurement graph
   navigation.
 
-Next after tunnels:
-
-- graph notes/annotations saved in workflow JSON, with canvas position and
-  optional node association.
-
 Release gate:
 
 - large colocalization workflow remains readable without drawing repeated
   channel wires;
-- workflow JSON round-trips tunnel management changes;
-- graph tests cover tunnel management, search, and reveal/highlight behavior.
+- workflow JSON round-trips tunnel management and graph-note changes;
+- graph tests cover tunnel management, notes, search, and reveal/highlight
+  behavior.
 
 ### 0.11.0a1: Batch Configuration And Provenance
 

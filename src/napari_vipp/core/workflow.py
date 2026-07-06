@@ -30,6 +30,7 @@ Position = tuple[float, float]
 def serialize_workflow(
     pipeline: PrototypePipeline,
     positions: dict[str, Position] | None = None,
+    notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable dict describing the pipeline graph."""
     positions = positions or {}
@@ -62,6 +63,7 @@ def serialize_workflow(
         "positions": {
             node_id: [float(x), float(y)] for node_id, (x, y) in positions.items()
         },
+        "notes": [_note_to_dict(note) for note in notes or ()],
     }
 
 
@@ -189,11 +191,14 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
             raise ValueError(f"Position for {node_id!r} must contain numeric x and y.")
         positions[node_id] = (float(value[0]), float(value[1]))
 
+    notes = _notes_from_data(data.get("notes", []), node_id_set)
+
     return {
         "nodes": nodes,
         "connections": connections,
         "positions": positions,
         "output_tunnels": output_tunnels,
+        "notes": notes,
     }
 
 
@@ -201,11 +206,12 @@ def save_workflow(
     path: str | Path,
     pipeline: PrototypePipeline,
     positions: dict[str, Position] | None = None,
+    notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
 ) -> Path:
     """Write the pipeline graph to ``path`` as a JSON workflow file."""
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    document = serialize_workflow(pipeline, positions)
+    document = serialize_workflow(pipeline, positions, notes)
     target.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return target
 
@@ -252,6 +258,77 @@ def _node_from_dict(raw: Any, index: int) -> GraphNode:
         params,
         spec.max_inputs,
     )
+
+
+def _note_to_dict(note: dict[str, Any]) -> dict[str, Any]:
+    position = note.get("position", (0.0, 0.0))
+    x, y = tuple(position)
+    attached_node = str(note.get("attached_node", "") or "").strip()
+    result = {
+        "id": str(note.get("id", "")).strip(),
+        "text": str(note.get("text", "")),
+        "position": [float(x), float(y)],
+        "width": float(note.get("width", 240.0)),
+    }
+    if attached_node:
+        result["attached_node"] = attached_node
+    return result
+
+
+def _notes_from_data(raw_notes: Any, node_id_set: set[str]) -> list[dict[str, Any]]:
+    if raw_notes is None:
+        return []
+    if not isinstance(raw_notes, list):
+        raise ValueError("Workflow notes must be a list.")
+    notes: list[dict[str, Any]] = []
+    note_ids: set[str] = set()
+    for index, raw in enumerate(raw_notes):
+        if not isinstance(raw, dict):
+            raise ValueError(f"Note {index} must be an object.")
+        note_id = _required_text(raw, "id", f"note {index}")
+        key = note_id.casefold()
+        if key in note_ids:
+            raise ValueError(f"Workflow contains duplicate note id {note_id!r}.")
+        note_ids.add(key)
+        text = raw.get("text", "")
+        if not isinstance(text, str):
+            raise ValueError(f"Text for note {note_id!r} must be a string.")
+        position = raw.get("position")
+        if not isinstance(position, list) or len(position) != 2:
+            raise ValueError(f"Position for note {note_id!r} must contain x and y.")
+        if any(
+            isinstance(coordinate, bool)
+            or not isinstance(coordinate, (int, float))
+            or not math.isfinite(coordinate)
+            for coordinate in position
+        ):
+            raise ValueError(
+                f"Position for note {note_id!r} must contain numeric x and y."
+            )
+        width = raw.get("width", 240.0)
+        if (
+            isinstance(width, bool)
+            or not isinstance(width, (int, float))
+            or not math.isfinite(width)
+            or width <= 0
+        ):
+            raise ValueError(f"Width for note {note_id!r} must be a positive number.")
+        attached_node = str(raw.get("attached_node", "") or "").strip()
+        if attached_node and attached_node not in node_id_set:
+            raise ValueError(
+                f"Note {note_id!r} references missing attached node "
+                f"{attached_node!r}."
+            )
+        note = {
+            "id": note_id.strip(),
+            "text": text,
+            "position": (float(position[0]), float(position[1])),
+            "width": float(width),
+        }
+        if attached_node:
+            note["attached_node"] = attached_node
+        notes.append(note)
+    return notes
 
 
 def _required_text(data: dict[str, Any], key: str, context: str) -> str:

@@ -4019,6 +4019,53 @@ def test_tunnel_management_summary_highlight_and_rename(qtbot, monkeypatch):
     assert dialog.table.rowCount() == 0
 
 
+def test_graph_notes_are_undoable_and_restored(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    note_id = widget._add_graph_note("Review threshold", QPointF(25, 35))
+
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+    assert widget.graph_view._notes[note_id].toPlainText() == "Review threshold"
+
+    widget._set_graph_note_text(note_id, "Review threshold and mask")
+
+    assert widget._graph_notes[note_id].text == "Review threshold and mask"
+    assert (
+        widget.graph_view._notes[note_id].toPlainText()
+        == "Review threshold and mask"
+    )
+
+    widget.undo()
+
+    assert widget._graph_notes[note_id].text == "Review threshold"
+    assert widget.graph_view._notes[note_id].toPlainText() == "Review threshold"
+
+    old_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    new_pos = QPointF(140, 155)
+    widget.graph_view._notes[note_id].setPos(new_pos)
+    widget._on_graph_note_moved(note_id, old_pos, new_pos)
+
+    assert widget._graph_notes[note_id].position == (140.0, 155.0)
+
+    widget.undo()
+
+    assert widget._graph_notes[note_id].position == (25.0, 35.0)
+    assert widget.graph_view._notes[note_id].pos() == QPointF(25, 35)
+
+    widget._delete_graph_note(note_id)
+
+    assert note_id not in widget._graph_notes
+    assert note_id not in widget.graph_view._notes
+
+    widget.undo()
+
+    assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+
+
 def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)

@@ -121,6 +121,36 @@ def test_workflow_preserves_named_tunnels(tmp_path):
     assert outputs[median.id] is not None
 
 
+def test_workflow_preserves_graph_notes(tmp_path):
+    pipeline = _build_pipeline()
+    notes = [
+        {
+            "id": "note_1",
+            "text": "Check threshold before batch.",
+            "position": [42.0, 84.0],
+            "width": 260.0,
+            "attached_node": "gaussian",
+        }
+    ]
+
+    path = save_workflow(tmp_path / "notes.json", pipeline, {}, notes)
+    document = serialize_workflow(pipeline, {}, notes)
+
+    assert document["notes"] == notes
+
+    workflow = load_workflow(path)
+
+    assert workflow["notes"] == [
+        {
+            "id": "note_1",
+            "text": "Check threshold before batch.",
+            "position": (42.0, 84.0),
+            "width": 260.0,
+            "attached_node": "gaussian",
+        }
+    ]
+
+
 def test_unknown_operation_is_rejected():
     pipeline = _build_pipeline()
     document = serialize_workflow(pipeline)
@@ -188,6 +218,33 @@ def test_unknown_tunnel_connection_is_rejected():
     document["connections"][0]["tunnel"] = "Missing"
 
     with pytest.raises(ValueError, match="unknown tunnel"):
+        deserialize_workflow(document)
+
+
+def test_duplicate_graph_note_ids_are_rejected():
+    document = serialize_workflow(_build_pipeline())
+    document["notes"] = [
+        {"id": "note_1", "text": "A", "position": [0, 0], "width": 240},
+        {"id": "NOTE_1", "text": "B", "position": [10, 10], "width": 240},
+    ]
+
+    with pytest.raises(ValueError, match="duplicate note id"):
+        deserialize_workflow(document)
+
+
+def test_graph_note_attached_node_must_exist():
+    document = serialize_workflow(_build_pipeline())
+    document["notes"] = [
+        {
+            "id": "note_1",
+            "text": "A",
+            "position": [0, 0],
+            "width": 240,
+            "attached_node": "ghost",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="references missing attached node"):
         deserialize_workflow(document)
 
 
