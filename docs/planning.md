@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-06
+Last reviewed: 2026-07-07
 
 This file is the concise planning source of truth. It should answer:
 
@@ -38,6 +38,8 @@ batch provenance, and validation work.
 - [node-roadmap.md](node-roadmap.md): detailed node inventory and candidate nodes.
 - [ome-io-plan.md](ome-io-plan.md): OME and OME-Zarr architecture.
 - [io-user-guide.md](io-user-guide.md): supported import/export formats.
+- [cache-and-memory.md](cache-and-memory.md): cache modes, memory guard, and
+  operation memory policy.
 - [measurement-workflows.md](measurement-workflows.md): object, table, mesh, and
   skeleton workflow guidance.
 - [analytical-phantom-validation.md](analytical-phantom-validation.md):
@@ -58,24 +60,26 @@ batch provenance, and validation work.
 
 Current public release: `0.9.0a1`.
 
-Current `main` adds post-release graph polish, including named-tunnel example
-workflows, schematic net-port tunnel badges, tunnel reveal/highlight, and a
-first-pass tunnel manager plus saved graph notes.
+Current development work after `0.9.0a1` adds two implemented clusters:
+
+- graph readability: named-tunnel example workflows, schematic net-port tunnel
+  badges, tunnel reveal/highlight, a first-pass tunnel manager, and saved graph
+  notes;
+- interactive execution and memory: branch-local dirty reruns, explicit cache
+  modes, cache/RAM status, auto memory guard, per-node `Keep output cached`, and
+  low-memory batch retention.
 
 ### Workflow Platform
 
 Implemented enough to build on:
 
-- searchable categorized node palette;
-- pan/zoom graph canvas with movable node cards;
-- typed ports, multi-input nodes, multi-output nodes, cycle rejection, and
-  compatibility checks;
-- click-to-connect and drag-to-connect wiring;
-- delete, duplicate, undo/redo, code inspection, and contextual graph menus;
-- insert-on-wire behavior with local make-room movement;
-- connector rerouting around nodes;
-- named port tunnels for reused channel, mask, ROI, and reference-image sources;
-- saved graph notes/annotations with canvas positions;
+- searchable categorized node palette and a pan/zoom graph canvas;
+- typed ports, multi-input/multi-output nodes, cycle rejection, compatibility
+  checks, and click/drag wiring;
+- delete, duplicate, undo/redo, code inspection, contextual graph menus, and
+  insert-on-wire behavior with local make-room movement;
+- connector rerouting, named port tunnels, tunnel reveal/highlight, first-pass
+  tunnel management, and saved graph notes with canvas positions;
 - auto-structure command;
 - portable workflow JSON, canvas positions, named tunnels, graph notes, and
   strict loading;
@@ -90,13 +94,20 @@ Implemented enough to build on:
 - global and per-node processing indicators;
 - coalesced reruns and stale-result rejection;
 - cooperative cancellation for selected expensive operations;
-- dirty-node caching;
+- dirty-node caching and branch-local reruns for graph edits;
 - manual/cached execution for expensive measurement and table nodes;
-- node execution states: not calculated, current, stale, running, and error.
+- node execution states: not calculated, current, stale, running, and error;
+- cache modes: keep all node outputs, smart interactive cache, and low-memory
+  mode;
+- cache/RAM status, auto memory guard, and a per-node `Keep output cached`
+  affordance;
+- batch execution retention that keeps explicit outputs and prunes item-level
+  intermediates.
 
 Known gap: cancellation/progress coverage is uneven. Some expensive operations
 still behave like black boxes because the underlying libraries do not expose
-fine-grained progress hooks.
+fine-grained progress hooks. Cache size is a practical estimate, not a complete
+Python heap profile, and most processing nodes are still eager.
 
 ### Data, Metadata, And I/O
 
@@ -159,37 +170,89 @@ colocalization, batch/provenance, and OME-Zarr round-tripping.
 
 These are the active areas that should guide work after `0.9.0a1`.
 
-1. Large graph usability
+### Large Graph Usability
 
-   Very large workflows need better tunnel management, graph notes, search, and
-   layout tools. Tunnel management and graph notes now have first-pass support;
-   search and layout polish remain active. The graph is the product surface, so
-   visual readability is not cosmetic. Minimap/navigation remains useful, but it
-   is a later scale feature rather than part of the first `0.10.0a1` pass.
+Implemented progress: tunnel reveal/highlight, tunnel management, graph notes,
+named-tunnel examples, insert-on-wire make-room behavior, and connector
+rerouting.
 
-2. Reproducible batch and provenance
+Next steps:
 
-   Batch execution exists, but publication-ready batch work needs configuration
-   files, per-item manifests, environment capture, richer collection traversal,
-   and clearer output intent.
+- add graph search/focus by node title, operation id, tunnel name, and output
+  tag;
+- add the phase-2 insert-on-wire chooser for ambiguous ports;
+- add alignment guides and optional snap-to-grid;
+- persist per-node thumbnail visibility and selected inspector display state;
+- update one dense colocalization or measurement example to demonstrate graph
+  navigation and tunnel management.
 
-3. Large OME-Zarr and scalable previews
+Minimap/navigation remains useful, but it should wait until search, tunnel
+management, and layout polish are in place.
 
-   VIPP can read/write local OME-Zarr, but very large datasets need pyramids,
-   preview-resolution controls, lazy histogram/thumbnail sampling, and richer
-   label metadata handling.
+### Reproducible Batch And Provenance
 
-4. Scientific validation
+Implemented progress: first-pass collection batch execution, explicit
+`Batch Output` nodes, dry-run preview, workflow/script reproducibility
+artifacts, and low-memory item retention.
 
-   Core measurement and colocalization nodes need validation artifacts that can
-   be cited or converted into paper figures. The morphology phantom report is a
-   good template.
+Next steps:
 
-5. AI-assisted graph authoring
+- define a saved `batch_config.yaml` or equivalent schema;
+- emit per-item provenance manifests with workflow hash, package versions,
+  input identity, source metadata, output paths, and status;
+- improve the dry-run table so input bindings, skipped items, and planned
+  outputs are visible before execution;
+- add semantic-axis iteration for timepoints, channels, z-slices, or selected
+  combinations;
+- add first-pass plate/well/field collection traversal for HCS-style layouts;
+- summarize failed, skipped, and completed items after a batch run.
 
-   Natural-language workflow generation is still a later feature. It should
-   generate ordinary workflow JSON through the existing validator, not bypass
-   the graph model.
+### Large OME-Zarr And Scalable Previews
+
+Implemented progress: local OME-Zarr 0.4/0.5 read/write, OME-Zarr image plus
+label analysis packages, cache modes, and a documented operation memory policy.
+
+Next steps:
+
+- generate OME-Zarr pyramids for exported images;
+- round-trip label colors and label-property tables where practical;
+- add preview-resolution controls for thumbnails and inspector views;
+- make histograms and thumbnails sampled or chunk-aware for large arrays;
+- declare operation capabilities such as eager, lazy-safe, memory-heavy, and
+  scale-aware;
+- warn before eager-only nodes materialize very large lazy arrays;
+- investigate anonymous HTTP reads for public OME-Zarr datasets.
+
+### Scientific Validation
+
+Implemented progress: automated tests plus calibrated analytical morphology
+phantoms for rectangles, cuboids, spheres, ellipsoids, and anisotropic voxel
+sizes.
+
+Next steps:
+
+- add colocalization validation with deterministic threshold and overlap
+  scenarios;
+- validate object overlap, nearest-distance, and event-localization assumptions;
+- validate watershed/touching-object separation on geometric and
+  microscopy-like phantoms;
+- validate skeleton/network outputs with known endpoints, junctions, cycles,
+  branch lengths, and anisotropic spacing;
+- produce reproducible example outputs that can become methods figures or
+  supplementary artifacts.
+
+### AI-Assisted Graph Authoring
+
+Implemented progress: none; this remains later-platform work.
+
+Next steps:
+
+- generate ordinary workflow JSON through the existing workflow validator;
+- validate operation ids, port contracts, and parameter schemas before applying
+  a generated graph;
+- show a preview/diff before changing the canvas;
+- keep full-resolution pixels local by default and make hosted-provider data
+  sharing explicit.
 
 ## Versioned Roadmap
 
@@ -198,19 +261,25 @@ ship with tests, documentation, an example workflow when appropriate, and a
 clear release note. If a feature is not validated enough for scientific use, the
 UI and docs should say so explicitly.
 
-### 0.10.0a1: Tunnel Management And Graph Readability
+### 0.10.0a1: Graph Readability And Interactive Memory
 
-Goal: make dense workflows easier to understand and edit.
+Goal: make dense workflows easier to understand, edit, and inspect without
+surprising recomputation or hidden memory growth.
 
-Implemented in current `main`:
+Implemented in current development:
 
 - tunnel subscriber reveal/highlight: select a tunnel and show every input that
   consumes it;
 - tunnel management panel for filtering, renaming, deleting, focusing, and
   auditing named sources;
-- graph notes/annotations saved in workflow JSON with canvas position.
+- graph notes/annotations saved in workflow JSON with canvas position;
+- branch-local dirty reruns for adding nodes, connecting new branches, inserting
+  on wires, disconnecting branches, deleting nodes, and tunnel edits;
+- cache modes, cache/RAM status, auto memory guard, per-node `Keep output
+  cached`, and low-memory batch retention;
+- user documentation in [cache-and-memory.md](cache-and-memory.md).
 
-Planned features:
+Next steps:
 
 - graph search by node title, operation id, tunnel name, and output tag;
 - phase-2 insert-on-wire chooser for ambiguous ports;
@@ -224,15 +293,25 @@ Release gate:
 
 - large colocalization workflow remains readable without drawing repeated
   channel wires;
+- routine graph edits reuse unaffected cached outputs;
 - workflow JSON round-trips tunnel management and graph-note changes;
-- graph tests cover tunnel management, notes, search, and reveal/highlight
-  behavior.
+- smart/low-memory cache modes prune and restore expected outputs without losing
+  explicit output intent;
+- graph tests cover tunnel management, notes, search, reveal/highlight, cache
+  modes, and memory guard behavior.
 
 ### 0.11.0a1: Batch Configuration And Provenance
 
 Goal: make batch execution explicit enough for real analysis runs.
 
-Planned features:
+Already implemented foundations:
+
+- local collection batch runner;
+- explicit `Batch Output` nodes;
+- low-memory retention during item execution;
+- optional workflow snapshot and Python script artifacts.
+
+Next steps:
 
 - `batch_config.yaml` or equivalent saved batch configuration;
 - per-item provenance manifest with workflow hash, package versions, input
@@ -257,7 +336,13 @@ Release gate:
 Goal: make large, multidimensional OME datasets feel deliberate rather than
 accidental.
 
-Planned features:
+Already implemented foundations:
+
+- local OME-Zarr 0.4/0.5 image read/write;
+- OME-Zarr image plus label analysis package import/export;
+- cache modes and operation memory policy documentation.
+
+Next steps:
 
 - generated OME-Zarr pyramids for exported image datasets;
 - OME-Zarr label colors and label-property table round-tripping where practical;
@@ -280,7 +365,13 @@ Release gate:
 
 Goal: turn implemented analysis families into defensible scientific methods.
 
-Planned features:
+Already implemented foundations:
+
+- automated tests for implemented operations and workflows;
+- calibrated analytical morphology phantom validation;
+- publication-facing colocalization method notes.
+
+Next steps:
 
 - colocalization validation report using deterministic synthetic data and known
   threshold/overlap scenarios;
@@ -305,7 +396,7 @@ Release gate:
 Goal: let users describe a workflow and receive a normal, inspectable VIPP
 graph, without weakening reproducibility.
 
-Planned features:
+Next steps:
 
 - provider-agnostic AI settings, with user-managed keys and local-provider room;
 - generated workflow JSON from natural language plus the live node registry;

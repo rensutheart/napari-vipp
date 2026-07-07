@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import inspect as py_inspect
+import os
 import re
 import textwrap
 import threading
@@ -290,6 +292,8 @@ class PipelineRunRequest:
     cached_execution_states: dict[str, str] | None = None
     cached_execution_messages: dict[str, str] | None = None
     manual_node_ids: frozenset[str] | None = None
+    retain_node_ids: frozenset[str] = frozenset()
+    prune_unretained: bool = False
     cancel_event: threading.Event | None = None
 
 
@@ -337,6 +341,8 @@ class PipelineRunWorker(QRunnable):
                 cancel_callback=self._is_cancelled,
                 manual_mode=MANUAL_RUN_SKIP,
                 manual_node_ids=self.request.manual_node_ids,
+                retain_node_ids=self.request.retain_node_ids,
+                prune_unretained=self.request.prune_unretained,
             )
         except OperationCancelled as exc:
             self.signals.finished.emit(
@@ -445,6 +451,24 @@ BACKGROUND_PIPELINE_OPERATIONS = {
 }
 ROLLING_BALL_RADIUS_SLIDER_MAX = 100.0
 MAX_CHANNEL_COLOR_CONTROLS = 12
+CACHE_MODE_KEEP_ALL = "Keep all node outputs cached"
+CACHE_MODE_SMART = "Smart interactive cache"
+CACHE_MODE_LOW_MEMORY = "Low-memory mode"
+CACHE_MODE_CHOICES = (
+    CACHE_MODE_KEEP_ALL,
+    CACHE_MODE_SMART,
+    CACHE_MODE_LOW_MEMORY,
+)
+CACHE_MODE_STATUS_LABELS = {
+    CACHE_MODE_KEEP_ALL: "Keep all",
+    CACHE_MODE_SMART: "Smart interactive",
+    CACHE_MODE_LOW_MEMORY: "Low memory",
+}
+CACHE_KEEP_NODE_PARAM = "_vipp_keep_cached"
+DEFAULT_CACHE_MEMORY_LIMIT_PERCENT = 90
+MEMORY_GUARD_MIN_FREE_BYTES = 512 * 1024 * 1024
+EXPLICIT_OUTPUT_OPERATIONS = {"batch_output", "save_output"}
+SMART_CACHE_RECENT_LIMIT = 6
 
 
 def _axis_heading_text(option: AxisSliceOption, *, mode: str = "keep") -> str:
@@ -3770,6 +3794,7 @@ class VippWidget(QWidget):
         self._toolbar_dropdown_widgets: list[QWidget] = []
         self._toolbar_zoom_widgets: list[QWidget] = []
         self._toolbar_settings_widgets: list[QWidget] = []
+        self._recent_cache_node_ids: list[str] = []
         self._syncing_view_dims_bar = False
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self._graph_notes: dict[str, GraphNoteState] = {}
@@ -3879,6 +3904,27 @@ class VippWidget(QWidget):
         self.settings_menu = QMenu(self.settings_menu_button)
         self.settings_menu.aboutToShow.connect(self._populate_settings_toolbar_menu)
         self.settings_menu_button.setMenu(self.settings_menu)
+        self.cache_mode_combo = QComboBox()
+        self.cache_mode_combo.addItems(CACHE_MODE_CHOICES)
+        self.cache_mode_combo.setCurrentText(CACHE_MODE_KEEP_ALL)
+        self.cache_mode_combo.setToolTip(
+            "Choose how aggressively VIPP keeps calculated node outputs in memory."
+        )
+        self.memory_guard_checkbox = QCheckBox("Auto memory guard")
+        self.memory_guard_checkbox.setChecked(True)
+        self.memory_guard_checkbox.setToolTip(
+            "When keep-all caching uses too much of free-or-reclaimable RAM, "
+            "switch to Smart interactive cache and prune optional outputs."
+        )
+        self.memory_limit_spin = QSpinBox()
+        self.memory_limit_spin.setRange(5, 95)
+        self.memory_limit_spin.setValue(DEFAULT_CACHE_MEMORY_LIMIT_PERCENT)
+        self.memory_limit_spin.setSuffix("%")
+        self.memory_limit_spin.setToolTip(
+            "Maximum share of reclaimable memory that VIPP keep-all cache may "
+            "occupy. Reclaimable memory is free RAM plus the current VIPP cache."
+        )
+        self._memory_guard_dialog_shown = False
         self.background_all_checkbox = QCheckBox("Run all in BG")
         self.background_all_checkbox.setChecked(False)
         self.background_all_checkbox.setToolTip(
@@ -3901,6 +3947,11 @@ class VippWidget(QWidget):
         self.pipeline_cancel_button.setVisible(False)
         self.pipeline_busy_label.setVisible(False)
         self.pipeline_busy_bar.setVisible(False)
+        self.cache_status_label = QLabel("Cache: --")
+        self.cache_status_label.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; padding: 2px 4px;"
+        )
+        self.cache_status_label.setToolTip("Estimated VIPP cache and system memory.")
         self.version_label = QLabel(f"VIPP {VIPP_VERSION}")
         self.version_label.setStyleSheet(
             "color: #94a3b8; font-size: 11px; font-weight: 600;"
@@ -3946,6 +3997,11 @@ class VippWidget(QWidget):
         self.selected_title.setStyleSheet("font-weight: 650;")
         self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
         self.thumbnail_checkbox.setChecked(True)
+        self.keep_cached_checkbox = QCheckBox("Keep output cached")
+        self.keep_cached_checkbox.setToolTip(
+            "Retain this node output in Smart and Low-memory cache modes. "
+            "Use this for expensive intermediate images or tables you inspect often."
+        )
         self.execution_group = QGroupBox("Execution")
         self.execution_status_label = QLabel("Automatic")
         self.execution_status_label.setWordWrap(True)
@@ -4316,6 +4372,7 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.pipeline_busy_label)
         workflow_row.addWidget(self.pipeline_busy_bar)
         workflow_row.addWidget(self.pipeline_cancel_button)
+        workflow_row.addWidget(self.cache_status_label)
         workflow_row.addWidget(self.version_label)
         root.addLayout(workflow_row)
         root.addWidget(self.view_dims_bar)
@@ -4380,6 +4437,17 @@ class VippWidget(QWidget):
             menu,
             "Follow napari dims",
             self.follow_dims_checkbox,
+        )
+        self._add_combo_menu(menu, "Cache mode", self.cache_mode_combo)
+        self._add_checkbox_menu_action(
+            menu,
+            "Auto memory guard",
+            self.memory_guard_checkbox,
+        )
+        self._add_spinbox_menu_widget(
+            menu,
+            "Cache limit",
+            self.memory_limit_spin,
         )
         added_section = True
         if hide_dropdowns:
@@ -4468,6 +4536,30 @@ class VippWidget(QWidget):
         action.setDefaultWidget(widget)
         menu.addAction(action)
 
+    def _add_spinbox_menu_widget(
+        self,
+        menu: QMenu,
+        label: str,
+        spinbox: QSpinBox,
+    ) -> None:
+        widget = QWidget(menu)
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel(label))
+        clone = QSpinBox(widget)
+        clone.setRange(spinbox.minimum(), spinbox.maximum())
+        clone.setSingleStep(spinbox.singleStep())
+        clone.setSuffix(spinbox.suffix())
+        clone.setValue(spinbox.value())
+        clone.setToolTip(spinbox.toolTip())
+        clone.valueChanged.connect(spinbox.setValue)
+        spinbox.valueChanged.connect(clone.setValue)
+        layout.addWidget(clone)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(widget)
+        menu.addAction(action)
+
     def _build_graph_panel(self) -> QWidget:
         panel = QWidget()
         panel.setMinimumHeight(0)
@@ -4504,6 +4596,7 @@ class VippWidget(QWidget):
         layout = QVBoxLayout(content)
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
+        layout.addWidget(self.keep_cached_checkbox)
         execution_layout = QVBoxLayout(self.execution_group)
         execution_layout.addWidget(self.execution_status_label)
         execution_layout.addWidget(self.auto_recalculate_checkbox)
@@ -4613,6 +4706,13 @@ class VippWidget(QWidget):
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
+        self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
+        self.memory_guard_checkbox.toggled.connect(
+            self._on_memory_guard_setting_changed
+        )
+        self.memory_limit_spin.valueChanged.connect(
+            self._on_memory_guard_setting_changed
+        )
         self.preview_mode_combo.currentTextChanged.connect(self._update_thumbnails)
         self.thumbnail_contrast_combo.currentTextChanged.connect(
             self._update_thumbnails,
@@ -4632,6 +4732,7 @@ class VippWidget(QWidget):
         self.thumbnail_checkbox.toggled.connect(
             self._on_selected_preview_toggled,
         )
+        self.keep_cached_checkbox.toggled.connect(self._on_keep_cached_toggled)
         self.histogram_log_checkbox.toggled.connect(self._update_histogram)
         self.histogram_scope_combo.currentTextChanged.connect(self._update_histogram)
         self.rescale_input_histogram_scope_combo.currentTextChanged.connect(
@@ -4997,8 +5098,6 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(node.id)
         self._sync_pin_ui()
         self.graph_view.select_node(node.id)
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
         return node
@@ -5064,7 +5163,10 @@ class VippWidget(QWidget):
 
             self.graph_view.select_node(node.id)
             self._sync_pin_ui()
-            self._invalidate_pipeline_cache()
+            dirty_nodes = {node.id}
+            if mode == "partial":
+                dirty_nodes.add(target_id)
+            self._mark_pipeline_branches_dirty(dirty_nodes)
             self.run_pipeline()
             self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
             self._push_undo_if_changed(before)
@@ -5176,7 +5278,10 @@ class VippWidget(QWidget):
             self.graph_view.select_node(node_id)
             self._sync_pin_ui()
             if changed_connections:
-                self._invalidate_pipeline_cache()
+                dirty_nodes = {node_id}
+                if mode == "partial":
+                    dirty_nodes.add(target_id)
+                self._mark_pipeline_branches_dirty(dirty_nodes)
                 self.run_pipeline()
                 self._make_room_for_inserted_node(
                     source_id,
@@ -5536,8 +5641,6 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(clone.id)
         self._sync_pin_ui()
         self.graph_view.select_node(clone.id)
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Duplicated '{original.title}' as '{clone.title}'.")
 
@@ -5886,6 +5989,8 @@ class VippWidget(QWidget):
                     input_metadata=None,
                     input_name="",
                     source_payloads=source_payloads,
+                    retain_node_ids=output_node_ids,
+                    prune_unretained=True,
                 )
                 for node_id in output_node_ids:
                     data = batch_pipeline.outputs.get(node_id)
@@ -5920,6 +6025,7 @@ class VippWidget(QWidget):
                             image_state=batch_pipeline.output_states.get(node_id),
                         )
                     )
+                batch_pipeline.prune_cached_outputs(())
         finally:
             self._set_pipeline_busy(False)
         return saved
@@ -6463,11 +6569,19 @@ class VippWidget(QWidget):
         self._refresh_layer_choices()
         self.run_pipeline()
 
-    def _mark_pipeline_dirty(self, node_id: str) -> None:
-        if node_id in self.pipeline.nodes:
-            self._pending_dirty_node_ids.add(node_id)
-            self.pipeline.mark_manual_descendants_stale({node_id})
-            self._sync_execution_ui()
+    def _mark_pipeline_dirty(self, node_id: str) -> bool:
+        return self._mark_pipeline_branches_dirty({node_id})
+
+    def _mark_pipeline_branches_dirty(self, node_ids) -> bool:
+        valid_node_ids = {
+            str(node_id) for node_id in node_ids if str(node_id) in self.pipeline.nodes
+        }
+        if not valid_node_ids:
+            return False
+        self._pending_dirty_node_ids.update(valid_node_ids)
+        self.pipeline.mark_manual_descendants_stale(valid_node_ids)
+        self._sync_execution_ui()
+        return True
 
     def _invalidate_pipeline_cache(self) -> None:
         self._pending_dirty_node_ids.clear()
@@ -6542,6 +6656,238 @@ class VippWidget(QWidget):
         # while this run was in flight and must survive for the next run.
         self._last_pipeline_source_signature = source_signature
         self._inflight_dirty_node_ids = None
+
+    def _cache_mode(self) -> str:
+        mode = self.cache_mode_combo.currentText()
+        return mode if mode in CACHE_MODE_CHOICES else CACHE_MODE_KEEP_ALL
+
+    def _cache_pruning_enabled(self) -> bool:
+        return self._cache_mode() != CACHE_MODE_KEEP_ALL
+
+    def _on_cache_mode_changed(self, _mode: str) -> None:
+        self._memory_guard_dialog_shown = False
+        self._apply_cache_retention()
+        self._refresh_dynamic_output_ports()
+        self._update_thumbnails()
+        self._refresh_inspection_layer_if_active()
+        self._refresh_pinned_layer_if_active()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_execution_ui()
+        self._refresh_cache_status()
+        self.status_label.setText(f"Cache mode set to {self._cache_mode()}.")
+
+    def _on_memory_guard_setting_changed(self, *_args) -> None:
+        self._memory_guard_dialog_shown = False
+        message = self._enforce_memory_guard()
+        self._refresh_cache_status()
+        if message:
+            self.status_label.setText(message)
+
+    def _remember_cache_node(self, node_id: str) -> None:
+        if node_id not in self.pipeline.nodes:
+            return
+        self._recent_cache_node_ids = [
+            recent_id
+            for recent_id in self._recent_cache_node_ids
+            if recent_id != node_id and recent_id in self.pipeline.nodes
+        ]
+        self._recent_cache_node_ids.insert(0, node_id)
+        del self._recent_cache_node_ids[SMART_CACHE_RECENT_LIMIT:]
+
+    def _apply_cache_retention(self) -> None:
+        if not self._cache_pruning_enabled():
+            self._refresh_cache_status()
+            return
+        self.pipeline.prune_cached_outputs(self._cache_retention_node_ids())
+        self._refresh_cache_status()
+
+    def _cache_retention_node_ids(self, mode: str | None = None) -> set[str]:
+        mode = mode or self._cache_mode()
+        valid = set(self.pipeline.nodes)
+        if mode == CACHE_MODE_KEEP_ALL:
+            return set(valid)
+
+        working_nodes = self._current_working_cache_nodes()
+        retained = (
+            working_nodes
+            | self._direct_input_cache_nodes(working_nodes)
+            | self._explicit_output_nodes()
+            | self._keep_cached_node_ids()
+        )
+        if mode == CACHE_MODE_SMART:
+            retained.update(self._source_cache_nodes())
+            retained.update(self._branch_point_cache_nodes())
+            recent_nodes = {
+                node_id
+                for node_id in self._recent_cache_node_ids
+                if node_id in self.pipeline.nodes
+            }
+            retained.update(
+                recent_nodes | self._direct_input_cache_nodes(recent_nodes)
+            )
+        return retained & valid
+
+    def _current_working_cache_nodes(self) -> set[str]:
+        nodes = set()
+        if self._selected_node_id in self.pipeline.nodes:
+            nodes.add(self._selected_node_id)
+        if self._active_pinned_node_id in self.pipeline.nodes:
+            nodes.add(str(self._active_pinned_node_id))
+        return nodes
+
+    def _direct_input_cache_nodes(self, node_ids: set[str]) -> set[str]:
+        return {
+            source_id
+            for node_id in node_ids
+            for source_id in self.pipeline._input_sources(node_id)
+            if source_id in self.pipeline.nodes
+        }
+
+    def _source_cache_nodes(self) -> set[str]:
+        return {
+            node_id
+            for node_id, node in self.pipeline.nodes.items()
+            if node.operation_id == "input"
+        }
+
+    def _explicit_output_nodes(self) -> set[str]:
+        return {
+            node_id
+            for node_id, node in self.pipeline.nodes.items()
+            if node.operation_id in EXPLICIT_OUTPUT_OPERATIONS
+        }
+
+    def _keep_cached_node_ids(self) -> set[str]:
+        return {
+            node_id
+            for node_id, node in self.pipeline.nodes.items()
+            if bool(node.params.get(CACHE_KEEP_NODE_PARAM, False))
+        }
+
+    def _branch_point_cache_nodes(self) -> set[str]:
+        outgoing_counts: dict[str, int] = {}
+        for connection in self.pipeline.connections:
+            outgoing_counts[connection.source_id] = (
+                outgoing_counts.get(connection.source_id, 0) + 1
+            )
+        for tunnel in self.pipeline.output_tunnel_list():
+            outgoing_counts[tunnel.source_id] = max(
+                outgoing_counts.get(tunnel.source_id, 0),
+                1,
+            )
+        return {
+            node_id
+            for node_id, count in outgoing_counts.items()
+            if count > 1 and node_id in self.pipeline.nodes
+        }
+
+    def _enforce_memory_guard(self) -> str:
+        if not self.memory_guard_checkbox.isChecked():
+            return ""
+        if self._cache_mode() != CACHE_MODE_KEEP_ALL:
+            return ""
+        cache_bytes = _pipeline_cache_nbytes(self.pipeline)
+        if cache_bytes <= 0:
+            return ""
+        free_bytes, total_bytes = _system_memory_bytes()
+        limit_percent = int(self.memory_limit_spin.value())
+        reason = self._memory_guard_reason(
+            cache_bytes,
+            free_bytes,
+            total_bytes,
+            limit_percent,
+        )
+        if not reason:
+            return ""
+
+        with QSignalBlocker(self.cache_mode_combo):
+            self.cache_mode_combo.setCurrentText(CACHE_MODE_SMART)
+        self._clear_optional_memory_caches()
+        self._apply_cache_retention()
+        self._refresh_dynamic_output_ports()
+        self._update_thumbnails()
+        self._refresh_inspection_layer_if_active()
+        self._refresh_pinned_layer_if_active()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_execution_ui()
+        message = (
+            "Memory guard switched cache mode to Smart interactive cache. "
+            f"{reason} Mark critical intermediates with Keep output cached if "
+            "they should survive pruning."
+        )
+        if not self._memory_guard_dialog_shown:
+            self._memory_guard_dialog_shown = True
+            QMessageBox.warning(self, "VIPP memory guard", message)
+        return message
+
+    def _memory_guard_reason(
+        self,
+        cache_bytes: int,
+        free_bytes: int | None,
+        total_bytes: int | None,
+        limit_percent: int,
+    ) -> str:
+        if free_bytes is not None and free_bytes >= 0:
+            reclaimable_bytes = cache_bytes + free_bytes
+            limit_bytes = int(reclaimable_bytes * (limit_percent / 100.0))
+            if cache_bytes > limit_bytes:
+                return (
+                    f"The VIPP cache reached {_format_byte_count(cache_bytes)}, "
+                    f"above the configured {limit_percent}% reclaimable-memory "
+                    f"limit ({_format_byte_count(limit_bytes)} of "
+                    f"{_format_byte_count(reclaimable_bytes)} free-or-cached RAM)."
+                )
+            if (
+                free_bytes < MEMORY_GUARD_MIN_FREE_BYTES
+                and cache_bytes > MEMORY_GUARD_MIN_FREE_BYTES
+            ):
+                return (
+                    f"System free RAM is down to {_format_byte_count(free_bytes)}, "
+                    f"below VIPP's {_format_byte_count(MEMORY_GUARD_MIN_FREE_BYTES)} "
+                    "safety reserve."
+                )
+        if free_bytes is None and total_bytes is not None and total_bytes > 0:
+            limit_bytes = int(total_bytes * (limit_percent / 100.0))
+            if cache_bytes > limit_bytes:
+                return (
+                    f"The VIPP cache reached {_format_byte_count(cache_bytes)}, "
+                    f"above the fallback {limit_percent}% total-RAM limit "
+                    f"({_format_byte_count(limit_bytes)})."
+                )
+        return ""
+
+    def _clear_optional_memory_caches(self) -> None:
+        self._sample_payload_cache = None
+        self._source_inspection_cache.clear()
+
+    def _refresh_cache_status(self) -> None:
+        cache_bytes = _pipeline_cache_nbytes(self.pipeline)
+        free_bytes, total_bytes = _system_memory_bytes()
+        cache_text = _format_byte_count(cache_bytes)
+        mode_label = CACHE_MODE_STATUS_LABELS.get(
+            self._cache_mode(),
+            self._cache_mode(),
+        )
+        if free_bytes is None:
+            memory_text = "RAM n/a"
+        elif total_bytes:
+            memory_text = (
+                f"RAM free {_format_byte_count(free_bytes)} / "
+                f"{_format_byte_count(total_bytes)}"
+            )
+        else:
+            memory_text = f"RAM free {_format_byte_count(free_bytes)}"
+        text = f"Cache {cache_text} ({mode_label}) | {memory_text}"
+        guard_state = "on" if self.memory_guard_checkbox.isChecked() else "off"
+        self.cache_status_label.setText(text)
+        self.cache_status_label.setToolTip(
+            f"{text}\nMode: {self._cache_mode()}"
+            f"\nMemory guard: {guard_state}"
+            f"\nCache limit: {int(self.memory_limit_spin.value())}% of "
+            "free RAM + VIPP cache"
+        )
 
     def _dirty_nodes_affect_node(
         self,
@@ -7187,7 +7533,9 @@ class VippWidget(QWidget):
         self._sync_port_tunnels()
         self.graph_view.clear_tunnel_highlight(sticky=True)
         if removed:
-            self._invalidate_pipeline_cache()
+            self._mark_pipeline_branches_dirty(
+                {connection.target_id for connection in removed}
+            )
             self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Removed tunnel '{name}'.")
@@ -7205,8 +7553,8 @@ class VippWidget(QWidget):
             self.status_label.setText(result.message)
             return
         self._apply_connection_result_to_graph(result)
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
+        if self._mark_pipeline_dirty(node_id):
+            self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(result.message)
 
@@ -7222,8 +7570,8 @@ class VippWidget(QWidget):
             connection.target_port,
         ):
             self._sync_port_tunnels()
-            self._invalidate_pipeline_cache()
-            self.run_pipeline()
+            if self._mark_pipeline_dirty(node_id):
+                self.run_pipeline()
             self._push_undo_if_changed(before)
             self.status_label.setText(
                 f"Cleared tunnel '{connection.tunnel_name}' from "
@@ -7278,8 +7626,8 @@ class VippWidget(QWidget):
             self.status_label.setText(result.message)
             return
         self._apply_connection_result_to_graph(result)
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
+        if self._mark_pipeline_dirty(target_id):
+            self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(result.message)
 
@@ -7293,8 +7641,8 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         if self.pipeline.disconnect(source_id, target_id, target_port):
             self._sync_port_tunnels()
-            self._invalidate_pipeline_cache()
-            self.run_pipeline()
+            if self._mark_pipeline_dirty(target_id):
+                self.run_pipeline()
             self._push_undo_if_changed(before)
             port_text = "" if target_port is None else f" input {int(target_port) + 1}"
             self.status_label.setText(
@@ -7308,6 +7656,11 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         title = node.title
+        dirty_targets = {
+            connection.target_id
+            for connection in self.pipeline.connections
+            if connection.source_id == node_id
+        }
         if not self.pipeline.remove_node(node_id):
             return
         attached_note_ids = [
@@ -7321,6 +7674,11 @@ class VippWidget(QWidget):
         self.graph_view.remove_node(node_id)
         self._sync_port_tunnels()
         self._preview_disabled_node_ids.discard(node_id)
+        self._recent_cache_node_ids = [
+            recent_id
+            for recent_id in self._recent_cache_node_ids
+            if recent_id != node_id
+        ]
         self._clip_auto_input_ranges.pop(node_id, None)
         self._rescale_auto_input_cutoffs.pop(node_id, None)
         self._rescale_auto_output_ranges.pop(node_id, None)
@@ -7328,8 +7686,8 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         if self._selected_node_id == node_id:
             self._select_first_available_node()
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
+        if self._mark_pipeline_branches_dirty(dirty_targets):
+            self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Deleted '{title}'.")
 
@@ -7381,14 +7739,20 @@ class VippWidget(QWidget):
         self.histogram_group.setTitle("Output Histogram")
         self.histogram_scope_row.setHidden(True)
         self.histogram_plot.set_histogram(None, log_scale=False)
+        self.keep_cached_checkbox.setVisible(False)
+        self.keep_cached_checkbox.setEnabled(False)
+        with QSignalBlocker(self.keep_cached_checkbox):
+            self.keep_cached_checkbox.setChecked(False)
 
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
             return
         self._selected_node_id = node_id
+        self._remember_cache_node(node_id)
         node = self.pipeline.nodes[node_id]
         self.selected_title.setText(node.title)
         self._sync_preview_ui()
+        self._sync_keep_cached_ui()
         self._render_parameters(node_id)
         self._sync_auto_contrast_ui()
         self._sync_pin_ui()
@@ -7398,6 +7762,54 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
+        self._restore_selected_output_for_interactive_cache(node_id)
+
+    def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
+        if self._cache_mode() != CACHE_MODE_SMART:
+            return
+        if node_id not in self.pipeline.nodes:
+            return
+        if self.pipeline.outputs.get(node_id) is not None:
+            self._apply_cache_retention()
+            return
+        if not self._node_has_required_inputs_for_restore(node_id):
+            self._refresh_cache_status()
+            return
+        if self._active_pipeline_run_id is not None:
+            self._mark_pipeline_dirty(node_id)
+            self._pipeline_run_pending = True
+            self._set_pipeline_busy(
+                True,
+                self._active_pipeline_node_id,
+                queued=True,
+            )
+            self.status_label.setText(
+                f"Queued '{self._node_title(node_id)}' for cache restore."
+            )
+            self._refresh_cache_status()
+            return
+        if not self._mark_pipeline_dirty(node_id):
+            return
+        self.status_label.setText(
+            f"Restoring '{self._node_title(node_id)}' for interactive preview..."
+        )
+        self.run_pipeline()
+
+    def _node_has_required_inputs_for_restore(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False
+        spec = self.pipeline.operation_spec(node.operation_id)
+        if not spec.has_input:
+            return True
+        connections = self.pipeline._input_connections(node_id)
+        if not connections:
+            return False
+        if node.max_inputs is not None and node.max_inputs == 1:
+            return True
+        required_inputs = self.pipeline._required_inputs_for(node)
+        connected_ports = {connection.target_port for connection in connections}
+        return all(port in connected_ports for port in range(required_inputs))
 
     def _calculate_selected_node(self) -> None:
         self._calculate_node(self._selected_node_id)
@@ -9897,6 +10309,7 @@ class VippWidget(QWidget):
             self._update_metadata_panel()
             self._update_histogram()
             self._sync_execution_ui()
+            self._refresh_cache_status()
             self.status_label.setText("No image layer selected.")
             return
 
@@ -10004,6 +10417,8 @@ class VippWidget(QWidget):
                 dirty_node_ids=dirty_node_ids,
                 manual_mode=MANUAL_RUN_SKIP,
                 manual_node_ids=manual_node_ids,
+                retain_node_ids=self._cache_retention_node_ids(),
+                prune_unretained=self._cache_pruning_enabled(),
             )
         except Exception as exc:
             for node_id in manual_node_ids or ():
@@ -10026,12 +10441,15 @@ class VippWidget(QWidget):
                     source_payloads=source_payloads,
                     dirty_node_ids=rerun_dirty,
                     manual_mode=MANUAL_RUN_SKIP,
+                    retain_node_ids=self._cache_retention_node_ids(),
+                    prune_unretained=self._cache_pruning_enabled(),
                 )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
 
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
         self._hide_input_layer_for_inspection(primary_layer)
+        self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
@@ -10041,13 +10459,17 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
-        if source_label:
+        memory_guard_message = self._enforce_memory_guard()
+        if memory_guard_message:
+            self.status_label.setText(memory_guard_message)
+        elif source_label:
             self.status_label.setText(
                 f"Graph updated from '{source_label}'. "
                 "Connect ports to build alternate paths."
             )
         else:
             self.status_label.setText("No image source selected.")
+        self._refresh_cache_status()
 
     def _pipeline_source_label(
         self,
@@ -10176,6 +10598,8 @@ class VippWidget(QWidget):
             manual_node_ids=(
                 frozenset(manual_node_ids) if manual_node_ids else None
             ),
+            retain_node_ids=frozenset(self._cache_retention_node_ids()),
+            prune_unretained=self._cache_pruning_enabled(),
             cancel_event=cancel_event,
         )
         self._active_pipeline_run_id = run_id
@@ -11371,6 +11795,7 @@ class VippWidget(QWidget):
             )
             return
         title = self._node_title(node_id)
+        self._remember_cache_node(node_id)
         self._set_or_add_generated_layer(
             self._inspect_layer_name,
             data,
@@ -11406,6 +11831,7 @@ class VippWidget(QWidget):
         if data is None:
             self.status_label.setText("That node has no output to pin yet.")
             return
+        self._remember_cache_node(node_id)
         self._set_active_pin_layer(node_id, data)
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Pinned '{self._node_title(node_id)}'.")
@@ -11916,6 +12342,34 @@ class VippWidget(QWidget):
             self.thumbnail_checkbox.setChecked(
                 previewable and self._node_preview_enabled(self._selected_node_id)
             )
+
+    def _sync_keep_cached_ui(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        available = node is not None
+        self.keep_cached_checkbox.setVisible(available)
+        self.keep_cached_checkbox.setEnabled(available)
+        with QSignalBlocker(self.keep_cached_checkbox):
+            self.keep_cached_checkbox.setChecked(
+                bool(node.params.get(CACHE_KEEP_NODE_PARAM, False))
+                if node is not None
+                else False
+            )
+
+    def _on_keep_cached_toggled(self, checked: bool) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return
+        if bool(node.params.get(CACHE_KEEP_NODE_PARAM, False)) == bool(checked):
+            return
+        self._record_parameter_undo(node_id, CACHE_KEEP_NODE_PARAM)
+        node.params[CACHE_KEEP_NODE_PARAM] = bool(checked)
+        self._apply_cache_retention()
+        self._update_thumbnails()
+        state = "kept" if checked else "not forced"
+        self.status_label.setText(
+            f"Cache retention for '{node.title}' is {state}."
+        )
 
     def _sync_auto_contrast_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -13024,6 +13478,105 @@ def _qcolor_from_unit_rgb(color: np.ndarray) -> QColor:
         float(np.clip(color[1], 0, 1)),
         float(np.clip(color[2], 0, 1)),
     )
+
+
+def _pipeline_cache_nbytes(pipeline: PrototypePipeline) -> int:
+    seen: set[int] = set()
+    total = 0
+    for value in pipeline.outputs.values():
+        total += _object_nbytes(value, seen)
+    for values in pipeline.node_outputs.values():
+        for value in values:
+            total += _object_nbytes(value, seen)
+    return int(total)
+
+
+def _object_nbytes(value, seen: set[int]) -> int:
+    if value is None:
+        return 0
+    value_id = id(value)
+    if value_id in seen:
+        return 0
+    seen.add(value_id)
+
+    nbytes = getattr(value, "nbytes", None)
+    if nbytes is not None:
+        try:
+            return max(int(nbytes), 0)
+        except (OverflowError, TypeError, ValueError):
+            pass
+    if is_table_data(value):
+        return _table_nbytes(value)
+    if isinstance(value, dict):
+        return sum(
+            _object_nbytes(item, seen)
+            for pair in value.items()
+            for item in pair
+        )
+    if isinstance(value, (list, tuple)):
+        return sum(_object_nbytes(item, seen) for item in value)
+    return 0
+
+
+def _table_nbytes(table) -> int:
+    total = 0
+    for column in table.columns:
+        total += len(str(column).encode("utf-8"))
+    for row in table.rows:
+        for item in row:
+            total += len(str(item).encode("utf-8"))
+    return total
+
+
+def _format_byte_count(size: int | float | None) -> str:
+    if size is None:
+        return "n/a"
+    value = max(float(size), 0.0)
+    units = ("B", "KB", "MB", "GB", "TB")
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TB"
+
+
+def _system_memory_bytes() -> tuple[int | None, int | None]:
+    if os.name == "nt":
+        return _windows_memory_bytes()
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
+    except (AttributeError, OSError, ValueError):
+        return None, None
+    return available_pages * page_size, total_pages * page_size
+
+
+def _windows_memory_bytes() -> tuple[int | None, int | None]:
+    class MEMORYSTATUSEX(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MEMORYSTATUSEX()
+    status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+    try:
+        ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+    except (AttributeError, OSError):
+        return None, None
+    if not ok:
+        return None, None
+    return int(status.ullAvailPhys), int(status.ullTotalPhys)
 
 
 def _format_histogram_label(value: float) -> str:

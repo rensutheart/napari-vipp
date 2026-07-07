@@ -22,6 +22,9 @@ from qtpy.QtWidgets import (
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
+    CACHE_MODE_KEEP_ALL,
+    CACHE_MODE_LOW_MEMORY,
+    CACHE_MODE_SMART,
     CollectionBatchDialog,
     ConnectionInsertDialog,
     FlexibleDoubleSpinBox,
@@ -37,6 +40,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
+    PrototypePipeline,
     SourcePayload,
 )
 from napari_vipp.core.preview import make_preview
@@ -3887,6 +3891,247 @@ def test_palette_adds_node_and_connects_branch(qtbot):
     assert widget.pipeline.outputs[node.id] is not None
 
 
+def test_adding_unconnected_node_does_not_rerun_cached_pipeline(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+
+    node = widget.add_node_from_palette("binary_threshold")
+
+    assert node.id in widget.pipeline.nodes
+    assert calls == []
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is not None
+
+
+def test_connecting_new_branch_reuses_cached_upstream(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("binary_threshold")
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+
+    widget._connect_nodes("gaussian", node.id)
+
+    assert node.id in calls
+    assert "input" not in calls
+    assert "gaussian" not in calls
+    assert widget.pipeline.outputs[node.id] is not None
+
+
+def test_inserting_node_on_wire_reuses_cached_source_side(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+
+    node = widget._insert_node_on_connection(
+        "median_filter",
+        ("gaussian", "threshold", 0, 0),
+        QPointF(250, 100),
+    )
+
+    assert node is not None
+    assert node.id in calls
+    assert "threshold" in calls
+    assert "input" not in calls
+    assert "gaussian" not in calls
+
+
+def test_cache_mode_defaults_to_keep_all_and_reports_memory(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.cache_mode_combo.currentText() == CACHE_MODE_KEEP_ALL
+    assert widget.memory_limit_spin.value() == 90
+    assert not widget._cache_pruning_enabled()
+    assert widget.pipeline.outputs["input"] is not None
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is not None
+    assert widget.cache_status_label.text().startswith("Cache ")
+    assert "(Keep all)" in widget.cache_status_label.text()
+    assert CACHE_MODE_KEEP_ALL in widget.cache_status_label.toolTip()
+
+
+def test_smart_cache_prunes_expendable_linear_outputs(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_SMART)
+
+    assert widget.pipeline.outputs["input"] is not None
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is None
+    assert "(Smart interactive)" in widget.cache_status_label.text()
+
+
+def test_smart_cache_selection_restores_pruned_selected_output(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+
+    widget.graph_view.select_node("input")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+    assert widget.pipeline.outputs["threshold"] is None
+
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_SMART)
+    assert widget.pipeline.outputs["threshold"] is None
+
+    widget.graph_view.select_node("threshold")
+
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is not None
+    assert widget.graph_view._cards["threshold"].preview.isHidden() is False
+
+
+def test_low_memory_cache_keeps_working_node_input_and_explicit_outputs(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("threshold", batch_output.id)
+    widget.graph_view.select_node("threshold")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+
+    assert widget.pipeline.outputs["input"] is None
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is not None
+    assert widget.pipeline.outputs[batch_output.id] is not None
+
+
+def test_low_memory_dirty_run_reuses_retained_working_input(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("threshold")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+    assert widget.pipeline.outputs["input"] is None
+    assert widget.pipeline.outputs["gaussian"] is not None
+
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+
+    widget._mark_pipeline_dirty("threshold")
+    widget.run_pipeline(force_sync=True)
+
+    assert calls == ["threshold"]
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is not None
+
+
+def test_keep_cached_node_survives_low_memory_pruning(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    widget.keep_cached_checkbox.setChecked(True)
+    assert widget.pipeline.nodes["gaussian"].params["_vipp_keep_cached"] is True
+
+    widget.graph_view.select_node("input")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+
+    assert widget.pipeline.outputs["input"] is not None
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is None
+
+
+def test_memory_guard_switches_keep_all_to_smart_and_prunes(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    warnings = []
+    monkeypatch.setattr("napari_vipp._widget._pipeline_cache_nbytes", lambda _p: 950)
+    monkeypatch.setattr(
+        "napari_vipp._widget._system_memory_bytes",
+        lambda: (50, 1000),
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.warning",
+        lambda *_args: warnings.append(_args),
+    )
+
+    message = widget._enforce_memory_guard()
+
+    assert "Memory guard switched cache mode" in message
+    assert "reclaimable-memory" in message
+    assert widget.cache_mode_combo.currentText() == CACHE_MODE_SMART
+    assert widget.pipeline.outputs["input"] is not None
+    assert widget.pipeline.outputs["gaussian"] is not None
+    assert widget.pipeline.outputs["threshold"] is None
+    assert warnings
+
+
+def test_memory_guard_uses_free_plus_cache_budget(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    monkeypatch.setattr("napari_vipp._widget._pipeline_cache_nbytes", lambda _p: 800)
+    monkeypatch.setattr(
+        "napari_vipp._widget._system_memory_bytes",
+        lambda: (100, 1000),
+    )
+
+    assert widget._enforce_memory_guard() == ""
+    assert widget.cache_mode_combo.currentText() == CACHE_MODE_KEEP_ALL
+
+
+def test_memory_guard_can_be_disabled(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.memory_guard_checkbox.setChecked(False)
+    monkeypatch.setattr("napari_vipp._widget._pipeline_cache_nbytes", lambda _p: 800)
+    monkeypatch.setattr(
+        "napari_vipp._widget._system_memory_bytes",
+        lambda: (100, 1000),
+    )
+
+    assert widget._enforce_memory_guard() == ""
+    assert widget.cache_mode_combo.currentText() == CACHE_MODE_KEEP_ALL
+
+
 def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -4594,6 +4839,8 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Show thumbnails" in labels
     assert "Run all in background" in labels
     assert "Follow napari dims" in labels
+    assert "Cache mode" in labels
+    assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
 
     widget.resize(1200, 600)
@@ -5076,6 +5323,52 @@ def test_run_collection_batch_prefers_explicit_batch_outputs(qtbot, tmp_path):
     saved_array = np.load(explicit_path)
     assert saved_array.shape == image.shape
     assert saved_array.dtype == image.dtype
+
+
+def test_run_collection_batch_uses_low_memory_retention(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    image = np.zeros((3, 8, 9), dtype=np.uint8)
+    image[:, 2:6, 3:7] = 200
+    tifffile.imwrite(input_dir / "field_a.tif", image, photometric="minisblack")
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("gaussian", batch_output.id)
+    widget.pipeline.set_param(batch_output.id, "format", "npy")
+
+    calls = []
+    original_run = PrototypePipeline.run
+
+    def captured_run(pipeline, *args, **kwargs):
+        calls.append(
+            {
+                "prune_unretained": kwargs.get("prune_unretained"),
+                "retain_node_ids": tuple(kwargs.get("retain_node_ids") or ()),
+            }
+        )
+        return original_run(pipeline, *args, **kwargs)
+
+    monkeypatch.setattr(PrototypePipeline, "run", captured_run)
+
+    saved = widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.tif",
+        image_format="ome-tiff",
+        save_workflow_snapshot=False,
+        save_python_script=False,
+    )
+
+    batch_calls = [call for call in calls if call["prune_unretained"]]
+    assert batch_calls
+    assert {path.name for path in saved} == {"field_a__output.npy"}
+    assert all(call["retain_node_ids"] == (batch_output.id,) for call in batch_calls)
 
 
 def test_run_collection_batch_supports_independent_source_bindings(qtbot, tmp_path):

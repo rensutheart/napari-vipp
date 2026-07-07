@@ -4016,7 +4016,12 @@ class PrototypePipeline:
         cancel_callback: Callable[[], bool] | None = None,
         manual_mode: str = MANUAL_RUN_CALCULATE,
         manual_node_ids: Iterable[str] | None = None,
+        retain_node_ids: Iterable[str] | None = None,
+        prune_unretained: bool = False,
     ) -> dict[str, Any]:
+        retained_nodes = {
+            node_id for node_id in (retain_node_ids or ()) if node_id in self.nodes
+        }
         dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
         if dirty_nodes is None:
             prior_outputs = dict(self.outputs)
@@ -4140,7 +4145,50 @@ class PrototypePipeline:
                 remaining.remove(node_id)
                 completed.add(node_id)
                 self.completed_node_ids.add(node_id)
+                if prune_unretained:
+                    self._prune_completed_outputs(
+                        completed,
+                        remaining,
+                        retained_nodes,
+                    )
+        if prune_unretained:
+            self.prune_cached_outputs(retained_nodes)
         return self.outputs
+
+    def prune_cached_outputs(self, retain_node_ids: Iterable[str]) -> None:
+        """Drop cached output data for nodes outside ``retain_node_ids``."""
+        retained = {node_id for node_id in retain_node_ids if node_id in self.nodes}
+        for node_id in list(self.nodes):
+            if node_id not in retained:
+                self._clear_cached_output(node_id)
+
+    def _prune_completed_outputs(
+        self,
+        completed: set[str],
+        remaining: set[str],
+        retain_node_ids: set[str],
+    ) -> None:
+        needed_sources = {
+            source_id
+            for node_id in remaining
+            for source_id in self._input_sources(node_id)
+        }
+        for node_id in list(completed):
+            if node_id in retain_node_ids or node_id in needed_sources:
+                continue
+            self._clear_cached_output(node_id)
+            completed.discard(node_id)
+
+    def _clear_cached_output(self, node_id: str) -> None:
+        if node_id not in self.nodes:
+            return
+        output_count = len(self.node_outputs.get(node_id, ()))
+        state_count = len(self.node_output_states.get(node_id, ()))
+        self.outputs[node_id] = None
+        self.output_states[node_id] = None
+        self.node_outputs[node_id] = [None] * output_count
+        self.node_output_states[node_id] = [None] * state_count
+        self.completed_node_ids.discard(node_id)
 
     def descendants_inclusive(self, node_ids: Iterable[str]) -> set[str]:
         targets = {node_id for node_id in node_ids if node_id in self.nodes}
@@ -4180,11 +4228,23 @@ class PrototypePipeline:
             return None
         if set(self.node_execution_messages) != set(self.nodes):
             return None
-        cached_nodes = set(self.completed_node_ids) & set(self.nodes)
-        nodes_to_run = self.descendants_inclusive(dirty_nodes)
-        cached_upstream = set(self.nodes) - nodes_to_run
-        if not cached_upstream <= cached_nodes:
-            return None
+        cached_nodes = {
+            node_id
+            for node_id in self.completed_node_ids & set(self.nodes)
+            if self._has_cached_output(node_id)
+        }
+        while True:
+            nodes_to_run = self.descendants_inclusive(dirty_nodes)
+            required_cached_sources = {
+                source_id
+                for node_id in nodes_to_run
+                for source_id in self._input_sources(node_id)
+                if source_id not in nodes_to_run
+            }
+            missing_upstream = required_cached_sources - cached_nodes
+            if not missing_upstream:
+                break
+            dirty_nodes.update(missing_upstream)
         return dirty_nodes
 
     def _run_node(

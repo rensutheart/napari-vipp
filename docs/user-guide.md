@@ -102,11 +102,20 @@ Recommended for large images or long graphs:
 
 - Follow napari dims: On
 - Run all in BG: On
+- Cache mode: Smart interactive cache, or Low-memory mode when RAM is tight
 
 Recommended for fixed-reference comparisons while navigating dims:
 
 - Follow napari dims: Off
 - Run all in BG: choose based on pipeline size
+
+The Settings menu also exposes `Auto memory guard` and `Cache limit`. If
+keep-all caching uses too much reclaimable memory, VIPP switches to Smart
+interactive cache and warns you. `Cache limit` is the allowed percentage of
+`free RAM + current VIPP cache`, and defaults to 90%. Mark important
+intermediate nodes with `Keep output cached` in the inspector when they should
+survive Smart or Low-memory pruning. See
+[cache-and-memory.md](cache-and-memory.md) for details.
 
 ## Manual Calculation Nodes
 
