@@ -67,4 +67,5 @@ tables.
 Graph tunnels in these examples are used as readability aids for reused sources:
 `Red intensity` avoids long back-reference wires from a split channel, while
 `Skeleton mask` avoids a dense fan-out from one binary skeleton mask into many
-QC and measurement nodes.
+QC and measurement nodes. Dense examples also include saved graph notes and
+selected-inspector metadata so manual review opens on a meaningful node.

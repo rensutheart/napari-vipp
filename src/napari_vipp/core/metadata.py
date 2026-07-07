@@ -484,7 +484,12 @@ def transform_split_output_state(
         )
 
     arr = np.asarray(data)
-    axes = _split_output_axes(input_state.axes, arr.ndim)
+    axes = _split_output_axes(
+        input_state.axes,
+        arr.ndim,
+        operation_id=operation_id,
+        params=params,
+    )
     metadata_source = input_state.metadata_source
     if len(axes) != arr.ndim:
         axes = infer_axis_metadata(arr)
@@ -496,7 +501,13 @@ def transform_split_output_state(
         metadata_source=metadata_source,
         source_name=input_state.source_name,
         history=input_state.history + (f"{label}: extracted {port_name}",),
-        channels=_split_output_channels(input_state.channels, port_name),
+        channels=_split_output_channels(
+            input_state.axes,
+            input_state.channels,
+            operation_id,
+            params,
+            port_name,
+        ),
         acquisition=input_state.acquisition,
         source=input_state.source,
     )
@@ -1035,8 +1046,16 @@ def _composite_to_rgb_axes(
 def _split_output_axes(
     axes: tuple[AxisMetadata, ...],
     output_ndim: int,
+    *,
+    operation_id: str = "",
+    params: dict[str, Any] | None = None,
 ) -> tuple[AxisMetadata, ...]:
     """Axes for one channel extracted from a multi-channel image."""
+    if operation_id == "split_axis":
+        axis_index = _split_axis_index_from_params(params or {}, len(axes))
+        reduced = _remove_axis(axes, axis_index)
+        if len(reduced) == output_ndim:
+            return reduced
     spatial = [axis for axis in axes if axis.type == "space"]
     if len(spatial) >= output_ndim:
         return tuple(spatial[-output_ndim:])
@@ -1129,15 +1148,38 @@ def _state_channel_count(state: ImageState) -> int:
 
 
 def _split_output_channels(
+    axes: tuple[AxisMetadata, ...],
     channels: tuple[ChannelMetadata, ...],
+    operation_id: str,
+    params: dict[str, Any],
     port_name: str,
 ) -> tuple[ChannelMetadata, ...]:
     if not channels:
         return ()
+    if operation_id == "split_axis":
+        axis_index = _split_axis_index_from_params(params, len(axes))
+        if axis_index != _channel_axis_index(axes):
+            return channels
     digits = "".join(character for character in port_name if character.isdigit())
     index = max(int(digits or "1") - 1, 0)
     index = min(index, len(channels) - 1)
     return (channels[index],)
+
+
+def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
+    value = params.get("axis", "axis:0")
+    text = str(value).strip().lower()
+    if text.startswith("axis:"):
+        text = text.split(":", 1)[1]
+    try:
+        axis = int(text)
+    except ValueError:
+        axis = 0
+    if ndim <= 0:
+        return 0
+    if axis < 0:
+        axis += ndim
+    return max(0, min(axis, ndim - 1))
 
 
 def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:

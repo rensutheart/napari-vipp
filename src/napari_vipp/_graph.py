@@ -108,6 +108,7 @@ class NodeCard(QFrame):
         self._can_pin = can_pin
         self._selected = False
         self._pinned = False
+        self._search_highlight = False
         self._preview_enabled = True
         self._processing = False
         self._processing_queued = False
@@ -188,6 +189,10 @@ class NodeCard(QFrame):
     def set_pinned(self, pinned: bool) -> None:
         self._pinned = pinned
         self.pin_button.setText("Unpin" if pinned else "Pin")
+        self._refresh_style()
+
+    def set_search_highlight(self, highlighted: bool) -> None:
+        self._search_highlight = bool(highlighted)
         self._refresh_style()
 
     def set_can_pin(self, can_pin: bool) -> None:
@@ -320,6 +325,10 @@ class NodeCard(QFrame):
                 border = "#94a3b8"
             if self._processing_queued and not self._pinned:
                 border = "#f59e0b"
+        if self._search_highlight and not self._selected and not self._pinned:
+            border = "#38bdf8"
+            border_width = max(border_width, 3)
+            background = "#1e2e38"
         accent_color = self._category_color
         category_background = self._category_tint
         category_color = self._category_color
@@ -1442,6 +1451,7 @@ class PipelineGraphView(QGraphicsView):
         self._tunnel_subscriber_ports: dict[str, list[PortItem]] = {}
         self._active_tunnel_name = ""
         self._hover_tunnel_name = ""
+        self._search_match_node_ids: set[str] = set()
         self._notes: dict[str, GraphNoteItem] = {}
 
     def build_graph(
@@ -1471,6 +1481,7 @@ class PipelineGraphView(QGraphicsView):
         self._tunnel_source_ports.clear()
         self._tunnel_subscriber_ports.clear()
         self._hover_tunnel_name = ""
+        self._search_match_node_ids.clear()
 
         default_positions = {
             "input": QPointF(0, 20),
@@ -1907,6 +1918,8 @@ class PipelineGraphView(QGraphicsView):
         proxy.refresh_ports()
         self._cards[node.id] = card
         self._proxies[node.id] = proxy
+        if node.id in self._search_match_node_ids:
+            card.set_search_highlight(True)
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
         self._mark_graph_geometry_changed()
         self.reroute_connections(affected_rect=proxy.sceneBoundingRect())
@@ -2007,6 +2020,24 @@ class PipelineGraphView(QGraphicsView):
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
         self.centerOn(proxy.sceneBoundingRect().center())
 
+    def set_search_matches(self, node_ids) -> None:
+        self._search_match_node_ids = {
+            str(node_id)
+            for node_id in node_ids or ()
+            if str(node_id) in self._proxies
+        }
+        for node_id, card in self._cards.items():
+            card.set_search_highlight(node_id in self._search_match_node_ids)
+        self._apply_graph_focus_opacity()
+
+    def clear_search_matches(self) -> None:
+        if not self._search_match_node_ids:
+            return
+        self._search_match_node_ids.clear()
+        for card in self._cards.values():
+            card.set_search_highlight(False)
+        self._apply_graph_focus_opacity()
+
     def _effective_tunnel_highlight(self) -> str:
         return self._active_tunnel_name or self._hover_tunnel_name
 
@@ -2024,26 +2055,52 @@ class PipelineGraphView(QGraphicsView):
             self._active_tunnel_name = ""
             self._hover_tunnel_name = ""
             active = ""
-        active_node_ids: set[str] = set()
         for name, source in self._tunnel_source_ports.items():
             role = ""
             if active:
                 role = "source" if name == active else "dimmed"
             source.set_tunnel_highlight_role(role)
-            if name == active:
-                active_node_ids.add(source.node_id)
         for name, ports in self._tunnel_subscriber_ports.items():
             for port in ports:
                 role = ""
                 if active:
                     role = "subscriber" if name == active else "dimmed"
                 port.set_tunnel_highlight_role(role)
-                if name == active:
-                    active_node_ids.add(port.node_id)
+        self._apply_graph_focus_opacity()
+
+    def _active_tunnel_node_ids(self) -> set[str]:
+        active = self._effective_tunnel_highlight()
+        if not active:
+            return set()
+        active_node_ids: set[str] = set()
+        source = self._tunnel_source_ports.get(active)
+        if source is not None:
+            active_node_ids.add(source.node_id)
+        for port in self._tunnel_subscriber_ports.get(active, ()):
+            active_node_ids.add(port.node_id)
+        return active_node_ids
+
+    def _apply_graph_focus_opacity(self) -> None:
+        active = self._effective_tunnel_highlight()
+        active_tunnel_node_ids = self._active_tunnel_node_ids()
+        search_node_ids = self._search_match_node_ids
         for node_id, proxy in self._proxies.items():
-            proxy.setOpacity(1.0 if not active or node_id in active_node_ids else 0.38)
+            opacity = 1.0
+            if active and node_id not in active_tunnel_node_ids:
+                opacity = min(opacity, 0.38)
+            if search_node_ids and node_id not in search_node_ids:
+                opacity = min(opacity, 0.34)
+            proxy.setOpacity(opacity)
         for connection in self._connections:
-            connection.setOpacity(0.18 if active else 1.0)
+            opacity = 1.0
+            if active:
+                opacity = min(opacity, 0.18)
+            if search_node_ids and (
+                connection.source_id not in search_node_ids
+                and connection.target_id not in search_node_ids
+            ):
+                opacity = min(opacity, 0.28)
+            connection.setOpacity(opacity)
         self.scene.update()
 
     def remove_node(self, node_id: str) -> None:
@@ -2063,7 +2120,9 @@ class PipelineGraphView(QGraphicsView):
             self._highlighted_input_port = None
         self._cards.pop(node_id, None)
         self._proxies.pop(node_id, None)
+        self._search_match_node_ids.discard(node_id)
         self.scene.removeItem(proxy)
+        self._apply_graph_focus_opacity()
         self._mark_graph_geometry_changed()
         self.reroute_connections(affected_rect=affected_rect)
 

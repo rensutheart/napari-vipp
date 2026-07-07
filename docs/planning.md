@@ -63,8 +63,9 @@ Current public release: `0.9.0a1`.
 Current development work after `0.9.0a1` adds two implemented clusters:
 
 - graph readability: named-tunnel example workflows, schematic net-port tunnel
-  badges, tunnel reveal/highlight, a first-pass tunnel manager, and saved graph
-  notes;
+  badges, tunnel reveal/highlight, a tunnel manager, graph search/focus,
+  ambiguous insert-on-wire mapping, saved graph notes, and workflow UI-state
+  metadata;
 - interactive execution and memory: branch-local dirty reruns, explicit cache
   modes, cache/RAM status, auto memory guard, per-node `Keep output cached`, and
   low-memory batch retention.
@@ -125,13 +126,17 @@ Implemented enough to build on:
 Known gap: large-data behavior is still mostly pragmatic rather than fully
 lazy. Thumbnail and histogram generation need clearer sampling and pyramid
 strategies before very large OME-Zarr datasets become comfortable.
+Multiple series should be investigated as source/import or batch-binding
+structure rather than a normal image axis; only expose series to axis-splitting
+tools when a reader materializes it as a real metadata-backed image axis.
 
 ### Analysis Coverage
 
 Implemented enough to build on:
 
 - filtering, projection, thresholding, morphology, label cleanup, watershed
-  separation, image math, channel composition, and dtype conversion;
+  separation, image math, channel composition, explicit axis splitting, and
+  dtype conversion;
 - object morphology, object intensity, table merge, metadata annotation, table
   column selection, grouped summaries, and property-based label filtering;
 - calibrated extended morphology and first-pass true-3D mesh morphology;
@@ -173,18 +178,16 @@ These are the active areas that should guide work after `0.9.0a1`.
 ### Large Graph Usability
 
 Implemented progress: tunnel reveal/highlight, tunnel management, graph notes,
-named-tunnel examples, insert-on-wire make-room behavior, and connector
-rerouting.
+named-tunnel examples, graph search/focus, insert-on-wire make-room behavior,
+ambiguous insert-on-wire port mapping, optional thumbnail-visibility
+persistence, selected inspector-state persistence, and connector rerouting.
 
-Next steps:
+Release-readiness steps:
 
-- add graph search/focus by node title, operation id, tunnel name, and output
-  tag;
-- add the phase-2 insert-on-wire chooser for ambiguous ports;
-- add alignment guides and optional snap-to-grid;
-- persist per-node thumbnail visibility and selected inspector display state;
-- update one dense colocalization or measurement example to demonstrate graph
-  navigation and tunnel management.
+- run manual smoke tests for graph search, tunnel manager, graph notes,
+  insert-on-wire mapping, workflow save/load, cache modes, and example
+  workflows;
+- update release notes and version metadata when cutting the alpha.
 
 Minimap/navigation remains useful, but it should wait until search, tunnel
 management, and layout polish are in place.
@@ -272,33 +275,38 @@ Implemented in current development:
   consumes it;
 - tunnel management panel for filtering, renaming, deleting, focusing, and
   auditing named sources;
+- graph search by node title, operation id, tunnel name, and output tag;
 - graph notes/annotations saved in workflow JSON with canvas position;
 - branch-local dirty reruns for adding nodes, connecting new branches, inserting
   on wires, disconnecting branches, deleting nodes, and tunnel edits;
+- ambiguous insert-on-wire port chooser with dynamic Split Channels output
+  inference;
+- explicit `Split Axis` node for splitting time, Z, or other non-channel stack
+  axes separately from semantic channel splitting;
+- selected inspector state plus optional per-node thumbnail visibility in
+  workflow JSON;
 - cache modes, cache/RAM status, auto memory guard, per-node `Keep output
   cached`, and low-memory batch retention;
 - user documentation in [cache-and-memory.md](cache-and-memory.md).
 
-Next steps:
+Release-readiness steps:
 
-- graph search by node title, operation id, tunnel name, and output tag;
-- phase-2 insert-on-wire chooser for ambiguous ports;
-- alignment guides and optional snap-to-grid;
-- persistence for per-node thumbnail visibility and selected inspector display
-  state;
-- example workflow update showing dense colocalization or measurement graph
-  navigation.
+- update changelog and package version;
+- run full automated tests plus a short manual UI smoke pass;
+- confirm example workflows load with saved notes, tunnels, and inspector
+  metadata.
 
 Release gate:
 
 - large colocalization workflow remains readable without drawing repeated
   channel wires;
 - routine graph edits reuse unaffected cached outputs;
-- workflow JSON round-trips tunnel management and graph-note changes;
+- workflow JSON round-trips tunnel management, graph-note changes, inspector
+  state, and optional thumbnail visibility;
 - smart/low-memory cache modes prune and restore expected outputs without losing
   explicit output intent;
 - graph tests cover tunnel management, notes, search, reveal/highlight, cache
-  modes, and memory guard behavior.
+  modes, memory guard behavior, and insert-on-wire mapping behavior.
 
 ### 0.11.0a1: Batch Configuration And Provenance
 
@@ -417,6 +425,7 @@ Release gate:
 These should wait until the platform and validation base are stronger:
 
 - minimap/navigation aids for very large graphs;
+- alignment guides and optional snap-to-grid for manual graph layout polish;
 - registration;
 - deconvolution with PSF handling;
 - model-backed segmentation;

@@ -151,6 +151,60 @@ def test_workflow_preserves_graph_notes(tmp_path):
     ]
 
 
+def test_workflow_preserves_vipp_metadata(tmp_path):
+    pipeline = _build_pipeline()
+    metadata = {
+        "vipp": {
+            "inspector": {
+                "selected_node_id": "gaussian",
+                "right_panel_visible": False,
+            },
+            "thumbnails": {
+                "disabled_node_ids": ["median_filter_1"],
+            },
+        }
+    }
+
+    document = serialize_workflow(pipeline, metadata=metadata)
+    assert document["metadata"] == metadata
+
+    path = save_workflow(tmp_path / "metadata.json", pipeline, metadata=metadata)
+    workflow = load_workflow(path)
+
+    assert workflow["metadata"] == metadata
+
+
+def test_workflow_loads_without_thumbnail_metadata():
+    pipeline = _build_pipeline()
+    metadata = {
+        "vipp": {
+            "inspector": {
+                "selected_node_id": "gaussian",
+                "right_panel_visible": True,
+            },
+        }
+    }
+    document = serialize_workflow(pipeline, metadata=metadata)
+
+    workflow = deserialize_workflow(document)
+
+    assert workflow["metadata"] == metadata
+
+
+def test_workflow_metadata_node_references_must_exist():
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "inspector": {
+                "selected_node_id": "ghost",
+            },
+        }
+    }
+
+    with pytest.raises(ValueError, match="references missing node"):
+        deserialize_workflow(document)
+
+
 def test_unknown_operation_is_rejected():
     pipeline = _build_pipeline()
     document = serialize_workflow(pipeline)

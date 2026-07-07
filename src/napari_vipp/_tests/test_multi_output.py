@@ -81,34 +81,35 @@ def test_split_channels_adjusts_ports_to_true_channel_count():
     node = pipeline.add_node("split_channels")
     pipeline.connect("input", node.id)
 
-    pipeline.run(_two_channel_image())
+    pipeline.run(_two_channel_image(), input_metadata={"axes": "CYX"})
 
     ports = pipeline.output_ports(node.id)
     assert [port.name for port in ports] == ["channel_1", "channel_2"]
     assert len(pipeline.node_outputs[node.id]) == 2
 
 
-def test_split_channels_grayscale_yields_single_port():
+def test_split_axis_grayscale_yields_one_port_per_axis_index():
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
-    node = pipeline.add_node("split_channels")
+    node = pipeline.add_node("split_axis")
     pipeline.connect("input", node.id)
 
-    pipeline.run(np.full((8, 8), 7, dtype=np.uint8))
+    image = np.full((3, 8), 7, dtype=np.uint8)
+    pipeline.run(image, input_metadata={"axes": "YX"})
 
     ports = pipeline.output_ports(node.id)
-    assert [port.name for port in ports] == ["channel_1"]
-    assert len(pipeline.node_outputs[node.id]) == 1
+    assert [port.name for port in ports] == ["y_1", "y_2", "y_3"]
+    assert len(pipeline.node_outputs[node.id]) == 3
 
 
 def test_trim_invalid_output_connections_drops_stale_ports():
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
-    node = pipeline.add_node("split_channels")
+    node = pipeline.add_node("split_axis")
     pipeline.connect("input", node.id)
     pipeline.connect(node.id, "gaussian", None, 2)
 
-    # Two-channel input shrinks the node to ports 0 and 1, invalidating port 2.
+    # Two slices shrink the node to ports 0 and 1, invalidating port 2.
     pipeline.run(_two_channel_image())
     removed = pipeline.trim_invalid_output_connections(node.id)
 

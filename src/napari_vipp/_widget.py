@@ -103,6 +103,10 @@ from napari_vipp.core.graph_layout import (
     LayoutNode,
     layout_layered_dag,
 )
+from napari_vipp.core.graph_search import (
+    GraphSearchMatch,
+    find_graph_matches,
+)
 from napari_vipp.core.io import (
     AnalysisLabel,
     SourceInspection,
@@ -134,6 +138,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     GLOBAL_THRESHOLD_OPERATIONS,
     MANUAL_RUN_SKIP,
+    InputSpec,
     OperationSpec,
     ParameterSpec,
     PrototypePipeline,
@@ -574,6 +579,16 @@ class ConnectionInsertCandidate:
     search_text: str
 
 
+@dataclass(frozen=True)
+class ConnectionInsertPortMapping:
+    input_port: int
+    output_port: int
+    input_label: str
+    output_label: str
+    detail: str
+    params: tuple[tuple[str, object], ...] = ()
+
+
 class ConnectionInsertDialog(QDialog):
     """Searchable picker for inserting a node on a specific connection."""
 
@@ -668,6 +683,7 @@ class ConnectionInsertDialog(QDialog):
     def _mode_label(mode: str) -> str:
         return {
             "full": "Full splice",
+            "choose": "Choose ports",
             "partial": "Partial insert",
             "place": "Place in gap",
         }.get(mode, mode)
@@ -676,6 +692,7 @@ class ConnectionInsertDialog(QDialog):
     def _mode_color(mode: str) -> str:
         return {
             "full": "#22c55e",
+            "choose": "#a78bfa",
             "partial": "#38bdf8",
             "place": "#f59e0b",
         }.get(mode, "#cbd5e1")
@@ -685,6 +702,120 @@ class ConnectionInsertDialog(QDialog):
         if candidate.subcategory:
             return f"{candidate.category} / {candidate.subcategory}"
         return candidate.category
+
+
+class ConnectionInsertMappingDialog(QDialog):
+    """Chooser for ambiguous insert-on-wire port mappings."""
+
+    def __init__(
+        self,
+        mappings: list[ConnectionInsertPortMapping],
+        node_title: str,
+        source_title: str,
+        target_title: str,
+        axis_choices: list[tuple[str, str]] | None = None,
+        mappings_by_axis: dict[str, list[ConnectionInsertPortMapping]] | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Choose insert ports")
+        self.resize(560, 360)
+        self._mappings = list(mappings)
+        self._mappings_by_axis = {
+            str(axis): list(axis_mappings)
+            for axis, axis_mappings in (mappings_by_axis or {}).items()
+        }
+        self.axis_combo: QComboBox | None = None
+
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Upstream input", "Downstream output", "Mapping"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.tree.itemDoubleClicked.connect(self._accept_item)
+        self.tree.itemSelectionChanged.connect(self._sync_button_state)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        self.ok_button = self.buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setEnabled(False)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                f"Choose how '{node_title}' should connect "
+                f"'{source_title}' to '{target_title}'."
+            )
+        )
+        if axis_choices:
+            axis_row = QHBoxLayout()
+            axis_row.setContentsMargins(0, 0, 0, 0)
+            axis_row.addWidget(QLabel("Axis"))
+            self.axis_combo = QComboBox()
+            for value, label in axis_choices:
+                self.axis_combo.addItem(label, value)
+            self.axis_combo.currentIndexChanged.connect(self._on_axis_changed)
+            axis_row.addWidget(self.axis_combo, 1)
+            layout.addLayout(axis_row)
+        layout.addWidget(self.tree, 1)
+        layout.addWidget(self.buttons)
+
+        if self.axis_combo is not None:
+            self._on_axis_changed(self.axis_combo.currentIndex())
+        self._populate()
+
+    def selected_mapping(self) -> ConnectionInsertPortMapping | None:
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        index = item.data(0, Qt.UserRole)
+        try:
+            return self._mappings[int(index)]
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _on_axis_changed(self, _index: int) -> None:
+        if self.axis_combo is None:
+            return
+        axis = str(self.axis_combo.currentData())
+        self._mappings = list(self._mappings_by_axis.get(axis, ()))
+        self._populate()
+
+    def _populate(self) -> None:
+        self.tree.clear()
+        first_item = None
+        for index, mapping in enumerate(self._mappings):
+            item = QTreeWidgetItem(
+                [
+                    mapping.input_label,
+                    mapping.output_label,
+                    mapping.detail,
+                ]
+            )
+            item.setData(0, Qt.UserRole, index)
+            item.setToolTip(0, mapping.detail)
+            item.setToolTip(1, mapping.detail)
+            item.setToolTip(2, mapping.detail)
+            self.tree.addTopLevelItem(item)
+            if first_item is None:
+                first_item = item
+        if first_item is not None:
+            self.tree.setCurrentItem(first_item)
+        for column in range(3):
+            self.tree.resizeColumnToContents(column)
+        self._sync_button_state()
+
+    def _sync_button_state(self) -> None:
+        self.ok_button.setEnabled(self.selected_mapping() is not None)
+
+    def _accept_item(self, item, _column) -> None:
+        if item.data(0, Qt.UserRole) is not None:
+            self.accept()
 
 
 class NodePalette(QTreeWidget):
@@ -3798,6 +3929,9 @@ class VippWidget(QWidget):
         self._syncing_view_dims_bar = False
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self._graph_notes: dict[str, GraphNoteState] = {}
+        self._graph_search_matches: tuple[GraphSearchMatch, ...] = ()
+        self._graph_search_index = -1
+        self._graph_search_highlighted_tunnel = ""
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -3805,6 +3939,14 @@ class VippWidget(QWidget):
         self.layer_combo.setMinimumWidth(220)
         self.global_thumbnail_checkbox = QCheckBox("Thumbnails")
         self.global_thumbnail_checkbox.setChecked(True)
+        self.save_thumbnail_visibility_checkbox = QCheckBox(
+            "Save thumbnail visibility in workflows"
+        )
+        self.save_thumbnail_visibility_checkbox.setChecked(False)
+        self.save_thumbnail_visibility_checkbox.setToolTip(
+            "Store per-node thumbnail preview visibility in saved workflow JSON. "
+            "Thumbnail image pixels are never saved."
+        )
         self.preview_mode_combo = QComboBox()
         self.preview_mode_combo.addItems(["Slice", "MIP", "Off"])
         self.thumbnail_contrast_combo = QComboBox()
@@ -3967,6 +4109,21 @@ class VippWidget(QWidget):
         self.palette_search = QLineEdit()
         self.palette_search.setPlaceholderText("Search nodes")
         self.palette_search.setClearButtonEnabled(True)
+        self.graph_search_edit = QLineEdit()
+        self.graph_search_edit.setPlaceholderText("Search graph")
+        self.graph_search_edit.setClearButtonEnabled(True)
+        self.graph_search_edit.setToolTip(
+            "Search node titles, operation IDs, tunnel names, and output tags."
+        )
+        self.graph_search_edit.setMaximumWidth(260)
+        self.graph_search_focus_button = QPushButton("Focus")
+        self.graph_search_focus_button.setToolTip(
+            "Focus the next graph search match."
+        )
+        self.graph_search_focus_button.setEnabled(False)
+        self.graph_search_status = QLabel("")
+        self.graph_search_status.setMinimumWidth(72)
+        self.graph_search_status.setStyleSheet("color: #94a3b8; font-size: 11px;")
         self.palette = NodePalette(grouped_palette_specs())
         self.palette.setMinimumWidth(190)
         self.palette.setMinimumHeight(0)
@@ -4430,6 +4587,11 @@ class VippWidget(QWidget):
         )
         self._add_checkbox_menu_action(
             menu,
+            "Save thumbnail visibility in workflows",
+            self.save_thumbnail_visibility_checkbox,
+        )
+        self._add_checkbox_menu_action(
+            menu,
             "Run all in background",
             self.background_all_checkbox,
         )
@@ -4570,7 +4732,11 @@ class VippWidget(QWidget):
 
         panel_controls = QHBoxLayout()
         panel_controls.setContentsMargins(0, 0, 0, 0)
+        panel_controls.setSpacing(4)
         panel_controls.addWidget(self.left_panel_toggle)
+        panel_controls.addWidget(self.graph_search_edit)
+        panel_controls.addWidget(self.graph_search_focus_button)
+        panel_controls.addWidget(self.graph_search_status)
         panel_controls.addStretch(1)
         panel_controls.addWidget(self.right_panel_toggle)
         layout.addLayout(panel_controls)
@@ -4764,6 +4930,11 @@ class VippWidget(QWidget):
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
         self.right_panel_toggle.clicked.connect(self._toggle_right_panel)
         self.palette_search.textChanged.connect(self.palette.set_filter_text)
+        self.graph_search_edit.textChanged.connect(self._on_graph_search_changed)
+        self.graph_search_edit.returnPressed.connect(self._focus_next_graph_search_match)
+        self.graph_search_focus_button.clicked.connect(
+            self._focus_next_graph_search_match
+        )
 
         self.palette.operation_requested.connect(self.add_node_from_palette)
         self.graph_view.node_create_requested.connect(self._add_node_at)
@@ -4832,6 +5003,94 @@ class VippWidget(QWidget):
         )
         with QSignalBlocker(self.graph_zoom_slider):
             self.graph_zoom_slider.setValue(clipped)
+
+    def _on_graph_search_changed(self, _text: str) -> None:
+        self._clear_graph_search_tunnel_highlight()
+        self._refresh_graph_search_matches(reset_index=True)
+
+    def _refresh_graph_search_matches(self, *, reset_index: bool = True) -> None:
+        query = self.graph_search_edit.text()
+        matches = find_graph_matches(
+            query,
+            self.pipeline.nodes.values(),
+            self.pipeline.output_tunnel_list(),
+            self.pipeline.connections,
+        )
+        self._graph_search_matches = matches
+        if reset_index:
+            self._graph_search_index = 0 if matches else -1
+        elif matches and self._graph_search_index >= len(matches):
+            self._graph_search_index = 0
+        elif not matches:
+            self._graph_search_index = -1
+
+        node_ids = {
+            node_id
+            for match in matches
+            for node_id in match.node_ids
+            if node_id in self.pipeline.nodes
+        }
+        if node_ids:
+            self.graph_view.set_search_matches(node_ids)
+        else:
+            self.graph_view.clear_search_matches()
+        self._sync_graph_search_status()
+
+    def _sync_graph_search_status(self) -> None:
+        query = self.graph_search_edit.text()
+        if not _normalize_search_text(query):
+            text = ""
+        elif not self._graph_search_matches:
+            text = "No matches"
+        else:
+            count = len(self._graph_search_matches)
+            text = f"{count} match" if count == 1 else f"{count} matches"
+        self.graph_search_status.setText(text)
+        self.graph_search_focus_button.setEnabled(bool(self._graph_search_matches))
+
+    def _focus_next_graph_search_match(self) -> None:
+        if not self._graph_search_matches:
+            self._refresh_graph_search_matches(reset_index=True)
+        if not self._graph_search_matches:
+            query = self.graph_search_edit.text().strip()
+            if query:
+                self.status_label.setText(f"No graph match for '{query}'.")
+            else:
+                self.status_label.setText("Enter graph search text to focus a match.")
+            return
+
+        index = self._graph_search_index
+        if index < 0 or index >= len(self._graph_search_matches):
+            index = 0
+        match = self._graph_search_matches[index]
+        self._graph_search_index = (index + 1) % len(self._graph_search_matches)
+        self._focus_graph_search_match(match)
+
+    def _focus_graph_search_match(self, match: GraphSearchMatch) -> None:
+        if match.kind == "tunnel" and match.tunnel_name:
+            self._clear_graph_search_tunnel_highlight()
+            self.graph_view.set_search_matches(match.node_ids)
+            self.graph_view.reveal_tunnel(match.tunnel_name)
+            self._graph_search_highlighted_tunnel = match.tunnel_name
+            self.status_label.setText(self._tunnel_status_text(match.tunnel_name))
+            return
+
+        if match.node_id not in self.pipeline.nodes:
+            self._refresh_graph_search_matches(reset_index=True)
+            return
+        self._clear_graph_search_tunnel_highlight()
+        self.graph_view.clear_tunnel_highlight(sticky=True)
+        self.graph_view.focus_node(match.node_id)
+        node = self.pipeline.nodes[match.node_id]
+        fields = ", ".join(match.matched_fields)
+        suffix = f" via {fields}" if fields else ""
+        self.status_label.setText(f"Focused '{node.title}'{suffix}.")
+
+    def _clear_graph_search_tunnel_highlight(self) -> None:
+        if not self._graph_search_highlighted_tunnel:
+            return
+        self.graph_view.clear_tunnel_highlight(sticky=True)
+        self._graph_search_highlighted_tunnel = ""
 
     def _on_follow_dims_toggled(self, _checked: bool) -> None:
         self._update_thumbnails()
@@ -4967,6 +5226,7 @@ class VippWidget(QWidget):
             )
             self._sync_all_input_ports()
             self._sync_all_output_ports()
+            self._refresh_graph_search_matches(reset_index=True)
             self._sync_pin_ui()
             self._invalidate_pipeline_cache()
             self.run_pipeline()
@@ -5097,6 +5357,7 @@ class VippWidget(QWidget):
         self._sync_node_input_ports(node.id)
         self._sync_node_output_ports(node.id)
         self._sync_pin_ui()
+        self._refresh_graph_search_matches(reset_index=True)
         self.graph_view.select_node(node.id)
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
@@ -5114,6 +5375,16 @@ class VippWidget(QWidget):
         if mode == "incompatible":
             self.status_label.setText(reason)
             return None
+        mapping = None
+        if mode == "choose":
+            mapping = self._choose_connection_insert_mapping(
+                operation_id,
+                connection_key,
+            )
+            if mapping is None:
+                self.status_label.setText("Insert canceled.")
+                return None
+        splice_mode = "full" if mapping is not None else mode
 
         try:
             source_id, target_id, target_port, source_port = (
@@ -5121,6 +5392,7 @@ class VippWidget(QWidget):
             )
             downstream = self.pipeline.descendants_inclusive([target_id])
             node = self.pipeline.add_node(operation_id)
+            self._apply_insert_mapping_params(node.id, mapping)
             self.graph_view.add_node(node, position)
             self._sync_node_input_ports(node.id)
             self._sync_node_output_ports(node.id)
@@ -5128,7 +5400,7 @@ class VippWidget(QWidget):
             self._make_room_for_inserted_node(source_id, target_id, node.id, downstream)
 
             changed_connections = False
-            if mode in {"full", "partial"}:
+            if splice_mode in {"full", "partial"}:
                 if not self.pipeline.disconnect(source_id, target_id, target_port):
                     raise RuntimeError("Original connection was no longer available.")
                 self.graph_view.remove_connection(
@@ -5142,7 +5414,7 @@ class VippWidget(QWidget):
                 input_result = self.pipeline.connect(
                     source_id,
                     node.id,
-                    target_port=0,
+                    target_port=mapping.input_port if mapping is not None else 0,
                     source_port=source_port,
                 )
                 if not input_result.success:
@@ -5150,12 +5422,14 @@ class VippWidget(QWidget):
                 self._apply_connection_result_to_graph(input_result)
                 self._sync_node_output_ports(node.id)
 
-                if mode == "full":
+                if splice_mode == "full":
                     output_result = self.pipeline.connect(
                         node.id,
                         target_id,
                         target_port=target_port,
-                        source_port=0,
+                        source_port=(
+                            mapping.output_port if mapping is not None else 0
+                        ),
                     )
                     if not output_result.success:
                         raise RuntimeError(output_result.message)
@@ -5164,7 +5438,7 @@ class VippWidget(QWidget):
             self.graph_view.select_node(node.id)
             self._sync_pin_ui()
             dirty_nodes = {node.id}
-            if mode == "partial":
+            if splice_mode == "partial":
                 dirty_nodes.add(target_id)
             self._mark_pipeline_branches_dirty(dirty_nodes)
             self.run_pipeline()
@@ -5175,7 +5449,13 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Insert failed: {exc}")
             return None
 
-        if mode == "full":
+        if mapping is not None:
+            self.status_label.setText(
+                f"Inserted '{node.title}' between "
+                f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}' "
+                f"using {mapping.input_label} and {mapping.output_label}."
+            )
+        elif mode == "full":
             self.status_label.setText(
                 f"Inserted '{node.title}' between "
                 f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}'."
@@ -5227,11 +5507,27 @@ class VippWidget(QWidget):
             )
             return None
 
-        mode, reason = self._connection_insert_mode(node.operation_id, connection_key)
+        mode, reason = self._connection_insert_mode(
+            node.operation_id,
+            connection_key,
+            inserted_node_id=node_id,
+        )
         if mode == "incompatible":
             self._push_undo_if_changed(before)
             self.status_label.setText(reason)
             return None
+        mapping = None
+        if mode == "choose":
+            mapping = self._choose_connection_insert_mapping(
+                node.operation_id,
+                connection_key,
+                inserted_node_id=node_id,
+            )
+            if mapping is None:
+                self._push_undo_if_changed(before)
+                self.status_label.setText("Insert canceled.")
+                return None
+        splice_mode = "full" if mapping is not None else mode
 
         try:
             source_id, target_id, target_port, source_port = (
@@ -5239,10 +5535,11 @@ class VippWidget(QWidget):
             )
             downstream = self.pipeline.descendants_inclusive([target_id])
             downstream.discard(node_id)
+            self._apply_insert_mapping_params(node_id, mapping)
             self._make_room_for_inserted_node(source_id, target_id, node_id, downstream)
 
             changed_connections = False
-            if mode in {"full", "partial"}:
+            if splice_mode in {"full", "partial"}:
                 if not self.pipeline.disconnect(source_id, target_id, target_port):
                     raise RuntimeError("Original connection was no longer available.")
                 self.graph_view.remove_connection(
@@ -5256,7 +5553,7 @@ class VippWidget(QWidget):
                 input_result = self.pipeline.connect(
                     source_id,
                     node_id,
-                    target_port=0,
+                    target_port=mapping.input_port if mapping is not None else 0,
                     source_port=source_port,
                 )
                 if not input_result.success:
@@ -5264,12 +5561,14 @@ class VippWidget(QWidget):
                 self._apply_connection_result_to_graph(input_result)
                 self._sync_node_output_ports(node_id)
 
-                if mode == "full":
+                if splice_mode == "full":
                     output_result = self.pipeline.connect(
                         node_id,
                         target_id,
                         target_port=target_port,
-                        source_port=0,
+                        source_port=(
+                            mapping.output_port if mapping is not None else 0
+                        ),
                     )
                     if not output_result.success:
                         raise RuntimeError(output_result.message)
@@ -5279,7 +5578,7 @@ class VippWidget(QWidget):
             self._sync_pin_ui()
             if changed_connections:
                 dirty_nodes = {node_id}
-                if mode == "partial":
+                if splice_mode == "partial":
                     dirty_nodes.add(target_id)
                 self._mark_pipeline_branches_dirty(dirty_nodes)
                 self.run_pipeline()
@@ -5295,7 +5594,13 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Insert failed: {exc}")
             return None
 
-        if mode == "full":
+        if mapping is not None:
+            self.status_label.setText(
+                f"Inserted existing '{node.title}' between "
+                f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}' "
+                f"using {mapping.input_label} and {mapping.output_label}."
+            )
+        elif mode == "full":
             self.status_label.setText(
                 f"Inserted existing '{node.title}' between "
                 f"'{self._node_title(source_id)}' and '{self._node_title(target_id)}'."
@@ -5318,6 +5623,16 @@ class VippWidget(QWidget):
             connection.source_id == node_id or connection.target_id == node_id
             for connection in self.pipeline.connections
         )
+
+    def _apply_insert_mapping_params(
+        self,
+        node_id: str,
+        mapping: ConnectionInsertPortMapping | None,
+    ) -> None:
+        if mapping is None:
+            return
+        for name, value in mapping.params:
+            self.pipeline.set_param(node_id, str(name), value)
 
     def _choose_connection_insert_operation(self, connection_key) -> str | None:
         candidates = self._connection_insert_candidates(connection_key)
@@ -5372,6 +5687,7 @@ class VippWidget(QWidget):
     def _connection_insert_mode_label(mode: str) -> str:
         return {
             "full": "full splice",
+            "choose": "choose ports",
             "partial": "partial insert",
             "place": "place in gap",
         }.get(mode, mode)
@@ -5381,6 +5697,11 @@ class VippWidget(QWidget):
             return (
                 "Full splice: replace the original wire and connect "
                 "source -> inserted node -> target."
+            )
+        if mode == "choose":
+            return (
+                "Choose ports: select which inserted input receives the upstream "
+                "output and which inserted output feeds the downstream node."
             )
         if mode == "partial":
             return (
@@ -5416,6 +5737,187 @@ class VippWidget(QWidget):
         source_id, target_id, target_port, source_port = tuple(connection_key)
         return str(source_id), str(target_id), int(target_port), int(source_port)
 
+    def _choose_connection_insert_mapping(
+        self,
+        operation_id: str,
+        connection_key,
+        *,
+        inserted_node_id: str | None = None,
+    ) -> ConnectionInsertPortMapping | None:
+        axis_choices = self._connection_insert_axis_choices(
+            operation_id,
+            connection_key,
+        )
+        mappings_by_axis: dict[str, list[ConnectionInsertPortMapping]] = {}
+        if axis_choices:
+            for axis_value, _axis_label in axis_choices:
+                axis_mappings = self._connection_insert_mapping_options(
+                    operation_id,
+                    connection_key,
+                    inserted_node_id=inserted_node_id,
+                    params_override={"axis": axis_value},
+                )
+                if axis_mappings:
+                    mappings_by_axis[axis_value] = axis_mappings
+            axis_choices = [
+                choice for choice in axis_choices if choice[0] in mappings_by_axis
+            ]
+            if not axis_choices:
+                return None
+            mappings = list(mappings_by_axis[axis_choices[0][0]])
+        else:
+            mappings = self._connection_insert_mapping_options(
+                operation_id,
+                connection_key,
+                inserted_node_id=inserted_node_id,
+            )
+        if len(mappings) == 1 and len(axis_choices) <= 1:
+            return mappings[0]
+        if not mappings:
+            return None
+        try:
+            source_id, target_id, _target_port, _source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            title = self.pipeline.operation_spec(operation_id).title
+            source_title = self._node_title(source_id)
+            target_title = self._node_title(target_id)
+        except Exception:
+            return None
+        dialog = ConnectionInsertMappingDialog(
+            mappings,
+            title,
+            source_title,
+            target_title,
+            axis_choices=axis_choices,
+            mappings_by_axis=mappings_by_axis,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return None
+        return dialog.selected_mapping()
+
+    def _connection_insert_mapping_options(
+        self,
+        operation_id: str,
+        connection_key,
+        *,
+        inserted_node_id: str | None = None,
+        params_override: dict[str, object] | None = None,
+    ) -> list[ConnectionInsertPortMapping]:
+        try:
+            source_id, target_id, target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+            spec = self.pipeline.operation_spec(operation_id)
+        except Exception:
+            return []
+        if source_id not in self.pipeline.nodes or target_id not in self.pipeline.nodes:
+            return []
+
+        source_ports = self.pipeline.output_ports(source_id)
+        target_ports = self.pipeline.input_ports(target_id)
+        if not 0 <= source_port < len(source_ports):
+            return []
+        if not 0 <= target_port < len(target_ports):
+            return []
+
+        source_type = source_ports[source_port].output_type
+        target_type = target_ports[target_port].input_type
+        input_ports = self._operation_insert_input_ports(
+            spec,
+            inserted_node_id=inserted_node_id,
+        )
+        output_ports = self._operation_insert_output_ports(
+            spec,
+            source_type,
+            inserted_node_id=inserted_node_id,
+            source_id=source_id,
+            source_port=source_port,
+            params_override=params_override,
+        )
+        compatible_inputs = [
+            index
+            for index, port in enumerate(input_ports)
+            if self.pipeline._types_compatible(source_type, port.input_type)
+        ]
+        compatible_outputs = [
+            index
+            for index, port in enumerate(output_ports)
+            if self.pipeline._types_compatible(port.output_type, target_type)
+        ]
+
+        source_title = self._node_title(source_id)
+        target_title = self._node_title(target_id)
+        mappings: list[ConnectionInsertPortMapping] = []
+        for input_index in compatible_inputs:
+            input_label = input_ports[input_index].label
+            for output_index in compatible_outputs:
+                output_label = output_ports[output_index].label
+                mappings.append(
+                    ConnectionInsertPortMapping(
+                        input_port=input_index,
+                        output_port=output_index,
+                        input_label=f"input {input_index + 1}: {input_label}",
+                        output_label=f"output {output_index + 1}: {output_label}",
+                        detail=(
+                            f"{source_title} -> {input_label}; "
+                            f"{output_label} -> {target_title} "
+                            f"input {target_port + 1}"
+                        ),
+                        params=tuple((params_override or {}).items()),
+                    )
+                )
+        return mappings
+
+    def _connection_insert_axis_choices(
+        self,
+        operation_id: str,
+        connection_key,
+    ) -> list[tuple[str, str]]:
+        if operation_id != "split_axis":
+            return []
+        try:
+            source_id, _target_id, _target_port, source_port = (
+                self._normalize_connection_key(connection_key)
+            )
+        except Exception:
+            return []
+        options = self._split_axis_options_from(
+            self._axis_slice_options_for_output(source_id, source_port),
+            fallback_all=False,
+        )
+        return [
+            (f"axis:{option.index}", self._split_axis_choice_label(option))
+            for option in options
+        ]
+
+    def _labeled_split_axis_insert_ports(
+        self,
+        ports,
+        source_id: str,
+        source_port: int,
+        params: dict[str, object],
+    ):
+        shape = self.pipeline._resolved_output_shape(source_id, source_port)
+        if not shape:
+            return ports
+        axis_index = self._split_axis_index_from_params(params, len(shape))
+        options_by_index = {
+            option.index: option
+            for option in self._axis_slice_options_for_output(source_id, source_port)
+        }
+        option = options_by_index.get(axis_index)
+        label = option.title if option is not None else f"Axis {axis_index}"
+        return tuple(
+            replace(
+                port,
+                name=f"{label.lower()}_{index + 1}",
+                title=f"{label} {index + 1}",
+            )
+            for index, port in enumerate(ports)
+        )
+
     def _connection_insert_preview_state(
         self,
         operation_id: str,
@@ -5437,6 +5939,12 @@ class VippWidget(QWidget):
                 f"Drop to insert '{title}' between "
                 f"'{source_title}' and '{target_title}'.",
             )
+        if mode == "choose":
+            return (
+                "partial",
+                f"Drop to insert '{title}' and choose ports between "
+                f"'{source_title}' and '{target_title}'.",
+            )
         if mode == "partial":
             return (
                 "partial",
@@ -5454,6 +5962,8 @@ class VippWidget(QWidget):
         self,
         operation_id: str,
         connection_key,
+        *,
+        inserted_node_id: str | None = None,
     ) -> tuple[str, str]:
         try:
             source_id, target_id, target_port, source_port = (
@@ -5474,18 +5984,44 @@ class VippWidget(QWidget):
 
         source_type = source_ports[source_port].output_type
         target_type = target_ports[target_port].input_type
-        input_ports = spec.input_ports if spec.has_input else ()
+        input_ports = self._operation_insert_input_ports(
+            spec,
+            inserted_node_id=inserted_node_id,
+        )
         compatible_inputs = [
             index
             for index, port in enumerate(input_ports)
             if self.pipeline._types_compatible(source_type, port.input_type)
         ]
-        output_ports = self._operation_insert_output_ports(spec, source_type)
+        output_ports = self._operation_insert_output_ports(
+            spec,
+            source_type,
+            inserted_node_id=inserted_node_id,
+            source_id=source_id,
+            source_port=source_port,
+        )
         compatible_outputs = [
             index
             for index, port in enumerate(output_ports)
             if self.pipeline._types_compatible(port.output_type, target_type)
         ]
+        if operation_id == "split_axis":
+            axis_choices = self._connection_insert_axis_choices(
+                operation_id,
+                connection_key,
+            )
+            option_count = 0
+            for axis_value, _axis_label in axis_choices:
+                option_count += len(
+                    self._connection_insert_mapping_options(
+                        operation_id,
+                        connection_key,
+                        inserted_node_id=inserted_node_id,
+                        params_override={"axis": axis_value},
+                    )
+                )
+            if option_count > 1:
+                return "choose", ""
 
         if not input_ports:
             if compatible_outputs:
@@ -5503,6 +6039,9 @@ class VippWidget(QWidget):
                 "incompatible",
                 f"Cannot feed {source_type} output into '{spec.title}'.",
             )
+
+        if compatible_outputs and len(compatible_inputs) * len(compatible_outputs) > 1:
+            return "choose", ""
 
         single_input = (
             len(input_ports) == 1
@@ -5530,18 +6069,114 @@ class VippWidget(QWidget):
             f"'{spec.title}' output cannot feed the downstream input.",
         )
 
-    @staticmethod
+    def _operation_insert_input_ports(
+        self,
+        spec: OperationSpec,
+        *,
+        inserted_node_id: str | None = None,
+    ):
+        if inserted_node_id and inserted_node_id in self.pipeline.nodes:
+            return self.pipeline.input_ports(inserted_node_id)
+        if spec.inputs:
+            return spec.input_ports
+        if not spec.has_input:
+            return ()
+        count = 1
+        if spec.max_inputs is None or spec.max_inputs != 1:
+            for param in spec.parameters:
+                if param.name != "input_count":
+                    continue
+                count = max(int(param.default), 1)
+                if spec.max_inputs is not None:
+                    count = min(count, max(int(spec.max_inputs), 1))
+                break
+        input_type = spec.input_type or "any"
+        return tuple(
+            InputSpec(f"input_{index + 1}", input_type, f"Input {index + 1}")
+            for index in range(count)
+        )
+
     def _operation_insert_output_ports(
+        self,
         spec: OperationSpec,
         source_type: str,
+        *,
+        inserted_node_id: str | None = None,
+        source_id: str | None = None,
+        source_port: int = 0,
+        params_override: dict[str, object] | None = None,
     ):
+        if spec.id == "split_axis" and source_id is not None and not params_override:
+            options = self._split_axis_options_from(
+                self._axis_slice_options_for_output(source_id, source_port),
+                fallback_all=False,
+            )
+            if not options:
+                return ()
+            params_override = {"axis": f"axis:{options[0].index}"}
+        if inserted_node_id and inserted_node_id in self.pipeline.nodes:
+            ports = self.pipeline.output_ports(inserted_node_id)
+            if (
+                spec.output_factory is not None
+                and not self.pipeline.node_outputs.get(inserted_node_id)
+            ):
+                count = self._inferred_insert_output_count(
+                    spec,
+                    source_id,
+                    source_port,
+                    params_override=params_override,
+                )
+                if count is not None:
+                    ports = spec.output_factory(count)
+            if spec.id == "split_axis" and source_id is not None:
+                ports = self._labeled_split_axis_insert_ports(
+                    ports,
+                    source_id,
+                    source_port,
+                    params_override or {},
+                )
+            if spec.preserves_input_type:
+                return tuple(replace(port, output_type=source_type) for port in ports)
+            return ports
         if spec.output_factory is not None:
-            ports = spec.output_factory(DEFAULT_DYNAMIC_OUTPUT_PORTS)
+            count = self._inferred_insert_output_count(
+                spec,
+                source_id,
+                source_port,
+                params_override=params_override,
+            )
+            if count is None:
+                count = DEFAULT_DYNAMIC_OUTPUT_PORTS
+            ports = spec.output_factory(count)
         else:
             ports = spec.output_ports
+        if spec.id == "split_axis" and source_id is not None:
+            ports = self._labeled_split_axis_insert_ports(
+                ports,
+                source_id,
+                source_port,
+                params_override or {},
+            )
         if spec.preserves_input_type:
             return tuple(replace(port, output_type=source_type) for port in ports)
         return ports
+
+    def _inferred_insert_output_count(
+        self,
+        spec: OperationSpec,
+        source_id: str | None,
+        source_port: int,
+        *,
+        params_override: dict[str, object] | None = None,
+    ) -> int | None:
+        if source_id is None:
+            return None
+        return self.pipeline.inferred_dynamic_output_count(
+            spec.id,
+            source_id,
+            source_port,
+            params_override,
+        )
 
     def _insert_make_room_delta(
         self,
@@ -5800,6 +6435,36 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._sync_all_input_ports()
         self._sync_all_output_ports()
+        self._refresh_graph_search_matches(reset_index=True)
+
+    def _workflow_metadata(self) -> dict:
+        valid_node_ids = set(self.pipeline.nodes)
+        inspector: dict[str, object] = {
+            "right_panel_visible": (
+                not self.inspector_panel.isHidden()
+                if hasattr(self, "inspector_panel")
+                else True
+            ),
+        }
+        if self._selected_node_id in valid_node_ids:
+            inspector["selected_node_id"] = self._selected_node_id
+
+        vipp: dict[str, object] = {"inspector": inspector}
+        if self.save_thumbnail_visibility_checkbox.isChecked():
+            vipp["thumbnails"] = {
+                "disabled_node_ids": sorted(
+                    self._preview_disabled_node_ids & valid_node_ids
+                )
+            }
+        return {"vipp": vipp}
+
+    @staticmethod
+    def _workflow_vipp_metadata(workflow: dict) -> dict:
+        metadata = workflow.get("metadata", {})
+        if not isinstance(metadata, dict):
+            return {}
+        vipp = metadata.get("vipp", {})
+        return vipp if isinstance(vipp, dict) else {}
 
     def _save_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -5819,6 +6484,7 @@ class VippWidget(QWidget):
                 self.pipeline,
                 positions,
                 self._graph_note_documents(),
+                self._workflow_metadata(),
             )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
@@ -5852,7 +6518,22 @@ class VippWidget(QWidget):
             workflow["connections"],
             workflow.get("output_tunnels", ()),
         )
-        self._preview_disabled_node_ids.clear()
+        valid_node_ids = set(self.pipeline.nodes)
+        vipp_metadata = self._workflow_vipp_metadata(workflow)
+        thumbnail_metadata = vipp_metadata.get("thumbnails")
+        if isinstance(thumbnail_metadata, dict):
+            self._preview_disabled_node_ids = set(
+                thumbnail_metadata.get("disabled_node_ids", ())
+            ) & valid_node_ids
+        else:
+            self._preview_disabled_node_ids.clear()
+        inspector_metadata = vipp_metadata.get("inspector")
+        if not isinstance(inspector_metadata, dict):
+            inspector_metadata = {}
+        selected_node_id = str(inspector_metadata.get("selected_node_id", "") or "")
+        if selected_node_id not in valid_node_ids:
+            selected_node_id = ""
+        right_panel_visible = inspector_metadata.get("right_panel_visible", None)
         self._clip_auto_input_ranges.clear()
         self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
@@ -5868,9 +6549,15 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._sync_all_input_ports()
         self._sync_all_output_ports()
+        self._refresh_graph_search_matches(reset_index=True)
         self._invalidate_pipeline_cache()
         self.run_pipeline(force_sync=True)
-        self._select_first_available_node()
+        if selected_node_id:
+            self.graph_view.select_node(selected_node_id)
+        else:
+            self._select_first_available_node()
+        if isinstance(right_panel_visible, bool):
+            self._set_right_panel_visible(right_panel_visible)
         self._push_undo_if_changed(before)
         return source
 
@@ -5936,6 +6623,7 @@ class VippWidget(QWidget):
             self.pipeline,
             positions,
             self._graph_note_documents(),
+            self._workflow_metadata(),
         )
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
@@ -5963,6 +6651,7 @@ class VippWidget(QWidget):
                     self.pipeline,
                     positions,
                     self._graph_note_documents(),
+                    self._workflow_metadata(),
                 )
             )
         if save_python_script:
@@ -6052,6 +6741,7 @@ class VippWidget(QWidget):
             self.pipeline,
             self.graph_view.node_positions(),
             self._graph_note_documents(),
+            self._workflow_metadata(),
         )
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
@@ -7611,6 +8301,7 @@ class VippWidget(QWidget):
             self.pipeline.connections,
         )
         self._refresh_tunnel_manager()
+        self._refresh_graph_search_matches(reset_index=False)
 
     def _connect_nodes(
         self,
@@ -7626,6 +8317,9 @@ class VippWidget(QWidget):
             self.status_label.setText(result.message)
             return
         self._apply_connection_result_to_graph(result)
+        self._sync_node_output_ports(target_id)
+        if self._selected_node_id == target_id:
+            self._refresh_selected_parameter_controls()
         if self._mark_pipeline_dirty(target_id):
             self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -8769,6 +9463,17 @@ class VippWidget(QWidget):
                 choices=choices,
                 choice_labels=choice_labels,
             )
+        if (
+            node is not None
+            and node.operation_id == "split_axis"
+            and spec.name == "axis"
+        ):
+            choices, choice_labels = self._available_split_axis_choices(node_id)
+            return replace(
+                spec,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
         return spec
 
     def _spatial_mode_choice_labels(
@@ -8823,6 +9528,28 @@ class VippWidget(QWidget):
 
     @staticmethod
     def _project_axis_choice_label(option: AxisSliceOption) -> str:
+        title = option.title
+        if title.lower().startswith("axis "):
+            return f"{title} (size {option.size})"
+        detail = f"{option.axis_type}, size {option.size}"
+        return f"{title} axis ({detail})"
+
+    def _available_split_axis_choices(
+        self,
+        node_id: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        options = self._split_axis_options_from(
+            self._axis_slice_options_for(node_id),
+            fallback_all=True,
+        )
+        choices = tuple(f"axis:{option.index}" for option in options)
+        labels = tuple(self._split_axis_choice_label(option) for option in options)
+        if choices:
+            return choices, labels
+        return ("axis:0",), ("Axis 0",)
+
+    @staticmethod
+    def _split_axis_choice_label(option: AxisSliceOption) -> str:
         title = option.title
         if title.lower().startswith("axis "):
             return f"{title} (size {option.size})"
@@ -9099,6 +9826,83 @@ class VippWidget(QWidget):
             AxisSliceOption(index, f"axis {index}", "unknown", int(size))
             for index, size in enumerate(arr.shape)
         ]
+
+    def _axis_slice_options_for_output(
+        self,
+        source_id: str,
+        source_port: int,
+    ) -> list[AxisSliceOption]:
+        shape = self.pipeline._resolved_output_shape(source_id, source_port)
+        if not shape:
+            return []
+        state = self.pipeline._resolved_output_state(source_id, source_port)
+        if isinstance(state, ImageState) and len(state.axes) == len(shape):
+            return [
+                AxisSliceOption(index, axis.name, axis.type, int(size))
+                for index, (axis, size) in enumerate(
+                    zip(state.axes, shape, strict=True)
+                )
+            ]
+        return [
+            AxisSliceOption(index, f"axis {index}", "unknown", int(size))
+            for index, size in enumerate(shape)
+        ]
+
+    def _split_axis_options_from(
+        self,
+        options: list[AxisSliceOption],
+        *,
+        fallback_all: bool,
+    ) -> list[AxisSliceOption]:
+        candidates = [
+            option
+            for option in options
+            if self._is_split_axis_candidate(option, len(options))
+        ]
+        if candidates or not fallback_all:
+            return candidates
+        fallback = [option for option in options if option.size > 1]
+        return fallback or options[:1]
+
+    @staticmethod
+    def _is_split_axis_candidate(
+        option: AxisSliceOption,
+        option_count: int,
+    ) -> bool:
+        if option.size <= 1:
+            return False
+        name = option.name.strip().lower()
+        axis_type = option.axis_type.strip().lower()
+        if name in {"series", "s"} or axis_type == "series":
+            return False
+        if name in {"c", "channel", "t", "time", "z"}:
+            return True
+        if axis_type in {"channel", "time"}:
+            return True
+        if axis_type == "space":
+            return name not in {"x", "y"} and option.index < max(option_count - 1, 1)
+        if axis_type == "unknown":
+            return option.index < max(option_count - 2, 1)
+        return name not in {"x", "y"}
+
+    @staticmethod
+    def _split_axis_index_from_params(
+        params: dict[str, object],
+        ndim: int,
+    ) -> int:
+        value = params.get("axis", "axis:0")
+        text = str(value).strip().lower()
+        if text.startswith("axis:"):
+            text = text.split(":", 1)[1]
+        try:
+            axis = int(text)
+        except ValueError:
+            axis = 0
+        if ndim <= 0:
+            return 0
+        if axis < 0:
+            axis += ndim
+        return max(0, min(axis, ndim - 1))
 
     def _select_axis_slice_value(self, node) -> dict:
         params = node.params
@@ -10116,6 +10920,8 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if name == "tag":
+            self._refresh_graph_search_matches(reset_index=True)
         self._mark_pipeline_dirty(self._selected_node_id)
         if node.operation_id == "gaussian_blur_3d":
             if name == "lock_xy" and bool(value):
@@ -10176,6 +10982,17 @@ class VippWidget(QWidget):
             self._sync_node_input_ports(self._selected_node_id)
         if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
+        if node.operation_id == "split_axis" and name == "axis":
+            for connection in self.pipeline.trim_invalid_output_connections(
+                self._selected_node_id
+            ):
+                self.graph_view.remove_connection(
+                    connection.source_id,
+                    connection.target_id,
+                    target_port=connection.target_port,
+                    notify=False,
+                )
+            self._sync_node_output_ports(self._selected_node_id)
         if node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS:
             if name == "threshold_mode" and str(value).lower().startswith("costes"):
                 self._sync_colocalization_costes_thresholds(

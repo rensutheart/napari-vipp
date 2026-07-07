@@ -156,6 +156,7 @@ The current node catalogue includes:
   - Axes & Regions:
     - Crop Stack
     - Select Axis Slice
+    - Split Axis
     - Reorder Axes
     - Set Pixel Size / Units
     - Rescale Axes
@@ -399,12 +400,15 @@ the skeleton node inputs, outputs, and intended use.
 `Extract Channel` pulls one selected channel from a multichannel image.
 `Split Channels` is its bulk counterpart: it emits one output port per channel
 in the image (losslessly, preserving dtype), with the port count following the
-true channel count. Each channel also preserves the semantic type of its input,
-so splitting a threshold mask produces mask ports that connect directly to
-`Label Connected Components`. `Combine Channels` is the inverse multi-input
-node: set the expected channel/input count, connect that many upstream images,
-and it stacks them into an explicit multichannel output. Channel pseudo-colours
-are carried as metadata from OME sources, Image Source overrides, Combine
+true channel count when VIPP has channel-axis metadata or a conventional
+RGB/RGBA channel-last image. Use `Split Axis` for arbitrary stack axes such as
+timepoints, Z slices, or a leading non-channel axis. Each split output also
+preserves the semantic type of its input, so splitting a threshold mask produces
+mask ports that connect directly to `Label Connected Components`. `Combine
+Channels` is the inverse multi-input node: set the expected channel/input count,
+connect that many upstream images, and it stacks them into an explicit
+multichannel output. Channel pseudo-colours are carried as metadata from OME
+sources, Image Source overrides, Combine
 Channels, or the `Assign Channel Colors` pass-through node. `Composite → RGB`
 maps a multichannel composite to a channel-last RGB image. Auto mode preserves
 true RGB/RGBA inputs, and otherwise blends all channels by their carried
@@ -500,7 +504,8 @@ The current versioned alpha roadmap is maintained in
 `docs/planning.md`. Planned next minor milestones are:
 
 - `0.10.0a1`: graph readability, tunnel management, saved graph notes,
-  graph search/focus, and large-workflow editing polish. Minimap/navigation is
+  graph search/focus, ambiguous insert-on-wire port mapping, workflow UI-state
+  persistence, and interactive cache/memory modes. Minimap/navigation is
   deferred until very large workflows justify it;
 - `0.11.0a1`: batch configuration, output manifests, semantic-axis iteration,
   and per-item provenance;

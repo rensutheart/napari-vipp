@@ -3025,25 +3025,56 @@ def composite_to_rgb(
     return np.stack(channels, axis=-1).astype(np.float32)
 
 
-def split_channels(data, preview_channel: int = 0) -> list[np.ndarray]:
+def split_channels(
+    data,
+    preview_channel: int = 0,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> list[np.ndarray]:
     """Split a multi-channel image into one output array per channel.
 
-    The channel axis is detected automatically and each output is a single
-    channel with the spatial shape of the input. The number of outputs equals
-    the true number of channels in the image. A grayscale image with no
-    detected channel axis yields a single output.
+    The channel axis is detected from carried axis metadata or conventional
+    RGB/RGBA channel-last arrays. Each output is a single channel with the
+    spatial shape of the input. Images without a channel axis should use
+    ``split_axis`` instead of silently treating Z or time as channels.
 
     ``preview_channel`` is a UI-only hint used by the graph thumbnail and does
     not affect the returned channel outputs.
     """
+    del preview_channel
     arr = np.asarray(data)
-    axis = _default_channel_axis(arr)
+    axis = _strict_channel_axis(
+        arr,
+        axis_names=axis_names,
+        axis_types=axis_types,
+    )
     if axis is None:
-        return [arr.copy()]
+        raise ValueError(
+            "Split Channels needs a channel axis. Use Split Axis to split "
+            "timepoints, Z slices, or another image axis."
+        )
 
     moved = np.moveaxis(arr, axis, -1)
     count = moved.shape[-1]
     return [moved[..., index].copy() for index in range(count)]
+
+
+def split_axis(
+    data,
+    axis: str = "axis:0",
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> list[np.ndarray]:
+    """Split an image into one output per index of a selected axis."""
+    del axis_names, axis_types
+    arr = np.asarray(data)
+    if arr.ndim == 0:
+        return [arr.copy()]
+    axis_index = _axis_index_from_token(axis, arr.ndim)
+    return [
+        np.take(arr, index, axis=axis_index).copy()
+        for index in range(arr.shape[axis_index])
+    ]
 
 
 def colocalization_threshold_values(
@@ -7411,6 +7442,34 @@ def _default_channel_axis(arr: np.ndarray) -> int | None:
     if arr.ndim == 3 and arr.shape[0] <= 16:
         return 0
     return None
+
+
+def _strict_channel_axis(
+    arr: np.ndarray,
+    *,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> int | None:
+    for index, axis_type in enumerate(axis_types[: arr.ndim]):
+        if str(axis_type).strip().lower() == "channel":
+            return index
+    for index, axis_name in enumerate(axis_names[: arr.ndim]):
+        if str(axis_name).strip().lower() in {"c", "channel", "rgb", "rgba"}:
+            return index
+    if _has_channel_axis(arr):
+        return arr.ndim - 1
+    return None
+
+
+def _axis_index_from_token(value, ndim: int) -> int:
+    text = str(value).strip().lower()
+    if text.startswith("axis:"):
+        text = text.split(":", 1)[1]
+    try:
+        axis = int(text)
+    except ValueError:
+        axis = 0
+    return _normalize_axis(axis, ndim)
 
 
 def _normalize_axis(axis: int, ndim: int) -> int:

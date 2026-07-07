@@ -169,11 +169,11 @@ def write_ome_zarr_analysis_dataset(
     if not labels:
         raise ValueError("At least one label image is required.")
     state = _coerce_state(image_state)
-    write_ome_zarr(image_data, path, version=version, image_state=state)
-
     fmt = _format(version)
     image_arr, image_axes = _canonical_payload(image_data, state)
     used_names: set[str] = set()
+
+    prepared_labels = []
     for label in labels:
         label_state = _coerce_state(label.image_state)
         if label_state is not None and label_state.kind != "label image":
@@ -187,6 +187,11 @@ def write_ome_zarr_analysis_dataset(
             image_axes,
         )
         label_name = _unique_name(_safe_label_name(label.name), used_names)
+        prepared_labels.append((label, label_state, label_arr, label_axes, label_name))
+
+    write_ome_zarr(image_data, path, version=version, image_state=state)
+
+    for label, label_state, label_arr, label_axes, label_name in prepared_labels:
         axis_records = _axis_records(label_axes)
         units = _axis_units(label_axes)
         label_metadata = {

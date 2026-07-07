@@ -31,10 +31,12 @@ def serialize_workflow(
     pipeline: PrototypePipeline,
     positions: dict[str, Position] | None = None,
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable dict describing the pipeline graph."""
     positions = positions or {}
-    return {
+    node_id_set = set(pipeline.nodes)
+    document = {
         "type": WORKFLOW_TYPE,
         "version": WORKFLOW_VERSION,
         "nodes": [_node_to_dict(node) for node in pipeline.nodes.values()],
@@ -65,6 +67,10 @@ def serialize_workflow(
         },
         "notes": [_note_to_dict(note) for note in notes or ()],
     }
+    workflow_metadata = _workflow_metadata_to_dict(metadata, node_id_set)
+    if workflow_metadata:
+        document["metadata"] = workflow_metadata
+    return document
 
 
 def deserialize_workflow(data: Any) -> dict[str, Any]:
@@ -192,6 +198,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         positions[node_id] = (float(value[0]), float(value[1]))
 
     notes = _notes_from_data(data.get("notes", []), node_id_set)
+    metadata = _workflow_metadata_to_dict(data.get("metadata", {}), node_id_set)
 
     return {
         "nodes": nodes,
@@ -199,6 +206,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         "positions": positions,
         "output_tunnels": output_tunnels,
         "notes": notes,
+        "metadata": metadata,
     }
 
 
@@ -207,11 +215,12 @@ def save_workflow(
     pipeline: PrototypePipeline,
     positions: dict[str, Position] | None = None,
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Path:
     """Write the pipeline graph to ``path`` as a JSON workflow file."""
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    document = serialize_workflow(pipeline, positions, notes)
+    document = serialize_workflow(pipeline, positions, notes, metadata)
     target.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return target
 
@@ -329,6 +338,118 @@ def _notes_from_data(raw_notes: Any, node_id_set: set[str]) -> list[dict[str, An
             note["attached_node"] = attached_node
         notes.append(note)
     return notes
+
+
+def _workflow_metadata_to_dict(
+    raw_metadata: Any,
+    node_id_set: set[str],
+) -> dict[str, Any]:
+    if raw_metadata is None:
+        return {}
+    if not isinstance(raw_metadata, dict):
+        raise ValueError("Workflow metadata must be an object.")
+    raw_vipp = raw_metadata.get("vipp", {})
+    if raw_vipp is None:
+        return {}
+    if not isinstance(raw_vipp, dict):
+        raise ValueError("VIPP workflow metadata must be an object.")
+
+    vipp: dict[str, Any] = {}
+    if "inspector" in raw_vipp:
+        vipp["inspector"] = _inspector_metadata_to_dict(
+            raw_vipp["inspector"],
+            node_id_set,
+        )
+    if "thumbnails" in raw_vipp:
+        vipp["thumbnails"] = _thumbnail_metadata_to_dict(
+            raw_vipp["thumbnails"],
+            node_id_set,
+        )
+    return {"vipp": vipp} if vipp else {}
+
+
+def _inspector_metadata_to_dict(
+    raw_inspector: Any,
+    node_id_set: set[str],
+) -> dict[str, Any]:
+    if not isinstance(raw_inspector, dict):
+        raise ValueError("Workflow inspector metadata must be an object.")
+    result: dict[str, Any] = {}
+    if "selected_node_id" in raw_inspector:
+        selected_node_id = _optional_node_id(
+            raw_inspector,
+            "selected_node_id",
+            "workflow inspector metadata",
+            node_id_set,
+        )
+        if selected_node_id:
+            result["selected_node_id"] = selected_node_id
+    if "right_panel_visible" in raw_inspector:
+        right_panel_visible = raw_inspector.get("right_panel_visible")
+        if not isinstance(right_panel_visible, bool):
+            raise ValueError(
+                "Workflow inspector metadata 'right_panel_visible' must be a "
+                "boolean."
+            )
+        result["right_panel_visible"] = right_panel_visible
+    return result
+
+
+def _thumbnail_metadata_to_dict(
+    raw_thumbnails: Any,
+    node_id_set: set[str],
+) -> dict[str, Any]:
+    if not isinstance(raw_thumbnails, dict):
+        raise ValueError("Workflow thumbnail metadata must be an object.")
+    raw_disabled = raw_thumbnails.get("disabled_node_ids", [])
+    if raw_disabled is None:
+        raw_disabled = []
+    if not isinstance(raw_disabled, list):
+        raise ValueError(
+            "Workflow thumbnail metadata 'disabled_node_ids' must be a list."
+        )
+    disabled_node_ids: list[str] = []
+    seen: set[str] = set()
+    for value in raw_disabled:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "Workflow thumbnail metadata disabled node ids must be "
+                "non-empty strings."
+            )
+        node_id = value.strip()
+        if node_id not in node_id_set:
+            raise ValueError(
+                f"Workflow thumbnail metadata references missing node "
+                f"{node_id!r}."
+            )
+        key = node_id.casefold()
+        if key in seen:
+            raise ValueError(
+                "Workflow thumbnail metadata contains duplicate disabled node "
+                f"id {node_id!r}."
+            )
+        seen.add(key)
+        disabled_node_ids.append(node_id)
+    return {"disabled_node_ids": disabled_node_ids}
+
+
+def _optional_node_id(
+    data: dict[str, Any],
+    key: str,
+    context: str,
+    node_id_set: set[str],
+) -> str:
+    value = data.get(key, "")
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context.capitalize()} {key!r} must be a node id string.")
+    node_id = value.strip()
+    if node_id not in node_id_set:
+        raise ValueError(
+            f"{context.capitalize()} references missing node {node_id!r}."
+        )
+    return node_id
 
 
 def _required_text(data: dict[str, Any], key: str, context: str) -> str:

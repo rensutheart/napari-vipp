@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import tifffile
 
 from napari_vipp.core.metadata import (
@@ -99,6 +100,7 @@ from napari_vipp.core.operations import (
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
+    split_axis,
     split_channels,
     subtract_background,
     subtract_images,
@@ -2926,7 +2928,12 @@ def test_split_channels_preview_channel_does_not_change_outputs():
     data[1] = 20
     data[2] = 30
 
-    channels = split_channels(data, preview_channel=2)
+    channels = split_channels(
+        data,
+        preview_channel=2,
+        axis_names=("c", "y", "x"),
+        axis_types=("channel", "space", "space"),
+    )
 
     assert len(channels) == 3
     assert int(channels[0].max()) == 10
@@ -2939,20 +2946,33 @@ def test_split_channels_returns_true_channel_count():
     data[0] = 10
     data[1] = 20
 
-    channels = split_channels(data)
+    channels = split_channels(
+        data,
+        axis_names=("c", "y", "x"),
+        axis_types=("channel", "space", "space"),
+    )
 
     assert len(channels) == 2
     assert int(channels[0].max()) == 10
     assert int(channels[1].max()) == 20
 
 
-def test_split_channels_grayscale_returns_single_output():
+def test_split_channels_requires_channel_axis_for_grayscale_input():
     data = np.full((5, 5), 7, dtype=np.uint8)
 
-    channels = split_channels(data)
+    with pytest.raises(ValueError, match="needs a channel axis"):
+        split_channels(data)
 
-    assert len(channels) == 1
-    np.testing.assert_array_equal(channels[0], data)
+
+def test_split_axis_can_split_grayscale_axis():
+    data = np.arange(3 * 5, dtype=np.uint8).reshape(3, 5)
+
+    slices = split_axis(data, axis="axis:0")
+
+    assert len(slices) == 3
+    np.testing.assert_array_equal(slices[0], data[0])
+    np.testing.assert_array_equal(slices[1], data[1])
+    np.testing.assert_array_equal(slices[2], data[2])
 
 
 def test_select_axis_slice_removes_requested_axis():

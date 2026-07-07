@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 
@@ -27,11 +28,14 @@ from napari_vipp._widget import (
     CACHE_MODE_SMART,
     CollectionBatchDialog,
     ConnectionInsertDialog,
+    ConnectionInsertMappingDialog,
+    ConnectionInsertPortMapping,
     FlexibleDoubleSpinBox,
     HistogramPlot,
     SelectTableColumnsControl,
     VippWidget,
 )
+from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import inspect_image_source, read_image
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.core.pipeline import (
@@ -40,10 +44,13 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
+    GraphNode,
+    OutputTunnel,
     PrototypePipeline,
     SourcePayload,
 )
 from napari_vipp.core.preview import make_preview
+from napari_vipp.core.workflow import save_workflow
 
 
 class _Event:
@@ -1394,6 +1401,7 @@ def test_image_data_category_groups_source_axis_and_channel_nodes(qtbot):
     assert _palette_child_by_text(source_output, "Batch Output")
     assert _palette_child_by_text(axes_regions, "Crop Stack")
     assert _palette_child_by_text(axes_regions, "Select Axis Slice")
+    assert _palette_child_by_text(axes_regions, "Split Axis")
     assert _palette_child_by_text(axes_regions, "Reorder Axes")
     assert _palette_child_by_text(axes_regions, "Set Pixel Size / Units")
     assert _palette_child_by_text(axes_regions, "Rescale Axes")
@@ -3236,6 +3244,113 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
     assert reorder_calls[-1][2].axis_order == "CZYX"
 
 
+def test_graph_search_matches_title_operation_tunnel_and_output_tag():
+    nodes = (
+        GraphNode(
+            "counter",
+            "quantify_cells",
+            "Cell Counter",
+            "Measurements",
+            "labels",
+            "table",
+        ),
+        GraphNode(
+            "batch",
+            "batch_output",
+            "Batch Output",
+            "Image Data",
+            "any",
+            "any",
+            {"tag": "QC mask"},
+        ),
+    )
+    tunnels = (OutputTunnel("Raw Reference", "counter", 0),)
+
+    title_matches = find_graph_matches("cell counter", nodes, tunnels)
+    operation_matches = find_graph_matches("quantify_cells", nodes, tunnels)
+    tag_matches = find_graph_matches("qc mask", nodes, tunnels)
+    tunnel_matches = find_graph_matches("raw reference", nodes, tunnels)
+
+    assert [(match.kind, match.node_id) for match in title_matches] == [
+        ("node", "counter")
+    ]
+    assert title_matches[0].matched_fields == ("title",)
+    assert [(match.kind, match.node_id) for match in operation_matches] == [
+        ("node", "counter")
+    ]
+    assert operation_matches[0].matched_fields == ("operation id",)
+    assert [(match.kind, match.node_id) for match in tag_matches] == [
+        ("node", "batch")
+    ]
+    assert tag_matches[0].matched_fields == ("output tag",)
+    assert [(match.kind, match.tunnel_name) for match in tunnel_matches] == [
+        ("tunnel", "Raw Reference")
+    ]
+
+
+def test_graph_search_highlights_and_focuses_node_matches(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget.graph_search_edit.setText("otsu")
+
+    assert widget.graph_search_status.text() == "1 match"
+    assert widget.graph_search_focus_button.isEnabled()
+    assert widget._graph_search_matches[0].node_id == "threshold"
+    assert widget.graph_view._cards["threshold"]._search_highlight
+    assert not widget.graph_view._cards["input"]._search_highlight
+    assert widget.graph_view._proxies["threshold"].opacity() == 1.0
+    assert widget.graph_view._proxies["input"].opacity() < 1.0
+    assert widget._selected_node_id == "gaussian"
+
+    widget.graph_search_edit.setFocus()
+    qtbot.keyClick(widget.graph_search_edit, Qt.Key_Return)
+
+    assert widget._selected_node_id == "threshold"
+    assert widget.graph_view._cards["threshold"]._selected
+    assert "Focused 'Otsu Threshold'" in widget.status_label.text()
+
+
+def test_graph_search_focuses_output_tag_and_tunnel_matches(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("threshold", batch_output.id)
+    widget.pipeline.set_param(batch_output.id, "tag", "segmented masks")
+
+    widget.graph_search_edit.setText("segmented masks")
+    assert widget._graph_search_matches[0].node_id == batch_output.id
+    assert widget.graph_view._cards[batch_output.id]._search_highlight
+
+    widget.graph_search_edit.setFocus()
+    qtbot.keyClick(widget.graph_search_edit, Qt.Key_Return)
+
+    assert widget._selected_node_id == batch_output.id
+    assert "output tag" in widget.status_label.text()
+
+    widget.pipeline.add_output_tunnel("Raw Reference", "input", 0)
+    widget._sync_port_tunnels()
+    widget.graph_search_edit.setText("raw reference")
+
+    assert widget._graph_search_matches[0].kind == "tunnel"
+
+    qtbot.keyClick(widget.graph_search_edit, Qt.Key_Return)
+
+    assert widget.graph_view._active_tunnel_name == "Raw Reference"
+    assert (
+        widget.graph_view._proxies["input"]
+        .output_port_at(0)
+        ._tunnel_highlight_role
+        == "source"
+    )
+    assert widget.graph_view._proxies["input"].opacity() == 1.0
+    assert widget.graph_view._proxies["threshold"].opacity() < 1.0
+    assert "Raw Reference" in widget.status_label.text()
+
+
 def test_converter_node_uses_choice_controls_and_updates_dtype(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
     viewer = _Viewer(data)
@@ -3313,6 +3428,92 @@ def test_node_preview_toggle_is_restored_when_reenabled(qtbot):
 
     assert "gaussian" not in widget._preview_disabled_node_ids
     assert not card.preview.isHidden()
+
+
+def test_workflow_roundtrip_restores_inspector_and_optional_thumbnails(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    widget.thumbnail_checkbox.setChecked(False)
+    widget.graph_view.select_node("threshold")
+    widget._set_right_panel_visible(False)
+
+    path = tmp_path / "workflow.json"
+    save_workflow(
+        path,
+        widget.pipeline,
+        widget.graph_view.node_positions(),
+        widget._graph_note_documents(),
+        widget._workflow_metadata(),
+    )
+    document = json.loads(path.read_text(encoding="utf-8"))
+
+    vipp_metadata = document["metadata"]["vipp"]
+    assert vipp_metadata["inspector"] == {
+        "right_panel_visible": False,
+        "selected_node_id": "threshold",
+    }
+    assert "thumbnails" not in vipp_metadata
+
+    widget.save_thumbnail_visibility_checkbox.setChecked(True)
+    path_with_thumbnails = tmp_path / "workflow-with-thumbnails.json"
+    save_workflow(
+        path_with_thumbnails,
+        widget.pipeline,
+        widget.graph_view.node_positions(),
+        widget._graph_note_documents(),
+        widget._workflow_metadata(),
+    )
+    document = json.loads(path_with_thumbnails.read_text(encoding="utf-8"))
+    assert document["metadata"]["vipp"]["thumbnails"] == {
+        "disabled_node_ids": ["gaussian"]
+    }
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    restored._preview_disabled_node_ids.add("threshold")
+    restored.load_workflow_file(path_with_thumbnails)
+
+    assert restored._selected_node_id == "threshold"
+    assert restored.inspector_panel.isHidden()
+    assert restored._preview_disabled_node_ids == {"gaussian"}
+    assert restored.thumbnail_checkbox.isChecked()
+
+
+def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    path = tmp_path / "workflow-without-thumbnails.json"
+    save_workflow(
+        path,
+        widget.pipeline,
+        widget.graph_view.node_positions(),
+        widget._graph_note_documents(),
+        {
+            "vipp": {
+                "inspector": {
+                    "selected_node_id": "gaussian",
+                    "right_panel_visible": True,
+                }
+            }
+        },
+    )
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    restored._preview_disabled_node_ids.add("threshold")
+    restored._set_right_panel_visible(False)
+    restored.load_workflow_file(path)
+
+    assert restored._selected_node_id == "gaussian"
+    assert not restored.inspector_panel.isHidden()
+    assert restored._preview_disabled_node_ids == set()
 
 
 def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
@@ -4364,13 +4565,22 @@ def test_delete_node_removes_attached_graph_notes_with_undo(qtbot):
     assert note_id in widget.graph_view._notes
 
 
-def test_insert_node_on_connection_full_splice_moves_downstream(qtbot):
+def test_insert_node_on_connection_full_splice_moves_downstream(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
     source_before = QPointF(widget.graph_view.node_position("input"))
     target_before = QPointF(widget.graph_view.node_position("gaussian"))
+
+    def fail_mapping_prompt(*_args, **_kwargs):
+        raise AssertionError("unambiguous insert should not prompt for ports")
+
+    monkeypatch.setattr(
+        widget,
+        "_choose_connection_insert_mapping",
+        fail_mapping_prompt,
+    )
 
     node = widget._insert_node_on_connection(
         "median_filter",
@@ -4459,20 +4669,141 @@ def test_insert_node_on_connection_does_not_shift_when_gap_is_sufficient(qtbot):
     assert target_rect.left() - inserted_rect.right() >= widget.INSERT_GAP_PADDING_X
 
 
-def test_insert_split_channels_on_connection_is_partial(qtbot):
-    viewer = _Viewer(np.zeros((3, 4, 8, 9), dtype=np.uint8))
+def test_insert_node_on_connection_ambiguous_chooser_options(qtbot):
+    viewer = _Viewer(np.zeros((12, 8, 9), dtype=np.uint8), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    connection_key = ("input", "gaussian", 0, 0)
+
+    channel_mode, channel_reason = widget._connection_insert_mode(
+        "split_channels",
+        connection_key,
+    )
+    axis_mode, _reason = widget._connection_insert_mode("split_axis", connection_key)
+    preview_mode, preview_text = widget._connection_insert_preview_state(
+        "split_axis",
+        connection_key,
+    )
+    axis_options = widget._connection_insert_mapping_options(
+        "split_axis",
+        connection_key,
+        params_override={"axis": "axis:0"},
+    )
+    add_options = widget._connection_insert_mapping_options(
+        "add_images",
+        connection_key,
+    )
+
+    assert channel_mode == "incompatible"
+    assert "Split Channels" in channel_reason
+    assert axis_mode == "choose"
+    assert preview_mode == "partial"
+    assert "choose ports" in preview_text
+    assert [
+        (mapping.input_port, mapping.output_port) for mapping in axis_options
+    ] == [(0, index) for index in range(12)]
+    assert axis_options[10].output_label == "output 11: Z 11"
+    assert axis_options[10].params == (("axis", "axis:0"),)
+    assert [
+        (mapping.input_port, mapping.output_port) for mapping in add_options
+    ] == [(0, 0), (1, 0)]
+    assert add_options[1].input_label == "input 2: Input 2"
+
+
+def test_split_axis_insert_mapping_dialog_switches_axis_options(qtbot):
+    z_mapping = ConnectionInsertPortMapping(
+        0,
+        10,
+        "input 1: Input 1",
+        "output 11: Z 11",
+        "Image Source -> Input 1; Z 11 -> Gaussian Blur input 1",
+        params=(("axis", "axis:0"),),
+    )
+    t_mapping = ConnectionInsertPortMapping(
+        0,
+        2,
+        "input 1: Input 1",
+        "output 3: T 3",
+        "Image Source -> Input 1; T 3 -> Gaussian Blur input 1",
+        params=(("axis", "axis:1"),),
+    )
+
+    dialog = ConnectionInsertMappingDialog(
+        [z_mapping],
+        "Split Axis",
+        "Image Source",
+        "Gaussian Blur",
+        axis_choices=[
+            ("axis:0", "Z axis (space, size 12)"),
+            ("axis:1", "T axis (time, size 3)"),
+        ],
+        mappings_by_axis={
+            "axis:0": [z_mapping],
+            "axis:1": [t_mapping],
+        },
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.selected_mapping() == z_mapping
+
+    dialog.axis_combo.setCurrentIndex(1)
+
+    assert dialog.selected_mapping() == t_mapping
+
+
+def test_split_axis_inspector_offers_semantic_axis_choices(qtbot):
+    viewer = _Viewer(
+        np.zeros((2, 3, 4, 16, 18), dtype=np.uint8),
+        metadata={"axes": "TCZYX"},
+    )
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
+    node = widget.add_node_from_palette("split_axis")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    control = widget._parameter_widgets["axis"]
+    labels = [control.combo.itemText(index) for index in range(control.combo.count())]
+
+    assert labels == [
+        "T axis (time, size 2)",
+        "C axis (channel, size 3)",
+        "Z axis (space, size 4)",
+    ]
+
+    control.combo.setCurrentIndex(labels.index("Z axis (space, size 4)"))
+
+    assert node.params["axis"] == "axis:2"
+    assert len(widget.pipeline.output_ports(node.id)) == 4
+    assert widget.pipeline.output_ports(node.id)[3].label == "Z 4"
+
+
+def test_insert_node_on_connection_applies_selected_mapping(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    connection_key = ("input", "gaussian", 0, 0)
+    selected = widget._connection_insert_mapping_options(
+        "add_images",
+        connection_key,
+    )[1]
+
+    monkeypatch.setattr(
+        widget,
+        "_choose_connection_insert_mapping",
+        lambda *_args, **_kwargs: selected,
+    )
+
     node = widget._insert_node_on_connection(
-        "split_channels",
-        ("input", "gaussian", 0, 0),
+        "add_images",
+        connection_key,
         QPointF(180, 100),
     )
 
     assert node is not None
-    assert node.operation_id == "split_channels"
-    assert ("input", node.id, 0, 0) in {
+    assert node.operation_id == "add_images"
+    assert ("input", node.id, 1, 0) in {
         (
             connection.source_id,
             connection.target_id,
@@ -4481,15 +4812,63 @@ def test_insert_split_channels_on_connection_is_partial(qtbot):
         )
         for connection in widget.pipeline.connections
     }
-    assert not any(
-        connection.source_id == node.id and connection.target_id == "gaussian"
+    assert (node.id, "gaussian", 0, 0) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
         for connection in widget.pipeline.connections
-    )
+    }
     assert ("input", "gaussian") not in {
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
     }
-    assert "Choose which output should feed" in widget.status_label.text()
+    assert "using input 2: Input 2 and output 1: out" in widget.status_label.text()
+
+
+def test_insert_split_axis_on_connection_applies_inferred_high_output(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.zeros((12, 8, 9), dtype=np.uint8), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    connection_key = ("input", "gaussian", 0, 0)
+    selected = widget._connection_insert_mapping_options(
+        "split_axis",
+        connection_key,
+        params_override={"axis": "axis:0"},
+    )[10]
+
+    monkeypatch.setattr(
+        widget,
+        "_choose_connection_insert_mapping",
+        lambda *_args, **_kwargs: selected,
+    )
+
+    node = widget._insert_node_on_connection(
+        "split_axis",
+        connection_key,
+        QPointF(180, 100),
+    )
+
+    assert node is not None
+    assert node.operation_id == "split_axis"
+    assert node.params["axis"] == "axis:0"
+    assert (node.id, "gaussian", 0, 10) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
+        for connection in widget.pipeline.connections
+    }
+    assert len(widget.pipeline.output_ports(node.id)) == 12
+    assert widget.pipeline.output_ports(node.id)[10].label == "Z 11"
+    assert "using input 1: Input 1 and output 11: Z 11" in widget.status_label.text()
 
 
 def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot):
@@ -4552,23 +4931,40 @@ def test_insert_existing_loose_node_on_connection_full_splice_is_undoable(qtbot)
     )
 
 
-def test_insert_existing_split_channels_on_connection_is_partial(qtbot):
-    viewer = _Viewer(np.zeros((3, 4, 8, 9), dtype=np.uint8))
+def test_insert_existing_split_axis_on_connection_applies_selected_mapping(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.zeros((12, 8, 9), dtype=np.uint8), metadata={"axes": "ZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    node = widget.add_node_from_palette("split_channels")
+    node = widget.add_node_from_palette("split_axis")
     old_pos = QPointF(widget.graph_view.node_position(node.id))
     widget.graph_view.center_node_on(node.id, QPointF(180, 100))
+    connection_key = ("input", "gaussian", 0, 0)
+    selected = widget._connection_insert_mapping_options(
+        "split_axis",
+        connection_key,
+        inserted_node_id=node.id,
+        params_override={"axis": "axis:0"},
+    )[10]
+
+    monkeypatch.setattr(
+        widget,
+        "_choose_connection_insert_mapping",
+        lambda *_args, **_kwargs: selected,
+    )
 
     result = widget._insert_existing_node_on_connection(
         node.id,
-        ("input", "gaussian", 0, 0),
+        connection_key,
         old_pos,
         widget.graph_view.node_position(node.id),
     )
 
     assert result is node
+    assert node.params["axis"] == "axis:0"
     assert ("input", node.id, 0, 0) in {
         (
             connection.source_id,
@@ -4578,15 +4974,22 @@ def test_insert_existing_split_channels_on_connection_is_partial(qtbot):
         )
         for connection in widget.pipeline.connections
     }
-    assert not any(
-        connection.source_id == node.id and connection.target_id == "gaussian"
+    assert (node.id, "gaussian", 0, 10) in {
+        (
+            connection.source_id,
+            connection.target_id,
+            connection.target_port,
+            connection.source_port,
+        )
         for connection in widget.pipeline.connections
-    )
+    }
     assert ("input", "gaussian") not in {
         (connection.source_id, connection.target_id)
         for connection in widget.pipeline.connections
     }
-    assert "Choose which output should feed" in widget.status_label.text()
+    assert len(widget.pipeline.output_ports(node.id)) == 12
+    assert widget.pipeline.output_ports(node.id)[10].label == "Z 11"
+    assert "using input 1: Input 1 and output 11: Z 11" in widget.status_label.text()
 
 
 def test_insert_existing_connected_node_is_rejected_without_rewiring(qtbot):
@@ -4634,7 +5037,7 @@ def test_insert_existing_connected_node_is_rejected_without_rewiring(qtbot):
 
 
 def test_connection_insert_candidates_show_modes(qtbot):
-    viewer = _Viewer()
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.uint8), metadata={"axes": "CYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
@@ -4646,14 +5049,16 @@ def test_connection_insert_candidates_show_modes(qtbot):
     }
 
     assert candidates["median_filter"].mode == "full"
-    assert candidates["split_channels"].mode == "partial"
+    assert candidates["split_channels"].mode == "choose"
+    assert candidates["split_axis"].mode == "choose"
+    assert candidates["add_images"].mode == "choose"
     assert "Full splice" in candidates["median_filter"].detail
-    assert "Partial insert" in candidates["split_channels"].detail
+    assert "Choose ports" in candidates["split_channels"].detail
     assert "measure_objects" not in candidates
 
 
 def test_connection_insert_dialog_filters_candidates(qtbot):
-    viewer = _Viewer()
+    viewer = _Viewer(np.zeros((12, 8, 9), dtype=np.uint8), metadata={"axes": "ZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     candidates = widget._connection_insert_candidates(("input", "gaussian", 0, 0))
@@ -4663,7 +5068,7 @@ def test_connection_insert_dialog_filters_candidates(qtbot):
 
     dialog.search.setText("split")
 
-    assert dialog.selected_operation_id() == "split_channels"
+    assert dialog.selected_operation_id() == "split_axis"
     assert dialog.ok_button.isEnabled()
 
 
@@ -4837,6 +5242,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
         if not action.isSeparator() and action.text()
     ]
     assert "Show thumbnails" in labels
+    assert "Save thumbnail visibility in workflows" in labels
     assert "Run all in background" in labels
     assert "Follow napari dims" in labels
     assert "Cache mode" in labels
@@ -4863,6 +5269,15 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert widget.global_thumbnail_checkbox.isChecked()
     show_action.trigger()
     assert not widget.global_thumbnail_checkbox.isChecked()
+
+    save_thumbnail_action = next(
+        action
+        for action in widget.settings_menu.actions()
+        if action.text() == "Save thumbnail visibility in workflows"
+    )
+    assert not widget.save_thumbnail_visibility_checkbox.isChecked()
+    save_thumbnail_action.trigger()
+    assert widget.save_thumbnail_visibility_checkbox.isChecked()
 
 
 def test_palette_image_operations_can_run(qtbot):
@@ -4917,7 +5332,14 @@ def test_palette_image_operations_can_run(qtbot):
     connect_for_smoke(skeleton_source.id, skeleton_table_source.id)
     run_for_smoke(skeleton_table_source.id)
 
+    channel_source = widget.add_node_from_palette("combine_channels")
+    for port_index in range(widget.pipeline._required_inputs_for(channel_source)):
+        connect_for_smoke("input", channel_source.id, target_port=port_index)
+    run_for_smoke(channel_source.id)
+
     def source_for_type(input_type: str | None, operation_id: str = "") -> str:
+        if operation_id == "split_channels":
+            return channel_source.id
         if input_type in {"mask", "mask_or_labels"}:
             return "threshold"
         if input_type == "labels":
@@ -4953,6 +5375,7 @@ def test_palette_image_operations_can_run(qtbot):
             table_source.id,
             skeleton_source.id,
             skeleton_table_source.id,
+            channel_source.id,
         }:
             widget._delete_node(node.id)
 

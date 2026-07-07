@@ -62,9 +62,9 @@ expensive intermediates that you expect to inspect or reuse repeatedly, such as:
 - a manual measurement table that is expensive to recompute;
 - a segmentation mask used by multiple downstream analyses.
 
-This setting is saved in workflow JSON as hidden VIPP metadata and is excluded
-from exported operation calls. It affects cache retention only; it does not
-force a node to calculate if the node has no output yet.
+This setting is saved in workflow JSON as a hidden VIPP node setting and is
+excluded from exported operation calls. It affects cache retention only; it does
+not force a node to calculate if the node has no output yet.
 
 ## Operation Memory Characteristics
 

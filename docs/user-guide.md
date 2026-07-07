@@ -5,6 +5,13 @@ view.
 
 ## Toolbar Controls
 
+### Graph search
+
+Use `Search graph` above the canvas to highlight matching graph elements.
+Search checks node titles, operation IDs, named tunnel names, and Batch Output
+tags. Press Enter or `Focus` to jump to the next match. Tunnel matches reveal
+the tunnel source and subscribed inputs.
+
 ### View dims
 
 When the active image has non-XY axes such as `T`, `Z`, or `C`, VIPP shows a
@@ -43,6 +50,16 @@ run.
 
 For small or very fast edits, Run all in BG can add overhead. If updates feel
 slower for simple operations, switch it off.
+
+## Axis And Channel Splitting
+
+Use `Split Channels` when the input has a semantic channel axis, such as OME
+`C` metadata, VIPP sample metadata, `Combine Channels` output, or a conventional
+RGB/RGBA channel-last image. The node creates one graph output port per channel.
+
+Use `Split Axis` when you want one output per index of another stack axis, such
+as timepoints, Z slices, or a leading non-channel axis. This keeps accidental
+Z/time splitting separate from fluorescence channel splitting.
 
 ## Named Port Tunnels
 
@@ -90,6 +107,22 @@ note and press Delete, or use the note context menu, to remove it. Note creation
 movement, text edits, and deletion are included in undo/redo.
 
 Notes are saved in workflow JSON and reload with their attached node.
+
+## Workflow Save And Load
+
+`Save workflow...` writes the graph, node parameters, connections, canvas
+positions, named tunnels, graph notes, and selected inspector state to workflow
+JSON. The selected node and whether the right inspector panel is visible are
+restored when the workflow is loaded.
+
+Per-node thumbnail visibility is optional workflow UI metadata. Enable
+`Save thumbnail visibility in workflows` in Settings when hidden/shown thumbnail
+choices should be restored with the workflow. VIPP stores only the visibility
+preference; thumbnail image pixels, cached arrays, and cached tables are never
+embedded in workflow JSON.
+
+Old workflows without this metadata still load. When thumbnail metadata is
+absent, VIPP starts with normal thumbnail visibility.
 
 ## When To Use Which Mode
 

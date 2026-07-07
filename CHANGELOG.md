@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Added graph search/focus for node titles, operation IDs, named tunnels, and
+  `Batch Output` tags.
+- Added an ambiguous insert-on-wire chooser so users can select the inserted
+  node input/output mapping when several compatible port mappings are possible.
+- Added dynamic `Split Channels` output inference before execution so large
+  channel counts expose the right graph ports while editing.
+- Added `Split Axis` for explicit splitting of time, Z, or other non-channel
+  stack axes.
+- Added workflow UI metadata for selected inspector state, with optional
+  per-node thumbnail visibility persistence controlled by Settings.
+- Added explicit cache modes, cache/RAM status, auto memory guard, per-node
+  `Keep output cached`, and low-memory batch retention.
+- Added saved graph notes, tunnel reveal/highlight, and a tunnel manager for
+  filtering, renaming, deleting, focusing, and auditing named sources.
+- Fixed OME-Zarr analysis package validation so mismatched label shapes are
+  rejected before writing the reference image store.
+
 ## 0.9.0a1 - 2026-07-05
 
 - Added colocalization workflows for masked pixel metrics, threshold scatter

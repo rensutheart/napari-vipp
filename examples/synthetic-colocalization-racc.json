@@ -1,6 +1,14 @@
 {
   "type": "napari-vipp-workflow",
   "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "masked_racc_index_1",
+        "right_panel_visible": true
+      }
+    }
+  },
   "nodes": [
     {
       "id": "input",

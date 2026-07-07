@@ -1,11 +1,11 @@
-# VIPP 0.9.0a1 Alpha Release Runbook
+# VIPP Alpha Release Runbook
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
 
 ## Scope
 
-- Package version: 0.9.0a1
+- Target package version for the next alpha: `0.10.0a1`
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -25,16 +25,21 @@ Recommended local tools:
 
 Confirm these are set:
 
-- `pyproject.toml` version is `0.9.0a1`
+- `pyproject.toml` version matches the target version
+- `src/napari_vipp/__init__.py` exposes the same target version, if it carries
+  an explicit version
 - `pyproject.toml` classifier includes `Development Status :: 3 - Alpha`
 - `pyproject.toml` license is `LicenseRef-PolyForm-Shield-1.0.0`
 - README has a clear alpha disclaimer
 - README has a clear license section
+- CHANGELOG has an `Unreleased` section or a dated section for the target
+  version with the release highlights
 
 Optional but recommended checks:
 
 - `python -m npe2 validate src/napari_vipp/napari.yaml`
-- `python -m pytest -q`
+- `python -m ruff check .`
+- `python -m pytest`
 
 ## 3. Build Artifacts
 
@@ -48,8 +53,8 @@ python -m twine check dist/*
 
 Expected output artifacts:
 
-- `dist/napari_vipp-0.9.0a1.tar.gz`
-- `dist/napari_vipp-0.9.0a1-py3-none-any.whl`
+- `dist/napari_vipp-<version>.tar.gz`
+- `dist/napari_vipp-<version>-py3-none-any.whl`
 
 ## 4. Publish To PyPI
 
@@ -64,7 +69,7 @@ python -m twine upload dist/*
 Post-upload validation:
 
 - Open https://pypi.org/project/napari-vipp/
-- Confirm version `0.9.0a1` is visible
+- Confirm the target version is visible
 - Confirm README renders alpha disclaimer
 - Confirm license metadata shows PolyForm Shield/custom license terms
 
@@ -73,22 +78,22 @@ Post-upload validation:
 Create and push tag:
 
 ```powershell
-git tag -a v0.9.0a1 -m "napari-vipp 0.9.0a1 alpha"
-git push origin v0.9.0a1
+git tag -a v<version> -m "napari-vipp <version> alpha"
+git push origin v<version>
 ```
 
 Create release page in GitHub UI:
 
 1. GitHub repository -> Releases -> Draft a new release
-2. Tag: `v0.9.0a1`
-3. Title: `napari-vipp v0.9.0a1 (Alpha)`
+2. Tag: `v<version>`
+3. Title: `napari-vipp v<version> (Alpha)`
 4. Mark as pre-release: enabled
 5. Add release notes (suggested template below)
 
 Suggested release notes body:
 
 ```markdown
-## napari-vipp v0.9.0a1 (Alpha)
+## napari-vipp v<version> (Alpha)
 
 This is an early alpha build and is still in active development.
 
@@ -99,14 +104,16 @@ This is an early alpha build and is still in active development.
   0.8.2a1 remain BSD 3-Clause.
 
 ### Highlights
-- Added colocalization workflows for masked pixel metrics, threshold scatter
-  inspection, RACC-style outputs, object metrics, and object association tables.
-- Added publication-facing colocalization method notes for Pearson, Manders,
-  Costes, RACC, and object-association assumptions.
-- Added analytical phantom validation for calibrated 2D/3D morphology.
-- Added local folder batch execution with explicit `Batch Output` nodes.
-- Added background cancellation/progress support for long operations.
-- Added draggable histogram threshold markers for cutoff and label-volume nodes.
+- Added graph search/focus across node titles, operation IDs, tunnels, and
+  output tags.
+- Added tunnel management, tunnel reveal/highlight, and saved graph notes for
+  large workflow readability.
+- Added ambiguous insert-on-wire port mapping and dynamic Split Channels output
+  inference while editing.
+- Added Split Axis for explicit time, Z, and non-channel axis splitting.
+- Added selected-inspector workflow metadata and optional thumbnail-visibility
+  persistence.
+- Added explicit cache modes, memory guard, and low-memory batch retention.
 ```
 
 ## 6. napari Hub Listing/Refresh
@@ -119,7 +126,7 @@ After PyPI upload:
 2. Check: https://napari-hub.org/plugins/napari-vipp
 3. Confirm:
    - plugin appears
-   - version updates to 0.9.0a1
+   - version updates to the target version
    - README/disclaimer is visible
 
 If not updated after indexing delay:
@@ -131,12 +138,15 @@ If not updated after indexing delay:
 ## 7. Post-Release Follow-up
 
 1. Announce alpha status clearly in repository and release channels.
-2. Open a tracking milestone for issues found in 0.9.0 alpha.
+2. Open a tracking milestone for issues found in the released alpha.
 3. Plan next versioning strategy.
 
 ## Operator Checklist
 
 - [ ] Tests pass locally
+- [ ] Manual UI smoke pass completed for graph search, tunnel manager, graph
+      notes, insert-on-wire mapping, workflow save/load, cache modes, and
+      example workflows
 - [ ] Build and twine checks pass
 - [ ] Uploaded to PyPI
 - [ ] Git tag pushed

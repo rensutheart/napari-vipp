@@ -192,6 +192,9 @@ Special execution cases:
   from the number of returned arrays, e.g. `split_channels` yields one port per
   channel in the image). Graph `PortItem`s carry their own resolved data types,
   so drag compatibility can differ from a multi-output node's fallback type.
+- `split_channels` requires a semantic channel axis from metadata or a
+  conventional RGB/RGBA channel-last input. `split_axis` is the dynamic-output
+  node for arbitrary stack axes such as time, Z, or a leading non-channel axis.
 
 ## Node Library
 
@@ -203,7 +206,7 @@ The current high-level groups are:
 
 - `Image Data`
   - `Source & Output`: Image Source, Save Image, Batch Output
-  - `Axes & Regions`: Crop Stack, Select Axis Slice, Reorder Axes
+  - `Axes & Regions`: Crop Stack, Select Axis Slice, Split Axis, Reorder Axes
   - `Channels & Composites`: Extract Channel, Combine Channels, Split Channels,
     Composite → RGB
   - `Utilities`: Convert Dtype
@@ -727,15 +730,20 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 1 does not yet store preview visibility, inspector state,
-  graph notes, environment provenance, or YAML.
+- Workflow version 1 also stores graph notes and VIPP UI metadata. Inspector
+  metadata is always written when saving through the widget and records the
+  selected node plus right-panel visibility. Per-node thumbnail visibility is
+  written only when `Save thumbnail visibility in workflows` is enabled.
+- Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
+  tables, environment provenance, or YAML.
 - Image Source paths and layer names are serialized as literal parameters;
   input files are not embedded and paths are not rebased for portable sharing.
 - The loader requires the current type and version and rejects unknown
   operations, malformed records, duplicate node ids, invalid positions, and
   dangling or multiply occupied connections. It also rejects duplicate tunnel
-  names, tunnel connections without a declared source, and tunnel connections
-  whose stored source/output does not match the named source.
+  names, tunnel connections without a declared source, tunnel connections whose
+  stored source/output does not match the named source, and VIPP workflow
+  metadata that references missing nodes.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
 - `VippWidget.load_workflow_file()` provides the non-dialog load path used by
   the example launcher.
@@ -847,8 +855,9 @@ Implemented now:
 - true multi-output graph nodes with per-port wiring, including dynamic port
   counts (e.g. `Split Channels` emits one port per channel);
 - Image Data grouping with source, output, axis/region, channel/composite,
-  utility, math, and logic nodes, including `Reorder Axes`, `Assign Channel
-  Colors`, configurable `Composite → RGB`, and `Split Channels`;
+  utility, math, and logic nodes, including `Reorder Axes`, `Split Axis`,
+  `Assign Channel Colors`, configurable `Composite → RGB`, and `Split
+  Channels`;
 - OME-NGFF-inspired metadata propagation;
 - per-node and global preview controls;
 - slice/stack/log histograms;

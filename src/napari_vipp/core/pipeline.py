@@ -109,6 +109,7 @@ from napari_vipp.core.operations import (
     skeleton_keypoints,
     skeletonize_mask,
     sobel_filter,
+    split_axis,
     split_channels,
     subtract_background,
     subtract_images,
@@ -419,9 +420,17 @@ def _split_channels_outputs(count: int) -> tuple[OutputSpec, ...]:
     pipeline supplies the default port count for a node that has not yet
     processed an image.
     """
-    count = max(int(count), 1)
+    count = max(int(count), 0)
     return tuple(
         OutputSpec(f"channel_{index + 1}", "image", f"Ch {index + 1}")
+        for index in range(count)
+    )
+
+
+def _split_axis_outputs(count: int) -> tuple[OutputSpec, ...]:
+    count = max(int(count), 0)
+    return tuple(
+        OutputSpec(f"slice_{index + 1}", "image", f"Slice {index + 1}")
         for index in range(count)
     )
 
@@ -853,6 +862,30 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         select_axis_slice,
         subcategory=AXES_REGIONS_GROUP,
+    ),
+    OperationSpec(
+        "split_axis",
+        "Split Axis",
+        IMAGE_DATA_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "axis",
+                "Axis to split",
+                "choice",
+                "axis:0",
+                0,
+                0,
+                1,
+                choices=("axis:0",),
+                choice_labels=("Axis 0",),
+            ),
+        ),
+        split_axis,
+        subcategory=AXES_REGIONS_GROUP,
+        output_factory=_split_axis_outputs,
+        preserves_input_type=True,
     ),
     OperationSpec(
         "reorder_axes",
@@ -3799,13 +3832,35 @@ class PrototypePipeline:
             return ()
         spec = self.operation_spec(node.operation_id)
         if spec.output_factory is not None:
-            count = len(self.node_outputs.get(node_id, ()))
-            if count <= 0:
-                count = DEFAULT_DYNAMIC_OUTPUT_PORTS
+            inferred = self._inferred_dynamic_output_count_for_node(node_id, spec)
+            if inferred is None:
+                count = len(self.node_outputs.get(node_id, ()))
+                if count <= 0:
+                    count = DEFAULT_DYNAMIC_OUTPUT_PORTS
+            else:
+                count = inferred
             ports = spec.output_factory(count)
         else:
             ports = spec.output_ports
+        if spec.id == "split_axis":
+            ports = self._labeled_split_axis_ports(node_id, ports)
         return self._resolved_output_port_types(node_id, ports)
+
+    def inferred_dynamic_output_count(
+        self,
+        operation_id: str,
+        source_id: str,
+        source_port: int = 0,
+        params: dict[str, Any] | None = None,
+    ) -> int | None:
+        spec = self.operation_spec(operation_id)
+        if spec.output_factory is None:
+            return None
+        if operation_id == "split_channels":
+            return self._split_channel_output_count(source_id, source_port)
+        if operation_id == "split_axis":
+            return self._split_axis_output_count(source_id, source_port, params or {})
+        return None
 
     def input_ports(self, node_id: str) -> tuple[InputSpec, ...]:
         node = self.nodes.get(node_id)
@@ -3838,6 +3893,108 @@ class PrototypePipeline:
             return ports
         output_type = source_ports[source.source_port].output_type
         return tuple(replace(port, output_type=output_type) for port in ports)
+
+    def _inferred_dynamic_output_count_for_node(
+        self,
+        node_id: str,
+        spec: OperationSpec,
+    ) -> int | None:
+        connections = self._input_connections(node_id)
+        if not connections:
+            return None
+        source = connections[0]
+        if spec.id == "split_channels":
+            return self._split_channel_output_count(
+                source.source_id,
+                source.source_port,
+            )
+        if spec.id == "split_axis":
+            node = self.nodes.get(node_id)
+            return self._split_axis_output_count(
+                source.source_id,
+                source.source_port,
+                self._public_params(node.params) if node is not None else {},
+            )
+        return None
+
+    def _split_channel_output_count(
+        self,
+        source_id: str,
+        source_port: int,
+    ) -> int | None:
+        shape = self._resolved_output_shape(source_id, source_port)
+        if not shape:
+            return None
+        state = self._resolved_output_state(source_id, source_port)
+        axis = _strict_channel_axis_for_shape(shape, state)
+        if axis is None:
+            return 0
+        try:
+            return max(int(shape[axis]), 0)
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _split_axis_output_count(
+        self,
+        source_id: str,
+        source_port: int,
+        params: dict[str, Any],
+    ) -> int | None:
+        shape = self._resolved_output_shape(source_id, source_port)
+        if not shape:
+            return None
+        axis = _split_axis_index_from_params(params, len(shape))
+        try:
+            return max(int(shape[axis]), 0)
+        except (TypeError, ValueError, IndexError):
+            return None
+
+    def _labeled_split_axis_ports(
+        self,
+        node_id: str,
+        ports: tuple[OutputSpec, ...],
+    ) -> tuple[OutputSpec, ...]:
+        connections = self._input_connections(node_id)
+        if not connections:
+            return ports
+        source = connections[0]
+        shape = self._resolved_output_shape(source.source_id, source.source_port)
+        if not shape:
+            return ports
+        node = self.nodes.get(node_id)
+        axis_index = _split_axis_index_from_params(
+            self._public_params(node.params) if node is not None else {},
+            len(shape),
+        )
+        label = _split_axis_label(
+            self._resolved_output_state(source.source_id, source.source_port),
+            axis_index,
+        )
+        return tuple(
+            replace(
+                port,
+                name=f"{label.lower()}_{index + 1}",
+                title=f"{label} {index + 1}",
+            )
+            for index, port in enumerate(ports)
+        )
+
+    def _resolved_output_shape(
+        self,
+        source_id: str,
+        source_port: int,
+    ) -> tuple[int, ...] | None:
+        output = self._resolved_output(source_id, source_port)
+        shape = getattr(output, "shape", None)
+        if shape is None:
+            state = self._resolved_output_state(source_id, source_port)
+            shape = getattr(state, "shape", None)
+        if shape is None:
+            return None
+        try:
+            return tuple(int(size) for size in shape)
+        except (TypeError, ValueError):
+            return None
 
     def _resolved_output(self, source_id: str, source_port: int):
         outputs = self.node_outputs.get(source_id)
@@ -4442,7 +4599,13 @@ class PrototypePipeline:
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if (
             node.operation_id
-            in {"project_image", "orthogonal_projection", "rescale_axes"}
+            in {
+                "project_image",
+                "orthogonal_projection",
+                "rescale_axes",
+                "split_axis",
+                "split_channels",
+            }
             and isinstance(input_state, ImageState)
         ):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
@@ -4818,6 +4981,46 @@ def _default_combined_channel_axis(input_state: ImageState | None) -> int:
         if axis.type == "space":
             return index
     return 0
+
+
+def _strict_channel_axis_for_shape(
+    shape: tuple[int, ...],
+    state: ImageState | TableState | None,
+) -> int | None:
+    if isinstance(state, ImageState):
+        axis = _image_state_channel_axis(state)
+        if axis is not None and 0 <= axis < len(shape):
+            return axis
+    if len(shape) >= 3 and shape[-1] in (3, 4):
+        return len(shape) - 1
+    return None
+
+
+def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
+    value = params.get("axis", "axis:0")
+    text = str(value).strip().lower()
+    if text.startswith("axis:"):
+        text = text.split(":", 1)[1]
+    try:
+        axis = int(text)
+    except ValueError:
+        axis = 0
+    if ndim <= 0:
+        return 0
+    if axis < 0:
+        axis += ndim
+    return max(0, min(axis, ndim - 1))
+
+
+def _split_axis_label(
+    state: ImageState | TableState | None,
+    axis_index: int,
+) -> str:
+    if isinstance(state, ImageState) and 0 <= axis_index < len(state.axes):
+        name = str(state.axes[axis_index].name or "").strip()
+        if name:
+            return name.upper() if len(name) == 1 else name
+    return f"Axis {axis_index}"
 
 
 def _image_state_channel_axis(input_state: ImageState) -> int | None:
