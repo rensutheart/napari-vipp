@@ -223,8 +223,8 @@ def _mesh_morphology_sample():
     data[2, 78, 96] = 58_000
     data[2, 78, 97] = 58_000
 
-    background = ((z * 3 + y + x) % 96).astype(np.uint16)
-    data += background
+    foreground_texture = ((z * 3 + y + x) % 96).astype(np.uint16)
+    data += foreground_texture * (data > 0)
 
     metadata_block = _ome_image_metadata("ZYX", data.shape)
     metadata_block["ome"]["multiscales"][0]["datasets"][0][

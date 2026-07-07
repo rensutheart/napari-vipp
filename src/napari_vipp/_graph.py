@@ -564,9 +564,17 @@ class GraphNoteItem(QGraphicsTextItem):
 
     DEFAULT_WIDTH = 240.0
 
-    def __init__(self, note_id: str, text: str, width: float = DEFAULT_WIDTH):
+    def __init__(
+        self,
+        note_id: str,
+        text: str,
+        width: float = DEFAULT_WIDTH,
+        *,
+        attached_node: str = "",
+    ):
         super().__init__()
         self.note_id = str(note_id)
+        self.attached_node = str(attached_node or "")
         self._drag_start_pos: QPointF | None = None
         self.setPlainText(str(text or ""))
         self.setTextWidth(max(float(width), 140.0))
@@ -575,7 +583,7 @@ class GraphNoteItem(QGraphicsTextItem):
         font.setPointSizeF(9.0)
         self.setFont(font)
         self.setDefaultTextColor(QColor("#f8fafc"))
-        self.setZValue(28)
+        self.setZValue(80)
         self.setFlag(QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -598,6 +606,11 @@ class GraphNoteItem(QGraphicsTextItem):
 
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.LeftButton:
+            view = _view_for_scene(self.scene())
+            if view is not None:
+                view.scene.clearSelection()
+                view._clear_node_selection()
+            self.setSelected(True)
             self._drag_start_pos = QPointF(self.pos())
             self.setCursor(Qt.ClosedHandCursor)
         super().mousePressEvent(event)
@@ -997,9 +1010,12 @@ class NodeProxy(QGraphicsProxyWidget):
             if delta.manhattanLength() >= 3:
                 self._dragging = True
                 self.setOpacity(self.DRAG_OPACITY)
-                self.setPos(self._drag_start_pos + delta)
+                new_pos = self._drag_start_pos + delta
+                old_pos = QPointF(self.pos())
+                self.setPos(new_pos)
                 view = _view_for_scene(self.scene())
                 if view is not None:
+                    view._move_attached_notes(self.node_id, new_pos - old_pos)
                     view.update_existing_node_insert_preview(
                         self.node_id,
                         event.scenePos(),
@@ -1364,6 +1380,7 @@ class PipelineGraphView(QGraphicsView):
     node_delete_requested = Signal(str)
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
+    node_note_requested = Signal(str)
     node_moved = Signal(str, object, object)
     node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
@@ -1561,17 +1578,24 @@ class PipelineGraphView(QGraphicsView):
         position: QPointF,
         *,
         width: float = GraphNoteItem.DEFAULT_WIDTH,
+        attached_node: str = "",
     ) -> None:
         if not note_id:
             return
         existing = self._notes.get(note_id)
         if existing is not None:
             existing.set_text(text)
+            existing.attached_node = str(attached_node or "")
             existing.setTextWidth(max(float(width), 140.0))
             existing.setPos(position)
             self._ensure_scene_space_for_rect(existing.sceneBoundingRect())
             return
-        item = GraphNoteItem(note_id, text, width)
+        item = GraphNoteItem(
+            note_id,
+            text,
+            width,
+            attached_node=attached_node,
+        )
         self.scene.addItem(item)
         item.setPos(position)
         self._notes[note_id] = item
@@ -1588,14 +1612,22 @@ class PipelineGraphView(QGraphicsView):
                 text = str(note.get("text", ""))
                 position = _to_pointf(note.get("position"))
                 width = float(note.get("width", GraphNoteItem.DEFAULT_WIDTH))
+                attached_node = str(note.get("attached_node", "") or "")
             else:
                 note_id = str(getattr(note, "id", "")).strip()
                 text = str(getattr(note, "text", ""))
                 position = _to_pointf(getattr(note, "position", None))
                 width = float(getattr(note, "width", GraphNoteItem.DEFAULT_WIDTH))
+                attached_node = str(getattr(note, "attached_node", "") or "")
             if position is None:
                 continue
-            self.add_note(note_id, text, position, width=width)
+            self.add_note(
+                note_id,
+                text,
+                position,
+                width=width,
+                attached_node=attached_node,
+            )
 
     def set_note_text(self, note_id: str, text: str) -> None:
         item = self._notes.get(note_id)
@@ -1611,6 +1643,7 @@ class PipelineGraphView(QGraphicsView):
         item = self._notes.get(note_id)
         if item is None:
             return
+        self._clear_node_selection()
         for other in self._notes.values():
             other.setSelected(other is item)
         self._ensure_scene_space_for_rect(item.sceneBoundingRect())
@@ -1619,6 +1652,25 @@ class PipelineGraphView(QGraphicsView):
     def suggest_note_position(self) -> QPointF:
         center = self.mapToScene(self.viewport().rect().center())
         return QPointF(center.x() - 120.0, center.y() - 45.0)
+
+    def suggest_note_position_for_node(self, node_id: str) -> QPointF:
+        rect = self.node_scene_rect(node_id)
+        if rect is None:
+            return self.suggest_note_position()
+        return QPointF(rect.right() + 24.0, rect.top() + 18.0)
+
+    def _move_attached_notes(self, node_id: str, delta: QPointF) -> None:
+        if abs(delta.x()) < 0.001 and abs(delta.y()) < 0.001:
+            return
+        moved_rect = QRectF()
+        for item in self._notes.values():
+            if item.attached_node != node_id:
+                continue
+            before = item.sceneBoundingRect()
+            item.setPos(item.pos() + delta)
+            moved_rect = moved_rect.united(before.united(item.sceneBoundingRect()))
+        if moved_rect.isValid():
+            self._ensure_scene_space_for_rect(moved_rect)
 
     def node_position(self, node_id: str) -> QPointF | None:
         proxy = self._proxies.get(node_id)
@@ -1660,7 +1712,9 @@ class PipelineGraphView(QGraphicsView):
             if _points_close(proxy.pos(), point):
                 continue
             before = proxy.sceneBoundingRect()
+            old_pos = QPointF(proxy.pos())
             proxy.setPos(point)
+            self._move_attached_notes(node_id, point - old_pos)
             after = proxy.sceneBoundingRect()
             combined = before.united(after)
             moved_rect = combined if moved_rect is None else moved_rect.united(combined)
@@ -1679,7 +1733,9 @@ class PipelineGraphView(QGraphicsView):
         if proxy is None:
             return
         rect = proxy.sceneBoundingRect()
-        proxy.setPos(proxy.pos() + (scene_pos - rect.center()))
+        delta = scene_pos - rect.center()
+        proxy.setPos(proxy.pos() + delta)
+        self._move_attached_notes(node_id, delta)
         moved_rect = rect.united(proxy.sceneBoundingRect())
         self._ensure_scene_space_for_rect(proxy.sceneBoundingRect())
         self._mark_graph_geometry_changed()
@@ -1694,6 +1750,7 @@ class PipelineGraphView(QGraphicsView):
             if proxy is None:
                 continue
             proxy.setPos(proxy.pos() + delta)
+            self._move_attached_notes(node_id, delta)
             moved_rect = moved_rect.united(proxy.sceneBoundingRect())
         if moved_rect.isValid():
             self._ensure_scene_space_for_rect(moved_rect)
@@ -2420,12 +2477,21 @@ class PipelineGraphView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def _select_node(self, node_id: str) -> None:
+        for note in self._notes.values():
+            note.setSelected(False)
         for card_id, card in self._cards.items():
             card.set_selected(card_id == node_id)
             proxy = self._proxies.get(card_id)
             if proxy is not None:
                 proxy.setSelected(card_id == node_id)
         self.node_selected.emit(node_id)
+
+    def _clear_node_selection(self) -> None:
+        for card_id, card in self._cards.items():
+            card.set_selected(False)
+            proxy = self._proxies.get(card_id)
+            if proxy is not None:
+                proxy.setSelected(False)
 
     def _node_id_at_view_pos(self, pos: QPoint) -> str | None:
         scene_pos = self.mapToScene(pos)
@@ -2445,6 +2511,7 @@ class PipelineGraphView(QGraphicsView):
         delete_action = menu.addAction("Delete")
         code_action = menu.addAction("Inspect Code")
         duplicate_action = menu.addAction("Duplicate Node")
+        add_note_action = menu.addAction("Add note")
         pin_action = None
         if card._can_pin:
             menu.addSeparator()
@@ -2456,6 +2523,8 @@ class PipelineGraphView(QGraphicsView):
             self.node_code_requested.emit(node_id)
         elif action == duplicate_action:
             self.node_duplicate_requested.emit(node_id)
+        elif action == add_note_action:
+            self.node_note_requested.emit(node_id)
         elif pin_action is not None and action == pin_action:
             self.pin_requested.emit(node_id)
 

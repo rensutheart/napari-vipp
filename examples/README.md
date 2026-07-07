@@ -23,13 +23,13 @@ Other workflows can be loaded from the VIPP toolbar with `Load workflow...`.
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: blur, Otsu threshold, split channel mask, fill holes, connected components, clear border objects, and volume filtering. |
-| `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image into `Measure Objects + Intensity`. |
-| `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity, table merge, and metadata columns. |
+| `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |
+| `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |
 | `synthetic-measurement-summary.json` | `VIPP synthetic measurement summary` | Grouped measurement summaries with known timepoint object counts and areas. |
 | `synthetic-derived-object-morphology.json` | `VIPP synthetic object morphology` | Derived 2D morphology, circularity, perimeter/area ratio, Hu moments, and checklist-based column selection. |
 | `synthetic-3d-mesh-morphology.json` | `VIPP synthetic 3D mesh morphology` | True-3D mesh morphology on anisotropic objects, including surface area, mesh volume, convex hull metrics, sphericity, and tiny-object status reporting. |
-| `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
-| `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
+| `synthetic-skeleton-qc.json` | `VIPP synthetic skeleton network` | Compact skeleton QC path using a `Skeleton mask` tunnel: keypoint masks, component/branch labels, pruning, branch tables, graph tables, and overall network summaries. |
+| `synthetic-advanced-skeleton-network.json` | `VIPP synthetic advanced skeleton network` | Stress test using a `Skeleton mask` tunnel for time-indexed 3D skeleton/network analysis with loops, disconnected fragments, pruning, graph overlays, branch summaries, and anisotropic physical calibration. |
 | `synthetic-colocalization-racc.json` | `VIPP synthetic colocalization` | Two-channel colocalization review path using named red/green channel tunnels: ROI mask, inspector scatter threshold guides, colocalized-voxel RGB views, Pearson/Manders metrics, and RACC index output. |
 | `synthetic-object-colocalization-association.json` | `VIPP synthetic colocalization` | Object-aware colocalization and association review path using named red/green channel tunnels: thresholded channel labels, object colocalization rows, label overlap, nearest-object distances, event localization, and merged morphology/colocalization tables. |
 
@@ -63,3 +63,8 @@ metadata annotation, grouped summaries, skeleton/network measurements, 3D mesh
 morphology, first-pass pixel colocalization/RACC outputs with ROI-masked
 variants, named channel tunnels, and object-aware colocalization/association
 tables.
+
+Graph tunnels in these examples are used as readability aids for reused sources:
+`Red intensity` avoids long back-reference wires from a split channel, while
+`Skeleton mask` avoids a dense fan-out from one binary skeleton mask into many
+QC and measurement nodes.

@@ -4024,11 +4024,17 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    note_id = widget._add_graph_note("Review threshold", QPointF(25, 35))
+    note_id = widget._add_graph_note(
+        "Review threshold",
+        QPointF(25, 35),
+        attached_node="gaussian",
+    )
 
     assert note_id in widget._graph_notes
     assert note_id in widget.graph_view._notes
     assert widget.graph_view._notes[note_id].toPlainText() == "Review threshold"
+    assert widget._graph_notes[note_id].attached_node == "gaussian"
+    assert widget.graph_view._notes[note_id].attached_node == "gaussian"
 
     widget._set_graph_note_text(note_id, "Review threshold and mask")
 
@@ -4055,6 +4061,28 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     assert widget._graph_notes[note_id].position == (25.0, 35.0)
     assert widget.graph_view._notes[note_id].pos() == QPointF(25, 35)
 
+    old_node_pos = QPointF(widget.graph_view.node_position("gaussian"))
+    old_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    new_node_pos = old_node_pos + QPointF(80, 30)
+    widget.graph_view.apply_node_positions({"gaussian": new_node_pos})
+    widget._on_node_moved("gaussian", old_node_pos, new_node_pos)
+
+    assert widget.graph_view.node_position("gaussian") == new_node_pos
+    assert widget.graph_view._notes[note_id].pos() == old_note_pos + QPointF(80, 30)
+    assert widget._graph_notes[note_id].position == (
+        old_note_pos.x() + 80.0,
+        old_note_pos.y() + 30.0,
+    )
+
+    widget.undo()
+
+    assert widget.graph_view.node_position("gaussian") == old_node_pos
+    assert widget.graph_view._notes[note_id].pos() == old_note_pos
+    assert widget._graph_notes[note_id].position == (
+        old_note_pos.x(),
+        old_note_pos.y(),
+    )
+
     widget._delete_graph_note(note_id)
 
     assert note_id not in widget._graph_notes
@@ -4063,6 +4091,31 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
     widget.undo()
 
     assert note_id in widget._graph_notes
+    assert note_id in widget.graph_view._notes
+
+
+def test_delete_node_removes_attached_graph_notes_with_undo(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    note_id = widget._add_graph_note(
+        "Tune blur radius",
+        QPointF(220, 40),
+        attached_node="gaussian",
+    )
+
+    widget._delete_node("gaussian")
+
+    assert "gaussian" not in widget.pipeline.nodes
+    assert note_id not in widget._graph_notes
+    assert note_id not in widget.graph_view._notes
+
+    widget.undo()
+
+    assert "gaussian" in widget.pipeline.nodes
+    assert note_id in widget._graph_notes
+    assert widget._graph_notes[note_id].attached_node == "gaussian"
     assert note_id in widget.graph_view._notes
 
 
@@ -4412,6 +4465,12 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
         "threshold": (180, 30),
     }
     widget.graph_view.apply_node_positions(messy_positions)
+    note_id = widget._add_graph_note(
+        "Check blur",
+        QPointF(90, 500),
+        attached_node="gaussian",
+    )
+    messy_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
     before_connections = {
         (
             connection.source_id,
@@ -4442,6 +4501,12 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
     assert threshold_pos is not None
     assert input_pos.x() < gaussian_pos.x()
     assert gaussian_pos.x() < threshold_pos.x()
+    structured_note_pos = QPointF(widget.graph_view._notes[note_id].pos())
+    assert structured_note_pos != messy_note_pos
+    assert widget._graph_notes[note_id].position == (
+        structured_note_pos.x(),
+        structured_note_pos.y(),
+    )
     assert "Auto-structured graph layout" in widget.status_label.text()
 
     widget.undo()
@@ -4450,6 +4515,7 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
         node_id: (float(x), float(y))
         for node_id, (x, y) in messy_positions.items()
     }
+    assert widget.graph_view._notes[note_id].pos() == messy_note_pos
 
 
 def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):

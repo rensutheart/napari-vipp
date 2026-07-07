@@ -163,8 +163,44 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
 
     view._show_node_context_menu("threshold", QPoint(0, 0))
 
-    assert labels == ["Delete", "Inspect Code", "Duplicate Node", "Pin"]
+    assert labels == ["Delete", "Inspect Code", "Duplicate Node", "Add note", "Pin"]
     assert deleted == ["threshold"]
+
+
+def test_node_context_menu_can_request_attached_note(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    def fake_exec(menu, _pos):
+        return next(action for action in menu.actions() if action.text() == "Add note")
+
+    requested = []
+    view.node_note_requested.connect(requested.append)
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._show_node_context_menu("threshold", QPoint(0, 0))
+
+    assert requested == ["threshold"]
+
+
+def test_selecting_graph_note_clears_node_selection(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    view.add_note(
+        "note_1",
+        "Check blur",
+        QPointF(180, 60),
+        attached_node="gaussian",
+    )
+    view.select_node("gaussian")
+    assert view._proxies["gaussian"].isSelected()
+
+    view.select_note("note_1")
+
+    assert view._notes["note_1"].isSelected()
+    assert not view._proxies["gaussian"].isSelected()
+    assert not view._cards["gaussian"]._selected
 
 
 def test_node_context_menu_uses_unpin_label_for_pinned_nodes(qtbot, monkeypatch):

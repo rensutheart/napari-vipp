@@ -78,16 +78,18 @@ To inspect tunnel usage:
 
 ## Graph Notes
 
-Use `Add note` to place a movable annotation on the graph canvas. Notes are for
-workflow reasoning, reminders, interpretation comments, or marking alternatives;
-they do not run as pipeline nodes and do not affect outputs.
+Right-click a node and choose `Add note` to attach a movable annotation to that
+node. Notes are for workflow reasoning, reminders, interpretation comments, or
+marking alternatives; they do not run as pipeline nodes and do not affect
+outputs.
 
-Notes can be moved like nodes. Double-click a note, or right-click it and choose
-`Edit note...`, to change the text. Select a note and press Delete, or use the
-note context menu, to remove it. Note creation, movement, text edits, and
-deletion are included in undo/redo.
+Attached notes move with their node during dragging, insertion layout changes,
+and `Auto structure graph`. Dragging a note only moves the note. Double-click a
+note, or right-click it and choose `Edit note...`, to change the text. Select a
+note and press Delete, or use the note context menu, to remove it. Note creation,
+movement, text edits, and deletion are included in undo/redo.
 
-Notes are saved in workflow JSON and reload at the same canvas position.
+Notes are saved in workflow JSON and reload with their attached node.
 
 ## When To Use Which Mode
 

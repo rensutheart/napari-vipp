@@ -73,3 +73,16 @@ def test_sample_data_includes_grayscale_multichannel_and_timelapse():
         "coordinateTransformations"
     ][0]["scale"]
     assert advanced_scale == [1.0, 1.2, 0.25, 0.25]
+
+
+def test_mesh_morphology_sample_empty_slices_have_empty_background():
+    data, _metadata, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic 3D mesh morphology"
+    )
+
+    assert data[0].max() == 0
+    assert data[1].max() == 0
+    assert data[-1].max() == 0
+    assert data.max() > 50_000

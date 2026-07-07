@@ -113,12 +113,21 @@
     }
   ],
   "positions": {
-    "input": [0.0, 20.0],
-    "binary_threshold_1": [330.0, 20.0],
-    "label_connected_components_1": [660.0, 20.0],
-    "measure_objects_1": [990.0, -90.0],
-    "measure_3d_mesh_morphology_1": [990.0, 150.0],
-    "merge_tables_1": [1320.0, 20.0],
-    "select_table_columns_1": [1650.0, 20.0]
-  }
+    "input": [0.0, 320.0],
+    "binary_threshold_1": [360.0, 320.0],
+    "label_connected_components_1": [720.0, 320.0],
+    "measure_objects_1": [1080.0, 120.0],
+    "measure_3d_mesh_morphology_1": [1080.0, 520.0],
+    "merge_tables_1": [1480.0, 320.0],
+    "select_table_columns_1": [1840.0, 320.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "Mesh metrics use physical voxel calibration; tiny labels may report skipped_too_few_voxels.",
+      "position": [1080.0, 750.0],
+      "width": 270.0,
+      "attached_node": "measure_3d_mesh_morphology_1"
+    }
+  ]
 }

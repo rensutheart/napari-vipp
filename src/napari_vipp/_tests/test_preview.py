@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.metadata import (
     ChannelMetadata,
     image_state_from_array,
@@ -85,6 +86,35 @@ def test_percentile_thumbnail_keeps_sparse_foreground_visible_over_low_ramp():
     assert thumb is not None
     assert thumb[0, :, 0].max() < 5
     assert thumb[20, 20, 0] > 200
+
+
+def test_mesh_morphology_empty_z_slice_thumbnail_stays_dark():
+    data, layer_kwargs, _layer_type = next(
+        sample
+        for sample in make_sample_data()
+        if sample[1]["name"] == "VIPP synthetic 3D mesh morphology"
+    )
+    state = image_state_from_array(
+        data,
+        layer_metadata=layer_kwargs["metadata"],
+    )
+
+    preview = make_preview(
+        data,
+        mode="slice",
+        current_step=(0, 0, 0),
+        current_step_nsteps=data.shape,
+        state=state,
+    )
+    thumb = normalize_thumbnail_with_colormap(
+        preview,
+        size=(64, 64),
+        colormap="Gray",
+        contrast_mode="Percentile",
+    )
+
+    assert thumb is not None
+    assert thumb[..., :3].max() == 0
 
 
 def test_signed_difference_thumbnail_renders_zero_background_black():

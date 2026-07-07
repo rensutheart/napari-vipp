@@ -113,6 +113,13 @@ def test_red_channel_intensity_measurement_workflow_loads_and_runs():
 
     input_ports = pipeline.input_ports("measure_objects_intensity_1")
     assert [port.name for port in input_ports] == ["labels", "intensity"]
+    red_intensity_tunnel = pipeline.output_tunnel("Red intensity")
+    assert red_intensity_tunnel is not None
+    assert (red_intensity_tunnel.source_id, red_intensity_tunnel.source_port) == (
+        "split_channels_1",
+        0,
+    )
+    assert pipeline.tunnel_connection_for_input("measure_objects_intensity_1", 1)
     assert any(
         connection.source_id == "filter_labels_by_volume_1"
         and connection.target_id == "measure_objects_intensity_1"
@@ -148,6 +155,13 @@ def test_red_channel_merged_measurement_table_workflow_loads_and_runs():
     input_ports = pipeline.input_ports("merge_tables_1")
     assert len(input_ports) == 2
     assert all(port.input_type == "table" for port in input_ports)
+    red_intensity_tunnel = pipeline.output_tunnel("Red intensity")
+    assert red_intensity_tunnel is not None
+    assert (red_intensity_tunnel.source_id, red_intensity_tunnel.source_port) == (
+        "split_channels_1",
+        0,
+    )
+    assert pipeline.tunnel_connection_for_input("measure_objects_intensity_1", 1)
     assert any(
         connection.source_id == "measure_objects_1"
         and connection.target_id == "merge_tables_1"
@@ -335,6 +349,14 @@ def test_synthetic_skeleton_qc_workflow_loads_and_runs():
         "Graph nodes",
         "Graph edges",
     ]
+    skeleton_tunnel = pipeline.output_tunnel("Skeleton mask")
+    assert skeleton_tunnel is not None
+    assert (skeleton_tunnel.source_id, skeleton_tunnel.source_port) == (
+        "binary_threshold_1",
+        0,
+    )
+    assert pipeline.tunnel_connection_for_input("skeleton_keypoints_1", 0)
+    assert pipeline.tunnel_connection_for_input("prune_skeleton_branches_1", 0)
 
     data, layer_kwargs, _layer_type = next(
         sample
@@ -384,6 +406,14 @@ def test_synthetic_advanced_skeleton_workflow_loads_and_runs():
         "Graph nodes",
         "Graph edges",
     ]
+    skeleton_tunnel = pipeline.output_tunnel("Skeleton mask")
+    assert skeleton_tunnel is not None
+    assert (skeleton_tunnel.source_id, skeleton_tunnel.source_port) == (
+        "binary_threshold_1",
+        0,
+    )
+    assert pipeline.tunnel_connection_for_input("skeleton_graph_overlay_1", 0)
+    assert pipeline.tunnel_connection_for_input("prune_skeleton_branches_1", 0)
 
     data, layer_kwargs, _layer_type = next(
         sample

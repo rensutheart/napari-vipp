@@ -3816,8 +3816,6 @@ class VippWidget(QWidget):
         self.tunnel_manager_button.setToolTip(
             "Manage named graph tunnels and reveal their subscribers.",
         )
-        self.add_note_button = QPushButton("Add note")
-        self.add_note_button.setToolTip("Add a movable note to the graph canvas.")
         self.auto_structure_button = QPushButton("Auto structure graph")
         self.auto_structure_button.setToolTip(
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
@@ -4267,7 +4265,6 @@ class VippWidget(QWidget):
         input_row.addWidget(self.calculate_all_button)
         input_row.addWidget(self.auto_structure_button)
         input_row.addWidget(self.tunnel_manager_button)
-        input_row.addWidget(self.add_note_button)
         input_row.addWidget(self.undo_button)
         input_row.addWidget(self.redo_button)
         compact_separator = _toolbar_separator(6)
@@ -4613,9 +4610,6 @@ class VippWidget(QWidget):
         self.batch_button.clicked.connect(self._batch_collection_dialog)
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
-        self.add_note_button.clicked.connect(
-            lambda _checked=False: self._add_graph_note()
-        )
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
         self.layer_combo.currentTextChanged.connect(self.run_pipeline)
         self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
@@ -4680,6 +4674,7 @@ class VippWidget(QWidget):
         self.graph_view.node_delete_requested.connect(self._delete_node)
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
+        self.graph_view.node_note_requested.connect(self._add_graph_note_for_node)
         self.graph_view.node_moved.connect(self._on_node_moved)
         self.graph_view.node_splice_requested.connect(
             self._insert_existing_node_on_connection
@@ -4984,6 +4979,7 @@ class VippWidget(QWidget):
             self.status_label.setText("Graph is already structured.")
             return
 
+        self._sync_graph_note_positions_from_view()
         self._push_undo_if_changed(before)
         self.status_label.setText(
             f"Auto-structured graph layout for {len(positions)} nodes."
@@ -5486,6 +5482,7 @@ class VippWidget(QWidget):
             target_id,
             inserted_node_id,
         )
+        self._sync_graph_note_positions_from_view()
 
     def _center_inserted_node_in_open_gap(
         self,
@@ -6794,6 +6791,14 @@ class VippWidget(QWidget):
             documents.append(replace(note, position=position).to_workflow_dict())
         return documents
 
+    def _sync_graph_note_positions_from_view(self) -> None:
+        positions = self.graph_view.note_positions()
+        for note_id, position in positions.items():
+            note = self._graph_notes.get(note_id)
+            if note is None:
+                continue
+            self._graph_notes[note_id] = replace(note, position=position)
+
     def _restore_graph_notes(self, notes) -> None:
         restored: dict[str, GraphNoteState] = {}
         for raw in notes or ():
@@ -6822,23 +6827,47 @@ class VippWidget(QWidget):
         position: QPointF | None = None,
         *,
         width: float = 240.0,
+        attached_node: str = "",
     ) -> str:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         note_id = self._next_graph_note_id()
-        point = position or self.graph_view.suggest_note_position()
+        attached_node = str(attached_node or "")
+        if position is not None:
+            point = position
+        elif attached_node:
+            point = self.graph_view.suggest_note_position_for_node(attached_node)
+        else:
+            point = self.graph_view.suggest_note_position()
         note = GraphNoteState(
             note_id,
             str(text),
             (float(point.x()), float(point.y())),
             float(width),
+            attached_node,
         )
         self._graph_notes[note_id] = note
-        self.graph_view.add_note(note.id, note.text, point, width=note.width)
+        self.graph_view.add_note(
+            note.id,
+            note.text,
+            point,
+            width=note.width,
+            attached_node=note.attached_node,
+        )
         self.graph_view.select_note(note_id)
         self._push_undo_if_changed(before)
-        self.status_label.setText("Added graph note.")
+        if attached_node:
+            self.status_label.setText(
+                f"Added note to '{self._node_title(attached_node)}'."
+            )
+        else:
+            self.status_label.setText("Added graph note.")
         return note_id
+
+    def _add_graph_note_for_node(self, node_id: str) -> None:
+        if node_id not in self.pipeline.nodes:
+            return
+        self._add_graph_note(attached_node=node_id)
 
     def _edit_graph_note(self, note_id: str) -> None:
         note = self._graph_notes.get(note_id)
@@ -7281,6 +7310,14 @@ class VippWidget(QWidget):
         title = node.title
         if not self.pipeline.remove_node(node_id):
             return
+        attached_note_ids = [
+            note_id
+            for note_id, note in self._graph_notes.items()
+            if note.attached_node == node_id
+        ]
+        for note_id in attached_note_ids:
+            self._graph_notes.pop(note_id, None)
+            self.graph_view.remove_note(note_id)
         self.graph_view.remove_node(node_id)
         self._sync_port_tunnels()
         self._preview_disabled_node_ids.discard(node_id)
@@ -7302,7 +7339,13 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         positions = self.graph_view.node_positions()
         positions[node_id] = (float(old_pos.x()), float(old_pos.y()))
-        self._push_undo_snapshot(self._current_history_snapshot(positions))
+        self._push_undo_snapshot(
+            self._current_history_snapshot(
+                positions,
+                notes_override=self._graph_note_documents(use_view_positions=False),
+            )
+        )
+        self._sync_graph_note_positions_from_view()
         self.status_label.setText(f"Moved '{self._node_title(node_id)}'.")
 
     def _select_first_available_node(self) -> None:
