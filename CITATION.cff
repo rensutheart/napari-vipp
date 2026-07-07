@@ -6,6 +6,6 @@ authors:
     given-names: "Rensu P."
 repository-code: "https://github.com/rensutheart/napari-vipp"
 url: "https://github.com/rensutheart/napari-vipp"
-version: "0.9.0a1"
-date-released: "2026-07-05"
+version: "0.10.0a1"
+date-released: "2026-07-07"
 license: "PolyForm-Shield-1.0.0"

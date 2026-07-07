@@ -153,7 +153,7 @@ def write_ome_zarr(
     metadata = {"vipp": _vipp_metadata(state)}
     if omero_metadata.get("channels"):
         metadata["omero"] = omero_metadata
-    add_metadata(str(path), metadata, fmt=fmt)
+    _with_zarr_metadata_retries(add_metadata, str(path), metadata, fmt=fmt)
     return path
 
 

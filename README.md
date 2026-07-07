@@ -501,12 +501,15 @@ Intensity`.
 ## Roadmap
 
 The current versioned alpha roadmap is maintained in
-`docs/planning.md`. Planned next minor milestones are:
+`docs/planning.md`. The current alpha release is:
 
 - `0.10.0a1`: graph readability, tunnel management, saved graph notes,
   graph search/focus, ambiguous insert-on-wire port mapping, workflow UI-state
   persistence, and interactive cache/memory modes. Minimap/navigation is
-  deferred until very large workflows justify it;
+  deferred until very large workflows justify it.
+
+Planned next minor milestones are:
+
 - `0.11.0a1`: batch configuration, output manifests, semantic-axis iteration,
   and per-item provenance;
 - `0.12.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and

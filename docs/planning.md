@@ -58,9 +58,9 @@ batch provenance, and validation work.
 
 ## Current Baseline
 
-Current public release: `0.9.0a1`.
+Current public release: `0.10.0a1`.
 
-Current development work after `0.9.0a1` adds two implemented clusters:
+The `0.10.0a1` alpha adds two implemented clusters:
 
 - graph readability: named-tunnel example workflows, schematic net-port tunnel
   badges, tunnel reveal/highlight, a tunnel manager, graph search/focus,
@@ -173,7 +173,7 @@ colocalization, batch/provenance, and OME-Zarr round-tripping.
 
 ## Active Gaps
 
-These are the active areas that should guide work after `0.9.0a1`.
+These are the active areas that should guide work after `0.10.0a1`.
 
 ### Large Graph Usability
 
@@ -181,13 +181,6 @@ Implemented progress: tunnel reveal/highlight, tunnel management, graph notes,
 named-tunnel examples, graph search/focus, insert-on-wire make-room behavior,
 ambiguous insert-on-wire port mapping, optional thumbnail-visibility
 persistence, selected inspector-state persistence, and connector rerouting.
-
-Release-readiness steps:
-
-- run manual smoke tests for graph search, tunnel manager, graph notes,
-  insert-on-wire mapping, workflow save/load, cache modes, and example
-  workflows;
-- update release notes and version metadata when cutting the alpha.
 
 Minimap/navigation remains useful, but it should wait until search, tunnel
 management, and layout polish are in place.
@@ -289,12 +282,8 @@ Implemented in current development:
   cached`, and low-memory batch retention;
 - user documentation in [cache-and-memory.md](cache-and-memory.md).
 
-Release-readiness steps:
-
-- update changelog and package version;
-- run full automated tests plus a short manual UI smoke pass;
-- confirm example workflows load with saved notes, tunnels, and inspector
-  metadata.
+Release status: ready for the `0.10.0a1` alpha after automated release checks
+and the final manual smoke pass.
 
 Release gate:
 

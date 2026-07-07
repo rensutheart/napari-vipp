@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0a1 - 2026-07-07
 
 - Added graph search/focus for node titles, operation IDs, named tunnels, and
   `Batch Output` tags.
