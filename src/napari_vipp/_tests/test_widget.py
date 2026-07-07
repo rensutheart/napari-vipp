@@ -4873,45 +4873,59 @@ def test_palette_image_operations_can_run(qtbot):
     widget = VippWidget(viewer)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
     qtbot.addWidget(widget)
-    label_source_id = None
-    table_source_id = None
 
-    def ensure_label_source() -> str:
-        nonlocal label_source_id
-        if label_source_id is not None:
-            return label_source_id
-        labels = widget.add_node_from_palette("label_connected_components")
-        widget._connect_nodes("threshold", labels.id)
-        qtbot.waitUntil(
-            lambda: widget.pipeline.outputs.get(labels.id) is not None,
-            timeout=30_000,
+    def connect_for_smoke(
+        source_id: str,
+        target_id: str,
+        *,
+        target_port: int | None = None,
+        source_port: int = 0,
+    ) -> None:
+        result = widget.pipeline.connect(
+            source_id,
+            target_id,
+            target_port,
+            source_port,
         )
-        assert widget.pipeline.outputs[labels.id] is not None
-        label_source_id = labels.id
-        return label_source_id
+        assert result.success, result.message
+        widget._apply_connection_result_to_graph(result)
+        widget._mark_pipeline_dirty(target_id)
 
-    def ensure_table_source() -> str:
-        nonlocal table_source_id
-        if table_source_id is not None:
-            return table_source_id
-        measurements = widget.add_node_from_palette("measure_objects")
-        widget._connect_nodes(ensure_label_source(), measurements.id)
-        widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
-        qtbot.waitUntil(
-            lambda: widget.pipeline.outputs.get(measurements.id) is not None,
-            timeout=30_000,
+    def run_for_smoke(node_id: str) -> None:
+        manual_node_ids = (
+            {node_id} if widget.pipeline.is_manual_node(node_id) else set()
         )
-        assert widget.pipeline.outputs[measurements.id] is not None
-        table_source_id = measurements.id
-        return table_source_id
+        widget.run_pipeline(force_sync=True, manual_node_ids=manual_node_ids)
+        assert widget.pipeline.outputs.get(node_id) is not None
 
-    def source_for_type(input_type: str | None) -> str:
+    widget.run_pipeline(force_sync=True)
+    assert widget.pipeline.outputs.get("threshold") is not None
+
+    label_source = widget.add_node_from_palette("label_connected_components")
+    connect_for_smoke("threshold", label_source.id)
+    run_for_smoke(label_source.id)
+
+    table_source = widget.add_node_from_palette("measure_objects")
+    connect_for_smoke(label_source.id, table_source.id)
+    run_for_smoke(table_source.id)
+
+    skeleton_source = widget.add_node_from_palette("skeletonize")
+    connect_for_smoke("threshold", skeleton_source.id)
+    run_for_smoke(skeleton_source.id)
+
+    skeleton_table_source = widget.add_node_from_palette("measure_skeleton_branches")
+    connect_for_smoke(skeleton_source.id, skeleton_table_source.id)
+    run_for_smoke(skeleton_table_source.id)
+
+    def source_for_type(input_type: str | None, operation_id: str = "") -> str:
         if input_type in {"mask", "mask_or_labels"}:
             return "threshold"
         if input_type == "labels":
-            return ensure_label_source()
+            return label_source.id
         if input_type == "table":
-            return ensure_table_source()
+            if operation_id == "summarize_skeleton_branches":
+                return skeleton_table_source.id
+            return table_source.id
         return "input"
 
     for spec in PALETTE_NODE_LIBRARY:
@@ -4920,48 +4934,27 @@ def test_palette_image_operations_can_run(qtbot):
         node = widget.add_node_from_palette(spec.id)
         if spec.inputs:
             for port_index, input_spec in enumerate(spec.inputs):
-                widget._connect_nodes(
-                    source_for_type(input_spec.input_type),
+                connect_for_smoke(
+                    source_for_type(input_spec.input_type, spec.id),
                     node.id,
                     target_port=port_index,
                 )
         else:
-            source_id = source_for_type(spec.input_type)
-            widget._connect_nodes(source_id, node.id)
-        if not spec.inputs and (spec.max_inputs is None or spec.max_inputs != 1):
-            if spec.input_type == "table":
-                widget._connect_nodes(table_source_id, node.id)
-            else:
-                second_input = widget.add_node_from_palette("input")
-                widget._connect_nodes(second_input.id, node.id)
-
-        qtbot.waitUntil(
-            lambda: (
-                widget._active_pipeline_run_id is None
-                and not widget._pipeline_run_pending
-            ),
-            timeout=30_000,
-        )
-        if widget.pipeline.is_manual_node(node.id):
-            widget.run_pipeline(force_sync=True, manual_node_ids={node.id})
-        else:
-            widget.run_pipeline(force_sync=True)
+            source_id = source_for_type(spec.input_type, spec.id)
+            for port_index in range(widget.pipeline._required_inputs_for(node)):
+                connect_for_smoke(source_id, node.id, target_port=port_index)
         try:
-            qtbot.waitUntil(
-                lambda node_id=node.id: (
-                    widget._active_pipeline_run_id is None
-                    and not widget._pipeline_run_pending
-                    and widget.pipeline.outputs.get(node_id) is not None
-                ),
-                timeout=30_000,
-            )
+            run_for_smoke(node.id)
         except Exception as exc:
             raise AssertionError(f"{spec.id} did not produce output") from exc
         assert widget.pipeline.outputs[node.id] is not None, spec.id
-        if spec.output_type == "labels":
-            label_source_id = node.id
-        if spec.output_type == "table":
-            table_source_id = node.id
+        if node.id not in {
+            label_source.id,
+            table_source.id,
+            skeleton_source.id,
+            skeleton_table_source.id,
+        }:
+            widget._delete_node(node.id)
 
 
 def test_save_selected_output_writes_npy(qtbot, tmp_path):

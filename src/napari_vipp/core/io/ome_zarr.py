@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import re
+import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -44,6 +47,8 @@ _DEFAULT_CHANNEL_COLORS = (
     "FFFF00",
     "0000FF",
 )
+_ZARR_METADATA_WRITE_ATTEMPTS = 5
+_ZARR_METADATA_RETRY_DELAY_SECONDS = 0.05
 
 
 def inspect_ome_zarr(path: Path) -> SourceInspection:
@@ -184,7 +189,22 @@ def write_ome_zarr_analysis_dataset(
         label_name = _unique_name(_safe_label_name(label.name), used_names)
         axis_records = _axis_records(label_axes)
         units = _axis_units(label_axes)
-        write_ome_zarr_labels(
+        label_metadata = {
+            "source": {"image": "../../"},
+            "vipp": {
+                "software": "napari-vipp",
+                "source_node_id": label.source_node_id,
+                "label_name": label.name,
+                "history": (
+                    list(label_state.history) if label_state is not None else []
+                ),
+                "source": (
+                    label_state.source.to_dict() if label_state is not None else {}
+                ),
+            },
+        }
+        _with_zarr_metadata_retries(
+            write_ome_zarr_labels,
             label_arr,
             str(path),
             name=label_name,
@@ -194,24 +214,127 @@ def write_ome_zarr_analysis_dataset(
             scale=_axis_scale(label_axes),
             scale_factors=(),
             scaler=None,
-            label_metadata={
-                "source": {"image": "../../"},
-                "vipp": {
-                    "software": "napari-vipp",
-                    "source_node_id": label.source_node_id,
-                    "label_name": label.name,
-                    "history": (
-                        list(label_state.history) if label_state is not None else []
-                    ),
-                    "source": (
-                        label_state.source.to_dict()
-                        if label_state is not None
-                        else {}
-                    ),
-                },
-            },
+            label_metadata=label_metadata,
+        )
+        _ensure_ome_zarr_label_metadata(
+            path,
+            label_name,
+            label_metadata,
+            fmt,
         )
     return path
+
+
+def _with_zarr_metadata_retries(
+    action: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    last_error: PermissionError | None = None
+    for attempt in range(_ZARR_METADATA_WRITE_ATTEMPTS):
+        try:
+            return action(*args, **kwargs)
+        except PermissionError as exc:
+            last_error = exc
+            gc.collect()
+            if attempt + 1 < _ZARR_METADATA_WRITE_ATTEMPTS:
+                time.sleep(_ZARR_METADATA_RETRY_DELAY_SECONDS * (attempt + 1))
+    if last_error is not None:
+        raise last_error
+    return None
+
+
+def _ensure_ome_zarr_label_metadata(
+    path: Path,
+    label_name: str,
+    label_metadata: dict[str, Any],
+    fmt,
+) -> None:
+    for attempt in range(_ZARR_METADATA_WRITE_ATTEMPTS):
+        if _ome_zarr_label_metadata_present(path, label_name, fmt):
+            return
+        _with_zarr_metadata_retries(
+            _write_ome_zarr_label_metadata,
+            path,
+            label_name,
+            label_metadata,
+            fmt,
+        )
+        if _ome_zarr_label_metadata_present(path, label_name, fmt):
+            return
+        gc.collect()
+        if attempt + 1 < _ZARR_METADATA_WRITE_ATTEMPTS:
+            time.sleep(_ZARR_METADATA_RETRY_DELAY_SECONDS * (attempt + 1))
+    raise RuntimeError(
+        f"OME-Zarr label metadata was not written for label group {label_name!r}."
+    )
+
+
+def _ome_zarr_label_metadata_present(path: Path, label_name: str, fmt) -> bool:
+    try:
+        root = zarr.open_group(
+            str(path),
+            mode="r",
+            zarr_format=fmt.zarr_format,
+        )
+        labels_group = root["labels"]
+        label_group = labels_group[label_name]
+    except Exception:
+        return False
+
+    labels = _format_attrs(labels_group, fmt).get("labels", ())
+    image_label = _format_attrs(label_group, fmt).get("image-label")
+    return isinstance(labels, list) and label_name in labels and isinstance(
+        image_label,
+        dict,
+    )
+
+
+def _write_ome_zarr_label_metadata(
+    path: Path,
+    label_name: str,
+    label_metadata: dict[str, Any],
+    fmt,
+) -> None:
+    root = zarr.open_group(
+        str(path),
+        mode="a",
+        zarr_format=fmt.zarr_format,
+    )
+    labels_group = root.require_group("labels")
+    label_group = labels_group[label_name]
+    existing = _format_attrs(labels_group, fmt).get("labels", ())
+    label_names = list(existing) if isinstance(existing, list) else []
+    if label_name not in label_names:
+        label_names.append(label_name)
+
+    image_label_metadata = dict(label_metadata)
+    image_label_metadata["version"] = fmt.version
+    _with_zarr_metadata_retries(
+        add_metadata,
+        labels_group,
+        {"labels": label_names},
+        fmt=fmt,
+    )
+    _with_zarr_metadata_retries(
+        add_metadata,
+        label_group,
+        {"image-label": image_label_metadata},
+        fmt=fmt,
+    )
+
+
+def _format_attrs(group, fmt) -> dict[str, Any]:
+    attrs = (
+        group.attrs.asdict()
+        if hasattr(group.attrs, "asdict")
+        else dict(group.attrs)
+    )
+    if fmt.version not in {"0.1", "0.2", "0.3", "0.4"}:
+        ome_attrs = attrs.get("ome")
+        if isinstance(ome_attrs, dict):
+            return ome_attrs
+    return attrs
 
 
 def _readable_nodes(path: Path):

@@ -288,6 +288,52 @@ def test_ome_zarr_analysis_dataset_round_trip_includes_label_group(tmp_path):
     assert np.array_equal(loaded_labels.data.compute(), labels)
 
 
+def test_ome_zarr_analysis_dataset_repairs_missing_label_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    import ome_zarr.writer as ome_writer
+
+    image = np.zeros((4, 8, 9), dtype=np.uint16)
+    image_state = image_state_from_array(
+        image,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+        source_name="Reference image",
+    )
+    labels = np.zeros((4, 8, 9), dtype=np.int32)
+    labels[:, 2:4, 3:5] = 1
+    label_state = replace(
+        image_state_from_array(labels, axes=image_state.axes),
+        kind="label image",
+    )
+    path = tmp_path / "analysis.ome.zarr"
+
+    monkeypatch.setattr(
+        ome_writer,
+        "write_label_metadata",
+        lambda *_args, **_kwargs: None,
+    )
+
+    write_ome_zarr_analysis_dataset(
+        image,
+        path,
+        labels=(AnalysisLabel("Nuclei Labels", labels, label_state, "labels"),),
+        image_state=image_state,
+    )
+    inspection = inspect_image_source(path)
+    loaded_labels = read_image(path, series_index=1)
+
+    assert [(series.name, series.kind) for series in inspection.series] == [
+        ("Reference image", "image"),
+        ("Nuclei_Labels", "labels"),
+    ]
+    assert np.array_equal(loaded_labels.data.compute(), labels)
+
+
 def test_ome_zarr_analysis_dataset_rejects_mismatched_label_shape(tmp_path):
     image = np.zeros((4, 8, 9), dtype=np.uint16)
     image_state = image_state_from_array(
