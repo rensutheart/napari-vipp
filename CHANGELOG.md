@@ -6,6 +6,8 @@
   the broader scientific Python ecosystem.
 - Added optional microscope-reader routing for ND2, CZI/LSM, Leica LIF/LOF/
   XLIF, Olympus OIR/OIB/OIF/VSI, and BioIO/Bio-Formats-backed fallback paths.
+- Added a missing optional-reader dialog that reports the required file reader
+  extra and lets users copy the install command from the UI.
 - Added normalized acquisition metadata fields for objective, refractive index,
   channel wavelength, and conservative upstream-deconvolution detection.
 - Added `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline

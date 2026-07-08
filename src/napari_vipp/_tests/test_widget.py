@@ -40,7 +40,11 @@ from napari_vipp._widget import (
     _example_workflow_path,
 )
 from napari_vipp.core.graph_search import find_graph_matches
-from napari_vipp.core.io import inspect_image_source, read_image
+from napari_vipp.core.io import (
+    OptionalMicroscopeReaderError,
+    inspect_image_source,
+    read_image,
+)
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.core.pipeline import (
     EXECUTION_NOT_CALCULATED,
@@ -6044,6 +6048,109 @@ def test_new_workflow_prompts_and_creates_empty_source_graph(
     assert widget.pipeline.nodes["input"].params["file_path"] == ""
     assert widget.pipeline.outputs["input"] is None
     assert widget.status_label.text() == "New empty workflow created."
+
+
+def test_optional_reader_error_uses_reader_dialog(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    error = OptionalMicroscopeReaderError(
+        "CZI support is missing",
+        suffix=".czi",
+        format_name="zeiss-czi",
+        module_name="bioio",
+        install_command='pip install "napari-vipp[czi]"',
+    )
+    calls = []
+
+    def raise_error():
+        raise error
+
+    monkeypatch.setattr(widget, "_source_payloads_for_pipeline", raise_error)
+    monkeypatch.setattr(
+        widget,
+        "_show_optional_reader_error",
+        lambda exc: calls.append(exc),
+    )
+
+    widget.run_pipeline()
+
+    assert calls == [error]
+
+
+def test_optional_reader_dialog_copies_install_command(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    command = 'pip install "napari-vipp[czi]"'
+    error = OptionalMicroscopeReaderError(
+        "CZI support is missing",
+        suffix=".czi",
+        format_name="zeiss-czi",
+        module_name="bioio",
+        install_command=command,
+        fallback_install_command='pip install "napari-vipp[bioformats]"',
+    )
+
+    class FakeMessageBox:
+        Warning = QMessageBox.Warning
+        ActionRole = QMessageBox.ActionRole
+        Close = QMessageBox.Close
+        instances = []
+
+        def __init__(self, parent=None):
+            self.parent = parent
+            self.icon = None
+            self.window_title = ""
+            self.text = ""
+            self.informative_text = ""
+            self.detailed_text = ""
+            self.copy_button = object()
+            self.clicked = None
+            self.buttons = []
+            self.instances.append(self)
+
+        def setIcon(self, icon):
+            self.icon = icon
+
+        def setWindowTitle(self, title):
+            self.window_title = title
+
+        def setText(self, text):
+            self.text = text
+
+        def setInformativeText(self, text):
+            self.informative_text = text
+
+        def setDetailedText(self, text):
+            self.detailed_text = text
+
+        def addButton(self, button, role=None):
+            if button == "Copy install command":
+                self.buttons.append((button, role, self.copy_button))
+                return self.copy_button
+            close_button = object()
+            self.buttons.append((button, role, close_button))
+            return close_button
+
+        def exec(self):
+            self.clicked = self.copy_button
+            return 0
+
+        def clickedButton(self):
+            return self.clicked
+
+    monkeypatch.setattr("napari_vipp._widget.QMessageBox", FakeMessageBox)
+
+    widget._show_optional_reader_error(error)
+
+    box = FakeMessageBox.instances[0]
+    assert box.window_title == "Optional Image Reader Missing"
+    assert "CZI reader is not installed" in box.text
+    assert command in box.informative_text
+    assert "restart napari" in box.informative_text
+    assert QApplication.clipboard().text() == command
+    assert widget.status_label.text() == f"Copied reader install command: {command}"
 
 
 def test_export_ome_dataset_dialog_writes_reference_and_labels(

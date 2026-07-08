@@ -48,6 +48,7 @@ from qtpy.QtGui import (
 )
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -110,6 +111,7 @@ from napari_vipp.core.graph_search import (
 from napari_vipp.core.io import (
     MICROSCOPE_FILE_FILTER,
     AnalysisLabel,
+    OptionalMicroscopeReaderError,
     SourceInspection,
     detect_deconvolution_metadata,
     inspect_image_source,
@@ -8918,6 +8920,51 @@ class VippWidget(QWidget):
             "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
         )
 
+    def _show_optional_reader_error(
+        self,
+        error: OptionalMicroscopeReaderError,
+    ) -> None:
+        command = error.install_command
+        fallback = error.fallback_install_command
+        suffix = error.suffix or "this file"
+        lines = [
+            f"VIPP can open {suffix} files after the optional reader is installed.",
+        ]
+        if command:
+            lines.extend(("", "Install command:", command))
+        if fallback and fallback != command:
+            lines.extend(("", "Broader fallback command:", fallback))
+        if error.restart_required:
+            lines.extend(
+                ("", "After installation, restart napari and reopen the file.")
+            )
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Optional Image Reader Missing")
+        box.setText(f"{error.reader_label} is not installed.")
+        box.setInformativeText("\n".join(lines))
+        box.setDetailedText(str(error))
+        copy_button = None
+        if command:
+            copy_button = box.addButton(
+                "Copy install command",
+                QMessageBox.ActionRole,
+            )
+        box.addButton(QMessageBox.Close)
+        box.exec()
+
+        if copy_button is not None and box.clickedButton() == copy_button:
+            QApplication.clipboard().setText(command)
+            self.status_label.setText(f"Copied reader install command: {command}")
+            return
+        if command:
+            self.status_label.setText(
+                f"Optional image reader missing. Install with: {command}"
+            )
+        else:
+            self.status_label.setText(f"Image source error: {error}")
+
     @staticmethod
     def _execution_status_text(state: str, message: str = "") -> str:
         if state == EXECUTION_READY:
@@ -11443,6 +11490,10 @@ class VippWidget(QWidget):
         }
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
+        except OptionalMicroscopeReaderError as exc:
+            self._set_pipeline_busy(False)
+            self._show_optional_reader_error(exc)
+            return
         except Exception as exc:
             self._set_pipeline_busy(False)
             self.status_label.setText(f"Image source error: {exc}")

@@ -3,6 +3,7 @@
 from napari_vipp.core.io.microscope import (
     MICROSCOPE_FILE_FILTER,
     MICROSCOPE_SUFFIXES,
+    OptionalMicroscopeReaderError,
     detect_deconvolution_metadata,
 )
 from napari_vipp.core.io.model import (
@@ -26,6 +27,7 @@ __all__ = [
     "ImageSeriesInfo",
     "MICROSCOPE_FILE_FILTER",
     "MICROSCOPE_SUFFIXES",
+    "OptionalMicroscopeReaderError",
     "SourceInspection",
     "detect_deconvolution_metadata",
     "inspect_image_source",

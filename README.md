@@ -92,6 +92,19 @@ shared headless I/O layer. OME-Zarr label groups, HCS plate browsing, generated
 pyramids, remote stores, and full operation-level lazy execution remain future
 work. See `docs/io-user-guide.md` for the current format contract.
 
+Microscope acquisition readers are optional. Install the format-specific extra
+before opening proprietary microscope files, then restart napari:
+
+| Format family | Install command |
+| --- | --- |
+| Zeiss CZI | `pip install "napari-vipp[czi]"` |
+| Nikon ND2 | `pip install "napari-vipp[nd2]"` |
+| Mixed microscope workstation | `pip install "napari-vipp[microscope]"` |
+| BioIO/Bio-Formats fallback | `pip install "napari-vipp[bioformats]"` |
+
+If a reader is missing, VIPP shows an optional-reader dialog with the relevant
+copyable install command.
+
 ## Sample Data
 
 The plugin contributes synthetic fluorescence-like sample data:

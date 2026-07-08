@@ -70,17 +70,17 @@ _FORMAT_BY_SUFFIX = {
     ".vsi": "olympus-vsi",
     ".xlif": "leica-xlif",
 }
-_NATIVE_INSTALL_HINTS = {
-    ".czi": "pip install napari-vipp[czi]",
-    ".nd2": "pip install napari-vipp[nd2]",
-    ".lif": "pip install napari-vipp[microscope]",
-    ".lof": "pip install napari-vipp[microscope]",
-    ".oib": "pip install napari-vipp[microscope]",
-    ".oif": "pip install napari-vipp[microscope]",
-    ".oir": "pip install napari-vipp[microscope]",
-    ".xlif": "pip install napari-vipp[microscope]",
+_NATIVE_INSTALL_COMMANDS = {
+    ".czi": 'pip install "napari-vipp[czi]"',
+    ".nd2": 'pip install "napari-vipp[nd2]"',
+    ".lif": 'pip install "napari-vipp[microscope]"',
+    ".lof": 'pip install "napari-vipp[microscope]"',
+    ".oib": 'pip install "napari-vipp[microscope]"',
+    ".oif": 'pip install "napari-vipp[microscope]"',
+    ".oir": 'pip install "napari-vipp[microscope]"',
+    ".xlif": 'pip install "napari-vipp[microscope]"',
 }
-_BIOIO_INSTALL_HINT = "pip install napari-vipp[bioformats]"
+_BIOIO_INSTALL_COMMAND = 'pip install "napari-vipp[bioformats]"'
 _DECONVOLUTION_TERMS = (
     "richardson-lucy",
     "richardson lucy",
@@ -102,6 +102,33 @@ _DECONVOLUTION_NEGATIONS = (
 
 class OptionalMicroscopeReaderError(ImportError):
     """Raised when a microscope reader needs an optional dependency."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        suffix: str = "",
+        format_name: str = "",
+        module_name: str = "",
+        install_command: str = "",
+        fallback_install_command: str = "",
+        restart_required: bool = True,
+    ) -> None:
+        super().__init__(message)
+        self.suffix = str(suffix or "").lower()
+        self.format_name = str(format_name or "")
+        self.module_name = str(module_name or "")
+        self.install_command = str(install_command or "")
+        self.fallback_install_command = str(fallback_install_command or "")
+        self.restart_required = bool(restart_required)
+
+    @property
+    def reader_label(self) -> str:
+        if self.suffix:
+            return f"{self.suffix.lstrip('.').upper()} reader"
+        if self.format_name:
+            return f"{self.format_name} reader"
+        return "Microscope reader"
 
 
 def is_microscope_source(path: str | Path) -> bool:
@@ -513,10 +540,18 @@ def _optional_import(module_name: str, suffix: str):
     try:
         return import_module(module_name)
     except ImportError as error:
-        hint = _NATIVE_INSTALL_HINTS.get(suffix, _BIOIO_INSTALL_HINT)
+        normalized_suffix = str(suffix or "").lower()
+        command = _NATIVE_INSTALL_COMMANDS.get(
+            normalized_suffix,
+            _BIOIO_INSTALL_COMMAND,
+        )
         raise OptionalMicroscopeReaderError(
             f"Reading {suffix} files requires optional dependency "
-            f"{module_name!r}. Install it with: {hint}"
+            f"{module_name!r}. Install it with: {command}",
+            suffix=normalized_suffix,
+            format_name=_FORMAT_BY_SUFFIX.get(normalized_suffix, ""),
+            module_name=module_name,
+            install_command=command,
         ) from error
 
 
@@ -524,17 +559,26 @@ def _optional_bioio(suffix: str = ""):
     try:
         return import_module("bioio")
     except ImportError as error:
-        native_hint = _NATIVE_INSTALL_HINTS.get(str(suffix).lower())
+        normalized_suffix = str(suffix or "").lower()
+        native_command = _NATIVE_INSTALL_COMMANDS.get(normalized_suffix)
+        command = native_command or _BIOIO_INSTALL_COMMAND
         hint = (
-            f"Install the format-specific extra with: {native_hint}. "
-            f"For BioIO/Bio-Formats fallback, install: {_BIOIO_INSTALL_HINT}"
-            if native_hint
-            else f"Install the fallback extra with: {_BIOIO_INSTALL_HINT}"
+            f"Install the format-specific extra with: {native_command}. "
+            f"For BioIO/Bio-Formats fallback, install: {_BIOIO_INSTALL_COMMAND}"
+            if native_command
+            else f"Install the fallback extra with: {_BIOIO_INSTALL_COMMAND}"
         )
         raise OptionalMicroscopeReaderError(
             "This microscope format requires an optional dependency: "
             "a BioIO reader plugin. "
-            f"{hint}"
+            f"{hint}",
+            suffix=normalized_suffix,
+            format_name=_FORMAT_BY_SUFFIX.get(normalized_suffix, ""),
+            module_name="bioio",
+            install_command=command,
+            fallback_install_command=(
+                _BIOIO_INSTALL_COMMAND if native_command else ""
+            ),
         ) from error
 
 

@@ -529,6 +529,14 @@ def test_czi_missing_optional_dependency_prefers_format_specific_hint(
     message = str(exc.value)
     assert "napari-vipp[czi]" in message
     assert "napari-vipp[bioformats]" in message
+    assert isinstance(exc.value, microscope_io.OptionalMicroscopeReaderError)
+    assert exc.value.suffix == ".czi"
+    assert exc.value.format_name == "zeiss-czi"
+    assert exc.value.module_name == "bioio"
+    assert exc.value.install_command == 'pip install "napari-vipp[czi]"'
+    assert exc.value.fallback_install_command == (
+        'pip install "napari-vipp[bioformats]"'
+    )
 
 
 def test_nested_microscope_metadata_does_not_break_acquisition_detection():

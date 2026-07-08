@@ -1,6 +1,6 @@
 # Image Import And Export
 
-Last reviewed: 2026-06-20
+Last reviewed: 2026-07-08
 
 VIPP uses one headless I/O layer for interactive sources, quick saves, Save
 Image nodes, and exported Python scripts. The explicit format choice matters:
@@ -22,6 +22,23 @@ Supported file sources:
 | OME-Zarr 0.4/0.5 | Discovers image groups and label groups, reads multiscale levels lazily, and marks label groups as label images. Level 0 is the analysis image. |
 | NPY/NPZ | Reads one NPY array or a selected NPZ member. |
 | PNG/JPEG/BMP/GIF/WebP/TGA/PNM | Reads ordinary raster images through imageio/Pillow. RGB/RGBA files are treated as rendered color images; grayscale files are treated as intensity images. Animated raster files use a leading time axis. |
+
+Microscope acquisition formats use optional reader packages so the base VIPP
+install stays lighter and avoids forcing proprietary-format dependencies onto
+every user. If a required reader is missing, VIPP shows an optional-reader
+dialog with a copyable install command. Restart napari after installing a new
+reader, then reopen the file.
+
+| Format family | Extensions | Install command |
+| --- | --- | --- |
+| Zeiss CZI | `.czi` | `pip install "napari-vipp[czi]"` |
+| Nikon ND2 | `.nd2` | `pip install "napari-vipp[nd2]"` |
+| Broad microscope reader set | `.czi`, `.nd2`, `.lif`, `.lof`, `.xlif`, `.oir`, `.oib`, `.oif`, `.vsi` | `pip install "napari-vipp[microscope]"` |
+| BioIO/Bio-Formats fallback | Leica/Olympus/Bio-Formats-backed sources | `pip install "napari-vipp[bioformats]"` |
+
+Use the format-specific extra when you know what you need. Use
+`napari-vipp[microscope]` on a workstation intended to open mixed acquisition
+formats.
 
 For multi-series TIFF or multi-image OME-Zarr, select the required item in
 `Series / image`. Time, channel, and Z remain axes inside that item. Use graph
