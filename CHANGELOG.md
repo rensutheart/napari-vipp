@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.11.0a1 - 2026-07-08
+
+- Changed the project license to BSD 3-Clause for compatibility with napari and
+  the broader scientific Python ecosystem.
+- Added optional microscope-reader routing for ND2, CZI/LSM, Leica LIF/LOF/
+  XLIF, Olympus OIR/OIB/OIF/VSI, and BioIO/Bio-Formats-backed fallback paths.
+- Added normalized acquisition metadata fields for objective, refractive index,
+  channel wavelength, and conservative upstream-deconvolution detection.
+- Added `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline
+  `Richardson-Lucy Deconvolution`, and `Richardson-Lucy TV Deconvolution`.
+- Added deterministic 2D and 3D deconvolution samples plus example workflows
+  that compare ordinary Richardson-Lucy with RL-TV using an explicit prepared
+  PSF input.
+- Added a grouped `Open example...` chooser for bundled workflow templates and
+  packaged the example workflow JSON files with the plugin.
+- Moved napari-layer selection into the `Image Source` inspector so the toolbar
+  is not carrying a confusing global input dropdown.
+- Fixed the red-channel label-cleanup examples so they use the red/TRITC-like
+  channel, and made the clear-border plus volume-filter cleanup visibly remove
+  real labels.
+- Updated restoration, microscope import, example-workflow, and release-roadmap
+  documentation for the 0.11 alpha scope.
+
 ## 0.10.0a1 - 2026-07-07
 
 - Added graph search/focus for node titles, operation IDs, named tunnels, and
@@ -115,10 +138,10 @@
 
 ## 0.8.2a2 - 2026-06-30
 
-- Changed the project license for future releases to PolyForm Shield License
-  1.0.0.
+- Changed the project license for this alpha line to PolyForm Shield License
+  1.0.0. This was superseded by the BSD 3-Clause license in `0.11.0a1`.
 - Added project-specific commercial-permission guidance, required notice text,
-  and citation metadata.
+  and citation metadata for that license experiment.
 - Documented that versions published through `0.8.2a1` remain under BSD
   3-Clause terms, while later releases use their declared distribution license.
 

@@ -5,7 +5,7 @@ and confirming discovery on napari hub.
 
 ## Scope
 
-- Target package version for the next alpha: `0.10.0a1`
+- Target package version for the next alpha: `0.11.0a1`
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -29,7 +29,7 @@ Confirm these are set:
 - `src/napari_vipp/__init__.py` exposes the same target version, if it carries
   an explicit version
 - `pyproject.toml` classifier includes `Development Status :: 3 - Alpha`
-- `pyproject.toml` license is `LicenseRef-PolyForm-Shield-1.0.0`
+- `pyproject.toml` license is `BSD-3-Clause`
 - README has a clear alpha disclaimer
 - README has a clear license section
 - CHANGELOG has an `Unreleased` section or a dated section for the target
@@ -71,7 +71,7 @@ Post-upload validation:
 - Open https://pypi.org/project/napari-vipp/
 - Confirm the target version is visible
 - Confirm README renders alpha disclaimer
-- Confirm license metadata shows PolyForm Shield/custom license terms
+- Confirm license metadata shows BSD-3-Clause terms
 
 ## 5. Create Git Tag And GitHub Release
 
@@ -100,20 +100,19 @@ This is an early alpha build and is still in active development.
 ### Important
 - Breaking changes are expected between releases.
 - Validate outputs before publication or production use.
-- This release remains under PolyForm Shield License 1.0.0. Versions through
-  0.8.2a1 remain BSD 3-Clause.
+- This release is distributed under the BSD 3-Clause License.
 
 ### Highlights
-- Added graph search/focus across node titles, operation IDs, tunnels, and
-  output tags.
-- Added tunnel management, tunnel reveal/highlight, and saved graph notes for
-  large workflow readability.
-- Added ambiguous insert-on-wire port mapping and dynamic Split Channels output
-  inference while editing.
-- Added Split Axis for explicit time, Z, and non-channel axis splitting.
-- Added selected-inspector workflow metadata and optional thumbnail-visibility
-  persistence.
-- Added explicit cache modes, memory guard, and low-memory batch retention.
+- Added PSF-aware restoration nodes: Born-Wolf PSF generation, PSF preparation,
+  baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution.
+- Added deterministic 2D and 3D deconvolution samples and example workflows.
+- Added optional microscope-reader routing for ND2, CZI/LSM, Leica, Olympus,
+  and BioIO/Bio-Formats-backed fallback paths.
+- Added normalized acquisition metadata fields used by PSF generation and
+  provenance checks.
+- Added the grouped Open example workflow chooser and packaged workflow
+  templates.
+- Restored BSD 3-Clause licensing for ecosystem compatibility.
 ```
 
 ## 6. napari Hub Listing/Refresh

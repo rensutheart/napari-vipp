@@ -32,18 +32,8 @@ can be added once one is available.
 
 ## License
 
-napari-vipp is source-available under the PolyForm Shield License 1.0.0. The
-public license permits many uses, including commercial internal use, but it does
-not permit providing a product or service that competes with napari-vipp or with
-products provided by the licensor using napari-vipp.
-
-Commercial redistribution, white-labeling, hosted product offerings, or bundling
-napari-vipp as a substantial commercial product feature require prior written
-permission. See `COMMERCIAL-LICENSE.md` for guidance.
-
-Versions published through `0.8.2a1` were released under the BSD 3-Clause
-License. Later releases use the license declared in their corresponding source
-and distribution metadata.
+napari-vipp is distributed under the BSD 3-Clause License. See `LICENSE` for
+the full terms.
 
 ## Current Status
 
@@ -107,8 +97,8 @@ work. See `docs/io-user-guide.md` for the current format contract.
 The plugin contributes synthetic fluorescence-like sample data:
 
 - `VIPP synthetic volume`: grayscale `ZYX` stack;
-- `VIPP synthetic multichannel volume`: `CZYX` volume with three probe-like
-  channels;
+- `VIPP synthetic multichannel volume`: `CZYX` volume with blue/DAPI-like
+  nuclei, green/FITC-like neurites, and red/TRITC-like puncta channels;
 - `VIPP synthetic time-lapse multichannel`: `TCZYX` time-lapse, multichannel
   stack;
 - `VIPP synthetic measurement summary`: `TYX` time-series object sample with
@@ -123,12 +113,14 @@ The plugin contributes synthetic fluorescence-like sample data:
 The multichannel samples use separate intensity channels, not baked RGB images.
 Graph thumbnails render these as fluorescence-style pseudo-color composites
 while preserving the underlying channel axis in the carried metadata.
-When the full sample suite is open, the workflow automatically starts from the
-`VIPP synthetic time-lapse multichannel` layer so the input metadata should read
-as `TCZYX`. The simpler grayscale and `CZYX` examples are still available in the
-toolbar input selector and in the graph-level `Image Source` node.
 
-Open sample data from napari:
+Use bundled samples from an `Image Source` node by setting `Source` to `sample`.
+This exposes the full sample list without first loading raw sample layers into
+napari. Use `Open example...` in the VIPP toolbar when you want a complete
+runnable workflow template with its sample sources already selected.
+
+Napari's sample-data menu is still useful when you specifically want to inspect
+the raw sample layers:
 
 ```text
 File > Open Sample > VIPP synthetic microscopy samples
@@ -486,7 +478,14 @@ Or launch the local sample app:
 python scripts\launch_vipp_sample.py
 ```
 
-To start directly from the multichannel Otsu-to-label workflow:
+To start from a runnable workflow template inside VIPP, use:
+
+```text
+Open example...
+```
+
+To start directly from the red-channel Otsu-to-label cleanup workflow from the
+command line:
 
 ```bash
 python scripts\launch_vipp_label_workflow.py
@@ -501,7 +500,7 @@ Intensity`.
 ## Roadmap
 
 The current versioned alpha roadmap is maintained in
-`docs/planning.md`. The current alpha release is:
+`docs/planning.md`. The current public alpha release is:
 
 - `0.10.0a1`: graph readability, tunnel management, saved graph notes,
   graph search/focus, ambiguous insert-on-wire port mapping, workflow UI-state
@@ -510,13 +509,17 @@ The current versioned alpha roadmap is maintained in
 
 Planned next minor milestones are:
 
-- `0.11.0a1`: batch configuration, output manifests, semantic-axis iteration,
+- `0.11.0a1`: PSF generation, PSF-aware Richardson-Lucy/RL-TV restoration,
+  optional microscope import foundations, and bundled example-workflow
+  onboarding;
+- `0.12.0a1`: batch configuration, output manifests, semantic-axis iteration,
   and per-item provenance;
-- `0.12.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and
+- `0.13.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and
   large-data strategy;
-- `0.13.0a1`: scientific validation reports for colocalization, object
-  association, watershed separation, and skeleton/network analysis;
-- `0.14.0a1`: AI-assisted pipeline authoring through validated workflow JSON.
+- `0.14.0a1`: scientific validation reports for colocalization, object
+  association, watershed separation, skeleton/network analysis, and
+  PSF/restoration;
+- `0.15.0a1`: AI-assisted pipeline authoring through validated workflow JSON.
 
 See `docs/user-guide.md` for end-user operation guidance,
 `docs/operator-tips.md` for operator-focused tuning,
