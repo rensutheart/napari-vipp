@@ -71,6 +71,29 @@ def test_thumbnail_contrast_modes_include_minmax_and_raw():
     assert minmax[0, 1, 0] == 255
 
 
+def test_raw_float_thumbnail_scales_relative_to_finite_data_range():
+    data = np.asarray(
+        [
+            [0.0, 5000.0],
+            [2500.0, np.nan],
+        ],
+        dtype=np.float32,
+    )
+
+    thumb = normalize_thumbnail_with_colormap(
+        data,
+        size=(2, 2),
+        colormap="Gray",
+        contrast_mode="Raw",
+    )
+
+    assert thumb is not None
+    assert thumb[0, 0, 0] == 0
+    assert thumb[0, 1, 0] == 255
+    assert 120 <= thumb[1, 0, 0] <= 130
+    assert thumb[1, 1, 0] == 0
+
+
 def test_percentile_thumbnail_keeps_sparse_foreground_visible_over_low_ramp():
     yy, xx = np.indices((64, 64), dtype=np.uint16)
     data = ((yy + xx) % 32).astype(np.uint16)

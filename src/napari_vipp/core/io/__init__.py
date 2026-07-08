@@ -1,5 +1,10 @@
 """Shared headless image import and export API."""
 
+from napari_vipp.core.io.microscope import (
+    MICROSCOPE_FILE_FILTER,
+    MICROSCOPE_SUFFIXES,
+    detect_deconvolution_metadata,
+)
 from napari_vipp.core.io.model import (
     AnalysisLabel,
     ImageDataset,
@@ -19,7 +24,10 @@ __all__ = [
     "AnalysisLabel",
     "ImageDataset",
     "ImageSeriesInfo",
+    "MICROSCOPE_FILE_FILTER",
+    "MICROSCOPE_SUFFIXES",
     "SourceInspection",
+    "detect_deconvolution_metadata",
     "inspect_image_source",
     "read_image",
     "write_image",

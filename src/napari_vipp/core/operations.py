@@ -10,6 +10,7 @@ from itertools import combinations, product
 from pathlib import Path
 
 import numpy as np
+from scipy import integrate, signal, special
 from scipy import ndimage as ndi
 from scipy.spatial import ConvexHull, QhullError
 from skimage import (
@@ -136,6 +137,289 @@ def gaussian_blur_3d(
     if not any(sigma_by_axis):
         return arr.copy()
     return ndi.gaussian_filter(arr, sigma=sigma_by_axis)
+
+
+def born_wolf_psf(
+    data,
+    spatial_mode: str = "Auto from axes",
+    wavelength_nm: float = 0.0,
+    numerical_aperture: float = 0.0,
+    refractive_index: float = 0.0,
+    pixel_size_xy_um: float = 0.0,
+    z_step_um: float = 0.0,
+    xy_size: int = 65,
+    z_size: int = 33,
+    channel: int = -1,
+    pupil_samples: int = 256,
+    normalize: bool = True,
+    resolved_spatial_ndim: int | None = None,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    axis_scales: Sequence[float] = (),
+    axis_units: Sequence[str | None] = (),
+    channel_emission_wavelengths: Sequence[float | None] = (),
+    channel_emission_wavelength_units: Sequence[str | None] = (),
+    channel_excitation_wavelengths: Sequence[float | None] = (),
+    channel_excitation_wavelength_units: Sequence[str | None] = (),
+    objective_lens_na: float | None = None,
+    objective_refractive_index: float | None = None,
+) -> np.ndarray:
+    """Generate a scalar Born-Wolf point-spread function from image metadata."""
+    shape = tuple(int(size) for size in getattr(data, "shape", ()) or ())
+    spatial_ndim = _resolved_psf_spatial_ndim(
+        shape,
+        spatial_mode,
+        resolved_spatial_ndim,
+        axis_types,
+    )
+    xy_size = _odd_size(xy_size, minimum=9, maximum=1025)
+    z_size = _odd_size(z_size, minimum=1, maximum=1025)
+    if spatial_ndim < 3:
+        z_size = 1
+
+    channel_index = _psf_channel_index(
+        channel,
+        channel_emission_wavelengths,
+        channel_excitation_wavelengths,
+    )
+    wavelength_nm = _resolved_wavelength_nm(
+        wavelength_nm,
+        channel_index,
+        channel_emission_wavelengths,
+        channel_emission_wavelength_units,
+        channel_excitation_wavelengths,
+        channel_excitation_wavelength_units,
+    )
+    wavelength_um = max(wavelength_nm / 1000.0, 1e-6)
+    numerical_aperture = _positive_float(
+        numerical_aperture,
+        _positive_float(objective_lens_na, 1.4),
+    )
+    refractive_index = _positive_float(
+        refractive_index,
+        _positive_float(objective_refractive_index, 1.515),
+    )
+    if numerical_aperture >= refractive_index:
+        numerical_aperture = refractive_index * 0.999
+
+    pixel_size_xy_um = _positive_float(
+        pixel_size_xy_um,
+        _metadata_xy_pixel_size_um(axis_names, axis_types, axis_scales, axis_units),
+    )
+    z_step_um = _positive_float(
+        z_step_um,
+        _metadata_axis_size_um("z", axis_names, axis_types, axis_scales, axis_units)
+        or max(pixel_size_xy_um, wavelength_um / 2.0),
+    )
+
+    y_coords = (np.arange(xy_size, dtype=np.float64) - xy_size // 2) * pixel_size_xy_um
+    x_coords = (np.arange(xy_size, dtype=np.float64) - xy_size // 2) * pixel_size_xy_um
+    yy, xx = np.meshgrid(y_coords, x_coords, indexing="ij")
+    radius_um = np.hypot(yy, xx)
+    radial_phase = (2.0 * np.pi * numerical_aperture / wavelength_um) * radius_um
+
+    z_coords = (
+        np.arange(z_size, dtype=np.float64) - z_size // 2
+    ) * z_step_um
+    pupil_count = max(int(pupil_samples), 16)
+    pupil = np.linspace(0.0, 1.0, pupil_count, dtype=np.float64)
+    pupil_weight = pupil[None, None, :]
+    bessel = special.j0(radial_phase[..., None] * pupil_weight)
+    alpha = np.arcsin(np.clip(numerical_aperture / refractive_index, 0.0, 0.999999))
+    defocus_scale = (
+        8.0
+        * np.pi
+        * refractive_index
+        * (np.sin(alpha / 2.0) ** 2)
+        / wavelength_um
+    )
+
+    planes = []
+    for z_um in z_coords:
+        phase = np.exp(1j * defocus_scale * z_um * (pupil**2))[None, None, :]
+        amplitude = 2.0 * integrate.trapezoid(
+            bessel * phase * pupil_weight,
+            pupil,
+            axis=-1,
+        )
+        planes.append(np.abs(amplitude) ** 2)
+    psf = np.stack(planes, axis=0).astype(np.float32, copy=False)
+    psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
+    if normalize:
+        total = float(psf.sum(dtype=np.float64))
+        if total > 0:
+            psf = psf / np.float32(total)
+    if spatial_ndim < 3:
+        return np.ascontiguousarray(psf[0])
+    return np.ascontiguousarray(psf)
+
+
+def prepare_validate_psf(
+    data,
+    center_mode: str = "Peak",
+    clip_negatives: bool = True,
+    normalize_sum: bool = True,
+    minimum_valid_sum: float = 1e-12,
+    force_odd_shape: bool = True,
+    crop_empty_border: bool = False,
+) -> np.ndarray:
+    """Clean, center, and normalize a scalar 2D or 3D PSF kernel."""
+    arr = np.asarray(data)
+    if arr.ndim not in {2, 3}:
+        raise ValueError(
+            "Prepare / Validate PSF expects a scalar 2D YX or 3D ZYX PSF "
+            "without time or channel axes."
+        )
+    if arr.size == 0 or any(size <= 0 for size in arr.shape):
+        raise ValueError("PSF is empty.")
+
+    minimum_valid_sum = max(float(minimum_valid_sum), 0.0)
+    psf = arr.astype(np.float32, copy=False)
+    psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
+    if bool(clip_negatives):
+        psf = np.maximum(psf, 0.0)
+    if bool(crop_empty_border):
+        psf = _crop_empty_psf_border(psf)
+    if bool(force_odd_shape):
+        psf = _force_odd_psf_shape(psf)
+    psf = _center_psf(psf, center_mode, minimum_valid_sum=minimum_valid_sum)
+    psf = _validate_psf_sum(psf, minimum_valid_sum=minimum_valid_sum)
+    if bool(normalize_sum):
+        psf = psf / np.float32(psf.sum(dtype=np.float64))
+    return np.ascontiguousarray(psf.astype(np.float32, copy=False))
+
+
+def richardson_lucy_deconvolution(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    iterations: int = 25,
+    normalize_psf: bool = True,
+    clip_negative_input: bool = True,
+    clip_output_negative: bool = True,
+    preserve_input_scale: bool = True,
+    filter_epsilon: float = 1e-12,
+    resolved_spatial_ndim: int | None = None,
+    progress=None,
+) -> np.ndarray:
+    """Restore an image with baseline Richardson-Lucy deconvolution."""
+    image, psf = _deconvolution_inputs(inputs)
+    image_arr = np.asarray(image)
+    spatial_ndim = _resolved_deconvolution_spatial_ndim(
+        image_arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    kernel = _deconvolution_psf(
+        psf,
+        spatial_ndim,
+        normalize_psf=bool(normalize_psf),
+    )
+    iterations = max(int(iterations), 1)
+
+    def restore_block(block: np.ndarray, iteration_done=None) -> np.ndarray:
+        values, output_scale = _deconvolution_observed_block(
+            block,
+            clip_negative_input=bool(clip_negative_input),
+            preserve_input_scale=bool(preserve_input_scale),
+        )
+        if progress is None:
+            restored = restoration.richardson_lucy(
+                values,
+                kernel,
+                num_iter=iterations,
+                clip=False,
+                filter_epsilon=float(filter_epsilon),
+            )
+        else:
+            restored = _richardson_lucy_native_block(
+                values,
+                kernel,
+                iterations=iterations,
+                filter_epsilon=float(filter_epsilon),
+                iteration_done=iteration_done,
+                check_cancelled=(
+                    progress.check_cancelled if progress is not None else None
+                ),
+            )
+        return _deconvolution_output_block(
+            restored,
+            output_scale=output_scale,
+            clip_output_negative=bool(clip_output_negative),
+        )
+
+    return _apply_deconvolution_blocks(
+        image_arr,
+        spatial_ndim,
+        restore_block,
+        iterations=iterations,
+        progress=progress,
+        progress_message="Richardson-Lucy deconvolution",
+    )
+
+
+def richardson_lucy_tv_deconvolution(
+    inputs,
+    spatial_mode: str = "Auto from axes",
+    iterations: int = 25,
+    tv_regularization: float = 0.002,
+    tv_epsilon: float = 1e-6,
+    normalize_psf: bool = True,
+    clip_negative_input: bool = True,
+    clip_output_negative: bool = True,
+    preserve_input_scale: bool = True,
+    filter_epsilon: float = 1e-12,
+    denominator_floor: float = 0.05,
+    resolved_spatial_ndim: int | None = None,
+    progress=None,
+) -> np.ndarray:
+    """Restore an image with Richardson-Lucy total-variation deconvolution."""
+    image, psf = _deconvolution_inputs(inputs)
+    image_arr = np.asarray(image)
+    spatial_ndim = _resolved_deconvolution_spatial_ndim(
+        image_arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    kernel = _deconvolution_psf(
+        psf,
+        spatial_ndim,
+        normalize_psf=bool(normalize_psf),
+    )
+    iterations = max(int(iterations), 1)
+
+    def restore_block(block: np.ndarray, iteration_done=None) -> np.ndarray:
+        values, output_scale = _deconvolution_observed_block(
+            block,
+            clip_negative_input=bool(clip_negative_input),
+            preserve_input_scale=bool(preserve_input_scale),
+        )
+        restored = _richardson_lucy_tv_native_block(
+            values,
+            kernel,
+            iterations=iterations,
+            tv_regularization=max(float(tv_regularization), 0.0),
+            tv_epsilon=max(float(tv_epsilon), 1e-12),
+            filter_epsilon=float(filter_epsilon),
+            denominator_floor=max(float(denominator_floor), 1e-6),
+            iteration_done=iteration_done,
+            check_cancelled=(
+                progress.check_cancelled if progress is not None else None
+            ),
+        )
+        return _deconvolution_output_block(
+            restored,
+            output_scale=output_scale,
+            clip_output_negative=bool(clip_output_negative),
+        )
+
+    return _apply_deconvolution_blocks(
+        image_arr,
+        spatial_ndim,
+        restore_block,
+        iterations=iterations,
+        progress=progress,
+        progress_message="Richardson-Lucy TV deconvolution",
+    )
 
 
 def median_filter(data, size: int = 5) -> np.ndarray:
@@ -4652,6 +4936,330 @@ def _resolved_spatial_ndim(
     return int(np.clip(requested, 1, max(arr.ndim, 1)))
 
 
+def _deconvolution_inputs(inputs) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        image, psf = list(inputs)[:2]
+    except Exception as exc:
+        raise ValueError(
+            "Deconvolution requires two inputs: Image and PSF."
+        ) from exc
+    if image is None or psf is None:
+        raise ValueError("Deconvolution requires connected Image and PSF inputs.")
+    return np.asarray(image), np.asarray(psf)
+
+
+def _resolved_deconvolution_spatial_ndim(
+    arr: np.ndarray,
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+) -> int:
+    spatial_ndim = _resolved_spatial_ndim(
+        arr,
+        spatial_mode,
+        resolved_spatial_ndim,
+    )
+    if spatial_ndim not in {2, 3}:
+        raise ValueError(
+            "Deconvolution requires 2D YX or 3D ZYX spatial processing."
+        )
+    return spatial_ndim
+
+
+def _deconvolution_psf(
+    psf,
+    spatial_ndim: int,
+    *,
+    normalize_psf: bool,
+) -> np.ndarray:
+    kernel = np.asarray(psf, dtype=np.float32)
+    if kernel.ndim != spatial_ndim:
+        raise ValueError(
+            f"PSF dimensionality ({kernel.ndim}D) must match the resolved "
+            f"spatial dimensionality ({spatial_ndim}D)."
+        )
+    if kernel.size == 0 or any(size <= 0 for size in kernel.shape):
+        raise ValueError("PSF is empty.")
+    kernel = np.nan_to_num(kernel, nan=0.0, posinf=0.0, neginf=0.0)
+    kernel = np.maximum(kernel, 0.0)
+    kernel = _validate_psf_sum(kernel, minimum_valid_sum=1e-12)
+    if bool(normalize_psf):
+        kernel = kernel / np.float32(kernel.sum(dtype=np.float64))
+    return np.ascontiguousarray(kernel.astype(np.float32, copy=False))
+
+
+def _validate_psf_sum(
+    psf: np.ndarray,
+    *,
+    minimum_valid_sum: float,
+) -> np.ndarray:
+    total = float(np.sum(psf, dtype=np.float64))
+    if not np.isfinite(total) or total <= float(minimum_valid_sum):
+        raise ValueError(
+            "PSF is empty or invalid after cleaning; sum is below the "
+            "minimum valid threshold."
+        )
+    if not np.isfinite(float(np.max(psf))):
+        raise ValueError("PSF maximum is not finite after cleaning.")
+    return psf
+
+
+def _crop_empty_psf_border(psf: np.ndarray) -> np.ndarray:
+    nonzero = psf != 0
+    if not np.any(nonzero):
+        raise ValueError("PSF is empty after cleaning.")
+    coords = np.argwhere(nonzero)
+    slices = tuple(
+        slice(int(coords[:, axis].min()), int(coords[:, axis].max()) + 1)
+        for axis in range(psf.ndim)
+    )
+    return np.ascontiguousarray(psf[slices])
+
+
+def _force_odd_psf_shape(psf: np.ndarray) -> np.ndarray:
+    pad_width = [
+        (0, 1) if int(size) % 2 == 0 else (0, 0)
+        for size in psf.shape
+    ]
+    if not any(after for _, after in pad_width):
+        return psf
+    return np.pad(psf, pad_width, mode="constant", constant_values=0)
+
+
+def _center_psf(
+    psf: np.ndarray,
+    center_mode: str,
+    *,
+    minimum_valid_sum: float,
+) -> np.ndarray:
+    mode = str(center_mode).strip().lower()
+    if mode in {"", "none", "off", "disabled"}:
+        return psf
+    target = np.asarray([size // 2 for size in psf.shape], dtype=int)
+    if mode.startswith("centroid"):
+        source = _psf_centroid_index(psf, minimum_valid_sum=minimum_valid_sum)
+    elif mode.startswith("peak"):
+        source = np.asarray(np.unravel_index(int(np.argmax(psf)), psf.shape))
+    else:
+        raise ValueError(f"Unknown PSF center mode: {center_mode!r}.")
+    shift = tuple(int(dst - src) for dst, src in zip(target, source, strict=True))
+    if not any(shift):
+        return psf
+    return _integer_shift_zero_fill(psf, shift)
+
+
+def _psf_centroid_index(
+    psf: np.ndarray,
+    *,
+    minimum_valid_sum: float,
+) -> np.ndarray:
+    weights = np.maximum(psf, 0.0)
+    total = float(weights.sum(dtype=np.float64))
+    if total <= float(minimum_valid_sum) or not np.isfinite(total):
+        return np.asarray(np.unravel_index(int(np.argmax(psf)), psf.shape))
+    coords = np.indices(psf.shape, dtype=np.float64)
+    centroid = [
+        float(np.sum(coords[axis] * weights, dtype=np.float64) / total)
+        for axis in range(psf.ndim)
+    ]
+    return np.asarray(
+        [
+            int(np.clip(np.rint(value), 0, psf.shape[axis] - 1))
+            for axis, value in enumerate(centroid)
+        ],
+        dtype=int,
+    )
+
+
+def _integer_shift_zero_fill(psf: np.ndarray, shift: tuple[int, ...]) -> np.ndarray:
+    shifted = np.zeros_like(psf)
+    source_slices: list[slice] = []
+    target_slices: list[slice] = []
+    for size, offset in zip(psf.shape, shift, strict=True):
+        if abs(offset) >= size:
+            return shifted
+        if offset > 0:
+            source_slices.append(slice(0, size - offset))
+            target_slices.append(slice(offset, size))
+        elif offset < 0:
+            source_slices.append(slice(-offset, size))
+            target_slices.append(slice(0, size + offset))
+        else:
+            source_slices.append(slice(None))
+            target_slices.append(slice(None))
+    shifted[tuple(target_slices)] = psf[tuple(source_slices)]
+    return shifted
+
+
+def _deconvolution_observed_block(
+    block: np.ndarray,
+    *,
+    clip_negative_input: bool,
+    preserve_input_scale: bool,
+) -> tuple[np.ndarray, float]:
+    values = np.asarray(block, dtype=np.float32)
+    finite = values[np.isfinite(values)]
+    posinf_value = float(finite.max()) if finite.size else 0.0
+    values = np.nan_to_num(
+        values,
+        nan=0.0,
+        posinf=max(posinf_value, 0.0),
+        neginf=0.0,
+    ).astype(np.float32, copy=False)
+    if bool(clip_negative_input):
+        values = np.maximum(values, 0.0)
+    finite = values[np.isfinite(values)]
+    scale = float(finite.max()) if finite.size else 0.0
+    if not np.isfinite(scale) or scale <= 0.0:
+        return np.zeros_like(values, dtype=np.float32), 1.0
+    if bool(preserve_input_scale):
+        return (values / np.float32(scale)).astype(np.float32, copy=False), scale
+    return values.astype(np.float32, copy=False), 1.0
+
+
+def _deconvolution_output_block(
+    restored: np.ndarray,
+    *,
+    output_scale: float,
+    clip_output_negative: bool,
+) -> np.ndarray:
+    output = np.asarray(restored, dtype=np.float32) * np.float32(output_scale)
+    output = np.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
+    if bool(clip_output_negative):
+        output = np.maximum(output, 0.0)
+    return output.astype(np.float32, copy=False)
+
+
+def _apply_deconvolution_blocks(
+    arr: np.ndarray,
+    spatial_ndim: int,
+    block_func: Callable[[np.ndarray, Callable[[], None] | None], np.ndarray],
+    *,
+    iterations: int,
+    progress=None,
+    progress_message: str,
+) -> np.ndarray:
+    arr = np.asarray(arr)
+    block_count = _spatial_block_count(arr, spatial_ndim)
+    total = max(block_count * int(iterations), 1)
+    completed = 0
+    if progress is not None:
+        progress.report(0, total, progress_message)
+
+    def iteration_done() -> None:
+        nonlocal completed
+        completed += 1
+        if progress is not None:
+            progress.report(completed, total, progress_message)
+
+    if arr.ndim <= spatial_ndim:
+        if progress is not None:
+            progress.check_cancelled()
+        return np.ascontiguousarray(
+            block_func(arr, iteration_done if progress is not None else None)
+        )
+
+    result = np.empty(arr.shape, dtype=np.float32)
+    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
+    for index in np.ndindex(leading_shape):
+        if progress is not None:
+            progress.check_cancelled()
+        result[index] = block_func(
+            arr[index],
+            iteration_done if progress is not None else None,
+        )
+    return np.ascontiguousarray(result)
+
+
+def _richardson_lucy_native_block(
+    image: np.ndarray,
+    psf: np.ndarray,
+    *,
+    iterations: int,
+    filter_epsilon: float,
+    iteration_done: Callable[[], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> np.ndarray:
+    estimate = np.full(image.shape, 0.5, dtype=np.float32)
+    psf_mirror = np.flip(psf)
+    eps = np.float32(1e-12)
+    filter_epsilon = float(filter_epsilon)
+    for _ in range(int(iterations)):
+        if check_cancelled is not None:
+            check_cancelled()
+        blurred = signal.convolve(estimate, psf, mode="same") + eps
+        if filter_epsilon > 0:
+            relative_blur = np.where(blurred < filter_epsilon, 0.0, image / blurred)
+        else:
+            relative_blur = image / blurred
+        estimate *= signal.convolve(relative_blur, psf_mirror, mode="same")
+        estimate = np.nan_to_num(estimate, nan=0.0, posinf=0.0, neginf=0.0)
+        estimate = np.maximum(estimate, 0.0).astype(np.float32, copy=False)
+        if iteration_done is not None:
+            iteration_done()
+    return estimate.astype(np.float32, copy=False)
+
+
+def _richardson_lucy_tv_native_block(
+    image: np.ndarray,
+    psf: np.ndarray,
+    *,
+    iterations: int,
+    tv_regularization: float,
+    tv_epsilon: float,
+    filter_epsilon: float,
+    denominator_floor: float,
+    iteration_done: Callable[[], None] | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> np.ndarray:
+    estimate = np.full(image.shape, 0.5, dtype=np.float32)
+    psf_mirror = np.flip(psf)
+    eps = np.float32(1e-12)
+    filter_epsilon = float(filter_epsilon)
+    for _ in range(int(iterations)):
+        if check_cancelled is not None:
+            check_cancelled()
+        blurred = signal.convolve(estimate, psf, mode="same") + eps
+        if filter_epsilon > 0:
+            relative_blur = np.where(blurred < filter_epsilon, 0.0, image / blurred)
+        else:
+            relative_blur = image / blurred
+        correction = signal.convolve(relative_blur, psf_mirror, mode="same")
+        if tv_regularization > 0:
+            tv = _tv_divergence(estimate, epsilon=tv_epsilon)
+            denom = np.maximum(
+                1.0 - np.float32(tv_regularization) * tv,
+                np.float32(denominator_floor),
+            )
+            estimate = estimate * correction / denom
+        else:
+            estimate *= correction
+        estimate = np.nan_to_num(estimate, nan=0.0, posinf=0.0, neginf=0.0)
+        estimate = np.maximum(estimate, 0.0).astype(np.float32, copy=False)
+        if iteration_done is not None:
+            iteration_done()
+    return estimate.astype(np.float32, copy=False)
+
+
+def _tv_divergence(values: np.ndarray, *, epsilon: float) -> np.ndarray:
+    gradients = np.gradient(values.astype(np.float32, copy=False))
+    norm = np.sqrt(
+        np.sum(
+            np.stack([gradient * gradient for gradient in gradients], axis=0),
+            axis=0,
+            dtype=np.float32,
+        )
+        + np.float32(epsilon) ** 2
+    )
+    normalized = [gradient / norm for gradient in gradients]
+    divergence = np.zeros(values.shape, dtype=np.float32)
+    for axis, component in enumerate(normalized):
+        divergence += np.gradient(component.astype(np.float32, copy=False), axis=axis)
+    return np.nan_to_num(divergence, nan=0.0, posinf=0.0, neginf=0.0).astype(
+        np.float32,
+        copy=False,
+    )
+
+
 def _estimate_rolling_ball_background(
     arr: np.ndarray,
     *,
@@ -7397,6 +8005,199 @@ def _safe_column_fragment(value: str) -> str:
     return compact
 
 
+def _resolved_psf_spatial_ndim(
+    shape: Sequence[int],
+    spatial_mode: str,
+    resolved_spatial_ndim: int | None,
+    axis_types: Sequence[str],
+) -> int:
+    ndim = max(len(tuple(shape)), 1)
+    mode = str(spatial_mode or "Auto from axes").strip().lower()
+    if mode.startswith("2d"):
+        requested = 2
+    elif mode.startswith("3d"):
+        requested = 3
+    elif resolved_spatial_ndim is not None:
+        requested = int(resolved_spatial_ndim)
+    else:
+        spatial_count = sum(
+            str(axis_type).strip().lower() == "space"
+            for axis_type in axis_types
+        )
+        requested = 3 if spatial_count >= 3 or ndim >= 3 else 2
+    return 3 if requested >= 3 else 2
+
+
+def _psf_channel_index(
+    channel: int,
+    emission_wavelengths: Sequence[float | None],
+    excitation_wavelengths: Sequence[float | None],
+) -> int:
+    count = max(len(tuple(emission_wavelengths)), len(tuple(excitation_wavelengths)))
+    if count <= 0:
+        return 0
+    try:
+        index = int(channel)
+    except Exception:
+        index = -1
+    if index < 0:
+        return 0
+    return int(np.clip(index, 0, count - 1))
+
+
+def _resolved_wavelength_nm(
+    requested_nm: float,
+    channel_index: int,
+    emission_wavelengths: Sequence[float | None],
+    emission_units: Sequence[str | None],
+    excitation_wavelengths: Sequence[float | None],
+    excitation_units: Sequence[str | None],
+) -> float:
+    requested = _positive_float(requested_nm, 0.0)
+    if requested > 0:
+        return requested
+    for values, units in (
+        (emission_wavelengths, emission_units),
+        (excitation_wavelengths, excitation_units),
+    ):
+        if not values or channel_index >= len(values):
+            continue
+        converted = _length_to_nanometer(
+            values[channel_index],
+            units[channel_index] if channel_index < len(units) else None,
+        )
+        if converted is not None and converted > 0:
+            return converted
+    return 520.0
+
+
+def _metadata_xy_pixel_size_um(
+    axis_names: Sequence[str],
+    axis_types: Sequence[str],
+    axis_scales: Sequence[float],
+    axis_units: Sequence[str | None],
+) -> float:
+    values = [
+        _metadata_axis_size_um(
+            name,
+            axis_names,
+            axis_types,
+            axis_scales,
+            axis_units,
+        )
+        for name in ("x", "y")
+    ]
+    present = [value for value in values if value is not None and value > 0]
+    if present:
+        return float(np.mean(present))
+    spatial = []
+    for index, axis_type in enumerate(axis_types):
+        if str(axis_type).strip().lower() != "space":
+            continue
+        if index >= len(axis_scales):
+            continue
+        converted = _length_to_micrometer(
+            axis_scales[index],
+            axis_units[index] if index < len(axis_units) else None,
+        )
+        if converted is not None and converted > 0:
+            spatial.append(converted)
+    if spatial:
+        return float(np.mean(spatial[-2:]))
+    return 0.1
+
+
+def _metadata_axis_size_um(
+    name: str,
+    axis_names: Sequence[str],
+    axis_types: Sequence[str],
+    axis_scales: Sequence[float],
+    axis_units: Sequence[str | None],
+) -> float | None:
+    target = str(name).strip().lower()
+    for index, axis_name in enumerate(axis_names):
+        if str(axis_name).strip().lower() != target:
+            continue
+        if index >= len(axis_scales):
+            return None
+        return _length_to_micrometer(
+            axis_scales[index],
+            axis_units[index] if index < len(axis_units) else None,
+        )
+    if target == "z":
+        spatial_indices = [
+            index
+            for index, axis_type in enumerate(axis_types)
+            if str(axis_type).strip().lower() == "space"
+        ]
+        if len(spatial_indices) >= 3:
+            index = spatial_indices[-3]
+            return _length_to_micrometer(
+                axis_scales[index],
+                axis_units[index] if index < len(axis_units) else None,
+            )
+    return None
+
+
+def _length_to_nanometer(value, unit: str | None) -> float | None:
+    micrometer = _length_to_micrometer(value, unit, infer_wavelength_unit=True)
+    return None if micrometer is None else micrometer * 1000.0
+
+
+def _length_to_micrometer(
+    value,
+    unit: str | None,
+    *,
+    infer_wavelength_unit: bool = False,
+) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    if number <= 0 or not np.isfinite(number):
+        return None
+    normalized = _normalized_length_unit(unit)
+    if normalized in {"meter", "m"}:
+        return number * 1_000_000.0
+    if normalized in {"millimeter", "millimetre", "mm"}:
+        return number * 1000.0
+    if normalized in {"micrometer", "micrometre", "um"}:
+        return number
+    if normalized in {"nanometer", "nanometre", "nm"}:
+        return number / 1000.0
+    if normalized in {"pixel", "pixels", "px"}:
+        return None
+    if infer_wavelength_unit and number <= 10.0:
+        return number
+    return number / 1000.0 if infer_wavelength_unit else number
+
+
+def _normalized_length_unit(unit: str | None) -> str:
+    text = str(unit or "").strip().lower()
+    text = text.replace("\u00b5", "u").replace("\u03bc", "u")
+    aliases = {
+        "micron": "um",
+        "microns": "um",
+        "micrometer": "um",
+        "micrometers": "um",
+        "micrometre": "um",
+        "micrometres": "um",
+        "nanometer": "nm",
+        "nanometers": "nm",
+        "nanometre": "nm",
+        "nanometres": "nm",
+        "millimeter": "mm",
+        "millimeters": "mm",
+        "millimetre": "mm",
+        "millimetres": "mm",
+        "meter": "m",
+        "meters": "m",
+        "metre": "m",
+        "metres": "m",
+    }
+    return aliases.get(text, text)
+
+
 def _xy_structure(arr: np.ndarray, size: int) -> np.ndarray:
     structure = np.zeros([1] * arr.ndim, dtype=bool)
     slices = [0] * arr.ndim
@@ -8061,8 +8862,8 @@ def _positive_int(value, default: int) -> int:
 
 def _normalized_physical_unit(unit) -> str:
     text = str(unit or "").strip().lower()
+    text = text.replace("\u00b5", "u").replace("\u03bc", "u")
     aliases = {
-        "µm": "micrometer",
         "um": "micrometer",
         "micron": "micrometer",
         "microns": "micrometer",

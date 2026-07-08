@@ -19,7 +19,7 @@
         "file_path": "",
         "sample_name": "VIPP synthetic multichannel volume",
         "series_index": 0,
-        "channel_colors": "",
+        "channel_colors": "Blue,Green,Red",
         "binding_mode": "single item"
       }
     },
@@ -27,7 +27,7 @@
       "id": "split_channels_1",
       "operation_id": "split_channels",
       "params": {
-        "preview_channel": 0
+        "preview_channel": 2
       }
     },
     {
@@ -65,7 +65,7 @@
       "id": "filter_labels_by_volume_1",
       "operation_id": "filter_labels_by_volume",
       "params": {
-        "min_volume": 10,
+        "min_volume": 120,
         "max_volume": 0,
         "spatial_mode": "Auto from axes"
       }
@@ -95,7 +95,7 @@
       "source": "split_channels_1",
       "target": "gaussian_blur_1",
       "target_port": 0,
-      "source_port": 0
+      "source_port": 2
     },
     {
       "source": "gaussian_blur_1",
@@ -131,7 +131,7 @@
       "source": "split_channels_1",
       "target": "measure_objects_intensity_1",
       "target_port": 1,
-      "source_port": 0,
+      "source_port": 2,
       "tunnel": "Red intensity"
     }
   ],
@@ -158,7 +158,7 @@
     {
       "name": "Red intensity",
       "source": "split_channels_1",
-      "source_port": 0
+      "source_port": 2
     }
   ]
 }

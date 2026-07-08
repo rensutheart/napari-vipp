@@ -1,0 +1,149 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "richardson_lucy_tv_deconvolution_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D deconvolution volume",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "input_2",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D measured PSF",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "prepare_validate_psf_1",
+      "operation_id": "prepare_validate_psf",
+      "params": {
+        "center_mode": "Peak",
+        "clip_negatives": true,
+        "normalize_sum": true,
+        "minimum_valid_sum": 1e-12,
+        "force_odd_shape": true,
+        "crop_empty_border": false
+      }
+    },
+    {
+      "id": "richardson_lucy_deconvolution_1",
+      "operation_id": "richardson_lucy_deconvolution",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "iterations": 8,
+        "normalize_psf": true,
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "preserve_input_scale": true,
+        "filter_epsilon": 1e-12
+      }
+    },
+    {
+      "id": "richardson_lucy_tv_deconvolution_1",
+      "operation_id": "richardson_lucy_tv_deconvolution",
+      "params": {
+        "spatial_mode": "3D ZYX",
+        "iterations": 8,
+        "tv_regularization": 0.008,
+        "tv_epsilon": 1e-06,
+        "normalize_psf": true,
+        "clip_negative_input": true,
+        "clip_output_negative": true,
+        "preserve_input_scale": true,
+        "filter_epsilon": 1e-12,
+        "denominator_floor": 0.15
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input_2",
+      "target": "prepare_validate_psf_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "input",
+      "target": "richardson_lucy_deconvolution_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prepare_validate_psf_1",
+      "target": "richardson_lucy_deconvolution_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Prepared 3D PSF"
+    },
+    {
+      "source": "input",
+      "target": "richardson_lucy_tv_deconvolution_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "prepare_validate_psf_1",
+      "target": "richardson_lucy_tv_deconvolution_1",
+      "target_port": 1,
+      "source_port": 0,
+      "tunnel": "Prepared 3D PSF"
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Prepared 3D PSF",
+      "source": "prepare_validate_psf_1",
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 240.0],
+    "input_2": [0.0, 560.0],
+    "prepare_validate_psf_1": [400.0, 560.0],
+    "richardson_lucy_deconvolution_1": [820.0, 160.0],
+    "richardson_lucy_tv_deconvolution_1": [820.0, 540.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "This workflow uses true 3D ZYX restoration. The PSF is also ZYX, so its dimensionality matches the selected spatial mode.",
+      "position": [360.0, 810.0],
+      "width": 320.0,
+      "attached_node": "prepare_validate_psf_1"
+    },
+    {
+      "id": "note_2",
+      "text": "The iteration count is intentionally conservative for a small review volume. Increase slowly on real data because volumetric RL can sharpen noise and edge artifacts.",
+      "position": [1150.0, 610.0],
+      "width": 340.0,
+      "attached_node": "richardson_lucy_tv_deconvolution_1"
+    }
+  ],
+  "view": {
+    "zoom": 1.0,
+    "pan": [0.0, 0.0]
+  }
+}

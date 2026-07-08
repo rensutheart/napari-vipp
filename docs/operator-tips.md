@@ -41,7 +41,6 @@ the current napari dim position.
 For heavy scenes, these settings can help reduce UI churn:
 
 - set preview mode to `Off` when tuning non-visual parameters;
-- disable global thumbnails temporarily;
 - keep histogram scope to `Slice` while iterating.
 
 ## Practical Workflow Habits
@@ -56,7 +55,7 @@ For heavy scenes, these settings can help reduce UI churn:
 If updates feel slow:
 
 1. Turn `Run all in BG` off and compare interactive latency.
-2. Disable thumbnails globally and retest.
+2. Set preview mode to `Off` and retest.
 3. Switch preview mode from `MIP` to `Slice`.
 4. Reduce graph fan-out while tuning upstream nodes.
 5. Re-enable features one by one to identify the dominant cost.

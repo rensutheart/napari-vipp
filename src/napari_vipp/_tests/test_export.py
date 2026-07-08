@@ -77,6 +77,33 @@ def test_export_handles_multi_input_nodes():
     assert "add_images([v_input, v_gaussian]" in code
 
 
+def test_export_includes_richardson_lucy_deconvolution_call():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    psf_source = pipeline.add_node("input")
+    decon = pipeline.add_node("richardson_lucy_deconvolution")
+    pipeline.set_param(decon.id, "spatial_mode", "2D YX")
+    pipeline.set_param(decon.id, "iterations", 2)
+    pipeline.set_param(decon.id, "resolved_spatial_ndim", 2)
+    pipeline.connect("input", decon.id, target_port=0)
+    pipeline.connect(psf_source.id, decon.id, target_port=1)
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[4, 4] = 1.0
+    psf = np.zeros((3, 3), dtype=np.float32)
+    psf[1, 1] = 1.0
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    results = namespace["run_pipeline"](image, psf)
+
+    assert "richardson_lucy_deconvolution([" in code
+    assert "richardson_lucy_deconvolution([v_input, v_input_2]" in code
+    assert "resolved_spatial_ndim=2" in code
+    assert results[decon.id].dtype == np.float32
+    assert results[decon.id].shape == image.shape
+
+
 def test_export_compiles_named_tunnel_connections_as_normal_inputs():
     pipeline = _starter_pipeline()
     median = pipeline.add_node("median_filter")

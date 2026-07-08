@@ -6,6 +6,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from napari_vipp.core.io.microscope import (
+    MICROSCOPE_SUFFIXES,
+    inspect_microscope,
+    read_microscope,
+)
 from napari_vipp.core.io.model import ImageDataset, SourceInspection
 from napari_vipp.core.io.numpy_io import inspect_numpy, read_numpy, write_numpy
 from napari_vipp.core.io.ome_zarr import (
@@ -48,6 +53,8 @@ def inspect_image_source(path: str | Path) -> SourceInspection:
     suffix = source_path.suffix.lower()
     if suffix == ".zarr":
         return inspect_ome_zarr(source_path)
+    if suffix in MICROSCOPE_SUFFIXES:
+        return inspect_microscope(source_path)
     if suffix in {".npy", ".npz"}:
         return inspect_numpy(source_path)
     if suffix in {".tif", ".tiff"}:
@@ -67,6 +74,8 @@ def read_image(
     suffix = source_path.suffix.lower()
     if suffix == ".zarr":
         return read_ome_zarr(source_path, series_index)
+    if suffix in MICROSCOPE_SUFFIXES:
+        return read_microscope(source_path, series_index)
     if suffix in {".npy", ".npz"}:
         return read_numpy(source_path, series_index)
     if suffix in {".tif", ".tiff"}:

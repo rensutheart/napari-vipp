@@ -335,10 +335,16 @@ def _acquisition_metadata(ome, series_index: int) -> AcquisitionMetadata:
     instrument = ""
     objective = ""
     detector = ""
+    objective_record = None
     if image.instrument_ref is not None:
         instrument = str(image.instrument_ref.id)
     if image.objective_settings is not None:
         objective = str(image.objective_settings.id)
+        objective_record = _objective_record(
+            ome,
+            instrument,
+            image.objective_settings.id,
+        )
     pixels = image.pixels
     for channel in pixels.channels:
         if channel.detector_settings is not None:
@@ -350,7 +356,29 @@ def _acquisition_metadata(ome, series_index: int) -> AcquisitionMetadata:
         objective=objective,
         instrument=instrument,
         detector=detector,
+        objective_na=_optional_float(getattr(objective_record, "lens_na", None)),
+        objective_magnification=_optional_float(
+            getattr(objective_record, "nominal_magnification", None),
+        ),
+        objective_immersion=_model_value(getattr(objective_record, "immersion", "")),
+        refractive_index=_optional_float(
+            getattr(image.objective_settings, "refractive_index", None)
+            if image.objective_settings is not None
+            else None
+        ),
     )
+
+
+def _objective_record(ome, instrument_id: str, objective_id: str):
+    if not objective_id:
+        return None
+    for instrument in getattr(ome, "instruments", ()) or ():
+        if instrument_id and str(getattr(instrument, "id", "")) != instrument_id:
+            continue
+        for objective in getattr(instrument, "objectives", ()) or ():
+            if str(getattr(objective, "id", "")) == str(objective_id):
+                return objective
+    return None
 
 
 def _ome_axis_scale(pixels, label: str) -> tuple[float, str | None]:

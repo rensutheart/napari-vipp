@@ -445,9 +445,20 @@ def _raw_uint8(arr: np.ndarray) -> np.ndarray:
             scaled = values / float(info.max)
         return (np.clip(scaled, 0, 1) * 255).astype(np.uint8)
     finite = values[np.isfinite(values)]
-    if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
-        return (np.clip(values, 0, 1) * 255).astype(np.uint8)
-    return np.clip(values, 0, 255).astype(np.uint8)
+    if finite.size == 0:
+        return np.zeros(values.shape, dtype=np.uint8)
+    finite_min = float(finite.min())
+    finite_max = float(finite.max())
+    if finite_min >= 0.0:
+        if finite_max <= 0.0:
+            return np.zeros(values.shape, dtype=np.uint8)
+        scaled = values / finite_max
+    else:
+        scale = finite_max - finite_min
+        if scale <= 0.0:
+            return np.zeros(values.shape, dtype=np.uint8)
+        scaled = (values - finite_min) / scale
+    return (np.clip(scaled, 0, 1) * 255).astype(np.uint8)
 
 
 def _label_thumbnail_rgb(arr: np.ndarray) -> np.ndarray:

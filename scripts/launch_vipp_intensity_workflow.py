@@ -47,6 +47,14 @@ def _workflow_args(args: list[str]) -> tuple[Path, str]:
             examples / "synthetic-object-colocalization-association.json",
             "object_colocalization_metrics_1",
         ),
+        "deconvolution": (
+            examples / "synthetic-deconvolution-rl-tv.json",
+            "richardson_lucy_tv_deconvolution_1",
+        ),
+        "deconvolution-3d": (
+            examples / "synthetic-3d-deconvolution-rl-tv.json",
+            "richardson_lucy_tv_deconvolution_1",
+        ),
     }
     if not args:
         return workflows["intensity"]

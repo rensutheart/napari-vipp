@@ -3,8 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 import tifffile
+from scipy import signal
 
 from napari_vipp.core.metadata import (
+    AcquisitionMetadata,
+    AxisMetadata,
+    ChannelMetadata,
     image_state_from_array,
     transform_image_state,
     transform_multi_input_image_state,
@@ -21,6 +25,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    born_wolf_psf,
     calculate_weighted_image,
     canny_edges,
     clear_border_objects,
@@ -79,6 +84,7 @@ from napari_vipp.core.operations import (
     opening,
     orthogonal_projection,
     otsu_threshold,
+    prepare_validate_psf,
     project_image,
     prune_skeleton_branches,
     racc_index,
@@ -88,6 +94,8 @@ from napari_vipp.core.operations import (
     reorder_axes,
     rescale_axes,
     rescale_intensity,
+    richardson_lucy_deconvolution,
+    richardson_lucy_tv_deconvolution,
     rolling_ball_background,
     sauvola_threshold,
     save_array_output,
@@ -118,10 +126,40 @@ from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
+    SourcePayload,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import save_table_output, table_from_columns
 from napari_vipp.core.workflow import serialize_workflow
+
+
+def _compact_psf_2d() -> np.ndarray:
+    psf = np.array(
+        [
+            [0.0, 0.05, 0.0],
+            [0.05, 0.8, 0.05],
+            [0.0, 0.05, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    return psf / psf.sum()
+
+
+def _compact_psf_3d() -> np.ndarray:
+    psf = np.zeros((3, 3, 3), dtype=np.float32)
+    psf[1, 1, 1] = 0.7
+    psf[0, 1, 1] = 0.05
+    psf[2, 1, 1] = 0.05
+    psf[1, 0, 1] = 0.05
+    psf[1, 2, 1] = 0.05
+    psf[1, 1, 0] = 0.05
+    psf[1, 1, 2] = 0.05
+    return psf / psf.sum()
+
+
+def _total_variation(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=np.float32)
+    return float(sum(np.abs(np.diff(arr, axis=axis)).sum() for axis in range(arr.ndim)))
 
 
 def test_vipp_operation_nodes_are_registered():
@@ -132,6 +170,9 @@ def test_vipp_operation_nodes_are_registered():
         "average_blur",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "prepare_validate_psf",
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
         "median_filter",
         "bilateral_filter",
         "non_local_means_filter",
@@ -2013,6 +2054,335 @@ def test_gaussian_3d_spreads_across_z_axis():
     assert blurred.shape == data.shape
     assert blurred[0, 4, 4] > 0
     assert blurred[2, 4, 4] > 0
+
+
+def test_born_wolf_psf_generates_normalized_3d_metadata_sized_kernel():
+    reference = np.zeros((4, 24, 24), dtype=np.uint16)
+
+    psf = born_wolf_psf(
+        reference,
+        spatial_mode="3D ZYX",
+        xy_size=17,
+        z_size=7,
+        pupil_samples=64,
+        axis_names=("z", "y", "x"),
+        axis_types=("space", "space", "space"),
+        axis_scales=(0.3, 0.1, 0.1),
+        axis_units=("micrometer", "micrometer", "micrometer"),
+        channel_emission_wavelengths=(610.0,),
+        channel_emission_wavelength_units=("nanometer",),
+        numerical_aperture=1.2,
+        refractive_index=1.33,
+    )
+
+    assert psf.shape == (7, 17, 17)
+    assert psf.dtype == np.float32
+    assert np.isclose(float(psf.sum()), 1.0, rtol=1e-5)
+    assert psf[3, 8, 8] == psf.max()
+
+
+def test_born_wolf_psf_can_generate_2d_kernel():
+    reference = np.zeros((24, 24), dtype=np.float32)
+
+    psf = born_wolf_psf(
+        reference,
+        spatial_mode="2D YX",
+        xy_size=15,
+        z_size=9,
+        pupil_samples=48,
+        wavelength_nm=520.0,
+        numerical_aperture=1.4,
+        refractive_index=1.515,
+    )
+
+    assert psf.shape == (15, 15)
+    assert np.isclose(float(psf.sum()), 1.0, rtol=1e-5)
+    assert psf[7, 7] == psf.max()
+
+
+def test_born_wolf_psf_pipeline_uses_carried_image_metadata():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("born_wolf_psf")
+    pipeline.connect("input", node.id)
+    pipeline.set_param(node.id, "xy_size", 15)
+    pipeline.set_param(node.id, "z_size", 5)
+    pipeline.set_param(node.id, "pupil_samples", 48)
+
+    data = np.zeros((3, 16, 16), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space", unit="micrometer", scale=0.4),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.08),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.08),
+        ),
+        channels=(
+            ChannelMetadata(
+                name="Far red",
+                emission_wavelength=650.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.2,
+            refractive_index=1.33,
+        ),
+    )
+    assert state is not None
+
+    pipeline.run(
+        data,
+        source_payloads={
+            "input": SourcePayload(data, name="metadata test", image_state=state)
+        },
+    )
+
+    psf = pipeline.outputs[node.id]
+    psf_state = pipeline.output_states[node.id]
+
+    assert psf.shape == (5, 15, 15)
+    assert np.isclose(float(psf.sum()), 1.0, rtol=1e-5)
+    assert psf_state is not None
+    assert psf_state.axis_order == "ZYX"
+    assert [axis.scale for axis in psf_state.axes] == [0.4, 0.08, 0.08]
+    assert psf_state.channels[0].name == "Far red"
+
+
+def test_prepare_validate_psf_clips_centers_forces_odd_and_normalizes():
+    psf = np.zeros((4, 4), dtype=np.float32)
+    psf[0, 1] = 5.0
+    psf[3, 3] = -3.0
+    psf[1, 1] = np.nan
+
+    prepared = prepare_validate_psf(psf)
+
+    assert prepared.shape == (5, 5)
+    assert prepared.dtype == np.float32
+    assert prepared[2, 2] == prepared.max()
+    assert prepared.min() >= 0
+    assert np.isclose(float(prepared.sum()), 1.0)
+
+
+def test_prepare_validate_psf_rejects_invalid_psfs():
+    with pytest.raises(ValueError, match="empty|invalid"):
+        prepare_validate_psf(np.full((3, 3), np.nan, dtype=np.float32))
+
+    with pytest.raises(ValueError, match="without time or channel axes"):
+        prepare_validate_psf(np.zeros((2, 3, 3, 1), dtype=np.float32))
+
+
+def test_richardson_lucy_deconvolution_restores_2d_fixture():
+    truth = np.zeros((17, 17), dtype=np.float32)
+    truth[8, 8] = 1.0
+    psf = _compact_psf_2d()
+    blurred = signal.convolve(truth, psf, mode="same").astype(np.float32)
+
+    restored = richardson_lucy_deconvolution(
+        [blurred, psf],
+        spatial_mode="2D YX",
+        iterations=8,
+    )
+
+    assert restored.shape == blurred.shape
+    assert restored.dtype == np.float32
+    assert np.all(np.isfinite(restored))
+    assert restored.min() >= 0
+    assert restored[8, 8] > blurred[8, 8]
+
+
+def test_richardson_lucy_deconvolution_restores_3d_fixture():
+    truth = np.zeros((5, 13, 13), dtype=np.float32)
+    truth[2, 6, 6] = 1.0
+    psf = _compact_psf_3d()
+    blurred = signal.convolve(truth, psf, mode="same").astype(np.float32)
+
+    restored = richardson_lucy_deconvolution(
+        [blurred, psf],
+        spatial_mode="3D ZYX",
+        iterations=6,
+    )
+
+    assert restored.shape == blurred.shape
+    assert restored.dtype == np.float32
+    assert np.all(np.isfinite(restored))
+    assert restored.min() >= 0
+    assert restored[2, 6, 6] > blurred[2, 6, 6]
+
+
+def test_richardson_lucy_tv_zero_regularization_matches_rl_update():
+    image = np.zeros((13, 13), dtype=np.float32)
+    image[6, 6] = 1.0
+    image = signal.convolve(image, _compact_psf_2d(), mode="same").astype(np.float32)
+
+    rl = richardson_lucy_deconvolution(
+        [image, _compact_psf_2d()],
+        spatial_mode="2D YX",
+        iterations=5,
+        preserve_input_scale=False,
+    )
+    tv_zero = richardson_lucy_tv_deconvolution(
+        [image, _compact_psf_2d()],
+        spatial_mode="2D YX",
+        iterations=5,
+        tv_regularization=0.0,
+        preserve_input_scale=False,
+    )
+
+    np.testing.assert_allclose(tv_zero, rl, rtol=2e-5, atol=2e-6)
+
+
+def test_richardson_lucy_tv_reduces_noise_variation_versus_ordinary_rl():
+    yy, xx = np.mgrid[:32, :32]
+    truth = (
+        ((yy - 11) ** 2 + (xx - 11) ** 2 <= 4**2).astype(np.float32)
+        + 0.7 * ((yy - 21) ** 2 + (xx - 22) ** 2 <= 3**2)
+    )
+    psf = _compact_psf_2d()
+    blurred = signal.convolve(truth, psf, mode="same").astype(np.float32)
+    rng = np.random.default_rng(12)
+    noisy = np.clip(
+        blurred + rng.normal(0.0, 0.03, size=blurred.shape).astype(np.float32),
+        0.0,
+        None,
+    )
+
+    rl = richardson_lucy_deconvolution(
+        [noisy, psf],
+        spatial_mode="2D YX",
+        iterations=20,
+    )
+    tv = richardson_lucy_tv_deconvolution(
+        [noisy, psf],
+        spatial_mode="2D YX",
+        iterations=20,
+        tv_regularization=0.02,
+        denominator_floor=0.2,
+    )
+
+    assert tv.shape == noisy.shape
+    assert tv.dtype == np.float32
+    assert np.all(np.isfinite(tv))
+    assert tv.min() >= 0
+    assert _total_variation(tv) < _total_variation(rl)
+
+
+def test_richardson_lucy_2d_mode_processes_leading_axes_independently():
+    stack = np.zeros((2, 15, 15), dtype=np.float32)
+    stack[0, 7, 7] = 1.0
+    stack[1, 4, 9] = 0.5
+    psf = _compact_psf_2d()
+    blurred = signal.convolve(stack, psf[None, :, :], mode="same").astype(np.float32)
+
+    restored_stack = richardson_lucy_deconvolution(
+        [blurred, psf],
+        spatial_mode="2D YX",
+        iterations=6,
+    )
+    restored_first = richardson_lucy_deconvolution(
+        [blurred[0], psf],
+        spatial_mode="2D YX",
+        iterations=6,
+    )
+    restored_second = richardson_lucy_deconvolution(
+        [blurred[1], psf],
+        spatial_mode="2D YX",
+        iterations=6,
+    )
+
+    np.testing.assert_allclose(restored_stack[0], restored_first)
+    np.testing.assert_allclose(restored_stack[1], restored_second)
+
+
+def test_richardson_lucy_rejects_mismatched_psf_dimensionality():
+    image = np.zeros((5, 13, 13), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="dimensionality"):
+        richardson_lucy_deconvolution(
+            [image, _compact_psf_2d()],
+            spatial_mode="3D ZYX",
+        )
+
+
+def test_richardson_lucy_tv_reports_progress_and_cancels_between_iterations():
+    image = np.zeros((13, 13), dtype=np.float32)
+    image[6, 6] = 1.0
+    updates = []
+    state = {"cancel": False}
+
+    def report(update):
+        updates.append((update.current, update.total, update.message))
+        if update.current >= 1:
+            state["cancel"] = True
+
+    progress = ProgressContext(
+        cancelled=lambda: state["cancel"],
+        reporter=report,
+    )
+
+    with pytest.raises(OperationCancelled):
+        richardson_lucy_tv_deconvolution(
+            [image, _compact_psf_2d()],
+            spatial_mode="2D YX",
+            iterations=4,
+            progress=progress,
+        )
+
+    assert updates[0] == (0, 4, "Richardson-Lucy TV deconvolution")
+    assert updates[1] == (1, 4, "Richardson-Lucy TV deconvolution")
+
+
+def test_deconvolution_pipeline_metadata_follows_image_input():
+    image = np.zeros((2, 13, 13), dtype=np.float32)
+    image[:, 6, 6] = 1.0
+    psf = _compact_psf_2d()
+    image_state = image_state_from_array(
+        image,
+        axes=(
+            AxisMetadata("t", "time", unit="second", scale=2.0),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.2),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.2),
+        ),
+        source_name="image source",
+        channels=(ChannelMetadata(name="GFP", color=0x00FF00),),
+    )
+    psf_state = image_state_from_array(
+        psf,
+        axes=(
+            AxisMetadata("y", "space", unit="micrometer", scale=0.05),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.05),
+        ),
+        source_name="psf source",
+        channels=(ChannelMetadata(name="PSF channel", color=0xFF00FF),),
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    psf_source = pipeline.add_node("input")
+    decon = pipeline.add_node("richardson_lucy_deconvolution")
+    pipeline.set_param(decon.id, "spatial_mode", "2D YX")
+    pipeline.set_param(decon.id, "iterations", 3)
+
+    assert [port.name for port in pipeline.input_ports(decon.id)] == ["image", "psf"]
+    assert [port.label for port in pipeline.input_ports(decon.id)] == ["Image", "PSF"]
+
+    pipeline.connect("input", decon.id, target_port=0)
+    pipeline.connect(psf_source.id, decon.id, target_port=1)
+
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "input": SourcePayload(image, name="image source", image_state=image_state),
+            psf_source.id: SourcePayload(psf, name="psf source", image_state=psf_state),
+        },
+    )
+    state = pipeline.output_states[decon.id]
+
+    assert pipeline.is_manual_node(decon.id)
+    assert outputs[decon.id].dtype == np.float32
+    assert state.axis_order == "TYX"
+    assert state.source_name == "image source"
+    assert state.channels[0].name == "GFP"
+    assert [axis.scale for axis in state.axes] == [2.0, 0.2, 0.2]
+    assert "Richardson-Lucy Deconvolution" in state.history[-1]
 
 
 def test_bilateral_filter_preserves_shape():

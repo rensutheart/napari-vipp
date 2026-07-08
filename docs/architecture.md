@@ -555,17 +555,17 @@ For generated napari inspect/pin layers, 2D RGB outputs use napari's native
 additive red/green/blue image layers because napari's scalar-field 3D status
 and rendering path does not reliably handle hidden RGB axes.
 
-Toolbar thumbnail controls are global display settings. `Thumbnails` gates all
-node-card thumbnail generation, while the selected-node inspector checkbox
-still acts as a per-node opt-out when global thumbnails are enabled. `Preview`
-chooses the thumbnail reduction (`Slice`, `MIP`, or `Off`). `Contrast` chooses
-how scalar thumbnail intensities are mapped to display: `Percentile` uses the
-current robust 1st/99th percentile stretch, `Min-max` uses the displayed data
-minimum and maximum, and `Raw` uses dtype/range display without adaptive
-stretching. For `uint16`, raw mode maps 0..65535 to 0..255, so dim microscopy
-signals may appear dark by design. The toolbar `Mono` dropdown controls the
-colormap used for monochrome thumbnails only. These controls are display
-settings, not metadata, and do not alter graph outputs or histogram values.
+Toolbar thumbnail controls are global display settings. `Preview` chooses the
+thumbnail reduction (`Slice`, `MIP`, or `Off`); `Off` disables node-card
+thumbnail generation globally. The selected-node inspector checkbox still acts
+as a per-node opt-out when previews are enabled. `Contrast` chooses how scalar
+thumbnail intensities are mapped to display: `Percentile` uses the current
+robust 1st/99th percentile stretch, `Min-max` uses the displayed data minimum
+and maximum, and `Raw` uses dtype/range display without adaptive stretching.
+For `uint16`, raw mode maps 0..65535 to 0..255, so dim microscopy signals may
+appear dark by design. The toolbar `Mono` dropdown controls the colormap used
+for monochrome thumbnails only. These controls are display settings, not
+metadata, and do not alter graph outputs or histogram values.
 
 Histograms live mostly in `_widget.py` through `HistogramPlot` and helper
 functions near the bottom of the file. The general selected-output histogram
@@ -673,7 +673,7 @@ It is currently large because it contains:
 
 The main update loop is `run_pipeline()`:
 
-1. Resolve toolbar input and any graph-level Image Source nodes.
+1. Resolve graph-level Image Source nodes.
 2. Run `PrototypePipeline.run(...)`.
 3. Refresh dynamic parameter bounds and re-run once if those bounds changed.
 4. Hide/restores managed input layers as needed for inspection.
@@ -698,8 +698,8 @@ panel detached. Keep this behavior plugin-local; do not patch napari internals.
 
 ## Input, Output, Persistence, And Export
 
-Input is represented both by the toolbar input selector and by explicit
-graph-level Image Source nodes. Image Source supports:
+Input is represented by explicit graph-level Image Source nodes. Image Source
+supports:
 
 - existing napari layer;
 - file path (`.npy`, `.npz`, OME-TIFF/ImageJ/conventional TIFF, OME-Zarr
@@ -810,6 +810,16 @@ Collection batch UI:
 - `VIPP synthetic advanced skeleton network`: two-timepoint `TZYX` sparse
   skeleton network with looped components, many junctions, separate fragments,
   terminal spurs, isolated voxels, and anisotropic spatial calibration.
+- `VIPP synthetic colocalization`: two-channel `CZYX` volume with partial
+  overlap, single-channel objects, offset puncta, gradients, and noise;
+- `VIPP synthetic deconvolution image`: blurred/noisy `YX` object image for
+  PSF-aware restoration review;
+- `VIPP synthetic measured PSF`: compact `YX` measured-PSF-style kernel for
+  `Prepare / Validate PSF`.
+- `VIPP synthetic 3D deconvolution volume`: blurred/noisy anisotropic `ZYX`
+  volume for volumetric PSF-aware restoration review;
+- `VIPP synthetic 3D measured PSF`: compact `ZYX` measured-PSF-style kernel for
+  3D `Prepare / Validate PSF`.
 
 The samples include OME-NGFF-like `multiscales` metadata and VIPP hint keys.
 The time-lapse multichannel sample is preferred as the default when present.
@@ -863,7 +873,8 @@ Implemented now:
 - slice/stack/log histograms;
 - guarded `New workflow...` action that resets to one unbound Image Source
   node;
-- workflow JSON save/load;
+- grouped `Open example...` workflow chooser for bundled templates, plus
+  workflow JSON save/load for user files;
 - Python export;
 - shared OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, NumPy,
   and 2D common raster import/export;

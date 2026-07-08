@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import imageio.v3 as iio
 import numpy as np
 import pytest
 from tifffile import TiffFile, TiffWriter
 
+import napari_vipp.core.io.microscope as microscope_io
 from napari_vipp.core.io import (
     AnalysisLabel,
+    detect_deconvolution_metadata,
     inspect_image_source,
     read_image,
     write_image,
@@ -408,3 +411,114 @@ def test_standalone_label_image_is_not_miswritten_as_ome_zarr(tmp_path):
             format="ome-zarr",
             image_state=state,
         )
+
+
+def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
+    path = tmp_path / "source.nd2"
+    path.write_bytes(b"fake nd2")
+
+    class FakeND2File:
+        shape = (2, 3, 4, 5)
+        dtype = np.dtype("uint16")
+        sizes = {"T": 2, "C": 3, "Y": 4, "X": 5}
+        attributes = {"bitsPerComponentSignificant": 16}
+        experiment = ()
+        text_info = {
+            "Description": "NIS Elements Richardson-Lucy deconvolution"
+        }
+
+        metadata = SimpleNamespace(
+            channels=(
+                SimpleNamespace(
+                    channel=SimpleNamespace(
+                        name="DAPI",
+                        colorRGBA=0x00FF0000,
+                        excitationLambdaNm=405.0,
+                        emissionLambdaNm=461.0,
+                    )
+                ),
+            )
+        )
+
+        def __init__(self, _path):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def voxel_size(self):
+            return SimpleNamespace(x=0.21, y=0.22, z=1.0)
+
+        def unstructured_metadata(self):
+            return {
+                "ObjectiveName": "Plan Apo 60x Oil",
+                "objectiveNumericalAperture": 1.4,
+                "objectiveMagnification": 60,
+                "refractiveIndex": 1.515,
+            }
+
+    fake_nd2 = SimpleNamespace(
+        ND2File=FakeND2File,
+        imread=lambda *_args, **_kwargs: np.zeros(
+            (2, 3, 4, 5),
+            dtype=np.uint16,
+        ),
+    )
+
+    def fake_import(name):
+        if name == "nd2":
+            return fake_nd2
+        raise ImportError(name)
+
+    monkeypatch.setattr(microscope_io, "import_module", fake_import)
+
+    inspection = inspect_image_source(path)
+    loaded = read_image(path)
+
+    assert inspection.format == "nikon-nd2"
+    assert inspection.series[0].axes == "TCYX"
+    assert loaded.image_state.axis_order == "TCYX"
+    assert [axis.scale for axis in loaded.image_state.axes] == [
+        1.0,
+        1.0,
+        0.22,
+        0.21,
+    ]
+    assert loaded.image_state.channels[0].name == "DAPI"
+    assert loaded.image_state.channels[0].emission_wavelength == 461.0
+    assert loaded.image_state.acquisition.objective_na == 1.4
+    assert loaded.image_state.acquisition.refractive_index == 1.515
+    assert loaded.image_state.acquisition.deconvolution_applied is True
+    assert loaded.image_state.acquisition.deconvolution_method == "Richardson-Lucy"
+
+
+def test_microscope_reader_reports_missing_optional_dependency(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "source.nd2"
+    path.write_bytes(b"fake nd2")
+
+    def fake_import(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr(microscope_io, "import_module", fake_import)
+
+    with pytest.raises(ImportError, match="optional dependency"):
+        inspect_image_source(path)
+
+
+def test_deconvolution_metadata_detection_is_conservative():
+    assert detect_deconvolution_metadata(
+        {"Processing": "Huygens deconvolution"}
+    ) == (True, "Huygens")
+    assert detect_deconvolution_metadata(
+        {"Processing": "no deconvolution applied"}
+    ) == (False, "")
+    assert detect_deconvolution_metadata({"Processing": "raw acquisition"}) == (
+        None,
+        "",
+    )

@@ -144,6 +144,12 @@ class AcquisitionMetadata:
     objective: str = ""
     instrument: str = ""
     detector: str = ""
+    objective_na: float | None = None
+    objective_magnification: float | None = None
+    objective_immersion: str = ""
+    refractive_index: float | None = None
+    deconvolution_applied: bool | None = None
+    deconvolution_method: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -154,8 +160,14 @@ class AcquisitionMetadata:
                 "objective": self.objective,
                 "instrument": self.instrument,
                 "detector": self.detector,
+                "objective_na": self.objective_na,
+                "objective_magnification": self.objective_magnification,
+                "objective_immersion": self.objective_immersion,
+                "refractive_index": self.refractive_index,
+                "deconvolution_applied": self.deconvolution_applied,
+                "deconvolution_method": self.deconvolution_method,
             }.items()
-            if value
+            if value not in {"", None}
         }
 
     @classmethod
@@ -166,6 +178,16 @@ class AcquisitionMetadata:
             objective=str(data.get("objective", "")),
             instrument=str(data.get("instrument", "")),
             detector=str(data.get("detector", "")),
+            objective_na=_optional_float(data.get("objective_na")),
+            objective_magnification=_optional_float(
+                data.get("objective_magnification")
+            ),
+            objective_immersion=str(data.get("objective_immersion", "")),
+            refractive_index=_optional_float(data.get("refractive_index")),
+            deconvolution_applied=_optional_bool(
+                data.get("deconvolution_applied")
+            ),
+            deconvolution_method=str(data.get("deconvolution_method", "")),
         )
 
 
@@ -586,6 +608,45 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
         names = [channel.name for channel in state.channels if channel.name]
         if names:
             rows.append(MetadataRow("Channel names", ", ".join(names)))
+    if state.acquisition.objective_na:
+        rows.append(
+            MetadataRow("Objective NA", _format_number(state.acquisition.objective_na))
+        )
+    if state.acquisition.objective_magnification:
+        rows.append(
+            MetadataRow(
+                "Objective magnification",
+                _format_number(state.acquisition.objective_magnification),
+            )
+        )
+    if state.acquisition.objective_immersion:
+        rows.append(
+            MetadataRow(
+                "Objective immersion",
+                state.acquisition.objective_immersion,
+            )
+        )
+    if state.acquisition.refractive_index:
+        rows.append(
+            MetadataRow(
+                "Refractive index",
+                _format_number(state.acquisition.refractive_index),
+            )
+        )
+    if state.acquisition.deconvolution_applied is not None:
+        rows.append(
+            MetadataRow(
+                "Source deconvolved",
+                "yes" if state.acquisition.deconvolution_applied else "no",
+            )
+        )
+    if state.acquisition.deconvolution_method:
+        rows.append(
+            MetadataRow(
+                "Source deconvolution",
+                state.acquisition.deconvolution_method,
+            )
+        )
     if state.source.format:
         rows.append(MetadataRow("Source format", state.source.format))
     if state.source.series_name:
@@ -877,6 +938,8 @@ def _transformed_axes(
             input_shape=input_state.shape,
             output_shape=arr.shape,
         )
+    if operation_id == "born_wolf_psf":
+        return _psf_axes(axes, arr.ndim, params)
 
     if operation_id == "select_axis_slice" and params.get("range_mode", False):
         return _range_and_removed_axes(axes, params)
@@ -1075,6 +1138,11 @@ def _transformed_channels(
     channels = input_state.channels
     if operation_id == "extract_channel" and channels:
         index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
+        return (channels[index],)
+    if operation_id == "born_wolf_psf":
+        if not channels:
+            return ()
+        index = int(np.clip(int(params.get("channel", -1)), 0, len(channels) - 1))
         return (channels[index],)
     if operation_id == "assign_channel_colors":
         return _channels_with_colors(channels, params.get("channel_colors", ""))
@@ -1293,6 +1361,59 @@ def _rescaled_axes(
         else axis
         for index, axis in enumerate(axes)
     )
+
+
+def _psf_axes(
+    input_axes: tuple[AxisMetadata, ...],
+    output_ndim: int,
+    params: dict[str, Any],
+) -> tuple[AxisMetadata, ...]:
+    xy_size = _positive_float(
+        params.get("pixel_size_xy_um"),
+        _psf_xy_size_from_axes(input_axes),
+    )
+    wavelength_nm = _positive_float(params.get("wavelength_nm"), 520.0)
+    z_size = _positive_float(
+        params.get("z_step_um"),
+        _psf_z_size_from_axes(input_axes) or max(xy_size, wavelength_nm / 2000.0),
+    )
+    y_axis = AxisMetadata(name="y", type="space", unit="micrometer", scale=xy_size)
+    x_axis = AxisMetadata(name="x", type="space", unit="micrometer", scale=xy_size)
+    if output_ndim <= 2:
+        return (y_axis, x_axis)
+    z_axis = AxisMetadata(name="z", type="space", unit="micrometer", scale=z_size)
+    return (z_axis, y_axis, x_axis)
+
+
+def _psf_xy_size_from_axes(axes: tuple[AxisMetadata, ...]) -> float:
+    axis_map = _xyz_axis_map_for_metadata(axes)
+    values = []
+    for name in ("x", "y"):
+        index = axis_map.get(name)
+        if index is None or index >= len(axes):
+            continue
+        value = _axis_size_micrometer(axes[index])
+        if value is not None:
+            values.append(value)
+    if values:
+        return float(np.mean(values))
+    return 0.1
+
+
+def _psf_z_size_from_axes(axes: tuple[AxisMetadata, ...]) -> float | None:
+    index = _xyz_axis_map_for_metadata(axes).get("z")
+    if index is None or index >= len(axes):
+        return None
+    return _axis_size_micrometer(axes[index])
+
+
+def _axis_size_micrometer(axis: AxisMetadata) -> float | None:
+    unit = _normalized_physical_unit(axis.unit)
+    factor = _unit_to_micrometer_factor(unit)
+    if factor is None:
+        return None
+    size = _positive_float(axis.scale, 0.0) * factor
+    return size if size > 0 else None
 
 
 def _xyz_axis_map_for_metadata(
@@ -1537,6 +1658,25 @@ def _operation_history(
             f"{operation_title}: x={x_scale}, y={y_scale}, z={z_scale} "
             f"via {interpolation}"
         )
+    if operation_id == "born_wolf_psf":
+        spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
+        wavelength = _format_number(params.get("wavelength_nm", 0.0))
+        na = _format_number(params.get("numerical_aperture", 0.0))
+        ri = _format_number(params.get("refractive_index", 0.0))
+        return (
+            f"{operation_title}: scalar {spatial_mode}, "
+            f"wavelength {wavelength} nm, NA {na}, RI {ri} (0=auto)"
+        )
+    if operation_id == "prepare_validate_psf":
+        center_mode = str(params.get("center_mode", "Peak"))
+        actions = [f"center={center_mode}"]
+        if bool(params.get("clip_negatives", True)):
+            actions.append("clipped negatives")
+        if bool(params.get("force_odd_shape", True)):
+            actions.append("odd shape")
+        if bool(params.get("normalize_sum", True)):
+            actions.append("sum normalized")
+        return f"{operation_title}: {', '.join(actions)}"
     if operation_id == "select_axis_slice":
         if params.get("range_mode", False):
             ranges = _parse_axis_ranges(params.get("ranges"), len(input_state.axes))
@@ -1665,6 +1805,18 @@ def _multi_input_history(
         mode = str(params.get("image_mode", "Distance map (invert)"))
         spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
         return f"{operation_title}: {mode}, {spatial_mode}"
+    if operation_id == "richardson_lucy_deconvolution":
+        iterations = int(params.get("iterations", 25))
+        spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
+        return f"{operation_title}: {iterations} iterations, {spatial_mode}"
+    if operation_id == "richardson_lucy_tv_deconvolution":
+        iterations = int(params.get("iterations", 25))
+        tv_weight = _format_number(params.get("tv_regularization", 0.002))
+        spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
+        return (
+            f"{operation_title}: {iterations} iterations, "
+            f"TV {tv_weight}, {spatial_mode}"
+        )
     if operation_id in {"colocalization_metrics", "masked_colocalization_metrics"}:
         mode = str(params.get("threshold_mode", "Manual"))
         return f"{operation_title}: two-channel metrics, {mode} thresholds"
@@ -2109,6 +2261,19 @@ def _optional_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_bool(value) -> bool | None:
+    if value in {None, ""}:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
 
 
 def _optional_int(value) -> int | None:

@@ -35,6 +35,10 @@ def make_sample_data():
         _skeleton_network_sample(),
         _advanced_skeleton_network_sample(),
         _colocalization_sample(rng),
+        _deconvolution_image_sample(),
+        _measured_psf_sample(),
+        _deconvolution_volume_sample(),
+        _measured_psf_3d_sample(),
     ]
 
 
@@ -45,7 +49,7 @@ def _multichannel_volume_sample(z, y, x, rng):
     channels = [
         np.clip(nuclei * 0.85 + rng.normal(0, 0.025, nuclei.shape), 0, 1),
         np.clip(neurite * 0.75 + rng.normal(0, 0.025, nuclei.shape), 0, 1),
-        np.clip(puncta * 0.9 + nuclei * 0.18 + rng.normal(0, 0.02, nuclei.shape), 0, 1),
+        np.clip(puncta * 0.9 + rng.normal(0, 0.02, nuclei.shape), 0, 1),
     ]
     data = (np.stack(channels, axis=0) * 65535).astype(np.uint16)
     metadata = {
@@ -424,6 +428,210 @@ def _colocalization_sample(rng):
     return data, metadata, "image"
 
 
+def _deconvolution_image_sample():
+    """Return a blurred/noisy 2D image for PSF-aware restoration review."""
+    yy, xx = np.indices((96, 96), dtype=np.float32)
+    clean = np.zeros((96, 96), dtype=np.float32)
+    objects = (
+        (28.0, 28.0, 4.5, 1.00),
+        (34.0, 62.0, 6.0, 0.85),
+        (62.0, 38.0, 5.0, 0.75),
+        (68.0, 70.0, 3.5, 0.95),
+    )
+    for cy, cx, radius, intensity in objects:
+        clean += intensity * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / radius**2)
+    clean += 0.08 * (xx / max(float(xx.max()), 1.0))
+    psf = _synthetic_deconvolution_psf()
+    blurred = _convolve_same_reflect(clean, psf)
+    rng = np.random.default_rng(123)
+    noisy = np.clip(
+        blurred + rng.normal(0.0, 0.018, size=blurred.shape).astype(np.float32),
+        0.0,
+        None,
+    )
+    data = (noisy / max(float(noisy.max()), 1e-6) * 65535).astype(np.uint16)
+    metadata = {
+        "name": "VIPP synthetic deconvolution image",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Blurred and noisy 2D bead/object image for reviewing "
+                "Richardson-Lucy and Richardson-Lucy TV deconvolution with a "
+                "separate measured PSF sample."
+            ),
+            **_ome_image_metadata("YX", data.shape),
+        },
+    }
+    metadata["metadata"]["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [0.12, 0.12]
+    return data, metadata, "image"
+
+
+def _measured_psf_sample():
+    """Return a compact measured-PSF-like kernel with mild background error."""
+    clean = _synthetic_deconvolution_psf(size=15, sigma=1.45)
+    yy, xx = np.indices(clean.shape, dtype=np.float32)
+    ring = 0.004 * np.sin(xx * 0.9) - 0.003 * np.cos(yy * 0.7)
+    measured = (clean + ring).astype(np.float32)
+    metadata = {
+        "name": "VIPP synthetic measured PSF",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Compact 2D measured-PSF-style kernel with small background "
+                "offsets so Prepare / Validate PSF can clip, center, and "
+                "normalize it before deconvolution."
+            ),
+            **_ome_image_metadata("YX", measured.shape),
+        },
+    }
+    metadata["metadata"]["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [0.12, 0.12]
+    return measured.astype(np.float32, copy=False), metadata, "image"
+
+
+def _deconvolution_volume_sample():
+    """Return a blurred/noisy 3D volume for PSF-aware restoration review."""
+    z, y, x = np.indices((9, 48, 56), dtype=np.float32)
+    clean = np.zeros((9, 48, 56), dtype=np.float32)
+    objects = (
+        (3.0, 17.0, 18.0, 1.5, 4.5, 4.0, 1.00),
+        (5.0, 30.0, 34.0, 1.8, 5.0, 6.0, 0.85),
+        (6.0, 18.0, 42.0, 1.3, 3.5, 3.5, 0.70),
+    )
+    for cz, cy, cx, rz, ry, rx, intensity in objects:
+        clean += intensity * np.exp(
+            -(
+                ((z - cz) ** 2) / max(rz**2, 1e-6)
+                + ((y - cy) ** 2) / max(ry**2, 1e-6)
+                + ((x - cx) ** 2) / max(rx**2, 1e-6)
+            )
+        )
+    clean += 0.05 * (x / max(float(x.max()), 1.0))
+    clean += 0.03 * (z / max(float(z.max()), 1.0))
+    psf = _synthetic_deconvolution_psf_3d()
+    blurred = _convolve_same_reflect(clean, psf)
+    rng = np.random.default_rng(321)
+    noisy = np.clip(
+        blurred + rng.normal(0.0, 0.014, size=blurred.shape).astype(np.float32),
+        0.0,
+        None,
+    )
+    data = (noisy / max(float(noisy.max()), 1e-6) * 65535).astype(np.uint16)
+    metadata_block = _ome_image_metadata("ZYX", data.shape)
+    metadata_block["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [0.35, 0.12, 0.12]
+    metadata = {
+        "name": "VIPP synthetic 3D deconvolution volume",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Small blurred and noisy ZYX volume with anisotropic Z/Y/X "
+                "scale for reviewing volumetric Richardson-Lucy and "
+                "Richardson-Lucy TV deconvolution."
+            ),
+            **metadata_block,
+        },
+    }
+    return data, metadata, "image"
+
+
+def _measured_psf_3d_sample():
+    """Return a compact 3D measured-PSF-like kernel with mild background error."""
+    clean = _synthetic_deconvolution_psf_3d(
+        z_size=5,
+        xy_size=9,
+        sigma_z=0.95,
+        sigma_xy=1.35,
+    )
+    z, y, x = np.indices(clean.shape, dtype=np.float32)
+    ripple = 0.0025 * np.sin(x * 1.1) - 0.002 * np.cos(y * 0.8)
+    ripple += 0.0015 * (z - z.mean())
+    measured = (clean + ripple).astype(np.float32)
+    metadata_block = _ome_image_metadata("ZYX", measured.shape)
+    metadata_block["ome"]["multiscales"][0]["datasets"][0][
+        "coordinateTransformations"
+    ][0]["scale"] = [0.35, 0.12, 0.12]
+    metadata = {
+        "name": "VIPP synthetic 3D measured PSF",
+        "visible": False,
+        "metadata": {
+            "napari_vipp_sample": True,
+            "napari_vipp_preferred_input": False,
+            "description": (
+                "Compact ZYX measured-PSF-style kernel with slight background "
+                "offsets for validating 3D PSF preparation and deconvolution."
+            ),
+            **metadata_block,
+        },
+    }
+    return measured.astype(np.float32, copy=False), metadata, "image"
+
+
+def _synthetic_deconvolution_psf(
+    *,
+    size: int = 15,
+    sigma: float = 1.7,
+) -> np.ndarray:
+    coords = np.arange(size, dtype=np.float32) - size // 2
+    yy, xx = np.meshgrid(coords, coords, indexing="ij")
+    psf = np.exp(-(yy**2 + xx**2) / (2.0 * float(sigma) ** 2))
+    psf += 0.03 * np.exp(-(yy**2 + xx**2) / (2.0 * (float(sigma) * 2.2) ** 2))
+    psf = np.maximum(psf, 0.0)
+    return (psf / psf.sum(dtype=np.float64)).astype(np.float32)
+
+
+def _synthetic_deconvolution_psf_3d(
+    *,
+    z_size: int = 5,
+    xy_size: int = 9,
+    sigma_z: float = 1.15,
+    sigma_xy: float = 1.55,
+) -> np.ndarray:
+    z_coords = np.arange(z_size, dtype=np.float32) - z_size // 2
+    xy_coords = np.arange(xy_size, dtype=np.float32) - xy_size // 2
+    zz, yy, xx = np.meshgrid(z_coords, xy_coords, xy_coords, indexing="ij")
+    psf = np.exp(
+        -(
+            (zz**2) / (2.0 * float(sigma_z) ** 2)
+            + (yy**2 + xx**2) / (2.0 * float(sigma_xy) ** 2)
+        )
+    )
+    psf += 0.025 * np.exp(
+        -(
+            (zz**2) / (2.0 * (float(sigma_z) * 1.8) ** 2)
+            + (yy**2 + xx**2) / (2.0 * (float(sigma_xy) * 2.2) ** 2)
+        )
+    )
+    psf = np.maximum(psf, 0.0)
+    return (psf / psf.sum(dtype=np.float64)).astype(np.float32)
+
+
+def _convolve_same_reflect(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    image = np.asarray(image, dtype=np.float32)
+    kernel = np.asarray(kernel, dtype=np.float32)
+    pad_width = tuple((size // 2, size // 2) for size in kernel.shape)
+    padded = np.pad(image, pad_width, mode="reflect")
+    output = np.zeros_like(image, dtype=np.float32)
+    base_slices = tuple(slice(0, size) for size in image.shape)
+    for kernel_index in np.ndindex(kernel.shape):
+        slices = tuple(
+            slice(offset, offset + base_slice.stop)
+            for offset, base_slice in zip(kernel_index, base_slices, strict=True)
+        )
+        output += kernel[kernel_index] * padded[slices]
+    return output
+
+
 def _draw_line_zyx(
     target: np.ndarray,
     start: tuple[int, int, int],
@@ -503,8 +711,20 @@ def _tube(y, x, center_y=42, amplitude=9, period=12, width=45):
 
 
 def _puncta(z, y, x):
-    centers = [(4, 35, 48), (7, 58, 76), (8, 46, 92), (5, 67, 56)]
+    centers = [
+        (4, 35, 48, 1.0, 3.0, 46.0, 46.0),
+        (7, 58, 76, 1.0, 3.0, 46.0, 46.0),
+        (8, 46, 92, 1.0, 3.0, 46.0, 46.0),
+        (5, 67, 56, 0.8, 1.0, 8.0, 8.0),
+        (6, 48, 2, 0.9, 3.0, 46.0, 46.0),
+    ]
     signal = np.zeros_like(z, dtype=np.float32)
-    for cz, cy, cx in centers:
-        signal += np.exp(-((z - cz) ** 2 / 3 + (y - cy) ** 2 / 46 + (x - cx) ** 2 / 46))
+    for cz, cy, cx, amplitude, z_width, y_width, x_width in centers:
+        signal += amplitude * np.exp(
+            -(
+                (z - cz) ** 2 / z_width
+                + (y - cy) ** 2 / y_width
+                + (x - cx) ** 2 / x_width
+            )
+        )
     return np.clip(signal, 0, 1)

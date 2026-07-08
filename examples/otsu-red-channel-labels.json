@@ -19,7 +19,7 @@
         "file_path": "",
         "sample_name": "VIPP synthetic multichannel volume",
         "series_index": 0,
-        "channel_colors": "",
+        "channel_colors": "Blue,Green,Red",
         "binding_mode": "single item"
       }
     },
@@ -41,7 +41,7 @@
       "id": "split_channels_1",
       "operation_id": "split_channels",
       "params": {
-        "preview_channel": 0
+        "preview_channel": 2
       }
     },
     {
@@ -65,7 +65,7 @@
       "id": "filter_labels_by_volume_1",
       "operation_id": "filter_labels_by_volume",
       "params": {
-        "min_volume": 10,
+        "min_volume": 120,
         "max_volume": 0,
         "spatial_mode": "Auto from axes"
       }
@@ -82,9 +82,15 @@
   "connections": [
     {
       "source": "input",
-      "target": "gaussian",
+      "target": "split_channels_1",
       "target_port": 0,
       "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "gaussian",
+      "target_port": 0,
+      "source_port": 2
     },
     {
       "source": "gaussian",
@@ -94,12 +100,6 @@
     },
     {
       "source": "threshold",
-      "target": "split_channels_1",
-      "target_port": 0,
-      "source_port": 0
-    },
-    {
-      "source": "split_channels_1",
       "target": "fill_holes_1",
       "target_port": 0,
       "source_port": 0
@@ -125,9 +125,9 @@
   ],
   "positions": {
     "input": [0.0, 160.0],
-    "gaussian": [360.0, 160.0],
-    "threshold": [720.0, 160.0],
-    "split_channels_1": [1080.0, 160.0],
+    "split_channels_1": [360.0, 160.0],
+    "gaussian": [720.0, 160.0],
+    "threshold": [1080.0, 160.0],
     "label_connected_components_1": [1800.0, 160.0],
     "fill_holes_1": [1440.0, 160.0],
     "filter_labels_by_volume_1": [2520.0, 160.0],
@@ -136,14 +136,14 @@
   "notes": [
     {
       "id": "note_1",
-      "text": "Segmentation gate: Otsu uses the stack histogram after blur; inspect this mask before label cleanup.",
-      "position": [720.0, 30.0],
+      "text": "Segmentation gate: Otsu uses the red channel after blur; inspect this mask before label cleanup.",
+      "position": [1080.0, 30.0],
       "width": 270.0,
       "attached_node": "threshold"
     },
     {
       "id": "note_2",
-      "text": "Clean label output: border-touching objects and tiny labels are removed here.",
+      "text": "Clean label output: clear-border removes edge-touching labels, then volume filtering removes the tiny label.",
       "position": [2520.0, 30.0],
       "width": 270.0,
       "attached_node": "filter_labels_by_volume_1"

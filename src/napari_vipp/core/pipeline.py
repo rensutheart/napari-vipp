@@ -30,6 +30,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
+    born_wolf_psf,
     calculate_weighted_image,
     canny_edges,
     clear_border_objects,
@@ -89,6 +90,7 @@ from napari_vipp.core.operations import (
     opening,
     orthogonal_projection,
     otsu_threshold,
+    prepare_validate_psf,
     project_image,
     prune_skeleton_branches,
     racc_index,
@@ -98,6 +100,8 @@ from napari_vipp.core.operations import (
     reorder_axes,
     rescale_axes,
     rescale_intensity,
+    richardson_lucy_deconvolution,
+    richardson_lucy_tv_deconvolution,
     rolling_ball_background,
     sauvola_threshold,
     save_output,
@@ -282,6 +286,7 @@ SEGMENTATION_CATEGORY = "Segmentation"
 SMOOTHING_DENOISING_GROUP = "Smoothing & Denoising"
 EDGE_DETAIL_GROUP = "Edge & Detail"
 BACKGROUND_CORRECTION_GROUP = "Background Correction"
+RESTORATION_PSF_GROUP = "Restoration & PSF"
 GLOBAL_THRESHOLDS_GROUP = "Global Thresholds"
 LOCAL_THRESHOLDS_GROUP = "Local Thresholds"
 OBJECT_SEPARATION_GROUP = "Object Separation"
@@ -377,6 +382,7 @@ THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
 
 SPATIAL_OPERATIONS = {
     "auto_watershed_from_mask",
+    "born_wolf_psf",
     "clear_border_objects",
     "euclidean_distance_transform",
     "expand_labels",
@@ -401,6 +407,8 @@ SPATIAL_OPERATIONS = {
     "measure_objects",
     "relabel_sequential",
     "remove_small_objects",
+    "richardson_lucy_deconvolution",
+    "richardson_lucy_tv_deconvolution",
     "rolling_ball_background",
     "prune_skeleton_branches",
     "subtract_background",
@@ -532,6 +540,268 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         gaussian_blur_3d,
         subcategory=SMOOTHING_DENOISING_GROUP,
+    ),
+    OperationSpec(
+        "born_wolf_psf",
+        "Born-Wolf PSF",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec(
+                "wavelength_nm",
+                "Emission wavelength nm (0 = auto)",
+                "float",
+                0.0,
+                0.0,
+                2000.0,
+                1.0,
+                1,
+            ),
+            ParameterSpec(
+                "numerical_aperture",
+                "Numerical aperture (0 = auto)",
+                "float",
+                0.0,
+                0.0,
+                2.0,
+                0.01,
+                3,
+            ),
+            ParameterSpec(
+                "refractive_index",
+                "Refractive index (0 = auto)",
+                "float",
+                0.0,
+                0.0,
+                2.0,
+                0.001,
+                4,
+            ),
+            ParameterSpec(
+                "pixel_size_xy_um",
+                "XY pixel size um (0 = auto)",
+                "float",
+                0.0,
+                0.0,
+                10.0,
+                0.001,
+                4,
+            ),
+            ParameterSpec(
+                "z_step_um",
+                "Z step um (0 = auto)",
+                "float",
+                0.0,
+                0.0,
+                20.0,
+                0.001,
+                4,
+            ),
+            ParameterSpec("xy_size", "PSF XY size", "int", 65, 9, 1025, 2),
+            ParameterSpec("z_size", "PSF Z size", "int", 33, 1, 1025, 2),
+            ParameterSpec("channel", "Channel (-1 = auto)", "int", -1, -1, 64, 1),
+            ParameterSpec(
+                "pupil_samples",
+                "Pupil samples",
+                "int",
+                256,
+                16,
+                2048,
+                16,
+            ),
+            ParameterSpec("normalize", "Normalize sum to 1", "bool", True, 0, 1, 1),
+        ),
+        born_wolf_psf,
+        subcategory=RESTORATION_PSF_GROUP,
+    ),
+    OperationSpec(
+        "prepare_validate_psf",
+        "Prepare / Validate PSF",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "center_mode",
+                "Center mode",
+                "choice",
+                "Peak",
+                0,
+                0,
+                1,
+                choices=("None", "Peak", "Centroid"),
+            ),
+            ParameterSpec("clip_negatives", "Clip negatives", "bool", True, 0, 1, 1),
+            ParameterSpec("normalize_sum", "Normalize sum", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "minimum_valid_sum",
+                "Minimum valid sum",
+                "float",
+                1e-12,
+                0.0,
+                1.0,
+                1e-12,
+                12,
+            ),
+            ParameterSpec("force_odd_shape", "Force odd shape", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "crop_empty_border",
+                "Crop empty border",
+                "bool",
+                False,
+                0,
+                1,
+                1,
+            ),
+        ),
+        prepare_validate_psf,
+        subcategory=RESTORATION_PSF_GROUP,
+    ),
+    OperationSpec(
+        "richardson_lucy_deconvolution",
+        "Richardson-Lucy Deconvolution",
+        FILTERING_CATEGORY,
+        "image",
+        "image",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec("iterations", "Iterations", "int", 25, 1, 500, 1),
+            ParameterSpec("normalize_psf", "Normalize PSF", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "clip_negative_input",
+                "Clip negative input",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "clip_output_negative",
+                "Clip output negative",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "preserve_input_scale",
+                "Preserve input scale",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "filter_epsilon",
+                "Filter epsilon",
+                "float",
+                1e-12,
+                0.0,
+                1.0,
+                1e-12,
+                12,
+            ),
+        ),
+        richardson_lucy_deconvolution,
+        max_inputs=2,
+        subcategory=RESTORATION_PSF_GROUP,
+        inputs=(
+            InputSpec("image", "image", "Image"),
+            InputSpec("psf", "image", "PSF"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "richardson_lucy_tv_deconvolution",
+        "Richardson-Lucy TV Deconvolution",
+        FILTERING_CATEGORY,
+        "image",
+        "image",
+        (
+            SPATIAL_MODE_PARAMETER,
+            ParameterSpec("iterations", "Iterations", "int", 25, 1, 500, 1),
+            ParameterSpec(
+                "tv_regularization",
+                "TV regularization",
+                "float",
+                0.002,
+                0.0,
+                1.0,
+                0.0001,
+                6,
+            ),
+            ParameterSpec(
+                "tv_epsilon",
+                "TV epsilon",
+                "float",
+                1e-6,
+                1e-12,
+                1.0,
+                1e-6,
+                8,
+            ),
+            ParameterSpec("normalize_psf", "Normalize PSF", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "clip_negative_input",
+                "Clip negative input",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "clip_output_negative",
+                "Clip output negative",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "preserve_input_scale",
+                "Preserve input scale",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
+                "filter_epsilon",
+                "Filter epsilon",
+                "float",
+                1e-12,
+                0.0,
+                1.0,
+                1e-12,
+                12,
+            ),
+            ParameterSpec(
+                "denominator_floor",
+                "Denominator floor",
+                "float",
+                0.05,
+                1e-6,
+                1.0,
+                0.01,
+                4,
+            ),
+        ),
+        richardson_lucy_tv_deconvolution,
+        max_inputs=2,
+        subcategory=RESTORATION_PSF_GROUP,
+        inputs=(
+            InputSpec("image", "image", "Image"),
+            InputSpec("psf", "image", "PSF"),
+        ),
+        execution_policy="manual",
     ),
     OperationSpec(
         "median_filter",
@@ -4615,6 +4885,30 @@ class PrototypePipeline:
                 kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
             if node.operation_id == "rescale_axes":
                 kwargs["input_kind"] = input_state.kind
+        if node.operation_id == "born_wolf_psf" and isinstance(
+            input_state,
+            ImageState,
+        ):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+            kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
+            kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
+            kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
+            kwargs["channel_emission_wavelengths"] = tuple(
+                channel.emission_wavelength for channel in input_state.channels
+            )
+            kwargs["channel_emission_wavelength_units"] = tuple(
+                channel.emission_wavelength_unit for channel in input_state.channels
+            )
+            kwargs["channel_excitation_wavelengths"] = tuple(
+                channel.excitation_wavelength for channel in input_state.channels
+            )
+            kwargs["channel_excitation_wavelength_units"] = tuple(
+                channel.excitation_wavelength_unit for channel in input_state.channels
+            )
+            kwargs["objective_lens_na"] = input_state.acquisition.objective_na
+            kwargs["objective_refractive_index"] = (
+                input_state.acquisition.refractive_index
+            )
         if node.operation_id == "composite_to_rgb" and isinstance(
             input_state,
             ImageState,

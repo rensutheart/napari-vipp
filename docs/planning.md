@@ -1,16 +1,11 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-07
+Last reviewed: 2026-07-08
 
-This file is the concise planning source of truth. It should answer:
-
-- what VIPP is trying to become;
-- what is already good enough to build on;
-- what remains risky or incomplete;
-- which features belong in the next minor alpha releases.
-
-Detailed implementation notes live in the specialist documents linked below.
-Avoid duplicating long node lists or method explanations here.
+This is the concise planning source of truth. It records the current public
+baseline, the work that is still genuinely open, and the intended order for the
+next alpha releases. Detailed implementation notes stay in the specialist docs
+listed below.
 
 ## Product Direction
 
@@ -19,337 +14,286 @@ canvas is the primary work surface: users should be able to build, inspect,
 reuse, export, batch-run, and publish workflows without losing the connection
 between image data, metadata, tables, and provenance.
 
-The core scientific workflow families are:
+The core workflow families are:
 
 - segmentation and label cleanup for 2D and true 3D data;
 - object, intensity, mesh, and skeleton measurements;
 - two-channel pixel and object colocalization;
 - multi-channel, z-stack, and time-lapse fluorescence data;
+- native PSF generation and PSF-aware restoration/deconvolution;
+- microscope acquisition import across common vendor formats, with normalized
+  axes, channel, objective, and scale metadata;
 - reproducible batch execution with explicit outputs.
 
-Registration, deconvolution, model-backed segmentation, and stitching remain
-later milestones. They should not displace graph usability, metadata fidelity,
-batch provenance, and validation work.
+PSF generation, deconvolution foundations, and broader microscope import are
+now active next-version work. Registration, model-backed segmentation,
+stitching, and AI-assisted graph authoring remain later milestones. They should
+not displace metadata fidelity, batch provenance, scalable previews, and
+scientific validation.
 
 ## Reference Documents
 
 - [architecture.md](architecture.md): implementation architecture and data model.
 - [user-guide.md](user-guide.md): current end-user workflow behavior.
-- [node-roadmap.md](node-roadmap.md): detailed node inventory and candidate nodes.
-- [ome-io-plan.md](ome-io-plan.md): OME and OME-Zarr architecture.
-- [io-user-guide.md](io-user-guide.md): supported import/export formats.
+- [node-roadmap.md](node-roadmap.md): detailed node inventory and candidate
+  nodes.
+- [io-user-guide.md](io-user-guide.md) and [ome-io-plan.md](ome-io-plan.md):
+  supported I/O and OME architecture.
 - [cache-and-memory.md](cache-and-memory.md): cache modes, memory guard, and
   operation memory policy.
-- [measurement-workflows.md](measurement-workflows.md): object, table, mesh, and
-  skeleton workflow guidance.
-- [analytical-phantom-validation.md](analytical-phantom-validation.md):
-  calibrated morphology phantom validation.
-- [colocalization-racc-plan.md](colocalization-racc-plan.md): colocalization
-  implementation tracking.
-- [colocalization-method-notes.md](colocalization-method-notes.md):
-  publication-facing colocalization methods.
-- [skeleton-nodes.md](skeleton-nodes.md): skeleton node usage.
-- [mitomorph-feature-parity.md](mitomorph-feature-parity.md):
-  MitoMorph-inspired feature parity.
-- [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md): mesh and
-  object morphology details.
-- [research-and-publication.md](research-and-publication.md): publication and
-  evidence tracking.
+- [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
+  generation, deconvolution, and microscope metadata requirements.
+- [measurement-workflows.md](measurement-workflows.md),
+  [skeleton-nodes.md](skeleton-nodes.md), and
+  [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md):
+  measurement workflow guidance.
+- [analytical-phantom-validation.md](analytical-phantom-validation.md),
+  [colocalization-method-notes.md](colocalization-method-notes.md), and
+  [research-and-publication.md](research-and-publication.md): validation and
+  publication-facing evidence.
+- [mitomorph-feature-parity.md](mitomorph-feature-parity.md): MitoMorph-inspired
+  feature parity tracking.
 
-## Current Baseline
+## Current Public Baseline
 
 Current public release: `0.10.0a1`.
 
-The `0.10.0a1` alpha adds two implemented clusters:
+The 0.10 alpha is now the graph-readability and interactive-memory baseline.
+Implemented and documented work includes:
 
-- graph readability: named-tunnel example workflows, schematic net-port tunnel
-  badges, tunnel reveal/highlight, a tunnel manager, graph search/focus,
-  ambiguous insert-on-wire mapping, saved graph notes, and workflow UI-state
-  metadata;
-- interactive execution and memory: branch-local dirty reruns, explicit cache
-  modes, cache/RAM status, auto memory guard, per-node `Keep output cached`, and
-  low-memory batch retention.
+- searchable categorized palette and searchable graph canvas;
+- pan/zoom graph with typed ports, cycle rejection, undo/redo, duplicate/delete,
+  contextual graph menus, auto-structure, and insert-on-wire make-room behavior;
+- named port tunnels, tunnel reveal/highlight, tunnel manager, and saved graph
+  notes;
+- ambiguous insert-on-wire port mapping, dynamic multi-output port handling,
+  `Split Channels`, and explicit `Split Axis`;
+- workflow JSON with canvas positions, named tunnels, graph notes, selected
+  inspector state, optional per-node thumbnail visibility, strict loading, and
+  old-workflow compatibility;
+- Python export, first-pass collection batch execution, explicit `Batch Output`
+  nodes, dry-run preview, multi-source bindings, and saved workflow/script
+  artifacts;
+- background execution, stale-result rejection, cooperative cancellation where
+  supported, manual/cached measurement nodes, branch-local dirty reruns, cache
+  modes, auto memory guard, and per-node `Keep output cached`;
+- OME-NGFF-inspired image/table metadata, semantic axes, scale/units/origin,
+  channel metadata, source history, OME-TIFF/ImageJ TIFF/common raster/NumPy
+  I/O, local OME-Zarr 0.4/0.5 read/write, and OME-Zarr image plus label
+  analysis packages;
+- object, intensity, derived morphology, 3D mesh, skeleton/network,
+  colocalization, object association, nearest-object distance, event
+  localization, table merge, table annotation, and grouped summary workflows;
+- example workflows for label cleanup, measurement, derived morphology, 3D mesh
+  morphology, skeleton/network QC, pixel/object colocalization, named tunnels,
+  graph notes, and selected-inspector metadata;
+- automated tests plus calibrated analytical morphology phantom validation.
 
-### Workflow Platform
+Known constraints:
 
-Implemented enough to build on:
+- progress/cancellation coverage depends on third-party operations and remains
+  uneven;
+- most processing remains eager, so very large OME-Zarr workflows still need a
+  more deliberate lazy/sampled preview strategy;
+- broad proprietary microscope import is active development rather than a
+  public baseline guarantee; reader support should be documented per format as
+  supported, experimental, or metadata-incomplete;
+- validation is strong for calibrated morphology but still uneven for
+  colocalization, watershed, skeleton/network, batch/provenance, and OME-Zarr
+  round-tripping.
 
-- searchable categorized node palette and a pan/zoom graph canvas;
-- typed ports, multi-input/multi-output nodes, cycle rejection, compatibility
-  checks, and click/drag wiring;
-- delete, duplicate, undo/redo, code inspection, contextual graph menus, and
-  insert-on-wire behavior with local make-room movement;
-- connector rerouting, named port tunnels, tunnel reveal/highlight, first-pass
-  tunnel management, and saved graph notes with canvas positions;
-- auto-structure command;
-- portable workflow JSON, canvas positions, named tunnels, graph notes, and
-  strict loading;
-- Python export and a first-pass batch runner;
-- explicit `Batch Output` nodes for image/table outputs that matter.
+## Active TODOs After 0.10
 
-### Execution And Responsiveness
+These are the items that should guide near-term work. Items not listed here are
+either already implemented enough to build on or intentionally deferred.
 
-Implemented enough to build on:
+### 1. PSF Generation And Deconvolution
 
-- background execution for slow graphs;
-- global and per-node processing indicators;
-- coalesced reruns and stale-result rejection;
-- cooperative cancellation for selected expensive operations;
-- dirty-node caching and branch-local reruns for graph edits;
-- manual/cached execution for expensive measurement and table nodes;
-- node execution states: not calculated, current, stale, running, and error;
-- cache modes: keep all node outputs, smart interactive cache, and low-memory
-  mode;
-- cache/RAM status, auto memory guard, and a per-node `Keep output cached`
-  affordance;
-- batch execution retention that keeps explicit outputs and prunes item-level
-  intermediates.
+Already implemented or started: normalized objective/channel metadata from
+OME-TIFF where available, a native `Born-Wolf PSF` node that can use connected
+image metadata, `Prepare / Validate PSF`, baseline Richardson-Lucy
+deconvolution, Richardson-Lucy TV deconvolution, deterministic synthetic
+2D/3D deconvolution samples, example workflows, and a dedicated
+PSF/deconvolution plan.
 
-Known gap: cancellation/progress coverage is uneven. Some expensive operations
-still behave like black boxes because the underlying libraries do not expose
-fine-grained progress hooks. Cache size is a practical estimate, not a complete
-Python heap profile, and most processing nodes are still eager.
+Still needed before positioning restoration as publication-ready:
 
-### Data, Metadata, And I/O
+- real bead-PSF and microscopy-image validation datasets for at least one 2D
+  and one 3D workflow;
+- boundary-policy follow-up for reflect-padded edge handling and explicit
+  crop-margin guidance;
+- release-facing tutorial screenshots or walkthroughs for measured PSF,
+  generated PSF, baseline RL, and RL-TV comparison workflows;
+- performance profiling on larger 3D volumes before considering chunking,
+  vector acceleration, or optional GPU work;
+- continued documentation of wavelength, numerical aperture, refractive index,
+  pixel size, z step, channel selection, and when metadata is being used versus
+  manually overridden.
 
-Implemented enough to build on:
+### 2. Microscope File Import Expansion
 
-- OME-NGFF-inspired `ImageState` on image-like outputs;
-- `TableState` on table outputs;
-- semantic axes, scale, units, origin, dtype, image kind, channels, timepoints,
-  and history;
-- explicit axis/dtype/spatial calibration nodes;
-- OME-TIFF, ImageJ TIFF, conventional TIFF, common raster formats, NumPy, and
-  local OME-Zarr 0.4/0.5;
-- OME-Zarr label-group import/export through image-plus-label analysis packages.
+Already implemented: shared headless I/O registry, OME-TIFF/ImageJ TIFF/
+conventional TIFF/common raster/NumPy/OME-Zarr import and export, normalized
+image/source metadata, adaptive TIFF series selection, OME-TIFF objective
+metadata preservation where OME-XML exposes it, and the first optional
+microscope reader boundary for ND2, CZI, LSM, Leica, Olympus, and BioIO/
+Bio-Formats-style fallback routes.
 
-Known gap: large-data behavior is still mostly pragmatic rather than fully
-lazy. Thumbnail and histogram generation need clearer sampling and pyramid
-strategies before very large OME-Zarr datasets become comfortable.
-Multiple series should be investigated as source/import or batch-binding
-structure rather than a normal image axis; only expose series to axis-splitting
-tools when a reader materializes it as a real metadata-backed image axis.
+Still needed:
 
-### Analysis Coverage
+- real sample-file validation for Nikon ND2, Zeiss CZI/LSM, Leica LIF/LOF/XLIF,
+  and Olympus OIR/OIB/OIF/VSI files across facilities and acquisition modes;
+- richer native metadata extraction for objective, detector, plate/well/field,
+  scene/position, and acquisition-loop details beyond the first normalized
+  fields;
+- fallback-reader documentation that explains which optional extras are native,
+  BioIO-backed, or Bio-Formats-backed;
+- normalized metadata mapping for every reader: axes, scale/units, channel
+  names/colours, excitation/emission wavelengths, objective NA/magnification,
+  immersion/refractive index, series/scene identity, plate/well/field where
+  present, and raw metadata provenance;
+- source-inspection UI that can select series/scenes/positions without turning
+  ordinary graph execution into a hidden list-of-images operation;
+- small public or synthetic fixtures for reader dispatch and metadata
+  normalization, with larger proprietary sample files kept out of the repository
+  when licensing or size requires it.
 
-Implemented enough to build on:
+### 3. Batch Configuration And Provenance
 
-- filtering, projection, thresholding, morphology, label cleanup, watershed
-  separation, image math, channel composition, explicit axis splitting, and
-  dtype conversion;
-- object morphology, object intensity, table merge, metadata annotation, table
-  column selection, grouped summaries, and property-based label filtering;
-- calibrated extended morphology and first-pass true-3D mesh morphology;
-- skeletonization, skeleton keypoints, branch labels, graph overlays, pruning,
-  branch tables, graph tables, branch summaries, and overall network summaries;
-- pixel colocalization metrics, ROI-masked colocalization, Costes thresholding,
-  colocalized-voxel overlays, RACC-like index outputs, object colocalization,
-  label-overlap association, nearest-object distances, and event localization.
+Already implemented: local collection batch execution, explicit `Batch Output`
+nodes, dry-run preview, multi-source binding, low-memory batch retention, and
+workflow/script reproducibility artifacts.
 
-Known gap: several analysis families are implemented but not yet validated to
-publication depth across realistic datasets. The next research risk is not only
-adding nodes; it is proving that the nodes behave correctly under common
-microscopy assumptions.
+Still needed:
 
-### Validation And Examples
-
-Implemented examples cover:
-
-- label cleanup;
-- object intensity measurement;
-- table merge and measurement summaries;
-- derived object morphology;
-- true-3D mesh morphology;
-- skeleton/network QC and advanced skeleton networks;
-- pixel and object colocalization;
-- named channel tunnels in colocalization workflows.
-
-Implemented validation includes automated tests plus the calibrated analytical
-phantom report for rectangles, cuboids, spheres, ellipsoids, and anisotropic
-voxel sizes.
-
-Known gap: validation reports are still uneven across segmentation, skeleton,
-colocalization, batch/provenance, and OME-Zarr round-tripping.
-
-## Active Gaps
-
-These are the active areas that should guide work after `0.10.0a1`.
-
-### Large Graph Usability
-
-Implemented progress: tunnel reveal/highlight, tunnel management, graph notes,
-named-tunnel examples, graph search/focus, insert-on-wire make-room behavior,
-ambiguous insert-on-wire port mapping, optional thumbnail-visibility
-persistence, selected inspector-state persistence, and connector rerouting.
-
-Minimap/navigation remains useful, but it should wait until search, tunnel
-management, and layout polish are in place.
-
-### Reproducible Batch And Provenance
-
-Implemented progress: first-pass collection batch execution, explicit
-`Batch Output` nodes, dry-run preview, workflow/script reproducibility
-artifacts, and low-memory item retention.
-
-Next steps:
-
-- define a saved `batch_config.yaml` or equivalent schema;
-- emit per-item provenance manifests with workflow hash, package versions,
-  input identity, source metadata, output paths, and status;
-- improve the dry-run table so input bindings, skipped items, and planned
-  outputs are visible before execution;
-- add semantic-axis iteration for timepoints, channels, z-slices, or selected
+- saved `batch_config.yaml` or equivalent batch configuration;
+- per-item provenance manifest with workflow hash, package versions, input
+  identity, source metadata, output paths, and status;
+- clearer failure summary with skipped, failed, and completed items;
+- richer output manifest for all `Batch Output` nodes;
+- semantic-axis iteration for timepoints, channels, z-slices, or selected
   combinations;
-- add first-pass plate/well/field collection traversal for HCS-style layouts;
-- summarize failed, skipped, and completed items after a batch run.
+- first-pass plate/well/field collection traversal for HCS-style layouts.
 
-### Large OME-Zarr And Scalable Previews
+### 4. OME-Zarr Scale And Preview Strategy
 
-Implemented progress: local OME-Zarr 0.4/0.5 read/write, OME-Zarr image plus
-label analysis packages, cache modes, and a documented operation memory policy.
+Already implemented: local OME-Zarr 0.4/0.5 image read/write, lazy reads,
+OME-Zarr image plus label analysis packages, cache modes, and operation memory
+documentation.
 
-Next steps:
+Still needed:
 
-- generate OME-Zarr pyramids for exported images;
-- round-trip label colors and label-property tables where practical;
-- add preview-resolution controls for thumbnails and inspector views;
-- make histograms and thumbnails sampled or chunk-aware for large arrays;
-- declare operation capabilities such as eager, lazy-safe, memory-heavy, and
+- generated OME-Zarr pyramids for exported image datasets;
+- label colors and label-property table round-tripping where practical;
+- preview-resolution controls for thumbnails and inspector views;
+- lazy/sampled histograms and thumbnails for large arrays;
+- operation capability declarations such as eager, lazy-safe, memory-heavy, and
   scale-aware;
-- warn before eager-only nodes materialize very large lazy arrays;
-- investigate anonymous HTTP reads for public OME-Zarr datasets.
+- warnings before eager-only nodes materialize very large lazy arrays;
+- anonymous HTTP read investigation for public OME-Zarr datasets.
 
-### Scientific Validation
+### 5. Scientific Validation Pack
 
-Implemented progress: automated tests plus calibrated analytical morphology
-phantoms for rectangles, cuboids, spheres, ellipsoids, and anisotropic voxel
-sizes.
+Already implemented: automated tests, calibrated analytical morphology phantom
+validation, and publication-facing colocalization method notes.
 
-Next steps:
+Still needed:
 
-- add colocalization validation with deterministic threshold and overlap
+- colocalization validation report using deterministic threshold and overlap
   scenarios;
-- validate object overlap, nearest-distance, and event-localization assumptions;
-- validate watershed/touching-object separation on geometric and
-  microscopy-like phantoms;
-- validate skeleton/network outputs with known endpoints, junctions, cycles,
+- object association validation report for overlap, nearest distance, and event
+  localization assumptions;
+- watershed/touching-object validation on geometric and microscopy-like
+  phantoms;
+- skeleton/network validation report with known endpoints, junctions, cycles,
   branch lengths, and anisotropic spacing;
-- produce reproducible example outputs that can become methods figures or
-  supplementary artifacts.
+- reproducible example-output artifacts for methods figures and supplementary
+  material;
+- RACC numerical-core decision: keep VIPP-owned implementation, share a common
+  core with the RACC plugin, or document the intentional separation.
 
-### AI-Assisted Graph Authoring
+### 6. Graph Polish To Revisit Later
 
-Implemented progress: none; this remains later-platform work.
+The 0.10 graph-readability work is implemented enough for the current alpha.
+Do not treat search, tunnels, notes, insert-on-wire mapping, inspector state, or
+thumbnail-visibility persistence as open 0.11 work.
 
-Next steps:
+Revisit only when very large workflows show the need:
 
-- generate ordinary workflow JSON through the existing workflow validator;
-- validate operation ids, port contracts, and parameter schemas before applying
-  a generated graph;
-- show a preview/diff before changing the canvas;
-- keep full-resolution pixels local by default and make hosted-provider data
-  sharing explicit.
+- minimap/navigation aids;
+- alignment guides and optional snap-to-grid;
+- additional layout polish beyond current auto-structure and connector
+  rerouting.
+
+### 7. AI-Assisted Graph Authoring
+
+This remains later-platform work.
+
+Still needed:
+
+- provider-agnostic AI settings with user-managed keys and local-provider room;
+- generated workflow JSON from natural language plus the live node registry;
+- validation against real operation ids, port contracts, and parameter schemas;
+- preview/diff before applying generated graph changes;
+- optional sharing of metadata summaries and downsampled thumbnails;
+- no full-resolution pixel sharing by default.
 
 ## Versioned Roadmap
 
 Version numbers are planned alpha milestones, not promises. Each release should
 ship with tests, documentation, an example workflow when appropriate, and a
-clear release note. If a feature is not validated enough for scientific use, the
-UI and docs should say so explicitly.
+clear release note.
 
-### 0.10.0a1: Graph Readability And Interactive Memory
+### Released: 0.10.0a1
 
-Goal: make dense workflows easier to understand, edit, and inspect without
-surprising recomputation or hidden memory growth.
+Theme: graph readability and interactive memory.
 
-Implemented in current development:
+Delivered:
 
-- tunnel subscriber reveal/highlight: select a tunnel and show every input that
-  consumes it;
-- tunnel management panel for filtering, renaming, deleting, focusing, and
-  auditing named sources;
-- graph search by node title, operation id, tunnel name, and output tag;
-- graph notes/annotations saved in workflow JSON with canvas position;
-- branch-local dirty reruns for adding nodes, connecting new branches, inserting
-  on wires, disconnecting branches, deleting nodes, and tunnel edits;
-- ambiguous insert-on-wire port chooser with dynamic Split Channels output
-  inference;
-- explicit `Split Axis` node for splitting time, Z, or other non-channel stack
-  axes separately from semantic channel splitting;
-- selected inspector state plus optional per-node thumbnail visibility in
-  workflow JSON;
-- cache modes, cache/RAM status, auto memory guard, per-node `Keep output
-  cached`, and low-memory batch retention;
-- user documentation in [cache-and-memory.md](cache-and-memory.md).
+- graph search/focus;
+- named tunnel management and tunnel reveal/highlight;
+- saved graph notes;
+- ambiguous insert-on-wire port mapping;
+- `Split Axis` and stricter semantic `Split Channels`;
+- workflow UI metadata for selected inspector state and optional thumbnail
+  visibility;
+- branch-local dirty reruns, cache modes, memory guard, and low-memory batch
+  retention;
+- example workflow metadata and release-facing docs.
 
-Release status: ready for the `0.10.0a1` alpha after automated release checks
-and the final manual smoke pass.
+### Next: 0.11.0a1 - PSF, Deconvolution, And Microscope Import Foundation
+
+Goal: make PSFs normal graph data, ship the first deconvolution path, and start
+the broad microscope-import layer needed for real acquisition files.
 
 Release gate:
 
-- large colocalization workflow remains readable without drawing repeated
-  channel wires;
-- routine graph edits reuse unaffected cached outputs;
-- workflow JSON round-trips tunnel management, graph-note changes, inspector
-  state, and optional thumbnail visibility;
-- smart/low-memory cache modes prune and restore expected outputs without losing
-  explicit output intent;
-- graph tests cover tunnel management, notes, search, reveal/highlight, cache
-  modes, memory guard behavior, and insert-on-wire mapping behavior.
+- `Born-Wolf PSF` can generate inspectable, saveable 2D/3D PSFs from metadata
+  or explicit overrides;
+- PSF preparation/validation makes measured or generated PSFs safe to reuse;
+- baseline Richardson-Lucy and Richardson-Lucy total-variation deconvolution
+  accept named `Image` and `PSF` inputs and use manual/cached execution;
+- at least the first selected proprietary microscope reader path is optional,
+  license-reviewed, and normalized through `ImageDataset`/`ImageState`;
+- docs explain which vendor formats are supported, experimental, or still under
+  evaluation.
 
-### 0.11.0a1: Batch Configuration And Provenance
+### 0.12.0a1 - Batch Configuration And Provenance
 
 Goal: make batch execution explicit enough for real analysis runs.
 
-Already implemented foundations:
-
-- local collection batch runner;
-- explicit `Batch Output` nodes;
-- low-memory retention during item execution;
-- optional workflow snapshot and Python script artifacts.
-
-Next steps:
-
-- `batch_config.yaml` or equivalent saved batch configuration;
-- per-item provenance manifest with workflow hash, package versions, input
-  identity, source metadata, and output paths;
-- richer batch dry-run table before execution;
-- semantic-axis iteration over timepoints, channels, z-slices, or selected
-  combinations;
-- first-pass plate/well/field collection traversal for HCS-style layouts;
-- clearer output manifest for all `Batch Output` nodes;
-- better handling of multiple Image Source nodes bound to related collections;
-- batch failure summary with skipped, failed, and completed items.
-
 Release gate:
 
-- a saved workflow plus saved batch config can reproduce output file names and
+- saved workflow plus saved batch config can reproduce output file names and
   selected outputs;
-- a failed item does not hide successful item outputs;
+- every item can emit provenance/status metadata;
+- failed items do not hide successful item outputs;
 - docs explain how `Batch Output` nodes define what gets saved.
 
-### 0.12.0a1: OME-Zarr Scale And Preview Strategy
+### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
 accidental.
-
-Already implemented foundations:
-
-- local OME-Zarr 0.4/0.5 image read/write;
-- OME-Zarr image plus label analysis package import/export;
-- cache modes and operation memory policy documentation.
-
-Next steps:
-
-- generated OME-Zarr pyramids for exported image datasets;
-- OME-Zarr label colors and label-property table round-tripping where practical;
-- preview-resolution selection for thumbnails and inspector views;
-- lazy/sampled histograms for large arrays;
-- thumbnail strategy that avoids full-array materialization unless explicitly
-  requested;
-- operation capability declarations for eager, lazy-safe, memory-heavy, and
-  scale-aware operations;
-- anonymous HTTP read investigation for public OME-Zarr datasets.
 
 Release gate:
 
@@ -358,29 +302,9 @@ Release gate:
 - exported OME-Zarr datasets include useful multiscale metadata;
 - docs distinguish analysis-resolution data from preview-resolution rendering.
 
-### 0.13.0a1: Scientific Validation Pack
+### 0.14.0a1 - Scientific Validation Pack
 
 Goal: turn implemented analysis families into defensible scientific methods.
-
-Already implemented foundations:
-
-- automated tests for implemented operations and workflows;
-- calibrated analytical morphology phantom validation;
-- publication-facing colocalization method notes.
-
-Next steps:
-
-- colocalization validation report using deterministic synthetic data and known
-  threshold/overlap scenarios;
-- object association validation report for overlap, nearest distance, and event
-  localization assumptions;
-- watershed/touching-object validation on rectangles, disks/spheres, and
-  representative microscopy-like phantoms;
-- skeleton/network validation report with known endpoints, junctions, cycles,
-  branch lengths, and anisotropic spacing;
-- reproducible example-output artifacts for publication figures and methods;
-- RACC numerical-core decision: keep VIPP-owned implementation, share a common
-  core with the RACC plugin, or document the intentional separation.
 
 Release gate:
 
@@ -388,20 +312,10 @@ Release gate:
 - methods documentation is consistent with implementation and tests;
 - examples can regenerate the reported tables/images.
 
-### 0.14.0a1: AI-Assisted Pipeline Authoring
+### 0.15.0a1 - AI-Assisted Pipeline Authoring
 
 Goal: let users describe a workflow and receive a normal, inspectable VIPP
-graph, without weakening reproducibility.
-
-Next steps:
-
-- provider-agnostic AI settings, with user-managed keys and local-provider room;
-- generated workflow JSON from natural language plus the live node registry;
-- validation against real operation ids, port contracts, and parameter schemas;
-- preview/diff before applying generated graph changes;
-- optional sharing of metadata summaries and downsampled thumbnails;
-- no full-resolution pixel sharing by default;
-- safe failure modes when the model proposes unavailable or incompatible nodes.
+graph without weakening reproducibility.
 
 Release gate:
 
@@ -411,15 +325,15 @@ Release gate:
 
 ## Later Milestones
 
-These should wait until the platform and validation base are stronger:
+These should wait until the platform, validation base, and user demand are
+stronger:
 
-- minimap/navigation aids for very large graphs;
-- alignment guides and optional snap-to-grid for manual graph layout polish;
 - registration;
-- deconvolution with PSF handling;
 - model-backed segmentation;
 - stitching and alignment workflows;
 - mesh export or surface-output graph contracts;
+- broader proprietary reader coverage after the first optional-reader layer is
+  stable;
 - specialist mitochondrial indices beyond the generic skeleton/network summary
   nodes;
 - custom code nodes with explicit review, trust, serialization, and sandboxing
@@ -428,7 +342,8 @@ These should wait until the platform and validation base are stronger:
 ## Planning Rules
 
 - Prefer a complete, documented, tested workflow over isolated nodes.
-- Prefer metadata-preserving transformations over visually convenient shortcuts.
+- Prefer metadata-preserving transformations over visually convenient
+  shortcuts.
 - Prefer explicit output nodes for batch and publication workflows.
 - Keep graph behavior serializable and reproducible.
 - Treat validation and documentation as part of the feature, not as cleanup.

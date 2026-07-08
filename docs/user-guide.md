@@ -110,10 +110,18 @@ Notes are saved in workflow JSON and reload with their attached node.
 
 ## Workflow Save And Load
 
+Use `Open example...` for bundled workflow templates. The example chooser is
+grouped by task, such as segmentation, measurements, colocalization, skeletons,
+and restoration. Example workflows use `Image Source` nodes set to bundled
+samples, so they run without loading sample layers into napari first.
+
 `Save workflow...` writes the graph, node parameters, connections, canvas
 positions, named tunnels, graph notes, and selected inspector state to workflow
 JSON. The selected node and whether the right inspector panel is visible are
 restored when the workflow is loaded.
+
+Use `Load workflow...` for a workflow JSON file that is not in the bundled
+example set.
 
 Per-node thumbnail visibility is optional workflow UI metadata. Enable
 `Save thumbnail visibility in workflows` in Settings when hidden/shown thumbnail
@@ -157,7 +165,8 @@ parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
 + Intensity`, `Measure 3D Mesh Morphology`, `Analyze Skeleton`,
 `Measure Skeleton Branches`, `Skeleton Graph Tables`, `Measure Overall
 Skeleton Network`, `Colocalization Metrics`, `Masked Colocalization Metrics`,
-`RACC Index`, and `Masked RACC Index`.
+`RACC Index`, `Masked RACC Index`, `Richardson-Lucy Deconvolution`, and
+`Richardson-Lucy TV Deconvolution`.
 
 When selected, these nodes show an `Execution` panel with `Calculate` or
 `Recalculate`. The same action is available on the node card. If upstream data
@@ -182,6 +191,70 @@ Manual node cards use status colours:
 - green: calculated and current;
 - orange: cached result is stale;
 - red: calculation failed.
+
+## Restoration And PSF Workflows
+
+PSF-aware deconvolution lives under `Filtering -> Restoration & PSF`. The first
+supported path is explicit: the image and the PSF are separate graph images, and
+the PSF is prepared before it is reused.
+
+For a measured PSF workflow:
+
+1. Add an `Image Source` for the microscopy image.
+2. Add a second `Image Source` for the measured PSF image, such as a bead PSF
+   saved as TIFF, OME-TIFF, NumPy, or a napari layer.
+3. Connect the PSF source to `Prepare / Validate PSF`.
+4. Connect the microscopy image to the deconvolution node's `Image` input.
+5. Connect the prepared PSF to the deconvolution node's `PSF` input.
+6. Choose `2D YX` for plane-wise restoration or `3D ZYX` for volumetric
+   restoration, then click `Calculate`.
+
+Use `Split Channels` first when each fluorescence channel needs its own PSF.
+The first implementation does not broadcast a multi-channel PSF stack; use one
+PSF preparation/deconvolution branch per channel.
+
+`Prepare / Validate PSF` converts the PSF to `float32`, replaces non-finite
+values with zero, optionally clips negatives, centers by peak or centroid,
+optionally forces odd shape, and normalizes the sum. Use `Peak` centering for
+generated or clean measured PSFs. Use `Centroid` when a bead PSF is broader or
+slightly asymmetric. Keep `Normalize sum` on for Richardson-Lucy deconvolution.
+An empty or all-invalid PSF raises an error instead of producing a misleading
+restoration.
+
+`Richardson-Lucy Deconvolution` is the baseline comparator. It is useful for
+checking whether the PSF and iteration count are plausible. `Richardson-Lucy TV
+Deconvolution` adds total-variation regularization to reduce noise
+amplification while preserving stronger edges. Start with a modest iteration
+count and increase slowly; ordinary RL can sharpen features and noise together.
+For RL-TV, start with the default `TV regularization` and adjust in small steps.
+Too little behaves like ordinary RL. Too much can flatten fine structure.
+
+Important caveats:
+
+- The PSF dimensionality must match the selected spatial mode: 2D PSF for
+  `2D YX`, 3D PSF for `3D ZYX`.
+- Deconvolution output is always `float32`, not the input integer dtype.
+- Output metadata follows the image input, not the PSF input.
+- PSFs are normalized defensively inside deconvolution even when the preparation
+  node is skipped.
+- `Preserve input scale` keeps restored intensities near the original image
+  scale after internal normalization.
+- The first implementation uses same-size convolution boundary behavior. Edges
+  can show restoration artifacts; crop margins or interpret image borders with
+  care.
+- GPU acceleration, blind deconvolution, spatially variant PSFs, and
+  vendor-specific file import are outside this first restoration pass.
+
+Reference review workflows:
+
+- `examples/synthetic-deconvolution-rl-tv.json`: compact 2D measured-PSF
+  workflow for quick inspection.
+- `examples/synthetic-3d-deconvolution-rl-tv.json`: true ZYX measured-PSF
+  workflow for the more common volumetric microscopy case.
+
+Both examples use a blurred/noisy synthetic image sample plus a separate
+measured-PSF sample, prepare the PSF, then run ordinary RL and RL-TV side by
+side.
 
 ## Object And Mesh Morphology
 

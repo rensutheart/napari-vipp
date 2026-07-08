@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from napari_vipp._sample_data import make_sample_data
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 from napari_vipp.core.workflow import load_workflow
 
 EXAMPLE_WORKFLOW = (
@@ -58,6 +58,16 @@ OBJECT_COLOCALIZATION_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-object-colocalization-association.json"
 )
+DECONVOLUTION_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-deconvolution-rl-tv.json"
+)
+DECONVOLUTION_3D_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-3d-deconvolution-rl-tv.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -68,15 +78,30 @@ def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
     )
 
 
+def _label_volumes(labels: np.ndarray) -> dict[int, int]:
+    label_ids = np.unique(labels)
+    label_ids = label_ids[label_ids != 0]
+    return {
+        int(label_id): int(np.count_nonzero(labels == label_id))
+        for label_id in label_ids
+    }
+
+
 def test_otsu_red_channel_label_workflow_loads_and_runs():
     workflow = load_workflow(EXAMPLE_WORKFLOW)
     pipeline = PrototypePipeline()
     _restore_workflow(pipeline, workflow)
 
     split_ports = pipeline.output_ports("split_channels_1")
-    assert [port.output_type for port in split_ports] == ["mask", "mask", "mask"]
+    assert [port.output_type for port in split_ports] == ["image", "image", "image"]
     assert any(
         connection.source_id == "split_channels_1"
+        and connection.source_port == 2
+        and connection.target_id == "gaussian"
+        for connection in pipeline.connections
+    )
+    assert any(
+        connection.source_id == "threshold"
         and connection.source_port == 0
         and connection.target_id == "fill_holes_1"
         for connection in pipeline.connections
@@ -100,10 +125,14 @@ def test_otsu_red_channel_label_workflow_loads_and_runs():
     assert labels.max() > 0
     assert cleared.shape == labels.shape
     assert cleared.dtype == np.int32
-    assert np.count_nonzero(cleared) <= np.count_nonzero(labels)
+    assert np.count_nonzero(cleared) < np.count_nonzero(labels)
     assert filtered.shape == labels.shape
     assert filtered.dtype == np.int32
-    assert np.count_nonzero(filtered) <= np.count_nonzero(cleared)
+    assert np.count_nonzero(filtered) < np.count_nonzero(cleared)
+    assert len(_label_volumes(labels)) == 4
+    assert len(_label_volumes(cleared)) == 3
+    assert len(_label_volumes(filtered)) == 2
+    assert min(_label_volumes(filtered).values()) >= 120
 
 
 def test_red_channel_intensity_measurement_workflow_loads_and_runs():
@@ -117,7 +146,7 @@ def test_red_channel_intensity_measurement_workflow_loads_and_runs():
     assert red_intensity_tunnel is not None
     assert (red_intensity_tunnel.source_id, red_intensity_tunnel.source_port) == (
         "split_channels_1",
-        0,
+        2,
     )
     assert pipeline.tunnel_connection_for_input("measure_objects_intensity_1", 1)
     assert any(
@@ -130,6 +159,7 @@ def test_red_channel_intensity_measurement_workflow_loads_and_runs():
         connection.source_id == "split_channels_1"
         and connection.target_id == "measure_objects_intensity_1"
         and connection.target_port == 1
+        and connection.source_port == 2
         for connection in pipeline.connections
     )
 
@@ -159,7 +189,7 @@ def test_red_channel_merged_measurement_table_workflow_loads_and_runs():
     assert red_intensity_tunnel is not None
     assert (red_intensity_tunnel.source_id, red_intensity_tunnel.source_port) == (
         "split_channels_1",
-        0,
+        2,
     )
     assert pipeline.tunnel_connection_for_input("measure_objects_intensity_1", 1)
     assert any(
@@ -606,3 +636,141 @@ def test_synthetic_object_colocalization_workflow_loads_and_runs():
     assert merged.row_count == measurements.row_count
     assert "volume_voxels" in merged.columns
     assert "colocalized_voxels" in merged.columns
+
+
+def test_synthetic_deconvolution_workflow_loads_and_runs():
+    workflow = load_workflow(DECONVOLUTION_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    prepared_psf_tunnel = pipeline.output_tunnel("Prepared PSF")
+    assert prepared_psf_tunnel is not None
+    assert (prepared_psf_tunnel.source_id, prepared_psf_tunnel.source_port) == (
+        "prepare_validate_psf_1",
+        0,
+    )
+    assert pipeline.tunnel_connection_for_input(
+        "richardson_lucy_deconvolution_1",
+        1,
+    )
+    assert pipeline.tunnel_connection_for_input(
+        "richardson_lucy_tv_deconvolution_1",
+        1,
+    )
+
+    samples = {
+        metadata["name"]: (data, metadata, layer_type)
+        for data, metadata, layer_type in make_sample_data()
+    }
+    image, image_kwargs, _image_layer_type = samples[
+        "VIPP synthetic deconvolution image"
+    ]
+    psf, psf_kwargs, _psf_layer_type = samples["VIPP synthetic measured PSF"]
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "input": SourcePayload(
+                image,
+                image_kwargs["metadata"],
+                image_kwargs["name"],
+            ),
+            "input_2": SourcePayload(psf, psf_kwargs["metadata"], psf_kwargs["name"]),
+        },
+    )
+
+    prepared_psf = outputs["prepare_validate_psf_1"]
+    rl = outputs["richardson_lucy_deconvolution_1"]
+    tv = outputs["richardson_lucy_tv_deconvolution_1"]
+    tv_state = pipeline.output_states["richardson_lucy_tv_deconvolution_1"]
+
+    assert prepared_psf.dtype == np.float32
+    assert prepared_psf.shape == psf.shape
+    assert np.isclose(float(prepared_psf.sum()), 1.0)
+    assert prepared_psf[prepared_psf.shape[0] // 2, prepared_psf.shape[1] // 2] == (
+        prepared_psf.max()
+    )
+    assert rl.shape == image.shape
+    assert tv.shape == image.shape
+    assert rl.dtype == np.float32
+    assert tv.dtype == np.float32
+    assert np.all(np.isfinite(rl))
+    assert np.all(np.isfinite(tv))
+    assert float(rl.min()) >= 0.0
+    assert float(tv.min()) >= 0.0
+    assert float(rl.max()) > float(image.max())
+    assert float(tv.max()) > float(image.max())
+    assert tv_state.axis_order == "YX"
+    assert tv_state.source_name == "VIPP synthetic deconvolution image"
+
+
+def test_synthetic_3d_deconvolution_workflow_loads_and_runs():
+    workflow = load_workflow(DECONVOLUTION_3D_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+
+    prepared_psf_tunnel = pipeline.output_tunnel("Prepared 3D PSF")
+    assert prepared_psf_tunnel is not None
+    assert (prepared_psf_tunnel.source_id, prepared_psf_tunnel.source_port) == (
+        "prepare_validate_psf_1",
+        0,
+    )
+    assert pipeline.input_ports("richardson_lucy_deconvolution_1")[0].label == "Image"
+    assert pipeline.input_ports("richardson_lucy_deconvolution_1")[1].label == "PSF"
+    assert pipeline.tunnel_connection_for_input(
+        "richardson_lucy_deconvolution_1",
+        1,
+    )
+    assert pipeline.tunnel_connection_for_input(
+        "richardson_lucy_tv_deconvolution_1",
+        1,
+    )
+
+    samples = {
+        metadata["name"]: (data, metadata, layer_type)
+        for data, metadata, layer_type in make_sample_data()
+    }
+    image, image_kwargs, _image_layer_type = samples[
+        "VIPP synthetic 3D deconvolution volume"
+    ]
+    psf, psf_kwargs, _psf_layer_type = samples["VIPP synthetic 3D measured PSF"]
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "input": SourcePayload(
+                image,
+                image_kwargs["metadata"],
+                image_kwargs["name"],
+            ),
+            "input_2": SourcePayload(psf, psf_kwargs["metadata"], psf_kwargs["name"]),
+        },
+    )
+
+    prepared_psf = outputs["prepare_validate_psf_1"]
+    rl = outputs["richardson_lucy_deconvolution_1"]
+    tv = outputs["richardson_lucy_tv_deconvolution_1"]
+    tv_state = pipeline.output_states["richardson_lucy_tv_deconvolution_1"]
+    center = tuple(size // 2 for size in prepared_psf.shape)
+
+    assert pipeline.nodes["richardson_lucy_deconvolution_1"].params[
+        "resolved_spatial_ndim"
+    ] == 3
+    assert pipeline.nodes["richardson_lucy_tv_deconvolution_1"].params[
+        "resolved_spatial_ndim"
+    ] == 3
+    assert prepared_psf.dtype == np.float32
+    assert prepared_psf.shape == psf.shape
+    assert np.isclose(float(prepared_psf.sum()), 1.0)
+    assert prepared_psf[center] == prepared_psf.max()
+    assert rl.shape == image.shape
+    assert tv.shape == image.shape
+    assert rl.dtype == np.float32
+    assert tv.dtype == np.float32
+    assert np.all(np.isfinite(rl))
+    assert np.all(np.isfinite(tv))
+    assert float(rl.min()) >= 0.0
+    assert float(tv.min()) >= 0.0
+    assert float(rl.max()) > float(image.max())
+    assert float(tv.max()) > float(image.max())
+    assert tv_state.axis_order == "ZYX"
+    assert [axis.scale for axis in tv_state.axes] == [0.35, 0.12, 0.12]
+    assert tv_state.source_name == "VIPP synthetic 3D deconvolution volume"
