@@ -511,6 +511,115 @@ def test_microscope_reader_reports_missing_optional_dependency(
         inspect_image_source(path)
 
 
+def test_czi_missing_optional_dependency_prefers_format_specific_hint(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "source.czi"
+    path.write_bytes(b"fake czi")
+
+    def fake_import(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr(microscope_io, "import_module", fake_import)
+
+    with pytest.raises(ImportError) as exc:
+        inspect_image_source(path)
+
+    message = str(exc.value)
+    assert "napari-vipp[czi]" in message
+    assert "napari-vipp[bioformats]" in message
+
+
+def test_nested_microscope_metadata_does_not_break_acquisition_detection():
+    acquisition = microscope_io._acquisition_from_metadata(
+        {
+            "objective": {"Name": "Plan-Apochromat 63x"},
+            "objectiveName": "Plan-Apochromat 63x",
+            "objectiveNumericalAperture": {"value": 1.4},
+            "numericalAperture": 1.35,
+        }
+    )
+
+    assert acquisition.objective == "Plan-Apochromat 63x"
+    assert acquisition.objective_na == 1.35
+
+
+def test_xarray_czi_metadata_normalizes_channels_and_axes():
+    class Coord:
+        def __init__(self, values):
+            self.values = np.asarray(values)
+
+    fake = SimpleNamespace(
+        attrs={
+            "channels": {
+                "Ch1": {
+                    "Fluor": "Hoechst 33342",
+                    "Color": "#0000FF",
+                    "ExcitationWavelength": 405.0,
+                    "EmissionWavelength": 469.91,
+                },
+                "Ch2": {
+                    "Fluor": "Alexa Fluor 568",
+                    "Color": "#FF0000",
+                    "ExcitationWavelength": 561.0,
+                    "DetectionWavelength": (592.01, 712.0),
+                },
+            },
+            "coord_scales": {
+                "C": 182.095,
+                "Z": 2e-7,
+                "Y": 1.660531641927678e-7,
+                "X": 1.660531641927678e-7,
+            },
+            "coord_units": {
+                "C": "nanometer",
+                "Z": "meter",
+                "Y": "meter",
+                "X": "meter",
+            },
+        },
+        coords={
+            "C": Coord([469.91, 652.005]),
+            "T": Coord([7404.34473018, 7415.62325915]),
+            "Z": Coord([0.0, 2e-7]),
+            "Y": Coord([0.0, 1.660531641927678e-7]),
+            "X": Coord([0.0, 1.660531641927678e-7]),
+        },
+    )
+
+    axes = microscope_io._axes_from_xarray(
+        fake,
+        ("C", "T", "Z", "Y", "X"),
+        (2, 2, 2, 2, 2),
+    )
+    channels = microscope_io._channels_from_xarray(fake)
+
+    assert [(axis.name, axis.type, axis.unit) for axis in axes] == [
+        ("c", "channel", None),
+        ("t", "time", "second"),
+        ("z", "space", "micrometer"),
+        ("y", "space", "micrometer"),
+        ("x", "space", "micrometer"),
+    ]
+    assert [axis.scale for axis in axes] == pytest.approx(
+        [
+            1.0,
+            11.27852897,
+            0.2,
+            0.1660531641927678,
+            0.1660531641927678,
+        ]
+    )
+    assert channels[0].name == "Hoechst 33342"
+    assert channels[0].color == 0x0000FF
+    assert channels[0].excitation_wavelength == 405.0
+    assert channels[0].emission_wavelength == 469.91
+    assert channels[1].name == "Alexa Fluor 568"
+    assert channels[1].color == 0xFF0000
+    assert channels[1].emission_wavelength == pytest.approx(652.005)
+
+
 def test_deconvolution_metadata_detection_is_conservative():
     assert detect_deconvolution_metadata(
         {"Processing": "Huygens deconvolution"}

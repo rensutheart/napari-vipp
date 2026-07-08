@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core.channel_colors import channel_color_int
 from napari_vipp.core.io.model import (
     ImageDataset,
     ImageSeriesInfo,
@@ -442,7 +443,7 @@ def _read_lsm(path: Path, series_index: int = 0) -> ImageDataset:
 
 
 def _inspect_bioio(path: Path, format_hint: str) -> SourceInspection:
-    bioio = _optional_bioio()
+    bioio = _optional_bioio(path.suffix)
     image = bioio.BioImage(str(path))
     series: list[ImageSeriesInfo] = []
     for index, scene in enumerate(tuple(getattr(image, "scenes", ()) or (0,))):
@@ -470,7 +471,7 @@ def _inspect_bioio(path: Path, format_hint: str) -> SourceInspection:
 def _read_bioio(path: Path, series_index: int, format_hint: str) -> ImageDataset:
     inspection = _inspect_bioio(path, format_hint)
     selected = _selected_series(inspection, series_index)
-    bioio = _optional_bioio()
+    bioio = _optional_bioio(path.suffix)
     image = bioio.BioImage(str(path))
     _bioio_set_scene(image, selected.key)
     data = getattr(image, "dask_data", None)
@@ -519,14 +520,21 @@ def _optional_import(module_name: str, suffix: str):
         ) from error
 
 
-def _optional_bioio():
+def _optional_bioio(suffix: str = ""):
     try:
         return import_module("bioio")
     except ImportError as error:
+        native_hint = _NATIVE_INSTALL_HINTS.get(str(suffix).lower())
+        hint = (
+            f"Install the format-specific extra with: {native_hint}. "
+            f"For BioIO/Bio-Formats fallback, install: {_BIOIO_INSTALL_HINT}"
+            if native_hint
+            else f"Install the fallback extra with: {_BIOIO_INSTALL_HINT}"
+        )
         raise OptionalMicroscopeReaderError(
             "This microscope format requires an optional dependency: "
             "a BioIO reader plugin. "
-            f"Install the fallback extra with: {_BIOIO_INSTALL_HINT}"
+            f"{hint}"
         ) from error
 
 
@@ -708,7 +716,7 @@ def _scene_payload(
         dims = tuple(str(dim) for dim in getattr(xarray, "dims", ()))
         attrs = dict(getattr(xarray, "attrs", {}) or {})
         axes = _axes_from_xarray(xarray, dims, tuple(int(size) for size in data.shape))
-        channels = _channels_from_labels(_channel_labels_from_xarray(xarray))
+        channels = _channels_from_xarray(xarray)
         return data, axes, channels, attrs
 
     data = _safe_call(scene, "asarray")
@@ -875,18 +883,17 @@ def _axes_from_xarray(
         scale = _optional_float(_mapping_value(scales, dim, label))
         if scale is None:
             scale = _scale_from_coord(getattr(xarray, "coords", {}), dim)
-        unit = _mapping_value(units, dim, label)
-        inferred_unit = None
-        if unit:
-            inferred_unit = str(unit)
-        elif label in {"X", "Y", "Z"} and scale:
-            inferred_unit = "micrometer"
+        scale, inferred_unit = _normalized_axis_scale_and_unit(
+            label,
+            scale,
+            _mapping_value(units, dim, label),
+        )
         axes.append(
             AxisMetadata(
                 name=_axis_name(label),
                 type=_axis_type(label),
                 unit=inferred_unit,
-                scale=scale or 1.0,
+                scale=scale,
             )
         )
     if len(axes) != len(shape):
@@ -910,6 +917,42 @@ def _scale_from_coord(coords, dim: str) -> float | None:
     return delta if np.isfinite(delta) and delta > 0 else None
 
 
+def _normalized_axis_scale_and_unit(
+    label: str,
+    scale: float | None,
+    unit,
+) -> tuple[float, str | None]:
+    axis_type = _axis_type(label)
+    if axis_type == "channel":
+        return 1.0, None
+    value = float(scale) if scale is not None else 1.0
+    text = str(unit or "").strip().lower()
+    if axis_type == "space":
+        if text in {"meter", "metre", "meters", "metres", "m"}:
+            return value * 1_000_000.0, "micrometer"
+        if text in {"nanometer", "nanometre", "nanometers", "nanometres", "nm"}:
+            return value / 1_000.0, "micrometer"
+        if text in {
+            "micrometer",
+            "micrometre",
+            "micrometers",
+            "micrometres",
+            "um",
+            "\u00b5m",
+            "\u03bcm",
+        }:
+            return value, "micrometer"
+        return value, str(unit) if unit else None
+    if axis_type == "time":
+        if text in {"millisecond", "milliseconds", "ms"}:
+            return value / 1_000.0, "second"
+        if text in {"second", "seconds", "sec", "s"}:
+            return value, "second"
+        inferred_unit = "second" if scale is not None else None
+        return value, str(unit) if unit else inferred_unit
+    return value, str(unit) if unit else None
+
+
 def _channel_labels_from_xarray(xarray) -> tuple[str, ...]:
     labels = []
     coords = getattr(xarray, "coords", {})
@@ -921,6 +964,50 @@ def _channel_labels_from_xarray(xarray) -> tuple[str, ...]:
         labels = [str(value) for value in values.reshape(-1)]
         break
     return tuple(labels)
+
+
+def _channels_from_xarray(xarray) -> tuple[ChannelMetadata, ...]:
+    attrs = dict(getattr(xarray, "attrs", {}) or {})
+    channel_records = attrs.get("channels")
+    records: list[ChannelMetadata] = []
+    if isinstance(channel_records, dict):
+        for key, item in channel_records.items():
+            if not isinstance(item, dict):
+                records.append(ChannelMetadata(name=str(key)))
+                continue
+            excitation = _optional_float(
+                _mapping_value(item, "ExcitationWavelength", "excitation")
+            )
+            emission = _optional_float(
+                _mapping_value(item, "EmissionWavelength", "emission")
+            )
+            if emission is None:
+                emission = _wavelength_midpoint(
+                    _mapping_value(item, "DetectionWavelength", "detection")
+                )
+            name = _mapping_value(item, "Fluor", "DyeName", "Name", "ChannelName")
+            records.append(
+                ChannelMetadata(
+                    name=str(name or key),
+                    color=channel_color_int(_mapping_value(item, "Color", "color")),
+                    excitation_wavelength=excitation,
+                    excitation_wavelength_unit="nm" if excitation else "",
+                    emission_wavelength=emission,
+                    emission_wavelength_unit="nm" if emission else "",
+                )
+            )
+    if records:
+        return tuple(records)
+    return _channels_from_labels(_channel_labels_from_xarray(xarray))
+
+
+def _wavelength_midpoint(value) -> float | None:
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        first = _optional_float(value[0])
+        second = _optional_float(value[1])
+        if first is not None and second is not None:
+            return (first + second) / 2.0
+    return _optional_float(value)
 
 
 def _channels_from_labels(labels) -> tuple[ChannelMetadata, ...]:
@@ -985,7 +1072,10 @@ def _acquisition_from_metadata(metadata: Any) -> AcquisitionMetadata:
 def _first_text(metadata: Any, keys: tuple[str, ...]) -> str:
     for key in keys:
         value = _find_metadata_value(metadata, key)
-        if value not in {None, ""}:
+        if not _is_empty_metadata_value(value) and not isinstance(
+            value,
+            (dict, list, tuple, set),
+        ):
             return str(value)
     return ""
 
@@ -1125,7 +1215,7 @@ def _mapping_value(mapping, *keys: str):
     normalized = {_normalized_key(str(key)): value for key, value in mapping.items()}
     for key in keys:
         value = normalized.get(_normalized_key(key))
-        if value not in {None, ""}:
+        if not _is_empty_metadata_value(value):
             return value
     return None
 
@@ -1146,7 +1236,7 @@ def _safe_call(obj, name: str):
 
 
 def _optional_float(value) -> float | None:
-    if value in {None, ""}:
+    if _is_empty_metadata_value(value):
         return None
     try:
         number = float(value)
@@ -1156,9 +1246,13 @@ def _optional_float(value) -> float | None:
 
 
 def _optional_int(value) -> int | None:
-    if value in {None, ""}:
+    if _is_empty_metadata_value(value):
         return None
     try:
         return int(value)
     except Exception:
         return None
+
+
+def _is_empty_metadata_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value == "")
