@@ -1,0 +1,152 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "clear_border_objects_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic multichannel volume",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "gaussian",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2
+      }
+    },
+    {
+      "id": "threshold",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 2
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "fill_holes_1",
+      "operation_id": "fill_holes",
+      "params": {
+        "max_hole_size": 0,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "filter_labels_by_volume_1",
+      "operation_id": "filter_labels_by_volume",
+      "params": {
+        "min_volume": 120,
+        "max_volume": 0,
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "clear_border_objects_1",
+      "operation_id": "clear_border_objects",
+      "params": {
+        "border_buffer": 0,
+        "boundary_mode": "All spatial borders"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "gaussian",
+      "target_port": 0,
+      "source_port": 2
+    },
+    {
+      "source": "gaussian",
+      "target": "threshold",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "threshold",
+      "target": "fill_holes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "fill_holes_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "clear_border_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "clear_border_objects_1",
+      "target": "filter_labels_by_volume_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 160.0],
+    "split_channels_1": [360.0, 160.0],
+    "gaussian": [720.0, 160.0],
+    "threshold": [1080.0, 160.0],
+    "label_connected_components_1": [1800.0, 160.0],
+    "fill_holes_1": [1440.0, 160.0],
+    "filter_labels_by_volume_1": [2520.0, 160.0],
+    "clear_border_objects_1": [2160.0, 160.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "Segmentation gate: Otsu uses the red channel after blur; inspect this mask before label cleanup.",
+      "position": [1080.0, 30.0],
+      "width": 270.0,
+      "attached_node": "threshold"
+    },
+    {
+      "id": "note_2",
+      "text": "Clean label output: clear-border removes edge-touching labels, then volume filtering removes the tiny label.",
+      "position": [2520.0, 30.0],
+      "width": 270.0,
+      "attached_node": "filter_labels_by_volume_1"
+    }
+  ]
+}

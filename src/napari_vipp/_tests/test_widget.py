@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import imageio.v3 as iio
 import numpy as np
@@ -26,14 +27,17 @@ from napari_vipp._widget import (
     CACHE_MODE_KEEP_ALL,
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
+    EXAMPLE_WORKFLOWS,
     CollectionBatchDialog,
     ConnectionInsertDialog,
     ConnectionInsertMappingDialog,
     ConnectionInsertPortMapping,
+    ExampleWorkflowDialog,
     FlexibleDoubleSpinBox,
     HistogramPlot,
     SelectTableColumnsControl,
     VippWidget,
+    _example_workflow_path,
 )
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import inspect_image_source, read_image
@@ -328,15 +332,66 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    assert widget.layer_combo.count() == 1
+    assert not hasattr(widget, "layer_combo")
     assert "gaussian" in widget.pipeline.outputs
     assert widget.version_label.text() == f"VIPP {VIPP_VERSION}"
     assert widget.background_all_checkbox.text() == "Run all in BG"
+    assert widget.open_example_button.text() == "Open example..."
 
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "gaussian"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
     assert not viewer.layers["input volume"].visible
+
+
+def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
+    dialog = ExampleWorkflowDialog()
+    qtbot.addWidget(dialog)
+
+    assert len(EXAMPLE_WORKFLOWS) >= 10
+    assert dialog.tree.topLevelItemCount() >= 4
+
+    dialog.filter_edit.setText("RACC")
+
+    titles = []
+    for index in range(dialog.tree.topLevelItemCount()):
+        category = dialog.tree.topLevelItem(index)
+        for child_index in range(category.childCount()):
+            titles.append(category.child(child_index).text(0))
+    assert titles == ["RACC Colocalization"]
+
+    dialog.select_example("racc-colocalization")
+    assert dialog.selected_example().id == "racc-colocalization"
+    assert dialog.open_button.isEnabled()
+
+
+def test_example_workflow_files_are_packaged():
+    repo_examples = Path(__file__).resolve().parents[3] / "examples"
+    for spec in EXAMPLE_WORKFLOWS:
+        packaged = _example_workflow_path(spec)
+        assert packaged.exists(), spec.filename
+        repo_copy = repo_examples / spec.filename
+        if repo_copy.exists():
+            assert packaged.read_text(encoding="utf-8") == repo_copy.read_text(
+                encoding="utf-8"
+            )
+
+
+def test_open_example_workflow_loads_bundled_template(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    loaded = widget.load_example_workflow("label-cleanup")
+
+    assert loaded.name == "otsu-red-channel-labels.json"
+    assert widget.pipeline.nodes["input"].params["source_mode"] == "sample"
+    assert (
+        widget.pipeline.nodes["input"].params["sample_name"]
+        == "VIPP synthetic multichannel volume"
+    )
+    assert "filter_labels_by_volume_1" in widget.pipeline.nodes
+    assert widget.status_label.text().startswith("Opened example workflow")
 
 
 def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
@@ -496,7 +551,7 @@ def test_widget_restores_hidden_source_layer_on_close(qtbot):
     assert viewer.layers["input volume"].visible
 
 
-def test_switching_input_layers_restores_previous_source(qtbot):
+def test_image_source_layer_selection_restores_previous_source(qtbot):
     viewer = _Viewer()
     viewer.layers.append(_Layer(np.ones((4, 16, 18), dtype=np.float32), "second"))
     widget = VippWidget(viewer)
@@ -508,7 +563,12 @@ def test_switching_input_layers_restores_previous_source(qtbot):
     assert not first.visible
     assert second.visible
 
-    widget.layer_combo.setCurrentText("second")
+    widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    assert control.layer_combo.currentText() == "input volume"
+
+    control.layer_combo.setCurrentText("second")
+    widget.run_pipeline()
 
     assert first.visible
     assert not second.visible
@@ -536,10 +596,15 @@ def test_widget_prefers_time_lapse_multichannel_sample_input(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    assert widget.layer_combo.currentText() == "VIPP synthetic time-lapse multichannel"
+    assert (
+        widget.pipeline.nodes["input"].params["layer_name"]
+        == "VIPP synthetic time-lapse multichannel"
+    )
     assert widget.pipeline.outputs["input"].shape == rich_data.shape
 
     widget.graph_view.select_node("input")
+    control = widget._parameter_widgets["image_source"]
+    assert control.layer_combo.currentText() == "VIPP synthetic time-lapse multichannel"
 
     assert _metadata_value(widget, "Dimensions") == "t=5, c=3, z=4, y=16, x=18"
 
@@ -559,6 +624,23 @@ def test_image_source_node_can_select_napari_layer(qtbot):
     assert widget.pipeline.nodes["input"].params["layer_name"] == "second layer"
     assert widget.pipeline.outputs["input"].shape == second.shape
     assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
+
+
+def test_image_source_mode_change_autoselects_napari_layer(qtbot):
+    viewer = _Viewer(np.zeros((2, 4, 5), dtype=np.uint8))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._new_workflow()
+    control = widget._parameter_widgets["image_source"]
+    assert control.mode_combo.currentText() == "file path"
+
+    control.mode_combo.setCurrentText("napari layer")
+    widget.run_pipeline()
+
+    assert widget.pipeline.nodes["input"].params["layer_name"] == "input volume"
+    assert control.layer_combo.currentText() == "input volume"
+    assert widget.pipeline.outputs["input"].shape == (2, 4, 5)
 
 
 def test_image_source_node_can_use_sample_mode(qtbot):
@@ -1717,11 +1799,13 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
         "Smoothing & Denoising",
         "Edge & Detail",
         "Background Correction",
+        "Restoration & PSF",
     } <= filtering_subgroups
 
     smoothing = _palette_child_by_text(filtering, "Smoothing & Denoising")
     edge_detail = _palette_child_by_text(filtering, "Edge & Detail")
     background = _palette_child_by_text(filtering, "Background Correction")
+    restoration = _palette_child_by_text(filtering, "Restoration & PSF")
     assert _palette_child_by_text(smoothing, "Gaussian Blur")
     assert _palette_child_by_text(smoothing, "Non-Local Means")
     assert _palette_child_by_text(edge_detail, "Difference of Gaussians")
@@ -1729,6 +1813,10 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
     assert _palette_child_by_text(edge_detail, "Canny Edges")
     assert _palette_child_by_text(background, "Rolling-Ball Background")
     assert _palette_child_by_text(background, "Subtract Background")
+    assert _palette_child_by_text(restoration, "Born-Wolf PSF")
+    assert _palette_child_by_text(restoration, "Prepare / Validate PSF")
+    assert _palette_child_by_text(restoration, "Richardson-Lucy Deconvolution")
+    assert _palette_child_by_text(restoration, "Richardson-Lucy TV Deconvolution")
 
     projection = _palette_category(widget, "Projection")
     assert _palette_child_by_text(projection, "Maximum Projection")
@@ -3979,34 +4067,6 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
     assert widget.graph_view._cards["threshold"].preview.isHidden()
 
 
-def test_global_thumbnail_checkbox_skips_thumbnail_generation(qtbot, monkeypatch):
-    viewer = _Viewer()
-    widget = VippWidget(viewer)
-    qtbot.addWidget(widget)
-
-    calls = []
-
-    def fake_make_preview(
-        data,
-        mode,
-        current_step,
-        current_step_nsteps=None,
-        state=None,
-        channel_colors=None,
-        contrast_mode="Percentile",
-    ):
-        calls.append(data)
-        return None
-
-    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
-    widget.global_thumbnail_checkbox.setChecked(False)
-
-    assert calls == []
-    assert widget.graph_view._cards["input"].preview.isHidden()
-    assert widget.graph_view._cards["gaussian"].preview.isHidden()
-    assert widget.graph_view._cards["threshold"].preview.isHidden()
-
-
 def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -5179,7 +5239,6 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.settings_menu_button.isHidden() is False
     assert widget.settings_menu_button.text() == "Settings"
     assert widget.settings_menu_button.minimumWidth() >= 96
-    assert widget.global_thumbnail_checkbox.isHidden()
     assert widget.background_all_checkbox.isHidden()
     assert widget.follow_dims_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden() is False
@@ -5192,7 +5251,6 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget.resize(1400, 600)
     widget._sync_toolbar_responsive_mode()
 
-    assert widget.global_thumbnail_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden()
     assert widget.thumbnail_contrast_combo.isHidden()
     assert widget.thumbnail_colormap_combo.isHidden()
@@ -5216,7 +5274,6 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget._sync_toolbar_responsive_mode()
 
     assert widget.settings_menu_button.isHidden() is False
-    assert widget.global_thumbnail_checkbox.isHidden()
     assert widget.background_all_checkbox.isHidden()
     assert widget.follow_dims_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden() is False
@@ -5241,7 +5298,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
         for action in widget.settings_menu.actions()
         if not action.isSeparator() and action.text()
     ]
-    assert "Show thumbnails" in labels
+    assert "Show thumbnails" not in labels
     assert "Save thumbnail visibility in workflows" in labels
     assert "Run all in background" in labels
     assert "Follow napari dims" in labels
@@ -5260,15 +5317,6 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Preview mode" in labels
     assert "Thumbnail contrast" in labels
     assert "Monochrome colormap" in labels
-
-    show_action = next(
-        action
-        for action in widget.settings_menu.actions()
-        if action.text() == "Show thumbnails"
-    )
-    assert widget.global_thumbnail_checkbox.isChecked()
-    show_action.trigger()
-    assert not widget.global_thumbnail_checkbox.isChecked()
 
     save_thumbnail_action = next(
         action

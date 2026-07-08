@@ -1,0 +1,141 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "select_table_columns_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic 3D mesh morphology",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 1000
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": true,
+        "include_axis_descriptors": true,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": true,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "measure_3d_mesh_morphology_1",
+      "operation_id": "measure_3d_mesh_morphology",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "minimum_voxel_count": 16,
+        "include_convex_hull_metrics": true
+      }
+    },
+    {
+      "id": "merge_tables_1",
+      "operation_id": "merge_tables",
+      "params": {
+        "input_count": 2,
+        "join_mode": "Left join",
+        "join_keys": "auto"
+      }
+    },
+    {
+      "id": "select_table_columns_1",
+      "operation_id": "select_table_columns",
+      "params": {
+        "columns": "label_id,volume_voxels,volume_physical,voxel_volume_physical,mesh_volume_physical,mesh_surface_area_physical,sphericity,solidity_3d,surface_area_to_volume,mesh_status"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_3d_mesh_morphology_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "merge_tables_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_3d_mesh_morphology_1",
+      "target": "merge_tables_1",
+      "target_port": 1,
+      "source_port": 0
+    },
+    {
+      "source": "merge_tables_1",
+      "target": "select_table_columns_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 320.0],
+    "binary_threshold_1": [360.0, 320.0],
+    "label_connected_components_1": [720.0, 320.0],
+    "measure_objects_1": [1080.0, 120.0],
+    "measure_3d_mesh_morphology_1": [1080.0, 520.0],
+    "merge_tables_1": [1480.0, 320.0],
+    "select_table_columns_1": [1840.0, 320.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "Mesh metrics use physical voxel calibration; tiny labels may report skipped_too_few_voxels.",
+      "position": [1080.0, 750.0],
+      "width": 270.0,
+      "attached_node": "measure_3d_mesh_morphology_1"
+    }
+  ]
+}

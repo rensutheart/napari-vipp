@@ -1,0 +1,120 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "summarize_measurements_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic measurement summary",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 1000
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "add_metadata_columns_1",
+      "operation_id": "add_metadata_columns",
+      "params": {
+        "metadata_columns": "condition=summary_validation, replicate=1",
+        "overwrite": "no"
+      }
+    },
+    {
+      "id": "summarize_measurements_1",
+      "operation_id": "summarize_measurements",
+      "params": {
+        "group_by": "auto",
+        "value_columns": "area_pixels",
+        "statistics": "count,mean,min,max"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "binary_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_objects_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "add_metadata_columns_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "add_metadata_columns_1",
+      "target": "summarize_measurements_1",
+      "target_port": 0,
+      "source_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 160.0],
+    "binary_threshold_1": [360.0, 160.0],
+    "label_connected_components_1": [720.0, 160.0],
+    "measure_objects_1": [1080.0, 160.0],
+    "add_metadata_columns_1": [1440.0, 160.0],
+    "summarize_measurements_1": [1800.0, 160.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "Summary output groups inferred metadata/time; validation expects object counts 2, 3, and 1.",
+      "position": [1800.0, 30.0],
+      "width": 270.0,
+      "attached_node": "summarize_measurements_1"
+    }
+  ]
+}

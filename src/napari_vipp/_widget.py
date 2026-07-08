@@ -108,8 +108,10 @@ from napari_vipp.core.graph_search import (
     find_graph_matches,
 )
 from napari_vipp.core.io import (
+    MICROSCOPE_FILE_FILTER,
     AnalysisLabel,
     SourceInspection,
+    detect_deconvolution_metadata,
     inspect_image_source,
     read_image,
     write_ome_zarr_analysis_dataset,
@@ -174,6 +176,152 @@ _BATCH_IMAGE_FORMAT_SUFFIXES = {
     "tiff": ".tif",
     "npy": ".npy",
 }
+
+
+@dataclass(frozen=True)
+class ExampleWorkflowSpec:
+    id: str
+    category: str
+    title: str
+    filename: str
+    samples: tuple[str, ...]
+    description: str
+
+
+EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
+    ExampleWorkflowSpec(
+        "label-cleanup",
+        "Segmentation & Labels",
+        "Red-Channel Label Cleanup",
+        "otsu-red-channel-labels.json",
+        ("VIPP synthetic multichannel volume",),
+        "Split the red/TRITC-like channel, blur, threshold, fill holes, "
+        "label objects, clear borders, and filter labels by volume.",
+    ),
+    ExampleWorkflowSpec(
+        "object-intensity",
+        "Measurements & Tables",
+        "Object Intensity Measurements",
+        "red-channel-object-intensity-measurements.json",
+        ("VIPP synthetic multichannel volume",),
+        "Measure cleaned object labels together with matching red-channel "
+        "intensity values.",
+    ),
+    ExampleWorkflowSpec(
+        "merged-measurements",
+        "Measurements & Tables",
+        "Merged Measurement Table",
+        "red-channel-merged-measurement-table.json",
+        ("VIPP synthetic multichannel volume",),
+        "Build a PCA-oriented table from object morphology, object intensity, "
+        "and metadata columns.",
+    ),
+    ExampleWorkflowSpec(
+        "summary-table",
+        "Measurements & Tables",
+        "Grouped Measurement Summary",
+        "synthetic-measurement-summary.json",
+        ("VIPP synthetic measurement summary",),
+        "Summarize known object counts and areas across timepoints.",
+    ),
+    ExampleWorkflowSpec(
+        "derived-morphology",
+        "Measurements & Tables",
+        "Derived 2D Object Morphology",
+        "synthetic-derived-object-morphology.json",
+        ("VIPP synthetic object morphology",),
+        "Calculate 2D morphology, circularity, perimeter-area ratio, and Hu "
+        "moments.",
+    ),
+    ExampleWorkflowSpec(
+        "mesh-morphology",
+        "Measurements & Tables",
+        "3D Mesh Morphology",
+        "synthetic-3d-mesh-morphology.json",
+        ("VIPP synthetic 3D mesh morphology",),
+        "Measure anisotropic 3D objects with surface area, mesh volume, convex "
+        "hull metrics, and sphericity.",
+    ),
+    ExampleWorkflowSpec(
+        "skeleton-qc",
+        "Skeletons & Networks",
+        "Skeleton QC",
+        "synthetic-skeleton-qc.json",
+        ("VIPP synthetic skeleton network",),
+        "Inspect skeleton keypoints, components, branches, pruning, graph "
+        "tables, and network summaries.",
+    ),
+    ExampleWorkflowSpec(
+        "advanced-skeleton",
+        "Skeletons & Networks",
+        "Advanced Skeleton Network",
+        "synthetic-advanced-skeleton-network.json",
+        ("VIPP synthetic advanced skeleton network",),
+        "Review time-indexed 3D skeleton/network analysis with loops, fragments, "
+        "spurs, and anisotropic calibration.",
+    ),
+    ExampleWorkflowSpec(
+        "racc-colocalization",
+        "Colocalization & Association",
+        "RACC Colocalization",
+        "synthetic-colocalization-racc.json",
+        ("VIPP synthetic colocalization",),
+        "Inspect red/green channel tunnels, ROI masks, scatter thresholds, "
+        "Manders/Pearson metrics, and RACC output.",
+    ),
+    ExampleWorkflowSpec(
+        "object-colocalization",
+        "Colocalization & Association",
+        "Object Colocalization Association",
+        "synthetic-object-colocalization-association.json",
+        ("VIPP synthetic colocalization",),
+        "Combine thresholded channel labels, object colocalization rows, label "
+        "overlap, nearest distances, and event localization.",
+    ),
+    ExampleWorkflowSpec(
+        "deconvolution-2d",
+        "Restoration & PSF",
+        "2D Richardson-Lucy / TV Deconvolution",
+        "synthetic-deconvolution-rl-tv.json",
+        ("VIPP synthetic deconvolution image", "VIPP synthetic measured PSF"),
+        "Prepare a measured PSF and compare ordinary Richardson-Lucy with "
+        "Richardson-Lucy TV restoration.",
+    ),
+    ExampleWorkflowSpec(
+        "deconvolution-3d",
+        "Restoration & PSF",
+        "3D Richardson-Lucy / TV Deconvolution",
+        "synthetic-3d-deconvolution-rl-tv.json",
+        (
+            "VIPP synthetic 3D deconvolution volume",
+            "VIPP synthetic 3D measured PSF",
+        ),
+        "Run volumetric PSF-aware restoration with matched 3D image and PSF "
+        "sources.",
+    ),
+)
+
+
+def _example_workflow_by_id(example_id: str) -> ExampleWorkflowSpec | None:
+    for spec in EXAMPLE_WORKFLOWS:
+        if spec.id == example_id:
+            return spec
+    return None
+
+
+def _example_workflow_dir() -> Path:
+    candidates = (
+        Path(__file__).resolve().parent / "examples",
+        Path(__file__).resolve().parents[2] / "examples",
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return candidates[-1]
+
+
+def _example_workflow_path(spec: ExampleWorkflowSpec) -> Path:
+    return _example_workflow_dir() / spec.filename
 
 if TYPE_CHECKING:
     import napari
@@ -1591,7 +1739,9 @@ class ImageSourceControl(QWidget):
             self.path_edit.text(),
             "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.png *.jpg "
             "*.jpeg *.jpe *.jfif *.bmp *.dib *.gif *.webp *.tga *.pbm *.pgm "
-            "*.ppm *.pnm *.npy *.npz);;"
+            "*.ppm *.pnm *.npy *.npz *.nd2 *.czi *.lsm *.lif *.lof *.xlif "
+            "*.oir *.oib *.oif *.vsi);;"
+            f"{MICROSCOPE_FILE_FILTER};;"
             "All files (*.*)",
         )
         if path:
@@ -1619,6 +1769,137 @@ class ImageSourceControl(QWidget):
         self.binding_combo.setVisible(file_mode)
         self.source_summary.setVisible(file_mode and bool(self.source_summary.text()))
         self.sample_row.setVisible(mode == "sample")
+
+
+class ExampleWorkflowDialog(QDialog):
+    """Searchable chooser for bundled example workflows."""
+
+    def __init__(
+        self,
+        parent=None,
+        examples: tuple[ExampleWorkflowSpec, ...] = EXAMPLE_WORKFLOWS,
+    ):
+        super().__init__(parent)
+        self._examples = tuple(examples)
+        self._selected_example_id = ""
+        self.setWindowTitle("Open VIPP Example")
+        self.resize(780, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("Filter examples, samples, or tasks")
+        self.filter_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.filter_edit)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Example", "Bundled sample"])
+        self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tree.setRootIsDecorated(True)
+        layout.addWidget(self.tree, 1)
+
+        self.details_label = QLabel("Select an example workflow.")
+        self.details_label.setWordWrap(True)
+        self.details_label.setStyleSheet(
+            "color: #cbd5e1; padding: 6px; background: #1f2937; "
+            "border: 1px solid #374151; border-radius: 4px;"
+        )
+        layout.addWidget(self.details_label)
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Cancel)
+        self.open_button = self.buttons.addButton("Open", QDialogButtonBox.AcceptRole)
+        self.open_button.setEnabled(False)
+        layout.addWidget(self.buttons)
+
+        self.filter_edit.textChanged.connect(self._populate_tree)
+        self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self.open_button.clicked.connect(self._accept_if_selected)
+        self.buttons.rejected.connect(self.reject)
+        self._populate_tree()
+
+    def selected_example(self) -> ExampleWorkflowSpec | None:
+        return _example_workflow_by_id(self._selected_example_id)
+
+    def select_example(self, example_id: str) -> None:
+        target = str(example_id)
+        for index in range(self.tree.topLevelItemCount()):
+            category = self.tree.topLevelItem(index)
+            for child_index in range(category.childCount()):
+                child = category.child(child_index)
+                if child.data(0, Qt.UserRole) == target:
+                    self.tree.setCurrentItem(child)
+                    return
+
+    def _populate_tree(self) -> None:
+        selected_id = self._selected_example_id
+        query = _normalize_search_text(self.filter_edit.text())
+        self.tree.clear()
+        categories: dict[str, list[ExampleWorkflowSpec]] = {}
+        for spec in self._examples:
+            if query and not self._matches_query(spec, query):
+                continue
+            categories.setdefault(spec.category, []).append(spec)
+
+        for category, specs in categories.items():
+            category_item = QTreeWidgetItem([category, ""])
+            category_item.setFlags(category_item.flags() & ~Qt.ItemIsSelectable)
+            self.tree.addTopLevelItem(category_item)
+            for spec in specs:
+                sample_text = ", ".join(spec.samples)
+                item = QTreeWidgetItem([spec.title, sample_text])
+                item.setData(0, Qt.UserRole, spec.id)
+                item.setToolTip(0, spec.description)
+                item.setToolTip(1, sample_text)
+                category_item.addChild(item)
+        self.tree.expandAll()
+        self.tree.resizeColumnToContents(0)
+        self._restore_selection(selected_id)
+        self._on_selection_changed()
+
+    @staticmethod
+    def _matches_query(spec: ExampleWorkflowSpec, query: str) -> bool:
+        text = _normalize_search_text(
+            " ".join(
+                (
+                    spec.category,
+                    spec.title,
+                    spec.filename,
+                    " ".join(spec.samples),
+                    spec.description,
+                )
+            )
+        )
+        return all(part in text for part in query.split())
+
+    def _restore_selection(self, example_id: str) -> None:
+        if not example_id:
+            return
+        self.select_example(example_id)
+
+    def _on_selection_changed(self) -> None:
+        item = self.tree.currentItem()
+        example_id = str(item.data(0, Qt.UserRole) or "") if item is not None else ""
+        spec = _example_workflow_by_id(example_id)
+        self._selected_example_id = spec.id if spec is not None else ""
+        self.open_button.setEnabled(spec is not None)
+        if spec is None:
+            self.details_label.setText("Select an example workflow.")
+            return
+        samples = ", ".join(spec.samples)
+        self.details_label.setText(
+            f"{spec.title}\n\n{spec.description}\n\nSource sample: {samples}"
+        )
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        if item.data(0, Qt.UserRole):
+            self._accept_if_selected()
+
+    def _accept_if_selected(self) -> None:
+        if self.selected_example() is not None:
+            self.accept()
 
 
 class CollectionBatchDialog(QDialog):
@@ -3901,7 +4182,6 @@ class VippWidget(QWidget):
         self._selected_node_id = "gaussian"
         self._active_pinned_node_id: str | None = None
         self._inspect_layer_name = "VIPP Inspect"
-        self._last_input_layer_name: str | None = None
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
@@ -3935,10 +4215,6 @@ class VippWidget(QWidget):
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
-        self.layer_combo = QComboBox()
-        self.layer_combo.setMinimumWidth(220)
-        self.global_thumbnail_checkbox = QCheckBox("Thumbnails")
-        self.global_thumbnail_checkbox.setChecked(True)
         self.save_thumbnail_visibility_checkbox = QCheckBox(
             "Save thumbnail visibility in workflows"
         )
@@ -4019,6 +4295,10 @@ class VippWidget(QWidget):
         self.addAction(self.undo_action)
         self.addAction(self.redo_action)
         self.save_workflow_button = QPushButton("Save workflow...")
+        self.open_example_button = QPushButton("Open example...")
+        self.open_example_button.setToolTip(
+            "Open a bundled example workflow with its sample Image Source nodes."
+        )
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
         self.batch_button = QPushButton("Run batch...")
@@ -4102,7 +4382,7 @@ class VippWidget(QWidget):
         )
         self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
         self.status_label = QLabel(
-            "Select an image layer and build the starter pipeline."
+            "Select an Image Source node to choose data for the workflow."
         )
         self.status_label.setWordWrap(True)
 
@@ -4270,7 +4550,7 @@ class VippWidget(QWidget):
         self._build_layout()
         self._connect_signals()
         self._sync_toolbar_responsive_mode()
-        self._refresh_layer_choices()
+        self._autobind_default_image_sources()
         self._build_graph_from_pipeline()
         self._select_node(self._selected_node_id)
         self.run_pipeline()
@@ -4451,11 +4731,6 @@ class VippWidget(QWidget):
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
         input_row.setSpacing(4)
-        input_label = QLabel("Input")
-        input_row.addWidget(input_label)
-        input_row.addWidget(self.layer_combo, 1)
-        thumbnail_separator = _toolbar_separator()
-        input_row.addWidget(thumbnail_separator)
         preview_label = QLabel("Preview")
         input_row.addWidget(preview_label)
         input_row.addWidget(self.preview_mode_combo)
@@ -4486,13 +4761,11 @@ class VippWidget(QWidget):
         root.addLayout(input_row)
         self._toolbar_checkbox_widgets = []
         for widget in (
-            self.global_thumbnail_checkbox,
             self.background_all_checkbox,
             self.follow_dims_checkbox,
         ):
             widget.setVisible(False)
         self._toolbar_dropdown_widgets = [
-            thumbnail_separator,
             preview_label,
             self.preview_mode_combo,
             contrast_label,
@@ -4516,6 +4789,7 @@ class VippWidget(QWidget):
         workflow_row.setContentsMargins(0, 0, 0, 0)
         workflow_row.setSpacing(4)
         workflow_row.addWidget(self.new_workflow_button)
+        workflow_row.addWidget(self.open_example_button)
         workflow_row.addWidget(self.save_workflow_button)
         workflow_row.addWidget(self.load_workflow_button)
         workflow_separator = _toolbar_separator()
@@ -4565,10 +4839,8 @@ class VippWidget(QWidget):
             widget.setVisible(not hide_zoom)
         for widget in self._toolbar_settings_widgets:
             widget.setVisible(True)
-        compact = hide_dropdowns or hide_zoom
-        self.layer_combo.setMinimumWidth(140 if compact else 220)
         self.auto_structure_button.setText(
-            "Structure" if compact else "Auto structure graph"
+            "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
         )
 
     def _populate_settings_toolbar_menu(self) -> None:
@@ -4580,11 +4852,6 @@ class VippWidget(QWidget):
             False,
         )
         added_section = False
-        self._add_checkbox_menu_action(
-            menu,
-            "Show thumbnails",
-            self.global_thumbnail_checkbox,
-        )
         self._add_checkbox_menu_action(
             menu,
             "Save thumbnail visibility in workflows",
@@ -4858,6 +5125,7 @@ class VippWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
+        self.open_example_button.clicked.connect(self._open_example_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
         self.calculate_all_button.clicked.connect(self._calculate_all_nodes)
@@ -4870,8 +5138,6 @@ class VippWidget(QWidget):
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
-        self.layer_combo.currentTextChanged.connect(self.run_pipeline)
-        self.global_thumbnail_checkbox.toggled.connect(self._update_thumbnails)
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
             self._on_memory_guard_setting_changed
@@ -4965,10 +5231,10 @@ class VippWidget(QWidget):
 
         try:
             self.viewer.layers.events.inserted.connect(
-                lambda _=None: self._refresh_layer_choices()
+                self._on_viewer_layers_changed
             )
             self.viewer.layers.events.removed.connect(
-                lambda _=None: self._refresh_layer_choices()
+                self._on_viewer_layers_changed
             )
         except Exception:
             pass
@@ -6507,6 +6773,31 @@ class VippWidget(QWidget):
             return
         self.status_label.setText(f"Loaded workflow from {loaded.name}.")
 
+    def _open_example_workflow_dialog(self) -> None:
+        dialog = ExampleWorkflowDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        example = dialog.selected_example()
+        if example is None:
+            return
+        try:
+            self.load_example_workflow(example.id)
+        except Exception as exc:
+            self.status_label.setText(f"Open example failed: {exc}")
+
+    def load_example_workflow(self, example_id: str) -> Path:
+        example = _example_workflow_by_id(example_id)
+        if example is None:
+            raise ValueError(f"Unknown example workflow: {example_id!r}.")
+        path = _example_workflow_path(example)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Example workflow file is not available: {path}"
+            )
+        loaded = self.load_workflow_file(path)
+        self.status_label.setText(f"Opened example workflow: {example.title}.")
+        return loaded
+
     def load_workflow_file(self, path: str | Path) -> Path:
         """Load a workflow file into the widget and recompute the graph."""
         self._finish_parameter_history_group()
@@ -7256,7 +7547,8 @@ class VippWidget(QWidget):
 
     def _refresh_and_run(self) -> None:
         self._invalidate_pipeline_cache()
-        self._refresh_layer_choices()
+        self._autobind_default_image_sources()
+        self._refresh_image_source_controls()
         self.run_pipeline()
 
     def _mark_pipeline_dirty(self, node_id: str) -> bool:
@@ -7326,7 +7618,7 @@ class VippWidget(QWidget):
                     )
                 ),
             )
-        return ("toolbar", input_name, id(input_data), id(input_metadata))
+        return ("sources", ())
 
     def _dirty_nodes_for_run(self, source_signature: tuple) -> set[str] | None:
         if source_signature != self._last_pipeline_source_signature:
@@ -7620,25 +7912,41 @@ class VippWidget(QWidget):
         except Exception:
             return False
 
-    def _refresh_layer_choices(self) -> None:
-        current = self.layer_combo.currentText()
-        with QSignalBlocker(self.layer_combo):
-            self.layer_combo.clear()
-            for layer in self.viewer.layers:
-                if self._is_vipp_generated_layer(layer):
-                    continue
-                if hasattr(layer, "data"):
-                    self.layer_combo.addItem(layer.name)
-            if current:
-                index = self.layer_combo.findText(current)
-                if index >= 0:
-                    self.layer_combo.setCurrentIndex(index)
-                    return
-            preferred = self._preferred_input_layer_name()
-            if preferred:
-                index = self.layer_combo.findText(preferred)
-                if index >= 0:
-                    self.layer_combo.setCurrentIndex(index)
+    def _on_viewer_layers_changed(self, _event=None) -> None:
+        changed_node_ids = self._autobind_default_image_sources()
+        self._refresh_image_source_controls()
+        if changed_node_ids and self._mark_pipeline_branches_dirty(changed_node_ids):
+            self.run_pipeline()
+
+    def _autobind_default_image_sources(self) -> set[str]:
+        default_layer_name = self._default_input_layer_name()
+        if not default_layer_name:
+            return set()
+        changed: set[str] = set()
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input":
+                continue
+            mode = str(node.params.get("source_mode", "napari layer"))
+            layer_name = str(node.params.get("layer_name", "")).strip()
+            if mode == "napari layer" and not layer_name:
+                node.params["layer_name"] = default_layer_name
+                changed.add(node_id)
+        return changed
+
+    def _refresh_image_source_controls(self) -> None:
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        control = self._parameter_widgets.get("image_source")
+        if node is None or node.operation_id != "input":
+            return
+        if isinstance(control, ImageSourceControl):
+            self._refresh_image_source_options()
+
+    def _default_input_layer_name(self) -> str:
+        preferred = self._preferred_input_layer_name()
+        if preferred:
+            return preferred
+        names = self._available_layer_names()
+        return names[0] if names else ""
 
     def _preferred_input_layer_name(self) -> str | None:
         fallback: tuple[int, str] | None = None
@@ -7744,7 +8052,7 @@ class VippWidget(QWidget):
 
         layer_name = str(node.params.get("layer_name", "")).strip()
         if not layer_name:
-            layer_name = self.layer_combo.currentText()
+            layer_name = self._default_input_layer_name()
         layer = self._layer_by_name(layer_name) if layer_name else None
         if layer is None:
             return None, None
@@ -8937,9 +9245,13 @@ class VippWidget(QWidget):
         self._render_channel_color_controls(node_id)
 
     def _image_source_value(self, node) -> dict[str, object]:
+        mode = str(node.params.get("source_mode", "napari layer"))
+        layer_name = str(node.params.get("layer_name", "")).strip()
+        if mode == "napari layer" and not layer_name:
+            layer_name = self._default_input_layer_name()
         return {
-            "source_mode": node.params.get("source_mode", "napari layer"),
-            "layer_name": node.params.get("layer_name", ""),
+            "source_mode": mode,
+            "layer_name": layer_name,
             "file_path": node.params.get("file_path", ""),
             "sample_name": node.params.get("sample_name", ""),
             "series_index": node.params.get("series_index", 0),
@@ -8951,6 +9263,7 @@ class VippWidget(QWidget):
         node_id: str,
         value: dict[str, object],
     ) -> None:
+        value = self._normalized_image_source_value(value)
         node = self.pipeline.nodes[node_id]
         for name in (
             "source_mode",
@@ -9031,6 +9344,18 @@ class VippWidget(QWidget):
             return self.pipeline.output_states.get(node_id)
         return self.pipeline.input_state_for_node(node_id)
 
+    def _normalized_image_source_value(
+        self,
+        value: dict[str, object],
+    ) -> dict[str, object]:
+        normalized = dict(value)
+        if (
+            str(normalized.get("source_mode", "napari layer")) == "napari layer"
+            and not str(normalized.get("layer_name", "")).strip()
+        ):
+            normalized["layer_name"] = self._default_input_layer_name()
+        return normalized
+
     def _node_channel_color_choices(self, node_id: str, count: int, state) -> list[str]:
         node = self.pipeline.nodes[node_id]
         raw = str(node.params.get("channel_colors", "")).strip()
@@ -9084,6 +9409,7 @@ class VippWidget(QWidget):
         self._debounce_timer.start()
 
     def _on_image_source_changed(self, value: dict[str, object]) -> None:
+        value = self._normalized_image_source_value(value)
         node = self.pipeline.nodes[self._selected_node_id]
         if self._image_source_value(node) == value:
             return
@@ -9145,10 +9471,17 @@ class VippWidget(QWidget):
             if mode == "collection"
             else ""
         )
-        return (
+        summary = (
             f"{prefix}{inspection.format}; "
             f"{len(inspection.series)} image series discovered."
         )
+        deconvolved, method = detect_deconvolution_metadata(
+            inspection.original_metadata
+        )
+        if deconvolved is True:
+            detail = f" ({method})" if method else ""
+            summary += f" Source metadata mentions deconvolution{detail}."
+        return summary
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -11108,7 +11441,6 @@ class VippWidget(QWidget):
             for node_id in (manual_node_ids or set())
             if self.pipeline.is_manual_node(node_id)
         }
-        toolbar_layer = self._selected_input_layer()
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except Exception as exc:
@@ -11116,7 +11448,7 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Image source error: {exc}")
             return
 
-        if toolbar_layer is None and not source_payloads:
+        if not source_payloads:
             self._set_pipeline_busy(False)
             self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
@@ -11127,22 +11459,14 @@ class VippWidget(QWidget):
             self._update_histogram()
             self._sync_execution_ui()
             self._refresh_cache_status()
-            self.status_label.setText("No image layer selected.")
+            self.status_label.setText("No Image Source node has a selected source.")
             return
 
-        primary_layer = (
-            source_layers[0]
-            if source_layers
-            else (None if source_payloads else toolbar_layer)
-        )
-        if primary_layer is not None:
-            self._last_input_layer_name = getattr(primary_layer, "name", None)
+        primary_layer = source_layers[0] if source_layers else None
         self._restore_hidden_input_layers(except_layer=primary_layer)
-        input_data = None if source_payloads else getattr(toolbar_layer, "data", None)
-        input_metadata = (
-            None if source_payloads else getattr(toolbar_layer, "metadata", None)
-        )
-        input_name = "" if source_payloads else getattr(toolbar_layer, "name", "")
+        input_data = None
+        input_metadata = None
+        input_name = ""
         source_label = self._pipeline_source_label(source_payloads, input_name)
         source_signature = self._pipeline_source_signature(
             input_data,
@@ -11848,9 +12172,7 @@ class VippWidget(QWidget):
             else None
         )
         contrast_mode = self.thumbnail_contrast_combo.currentText()
-        previews_visible_globally = (
-            self.global_thumbnail_checkbox.isChecked() and mode.lower() != "off"
-        )
+        previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
             node_output_type = self._node_output_type(node_id)
             self.graph_view.set_node_metadata(
@@ -12719,12 +13041,6 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
             return
         self._set_active_pin_layer(self._active_pinned_node_id, data)
-
-    def _selected_input_layer(self):
-        name = self.layer_combo.currentText()
-        if not name:
-            return None
-        return self._layer_by_name(name)
 
     def _layer_by_name(self, name: str):
         try:

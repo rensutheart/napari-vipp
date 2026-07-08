@@ -1,0 +1,164 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 1,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "measure_objects_intensity_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "sample",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "VIPP synthetic multichannel volume",
+        "series_index": 0,
+        "channel_colors": "Blue,Green,Red",
+        "binding_mode": "single item"
+      }
+    },
+    {
+      "id": "split_channels_1",
+      "operation_id": "split_channels",
+      "params": {
+        "preview_channel": 2
+      }
+    },
+    {
+      "id": "gaussian_blur_1",
+      "operation_id": "gaussian_blur",
+      "params": {
+        "sigma": 1.2
+      }
+    },
+    {
+      "id": "otsu_threshold_1",
+      "operation_id": "otsu_threshold",
+      "params": {
+        "threshold_scope": "Stack histogram"
+      }
+    },
+    {
+      "id": "fill_holes_1",
+      "operation_id": "fill_holes",
+      "params": {
+        "max_hole_size": 0,
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Face connected"
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "filter_labels_by_volume_1",
+      "operation_id": "filter_labels_by_volume",
+      "params": {
+        "min_volume": 120,
+        "max_volume": 0,
+        "spatial_mode": "Auto from axes"
+      }
+    },
+    {
+      "id": "measure_objects_intensity_1",
+      "operation_id": "measure_objects_intensity",
+      "params": {
+        "spatial_mode": "Auto from axes",
+        "measurement_set": "Basic morphology + intensity",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "split_channels_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "gaussian_blur_1",
+      "target_port": 0,
+      "source_port": 2
+    },
+    {
+      "source": "gaussian_blur_1",
+      "target": "otsu_threshold_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "otsu_threshold_1",
+      "target": "fill_holes_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "fill_holes_1",
+      "target": "label_connected_components_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "filter_labels_by_volume_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "filter_labels_by_volume_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 0,
+      "source_port": 0
+    },
+    {
+      "source": "split_channels_1",
+      "target": "measure_objects_intensity_1",
+      "target_port": 1,
+      "source_port": 2,
+      "tunnel": "Red intensity"
+    }
+  ],
+  "positions": {
+    "input": [0.0, 220.0],
+    "split_channels_1": [360.0, 220.0],
+    "gaussian_blur_1": [720.0, 220.0],
+    "otsu_threshold_1": [1080.0, 220.0],
+    "fill_holes_1": [1440.0, 220.0],
+    "label_connected_components_1": [1800.0, 220.0],
+    "filter_labels_by_volume_1": [2160.0, 220.0],
+    "measure_objects_intensity_1": [2520.0, 220.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "Two-input measurement: cleaned labels define objects; the red intensity tunnel supplies the original channel values.",
+      "position": [2520.0, 90.0],
+      "width": 270.0,
+      "attached_node": "measure_objects_intensity_1"
+    }
+  ],
+  "tunnels": [
+    {
+      "name": "Red intensity",
+      "source": "split_channels_1",
+      "source_port": 2
+    }
+  ]
+}
