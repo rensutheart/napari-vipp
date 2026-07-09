@@ -8,10 +8,12 @@ selected.
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass, replace
 from importlib import import_module
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 import numpy as np
 
@@ -1118,7 +1120,7 @@ def _first_text(metadata: Any, keys: tuple[str, ...]) -> str:
         value = _find_metadata_value(metadata, key)
         if not _is_empty_metadata_value(value) and not isinstance(
             value,
-            (dict, list, tuple, set),
+            (Mapping, list, tuple, set),
         ):
             return str(value)
     return ""
@@ -1134,10 +1136,12 @@ def _first_number(metadata: Any, keys: tuple[str, ...]) -> float | None:
 
 
 def _find_metadata_value(value: Any, target_key: str, depth: int = 0) -> Any:
-    if value is None or depth > 5:
+    if value is None or depth > 10:
         return None
     normalized_target = _normalized_key(target_key)
-    if isinstance(value, dict):
+    if isinstance(value, str):
+        return _find_xml_metadata_value(value, normalized_target)
+    if isinstance(value, Mapping):
         for key, item in value.items():
             if _normalized_key(str(key)) == normalized_target:
                 return item
@@ -1154,9 +1158,74 @@ def _find_metadata_value(value: Any, target_key: str, depth: int = 0) -> Any:
         return None
     if hasattr(value, target_key):
         return getattr(value, target_key)
-    if hasattr(value, "__dict__"):
-        return _find_metadata_value(vars(value), target_key, depth + 1)
+    for key, item in _metadata_object_items(value):
+        if _normalized_key(str(key)) == normalized_target:
+            return item
+    for _key, item in _metadata_object_items(value):
+        found = _find_metadata_value(item, target_key, depth + 1)
+        if found is not None:
+            return found
     return None
+
+
+def _metadata_object_items(value: Any) -> tuple[tuple[str, Any], ...]:
+    if is_dataclass(value) and not isinstance(value, type):
+        try:
+            return tuple(asdict(value).items())
+        except Exception:
+            return ()
+    if hasattr(value, "_asdict"):
+        try:
+            return tuple(value._asdict().items())
+        except Exception:
+            return ()
+    attrs = getattr(value, "__dict__", None)
+    if isinstance(attrs, Mapping):
+        return tuple((str(key), item) for key, item in attrs.items())
+    return ()
+
+
+def _find_xml_metadata_value(text: str, normalized_target: str) -> Any:
+    if "<" not in text or ">" not in text:
+        return None
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        return _find_xml_metadata_value_regex(text, normalized_target)
+    for element in root.iter():
+        tag = _xml_local_name(element.tag)
+        if _normalized_key(tag) == normalized_target:
+            if element.text and element.text.strip():
+                return element.text.strip()
+            for item in element.attrib.values():
+                if str(item).strip():
+                    return item
+        for key, item in element.attrib.items():
+            if _normalized_key(_xml_local_name(key)) == normalized_target:
+                return item
+    return None
+
+
+def _find_xml_metadata_value_regex(text: str, normalized_target: str) -> str | None:
+    pattern = (
+        r"<(?P<tag>[A-Za-z0-9_:.-]+)(?:\s[^>]*)?>"
+        r"(?P<value>[^<]+)</(?P=tag)>"
+    )
+    for match in re.finditer(pattern, text):
+        if _normalized_key(match.group("tag").split(":")[-1]) == normalized_target:
+            value = match.group("value").strip()
+            if value:
+                return value
+    return None
+
+
+def _xml_local_name(value: Any) -> str:
+    text = str(value)
+    if "}" in text:
+        text = text.rsplit("}", 1)[-1]
+    if ":" in text:
+        text = text.rsplit(":", 1)[-1]
+    return text
 
 
 def _metadata_text(metadata: Any) -> str:

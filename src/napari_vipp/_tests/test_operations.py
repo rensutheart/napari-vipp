@@ -26,6 +26,7 @@ from napari_vipp.core.operations import (
     binary_threshold,
     black_hat,
     born_wolf_psf,
+    born_wolf_psf_outputs,
     calculate_weighted_image,
     canny_edges,
     clear_border_objects,
@@ -2073,6 +2074,8 @@ def test_born_wolf_psf_generates_normalized_3d_metadata_sized_kernel():
         channel_emission_wavelength_units=("nanometer",),
         numerical_aperture=1.2,
         refractive_index=1.33,
+        pixel_size_xy_um=0.1,
+        z_step_um=0.3,
     )
 
     assert psf.shape == (7, 17, 17)
@@ -2093,11 +2096,42 @@ def test_born_wolf_psf_can_generate_2d_kernel():
         wavelength_nm=520.0,
         numerical_aperture=1.4,
         refractive_index=1.515,
+        pixel_size_xy_um=0.1,
+        z_step_um=0.3,
     )
 
     assert psf.shape == (15, 15)
     assert np.isclose(float(psf.sum()), 1.0, rtol=1e-5)
     assert psf[7, 7] == psf.max()
+
+
+def test_born_wolf_psf_outputs_generates_one_kernel_per_auto_channel():
+    reference = np.zeros((2, 3, 24, 24), dtype=np.float32)
+
+    psfs = born_wolf_psf_outputs(
+        reference,
+        spatial_mode="3D ZYX",
+        xy_size=15,
+        z_size=5,
+        pupil_samples=48,
+        axis_names=("c", "z", "y", "x"),
+        axis_types=("channel", "space", "space", "space"),
+        axis_scales=(1.0, 0.3, 0.1, 0.1),
+        axis_units=(None, "micrometer", "micrometer", "micrometer"),
+        channel_emission_wavelengths=(520.0, 620.0),
+        channel_emission_wavelength_units=("nanometer", "nanometer"),
+        numerical_aperture=1.2,
+        refractive_index=1.33,
+        pixel_size_xy_um=0.1,
+        z_step_um=0.3,
+    )
+
+    assert len(psfs) == 2
+    assert psfs[0].shape == (5, 15, 15)
+    assert psfs[1].shape == (5, 15, 15)
+    assert np.isclose(float(psfs[0].sum()), 1.0, rtol=1e-5)
+    assert np.isclose(float(psfs[1].sum()), 1.0, rtol=1e-5)
+    assert not np.allclose(psfs[0], psfs[1])
 
 
 def test_born_wolf_psf_pipeline_uses_carried_image_metadata():
@@ -2146,6 +2180,82 @@ def test_born_wolf_psf_pipeline_uses_carried_image_metadata():
     assert psf_state.axis_order == "ZYX"
     assert [axis.scale for axis in psf_state.axes] == [0.4, 0.08, 0.08]
     assert psf_state.channels[0].name == "Far red"
+
+
+def test_born_wolf_psf_pipeline_outputs_channel_specific_psfs():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("born_wolf_psf")
+    pipeline.connect("input", node.id)
+    pipeline.set_param(node.id, "xy_size", 15)
+    pipeline.set_param(node.id, "z_size", 5)
+    pipeline.set_param(node.id, "pupil_samples", 48)
+
+    data = np.zeros((2, 3, 16, 16), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("z", "space", unit="micrometer", scale=0.4),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.08),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.08),
+        ),
+        channels=(
+            ChannelMetadata(
+                name="green",
+                emission_wavelength=520.0,
+                emission_wavelength_unit="nanometer",
+            ),
+            ChannelMetadata(
+                name="red",
+                emission_wavelength=620.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.2,
+            refractive_index=1.33,
+        ),
+    )
+    assert state is not None
+
+    pipeline.run(
+        data,
+        source_payloads={
+            "input": SourcePayload(data, name="metadata test", image_state=state)
+        },
+    )
+
+    ports = pipeline.output_ports(node.id)
+
+    assert [port.label for port in ports] == ["green PSF", "red PSF"]
+    assert len(pipeline.node_outputs[node.id]) == 2
+    assert pipeline.node_outputs[node.id][0].shape == (5, 15, 15)
+    assert pipeline.node_outputs[node.id][1].shape == (5, 15, 15)
+    assert not np.allclose(
+        pipeline.node_outputs[node.id][0],
+        pipeline.node_outputs[node.id][1],
+    )
+    assert pipeline.node_output_states[node.id][0].axis_order == "ZYX"
+    assert pipeline.node_output_states[node.id][0].channels[0].name == "green"
+    assert pipeline.node_output_states[node.id][1].channels[0].name == "red"
+    assert "wavelength 620" in pipeline.node_output_states[node.id][1].history[-1]
+
+
+def test_born_wolf_psf_auto_requires_resolved_metadata():
+    reference = np.zeros((4, 24, 24), dtype=np.uint16)
+
+    with pytest.raises(ValueError, match="unresolved parameter"):
+        born_wolf_psf(
+            reference,
+            spatial_mode="3D ZYX",
+            xy_size=17,
+            z_size=7,
+            pupil_samples=64,
+            axis_names=("z", "y", "x"),
+            axis_types=("space", "space", "space"),
+            axis_scales=(0.3, 0.1, 0.1),
+            axis_units=("micrometer", "micrometer", "micrometer"),
+        )
 
 
 def test_prepare_validate_psf_clips_centers_forces_odd_and_normalizes():

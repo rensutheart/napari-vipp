@@ -27,6 +27,7 @@ MONOCHROME_COLORMAPS = (
     "Blue",
 )
 THUMBNAIL_CONTRAST_MODES = ("Percentile", "Min-max", "Raw")
+THUMBNAIL_CONTRAST_SCOPES = ("Stack", "Slice")
 
 
 def make_preview(
@@ -37,6 +38,8 @@ def make_preview(
     state: ImageState | None = None,
     channel_colors: str | list[str] | tuple[str, ...] | None = None,
     contrast_mode: str = "Percentile",
+    contrast_scope: str = "Slice",
+    contrast_limits=None,
 ) -> np.ndarray | None:
     """Reduce arbitrary image-like data to a 2D or RGB thumbnail source array."""
     if data is None or mode.lower() == "off":
@@ -56,6 +59,8 @@ def make_preview(
             state,
             channel_colors=channel_colors,
             contrast_mode=contrast_mode,
+            contrast_scope=contrast_scope,
+            contrast_limits=contrast_limits,
         )
         if state_preview is not None:
             return state_preview
@@ -84,6 +89,8 @@ def normalize_thumbnail_with_colormap(
     *,
     colormap: str = "Gray",
     contrast_mode: str = "Percentile",
+    contrast_reference=None,
+    contrast_limits=None,
     data_kind: str = "image",
 ) -> np.ndarray | None:
     """Convert preview data to uint8 RGB for display."""
@@ -104,15 +111,110 @@ def normalize_thumbnail_with_colormap(
         arr = arr.astype(np.uint8) * 255
 
     if arr.ndim == 2:
-        gray = _normalize_uint8(arr, contrast_mode=contrast_mode)
+        gray = _normalize_uint8(
+            arr,
+            contrast_mode=contrast_mode,
+            reference=contrast_reference,
+            contrast_limits=contrast_limits,
+        )
         rgb = _apply_monochrome_colormap(gray, colormap)
     elif arr.ndim == 3 and arr.shape[-1] in RGB_CHANNELS:
-        rgb = _normalize_rgb(arr[..., :3], contrast_mode=contrast_mode)
+        rgb = _normalize_rgb(
+            arr[..., :3],
+            contrast_mode=contrast_mode,
+            reference=contrast_reference,
+            contrast_limits=contrast_limits,
+        )
     else:
-        gray = _normalize_uint8(_slice(arr), contrast_mode=contrast_mode)
+        gray = _normalize_uint8(
+            _slice(arr),
+            contrast_mode=contrast_mode,
+            reference=contrast_reference,
+            contrast_limits=contrast_limits,
+        )
         rgb = _apply_monochrome_colormap(gray, colormap)
 
     return _resize_nearest(rgb, size)
+
+
+def thumbnail_contrast_limits(
+    data,
+    *,
+    contrast_mode: str = "Percentile",
+    data_kind: str = "image",
+) -> tuple[float, float] | None:
+    """Return reusable thumbnail contrast limits for an image-like array."""
+    if data is None or str(data_kind or "").lower() in {
+        "label",
+        "labels",
+        "label image",
+        "table",
+    }:
+        return None
+    arr = np.asarray(data)
+    if arr.size == 0:
+        return (0.0, 0.0)
+
+    mode = _contrast_mode_key(contrast_mode)
+    if mode == "raw":
+        if arr.dtype == bool or np.issubdtype(arr.dtype, np.integer):
+            return None
+        values = arr.astype(np.float32, copy=False)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return (0.0, 0.0)
+        return (float(finite.min()), float(finite.max()))
+
+    values = arr.astype(np.float32, copy=False)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return (0.0, 0.0)
+    if float(finite.min()) < 0.0:
+        values = np.clip(values, 0.0, None)
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return (0.0, 0.0)
+    if mode == "minmax":
+        lo = float(finite.min())
+        hi = float(finite.max())
+    else:
+        lo, hi = (
+            float(value)
+            for value in np.percentile(finite, THUMBNAIL_PERCENTILE_RANGE)
+        )
+    if hi <= lo:
+        hi = float(finite.max())
+        lo = float(finite.min())
+    return (lo, hi)
+
+
+def thumbnail_channel_contrast_limits(
+    data,
+    *,
+    channel_axis: int,
+    channel_count: int | None = None,
+    contrast_mode: str = "Percentile",
+    data_kind: str = "image",
+) -> tuple[tuple[float, float] | None, ...]:
+    """Return reusable per-channel thumbnail contrast limits."""
+    arr = np.asarray(data)
+    if arr.size == 0 or arr.ndim == 0:
+        return ()
+    axis = int(channel_axis)
+    if axis < 0:
+        axis += arr.ndim
+    if axis < 0 or axis >= arr.ndim:
+        return ()
+    count = arr.shape[axis] if channel_count is None else int(channel_count)
+    count = max(0, min(count, arr.shape[axis]))
+    return tuple(
+        thumbnail_contrast_limits(
+            np.take(arr, channel, axis=axis),
+            contrast_mode=contrast_mode,
+            data_kind=data_kind,
+        )
+        for channel in range(count)
+    )
 
 
 def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.ndarray:
@@ -147,6 +249,8 @@ def _state_aware_preview(
     *,
     channel_colors: str | list[str] | tuple[str, ...] | None = None,
     contrast_mode: str = "Percentile",
+    contrast_scope: str = "Slice",
+    contrast_limits=None,
 ) -> np.ndarray | None:
     if len(state.axes) != arr.ndim:
         return None
@@ -180,11 +284,20 @@ def _state_aware_preview(
         if axis_name in {"rgb", "rgba"} and not channel_colors:
             return reduced
         metadata_colors = tuple(channel.color for channel in state.channels)
+        reference = (
+            reduced
+            if _contrast_scope_key(contrast_scope) == "slice"
+            else None
+            if contrast_limits is not None
+            else _channel_last_reference(arr, channel_axis)
+        )
         return _fluorescence_composite(
             reduced,
             channel_colors=channel_colors,
             metadata_colors=metadata_colors,
             contrast_mode=contrast_mode,
+            reference=reference,
+            contrast_limits=contrast_limits,
         )
 
     reduced = _reduce_to_axes(
@@ -281,6 +394,8 @@ def _fluorescence_composite(
     channel_colors: str | list[str] | tuple[str, ...] | None = None,
     metadata_colors: tuple[int | None, ...] = (),
     contrast_mode: str = "Percentile",
+    reference=None,
+    contrast_limits=None,
 ) -> np.ndarray:
     color_table = channel_color_table(
         channel_colors,
@@ -289,8 +404,14 @@ def _fluorescence_composite(
     )
     channels = []
     for channel in range(arr.shape[-1]):
+        channel_reference = _channel_reference(reference, channel)
         normalized = (
-            _normalize_uint8(arr[..., channel], contrast_mode=contrast_mode).astype(
+            _normalize_uint8(
+                arr[..., channel],
+                contrast_mode=contrast_mode,
+                reference=channel_reference,
+                contrast_limits=_channel_contrast_limits(contrast_limits, channel),
+            ).astype(
                 np.float32,
             )
             / 255.0
@@ -366,34 +487,46 @@ def _normalize_uint8(
     arr: np.ndarray,
     *,
     contrast_mode: str = "Percentile",
+    reference=None,
+    contrast_limits=None,
 ) -> np.ndarray:
     mode = _contrast_mode_key(contrast_mode)
     if mode == "raw":
-        return _raw_uint8(arr)
+        return _raw_uint8(arr, reference=reference, contrast_limits=contrast_limits)
 
     values = arr.astype(np.float32, copy=False)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return np.zeros(values.shape, dtype=np.uint8)
-    # Signed difference images (e.g. Subtract) carry negative values around a
-    # zero background. Stretching from the negative minimum would render that
-    # background as mid-grey and saturate positive features to white. Anchor the
-    # black point at zero so the thumbnail matches the inspector view, where the
-    # zero background renders black.
-    if float(finite.min()) < 0.0:
-        values = np.clip(values, 0.0, None)
-        finite = values[np.isfinite(values)]
-    if mode == "minmax":
-        lo = float(finite.min())
-        hi = float(finite.max())
+    limits = _coerce_contrast_limits(contrast_limits)
+    if limits is not None:
+        lo, hi = limits
     else:
-        lo, hi = (
-            float(value)
-            for value in np.percentile(finite, THUMBNAIL_PERCENTILE_RANGE)
+        reference_values = (
+            values
+            if reference is None
+            else np.asarray(reference).astype(np.float32, copy=False)
         )
-    if hi <= lo:
-        hi = float(finite.max())
-        lo = float(finite.min())
+        finite = reference_values[np.isfinite(reference_values)]
+        if finite.size == 0:
+            return np.zeros(values.shape, dtype=np.uint8)
+        # Signed difference images (e.g. Subtract) carry negative values around a
+        # zero background. Stretching from the negative minimum would render that
+        # background as mid-grey and saturate positive features to white. Anchor
+        # the black point at zero so the thumbnail matches the inspector view,
+        # where the zero background renders black.
+        if float(finite.min()) < 0.0:
+            values = np.clip(values, 0.0, None)
+            reference_values = np.clip(reference_values, 0.0, None)
+            finite = reference_values[np.isfinite(reference_values)]
+        if mode == "minmax":
+            lo = float(finite.min())
+            hi = float(finite.max())
+        else:
+            lo, hi = (
+                float(value)
+                for value in np.percentile(finite, THUMBNAIL_PERCENTILE_RANGE)
+            )
+        if hi <= lo:
+            hi = float(finite.max())
+            lo = float(finite.min())
     if hi <= lo:
         return np.zeros(values.shape, dtype=np.uint8)
     scaled = (values - lo) / (hi - lo)
@@ -404,14 +537,26 @@ def _normalize_rgb(
     arr: np.ndarray,
     *,
     contrast_mode: str = "Percentile",
+    reference=None,
+    contrast_limits=None,
 ) -> np.ndarray:
     values = arr.astype(np.float32, copy=False)
     finite = values[np.isfinite(values)]
-    if finite.size and float(finite.min()) >= 0.0 and float(finite.max()) <= 1.0:
+    if (
+        contrast_limits is None
+        and finite.size
+        and float(finite.min()) >= 0.0
+        and float(finite.max()) <= 1.0
+    ):
         return (np.clip(values, 0, 1)[..., :3] * 255).astype(np.uint8)
 
     channels = [
-        _normalize_uint8(arr[..., i], contrast_mode=contrast_mode)
+        _normalize_uint8(
+            arr[..., i],
+            contrast_mode=contrast_mode,
+            reference=_rgb_channel_reference(reference, i),
+            contrast_limits=_channel_contrast_limits(contrast_limits, i),
+        )
         for i in range(min(3, arr.shape[-1]))
     ]
     while len(channels) < 3:
@@ -428,13 +573,75 @@ def _contrast_mode_key(contrast_mode: str) -> str:
     return "percentile"
 
 
-def _raw_uint8(arr: np.ndarray) -> np.ndarray:
+def _contrast_scope_key(contrast_scope: str) -> str:
+    text = str(contrast_scope or "").strip().lower()
+    return "slice" if text.startswith("slice") else "stack"
+
+
+def _channel_last_reference(arr: np.ndarray, channel_axis: int) -> np.ndarray:
+    if channel_axis == arr.ndim - 1:
+        return arr
+    return np.moveaxis(arr, channel_axis, -1)
+
+
+def _channel_reference(reference, channel: int):
+    if reference is None:
+        return None
+    values = np.asarray(reference)
+    if values.ndim >= 3 and values.shape[-1] > channel:
+        return values[..., channel]
+    return None
+
+
+def _rgb_channel_reference(reference, channel: int):
+    if reference is None:
+        return None
+    values = np.asarray(reference)
+    if (
+        values.ndim >= 3
+        and values.shape[-1] in RGB_CHANNELS
+        and values.shape[-1] > channel
+    ):
+        return values[..., channel]
+    return None
+
+
+def _channel_contrast_limits(contrast_limits, channel: int):
+    if contrast_limits is None:
+        return None
+    if _coerce_contrast_limits(contrast_limits) is not None:
+        return contrast_limits
+    try:
+        return contrast_limits[channel]
+    except Exception:
+        return None
+
+
+def _coerce_contrast_limits(contrast_limits) -> tuple[float, float] | None:
+    if contrast_limits is None:
+        return None
+    try:
+        lo = float(contrast_limits[0])
+        hi = float(contrast_limits[1])
+    except Exception:
+        return None
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        return None
+    return (lo, hi)
+
+
+def _raw_uint8(
+    arr: np.ndarray,
+    *,
+    reference=None,
+    contrast_limits=None,
+) -> np.ndarray:
     source = np.asarray(arr)
     if source.dtype == bool:
         return source.astype(np.uint8) * 255
-    values = source.astype(np.float32, copy=False)
-    values = np.nan_to_num(values, nan=0.0, posinf=255.0, neginf=0.0)
     if np.issubdtype(source.dtype, np.integer):
+        values = source.astype(np.float32, copy=False)
+        values = np.nan_to_num(values, nan=0.0, posinf=255.0, neginf=0.0)
         info = np.iinfo(source.dtype)
         if info.min < 0:
             scale = float(info.max - info.min)
@@ -444,11 +651,27 @@ def _raw_uint8(arr: np.ndarray) -> np.ndarray:
         else:
             scaled = values / float(info.max)
         return (np.clip(scaled, 0, 1) * 255).astype(np.uint8)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return np.zeros(values.shape, dtype=np.uint8)
-    finite_min = float(finite.min())
-    finite_max = float(finite.max())
+    values = source.astype(np.float32, copy=False)
+    limits = _coerce_contrast_limits(contrast_limits)
+    if limits is None:
+        reference_values = (
+            values
+            if reference is None
+            else np.asarray(reference).astype(np.float32, copy=False)
+        )
+        finite = reference_values[np.isfinite(reference_values)]
+        if finite.size == 0:
+            return np.zeros(values.shape, dtype=np.uint8)
+        finite_min = float(finite.min())
+        finite_max = float(finite.max())
+    else:
+        finite_min, finite_max = limits
+    values = np.nan_to_num(
+        values,
+        nan=0.0,
+        posinf=finite_max,
+        neginf=finite_min,
+    )
     if finite_min >= 0.0:
         if finite_max <= 0.0:
             return np.zeros(values.shape, dtype=np.uint8)

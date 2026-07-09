@@ -18,6 +18,7 @@ from napari_vipp.core.metadata import (
     with_channel_colors,
 )
 from napari_vipp.core.operations import (
+    BORN_WOLF_PSF_AUTO_PARAMETERS,
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
@@ -30,7 +31,7 @@ from napari_vipp.core.operations import (
     bilateral_filter,
     binary_threshold,
     black_hat,
-    born_wolf_psf,
+    born_wolf_psf_outputs,
     calculate_weighted_image,
     canny_edges,
     clear_border_objects,
@@ -100,6 +101,7 @@ from napari_vipp.core.operations import (
     reorder_axes,
     rescale_axes,
     rescale_intensity,
+    resolve_born_wolf_psf_parameters,
     richardson_lucy_deconvolution,
     richardson_lucy_tv_deconvolution,
     rolling_ball_background,
@@ -443,6 +445,14 @@ def _split_axis_outputs(count: int) -> tuple[OutputSpec, ...]:
     )
 
 
+def _born_wolf_psf_outputs(count: int) -> tuple[OutputSpec, ...]:
+    count = max(int(count), 0)
+    return tuple(
+        OutputSpec(f"channel_{index + 1}_psf", "image", f"Channel {index + 1} PSF")
+        for index in range(count)
+    )
+
+
 NODE_LIBRARY: tuple[OperationSpec, ...] = (
     OperationSpec(
         "input",
@@ -550,8 +560,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             SPATIAL_MODE_PARAMETER,
             ParameterSpec(
+                "auto_parameters",
+                "Auto from metadata",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+            ),
+            ParameterSpec(
                 "wavelength_nm",
-                "Emission wavelength nm (0 = auto)",
+                "Emission wavelength nm",
                 "float",
                 0.0,
                 0.0,
@@ -561,7 +580,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "numerical_aperture",
-                "Numerical aperture (0 = auto)",
+                "Numerical aperture",
                 "float",
                 0.0,
                 0.0,
@@ -571,7 +590,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "refractive_index",
-                "Refractive index (0 = auto)",
+                "Refractive index",
                 "float",
                 0.0,
                 0.0,
@@ -581,7 +600,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "pixel_size_xy_um",
-                "XY pixel size um (0 = auto)",
+                "XY pixel size um",
                 "float",
                 0.0,
                 0.0,
@@ -591,7 +610,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "z_step_um",
-                "Z step um (0 = auto)",
+                "Z step um",
                 "float",
                 0.0,
                 0.0,
@@ -601,7 +620,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec("xy_size", "PSF XY size", "int", 65, 9, 1025, 2),
             ParameterSpec("z_size", "PSF Z size", "int", 33, 1, 1025, 2),
-            ParameterSpec("channel", "Channel (-1 = auto)", "int", -1, -1, 64, 1),
+            ParameterSpec("channel", "Channel", "int", -1, -1, 64, 1),
             ParameterSpec(
                 "pupil_samples",
                 "Pupil samples",
@@ -613,8 +632,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec("normalize", "Normalize sum to 1", "bool", True, 0, 1, 1),
         ),
-        born_wolf_psf,
+        born_wolf_psf_outputs,
         subcategory=RESTORATION_PSF_GROUP,
+        output_factory=_born_wolf_psf_outputs,
     ),
     OperationSpec(
         "prepare_validate_psf",
@@ -4114,6 +4134,8 @@ class PrototypePipeline:
             ports = spec.output_ports
         if spec.id == "split_axis":
             ports = self._labeled_split_axis_ports(node_id, ports)
+        if spec.id == "born_wolf_psf":
+            ports = self._labeled_born_wolf_psf_ports(node_id, ports)
         return self._resolved_output_port_types(node_id, ports)
 
     def inferred_dynamic_output_count(
@@ -4130,6 +4152,12 @@ class PrototypePipeline:
             return self._split_channel_output_count(source_id, source_port)
         if operation_id == "split_axis":
             return self._split_axis_output_count(source_id, source_port, params or {})
+        if operation_id == "born_wolf_psf":
+            return self._born_wolf_psf_output_count(
+                source_id,
+                source_port,
+                params or {},
+            )
         return None
 
     def input_ports(self, node_id: str) -> tuple[InputSpec, ...]:
@@ -4185,6 +4213,13 @@ class PrototypePipeline:
                 source.source_port,
                 self._public_params(node.params) if node is not None else {},
             )
+        if spec.id == "born_wolf_psf":
+            node = self.nodes.get(node_id)
+            return self._born_wolf_psf_output_count(
+                source.source_id,
+                source.source_port,
+                self._public_params(node.params) if node is not None else {},
+            )
         return None
 
     def _split_channel_output_count(
@@ -4219,6 +4254,25 @@ class PrototypePipeline:
         except (TypeError, ValueError, IndexError):
             return None
 
+    def _born_wolf_psf_output_count(
+        self,
+        source_id: str,
+        source_port: int,
+        params: dict[str, Any],
+    ) -> int | None:
+        if not bool(params.get("auto_parameters", True)):
+            return 1
+        try:
+            requested = int(params.get("channel", -1))
+        except Exception:
+            requested = -1
+        if requested >= 0:
+            return 1
+        state = self._resolved_output_state(source_id, source_port)
+        shape = self._resolved_output_shape(source_id, source_port)
+        count = _state_channel_count(state, shape)
+        return max(count, 1) if count is not None else 1
+
     def _labeled_split_axis_ports(
         self,
         node_id: str,
@@ -4247,6 +4301,42 @@ class PrototypePipeline:
                 title=f"{label} {index + 1}",
             )
             for index, port in enumerate(ports)
+        )
+
+    def _labeled_born_wolf_psf_ports(
+        self,
+        node_id: str,
+        ports: tuple[OutputSpec, ...],
+    ) -> tuple[OutputSpec, ...]:
+        connections = self._input_connections(node_id)
+        if not connections:
+            return ports
+        node = self.nodes.get(node_id)
+        if node is None:
+            return ports
+        source = connections[0]
+        state = self._resolved_output_state(source.source_id, source.source_port)
+        channels = tuple(getattr(state, "channels", ()) or ())
+        try:
+            requested = int(node.params.get("channel", -1))
+        except Exception:
+            requested = -1
+        labels = (
+            [_born_wolf_psf_channel_label(channels, requested)]
+            if requested >= 0
+            else [
+                _born_wolf_psf_channel_label(channels, index)
+                for index in range(len(ports))
+            ]
+        )
+        return tuple(
+            replace(
+                port,
+                name=f"channel_{index + 1}_psf",
+                title=f"{labels[index]} PSF",
+            )
+            for index, port in enumerate(ports)
+            if index < len(labels)
         )
 
     def _resolved_output_shape(
@@ -4408,6 +4498,105 @@ class PrototypePipeline:
 
     def _operation_kwargs(self, node: GraphNode) -> dict[str, Any]:
         return self._public_params(node.params)
+
+    def _sync_born_wolf_psf_resolution(
+        self,
+        node: GraphNode,
+        source_output: Any,
+        kwargs: dict[str, Any],
+    ) -> None:
+        shape = getattr(source_output, "shape", ())
+        channel_indices = _born_wolf_psf_output_channel_indices(kwargs)
+        resolutions = [
+            resolve_born_wolf_psf_parameters(
+                shape,
+                kwargs.get("spatial_mode", "Auto from axes"),
+                auto_parameters=bool(kwargs.get("auto_parameters", True)),
+                wavelength_nm=kwargs.get("wavelength_nm", 0.0),
+                numerical_aperture=kwargs.get("numerical_aperture", 0.0),
+                refractive_index=kwargs.get("refractive_index", 0.0),
+                pixel_size_xy_um=kwargs.get("pixel_size_xy_um", 0.0),
+                z_step_um=kwargs.get("z_step_um", 0.0),
+                channel=channel_index,
+                resolved_spatial_ndim=kwargs.get("resolved_spatial_ndim"),
+                axis_types=kwargs.get("axis_types", ()),
+                axis_names=kwargs.get("axis_names", ()),
+                axis_scales=kwargs.get("axis_scales", ()),
+                axis_units=kwargs.get("axis_units", ()),
+                channel_emission_wavelengths=kwargs.get(
+                    "channel_emission_wavelengths",
+                    (),
+                ),
+                channel_emission_wavelength_units=kwargs.get(
+                    "channel_emission_wavelength_units",
+                    (),
+                ),
+                channel_excitation_wavelengths=kwargs.get(
+                    "channel_excitation_wavelengths",
+                    (),
+                ),
+                channel_excitation_wavelength_units=kwargs.get(
+                    "channel_excitation_wavelength_units",
+                    (),
+                ),
+                objective_lens_na=kwargs.get("objective_lens_na"),
+                objective_refractive_index=kwargs.get("objective_refractive_index"),
+            )
+            for channel_index in channel_indices
+        ]
+        resolution = resolutions[0]
+        node.params["_vipp_psf_resolution"] = {
+            name: {
+                "value": result.value,
+                "source": result.source,
+                "message": result.message,
+                "required": result.required,
+            }
+            for name, result in resolution.parameters.items()
+        }
+        node.params["_vipp_psf_channel_resolutions"] = [
+            {
+                "values": dict(item.values),
+                "unresolved": list(item.unresolved),
+                "parameters": {
+                    name: {
+                        "value": result.value,
+                        "source": result.source,
+                        "message": result.message,
+                        "required": result.required,
+                    }
+                    for name, result in item.parameters.items()
+                },
+            }
+            for item in resolutions
+        ]
+        unresolved_by_channel = [
+            (index, item.unresolved)
+            for index, item in enumerate(resolutions)
+            if item.unresolved
+        ]
+        node.params["_vipp_psf_unresolved_parameters"] = sorted(
+            {
+                name
+                for _index, unresolved in unresolved_by_channel
+                for name in unresolved
+            }
+        )
+        if unresolved_by_channel:
+            unresolved = "; ".join(
+                f"channel {index + 1}: {', '.join(unresolved)}"
+                for index, unresolved in unresolved_by_channel
+            )
+            mode = "auto" if bool(kwargs.get("auto_parameters", True)) else "manual"
+            raise ValueError(
+                f"Cannot generate Born-Wolf PSF in {mode} mode; unresolved "
+                f"parameter(s): {unresolved}."
+            )
+        if len(channel_indices) > 1:
+            return
+        for name in (*BORN_WOLF_PSF_AUTO_PARAMETERS, "channel"):
+            if name in resolution.values:
+                kwargs[name] = resolution.values[name]
 
     def _sync_colocalization_costes_thresholds(
         self,
@@ -4909,6 +5098,8 @@ class PrototypePipeline:
             kwargs["objective_refractive_index"] = (
                 input_state.acquisition.refractive_index
             )
+        if node.operation_id == "born_wolf_psf":
+            self._sync_born_wolf_psf_resolution(node, source_output, kwargs)
         if node.operation_id == "composite_to_rgb" and isinstance(
             input_state,
             ImageState,
@@ -4947,12 +5138,22 @@ class PrototypePipeline:
                 source_name=getattr(input_state, "source_name", ""),
             )
             return [(output, state)]
+        transform_params = self._public_params(node.params)
+        if node.operation_id == "born_wolf_psf":
+            transform_params = {
+                **transform_params,
+                **{
+                    name: kwargs.get(name, transform_params.get(name))
+                    for name in BORN_WOLF_PSF_AUTO_PARAMETERS
+                },
+                "channel": kwargs.get("channel", transform_params.get("channel")),
+            }
         state = transform_image_state(
             output,
             input_state,
             operation_id=node.operation_id,
             operation_title=node.title,
-            params=self._public_params(node.params),
+            params=transform_params,
         )
         return [(output, state)]
 
@@ -4994,6 +5195,8 @@ class PrototypePipeline:
             ports: tuple[OutputSpec, ...] = spec.output_factory(len(arrays))
         else:
             ports = spec.output_ports
+        if node.operation_id == "born_wolf_psf":
+            ports = self._labeled_born_wolf_psf_ports(node.id, ports)
         ports = self._resolved_output_port_types(node.id, ports)
         results: list[tuple[Any, ImageState | None]] = []
         for index, port in enumerate(ports):
@@ -5010,16 +5213,45 @@ class PrototypePipeline:
                 )
                 results.append((data, state))
                 continue
+            params = self._public_params(node.params)
+            if node.operation_id == "born_wolf_psf":
+                params = self._born_wolf_output_transform_params(node, index)
             state = transform_split_output_state(
                 data,
                 input_state,
                 operation_id=node.operation_id,
                 operation_title=node.title,
                 port_name=port.label,
-                params=self._public_params(node.params),
+                params=params,
             )
             results.append((data, state))
         return results
+
+    def _born_wolf_output_transform_params(
+        self,
+        node: GraphNode,
+        index: int,
+    ) -> dict[str, Any]:
+        params = self._public_params(node.params)
+        channel_resolutions = node.params.get("_vipp_psf_channel_resolutions")
+        if not isinstance(channel_resolutions, list):
+            return params
+        if not 0 <= index < len(channel_resolutions):
+            return params
+        item = channel_resolutions[index]
+        if not isinstance(item, dict):
+            return params
+        values = item.get("values")
+        if not isinstance(values, dict):
+            return params
+        return {
+            **params,
+            **{
+                name: values[name]
+                for name in (*BORN_WOLF_PSF_AUTO_PARAMETERS, "channel")
+                if name in values
+            },
+        }
 
     def _input_sources(self, node_id: str) -> list[str]:
         return [
@@ -5288,6 +5520,44 @@ def _strict_channel_axis_for_shape(
     if len(shape) >= 3 and shape[-1] in (3, 4):
         return len(shape) - 1
     return None
+
+
+def _state_channel_count(
+    state: ImageState | TableState | None,
+    shape: tuple[int, ...] | None,
+) -> int | None:
+    if isinstance(state, ImageState) and state.channels:
+        return len(state.channels)
+    if shape:
+        axis = _strict_channel_axis_for_shape(shape, state)
+        if axis is not None and 0 <= axis < len(shape):
+            return int(shape[axis])
+    return None
+
+
+def _born_wolf_psf_output_channel_indices(kwargs: dict[str, Any]) -> tuple[int, ...]:
+    try:
+        requested = int(kwargs.get("channel", -1))
+    except Exception:
+        requested = -1
+    count = max(
+        len(tuple(kwargs.get("channel_emission_wavelengths", ()) or ())),
+        len(tuple(kwargs.get("channel_excitation_wavelengths", ()) or ())),
+    )
+    if bool(kwargs.get("auto_parameters", True)) and requested < 0 and count > 1:
+        return tuple(range(count))
+    return (requested,)
+
+
+def _born_wolf_psf_channel_label(
+    channels: tuple[Any, ...],
+    index: int,
+) -> str:
+    if 0 <= index < len(channels):
+        name = str(getattr(channels[index], "name", "") or "").strip()
+        if name:
+            return name
+    return f"Channel {index + 1}"
 
 
 def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:

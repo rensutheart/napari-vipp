@@ -110,6 +110,7 @@ from napari_vipp.core.graph_search import (
 )
 from napari_vipp.core.io import (
     MICROSCOPE_FILE_FILTER,
+    MICROSCOPE_SUFFIXES,
     AnalysisLabel,
     OptionalMicroscopeReaderError,
     SourceInspection,
@@ -127,10 +128,13 @@ from napari_vipp.core.metadata import (
     metadata_table_rows,
 )
 from napari_vipp.core.operations import (
+    BORN_WOLF_PSF_AUTO_PARAMETERS,
+    BORN_WOLF_PSF_MANUAL_DEFAULTS,
     NO_TABLE_COLUMNS_VALUE,
     automatic_threshold_value,
     colocalization_normalized_inputs,
     colocalization_threshold_values,
+    resolve_born_wolf_psf_parameters,
     save_array_output,
 )
 from napari_vipp.core.pipeline import (
@@ -152,9 +156,12 @@ from napari_vipp.core.pipeline import (
 from napari_vipp.core.preview import (
     MONOCHROME_COLORMAPS,
     THUMBNAIL_CONTRAST_MODES,
+    THUMBNAIL_CONTRAST_SCOPES,
     _apply_monochrome_colormap,
     make_preview,
     normalize_thumbnail_with_colormap,
+    thumbnail_channel_contrast_limits,
+    thumbnail_contrast_limits,
 )
 from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.tables import is_table_data, save_table_output
@@ -178,6 +185,7 @@ _BATCH_IMAGE_FORMAT_SUFFIXES = {
     "tiff": ".tif",
     "npy": ".npy",
 }
+ASYNC_SOURCE_FILE_BYTES = 32 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -461,6 +469,133 @@ class PipelineRunResult:
     cancelled: bool = False
 
 
+@dataclass(frozen=True)
+class SourceFileLoadSpec:
+    node_id: str
+    path: str
+    series_index: int
+    cache_key: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class SourceFileLoadResult:
+    run_id: int
+    payloads: dict[tuple[object, ...], SourcePayload]
+    error: str = ""
+    node_id: str = ""
+
+
+@dataclass(frozen=True)
+class ThumbnailContrastLimitRequest:
+    key: tuple
+    node_id: str
+    data: object
+    channel_axis: int | None
+    contrast_mode: str
+    data_kind: str
+
+
+@dataclass(frozen=True)
+class ThumbnailContrastLimitResult:
+    run_id: int
+    keys: frozenset[tuple]
+    limits: dict[tuple, object]
+    error: str = ""
+
+
+class SourceFileLoadSignals(QObject):
+    finished = Signal(object)
+
+
+class SourceFileLoadWorker(QRunnable):
+    """Read selected file-path Image Source payloads off the GUI thread."""
+
+    def __init__(self, run_id: int, specs: tuple[SourceFileLoadSpec, ...]):
+        super().__init__()
+        self.run_id = int(run_id)
+        self.specs = tuple(specs)
+        self.signals = SourceFileLoadSignals()
+
+    def run(self) -> None:
+        payloads: dict[tuple[object, ...], SourcePayload] = {}
+        current_node_id = ""
+        try:
+            for spec in self.specs:
+                current_node_id = spec.node_id
+                dataset = read_image(spec.path, series_index=spec.series_index)
+                payloads[spec.cache_key] = SourcePayload(
+                    dataset.data,
+                    {"vipp_source_path": str(Path(spec.path).expanduser())},
+                    dataset.selected_series.name,
+                    dataset.image_state,
+                )
+        except Exception as exc:
+            self.signals.finished.emit(
+                SourceFileLoadResult(
+                    self.run_id,
+                    {},
+                    error=str(exc),
+                    node_id=current_node_id,
+                )
+            )
+            return
+        self.signals.finished.emit(SourceFileLoadResult(self.run_id, payloads))
+
+
+class ThumbnailContrastLimitSignals(QObject):
+    progress = Signal(object)
+    finished = Signal(object)
+
+
+class ThumbnailContrastLimitWorker(QRunnable):
+    """Compute stack thumbnail contrast limits off the GUI thread."""
+
+    def __init__(
+        self,
+        run_id: int,
+        requests: tuple[ThumbnailContrastLimitRequest, ...],
+    ):
+        super().__init__()
+        self.run_id = int(run_id)
+        self.requests = tuple(requests)
+        self.signals = ThumbnailContrastLimitSignals()
+
+    def run(self) -> None:
+        keys = frozenset(request.key for request in self.requests)
+        limits: dict[tuple, object] = {}
+        total = len(self.requests)
+        try:
+            self.signals.progress.emit((self.run_id, 0, total))
+            for index, request in enumerate(self.requests, start=1):
+                if request.channel_axis is None:
+                    limits[request.key] = thumbnail_contrast_limits(
+                        request.data,
+                        contrast_mode=request.contrast_mode,
+                        data_kind=request.data_kind,
+                    )
+                else:
+                    limits[request.key] = thumbnail_channel_contrast_limits(
+                        request.data,
+                        channel_axis=request.channel_axis,
+                        contrast_mode=request.contrast_mode,
+                        data_kind=request.data_kind,
+                    )
+                self.signals.progress.emit((self.run_id, index, total))
+        except Exception as exc:
+            self.signals.finished.emit(
+                ThumbnailContrastLimitResult(
+                    self.run_id,
+                    keys,
+                    {},
+                    error=str(exc),
+                )
+            )
+            return
+        self.signals.finished.emit(
+            ThumbnailContrastLimitResult(self.run_id, keys, limits)
+        )
+
+
 class PipelineRunSignals(QObject):
     node_started = Signal(object)
     progress = Signal(object)
@@ -593,6 +728,7 @@ COLOCALIZATION_SCATTER_COLORMAPS = (
     "Gray",
 )
 BACKGROUND_PIPELINE_OPERATIONS = {
+    "born_wolf_psf",
     "euclidean_distance_transform",
     "gaussian_blur_3d",
     "h_maxima_markers",
@@ -4188,6 +4324,10 @@ class VippWidget(QWidget):
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._source_inspection_cache: dict[str, tuple[int, SourceInspection]] = {}
+        self._file_source_payload_cache: dict[tuple[object, ...], SourcePayload] = {}
+        self._active_source_load_id: int | None = None
+        self._source_load_serial = 0
+        self._source_load_pending = False
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
@@ -4208,6 +4348,15 @@ class VippWidget(QWidget):
         self._toolbar_zoom_widgets: list[QWidget] = []
         self._toolbar_settings_widgets: list[QWidget] = []
         self._recent_cache_node_ids: list[str] = []
+        self._thumbnail_contrast_limit_cache: dict[tuple, object] = {}
+        self._queued_thumbnail_contrast_limit_requests: dict[
+            tuple,
+            ThumbnailContrastLimitRequest,
+        ] = {}
+        self._pending_thumbnail_contrast_limit_keys: set[tuple] = set()
+        self._active_thumbnail_contrast_run_id: int | None = None
+        self._thumbnail_contrast_serial = 0
+        self._thumbnail_contrast_busy_visible = False
         self._syncing_view_dims_bar = False
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self._graph_notes: dict[str, GraphNoteState] = {}
@@ -4229,6 +4378,8 @@ class VippWidget(QWidget):
         self.preview_mode_combo.addItems(["Slice", "MIP", "Off"])
         self.thumbnail_contrast_combo = QComboBox()
         self.thumbnail_contrast_combo.addItems(THUMBNAIL_CONTRAST_MODES)
+        self.thumbnail_scope_combo = QComboBox()
+        self.thumbnail_scope_combo.addItems(THUMBNAIL_CONTRAST_SCOPES)
         self.thumbnail_colormap_combo = QComboBox()
         self.thumbnail_colormap_combo.addItems(MONOCHROME_COLORMAPS)
         self.follow_dims_checkbox = QCheckBox("Follow napari dims")
@@ -4739,6 +4890,9 @@ class VippWidget(QWidget):
         contrast_label = QLabel("Contrast")
         input_row.addWidget(contrast_label)
         input_row.addWidget(self.thumbnail_contrast_combo)
+        scope_label = QLabel("Contrast Range")
+        input_row.addWidget(scope_label)
+        input_row.addWidget(self.thumbnail_scope_combo)
         mono_label = QLabel("Mono")
         input_row.addWidget(mono_label)
         input_row.addWidget(self.thumbnail_colormap_combo)
@@ -4772,6 +4926,8 @@ class VippWidget(QWidget):
             self.preview_mode_combo,
             contrast_label,
             self.thumbnail_contrast_combo,
+            scope_label,
+            self.thumbnail_scope_combo,
             mono_label,
             self.thumbnail_colormap_combo,
         ]
@@ -4889,6 +5045,11 @@ class VippWidget(QWidget):
                 menu,
                 "Thumbnail contrast",
                 self.thumbnail_contrast_combo,
+            )
+            self._add_combo_menu(
+                menu,
+                "Contrast range",
+                self.thumbnail_scope_combo,
             )
             self._add_combo_menu(
                 menu,
@@ -5151,6 +5312,7 @@ class VippWidget(QWidget):
         self.thumbnail_contrast_combo.currentTextChanged.connect(
             self._update_thumbnails,
         )
+        self.thumbnail_scope_combo.currentTextChanged.connect(self._update_thumbnails)
         self.thumbnail_colormap_combo.currentTextChanged.connect(
             self._update_thumbnails
         )
@@ -7571,6 +7733,7 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids.clear()
         self._inflight_dirty_node_ids = None
         self._last_pipeline_source_signature = None
+        self._clear_thumbnail_contrast_limit_state()
         self.pipeline.completed_node_ids.clear()
         self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
         self._sync_execution_ui()
@@ -8005,6 +8168,94 @@ class VippWidget(QWidget):
             self._sample_payload_cache = payloads
         return self._sample_payload_cache
 
+    def _uncached_async_file_source_specs(self) -> tuple[SourceFileLoadSpec, ...]:
+        specs: list[SourceFileLoadSpec] = []
+        seen: set[tuple[object, ...]] = set()
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input":
+                continue
+            if not self._file_source_should_load_async(node):
+                continue
+            key = self._file_source_cache_key(node)
+            if key is None or key in self._file_source_payload_cache or key in seen:
+                continue
+            seen.add(key)
+            specs.append(
+                SourceFileLoadSpec(
+                    node_id=node_id,
+                    path=str(
+                        Path(str(node.params.get("file_path", "")).strip())
+                        .expanduser()
+                    ),
+                    series_index=int(node.params.get("series_index", 0) or 0),
+                    cache_key=key,
+                )
+            )
+        return tuple(specs)
+
+    def _file_source_should_load_async(self, node) -> bool:
+        if str(node.params.get("source_mode", "")) != "file path":
+            return False
+        path_text = str(node.params.get("file_path", "")).strip()
+        if not path_text:
+            return False
+        source_path = Path(path_text).expanduser()
+        suffix = source_path.suffix.lower()
+        if suffix in MICROSCOPE_SUFFIXES:
+            return True
+        try:
+            return source_path.stat().st_size >= ASYNC_SOURCE_FILE_BYTES
+        except OSError:
+            return False
+
+    def _file_source_cache_key(self, node) -> tuple[object, ...] | None:
+        if str(node.params.get("source_mode", "")) != "file path":
+            return None
+        path_text = str(node.params.get("file_path", "")).strip()
+        if not path_text:
+            return None
+        source_path = Path(path_text).expanduser()
+        try:
+            stat = source_path.stat()
+        except OSError:
+            return None
+        try:
+            identity = str(source_path.resolve())
+        except OSError:
+            identity = str(source_path)
+        return (
+            identity,
+            int(node.params.get("series_index", 0) or 0),
+            int(stat.st_mtime_ns),
+            int(stat.st_size),
+        )
+
+    def _cached_file_source_payload(self, node) -> SourcePayload | None:
+        key = self._file_source_cache_key(node)
+        if key is None:
+            return None
+        payload = self._file_source_payload_cache.get(key)
+        if payload is None:
+            return None
+        return self._viewer_aligned_source_payload(payload)
+
+    def _prune_file_source_payload_cache(self) -> None:
+        active_keys = {
+            key
+            for node in self.pipeline.nodes.values()
+            if node.operation_id == "input"
+            for key in (self._file_source_cache_key(node),)
+            if key is not None
+        }
+        if not active_keys:
+            self._file_source_payload_cache.clear()
+            return
+        self._file_source_payload_cache = {
+            key: payload
+            for key, payload in self._file_source_payload_cache.items()
+            if key in active_keys
+        }
+
     def _source_payloads_for_pipeline(
         self,
     ) -> tuple[dict[str, SourcePayload], list[object]]:
@@ -8029,6 +8280,11 @@ class VippWidget(QWidget):
             path = str(node.params.get("file_path", "")).strip()
             if not path:
                 return SourcePayload(None, {}, ""), None
+            cached = self._cached_file_source_payload(node)
+            if cached is not None:
+                return cached, None
+            if self._file_source_should_load_async(node):
+                return None, None
             dataset = read_image(
                 path,
                 series_index=int(node.params.get("series_index", 0)),
@@ -9014,6 +9270,9 @@ class VippWidget(QWidget):
         if node.operation_id == "assign_channel_colors":
             self._render_assign_channel_colors_parameters(node_id)
             return
+        if node.operation_id == "born_wolf_psf":
+            self._render_born_wolf_psf_parameters(node_id)
+            return
 
         self._sync_clip_intensity_defaults(node_id)
         self._sync_rescale_input_cutoff_defaults(node_id)
@@ -9174,6 +9433,274 @@ class VippWidget(QWidget):
         )
         widget.layout().addWidget(button)
         self._parameter_widgets[f"{name}_reset"] = button
+
+    def _render_born_wolf_psf_parameters(self, node_id: str) -> None:
+        node = self.pipeline.nodes[node_id]
+        specs = {
+            spec.name: self._effective_parameter_spec(node_id, spec)
+            for spec in self.pipeline.node_parameter_specs(node_id)
+        }
+        auto = bool(node.params.get("auto_parameters", True))
+        resolution = self._born_wolf_psf_resolution(node_id)
+        managed_names = set(BORN_WOLF_PSF_AUTO_PARAMETERS) | {"channel"}
+        auto_channel_count = self._born_wolf_psf_auto_channel_count(node_id)
+        if not auto:
+            self._initialize_manual_born_wolf_psf_params(node_id, resolution)
+
+        for name, spec in specs.items():
+            bounds = self._born_wolf_psf_bounds(
+                spec,
+                auto=auto,
+                resolution=resolution,
+            )
+            if spec.kind == "choice":
+                widget = ChoiceControl(spec, node.params.get(name), bounds)
+            elif spec.kind == "bool":
+                widget = BoolControl(spec, node.params.get(name), bounds)
+            else:
+                value = node.params.get(name)
+                if auto and name in managed_names:
+                    result = resolution.parameters.get(name)
+                    if (
+                        name == "channel"
+                        and self._born_wolf_psf_requests_all_channels(node_id)
+                        and auto_channel_count > 1
+                    ):
+                        value = -1
+                    else:
+                        value = result.value if result is not None else None
+                    if value is None:
+                        value = 0
+                widget = NumericEntryControl(spec, value, bounds)
+                widget.setEnabled(not (auto and name in managed_names))
+
+            if name == "auto_parameters":
+                widget.valueChanged.connect(self._on_born_wolf_auto_changed)
+            elif name in {"spatial_mode", "channel"}:
+                widget.valueChanged.connect(
+                    lambda value, param=name: self._on_born_wolf_rerender_param_changed(
+                        param,
+                        value,
+                    )
+                )
+            else:
+                widget.valueChanged.connect(
+                    lambda value, param=name: self._on_param_changed(param, value)
+                )
+
+            label_widget = QLabel(spec.label)
+            field_widget: QWidget = widget
+            if name in managed_names:
+                result = resolution.parameters.get(name)
+                unresolved = bool(
+                    auto
+                    and result is not None
+                    and result.required
+                    and not result.resolved
+                )
+                status = QLabel(self._born_wolf_psf_status_text(result, auto=auto))
+                status.setWordWrap(True)
+                status.setStyleSheet(
+                    "color: #f87171;" if unresolved else "color: #94a3b8;"
+                )
+                if unresolved:
+                    label_widget.setStyleSheet("color: #f87171;")
+                if (
+                    name == "channel"
+                    and auto
+                    and self._born_wolf_psf_requests_all_channels(node_id)
+                    and auto_channel_count > 1
+                ):
+                    status.setText(f"all channels ({auto_channel_count})")
+                row = QWidget()
+                layout = QHBoxLayout(row)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(6)
+                layout.addWidget(widget, 0)
+                layout.addWidget(status, 1)
+                field_widget = row
+                self._parameter_widgets[f"{name}_status"] = status
+                self._parameter_widgets[f"{name}_label"] = label_widget
+
+            self.parameter_form.addRow(label_widget, field_widget)
+            self._parameter_widgets[name] = widget
+        self.parameter_group.setHidden(False)
+
+    def _born_wolf_psf_resolution(self, node_id: str):
+        node = self.pipeline.nodes[node_id]
+        data = self.pipeline.input_data_for_node(node_id)
+        state = self.pipeline.input_state_for_node(node_id)
+        shape = tuple(np.asarray(data).shape) if data is not None else ()
+        axis_names = (
+            tuple(axis.name for axis in state.axes) if state is not None else ()
+        )
+        axis_types = (
+            tuple(axis.type for axis in state.axes) if state is not None else ()
+        )
+        axis_scales = (
+            tuple(axis.scale for axis in state.axes) if state is not None else ()
+        )
+        axis_units = (
+            tuple(axis.unit for axis in state.axes) if state is not None else ()
+        )
+        channels = state.channels if state is not None else ()
+        acquisition = state.acquisition if state is not None else None
+        return resolve_born_wolf_psf_parameters(
+            shape,
+            node.params.get("spatial_mode", "Auto from axes"),
+            auto_parameters=bool(node.params.get("auto_parameters", True)),
+            wavelength_nm=node.params.get("wavelength_nm", 0.0),
+            numerical_aperture=node.params.get("numerical_aperture", 0.0),
+            refractive_index=node.params.get("refractive_index", 0.0),
+            pixel_size_xy_um=node.params.get("pixel_size_xy_um", 0.0),
+            z_step_um=node.params.get("z_step_um", 0.0),
+            channel=node.params.get("channel", -1),
+            resolved_spatial_ndim=node.params.get("resolved_spatial_ndim"),
+            axis_types=axis_types,
+            axis_names=axis_names,
+            axis_scales=axis_scales,
+            axis_units=axis_units,
+            channel_emission_wavelengths=tuple(
+                channel.emission_wavelength for channel in channels
+            ),
+            channel_emission_wavelength_units=tuple(
+                channel.emission_wavelength_unit for channel in channels
+            ),
+            channel_excitation_wavelengths=tuple(
+                channel.excitation_wavelength for channel in channels
+            ),
+            channel_excitation_wavelength_units=tuple(
+                channel.excitation_wavelength_unit for channel in channels
+            ),
+            objective_lens_na=(
+                None if acquisition is None else acquisition.objective_na
+            ),
+            objective_refractive_index=(
+                None if acquisition is None else acquisition.refractive_index
+            ),
+        )
+
+    def _born_wolf_psf_requests_all_channels(self, node_id: str) -> bool:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None:
+            return False
+        try:
+            channel = int(node.params.get("channel", -1))
+        except Exception:
+            channel = -1
+        return bool(node.params.get("auto_parameters", True)) and channel < 0
+
+    def _born_wolf_psf_auto_channel_count(self, node_id: str) -> int:
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is not None and getattr(state, "channels", None):
+            return len(state.channels)
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return 0
+        shape = tuple(getattr(data, "shape", ()) or ())
+        if state is not None:
+            for index, axis in enumerate(state.axes):
+                if axis.type == "channel" or axis.name.lower() == "c":
+                    if 0 <= index < len(shape):
+                        return int(shape[index])
+        if len(shape) >= 3 and shape[-1] in {3, 4}:
+            return int(shape[-1])
+        return 0
+
+    def _born_wolf_psf_bounds(
+        self,
+        spec: ParameterSpec,
+        *,
+        auto: bool,
+        resolution,
+    ) -> ParameterBounds:
+        if spec.kind == "choice":
+            return ParameterBounds(0, max(len(spec.choices) - 1, 0), 1, 0)
+        if spec.kind == "bool":
+            return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
+        minimum = spec.minimum
+        if not auto and spec.name in BORN_WOLF_PSF_AUTO_PARAMETERS:
+            minimum = 0.0001 if spec.decimals else 1
+        if not auto and spec.name == "channel":
+            minimum = 0
+        value = None
+        result = resolution.parameters.get(spec.name)
+        if result is not None:
+            value = result.value
+        try:
+            current = float(value if value is not None else spec.default)
+        except Exception:
+            current = float(spec.default)
+        maximum = max(float(spec.maximum), current * 1.25, float(minimum))
+        return ParameterBounds(
+            minimum,
+            maximum,
+            spec.step,
+            spec.decimals,
+            expandable=False,
+            entry_minimum=minimum,
+            entry_maximum=max(float(spec.maximum), maximum),
+        )
+
+    def _born_wolf_psf_status_text(self, result, *, auto: bool) -> str:
+        if result is None:
+            return ""
+        if not auto:
+            return "manual"
+        if not result.resolved:
+            return "Unresolved"
+        if result.source == "metadata":
+            return "auto: metadata"
+        if result.source == "not used":
+            return "not used for 2D"
+        if result.source == "manual":
+            return "manual override"
+        return "auto"
+
+    def _on_born_wolf_auto_changed(self, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.params.get("auto_parameters") == bool(value):
+            return
+        previous_resolution = self._born_wolf_psf_resolution(node_id)
+        self._record_parameter_undo(node_id, "auto_parameters")
+        self.pipeline.set_param(node_id, "auto_parameters", bool(value))
+        if not bool(value):
+            self._initialize_manual_born_wolf_psf_params(
+                node_id,
+                previous_resolution,
+            )
+        self._mark_pipeline_dirty(node_id)
+        self._render_parameters(node_id)
+        self._sync_node_output_ports(node_id)
+        self._debounce_timer.start()
+
+    def _on_born_wolf_rerender_param_changed(self, name: str, value) -> None:
+        self._on_param_changed(name, value)
+        if self._selected_node_id in self.pipeline.nodes:
+            self._render_parameters(self._selected_node_id)
+
+    def _initialize_manual_born_wolf_psf_params(self, node_id: str, resolution) -> None:
+        node = self.pipeline.nodes[node_id]
+        for name, default in BORN_WOLF_PSF_MANUAL_DEFAULTS.items():
+            current = node.params.get(name)
+            try:
+                initialized = (
+                    float(current) > 0 if name != "channel" else int(current) >= 0
+                )
+            except Exception:
+                initialized = False
+            if initialized:
+                continue
+            result = resolution.parameters.get(name)
+            value = (
+                result.value
+                if result is not None
+                and result.value is not None
+                and (name == "channel" or float(result.value) > 0)
+                else default
+            )
+            node.params[name] = value
 
     def _add_operation_note(self, text: str) -> None:
         note = QLabel(text)
@@ -9670,6 +10197,10 @@ class VippWidget(QWidget):
             return changed
         if node.operation_id == "rescale_axes":
             return self._refresh_rescale_axes_controls(self._selected_node_id)
+        if node.operation_id == "born_wolf_psf":
+            self._render_parameters(self._selected_node_id)
+            self._sync_node_output_ports(self._selected_node_id)
+            return False
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
             changed = True
         if self._sync_clip_intensity_defaults(self._selected_node_id):
@@ -9842,6 +10373,19 @@ class VippWidget(QWidget):
                 spec,
                 choices=choices,
                 choice_labels=choice_labels,
+            )
+        if (
+            node is not None
+            and node.operation_id == "born_wolf_psf"
+            and spec.name == "channel"
+        ):
+            return replace(
+                spec,
+                label=(
+                    "Channel (-1 = all channels)"
+                    if bool(node.params.get("auto_parameters", True))
+                    else "Channel"
+                ),
             )
         if (
             node is not None
@@ -10540,6 +11084,229 @@ class VippWidget(QWidget):
             return data, state
         selected_state = states[index] if 0 <= index < len(states) else state
         return selected, selected_state
+
+    def _thumbnail_contrast_limits_for_node(
+        self,
+        node_id: str,
+        data,
+        state: ImageState | None,
+        contrast_mode: str,
+        contrast_scope: str,
+        data_kind: str,
+    ):
+        request = self._thumbnail_contrast_limit_request(
+            node_id,
+            data,
+            state,
+            contrast_mode,
+            contrast_scope,
+            data_kind,
+        )
+        if request is None:
+            return None
+        if request.key in self._thumbnail_contrast_limit_cache:
+            return self._thumbnail_contrast_limit_cache[request.key]
+        self._queue_thumbnail_contrast_limit_request(request)
+        return None
+
+    def _clear_thumbnail_contrast_limit_state(self) -> None:
+        self._thumbnail_contrast_limit_cache.clear()
+        self._queued_thumbnail_contrast_limit_requests.clear()
+        self._pending_thumbnail_contrast_limit_keys.clear()
+        self._active_thumbnail_contrast_run_id = None
+        if (
+            self._thumbnail_contrast_busy_visible
+            and self._active_pipeline_run_id is None
+            and self._active_source_load_id is None
+        ):
+            self._set_pipeline_busy(False)
+        self._thumbnail_contrast_busy_visible = False
+
+    def _thumbnail_contrast_limit_request(
+        self,
+        node_id: str,
+        data,
+        state: ImageState | None,
+        contrast_mode: str,
+        contrast_scope: str,
+        data_kind: str,
+    ) -> ThumbnailContrastLimitRequest | None:
+        if str(contrast_scope or "").strip().lower().startswith("slice"):
+            return None
+        if data is None or str(data_kind or "").lower() in {"labels", "table"}:
+            return None
+        try:
+            arr = np.asarray(data)
+        except Exception:
+            return None
+        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
+        shape = tuple(int(size) for size in arr.shape)
+        dtype = str(getattr(arr, "dtype", ""))
+        mode_key = str(contrast_mode or "").strip().lower()
+        if channel_axis is not None:
+            key = (
+                "channel",
+                node_id,
+                id(data),
+                shape,
+                dtype,
+                mode_key,
+                data_kind,
+                int(channel_axis),
+                int(arr.shape[channel_axis]),
+            )
+            return ThumbnailContrastLimitRequest(
+                key,
+                node_id,
+                arr,
+                int(channel_axis),
+                contrast_mode,
+                data_kind,
+            )
+
+        key = ("scalar", node_id, id(data), shape, dtype, mode_key, data_kind)
+        return ThumbnailContrastLimitRequest(
+            key,
+            node_id,
+            arr,
+            None,
+            contrast_mode,
+            data_kind,
+        )
+
+    def _queue_thumbnail_contrast_limit_request(
+        self,
+        request: ThumbnailContrastLimitRequest,
+    ) -> None:
+        if request.key in self._thumbnail_contrast_limit_cache:
+            return
+        if request.key in self._pending_thumbnail_contrast_limit_keys:
+            return
+        if request.key in self._queued_thumbnail_contrast_limit_requests:
+            return
+        self._queued_thumbnail_contrast_limit_requests[request.key] = request
+        if self._active_thumbnail_contrast_run_id is None:
+            QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
+
+    def _start_thumbnail_contrast_limit_run(self) -> None:
+        if self._active_thumbnail_contrast_run_id is not None:
+            return
+        if not self._queued_thumbnail_contrast_limit_requests:
+            return
+        self._thumbnail_contrast_serial += 1
+        run_id = self._thumbnail_contrast_serial
+        requests = tuple(self._queued_thumbnail_contrast_limit_requests.values())
+        self._queued_thumbnail_contrast_limit_requests.clear()
+        self._pending_thumbnail_contrast_limit_keys.update(
+            request.key for request in requests
+        )
+        self._active_thumbnail_contrast_run_id = run_id
+        self._show_thumbnail_contrast_busy(len(requests))
+        worker = ThumbnailContrastLimitWorker(run_id, requests)
+        worker.signals.progress.connect(self._on_thumbnail_contrast_limit_progress)
+        worker.signals.finished.connect(self._on_thumbnail_contrast_limit_finished)
+        self._pipeline_thread_pool.start(worker)
+
+    def _show_thumbnail_contrast_busy(self, total: int) -> None:
+        if self._active_pipeline_run_id is not None or self._active_source_load_id:
+            self._thumbnail_contrast_busy_visible = False
+            return
+        self._thumbnail_contrast_busy_visible = True
+        self._set_pipeline_busy(True, None, cancelable=False)
+        self.pipeline_busy_label.setText("Calculating thumbnail contrast...")
+        if total > 1:
+            self.pipeline_busy_bar.setRange(0, total)
+            self.pipeline_busy_bar.setValue(0)
+            self.pipeline_busy_bar.setTextVisible(True)
+            self.pipeline_busy_bar.setFormat("%v/%m")
+
+    def _on_thumbnail_contrast_limit_progress(self, payload: object) -> None:
+        try:
+            run_id, current, total = payload
+        except Exception:
+            return
+        if run_id != self._active_thumbnail_contrast_run_id:
+            return
+        if not self._thumbnail_contrast_busy_visible:
+            return
+        current = int(current)
+        total = int(total)
+        if total > 1:
+            self.pipeline_busy_bar.setRange(0, total)
+            self.pipeline_busy_bar.setValue(max(0, min(current, total)))
+            self.pipeline_busy_bar.setTextVisible(True)
+            self.pipeline_busy_bar.setFormat("%v/%m")
+            self.pipeline_busy_label.setText(
+                f"Calculating thumbnail contrast {current}/{total}..."
+            )
+        else:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
+            self.pipeline_busy_label.setText("Calculating thumbnail contrast...")
+
+    def _on_thumbnail_contrast_limit_finished(
+        self,
+        result: ThumbnailContrastLimitResult,
+    ) -> None:
+        if result.run_id != self._active_thumbnail_contrast_run_id:
+            return
+        self._active_thumbnail_contrast_run_id = None
+        self._pending_thumbnail_contrast_limit_keys.difference_update(result.keys)
+        if not result.error:
+            self._thumbnail_contrast_limit_cache.update(result.limits)
+        if self._thumbnail_contrast_busy_visible:
+            self._thumbnail_contrast_busy_visible = False
+            if (
+                self._active_pipeline_run_id is None
+                and self._active_source_load_id is None
+            ):
+                self._set_pipeline_busy(False)
+        if result.error:
+            self.status_label.setText(
+                f"Thumbnail contrast calculation failed: {result.error}"
+            )
+        else:
+            self.status_label.setText("Thumbnail contrast ready.")
+            self._update_thumbnails()
+        if self._queued_thumbnail_contrast_limit_requests:
+            QTimer.singleShot(0, self._start_thumbnail_contrast_limit_run)
+
+    def _thumbnail_channel_axis_for_contrast(
+        self,
+        arr: np.ndarray,
+        state: ImageState | None,
+    ) -> int | None:
+        if state is not None and len(state.axes) == arr.ndim:
+            for index, axis in enumerate(state.axes):
+                if axis.type == "channel" or axis.name.lower() in {"c", "rgb", "rgba"}:
+                    return index
+        if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
+            return arr.ndim - 1
+        return None
+
+    def _thumbnail_preview_consumes_contrast(
+        self,
+        node_id: str,
+        data,
+        state: ImageState | None,
+    ) -> bool:
+        if state is None:
+            return False
+        try:
+            arr = np.asarray(data)
+        except Exception:
+            return False
+        if len(state.axes) != arr.ndim:
+            return False
+        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
+        if channel_axis is None:
+            return False
+        axis_name = state.axes[channel_axis].name.lower()
+        if axis_name in {"rgb", "rgba"} and not self._node_preview_channel_colors(
+            node_id
+        ):
+            return False
+        return True
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -11387,6 +12154,11 @@ class VippWidget(QWidget):
                 self._update_colocalization_scatter()
         if name == "spatial_mode":
             self._update_fill_holes_scope_note()
+        if node.operation_id == "born_wolf_psf" and name in {
+            "auto_parameters",
+            "channel",
+        }:
+            self._sync_node_output_ports(self._selected_node_id)
         if name in {"min_volume", "max_volume", "spatial_mode"}:
             self._update_label_volume_histogram()
         if (
@@ -11488,6 +12260,10 @@ class VippWidget(QWidget):
             for node_id in (manual_node_ids or set())
             if self.pipeline.is_manual_node(node_id)
         }
+        source_load_specs = self._uncached_async_file_source_specs()
+        if source_load_specs:
+            self._start_source_file_load(source_load_specs)
+            return
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except OptionalMicroscopeReaderError as exc:
@@ -11643,6 +12419,7 @@ class VippWidget(QWidget):
         self._hide_input_layer_for_inspection(primary_layer)
         self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
+        self._clear_thumbnail_contrast_limit_state()
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()
@@ -11670,6 +12447,57 @@ class VippWidget(QWidget):
     ) -> str:
         source_names = [payload.name for payload in source_payloads.values()]
         return ", ".join(name for name in source_names if name) or input_name
+
+    def _start_source_file_load(
+        self,
+        specs: tuple[SourceFileLoadSpec, ...],
+    ) -> None:
+        if not specs:
+            return
+        if self._active_source_load_id is not None:
+            self._source_load_pending = True
+            self._set_pipeline_busy(
+                True,
+                specs[0].node_id,
+                queued=True,
+                cancelable=False,
+            )
+            self.status_label.setText(
+                "Loading image source in background; latest source edit queued."
+            )
+            return
+        self._source_load_serial += 1
+        run_id = self._source_load_serial
+        self._active_source_load_id = run_id
+        self._source_load_pending = False
+        node_id = specs[0].node_id
+        self._set_pipeline_busy(True, node_id, cancelable=False)
+        path_name = Path(specs[0].path).name
+        suffix = f" ({len(specs)} source(s))" if len(specs) > 1 else ""
+        self.status_label.setText(f"Loading image source '{path_name}'{suffix}...")
+        worker = SourceFileLoadWorker(run_id, specs)
+        worker.signals.finished.connect(self._on_source_file_load_finished)
+        self._pipeline_thread_pool.start(worker)
+
+    def _on_source_file_load_finished(self, result: SourceFileLoadResult) -> None:
+        if result.run_id != self._active_source_load_id:
+            return
+        self._active_source_load_id = None
+        if result.error:
+            if result.node_id:
+                self.pipeline.set_node_execution_error(result.node_id, result.error)
+            self._sync_execution_ui()
+            self._set_pipeline_busy(False)
+            self.status_label.setText(f"Image source error: {result.error}")
+            if self._source_load_pending:
+                self._source_load_pending = False
+                QTimer.singleShot(0, self.run_pipeline)
+            return
+        self._file_source_payload_cache.update(result.payloads)
+        self._prune_file_source_payload_cache()
+        self._set_pipeline_busy(False)
+        self._source_load_pending = False
+        QTimer.singleShot(0, self.run_pipeline)
 
     def _should_run_pipeline_in_background(
         self,
@@ -11952,6 +12780,7 @@ class VippWidget(QWidget):
                 continue
             if update_params:
                 node.params = dict(result_node.params)
+        self._clear_thumbnail_contrast_limit_state()
         self.pipeline.outputs = dict(result_pipeline.outputs)
         self.pipeline.output_states = dict(result_pipeline.output_states)
         self.pipeline.node_outputs = {
@@ -12223,6 +13052,7 @@ class VippWidget(QWidget):
             else None
         )
         contrast_mode = self.thumbnail_contrast_combo.currentText()
+        contrast_scope = self.thumbnail_scope_combo.currentText()
         previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
             node_output_type = self._node_output_type(node_id)
@@ -12243,6 +13073,26 @@ class VippWidget(QWidget):
                 node_id,
                 data,
             )
+            contrast_limits = self._thumbnail_contrast_limits_for_node(
+                node_id,
+                preview_data,
+                preview_state,
+                contrast_mode,
+                contrast_scope,
+                node_output_type,
+            )
+            stack_scope = not str(contrast_scope).strip().lower().startswith("slice")
+            effective_contrast_scope = (
+                "Slice" if stack_scope and contrast_limits is None else contrast_scope
+            )
+            effective_scope_is_slice = (
+                str(effective_contrast_scope).strip().lower().startswith("slice")
+            )
+            preview_consumes_contrast = self._thumbnail_preview_consumes_contrast(
+                node_id,
+                preview_data,
+                preview_state,
+            )
             preview = make_preview(
                 preview_data,
                 mode=mode,
@@ -12251,11 +13101,19 @@ class VippWidget(QWidget):
                 state=preview_state,
                 channel_colors=self._node_preview_channel_colors(node_id),
                 contrast_mode=contrast_mode,
+                contrast_scope=effective_contrast_scope,
+                contrast_limits=contrast_limits,
             )
             thumbnail = normalize_thumbnail_with_colormap(
                 preview,
                 colormap=self.thumbnail_colormap_combo.currentText(),
                 contrast_mode=contrast_mode,
+                contrast_reference=(
+                    preview if effective_scope_is_slice else None
+                ),
+                contrast_limits=(
+                    None if preview_consumes_contrast else contrast_limits
+                ),
                 data_kind=node_output_type,
             )
             self.graph_view.set_thumbnail(node_id, thumbnail)

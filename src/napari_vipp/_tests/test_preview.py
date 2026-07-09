@@ -14,6 +14,8 @@ from napari_vipp.core.preview import (
     make_preview,
     normalize_thumbnail,
     normalize_thumbnail_with_colormap,
+    thumbnail_channel_contrast_limits,
+    thumbnail_contrast_limits,
 )
 
 
@@ -92,6 +94,53 @@ def test_raw_float_thumbnail_scales_relative_to_finite_data_range():
     assert thumb[0, 1, 0] == 255
     assert 120 <= thumb[1, 0, 0] <= 130
     assert thumb[1, 1, 0] == 0
+
+
+def test_raw_float_thumbnail_can_use_stack_contrast_reference():
+    stack = np.zeros((2, 2, 2), dtype=np.float32)
+    stack[0, 0, 0] = 1.0
+    stack[1, 0, 0] = 10.0
+    slice_view = stack[0]
+
+    slice_scaled = normalize_thumbnail_with_colormap(
+        slice_view,
+        size=(2, 2),
+        colormap="Gray",
+        contrast_mode="Raw",
+        contrast_reference=slice_view,
+    )
+    stack_scaled = normalize_thumbnail_with_colormap(
+        slice_view,
+        size=(2, 2),
+        colormap="Gray",
+        contrast_mode="Raw",
+        contrast_reference=stack,
+    )
+
+    assert slice_scaled is not None
+    assert stack_scaled is not None
+    assert slice_scaled[0, 0, 0] == 255
+    assert 20 <= stack_scaled[0, 0, 0] <= 30
+
+
+def test_raw_float_thumbnail_can_use_cached_stack_contrast_limits():
+    stack = np.zeros((2, 2, 2), dtype=np.float32)
+    stack[0, 0, 0] = 1.0
+    stack[1, 0, 0] = 10.0
+    slice_view = stack[0]
+    limits = thumbnail_contrast_limits(stack, contrast_mode="Raw")
+
+    stack_scaled = normalize_thumbnail_with_colormap(
+        slice_view,
+        size=(2, 2),
+        colormap="Gray",
+        contrast_mode="Raw",
+        contrast_limits=limits,
+    )
+
+    assert stack_scaled is not None
+    assert limits == (0.0, 10.0)
+    assert 20 <= stack_scaled[0, 0, 0] <= 30
 
 
 def test_percentile_thumbnail_keeps_sparse_foreground_visible_over_low_ramp():
@@ -279,6 +328,64 @@ def test_requested_blue_channel_stays_blue_in_thumbnail():
     assert green_pixel[0] == 0
     assert green_pixel[1] > 0
     assert green_pixel[2] == 0
+
+
+def test_multichannel_stack_contrast_scope_uses_full_channel_range():
+    data = np.zeros((1, 2, 8, 9), dtype=np.float32)
+    data[0, 0, 2:5, 2:5] = 1.0
+    data[0, 1, 2:5, 2:5] = 10.0
+    state = image_state_from_array(data, layer_metadata={"axes": "CZYX"})
+
+    slice_scaled = make_preview(
+        data,
+        mode="slice",
+        current_step=(0, 0, 0, 0),
+        state=state,
+        channel_colors=["Green"],
+        contrast_mode="Raw",
+        contrast_scope="Slice",
+    )
+    stack_scaled = make_preview(
+        data,
+        mode="slice",
+        current_step=(0, 0, 0, 0),
+        state=state,
+        channel_colors=["Green"],
+        contrast_mode="Raw",
+        contrast_scope="Stack",
+    )
+
+    assert slice_scaled is not None
+    assert stack_scaled is not None
+    assert slice_scaled[3, 3, 1] > 0.95
+    assert 0.05 < stack_scaled[3, 3, 1] < 0.15
+
+
+def test_multichannel_preview_can_use_cached_stack_contrast_limits():
+    data = np.zeros((1, 2, 8, 9), dtype=np.float32)
+    data[0, 0, 2:5, 2:5] = 1.0
+    data[0, 1, 2:5, 2:5] = 10.0
+    state = image_state_from_array(data, layer_metadata={"axes": "CZYX"})
+    limits = thumbnail_channel_contrast_limits(
+        data,
+        channel_axis=0,
+        contrast_mode="Raw",
+    )
+
+    stack_scaled = make_preview(
+        data,
+        mode="slice",
+        current_step=(0, 0, 0, 0),
+        state=state,
+        channel_colors=["Green"],
+        contrast_mode="Raw",
+        contrast_scope="Stack",
+        contrast_limits=limits,
+    )
+
+    assert stack_scaled is not None
+    assert limits == ((0.0, 10.0),)
+    assert 0.05 < stack_scaled[3, 3, 1] < 0.15
 
 
 def test_time_lapse_multichannel_preview_follows_current_step():

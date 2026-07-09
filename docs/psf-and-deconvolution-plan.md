@@ -210,8 +210,9 @@ Shape rules:
 - A 2D PSF can only be used in `2D YX` processing.
 - A 3D PSF can only be used in `3D ZYX` processing.
 - For channel-specific PSFs, first-pass workflow should use `Split Channels`
-  and one deconvolution node per channel. Do not implement multi-channel PSF
-  broadcasting yet.
+  and one deconvolution node per channel. Generated Born-Wolf PSFs may expose
+  one output port per channel, but deconvolution should still consume one
+  scalar PSF per branch; do not implement multi-channel PSF broadcasting yet.
 
 ### Richardson-Lucy TV Deconvolution
 

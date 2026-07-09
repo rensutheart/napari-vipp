@@ -553,6 +553,53 @@ def test_nested_microscope_metadata_does_not_break_acquisition_detection():
     assert acquisition.objective_na == 1.35
 
 
+def test_microscope_acquisition_reads_object_style_nested_metadata():
+    metadata = SimpleNamespace(
+        channels=(
+            SimpleNamespace(
+                microscope=SimpleNamespace(
+                    objectiveName="Apo TIRF 100x Oil DIC N2",
+                    objectiveNumericalAperture=1.49,
+                    objectiveMagnification=100.0,
+                    immersionRefractiveIndex=1.515,
+                )
+            ),
+        )
+    )
+
+    acquisition = microscope_io._acquisition_from_metadata({"metadata": metadata})
+
+    assert acquisition.objective == "Apo TIRF 100x Oil DIC N2"
+    assert acquisition.objective_na == 1.49
+    assert acquisition.objective_magnification == 100.0
+    assert acquisition.refractive_index == 1.515
+
+
+def test_microscope_acquisition_reads_xml_metadata_values():
+    metadata = """
+    <ImageDocument>
+      <ObjectiveSettings>
+        <Medium>Oil</Medium>
+        <RefractiveIndex>1.518</RefractiveIndex>
+      </ObjectiveSettings>
+      <Objectives>
+        <Objective>
+          <ObjectiveName>Plan-Apochromat 100x Oil</ObjectiveName>
+          <LensNA>1.46</LensNA>
+          <NominalMagnification>100</NominalMagnification>
+        </Objective>
+      </Objectives>
+    </ImageDocument>
+    """
+
+    acquisition = microscope_io._acquisition_from_metadata(metadata)
+
+    assert acquisition.objective == "Plan-Apochromat 100x Oil"
+    assert acquisition.objective_na == 1.46
+    assert acquisition.objective_magnification == 100.0
+    assert acquisition.refractive_index == 1.518
+
+
 def test_xarray_czi_metadata_normalizes_channels_and_axes():
     class Coord:
         def __init__(self, values):

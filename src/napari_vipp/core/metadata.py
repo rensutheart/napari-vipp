@@ -522,7 +522,12 @@ def transform_split_output_state(
         axes=axes,
         metadata_source=metadata_source,
         source_name=input_state.source_name,
-        history=input_state.history + (f"{label}: extracted {port_name}",),
+        history=input_state.history
+        + (
+            _operation_history(input_state, operation_id, label, params)
+            if operation_id == "born_wolf_psf"
+            else f"{label}: extracted {port_name}",
+        ),
         channels=_split_output_channels(
             input_state.axes,
             input_state.channels,
@@ -1114,6 +1119,8 @@ def _split_output_axes(
     params: dict[str, Any] | None = None,
 ) -> tuple[AxisMetadata, ...]:
     """Axes for one channel extracted from a multi-channel image."""
+    if operation_id == "born_wolf_psf":
+        return _psf_axes(axes, output_ndim, params or {})
     if operation_id == "split_axis":
         axis_index = _split_axis_index_from_params(params or {}, len(axes))
         reduced = _remove_axis(axes, axis_index)
@@ -1224,6 +1231,9 @@ def _split_output_channels(
 ) -> tuple[ChannelMetadata, ...]:
     if not channels:
         return ()
+    if operation_id == "born_wolf_psf" and "channel" in params:
+        index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
+        return (channels[index],)
     if operation_id == "split_axis":
         axis_index = _split_axis_index_from_params(params, len(axes))
         if axis_index != _channel_axis_index(axes):
@@ -1377,11 +1387,37 @@ def _psf_axes(
         params.get("z_step_um"),
         _psf_z_size_from_axes(input_axes) or max(xy_size, wavelength_nm / 2000.0),
     )
-    y_axis = AxisMetadata(name="y", type="space", unit="micrometer", scale=xy_size)
-    x_axis = AxisMetadata(name="x", type="space", unit="micrometer", scale=xy_size)
+    axis_map = _xyz_axis_map_for_metadata(input_axes)
+
+    def source_axis_for(name: str) -> int | None:
+        index = axis_map.get(name)
+        if index is None or index >= len(input_axes):
+            return None
+        return input_axes[index].source_axis
+
+    y_axis = AxisMetadata(
+        name="y",
+        type="space",
+        unit="micrometer",
+        scale=xy_size,
+        source_axis=source_axis_for("y"),
+    )
+    x_axis = AxisMetadata(
+        name="x",
+        type="space",
+        unit="micrometer",
+        scale=xy_size,
+        source_axis=source_axis_for("x"),
+    )
     if output_ndim <= 2:
         return (y_axis, x_axis)
-    z_axis = AxisMetadata(name="z", type="space", unit="micrometer", scale=z_size)
+    z_axis = AxisMetadata(
+        name="z",
+        type="space",
+        unit="micrometer",
+        scale=z_size,
+        source_axis=source_axis_for("z"),
+    )
     return (z_axis, y_axis, x_axis)
 
 
@@ -1660,12 +1696,13 @@ def _operation_history(
         )
     if operation_id == "born_wolf_psf":
         spatial_mode = str(params.get("spatial_mode", "Auto from axes"))
+        auto_mode = "auto" if bool(params.get("auto_parameters", True)) else "manual"
         wavelength = _format_number(params.get("wavelength_nm", 0.0))
         na = _format_number(params.get("numerical_aperture", 0.0))
         ri = _format_number(params.get("refractive_index", 0.0))
         return (
-            f"{operation_title}: scalar {spatial_mode}, "
-            f"wavelength {wavelength} nm, NA {na}, RI {ri} (0=auto)"
+            f"{operation_title}: scalar {spatial_mode}, {auto_mode} parameters, "
+            f"wavelength {wavelength} nm, NA {na}, RI {ri}"
         )
     if operation_id == "prepare_validate_psf":
         center_mode = str(params.get("center_mode", "Peak"))

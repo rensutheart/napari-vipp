@@ -31,6 +31,43 @@ NO_TABLE_COLUMNS_VALUE = "__none__"
 
 RGB_CHANNELS = (3, 4)
 
+BORN_WOLF_PSF_AUTO_PARAMETERS = (
+    "wavelength_nm",
+    "numerical_aperture",
+    "refractive_index",
+    "pixel_size_xy_um",
+    "z_step_um",
+)
+BORN_WOLF_PSF_MANUAL_DEFAULTS = {
+    "wavelength_nm": 520.0,
+    "numerical_aperture": 1.4,
+    "refractive_index": 1.515,
+    "pixel_size_xy_um": 0.1,
+    "z_step_um": 0.3,
+    "channel": 0,
+}
+
+
+@dataclass(frozen=True)
+class BornWolfPsfParameterResolution:
+    name: str
+    value: float | int | None
+    source: str
+    message: str
+    required: bool = True
+
+    @property
+    def resolved(self) -> bool:
+        return self.value is not None
+
+
+@dataclass(frozen=True)
+class BornWolfPsfResolution:
+    spatial_ndim: int
+    values: dict[str, float | int]
+    parameters: dict[str, BornWolfPsfParameterResolution]
+    unresolved: tuple[str, ...]
+
 
 def crop_stack(
     data,
@@ -142,6 +179,7 @@ def gaussian_blur_3d(
 def born_wolf_psf(
     data,
     spatial_mode: str = "Auto from axes",
+    auto_parameters: bool = True,
     wavelength_nm: float = 0.0,
     numerical_aperture: float = 0.0,
     refractive_index: float = 0.0,
@@ -166,51 +204,153 @@ def born_wolf_psf(
 ) -> np.ndarray:
     """Generate a scalar Born-Wolf point-spread function from image metadata."""
     shape = tuple(int(size) for size in getattr(data, "shape", ()) or ())
-    spatial_ndim = _resolved_psf_spatial_ndim(
+    resolution = resolve_born_wolf_psf_parameters(
         shape,
         spatial_mode,
-        resolved_spatial_ndim,
-        axis_types,
+        auto_parameters=auto_parameters,
+        wavelength_nm=wavelength_nm,
+        numerical_aperture=numerical_aperture,
+        refractive_index=refractive_index,
+        pixel_size_xy_um=pixel_size_xy_um,
+        z_step_um=z_step_um,
+        channel=channel,
+        resolved_spatial_ndim=resolved_spatial_ndim,
+        axis_types=axis_types,
+        axis_names=axis_names,
+        axis_scales=axis_scales,
+        axis_units=axis_units,
+        channel_emission_wavelengths=channel_emission_wavelengths,
+        channel_emission_wavelength_units=channel_emission_wavelength_units,
+        channel_excitation_wavelengths=channel_excitation_wavelengths,
+        channel_excitation_wavelength_units=channel_excitation_wavelength_units,
+        objective_lens_na=objective_lens_na,
+        objective_refractive_index=objective_refractive_index,
     )
+    if resolution.unresolved:
+        unresolved = ", ".join(resolution.unresolved)
+        mode = "auto" if bool(auto_parameters) else "manual"
+        raise ValueError(
+            f"Cannot generate Born-Wolf PSF in {mode} mode; unresolved "
+            f"parameter(s): {unresolved}."
+        )
+    return _born_wolf_psf_from_resolution(
+        resolution,
+        xy_size=xy_size,
+        z_size=z_size,
+        pupil_samples=pupil_samples,
+        normalize=normalize,
+    )
+
+
+def born_wolf_psf_outputs(
+    data,
+    spatial_mode: str = "Auto from axes",
+    auto_parameters: bool = True,
+    wavelength_nm: float = 0.0,
+    numerical_aperture: float = 0.0,
+    refractive_index: float = 0.0,
+    pixel_size_xy_um: float = 0.0,
+    z_step_um: float = 0.0,
+    xy_size: int = 65,
+    z_size: int = 33,
+    channel: int = -1,
+    pupil_samples: int = 256,
+    normalize: bool = True,
+    resolved_spatial_ndim: int | None = None,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+    axis_scales: Sequence[float] = (),
+    axis_units: Sequence[str | None] = (),
+    channel_emission_wavelengths: Sequence[float | None] = (),
+    channel_emission_wavelength_units: Sequence[str | None] = (),
+    channel_excitation_wavelengths: Sequence[float | None] = (),
+    channel_excitation_wavelength_units: Sequence[str | None] = (),
+    objective_lens_na: float | None = None,
+    objective_refractive_index: float | None = None,
+) -> tuple[np.ndarray, ...]:
+    """Generate one Born-Wolf PSF per requested channel for graph nodes."""
+    channel_indices = _born_wolf_psf_output_channel_indices(
+        channel,
+        auto_parameters=auto_parameters,
+        channel_emission_wavelengths=channel_emission_wavelengths,
+        channel_excitation_wavelengths=channel_excitation_wavelengths,
+    )
+    return tuple(
+        born_wolf_psf(
+            data,
+            spatial_mode=spatial_mode,
+            auto_parameters=auto_parameters,
+            wavelength_nm=wavelength_nm,
+            numerical_aperture=numerical_aperture,
+            refractive_index=refractive_index,
+            pixel_size_xy_um=pixel_size_xy_um,
+            z_step_um=z_step_um,
+            xy_size=xy_size,
+            z_size=z_size,
+            channel=channel_index,
+            pupil_samples=pupil_samples,
+            normalize=normalize,
+            resolved_spatial_ndim=resolved_spatial_ndim,
+            axis_names=axis_names,
+            axis_types=axis_types,
+            axis_scales=axis_scales,
+            axis_units=axis_units,
+            channel_emission_wavelengths=channel_emission_wavelengths,
+            channel_emission_wavelength_units=channel_emission_wavelength_units,
+            channel_excitation_wavelengths=channel_excitation_wavelengths,
+            channel_excitation_wavelength_units=channel_excitation_wavelength_units,
+            objective_lens_na=objective_lens_na,
+            objective_refractive_index=objective_refractive_index,
+        )
+        for channel_index in channel_indices
+    )
+
+
+def _born_wolf_psf_output_channel_indices(
+    channel: int,
+    *,
+    auto_parameters: bool,
+    channel_emission_wavelengths: Sequence[float | None],
+    channel_excitation_wavelengths: Sequence[float | None],
+) -> tuple[int, ...]:
+    try:
+        requested = int(channel)
+    except Exception:
+        requested = -1
+    count = _psf_channel_count(
+        channel_emission_wavelengths,
+        channel_excitation_wavelengths,
+    )
+    if bool(auto_parameters) and requested < 0 and count > 1:
+        return tuple(range(count))
+    return (requested,)
+
+
+def _born_wolf_psf_from_resolution(
+    resolution: BornWolfPsfResolution,
+    *,
+    xy_size: int,
+    z_size: int,
+    pupil_samples: int,
+    normalize: bool,
+) -> np.ndarray:
+    spatial_ndim = resolution.spatial_ndim
     xy_size = _odd_size(xy_size, minimum=9, maximum=1025)
     z_size = _odd_size(z_size, minimum=1, maximum=1025)
     if spatial_ndim < 3:
         z_size = 1
 
-    channel_index = _psf_channel_index(
-        channel,
-        channel_emission_wavelengths,
-        channel_excitation_wavelengths,
-    )
-    wavelength_nm = _resolved_wavelength_nm(
-        wavelength_nm,
-        channel_index,
-        channel_emission_wavelengths,
-        channel_emission_wavelength_units,
-        channel_excitation_wavelengths,
-        channel_excitation_wavelength_units,
-    )
+    wavelength_nm = float(resolution.values["wavelength_nm"])
     wavelength_um = max(wavelength_nm / 1000.0, 1e-6)
-    numerical_aperture = _positive_float(
-        numerical_aperture,
-        _positive_float(objective_lens_na, 1.4),
-    )
-    refractive_index = _positive_float(
-        refractive_index,
-        _positive_float(objective_refractive_index, 1.515),
-    )
+    numerical_aperture = float(resolution.values["numerical_aperture"])
+    refractive_index = float(resolution.values["refractive_index"])
     if numerical_aperture >= refractive_index:
-        numerical_aperture = refractive_index * 0.999
-
-    pixel_size_xy_um = _positive_float(
-        pixel_size_xy_um,
-        _metadata_xy_pixel_size_um(axis_names, axis_types, axis_scales, axis_units),
-    )
-    z_step_um = _positive_float(
-        z_step_um,
-        _metadata_axis_size_um("z", axis_names, axis_types, axis_scales, axis_units)
-        or max(pixel_size_xy_um, wavelength_um / 2.0),
-    )
+        raise ValueError(
+            "Born-Wolf PSF numerical aperture must be smaller than the "
+            "refractive index."
+        )
+    pixel_size_xy_um = float(resolution.values["pixel_size_xy_um"])
+    z_step_um = float(resolution.values["z_step_um"])
 
     y_coords = (np.arange(xy_size, dtype=np.float64) - xy_size // 2) * pixel_size_xy_um
     x_coords = (np.arange(xy_size, dtype=np.float64) - xy_size // 2) * pixel_size_xy_um
@@ -8028,12 +8168,206 @@ def _resolved_psf_spatial_ndim(
     return 3 if requested >= 3 else 2
 
 
+def resolve_born_wolf_psf_parameters(
+    shape: Sequence[int],
+    spatial_mode: str = "Auto from axes",
+    *,
+    auto_parameters: bool = True,
+    wavelength_nm: float = 0.0,
+    numerical_aperture: float = 0.0,
+    refractive_index: float = 0.0,
+    pixel_size_xy_um: float = 0.0,
+    z_step_um: float = 0.0,
+    channel: int = -1,
+    resolved_spatial_ndim: int | None = None,
+    axis_types: Sequence[str] = (),
+    axis_names: Sequence[str] = (),
+    axis_scales: Sequence[float] = (),
+    axis_units: Sequence[str | None] = (),
+    channel_emission_wavelengths: Sequence[float | None] = (),
+    channel_emission_wavelength_units: Sequence[str | None] = (),
+    channel_excitation_wavelengths: Sequence[float | None] = (),
+    channel_excitation_wavelength_units: Sequence[str | None] = (),
+    objective_lens_na: float | None = None,
+    objective_refractive_index: float | None = None,
+) -> BornWolfPsfResolution:
+    """Resolve Born-Wolf PSF auto/manual microscope parameters."""
+    spatial_ndim = _resolved_psf_spatial_ndim(
+        shape,
+        spatial_mode,
+        resolved_spatial_ndim,
+        axis_types,
+    )
+    auto = bool(auto_parameters)
+    parameters: dict[str, BornWolfPsfParameterResolution] = {}
+    values: dict[str, float | int] = {}
+
+    def add(
+        name: str,
+        value: float | int | None,
+        source: str,
+        message: str,
+        *,
+        required: bool = True,
+    ) -> None:
+        parameters[name] = BornWolfPsfParameterResolution(
+            name,
+            value,
+            source,
+            message,
+            required,
+        )
+        if value is not None:
+            values[name] = value
+
+    channel_index = _psf_channel_index(
+        channel,
+        channel_emission_wavelengths,
+        channel_excitation_wavelengths,
+    )
+    if int(channel) >= 0:
+        add("channel", int(channel_index), "manual", "Manual channel index.")
+    else:
+        add(
+            "channel",
+            int(channel_index),
+            "metadata" if _psf_channel_count(
+                channel_emission_wavelengths,
+                channel_excitation_wavelengths,
+            )
+            else "auto",
+            "Auto channel index.",
+            required=False,
+        )
+
+    wavelength_value, wavelength_source = _resolve_psf_wavelength_nm_optional(
+        wavelength_nm,
+        channel_index,
+        channel_emission_wavelengths,
+        channel_emission_wavelength_units,
+        channel_excitation_wavelengths,
+        channel_excitation_wavelength_units,
+        auto=auto,
+    )
+    add(
+        "wavelength_nm",
+        wavelength_value,
+        wavelength_source,
+        (
+            "Emission or excitation wavelength from channel metadata."
+            if wavelength_value is not None and wavelength_source == "metadata"
+            else "Manual emission wavelength."
+            if wavelength_value is not None
+            else "Missing emission/excitation wavelength metadata."
+        ),
+    )
+
+    na_value, na_source = _resolve_psf_positive_optional(
+        numerical_aperture,
+        objective_lens_na,
+        auto=auto,
+    )
+    add(
+        "numerical_aperture",
+        na_value,
+        na_source,
+        (
+            "Objective numerical aperture from metadata."
+            if na_value is not None and na_source == "metadata"
+            else "Manual numerical aperture."
+            if na_value is not None
+            else "Missing objective numerical aperture metadata."
+        ),
+    )
+
+    ri_value, ri_source = _resolve_psf_positive_optional(
+        refractive_index,
+        objective_refractive_index,
+        auto=auto,
+    )
+    add(
+        "refractive_index",
+        ri_value,
+        ri_source,
+        (
+            "Objective immersion refractive index from metadata."
+            if ri_value is not None and ri_source == "metadata"
+            else "Manual refractive index."
+            if ri_value is not None
+            else "Missing objective refractive index metadata."
+        ),
+    )
+
+    xy_metadata = _metadata_xy_pixel_size_um_optional(
+        axis_names,
+        axis_types,
+        axis_scales,
+        axis_units,
+    )
+    xy_value, xy_source = _resolve_psf_positive_optional(
+        pixel_size_xy_um,
+        xy_metadata,
+        auto=auto,
+    )
+    add(
+        "pixel_size_xy_um",
+        xy_value,
+        xy_source,
+        (
+            "Mean X/Y pixel size from axis metadata."
+            if xy_value is not None and xy_source == "metadata"
+            else "Manual X/Y pixel size."
+            if xy_value is not None
+            else "Missing X/Y pixel-size metadata."
+        ),
+    )
+
+    z_metadata = _metadata_axis_size_um(
+        "z",
+        axis_names,
+        axis_types,
+        axis_scales,
+        axis_units,
+    )
+    z_value, z_source = _resolve_psf_positive_optional(
+        z_step_um,
+        z_metadata,
+        auto=auto,
+    )
+    z_required = spatial_ndim >= 3
+    if not z_required and z_value is None:
+        z_value = 0.0
+        z_source = "not used"
+    add(
+        "z_step_um",
+        z_value,
+        z_source,
+        (
+            "Z step from axis metadata."
+            if z_value is not None and z_source == "metadata"
+            else "Manual Z step."
+            if z_value is not None
+            else "Z step is not used for a 2D PSF."
+            if not z_required
+            else "Missing Z-step metadata."
+        ),
+        required=z_required,
+    )
+
+    unresolved = tuple(
+        name
+        for name, result in parameters.items()
+        if result.required and not result.resolved
+    )
+    return BornWolfPsfResolution(spatial_ndim, values, parameters, unresolved)
+
+
 def _psf_channel_index(
     channel: int,
     emission_wavelengths: Sequence[float | None],
     excitation_wavelengths: Sequence[float | None],
 ) -> int:
-    count = max(len(tuple(emission_wavelengths)), len(tuple(excitation_wavelengths)))
+    count = _psf_channel_count(emission_wavelengths, excitation_wavelengths)
     if count <= 0:
         return 0
     try:
@@ -8043,6 +8377,59 @@ def _psf_channel_index(
     if index < 0:
         return 0
     return int(np.clip(index, 0, count - 1))
+
+
+def _psf_channel_count(
+    emission_wavelengths: Sequence[float | None],
+    excitation_wavelengths: Sequence[float | None],
+) -> int:
+    return max(len(tuple(emission_wavelengths)), len(tuple(excitation_wavelengths)))
+
+
+def _resolve_psf_positive_optional(
+    requested,
+    metadata_value,
+    *,
+    auto: bool,
+) -> tuple[float | None, str]:
+    requested_value = _positive_float(requested, 0.0)
+    if requested_value > 0:
+        return requested_value, "manual"
+    if auto:
+        metadata_positive = _positive_float(metadata_value, 0.0)
+        if metadata_positive > 0:
+            return metadata_positive, "metadata"
+    return None, "unresolved"
+
+
+def _resolve_psf_wavelength_nm_optional(
+    requested_nm: float,
+    channel_index: int,
+    emission_wavelengths: Sequence[float | None],
+    emission_units: Sequence[str | None],
+    excitation_wavelengths: Sequence[float | None],
+    excitation_units: Sequence[str | None],
+    *,
+    auto: bool,
+) -> tuple[float | None, str]:
+    requested = _positive_float(requested_nm, 0.0)
+    if requested > 0:
+        return requested, "manual"
+    if not auto:
+        return None, "unresolved"
+    for values, units in (
+        (emission_wavelengths, emission_units),
+        (excitation_wavelengths, excitation_units),
+    ):
+        if not values or channel_index >= len(values):
+            continue
+        converted = _length_to_nanometer(
+            values[channel_index],
+            units[channel_index] if channel_index < len(units) else None,
+        )
+        if converted is not None and converted > 0:
+            return converted, "metadata"
+    return None, "unresolved"
 
 
 def _resolved_wavelength_nm(
@@ -8077,6 +8464,23 @@ def _metadata_xy_pixel_size_um(
     axis_scales: Sequence[float],
     axis_units: Sequence[str | None],
 ) -> float:
+    return (
+        _metadata_xy_pixel_size_um_optional(
+            axis_names,
+            axis_types,
+            axis_scales,
+            axis_units,
+        )
+        or 0.1
+    )
+
+
+def _metadata_xy_pixel_size_um_optional(
+    axis_names: Sequence[str],
+    axis_types: Sequence[str],
+    axis_scales: Sequence[float],
+    axis_units: Sequence[str | None],
+) -> float | None:
     values = [
         _metadata_axis_size_um(
             name,
@@ -8104,7 +8508,7 @@ def _metadata_xy_pixel_size_um(
             spatial.append(converted)
     if spatial:
         return float(np.mean(spatial[-2:]))
-    return 0.1
+    return None
 
 
 def _metadata_axis_size_um(

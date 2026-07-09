@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -41,9 +42,18 @@ from napari_vipp._widget import (
 )
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
+    ImageDataset,
+    ImageSeriesInfo,
     OptionalMicroscopeReaderError,
+    SourceInspection,
     inspect_image_source,
     read_image,
+)
+from napari_vipp.core.metadata import (
+    AcquisitionMetadata,
+    AxisMetadata,
+    ChannelMetadata,
+    image_state_from_array,
 )
 from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
 from napari_vipp.core.pipeline import (
@@ -712,6 +722,64 @@ def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
     assert widget.pipeline.output_states["input"].source.format == "png"
 
 
+def test_microscope_file_source_loads_in_background(qtbot, tmp_path, monkeypatch):
+    path = tmp_path / "slow-source.czi"
+    path.write_bytes(b"fake czi")
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_read_image(path_arg, *, series_index=0):
+        started.set()
+        assert release.wait(5)
+        data = np.ones((4, 5), dtype=np.uint8)
+        state = image_state_from_array(
+            data,
+            layer_metadata={"axes": "YX"},
+            source_name="Loaded CZI",
+        )
+        series = ImageSeriesInfo(0, "0", "Loaded CZI", data.shape, "uint8", "YX")
+        inspection = SourceInspection(str(path_arg), "zeiss-czi", (series,))
+        return ImageDataset(data, state, inspection, series)
+
+    monkeypatch.setattr("napari_vipp._widget.read_image", fake_read_image)
+
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params["source_mode"] = "file path"
+    node.params["file_path"] = str(path)
+    node.params["series_index"] = 0
+    widget._mark_pipeline_dirty("input")
+
+    widget.run_pipeline()
+
+    assert widget._active_source_load_id is not None
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.graph_view._cards["input"].is_processing()
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and widget.pipeline.outputs["input"].shape == (4, 5)
+        ),
+        timeout=10_000,
+    )
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._pending_thumbnail_contrast_limit_keys
+        ),
+        timeout=5_000,
+    )
+
+    assert widget.pipeline_busy_bar.isHidden()
+    assert not widget.graph_view._cards["input"].is_processing()
+    assert widget.pipeline.output_states["input"].axis_order == "YX"
+
+
 def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -956,6 +1024,8 @@ def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         calls.append(tuple(current_step))
         return np.zeros((16, 18), dtype=np.uint8)
@@ -1745,6 +1815,197 @@ def test_rescale_axes_auto_interpolation_names_resolved_method(qtbot):
     interpolation = widget._parameter_widgets["interpolation"]
     assert interpolation.combo.currentData() == "Auto"
     assert interpolation.combo.currentText() == "Auto - Linear"
+
+
+def test_born_wolf_psf_auto_shows_resolved_values_without_sliders(qtbot):
+    data = np.zeros((3, 16, 18), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space", unit="micrometer", scale=0.4),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.08),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.08),
+        ),
+        channels=(
+            ChannelMetadata(
+                name="green",
+                emission_wavelength=520.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.2,
+            refractive_index=1.33,
+        ),
+    )
+    viewer = _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    auto = widget._parameter_widgets["auto_parameters"]
+    wavelength = widget._parameter_widgets["wavelength_nm"]
+    xy_size = widget._parameter_widgets["xy_size"]
+    status = widget._parameter_widgets["wavelength_nm_status"]
+
+    assert auto.checkbox.isChecked()
+    assert not hasattr(wavelength, "slider")
+    assert not hasattr(xy_size, "slider")
+    assert not wavelength.isEnabled()
+    assert wavelength.value() == 520.0
+    assert "metadata" in status.text()
+
+
+def test_born_wolf_psf_auto_marks_unresolved_metadata_red(qtbot):
+    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    wavelength = widget._parameter_widgets["wavelength_nm"]
+    status = widget._parameter_widgets["wavelength_nm_status"]
+    label = widget._parameter_widgets["wavelength_nm_label"]
+
+    assert not wavelength.isEnabled()
+    assert status.text() == "Unresolved"
+    assert "#f87171" in status.styleSheet()
+    assert "#f87171" in label.styleSheet()
+
+    widget._parameter_widgets["auto_parameters"].checkbox.setChecked(False)
+
+    assert widget.pipeline.nodes[node.id].params["auto_parameters"] is False
+    assert widget._parameter_widgets["wavelength_nm"].isEnabled()
+    assert widget.pipeline.nodes[node.id].params["wavelength_nm"] > 0
+    assert widget.pipeline.nodes[node.id].params["pixel_size_xy_um"] > 0
+
+
+def test_born_wolf_psf_auto_refreshes_inspector_and_outputs_all_channels(qtbot):
+    data = np.zeros((2, 3, 16, 18), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("z", "space", unit="micrometer", scale=0.4),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.08),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.08),
+        ),
+        channels=(
+            ChannelMetadata(
+                name="green",
+                emission_wavelength=520.0,
+                emission_wavelength_unit="nanometer",
+            ),
+            ChannelMetadata(
+                name="red",
+                emission_wavelength=620.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.2,
+            refractive_index=1.33,
+        ),
+    )
+    viewer = _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert len(widget.pipeline.output_ports(node.id)) == 2
+    assert widget._parameter_widgets["channel"].value() == -1
+    assert widget._parameter_widgets["channel_status"].text() == "all channels (2)"
+
+    widget._parameter_widgets["channel_status"].setText("stale")
+    widget.run_pipeline(force_sync=True)
+
+    assert widget._parameter_widgets["channel_status"].text() == "all channels (2)"
+    assert [port.label for port in widget.pipeline.output_ports(node.id)] == [
+        "green PSF",
+        "red PSF",
+    ]
+    assert len(widget.pipeline.node_outputs[node.id]) == 2
+
+
+def test_born_wolf_channel_psfs_subtract_as_zyx_without_time_channel_dims(qtbot):
+    data = np.zeros((2, 24, 10, 16, 18), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("t", "time"),
+            AxisMetadata("z", "space", unit="micrometer", scale=0.4),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.08),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.08),
+        ),
+        channels=(
+            ChannelMetadata(
+                name="green",
+                emission_wavelength=520.0,
+                emission_wavelength_unit="nanometer",
+            ),
+            ChannelMetadata(
+                name="red",
+                emission_wavelength=620.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.2,
+            refractive_index=1.33,
+        ),
+    )
+    viewer = _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    viewer.dims.current_step = (1, 9, 3, 0, 0)
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    psf = widget.add_node_from_palette("born_wolf_psf")
+    widget.pipeline.set_param(psf.id, "xy_size", 15)
+    widget.pipeline.set_param(psf.id, "z_size", 5)
+    widget.pipeline.set_param(psf.id, "pupil_samples", 48)
+    widget._connect_nodes("input", psf.id)
+    widget.run_pipeline(force_sync=True)
+
+    subtract = widget.add_node_from_palette("subtract_images")
+    widget._connect_nodes(psf.id, subtract.id, source_port=0, target_port=0)
+    widget._connect_nodes(psf.id, subtract.id, source_port=1, target_port=1)
+    widget.run_pipeline(force_sync=True)
+
+    output = widget.pipeline.outputs[subtract.id]
+    output_state = widget.pipeline.output_states[subtract.id]
+    assert output.shape == (5, 15, 15)
+    assert output_state.axis_order == "ZYX"
+    assert [axis.source_axis for axis in output_state.axes] == [2, 3, 4]
+
+    preview = make_preview(
+        output,
+        mode="slice",
+        current_step=viewer.dims.current_step,
+        current_step_nsteps=viewer.dims.nsteps,
+        state=output_state,
+    )
+    assert preview.shape == (15, 15)
+
+    widget.graph_view.select_node(subtract.id)
+    view_axes = [
+        (axis.label, axis.size, axis.value) for axis in widget.view_dims_bar._axes
+    ]
+    assert view_axes == [
+        ("Z", 5, 1),
+    ]
 
 
 def test_project_image_uses_contextual_axis_dropdown(qtbot):
@@ -2941,6 +3202,8 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         arr = np.asarray(data)
         calls.append((tuple(arr.shape), int(arr.max())))
@@ -3093,6 +3356,8 @@ def test_combine_channels_colour_change_refreshes_thumbnail_palette(
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         if channel_colors is not None:
             calls.append(list(channel_colors))
@@ -3322,6 +3587,8 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         calls.append((tuple(data.shape), current_step, state))
         return np.zeros((5, 6), dtype=np.uint8)
@@ -3497,6 +3764,8 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         calls.append(data)
         return None
@@ -4058,6 +4327,8 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         calls.append(data)
         return None
@@ -4086,15 +4357,72 @@ def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
-        calls.append(contrast_mode)
+        calls.append((contrast_mode, contrast_scope))
         return None
 
     monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
     widget.thumbnail_contrast_combo.setCurrentText("Raw")
+    widget.thumbnail_scope_combo.setCurrentText("Slice")
 
     assert calls
-    assert set(calls) == {"Raw"}
+    assert ("Raw", "Slice") in calls
+
+
+def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
+    data = np.zeros((5, 16, 18), dtype=np.float32)
+    data[4, 8, 9] = 10.0
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    calls = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_thumbnail_contrast_limits(
+        data,
+        *,
+        contrast_mode="Percentile",
+        data_kind="image",
+    ):
+        calls.append((id(data), contrast_mode, data_kind))
+        if len(calls) == 1:
+            started.set()
+            assert release.wait(5)
+        return (0.0, 10.0)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.thumbnail_contrast_limits",
+        fake_thumbnail_contrast_limits,
+    )
+    widget._clear_thumbnail_contrast_limit_state()
+    widget.thumbnail_scope_combo.setCurrentText("Stack")
+    widget.thumbnail_contrast_combo.setCurrentText("Min-max")
+    widget._update_thumbnails()
+
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert "thumbnail contrast" in widget.pipeline_busy_label.text().lower()
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and not widget._pending_thumbnail_contrast_limit_keys
+            and len(calls) > 0
+        ),
+        timeout=5_000,
+    )
+    first_count = len(calls)
+
+    widget._update_thumbnails()
+    viewer.dims.set_current_step(0, 3)
+
+    assert first_count > 0
+    assert len(calls) == first_count
 
 
 def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
@@ -4115,6 +4443,8 @@ def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch)
         state=None,
         channel_colors=None,
         contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
     ):
         return np.zeros((4, 4), dtype=np.uint8)
 
@@ -4124,6 +4454,8 @@ def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch)
         *,
         colormap="Gray",
         contrast_mode="Percentile",
+        contrast_reference=None,
+        contrast_limits=None,
         data_kind="image",
     ):
         calls.append(data_kind)
@@ -5247,6 +5579,7 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.follow_dims_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden() is False
     assert widget.thumbnail_contrast_combo.isHidden() is False
+    assert widget.thumbnail_scope_combo.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
@@ -5257,6 +5590,7 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
 
     assert widget.preview_mode_combo.isHidden()
     assert widget.thumbnail_contrast_combo.isHidden()
+    assert widget.thumbnail_scope_combo.isHidden()
     assert widget.thumbnail_colormap_combo.isHidden()
     assert widget.graph_zoom_slider.isHidden() is False
 
@@ -5282,6 +5616,7 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.follow_dims_checkbox.isHidden()
     assert widget.preview_mode_combo.isHidden() is False
     assert widget.thumbnail_contrast_combo.isHidden() is False
+    assert widget.thumbnail_scope_combo.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
@@ -5309,6 +5644,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
+    assert "Contrast range" not in labels
 
     widget.resize(1200, 600)
     widget._sync_toolbar_responsive_mode()
@@ -5320,6 +5656,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     ]
     assert "Preview mode" in labels
     assert "Thumbnail contrast" in labels
+    assert "Contrast range" in labels
     assert "Monochrome colormap" in labels
 
     save_thumbnail_action = next(
@@ -5406,6 +5743,14 @@ def test_palette_image_operations_can_run(qtbot):
         if not spec.has_input:
             continue
         node = widget.add_node_from_palette(spec.id)
+        if spec.id == "born_wolf_psf":
+            widget.pipeline.set_param(node.id, "auto_parameters", False)
+            widget.pipeline.set_param(node.id, "wavelength_nm", 520.0)
+            widget.pipeline.set_param(node.id, "numerical_aperture", 1.2)
+            widget.pipeline.set_param(node.id, "refractive_index", 1.33)
+            widget.pipeline.set_param(node.id, "pixel_size_xy_um", 0.1)
+            widget.pipeline.set_param(node.id, "z_step_um", 0.3)
+            widget.pipeline.set_param(node.id, "channel", 0)
         if spec.inputs:
             for port_index, input_spec in enumerate(spec.inputs):
                 connect_for_smoke(

@@ -39,6 +39,15 @@ a `View dims...` menu containing the same controls.
 Use On for normal interactive work. Use Off when you want a stable reference
 view while scrubbing dims or comparing parameter changes.
 
+### Thumbnail Contrast Range
+
+`Preview` chooses whether graph thumbnails show the current slice, a maximum
+projection, or no thumbnail. `Contrast` chooses the intensity mapping:
+percentile, min-max, or raw. `Range` chooses where that mapping is measured.
+Use `Stack` (default) for stable brightness while moving through Z/T/C, which
+is usually best for PSFs and restored float images. Use `Slice` when you want
+each viewed slice to stretch itself locally.
+
 ### Run all in BG
 
 - Off (default): only known slower operations use background processing.
@@ -198,6 +207,19 @@ PSF-aware deconvolution lives under `Filtering -> Restoration & PSF`. The first
 supported path is explicit: the image and the PSF are separate graph images, and
 the PSF is prepared before it is reused.
 
+`Born-Wolf PSF` can generate scalar 2D or 3D PSFs from the connected image's
+normalized metadata. Keep `Auto from metadata` on when wavelength, objective
+NA, refractive index, and pixel spacing are present; the disabled fields show
+the resolved values used for calculation. For multi-channel images, `Channel =
+-1` generates one output port per metadata channel, such as `488 PSF` and
+`561 PSF`. Set `Channel` to a specific index to generate only one
+channel-specific PSF. Missing required auto values are marked red and the node
+will not produce a PSF until the metadata is supplied or `Auto from metadata`
+is turned off. In manual mode the physical fields become editable exact
+numeric inputs and are initialized to non-zero defaults before calculation. PSF
+size and pupil samples are always explicit numeric entries, not sliders,
+because they are generation settings.
+
 For a measured PSF workflow:
 
 1. Add an `Image Source` for the microscopy image.
@@ -209,9 +231,11 @@ For a measured PSF workflow:
 6. Choose `2D YX` for plane-wise restoration or `3D ZYX` for volumetric
    restoration, then click `Calculate`.
 
-Use `Split Channels` first when each fluorescence channel needs its own PSF.
-The first implementation does not broadcast a multi-channel PSF stack; use one
-PSF preparation/deconvolution branch per channel.
+Use `Split Channels` first when each fluorescence channel needs its own
+deconvolution branch. Born-Wolf can expose one generated PSF output per
+channel, but Richardson-Lucy nodes still consume one scalar PSF per branch;
+connect the matching channel-specific PSF output to that branch's
+`Prepare / Validate PSF` or deconvolution node.
 
 `Prepare / Validate PSF` converts the PSF to `float32`, replaces non-finite
 values with zero, optionally clips negatives, centers by peak or centroid,
