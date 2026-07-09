@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0a1 - 2026-07-08
+## 0.11.0a1 - 2026-07-09
 
 - Changed the project license to BSD 3-Clause for compatibility with napari and
   the broader scientific Python ecosystem.
@@ -15,6 +15,14 @@
 - Added deterministic 2D and 3D deconvolution samples plus example workflows
   that compare ordinary Richardson-Lucy with RL-TV using an explicit prepared
   PSF input.
+- Refined Born-Wolf PSF auto-parameter visibility, channel-specific PSF outputs,
+  and background execution defaults for slower PSF/restoration workflows.
+- Added slice/stack thumbnail contrast range handling with cached stack limits,
+  and a linked/unlinked napari/VIPP slider setting for large data review.
+- Improved background cancellation for rerun requests and simplified redundant
+  long-running progress labels.
+- Fixed channel-aware previews for `Extract Channel` and retained-output
+  `Split Channels` workflows.
 - Added a grouped `Open example...` chooser for bundled workflow templates and
   packaged the example workflow JSON files with the plugin.
 - Moved napari-layer selection into the `Image Source` inspector so the toolbar

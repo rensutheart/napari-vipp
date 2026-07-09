@@ -4340,6 +4340,7 @@ class VippWidget(QWidget):
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self._code_dialogs: list[QDialog] = []
         self._pending_dirty_node_ids: set[str] = set()
+        self._pending_manual_node_ids: set[str] = set()
         self._inflight_dirty_node_ids: set[str] | None = None
         self._last_pipeline_source_signature: tuple | None = None
         self._toolbar_compact_stage: tuple[bool, bool, bool] | None = None
@@ -4358,6 +4359,8 @@ class VippWidget(QWidget):
         self._thumbnail_contrast_serial = 0
         self._thumbnail_contrast_busy_visible = False
         self._syncing_view_dims_bar = False
+        self._vipp_current_step: tuple[int, ...] | None = None
+        self._vipp_current_nsteps: tuple[int, ...] | None = None
         self._tunnel_manager_dialog: TunnelManagerDialog | None = None
         self._graph_notes: dict[str, GraphNoteState] = {}
         self._graph_search_matches: tuple[GraphSearchMatch, ...] = ()
@@ -4382,8 +4385,13 @@ class VippWidget(QWidget):
         self.thumbnail_scope_combo.addItems(THUMBNAIL_CONTRAST_SCOPES)
         self.thumbnail_colormap_combo = QComboBox()
         self.thumbnail_colormap_combo.addItems(MONOCHROME_COLORMAPS)
-        self.follow_dims_checkbox = QCheckBox("Follow napari dims")
+        self.follow_dims_checkbox = QCheckBox("Link napari/VIPP sliders")
         self.follow_dims_checkbox.setChecked(True)
+        self.follow_dims_checkbox.setToolTip(
+            "Keep napari dimension sliders and VIPP thumbnail sliders linked. "
+            "When disabled, napari scrubbing updates only the viewer; VIPP sliders "
+            "control workflow thumbnails and inspector summaries."
+        )
         self.graph_zoom_slider = QSlider(Qt.Horizontal)
         self.graph_zoom_slider.setRange(
             PipelineGraphView.SLIDER_MIN_ZOOM,
@@ -5022,9 +5030,10 @@ class VippWidget(QWidget):
         )
         self._add_checkbox_menu_action(
             menu,
-            "Follow napari dims",
+            "Link napari/VIPP sliders",
             self.follow_dims_checkbox,
         )
+        menu.addSeparator()
         self._add_combo_menu(menu, "Cache mode", self.cache_mode_combo)
         self._add_checkbox_menu_action(
             menu,
@@ -5135,11 +5144,15 @@ class VippWidget(QWidget):
         spinbox: QSpinBox,
     ) -> None:
         widget = QWidget(menu)
+        widget.setFont(menu.font())
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
-        layout.addWidget(QLabel(label))
+        label_widget = QLabel(label, widget)
+        label_widget.setFont(menu.font())
+        layout.addWidget(label_widget)
         clone = QSpinBox(widget)
+        clone.setFont(menu.font())
         clone.setRange(spinbox.minimum(), spinbox.maximum())
         clone.setSingleStep(spinbox.singleStep())
         clone.setSuffix(spinbox.suffix())
@@ -5523,6 +5536,7 @@ class VippWidget(QWidget):
         self._graph_search_highlighted_tunnel = ""
 
     def _on_follow_dims_toggled(self, _checked: bool) -> None:
+        self._capture_vipp_dims_from_viewer()
         self._update_thumbnails()
         self._update_metadata_panel()
         self._update_histogram()
@@ -7731,6 +7745,7 @@ class VippWidget(QWidget):
 
     def _invalidate_pipeline_cache(self) -> None:
         self._pending_dirty_node_ids.clear()
+        self._pending_manual_node_ids.clear()
         self._inflight_dirty_node_ids = None
         self._last_pipeline_source_signature = None
         self._clear_thumbnail_contrast_limit_state()
@@ -11080,10 +11095,22 @@ class VippWidget(QWidget):
             index = 0
         index = int(np.clip(index, 0, len(outputs) - 1))
         selected = outputs[index]
-        if selected is None:
-            return data, state
-        selected_state = states[index] if 0 <= index < len(states) else state
-        return selected, selected_state
+        if selected is not None:
+            selected_state = states[index] if 0 <= index < len(states) else state
+            return selected, selected_state
+
+        available = [
+            (output_index, output)
+            for output_index, output in enumerate(outputs)
+            if output is not None
+        ]
+        if len(available) == 1:
+            output_index, output = available[0]
+            output_state = (
+                states[output_index] if 0 <= output_index < len(states) else state
+            )
+            return output, output_state
+        return data, state
 
     def _thumbnail_contrast_limits_for_node(
         self,
@@ -11111,6 +11138,9 @@ class VippWidget(QWidget):
 
     def _clear_thumbnail_contrast_limit_state(self) -> None:
         self._thumbnail_contrast_limit_cache.clear()
+        self._discard_pending_thumbnail_contrast_limit_requests()
+
+    def _discard_pending_thumbnail_contrast_limit_requests(self) -> None:
         self._queued_thumbnail_contrast_limit_requests.clear()
         self._pending_thumbnail_contrast_limit_keys.clear()
         self._active_thumbnail_contrast_run_id = None
@@ -12169,7 +12199,7 @@ class VippWidget(QWidget):
                 self._refresh_rescale_cutoff_widgets(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+                self._current_step(),
             )
         if (
             (node.operation_id == "clip_intensity" and name in CLIP_CUTOFF_PARAMETERS)
@@ -12185,7 +12215,7 @@ class VippWidget(QWidget):
         ):
             self._update_rescale_input_histogram(
                 self._selected_node_id,
-                self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+                self._current_step(),
             )
         self._debounce_timer.start()
 
@@ -12260,8 +12290,16 @@ class VippWidget(QWidget):
             for node_id in (manual_node_ids or set())
             if self.pipeline.is_manual_node(node_id)
         }
+        if self._pending_manual_node_ids:
+            manual_node_ids.update(
+                node_id
+                for node_id in self._pending_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            self._pending_manual_node_ids.clear()
         source_load_specs = self._uncached_async_file_source_specs()
         if source_load_specs:
+            self._pending_manual_node_ids.update(manual_node_ids)
             self._start_source_file_load(source_load_specs)
             return
         try:
@@ -12419,7 +12457,7 @@ class VippWidget(QWidget):
         self._hide_input_layer_for_inspection(primary_layer)
         self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
-        self._clear_thumbnail_contrast_limit_state()
+        self._discard_pending_thumbnail_contrast_limit_requests()
         self._update_thumbnails()
         self._refresh_inspection_layer_if_active()
         self._inspect_selected_node()
@@ -12561,6 +12599,22 @@ class VippWidget(QWidget):
         )
         if self._active_pipeline_run_id is not None:
             self._pipeline_run_pending = True
+            if dirty_node_ids is None:
+                self._pending_dirty_node_ids.update(self.pipeline.nodes)
+            else:
+                self._pending_dirty_node_ids.update(
+                    node_id
+                    for node_id in dirty_node_ids
+                    if node_id in self.pipeline.nodes
+                )
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            event = self._pipeline_cancel_events.get(self._active_pipeline_run_id)
+            if event is not None:
+                event.set()
             self._set_pipeline_busy(
                 True,
                 self._active_pipeline_node_id or processing_node_id,
@@ -12572,7 +12626,7 @@ class VippWidget(QWidget):
                 else "graph"
             )
             self.status_label.setText(
-                f"Processing '{title}' in background; latest edit queued to rerun."
+                f"Canceling '{title}' and queuing the latest calculation."
             )
             return
 
@@ -12677,7 +12731,8 @@ class VippWidget(QWidget):
         else:
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setTextVisible(False)
-        detail = f": {message}" if str(message).strip() else ""
+        detail_message = _progress_detail_message(title, message)
+        detail = f": {detail_message}" if detail_message else ""
         suffix = "; latest edit queued" if self._pipeline_run_pending else ""
         self.pipeline_busy_label.setText(f"Processing: {title}{detail}{suffix}")
 
@@ -12780,7 +12835,7 @@ class VippWidget(QWidget):
                 continue
             if update_params:
                 node.params = dict(result_node.params)
-        self._clear_thumbnail_contrast_limit_state()
+        self._discard_pending_thumbnail_contrast_limit_requests()
         self.pipeline.outputs = dict(result_pipeline.outputs)
         self.pipeline.output_states = dict(result_pipeline.output_states)
         self.pipeline.node_outputs = {
@@ -12812,6 +12867,7 @@ class VippWidget(QWidget):
             event.set()
         self._active_pipeline_run_id = None
         self._pipeline_run_pending = False
+        self._pending_manual_node_ids.clear()
         self._pipeline_run_context.pop(run_id, None)
         self._requeue_inflight_dirty_nodes()
         self._set_pipeline_busy(False)
@@ -12952,7 +13008,13 @@ class VippWidget(QWidget):
             axis_size=int(matching_axis.size),
             viewer_axis_size=step_size,
         )
-        self._set_current_step_axis(int(step_axis), step_value)
+        if self._dims_linked():
+            self._set_current_step_axis(int(step_axis), step_value)
+        else:
+            self._set_vipp_current_step_axis(int(step_axis), step_value)
+            self._update_thumbnails()
+            self._update_metadata_panel()
+            self._update_histogram()
         self._sync_view_dims_bar()
 
     def _set_raw_current_step(self, axis: int, value: int) -> None:
@@ -13000,6 +13062,23 @@ class VippWidget(QWidget):
         raw_axis = self._raw_axis_for_current_step_axis(step_axis)
         self._set_raw_current_step(raw_axis, int(value))
 
+    def _set_vipp_current_step_axis(self, step_axis: int, value: int) -> None:
+        self._ensure_vipp_dims_state()
+        values = list(self._vipp_current_step or ())
+        while len(values) <= int(step_axis):
+            values.append(0)
+        nsteps = self._vipp_current_nsteps
+        upper = (
+            max(int(nsteps[int(step_axis)]) - 1, 0)
+            if nsteps is not None and int(step_axis) < len(nsteps)
+            else int(value)
+        )
+        values[int(step_axis)] = int(np.clip(int(value), 0, upper))
+        self._vipp_current_step = self._normalized_vipp_current_step(
+            tuple(values),
+            nsteps,
+        )
+
     def _raw_axis_for_current_step_axis(self, step_axis: int) -> int:
         raw_step = self._raw_current_step()
         if raw_step is None:
@@ -13036,6 +13115,9 @@ class VippWidget(QWidget):
         return int(step_axis)
 
     def _on_dims_changed(self, _event=None) -> None:
+        if not self._dims_linked():
+            return
+        self._capture_vipp_dims_from_viewer()
         self._sync_view_dims_bar()
         self._update_thumbnails()
         self._update_metadata_panel()
@@ -13043,14 +13125,8 @@ class VippWidget(QWidget):
 
     def _update_thumbnails(self) -> None:
         mode = self.preview_mode_combo.currentText()
-        current_step = (
-            self._current_step() if self.follow_dims_checkbox.isChecked() else None
-        )
-        current_step_nsteps = (
-            self._current_step_nsteps()
-            if self.follow_dims_checkbox.isChecked()
-            else None
-        )
+        current_step = self._current_step()
+        current_step_nsteps = self._current_step_nsteps()
         contrast_mode = self.thumbnail_contrast_combo.currentText()
         contrast_scope = self.thumbnail_scope_combo.currentText()
         previews_visible_globally = mode.lower() != "off"
@@ -13171,11 +13247,7 @@ class VippWidget(QWidget):
         self._update_table_preview()
 
     def _current_view_label(self, state) -> str:
-        if (
-            state is None
-            or not hasattr(state, "axes")
-            or not self.follow_dims_checkbox.isChecked()
-        ):
+        if state is None or not hasattr(state, "axes"):
             return ""
         try:
             current_step = tuple(self._current_step())
@@ -13225,14 +13297,8 @@ class VippWidget(QWidget):
             self.histogram_group.setHidden(True)
             self.histogram_plot.set_histogram(None, log_scale=False)
             return
-        current_step = (
-            self._current_step() if self.follow_dims_checkbox.isChecked() else None
-        )
-        current_step_nsteps = (
-            self._current_step_nsteps()
-            if self.follow_dims_checkbox.isChecked()
-            else None
-        )
+        current_step = self._current_step()
+        current_step_nsteps = self._current_step_nsteps()
         self._update_rescale_input_histogram(node.id, current_step)
         self.histogram_group.setHidden(False)
         self.histogram_group.setTitle("Output Histogram")
@@ -13444,7 +13510,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._update_rescale_input_histogram(
             node_id,
-            self._current_step() if self.follow_dims_checkbox.isChecked() else None,
+            self._current_step(),
         )
         self._debounce_timer.start()
 
@@ -13534,9 +13600,7 @@ class VippWidget(QWidget):
         current_step,
     ) -> None:
         current_step_nsteps = (
-            self._current_step_nsteps()
-            if self.follow_dims_checkbox.isChecked() and current_step is not None
-            else None
+            self._current_step_nsteps() if current_step is not None else None
         )
         node = self.pipeline.nodes.get(node_id)
         visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
@@ -14258,12 +14322,34 @@ class VippWidget(QWidget):
                 except Exception:
                     pass
         else:
-            limits = self._signed_image_contrast_limits(data)
+            limits = self._reused_image_contrast_limits(data)
             if limits is not None:
                 try:
                     layer.contrast_limits = limits
                 except Exception:
                     pass
+
+    def _reused_image_contrast_limits(self, data) -> tuple[float, float] | None:
+        """Return contrast limits for an existing generated image layer.
+
+        Napari keeps an image layer's contrast limits when ``layer.data`` is
+        replaced. Refresh limits here so a reused inspect/pin layer does not
+        render a newly rescaled ``0..1`` float image against an older high-range
+        window.
+        """
+        signed_limits = self._signed_image_contrast_limits(data)
+        if signed_limits is not None:
+            return signed_limits
+        arr = np.asarray(data)
+        if arr.dtype == bool or arr.size == 0:
+            return None
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            return None
+        high = float(finite.max())
+        if high <= 0.0:
+            return None
+        return (0.0, max(high, 1.0) if np.issubdtype(arr.dtype, np.floating) else high)
 
     def _signed_image_contrast_limits(self, data) -> tuple[float, float] | None:
         """Anchor the display black point at zero for signed images.
@@ -14460,12 +14546,69 @@ class VippWidget(QWidget):
         return f"VIPP Pinned: {title}"
 
     def _current_step(self):
+        if not self._dims_linked():
+            self._ensure_vipp_dims_state()
+            return self._vipp_current_step
+        return self._viewer_current_step()
+
+    def _current_step_nsteps(self):
+        if not self._dims_linked():
+            self._ensure_vipp_dims_state()
+            return self._vipp_current_nsteps
+        return self._viewer_current_nsteps()
+
+    def _dims_linked(self) -> bool:
+        checkbox = getattr(self, "follow_dims_checkbox", None)
+        return checkbox is None or bool(checkbox.isChecked())
+
+    def _capture_vipp_dims_from_viewer(self) -> None:
+        nsteps = self._viewer_current_nsteps()
+        self._vipp_current_nsteps = (
+            tuple(max(int(value), 1) for value in nsteps)
+            if nsteps is not None
+            else None
+        )
+        self._vipp_current_step = self._normalized_vipp_current_step(
+            self._viewer_current_step(),
+            self._vipp_current_nsteps,
+        )
+
+    def _ensure_vipp_dims_state(self) -> None:
+        nsteps = self._viewer_current_nsteps()
+        if nsteps is not None:
+            self._vipp_current_nsteps = tuple(max(int(value), 1) for value in nsteps)
+        if self._vipp_current_step is None:
+            self._vipp_current_step = self._viewer_current_step()
+        self._vipp_current_step = self._normalized_vipp_current_step(
+            self._vipp_current_step,
+            self._vipp_current_nsteps,
+        )
+
+    def _normalized_vipp_current_step(
+        self,
+        step,
+        nsteps: tuple[int, ...] | None,
+    ) -> tuple[int, ...] | None:
+        if step is None:
+            return None
+        values = [int(value) for value in tuple(step)]
+        if nsteps is None:
+            return tuple(values)
+        while len(values) < len(nsteps):
+            values.append(0)
+        values = values[: len(nsteps)]
+        return tuple(
+            int(np.clip(value, 0, max(int(size) - 1, 0)))
+            for value, size in zip(values, nsteps, strict=True)
+        )
+
+    def _viewer_current_step(self):
         raw_step = self._raw_current_step()
         if raw_step is None:
             return None
         return self._canonical_viewer_values(raw_step, fill_value=0)
 
-    def _current_step_nsteps(self):
+    def _viewer_current_nsteps(self):
         raw_nsteps = self._viewer_nsteps()
         if raw_nsteps is None:
             return None
@@ -14556,6 +14699,19 @@ def _positive_scale_float(value, default: float) -> float:
     if result <= 0 or not np.isfinite(result):
         return default
     return result
+
+
+def _progress_detail_message(title: str, message) -> str:
+    detail = str(message).strip()
+    if not detail:
+        return ""
+    if _normalized_progress_text(detail) == _normalized_progress_text(title):
+        return ""
+    return detail
+
+
+def _normalized_progress_text(value: str) -> str:
+    return " ".join(str(value).strip().casefold().split())
 
 
 def _auto_contrast_scale_offset(

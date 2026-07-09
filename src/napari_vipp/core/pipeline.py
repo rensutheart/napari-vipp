@@ -5064,6 +5064,7 @@ class PrototypePipeline:
                 "rescale_axes",
                 "split_axis",
                 "split_channels",
+                "extract_channel",
             }
             and isinstance(input_state, ImageState)
         ):

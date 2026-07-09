@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-08
+Last reviewed: 2026-07-09
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -56,9 +56,10 @@ scientific validation.
 
 ## Current Public Baseline
 
-Current public release: `0.10.0a1`.
+Current public release: `0.11.0a1`.
 
-The 0.10 alpha is now the graph-readability and interactive-memory baseline.
+The 0.11 alpha is now the PSF/restoration and microscope-import-foundation
+baseline on top of the 0.10 graph-readability and interactive-memory work.
 Implemented and documented work includes:
 
 - searchable categorized palette and searchable graph canvas;
@@ -86,7 +87,14 @@ Implemented and documented work includes:
   localization, table merge, table annotation, and grouped summary workflows;
 - example workflows for label cleanup, measurement, derived morphology, 3D mesh
   morphology, skeleton/network QC, pixel/object colocalization, named tunnels,
-  graph notes, and selected-inspector metadata;
+  graph notes, selected-inspector metadata, and 2D/3D PSF-aware deconvolution;
+- Born-Wolf PSF generation, PSF preparation, baseline Richardson-Lucy
+  deconvolution, Richardson-Lucy TV deconvolution, channel-specific PSF
+  outputs, and measured-PSF workflow guidance;
+- optional microscope-reader routing plus normalized acquisition metadata fields
+  used by PSF generation and provenance checks;
+- slice/stack thumbnail contrast range controls, cached stack contrast limits,
+  and a linked/unlinked napari/VIPP slider setting for large data review;
 - automated tests plus calibrated analytical morphology phantom validation.
 
 Known constraints:
@@ -102,14 +110,14 @@ Known constraints:
   colocalization, watershed, skeleton/network, batch/provenance, and OME-Zarr
   round-tripping.
 
-## Active TODOs After 0.10
+## Active TODOs After 0.11
 
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
 
 ### 1. PSF Generation And Deconvolution
 
-Already implemented or started: normalized objective/channel metadata from
+Already implemented for the first 0.11 alpha: normalized objective/channel metadata from
 OME-TIFF where available, a native `Born-Wolf PSF` node that can use connected
 image metadata, `Prepare / Validate PSF`, baseline Richardson-Lucy
 deconvolution, Richardson-Lucy TV deconvolution, deterministic synthetic
@@ -261,24 +269,24 @@ Delivered:
   retention;
 - example workflow metadata and release-facing docs.
 
-### Next: 0.11.0a1 - PSF, Deconvolution, And Microscope Import Foundation
+### Released: 0.11.0a1 - PSF, Deconvolution, And Microscope Import Foundation
 
-Goal: make PSFs normal graph data, ship the first deconvolution path, and start
+Theme: make PSFs normal graph data, ship the first deconvolution path, and start
 the broad microscope-import layer needed for real acquisition files.
 
-Release gate:
+Delivered:
 
 - `Born-Wolf PSF` can generate inspectable, saveable 2D/3D PSFs from metadata
   or explicit overrides;
 - PSF preparation/validation makes measured or generated PSFs safe to reuse;
 - baseline Richardson-Lucy and Richardson-Lucy total-variation deconvolution
   accept named `Image` and `PSF` inputs and use manual/cached execution;
-- at least the first selected proprietary microscope reader path is optional,
-  license-reviewed, and normalized through `ImageDataset`/`ImageState`;
+- optional proprietary microscope reader paths are routed through
+  `ImageDataset`/`ImageState` boundaries with normalized first-pass metadata;
 - docs explain which vendor formats are supported, experimental, or still under
   evaluation.
 
-### 0.12.0a1 - Batch Configuration And Provenance
+### Next: 0.12.0a1 - Batch Configuration And Provenance
 
 Goal: make batch execution explicit enough for real analysis runs.
 

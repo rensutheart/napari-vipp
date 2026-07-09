@@ -3313,13 +3313,23 @@ def _parse_metadata_columns(text: str) -> tuple[tuple[str, str], ...]:
     return tuple(pairs)
 
 
-def extract_channel(data, channel: int = 0) -> np.ndarray:
-    """Extract a single channel from a channel-last image or stack."""
+def extract_channel(
+    data,
+    channel: int = 0,
+    axis_names: Sequence[str] = (),
+    axis_types: Sequence[str] = (),
+) -> np.ndarray:
+    """Extract a single channel from a semantically marked channel axis."""
     arr = np.asarray(data)
+    axis = _strict_channel_axis(
+        arr,
+        axis_names=axis_names,
+        axis_types=axis_types,
+    )
     return _extract_channel(
         arr,
         channel=channel,
-        channel_axis=_default_channel_axis(arr),
+        channel_axis=axis if axis is not None else _default_channel_axis(arr),
     )
 
 

@@ -3113,6 +3113,21 @@ def test_extract_channel_supports_czyx_stacks():
     assert channel.max() == 42
 
 
+def test_extract_channel_uses_semantic_channel_axis():
+    data = np.zeros((2, 3, 5, 6), dtype=np.uint16)
+    data[:, 2] = 42
+
+    channel = extract_channel(
+        data,
+        channel=2,
+        axis_names=("z", "c", "y", "x"),
+        axis_types=("space", "channel", "space", "space"),
+    )
+
+    assert channel.shape == (2, 5, 6)
+    assert np.all(channel == 42)
+
+
 def test_combine_channels_stacks_multiple_inputs_as_channels():
     first = np.full((2, 5, 6), 10, dtype=np.uint16)
     second = np.full((2, 5, 6), 20, dtype=np.uint16)

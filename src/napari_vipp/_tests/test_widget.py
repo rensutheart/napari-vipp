@@ -15,10 +15,12 @@ from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
     QGraphicsItem,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QScrollArea,
+    QSpinBox,
     QWidget,
 )
 
@@ -788,6 +790,7 @@ def test_current_view_metadata_follows_napari_dims(qtbot):
     viewer.dims.current_step = (2, 1, 3, 0, 0)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     widget.graph_view.select_node("input")
 
@@ -799,6 +802,59 @@ def test_current_view_metadata_follows_napari_dims(qtbot):
     assert _metadata_value(widget, "Current view") == "t=4/4, c=0/2, z=1/3"
 
 
+def test_unlinked_napari_dims_do_not_refresh_vipp_thumbnails(qtbot, monkeypatch):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    viewer.dims.current_step = (1, 2, 3, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    widget.follow_dims_checkbox.setChecked(False)
+    assert not widget.follow_dims_checkbox.isChecked()
+
+    calls = []
+    monkeypatch.setattr(widget, "_update_thumbnails", lambda: calls.append("refresh"))
+
+    viewer.dims.set_current_step(0, 4)
+
+    assert calls == []
+    assert viewer.dims.current_step == (4, 2, 3, 0, 0)
+    assert _view_dim_control(widget, "T").spin.value() == 1
+    assert _metadata_value(widget, "Current view") == "t=1/4, c=2/2, z=3/3"
+
+
+def test_unlinked_vipp_dims_refresh_thumbnails_without_moving_napari(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(
+        np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
+        metadata={"axes": "TCZYX"},
+    )
+    viewer.dims.current_step = (1, 2, 3, 0, 0)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    widget.follow_dims_checkbox.setChecked(False)
+    assert not widget.follow_dims_checkbox.isChecked()
+
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "_update_thumbnails",
+        lambda: calls.append(widget._current_step()),
+    )
+
+    _view_dim_control(widget, "Z").spin.setValue(1)
+
+    assert viewer.dims.current_step == (1, 2, 3, 0, 0)
+    assert calls[-1] == (1, 2, 1, 0, 0)
+    assert _view_dim_control(widget, "Z").spin.value() == 1
+    assert _metadata_value(widget, "Current view") == "t=1/4, c=2/2, z=1/3"
+
+
 def test_view_dims_bar_exposes_semantic_axes_and_syncs_napari(qtbot):
     viewer = _Viewer(
         np.zeros((5, 3, 4, 16, 18), dtype=np.uint16),
@@ -807,6 +863,7 @@ def test_view_dims_bar_exposes_semantic_axes_and_syncs_napari(qtbot):
     viewer.dims.current_step = (1, 2, 3, 0, 0)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     widget.graph_view.select_node("input")
 
@@ -840,6 +897,7 @@ def test_view_dims_bar_syncs_after_selecting_axis_dropped_node(qtbot):
     viewer.dims.current_step = (1, 4, 0, 0)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     split = widget.add_node_from_palette("split_channels")
     blur = widget.add_node_from_palette("gaussian_blur")
@@ -902,6 +960,7 @@ def test_view_dims_bar_maps_rescaled_axis_values_to_viewer_steps(qtbot):
     viewer.dims.current_step = (11, 0, 0)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     node = widget.add_node_from_palette("rescale_axes")
     widget.pipeline.set_param(node.id, "z_scale", 0.5)
@@ -3074,6 +3133,7 @@ def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
     viewer = _Viewer(data, metadata={"axes": "CZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
@@ -3129,6 +3189,7 @@ def test_composite_to_rgb_and_input_share_time_and_z_slider_mapping(qtbot):
     viewer = _Viewer(data, metadata={"axes": "TCZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget.follow_dims_checkbox.setChecked(True)
 
     node = widget.add_node_from_palette("composite_to_rgb")
     widget._connect_nodes("input", node.id)
@@ -3214,6 +3275,71 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
     widget._update_thumbnails()
 
     assert ((2, 4, 5), 30) in calls
+
+
+def test_split_channels_thumbnail_uses_single_retained_output(qtbot):
+    data = np.zeros((3, 2, 4, 5), dtype=np.uint16)
+    data[0] = 10
+    data[1] = 20
+    data[2] = 30
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    widget._connect_nodes("input", split.id)
+    widget.run_pipeline()
+    node = widget.pipeline.nodes[split.id]
+    node.params["preview_channel"] = 0
+    widget.pipeline.node_outputs[split.id] = [
+        None,
+        widget.pipeline.node_outputs[split.id][1],
+        None,
+    ]
+    widget.pipeline.node_output_states[split.id] = [
+        None,
+        widget.pipeline.node_output_states[split.id][1],
+        None,
+    ]
+
+    preview_data, preview_state = widget._thumbnail_payload_for_node(
+        split.id,
+        widget.pipeline.outputs[split.id],
+    )
+
+    assert preview_state is widget.pipeline.node_output_states[split.id][1]
+    assert preview_data.shape == (2, 4, 5)
+    assert int(np.max(preview_data)) == 20
+
+
+def test_extract_channel_thumbnail_uses_selected_semantic_channel(qtbot):
+    data = np.zeros((2, 3, 5, 6), dtype=np.uint16)
+    data[:, 2] = 42
+    viewer = _Viewer(data, metadata={"axes": "ZCYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    extract = widget.add_node_from_palette("extract_channel")
+    widget._connect_nodes("input", extract.id)
+    widget.pipeline.set_param(extract.id, "channel", 2)
+    widget.run_pipeline()
+
+    output = widget.pipeline.outputs[extract.id]
+    state = widget.pipeline.output_states[extract.id]
+    viewer.dims.current_step = (1, 0, 0, 0)
+    preview = make_preview(
+        output,
+        mode="slice",
+        current_step=viewer.dims.current_step,
+        current_step_nsteps=viewer.dims.nsteps,
+        state=state,
+    )
+
+    assert output.shape == (2, 5, 6)
+    assert state.axis_order == "ZYX"
+    assert [axis.source_axis for axis in state.axes] == [0, 2, 3]
+    assert preview.shape == (5, 6)
+    assert int(np.max(preview)) == 42
 
 
 def test_split_threshold_channel_drag_connects_to_label_node(qtbot):
@@ -4122,6 +4248,37 @@ def test_cancel_background_run_requeues_dirty_nodes(qtbot):
     assert "result will be ignored" in widget.status_label.text()
 
 
+def test_new_background_request_cancels_active_run_and_remembers_manual(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    measurements = widget.add_node_from_palette("measure_objects")
+    cancel_event = threading.Event()
+
+    widget._active_pipeline_run_id = 123
+    widget._pipeline_cancel_events[123] = cancel_event
+    widget._pipeline_run_context[123] = (None, "input volume", "gaussian", None, None)
+    widget._active_pipeline_node_id = "gaussian"
+
+    widget._start_background_pipeline_run(
+        None,
+        None,
+        "",
+        {},
+        None,
+        "input volume",
+        ("sources", ()),
+        {measurements.id},
+        {measurements.id},
+    )
+
+    assert cancel_event.is_set()
+    assert widget._pipeline_run_pending is True
+    assert measurements.id in widget._pending_dirty_node_ids
+    assert measurements.id in widget._pending_manual_node_ids
+    assert "Canceling" in widget.status_label.text()
+
+
 def test_background_progress_updates_busy_bar(qtbot):
     viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
     widget = VippWidget(viewer)
@@ -4139,6 +4296,14 @@ def test_background_progress_updates_busy_bar(qtbot):
     assert widget.pipeline_busy_bar.value() == 2
     assert widget.pipeline_busy_bar.isTextVisible()
     assert "Rolling-ball background" in widget.pipeline_busy_label.text()
+
+    rolling = widget.add_node_from_palette("rolling_ball_background")
+    widget._set_pipeline_busy(True, rolling.id)
+    widget._on_background_pipeline_progress(
+        (321, rolling.id, 3, 5, "Rolling-ball background")
+    )
+
+    assert widget.pipeline_busy_label.text() == "Processing: Rolling-Ball Background"
 
     widget._set_pipeline_busy(False)
 
@@ -4420,6 +4585,7 @@ def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
 
     widget._update_thumbnails()
     viewer.dims.set_current_step(0, 3)
+    widget._finish_pipeline_update(None, "input volume")
 
     assert first_count > 0
     assert len(calls) == first_count
@@ -5640,11 +5806,39 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Show thumbnails" not in labels
     assert "Save thumbnail visibility in workflows" in labels
     assert "Run all in background" in labels
-    assert "Follow napari dims" in labels
+    assert "Link napari/VIPP sliders" in labels
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
     assert "Contrast range" not in labels
+    actions = widget.settings_menu.actions()
+    link_action = next(
+        action for action in actions if action.text() == "Link napari/VIPP sliders"
+    )
+    cache_mode_action = next(
+        action for action in actions if action.text() == "Cache mode"
+    )
+    assert widget.follow_dims_checkbox.isChecked()
+    assert link_action.isChecked()
+    assert any(
+        action.isSeparator()
+        for action in actions[
+            actions.index(link_action) + 1 : actions.index(cache_mode_action)
+        ]
+    )
+
+    cache_limit_widget = None
+    for action in actions:
+        default_widget = getattr(action, "defaultWidget", lambda: None)()
+        if default_widget is None:
+            continue
+        label_widget = default_widget.findChild(QLabel)
+        if label_widget is not None and label_widget.text() == "Cache limit":
+            cache_limit_widget = default_widget
+            break
+    assert cache_limit_widget is not None
+    assert cache_limit_widget.findChild(QLabel).font() == widget.settings_menu.font()
+    assert cache_limit_widget.findChild(QSpinBox).font() == widget.settings_menu.font()
 
     widget.resize(1200, 600)
     widget._sync_toolbar_responsive_mode()
@@ -6839,6 +7033,31 @@ def test_non_negative_image_keeps_default_contrast(qtbot):
     positive = np.linspace(0, 200, 4 * 16 * 18, dtype=np.float32).reshape(4, 16, 18)
 
     assert widget._signed_image_contrast_limits(positive) is None
+
+
+def test_rescaled_float_inspect_refreshes_reused_contrast_limits(qtbot):
+    data = np.linspace(0.0, 187.0, 4 * 16 * 18, dtype=np.float32).reshape(4, 16, 18)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "in_low_value", 0.0)
+    widget.pipeline.set_param(node.id, "in_high_value", 187.0)
+    widget.pipeline.set_param(node.id, "out_min", 0.0)
+    widget.pipeline.set_param(node.id, "out_max", 1.0)
+    widget.run_pipeline()
+
+    widget.inspect_node("input")
+    inspect = viewer.layers["VIPP Inspect"]
+    inspect.contrast_limits = (0.0, 187.0)
+
+    widget.inspect_node(node.id)
+
+    assert viewer.layers["VIPP Inspect"] is inspect
+    assert np.isclose(float(np.max(inspect.data)), 1.0)
+    assert inspect.contrast_limits == (0.0, 1.0)
 
 
 def test_inspecting_input_after_mask_resets_inspect_display(qtbot):

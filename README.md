@@ -515,16 +515,12 @@ Intensity`.
 The current versioned alpha roadmap is maintained in
 `docs/planning.md`. The current public alpha release is:
 
-- `0.10.0a1`: graph readability, tunnel management, saved graph notes,
-  graph search/focus, ambiguous insert-on-wire port mapping, workflow UI-state
-  persistence, and interactive cache/memory modes. Minimap/navigation is
-  deferred until very large workflows justify it.
+- `0.11.0a1`: PSF generation, PSF-aware Richardson-Lucy/RL-TV restoration,
+  optional microscope import foundations, bundled example-workflow onboarding,
+  and large-data review refinements.
 
 Planned next minor milestones are:
 
-- `0.11.0a1`: PSF generation, PSF-aware Richardson-Lucy/RL-TV restoration,
-  optional microscope import foundations, and bundled example-workflow
-  onboarding;
 - `0.12.0a1`: batch configuration, output manifests, semantic-axis iteration,
   and per-item provenance;
 - `0.13.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and
