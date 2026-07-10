@@ -110,8 +110,9 @@ def write_image(
         if _state_kind(image_state).lower() == "label image":
             raise ValueError(
                 "Standalone label arrays are not written as ordinary OME-Zarr "
-                "images. Use TIFF/OME-TIFF until Export OME Analysis Dataset "
-                "is available."
+                "images. Use TIFF/OME-TIFF for a standalone label, or Export "
+                "OME Analysis Dataset to preserve labels in an image-linked "
+                "OME-Zarr store."
             )
         if output_path.exists():
             if output_path.is_dir():

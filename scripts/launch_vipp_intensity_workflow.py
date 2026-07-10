@@ -1,16 +1,37 @@
-"""Launch napari with a VIPP example workflow preloaded."""
+"""Launch napari with any bundled or external VIPP workflow preloaded."""
 
 from __future__ import annotations
 
-import sys
+import argparse
 from pathlib import Path
 
 import napari
 
-from napari_vipp._widget import VippWidget
+from napari_vipp._widget import (
+    EXAMPLE_WORKFLOWS,
+    VippWidget,
+    _example_workflow_path,
+)
+
+_LEGACY_ALIASES = {
+    "intensity": "object-intensity",
+    "merged": "merged-measurements",
+    "morphology": "derived-morphology",
+    "mesh": "mesh-morphology",
+    "object-coloc": "object-colocalization",
+    "deconvolution": "deconvolution-2d",
+}
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = _argument_parser().parse_args(argv)
+    if args.list:
+        print(_example_listing())
+        return
+
+    workflow, selected_node = _workflow_args(
+        [value for value in (args.workflow, args.node) if value is not None]
+    )
     viewer = napari.Viewer()
     widget = VippWidget(viewer)
     viewer.window.add_dock_widget(
@@ -18,56 +39,61 @@ def main() -> None:
         area="bottom",
         name="VIPP Workflow",
     )
-    workflow, selected_node = _workflow_args(sys.argv[1:])
     widget.load_workflow_file(workflow)
-    widget.graph_view.select_node(selected_node)
+    if selected_node:
+        widget.graph_view.select_node(selected_node)
     napari.run()
 
 
-def _workflow_args(args: list[str]) -> tuple[Path, str]:
-    examples = Path(__file__).resolve().parents[1] / "examples"
-    workflows = {
-        "intensity": (
-            examples / "red-channel-object-intensity-measurements.json",
-            "measure_objects_intensity_1",
-        ),
-        "merged": (
-            examples / "red-channel-merged-measurement-table.json",
-            "add_metadata_columns_1",
-        ),
-        "morphology": (
-            examples / "synthetic-derived-object-morphology.json",
-            "measure_objects_1",
-        ),
-        "mesh": (
-            examples / "synthetic-3d-mesh-morphology.json",
-            "measure_3d_mesh_morphology_1",
-        ),
-        "object-coloc": (
-            examples / "synthetic-object-colocalization-association.json",
-            "object_colocalization_metrics_1",
-        ),
-        "deconvolution": (
-            examples / "synthetic-deconvolution-rl-tv.json",
-            "richardson_lucy_tv_deconvolution_1",
-        ),
-        "deconvolution-3d": (
-            examples / "synthetic-3d-deconvolution-rl-tv.json",
-            "richardson_lucy_tv_deconvolution_1",
-        ),
-    }
-    if not args:
-        return workflows["intensity"]
-    first = args[0]
-    if first in workflows:
-        workflow, default_node = workflows[first]
-        return workflow, args[1] if len(args) > 1 else default_node
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Open a bundled example id or a workflow JSON file in VIPP.",
+    )
+    parser.add_argument(
+        "workflow",
+        nargs="?",
+        default="object-intensity",
+        help="Bundled example id or path to workflow JSON.",
+    )
+    parser.add_argument(
+        "node",
+        nargs="?",
+        help="Optional node id to select after loading.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List bundled example ids and exit.",
+    )
+    return parser
+
+
+def _workflow_args(args: list[str]) -> tuple[Path, str | None]:
+    """Resolve a bundled example id or explicit workflow path."""
+    first = args[0] if args else "object-intensity"
+    selected_node = args[1] if len(args) > 1 else None
+    requested = _LEGACY_ALIASES.get(first, first)
+    by_id = {spec.id: spec for spec in EXAMPLE_WORKFLOWS}
+    by_filename = {spec.filename: spec for spec in EXAMPLE_WORKFLOWS}
+    spec = by_id.get(requested) or by_filename.get(requested)
+    if spec is not None:
+        return _example_workflow_path(spec), selected_node
+
     candidate = Path(first).expanduser()
-    if candidate.exists() or first.endswith(".json"):
-        default_node = args[1] if len(args) > 1 else "add_metadata_columns_1"
-        return candidate, default_node
-    workflow, _default_node = workflows["intensity"]
-    return workflow, first
+    if candidate.is_file():
+        return candidate, selected_node
+    if candidate.suffix.lower() == ".json":
+        raise FileNotFoundError(f"Workflow file does not exist: {candidate}")
+    raise ValueError(
+        f"Unknown example workflow {first!r}. Use --list to show valid ids."
+    )
+
+
+def _example_listing() -> str:
+    lines = ["Bundled VIPP example workflows:"]
+    for spec in EXAMPLE_WORKFLOWS:
+        lines.append(f"  {spec.id:<24} {spec.title} [{spec.filename}]")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

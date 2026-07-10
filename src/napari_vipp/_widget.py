@@ -10111,13 +10111,10 @@ class VippWidget(QWidget):
 
     def _render_select_table_columns_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
-        node.params.pop("selection_mode", None)
-        node.params.pop("append_unlisted", None)
         control = SelectTableColumnsControl(
             self._input_table_columns_for(node_id),
             str(node.params.get("columns", "auto")),
         )
-        self._apply_select_table_columns_params(node_id, control.value())
         control.valueChanged.connect(self._on_select_table_columns_changed)
         self.parameter_form.addRow(control)
         self._parameter_widgets["columns"] = control
@@ -10213,17 +10210,11 @@ class VippWidget(QWidget):
         if node.operation_id == "select_table_columns":
             widget = self._parameter_widgets.get("columns")
             if isinstance(widget, SelectTableColumnsControl):
-                previous = dict(node.params)
                 widget.set_options(
                     self._input_table_columns_for(self._selected_node_id),
                     str(node.params.get("columns", "auto")),
                     emit=False,
                 )
-                self._apply_select_table_columns_params(
-                    self._selected_node_id,
-                    widget.value(),
-                )
-                changed = previous != node.params
             return changed
         if node.operation_id == "rescale_axes":
             return self._refresh_rescale_axes_controls(self._selected_node_id)

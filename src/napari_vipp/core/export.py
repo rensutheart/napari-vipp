@@ -16,6 +16,21 @@ from datetime import datetime, timezone
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 
 _INDENT = " " * 4
+_RESERVED_FUNCTION_NAMES = {
+    "OUTPUT_NODES",
+    "Path",
+    "SOURCE_NODES",
+    "_table_output_path",
+    "argparse",
+    "batch_process",
+    "is_table_data",
+    "load_image",
+    "np",
+    "read_image",
+    "save_image",
+    "save_table_output",
+    "write_image",
+}
 
 
 def export_pipeline_to_python(
@@ -37,6 +52,11 @@ def export_pipeline_to_python(
     source_param_names = _unique_names(source_ids, prefix="src")
     terminal_ids = _terminal_nodes(pipeline, order)
     used_functions = _used_function_names(pipeline, order)
+    if (
+        function_name in _RESERVED_FUNCTION_NAMES
+        or function_name in used_functions
+    ):
+        raise ValueError(f"Invalid exported function name: {function_name!r}.")
 
     body_lines, missing = _build_function_body(
         pipeline,
@@ -49,7 +69,7 @@ def export_pipeline_to_python(
     imports = _build_imports(used_functions)
     helpers = _build_helpers()
     constants = _build_constants(source_ids, terminal_ids)
-    main = _build_main(source_ids)
+    main = _build_main(source_ids, function_name)
 
     sections = [header, imports, constants, "\n".join(body_lines), helpers, main]
     document = "\n\n\n".join(section for section in sections if section)
@@ -80,13 +100,17 @@ def _build_header(pipeline: PrototypePipeline) -> str:
 
 def _build_imports(function_names: list[str]) -> str:
     names = sorted(set(function_names))
-    inner = ",\n".join(f"{_INDENT}{name}" for name in names)
-    operations = f"from napari_vipp.core.operations import (\n{inner},\n)"
-    return (
-        f"{operations}\n"
-        "from napari_vipp.core.io import read_image, write_image\n"
-        "from napari_vipp.core.tables import is_table_data, save_table_output"
+    imports: list[str] = []
+    if names:
+        inner = ",\n".join(f"{_INDENT}{name}" for name in names)
+        imports.append(f"from napari_vipp.core.operations import (\n{inner},\n)")
+    imports.extend(
+        (
+            "from napari_vipp.core.io import read_image, write_image",
+            "from napari_vipp.core.tables import is_table_data, save_table_output",
+        )
     )
+    return "\n".join(imports)
 
 
 def _build_constants(source_ids: list[str], terminal_ids: list[str]) -> str:
@@ -234,9 +258,10 @@ def _build_helpers() -> str:
     )
 
 
-def _build_main(source_ids: list[str]) -> str:
+def _build_main(source_ids: list[str], function_name: str) -> str:
     primary = source_ids[0] if source_ids else None
     feed = "load_image(in_path)" if primary else ""
+    batch_feed = "load_image(source_path)" if primary else ""
     return (
         "def batch_process(input_dir, output_dir, pattern=\"*.tif\"):\n"
         f'{_INDENT}"""Run the pipeline over every matching file in a folder."""\n'
@@ -244,7 +269,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}output_dir = Path(output_dir)\n"
         f"{_INDENT}output_dir.mkdir(parents=True, exist_ok=True)\n"
         f"{_INDENT}for source_path in sorted(input_dir.glob(pattern)):\n"
-        f"{_INDENT}{_INDENT}results = run_pipeline(load_image(source_path))\n"
+        f"{_INDENT}{_INDENT}results = {function_name}({batch_feed})\n"
         f"{_INDENT}{_INDENT}for name in OUTPUT_NODES:\n"
         f"{_INDENT}{_INDENT}{_INDENT}output = results.get(name)\n"
         f"{_INDENT}{_INDENT}{_INDENT}if output is None:\n"
@@ -272,7 +297,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}if in_path.is_dir():\n"
         f"{_INDENT}{_INDENT}batch_process(in_path, args.output, pattern=args.pattern)\n"
         f"{_INDENT}else:\n"
-        f"{_INDENT}{_INDENT}results = run_pipeline({feed})\n"
+        f"{_INDENT}{_INDENT}results = {function_name}({feed})\n"
         f"{_INDENT}{_INDENT}out_path = Path(args.output)\n"
         f"{_INDENT}{_INDENT}if len(OUTPUT_NODES) == 1:\n"
         f"{_INDENT}{_INDENT}{_INDENT}save_image(results[OUTPUT_NODES[0]], out_path)\n"

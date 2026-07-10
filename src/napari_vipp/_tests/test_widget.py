@@ -8,6 +8,7 @@ from pathlib import Path
 
 import imageio.v3 as iio
 import numpy as np
+import pytest
 import tifffile
 from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt
 from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
@@ -391,6 +392,18 @@ def test_example_workflow_files_are_packaged():
             assert packaged.read_text(encoding="utf-8") == repo_copy.read_text(
                 encoding="utf-8"
             )
+
+
+def test_example_launcher_resolves_registry_and_rejects_unknown_aliases():
+    from scripts.launch_vipp_intensity_workflow import _workflow_args
+
+    for spec in EXAMPLE_WORKFLOWS:
+        path, selected_node = _workflow_args([spec.id])
+        assert path.name == spec.filename
+        assert selected_node is None
+
+    with pytest.raises(ValueError, match="Unknown example workflow"):
+        _workflow_args(["typo-that-used-to-fall-back-silently"])
 
 
 def test_open_example_workflow_loads_bundled_template(qtbot):
@@ -5981,6 +5994,45 @@ def test_select_table_columns_uses_detected_column_checklist(qtbot):
     control.select_all_button.click()
     control.reset_button.click()
     assert widget.pipeline.nodes[selected.id].params["columns"] == "auto"
+
+
+def test_select_table_columns_preserves_saved_selection_until_input_is_ready(qtbot):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    viewer = _Viewer(image, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    selected = widget.add_node_from_palette("select_table_columns")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget.pipeline.set_param(
+        selected.id,
+        "columns",
+        "label_id,area_pixels",
+    )
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget._connect_nodes(measurements.id, selected.id)
+
+    widget.graph_view.select_node(selected.id)
+
+    assert widget.pipeline.nodes[selected.id].params["columns"] == (
+        "label_id,area_pixels"
+    )
+
+    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
+
+    assert widget.pipeline.nodes[selected.id].params["columns"] == (
+        "label_id,area_pixels"
+    )
+    assert widget.pipeline.outputs[selected.id].columns == (
+        "label_id",
+        "area_pixels",
+    )
 
 
 def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):

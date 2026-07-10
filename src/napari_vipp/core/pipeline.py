@@ -4373,7 +4373,7 @@ class PrototypePipeline:
         state = self._resolved_output_state(source_id, source_port)
         shape = self._resolved_output_shape(source_id, source_port)
         count = _state_channel_count(state, shape)
-        return max(count, 1) if count is not None else 1
+        return max(count, 1) if count is not None else None
 
     def _labeled_split_axis_ports(
         self,

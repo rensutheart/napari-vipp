@@ -4,7 +4,7 @@ import numpy as np
 
 from napari_vipp._graph import PipelineGraphView
 from napari_vipp.core.export import export_pipeline_to_python
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 
@@ -197,6 +197,26 @@ def test_workflow_restore_preserves_referenced_dynamic_port_above_default():
     assert len(restored.output_ports(node.id)) == 5
     restored.run(image, input_metadata={"axes": "ZYX"})
     np.testing.assert_array_equal(restored.outputs["gaussian"], image[4])
+
+
+def test_workflow_restore_preserves_referenced_born_wolf_dynamic_port():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("born_wolf_psf")
+    assert pipeline.connect("input", node.id).success
+    assert pipeline.disconnect("input", "gaussian")
+    connections = [
+        *pipeline.connections,
+        GraphConnection(node.id, "gaussian", source_port=4),
+    ]
+
+    restored = PrototypePipeline()
+    restored.restore_graph(pipeline.nodes.values(), connections)
+
+    assert len(restored.output_ports(node.id)) == 5
+    assert any(
+        connection.source_id == node.id and connection.source_port == 4
+        for connection in restored.connections
+    )
 
 
 def test_export_indexes_multi_output_source():

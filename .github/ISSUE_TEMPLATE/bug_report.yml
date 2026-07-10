@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible incorrect or unexpected behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. Do not attach confidential or ethics-restricted data. Report security concerns privately through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: napari-vipp version
+      description: Copy the version shown in VIPP or from `python -m pip show napari-vipp`.
+      placeholder: 0.11.0a1
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Python version, napari version, and Qt backend.
+      placeholder: Windows 11; Python 3.12; napari 0.6.x; PyQt6
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction
+      description: List the smallest sequence of actions that reliably produces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and traceback
+      description: Paste the full traceback or exact error text when available.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data and workflow details
+      description: Describe dimensions, axes, dtype, calibration, source format, and whether a shareable workflow JSON or synthetic example is available.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I removed confidential, identifiable, and ethics-restricted information.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

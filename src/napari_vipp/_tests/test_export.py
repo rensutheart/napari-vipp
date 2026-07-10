@@ -94,10 +94,57 @@ def test_export_keeps_incomplete_multi_input_node_uncomputed():
     assert f"v_{add.id} = None" in code
 
 
-@pytest.mark.parametrize("name", ["bad-name", "class", ""])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bad-name",
+        "class",
+        "",
+        "OUTPUT_NODES",
+        "Path",
+        "batch_process",
+        "load_image",
+        "read_image",
+        "save_image",
+    ],
+)
 def test_export_rejects_invalid_function_name(name):
     with pytest.raises(ValueError, match="function name"):
         export_pipeline_to_python(PrototypePipeline(), function_name=name)
+
+
+def test_export_rejects_function_name_that_shadows_used_operation():
+    with pytest.raises(ValueError, match="function name"):
+        export_pipeline_to_python(
+            _starter_pipeline(),
+            function_name="gaussian_blur",
+        )
+
+
+def test_source_only_export_compiles_without_empty_operation_import():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.ones((3, 4), dtype=np.float32)
+
+    assert "from napari_vipp.core.operations import" not in code
+    np.testing.assert_array_equal(namespace["run_pipeline"](image)["input"], image)
+
+
+def test_custom_export_function_name_is_used_by_generated_harness():
+    pipeline = _starter_pipeline()
+
+    code = export_pipeline_to_python(pipeline, function_name="analyze_image")
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.ones((3, 4), dtype=np.float32)
+
+    assert "def analyze_image(" in code
+    assert "results = analyze_image(load_image(source_path))" in code
+    assert namespace["analyze_image"](image)["threshold"].dtype == bool
 
 
 def test_export_uses_unique_variables_for_colliding_node_identifiers():

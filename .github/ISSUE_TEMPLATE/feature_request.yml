@@ -1,0 +1,36 @@
+name: Feature request
+description: Propose a focused user-facing or scientific capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or research task
+      description: Explain the task and why current VIPP behavior does not address it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe inputs, outputs, important parameters, and the expected workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Scientific method or reference
+      description: For an analysis operation, link an authoritative paper, specification, or reference implementation and note relevant assumptions.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and the roadmap for this request.
+          required: true

@@ -1,5 +1,10 @@
 # napari-vipp
 
+[![CI](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml/badge.svg)](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
+[![Python](https://img.shields.io/pypi/pyversions/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
+[![License](https://img.shields.io/pypi/l/napari-vipp.svg)](LICENSE)
+
 napari-vipp is a napari-native visual image-processing pipeline builder for
 bioimage analysis. Build a typed node graph, inspect intermediate images and
 tables, tune parameters, save the workflow, and run the same operations without
@@ -15,9 +20,14 @@ VIPP requires Python 3.10 or newer. If napari is not already installed, install
 it with a Qt backend at the same time:
 
 ```bash
-python -m pip install "napari[pyqt6]" napari-vipp
+python -m pip install "napari[pyqt6]"
+python -m pip install --pre napari-vipp
 napari
 ```
+
+The `--pre` flag is required while VIPP is published as an alpha release. It is
+kept on the VIPP command so napari itself can continue to resolve to a stable
+release.
 
 In napari, open:
 
@@ -53,10 +63,10 @@ Install only the reader family you need, then restart napari:
 
 | Format family | Install command |
 | --- | --- |
-| Nikon ND2 | `python -m pip install "napari-vipp[nd2]"` |
-| Zeiss CZI | `python -m pip install "napari-vipp[czi]"` |
-| Mixed microscope formats | `python -m pip install "napari-vipp[microscope]"` |
-| BioIO/Bio-Formats fallback | `python -m pip install "napari-vipp[bioformats]"` |
+| Nikon ND2 | `python -m pip install --pre "napari-vipp[nd2]"` |
+| Zeiss CZI | `python -m pip install --pre "napari-vipp[czi]"` |
+| Mixed microscope formats | `python -m pip install --pre "napari-vipp[microscope]"` |
+| BioIO/Bio-Formats fallback | `python -m pip install --pre "napari-vipp[bioformats]"` |
 
 These routes are an experimental foundation: axes and common metadata are
 normalized where the source reader exposes them, but format-specific coverage
@@ -111,6 +121,12 @@ python -m pytest
 Launch a development instance with `python scripts/launch_vipp_sample.py`. The
 [architecture reference](docs/architecture.md) explains the graph, metadata,
 execution, persistence, and UI boundaries.
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before
+opening a pull request, use [SUPPORT.md](SUPPORT.md) for help and issue-reporting
+guidance, and report suspected vulnerabilities privately through
+[SECURITY.md](SECURITY.md). All project interactions follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Roadmap
 
