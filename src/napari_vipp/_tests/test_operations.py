@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pytest
 import tifffile
@@ -122,9 +124,11 @@ from napari_vipp.core.operations import (
 )
 from napari_vipp.core.pipeline import (
     EXECUTION_NOT_CALCULATED,
+    EXECUTION_POLICIES,
     EXECUTION_READY,
     EXECUTION_STALE,
     MANUAL_RUN_SKIP,
+    NODE_LIBRARY,
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
     SourcePayload,
@@ -269,6 +273,55 @@ def test_vipp_operation_nodes_are_registered():
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
+
+
+def test_registered_operation_specs_match_callable_and_ui_contracts():
+    operation_ids = [spec.id for spec in NODE_LIBRARY]
+    assert len(operation_ids) == len(set(operation_ids))
+
+    for spec in NODE_LIBRARY:
+        assert spec.execution_policy in EXECUTION_POLICIES, spec.id
+        if spec.inputs:
+            assert spec.max_inputs == len(spec.inputs), spec.id
+        assert (spec.function is not None) == spec.has_input, spec.id
+        if spec.function is not None:
+            signature_params = tuple(
+                inspect.signature(spec.function).parameters.values()
+            )
+            declared = {param.name for param in spec.parameters}
+            accepted = {param.name for param in signature_params}
+            required = {
+                param.name
+                for param in signature_params[1:]
+                if param.default is inspect.Parameter.empty
+                and param.kind
+                not in {
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                }
+            }
+            assert declared <= accepted, spec.id
+            assert required <= declared, spec.id
+
+        output_names = [port.name for port in spec.output_ports]
+        assert len(output_names) == len(set(output_names)), spec.id
+        for param in spec.parameters:
+            assert param.minimum <= param.maximum, (spec.id, param.name)
+            if param.choices:
+                assert param.default in param.choices, (spec.id, param.name)
+            elif isinstance(param.default, (int, float)) and not isinstance(
+                param.default,
+                bool,
+            ):
+                assert param.minimum <= param.default <= param.maximum, (
+                    spec.id,
+                    param.name,
+                )
+            if param.choice_labels:
+                assert len(param.choice_labels) == len(param.choices), (
+                    spec.id,
+                    param.name,
+                )
 
 
 def test_pipeline_runs_mask_to_labels_to_label_volume_filter_in_3d():
@@ -2004,6 +2057,20 @@ def test_save_array_output_rejects_blank_path():
         pass
     else:
         raise AssertionError("Expected blank save path to be rejected")
+
+
+def test_save_table_output_rejects_blank_path():
+    table = table_from_columns({"label_id": [1]})
+
+    with pytest.raises(ValueError, match="blank"):
+        save_table_output(table, "")
+
+
+def test_image_math_requires_configured_input_count():
+    image = np.ones((3, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="needs 2 connected input"):
+        add_images([image], input_count=2)
 
 
 def test_save_array_output_writes_imagej_hyperstack_and_mask_values(tmp_path):

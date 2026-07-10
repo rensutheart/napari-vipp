@@ -9226,8 +9226,23 @@ class VippWidget(QWidget):
         box.exec()
 
         if copy_button is not None and box.clickedButton() == copy_button:
-            QApplication.clipboard().setText(command)
-            self.status_label.setText(f"Copied reader install command: {command}")
+            clipboard = QApplication.clipboard()
+            copied = False
+            for _attempt in range(3):
+                clipboard.setText(command)
+                if clipboard.text() == command:
+                    copied = True
+                    break
+                QApplication.processEvents()
+            if copied:
+                self.status_label.setText(
+                    f"Copied reader install command: {command}"
+                )
+            else:
+                self.status_label.setText(
+                    "Could not access the system clipboard. Install with: "
+                    f"{command}"
+                )
             return
         if command:
             self.status_label.setText(

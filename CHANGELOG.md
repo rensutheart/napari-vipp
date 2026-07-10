@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Hardened graph restoration so invalid cycles, ports, duplicate input targets,
+  source-node targets, and tunnel definitions are rejected atomically.
+- Preserved dynamic output-count hints during workflow restore and stopped
+  invalid dynamic source ports from silently falling back to port 0.
+- Fixed generated Python for incomplete multi-input nodes, invalid or colliding
+  identifiers, and workflows whose node ids normalize to the same variable.
+- Tightened NumPy, workflow, and table output path validation, including NPY
+  suffix normalization and overwrite protection.
+- Improved background clipboard retry behavior and input-count consistency.
+- Added graph, operation-registry, export, I/O, documentation-link, and workflow
+  contract tests while replacing a slow redundant widget smoke test with a
+  focused palette invariant.
+- Reworked the README and user documentation, added a documentation index, and
+  reconciled planning, architecture, research, and release records with the
+  current 0.11 baseline.
+
 ## 0.11.0a1 - 2026-07-09
 
 - Changed the project license to BSD 3-Clause for compatibility with napari and

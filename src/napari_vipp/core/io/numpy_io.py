@@ -58,7 +58,8 @@ def read_numpy(path: Path, series_index: int = 0) -> ImageDataset:
 
 def write_numpy(data, path: Path) -> Path:
     """Write one array to NPY."""
-    np.save(path, np.asarray(data))
+    with path.open("wb") as handle:
+        np.save(handle, np.asarray(data))
     return path
 
 
@@ -87,4 +88,3 @@ def _selected_series(
             f"Series index {index} is outside 0..{len(inspection.series) - 1}"
         )
     return inspection.series[index]
-

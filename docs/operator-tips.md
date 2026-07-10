@@ -1,5 +1,7 @@
 # VIPP Operator Tips and Performance
 
+Last reviewed: 2026-07-10
+
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
 

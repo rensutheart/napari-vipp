@@ -3,11 +3,11 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-07-01
+Last reviewed: 2026-07-10
 
-It reflects the live codebase after slot-aware multi-input and multi-output
-graphs, workflow persistence, Python export, metadata panels, first-class label
-images, table outputs, label-volume filtering, and detachable-window fixes.
+It reflects the live codebase through the 0.11 alpha, including restoration,
+optional microscope-reader routing, collection batch execution, and graph
+restore hardening.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -128,17 +128,20 @@ Key behaviours:
   supplied.
 - `trim_invalid_connections(node_id)` removes connections whose stored slot is
   now outside the node's current input count.
-- `output_ports(node_id)` returns the node's resolved `OutputSpec`s: the static
-  `outputs` when declared, a single default `out` port otherwise, or — for nodes
-  with an `output_factory` — one port per channel discovered on the last run
-  (defaulting to three before the node has processed an image). Type-preserving
-  multi-output nodes such as `split_channels` resolve each port's type from the
-  connected upstream port, allowing a split mask channel to feed mask-only
-  operations.
+- `output_ports(node_id)` returns the node's resolved `OutputSpec`s: static
+  `outputs` when declared, one default `out` port otherwise, or a dynamic count
+  inferred from the connected source, the last run, or a persisted private
+  count hint. Type-preserving multi-output nodes such as `split_channels`
+  resolve each port's type from the connected upstream port, allowing a split
+  mask channel to feed mask-only operations.
 - `trim_invalid_output_connections(node_id)` removes downstream edges whose
   stored `source_port` is now outside a dynamic node's current output count.
 - `topological_order()` supports export by returning a source-first order.
-- `restore_graph()` rebuilds the model from workflow JSON.
+- `restore_graph()` validates a complete candidate graph before replacing the
+  live model. It rejects unknown operations, duplicate ids, missing nodes,
+  cycles, negative/out-of-range ports, multiple connections to one input, and
+  invalid or duplicate tunnel sources. Failed restoration is atomic: the
+  previous graph remains unchanged.
 
 Execution happens in `run(...)`. It repeatedly runs nodes whose upstream sources
 are complete. For each node it stores the primary port-0 output in
@@ -760,6 +763,9 @@ Python export:
   `source_port`.
 - `combine_channels` exports using stored `channel_axis`; if a composite node
   has not run yet and lacks that derived axis, export emits a NOTE comment.
+- Export calls pure operation functions with stored resolved parameters. It
+  does not reproduce interactive caches or the complete runtime `ImageState`
+  propagation used by the widget.
 
 Collection batch UI:
 
@@ -828,22 +834,11 @@ The time-lapse multichannel sample is preferred as the default when present.
 
 Tests live in `src/napari_vipp/_tests/`.
 
-Current test split:
-
-- `test_operations.py`: processing functions and save behaviour.
-- `test_graph.py`: Qt graph canvas behaviour, node movement, ports,
-  connection feedback, deletion.
-- `test_preview.py`: slice/MIP/multichannel thumbnail generation, including
-  requested Combine Channels colours.
-- `test_sample_data.py`: sample data shapes and metadata hints.
-- `test_widget.py`: pytest-qt tests for widget workflows, metadata, histogram,
-  pinning, source controls, graph interactions, Combine Channels UI, and save
-  actions.
-- `test_workflow.py`: workflow JSON save/load and target-port preservation.
-- `test_export.py`: generated Python syntax and execution.
-- `test_multi_output.py`: multi-output ports, `source_port` routing, split
-  metadata, and persistence/export of multi-output sources.
-- `test_example_workflow.py`: checked-in label workflow loading and execution.
+The suite covers pure operations and metadata, graph invariants, workflow
+persistence, generated Python execution, I/O round trips, examples, previews,
+and focused pytest-qt widget behavior. Keep contract and algorithm tests in the
+headless core where possible; reserve widget tests for behavior that genuinely
+depends on Qt orchestration.
 
 Useful commands:
 
@@ -915,8 +910,8 @@ Still incomplete or deliberately future-facing:
 - operation-level lazy execution, remote URI reads, and collection batch
   execution beyond the first-pass local folder UI;
 - richer channel/probe naming and colour metadata from real microscopy files;
-- richer batch execution UI for paired source collections, output templates, and
-  per-item provenance;
+- saved batch configuration, richer failure/output manifests, semantic-axis
+  iteration, HCS traversal, and per-item provenance;
 - plugin/template generation for arbitrary new analysis nodes.
 
 When continuing work, prefer this order: implement data behaviour in `core/`,

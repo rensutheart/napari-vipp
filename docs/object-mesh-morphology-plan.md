@@ -1,6 +1,8 @@
 # Object And Mesh Morphology Plan
 
-Last reviewed: 2026-07-02
+Status: implementation record; phases 1-3 complete, phase 4 deferred
+
+Last reviewed: 2026-07-10
 
 This plan covers the next morphology milestone after the skeleton/network
 work. It is informed by the old MitoMorph `morphology.py` implementation, but

@@ -1,5 +1,7 @@
 # Cache And Memory Policy
 
+Last reviewed: 2026-07-10
+
 VIPP is currently an eager, interactive workflow builder. Most nodes calculate
 NumPy-like in-memory outputs so that graph thumbnails, node inspection, pinned
 overlays, and downstream edits feel immediate. This is useful while designing a

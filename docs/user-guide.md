@@ -1,346 +1,614 @@
 # VIPP User Guide
 
-This guide explains everyday usage of the VIPP widget from an end-user point of
-view.
+Last reviewed: 2026-07-10
+
+This guide is written for people building visual image-processing workflows in
+VIPP. It focuses on how to use the graph, how to choose the right controls, and
+how to avoid common analysis mistakes.
+
+VIPP is still alpha software. Treat results as inspectable analysis outputs,
+not publication-ready measurements, until the workflow has been validated for
+your data and acquisition settings.
+
+## Quick Start
+
+The fastest way to understand VIPP is to open a bundled example. The examples
+use packaged synthetic data, so they do not require external files.
+
+1. Click `Open example...`.
+2. Pick a workflow from the grouped chooser.
+3. Review the graph from left to right.
+4. Select nodes to inspect parameters, output metadata, histograms, and manual
+   calculation controls.
+5. Use `Save workflow...` once the graph is worth keeping.
+
+![Grouped example workflow chooser](assets/user-guide/vipp-example-chooser.png)
+
+Good first examples:
+
+| Goal | Example |
+| --- | --- |
+| Segment a fluorescence channel | `Red-Channel Label Cleanup` |
+| Measure labels with intensity | `Object Intensity Measurements` |
+| Review 3D morphology | `3D Mesh Morphology` |
+| Try PSF-aware restoration | `3D Richardson-Lucy / TV Deconvolution` |
+| Review colocalization outputs | `RACC Colocalization` |
+| Audit skeleton/network measurements | `Skeleton QC` |
+
+## The Workspace
+
+The VIPP dock has four working areas:
+
+| Area | Purpose |
+| --- | --- |
+| Toolbar | Workflow loading, export, preview settings, dimension controls, background progress, and graph tools. |
+| Palette | Searchable node library grouped by task. |
+| Graph canvas | Typed node graph where outputs connect to compatible inputs. |
+| Inspector | Parameters, execution controls, metadata, histograms, and table previews for the selected node. |
+
+![VIPP workspace with a 3D deconvolution workflow](assets/user-guide/vipp-3d-deconvolution-workspace.png)
+
+Graph direction is usually left to right: sources on the left, processing in
+the middle, analysis or saved outputs on the right. Node cards show a compact
+thumbnail, axis/dtype metadata, execution status, and typed input/output ports.
+
+## Core Concepts
+
+### Images, Masks, Labels, And Tables
+
+VIPP distinguishes common data roles:
+
+| Role | Typical use |
+| --- | --- |
+| `image` | Intensity images, restored images, RGB views, PSFs, projections. |
+| `mask` | Binary foreground/background masks. |
+| `labels` | Integer object labels where `0` is background. |
+| `table` | Measurements, colocalization metrics, summaries, and provenance-like outputs. |
+
+Typed ports prevent many accidental connections. For example, a label
+measurement node expects labels, while a filtering node usually expects an
+image or array.
+
+### Metadata Matters
+
+VIPP tracks semantic axes, physical scale, units, channel names/colours,
+source identity, and operation history where possible. This metadata drives:
+
+- `View dims` mapping across nodes that drop or rescale axes;
+- channel-aware operations such as `Split Channels` and `Extract Channel`;
+- physical measurements such as mesh surface area and volume;
+- PSF generation from acquisition metadata;
+- graph behavior and output metadata for supported saved datasets.
+
+Always inspect the selected node's `Output Metadata` table when a workflow
+depends on axis order, channel identity, scale, or acquisition settings.
 
 ## Toolbar Controls
 
-### Graph search
+### Preview
 
-Use `Search graph` above the canvas to highlight matching graph elements.
-Search checks node titles, operation IDs, named tunnel names, and Batch Output
-tags. Press Enter or `Focus` to jump to the next match. Tunnel matches reveal
-the tunnel source and subscribed inputs.
+`Preview` controls graph-card thumbnails:
 
-### View dims
+| Mode | Use |
+| --- | --- |
+| `Slice` | Show the current T/Z/C position. Best for interactive review. |
+| `MIP` | Show a maximum projection. Useful for sparse 3D objects or PSFs. |
+| `Off` | Disable thumbnails. Useful for very large workflows or slow previews. |
 
-When the active image has non-XY axes such as `T`, `Z`, or `C`, VIPP shows a
-`View dims` bar above the graph. These controls mirror napari's dimension
-sliders and remain usable when napari's own Z slider is hidden in 3D view.
+The preview mode affects graph thumbnails, not the napari layer view.
 
-Moving a VIPP slider updates the napari viewer. Moving a napari slider updates
-the VIPP slider. For downstream nodes whose axis length differs from the source
-image, for example after `Rescale Axes`, VIPP shows the node's local axis range
-and maps it to the equivalent relative napari position. For nodes that drop an
-axis, for example `Split Channels`, VIPP still maps the remaining axes back to
-their original source dimensions, so the `Z` control continues to scrub the same
-stack axis downstream.
+### Contrast And Contrast Range
 
-In narrow dock layouts, the bar first hides the full sliders, then collapses to
-a `View dims...` menu containing the same controls.
+`Contrast` chooses the intensity mapping:
 
-### Follow napari dims
+| Contrast | Meaning |
+| --- | --- |
+| `Percentile` | Robust display range. Good default for most microscopy images. |
+| `Min-max` | Use observed minimum and maximum. Useful when outliers are meaningful. |
+| `Raw` | Use raw values relative to the selected range. Useful for normalized floats and PSFs. |
 
-- On (default): previews, slice histograms, and the Current view metadata track
-  the current napari/VIPP dims position (for example T and Z).
-- Off: these panels use a stable/default sampling context instead of following
-  napari or VIPP sliders.
+`Contrast Range` chooses where that range is measured:
 
-Use On for normal interactive work. Use Off when you want a stable reference
-view while scrubbing dims or comparing parameter changes.
+| Range | Meaning |
+| --- | --- |
+| `Stack` | Cache one range for the node output, then reuse it while moving through slices. Best for stable brightness across Z/T/C. |
+| `Slice` | Recompute display scaling from the currently viewed slice. Useful when individual slices are very different. |
 
-### Thumbnail Contrast Range
+For large volumes, prefer `Stack` once the cache is built. VIPP calculates stack
+thumbnail limits in the background and reuses them while the node output remains
+unchanged.
 
-`Preview` chooses whether graph thumbnails show the current slice, a maximum
-projection, or no thumbnail. `Contrast` chooses the intensity mapping:
-percentile, min-max, or raw. `Range` chooses where that mapping is measured.
-Use `Stack` (default) for stable brightness while moving through Z/T/C, which
-is usually best for PSFs and restored float images. Use `Slice` when you want
-each viewed slice to stretch itself locally.
+### View Dims
 
-### Run all in BG
+When the selected or pinned image has non-XY axes such as `T`, `Z`, or `C`,
+VIPP shows a `View dims` bar above the graph. These sliders control thumbnail,
+histogram, and metadata sampling positions. They are also useful when napari's
+own Z slider is hidden in 3D view.
 
-- Off (default): only known slower operations use background processing.
-- On: all pipeline recomputes run in background mode.
+For downstream nodes whose axis length differs from the source image, such as
+after `Rescale Axes`, VIPP shows the node's local range and maps it to the
+equivalent relative napari position. For nodes that drop an axis, such as
+`Split Channels`, VIPP still maps the remaining axes back to their original
+source dimensions.
 
-Background mode shows progress in the toolbar and node graph. This is useful
-for long pipelines and large images because you can see progress while updates
-run.
+### Link Napari/VIPP Sliders
 
-For small or very fast edits, Run all in BG can add overhead. If updates feel
-slower for simple operations, switch it off.
+The Settings menu contains `Link napari/VIPP sliders`.
 
-## Axis And Channel Splitting
+| Setting | Behavior |
+| --- | --- |
+| On | Napari dimension sliders and VIPP `View dims` sliders stay synchronized. Moving either one updates thumbnails, histograms, and current-view metadata. |
+| Off | Napari scrubbing updates only the napari viewer. VIPP `View dims` keeps a separate position for graph thumbnails and inspector summaries. |
 
-Use `Split Channels` when the input has a semantic channel axis, such as OME
-`C` metadata, VIPP sample metadata, `Combine Channels` output, or a conventional
-RGB/RGBA channel-last image. The node creates one graph output port per channel.
+Use `On` for normal work. Use `Off` when scrubbing large napari layers would
+make the whole graph refresh too often.
 
-Use `Split Axis` when you want one output per index of another stack axis, such
-as timepoints, Z slices, or a leading non-channel axis. This keeps accidental
-Z/time splitting separate from fluorescence channel splitting.
+### Background Execution
 
-## Named Port Tunnels
+`Run all in BG` controls whether normal pipeline recomputes run in background
+mode.
 
-Named port tunnels are hidden wires for outputs that are reused many times,
-such as split fluorescence channels, masks, ROIs, or the original reference
-image. They keep dense graphs readable without changing the calculation.
+| Setting | Behavior |
+| --- | --- |
+| Off | Only known slower operations run in the background. |
+| On | Every graph recompute runs in the background. |
 
-To create one:
+Background execution shows progress in the toolbar. If parameters change while
+a calculation is running, VIPP rejects its stale result and queues the latest
+request. Cancellation is cooperative: VIPP can stop between supported work
+units, but it cannot interrupt a NumPy, SciPy, or scikit-image call already in
+progress. CPU use may therefore continue briefly after `Cancel` is clicked.
+
+### Cache And Memory
+
+The Settings menu also exposes `Cache mode`, `Auto memory guard`, and
+`Cache limit`.
+
+| Mode | Use |
+| --- | --- |
+| `Keep all` | Current default. Fastest repeated inspection, highest memory use. |
+| `Smart interactive cache` | Recommended for large graphs. Keeps useful branch outputs while pruning safer intermediates. |
+| `Low-memory mode` | Recomputes more often to reduce cached array memory. |
+
+Mark important nodes with `Keep output cached` in the inspector when they
+should survive Smart or Low-memory pruning. See
+[cache-and-memory.md](cache-and-memory.md) for detailed memory policy.
+
+## Building A Graph
+
+### Add And Connect Nodes
+
+1. Search the palette or browse a category.
+2. Add a node by clicking the palette item.
+3. Drag from an output port to a compatible input port.
+4. Select the node and set parameters in the inspector.
+
+VIPP rejects incompatible port types and cycles. When a node can be inserted on
+an existing wire in more than one way, VIPP asks which input/output mapping to
+use.
+
+### Search And Focus
+
+Use `Search graph` above the canvas to find nodes, operation IDs, named
+tunnels, and `Batch Output` tags. Press Enter or click `Focus` to move through
+matches. Tunnel matches reveal the source and subscribers.
+
+### Named Port Tunnels
+
+Named tunnels are hidden wires for outputs reused many times. They keep dense
+graphs readable without changing calculation semantics.
+
+Create a tunnel:
 
 1. Right-click an output port.
 2. Choose `Create output tunnel...`.
-3. Give it a short name such as `Ch1`, `DAPI`, `Mask`, or `Reference`.
+3. Give it a short name such as `DAPI`, `Mask`, `Reference`, or `Prepared PSF`.
 
-To use one:
+Use a tunnel:
 
 1. Right-click a compatible input port.
 2. Choose `Use tunnel`.
 3. Select the named source.
 
-The graph shows compact tunnel badges on the source output and subscribed input
-ports instead of drawing the long wire. A tunnel still behaves like a real
-connection: it occupies that input slot, replaces any previous connection to
-that slot, respects data-type compatibility, rejects cycles, runs in batch mode,
-and is saved with the workflow.
+The `Tunnels...` toolbar button opens a manager where you can filter, focus,
+rename, or delete tunnels.
 
-To inspect tunnel usage:
+### Graph Notes
 
-1. Click a tunnel badge to highlight its source and all subscribed inputs.
-2. Right-click a tunneled port to reveal subscribers, rename the tunnel, remove
-   it, or open the tunnel manager.
-3. Use the toolbar `Tunnels...` button to filter, audit, focus, reveal, rename,
-   or delete named sources from one table.
+Right-click a node and choose `Add note` to attach a movable annotation. Notes
+are saved in workflow JSON, move with their node during layout changes, and are
+included in undo/redo. Use them for:
 
-## Graph Notes
+- parameter rationale;
+- known caveats;
+- branch interpretation;
+- review reminders.
 
-Right-click a node and choose `Add note` to attach a movable annotation to that
-node. Notes are for workflow reasoning, reminders, interpretation comments, or
-marking alternatives; they do not run as pipeline nodes and do not affect
-outputs.
+Notes do not execute and do not affect outputs.
 
-Attached notes move with their node during dragging, insertion layout changes,
-and `Auto structure graph`. Dragging a note only moves the note. Double-click a
-note, or right-click it and choose `Edit note...`, to change the text. Select a
-note and press Delete, or use the note context menu, to remove it. Note creation,
-movement, text edits, and deletion are included in undo/redo.
+## Workflow Save, Load, And Export
 
-Notes are saved in workflow JSON and reload with their attached node.
+### Save Workflow JSON
 
-## Workflow Save And Load
+`Save workflow...` writes the graph, parameters, connections, positions, named
+tunnels, graph notes, and selected inspector state.
 
-Use `Open example...` for bundled workflow templates. The example chooser is
-grouped by task, such as segmentation, measurements, colocalization, skeletons,
-and restoration. Example workflows use `Image Source` nodes set to bundled
-samples, so they run without loading sample layers into napari first.
+Workflow JSON does not embed cached image pixels or tables. When a saved
+workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-`Save workflow...` writes the graph, node parameters, connections, canvas
-positions, named tunnels, graph notes, and selected inspector state to workflow
-JSON. The selected node and whether the right inspector panel is visible are
-restored when the workflow is loaded.
+VIPP stores optional UI state under `metadata.vipp`; this state affects how the
+workflow reopens, not how it calculates:
 
-Use `Load workflow...` for a workflow JSON file that is not in the bundled
-example set.
+```json
+{
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "richardson_lucy_tv_deconvolution_1",
+        "right_panel_visible": true
+      },
+      "thumbnails": {
+        "disabled_node_ids": ["input_2"]
+      }
+    }
+  }
+}
+```
 
-Per-node thumbnail visibility is optional workflow UI metadata. Enable
-`Save thumbnail visibility in workflows` in Settings when hidden/shown thumbnail
-choices should be restored with the workflow. VIPP stores only the visibility
-preference; thumbnail image pixels, cached arrays, and cached tables are never
-embedded in workflow JSON.
+### Export Python
 
-Old workflows without this metadata still load. When thumbnail metadata is
-absent, VIPP starts with normal thumbnail visibility.
+`Export Python...` writes a headless script that imports the same pure operation
+functions used by the graph. Use it when a workflow should be reviewed,
+versioned, or run outside the GUI.
 
-## When To Use Which Mode
+Typical exported scripts follow this shape:
 
-Recommended default for most users:
+```python
+from napari_vipp.core.operations import gaussian_blur, otsu_threshold
 
-- Follow napari dims: On
-- Run all in BG: Off
+def run_pipeline(src_input):
+    v_input = src_input
+    v_gaussian = gaussian_blur(v_input, sigma=1.2)
+    v_threshold = otsu_threshold(v_gaussian)
+    return {
+        "input": v_input,
+        "gaussian": v_gaussian,
+        "threshold": v_threshold,
+    }
+```
 
-Recommended for large images or long graphs:
+The full export also includes shared VIPP image I/O, a folder batch helper, and
+a command-line entry point. Manual nodes calculate normally in exported runs.
+The script contains the resolved parameters stored on the graph, but it does
+not reproduce interactive caches or the full runtime `ImageState` metadata
+propagation. Its generated folder helper binds the first image source; workflows
+with additional independent sources need manual source binding in the script.
 
-- Follow napari dims: On
-- Run all in BG: On
-- Cache mode: Smart interactive cache, or Low-memory mode when RAM is tight
+### Batch Output Basics
 
-Recommended for fixed-reference comparisons while navigating dims:
+Add `Batch Output` nodes to mark exactly which image, labels, mask, RGB, or
+table outputs should be saved during batch execution. If no `Batch Output`
+nodes are present, VIPP falls back to terminal graph outputs.
 
-- Follow napari dims: Off
-- Run all in BG: choose based on pipeline size
+Use clear tags, because they become output identifiers:
 
-The Settings menu also exposes `Auto memory guard` and `Cache limit`. If
-keep-all caching uses too much reclaimable memory, VIPP switches to Smart
-interactive cache and warns you. `Cache limit` is the allowed percentage of
-`free RAM + current VIPP cache`, and defaults to 90%. Mark important
-intermediate nodes with `Keep output cached` in the inspector when they should
-survive Smart or Low-memory pruning. See
-[cache-and-memory.md](cache-and-memory.md) for details.
+```text
+labels_cleaned
+rl_tv_restored
+object_measurements
+colocalization_metrics
+```
+
+The current batch dialog supports local folder bindings, positional pairing of
+multiple sources, a dry-run preview, and optional saved workflow/script
+artifacts. The next roadmap milestone adds a saved batch configuration and
+per-item provenance manifests.
 
 ## Manual Calculation Nodes
 
-Some table-producing nodes are intentionally not recalculated on every
-parameter change. Current manual nodes are `Measure Objects`, `Measure Objects
-+ Intensity`, `Measure 3D Mesh Morphology`, `Analyze Skeleton`,
-`Measure Skeleton Branches`, `Skeleton Graph Tables`, `Measure Overall
-Skeleton Network`, `Colocalization Metrics`, `Masked Colocalization Metrics`,
-`RACC Index`, `Masked RACC Index`, `Richardson-Lucy Deconvolution`, and
-`Richardson-Lucy TV Deconvolution`.
+Some nodes intentionally do not recalculate on every parameter change. They
+show an `Execution` panel with `Calculate` or `Recalculate`.
 
-When selected, these nodes show an `Execution` panel with `Calculate` or
-`Recalculate`. The same action is available on the node card. If upstream data
-or parameters change after a calculation, the node keeps its last table output
-available downstream but marks it as stale until recalculated. Workflow files do
-not store cached tables, so loading a workflow starts from the node settings and
-the table must be calculated again in the UI. Exported Python scripts calculate
-manual nodes normally during headless runs.
+Manual/cached nodes include measurement, mesh, skeleton, colocalization, and
+deconvolution operations such as:
 
-The toolbar `Calculate all` button recalculates every manual node that is not
-current, including never-calculated, stale, or errored manual nodes.
+- `Measure Objects`
+- `Measure Objects + Intensity`
+- `Measure 3D Mesh Morphology`
+- `Analyze Skeleton`
+- `Colocalization Metrics`
+- `RACC Index`
+- `Richardson-Lucy Deconvolution`
+- `Richardson-Lucy TV Deconvolution`
 
-The `Execution` panel also has `Auto Recalculate`. This is off by default. When
-enabled for a manual node, VIPP recalculates that node automatically when
-upstream data or relevant parameters change, and hides the manual
-`Recalculate` button because the node no longer waits for an explicit click.
-Use it only when the node is fast enough for the current image size.
+Status colours:
 
-Manual node cards use status colours:
+| Colour | Meaning |
+| --- | --- |
+| Gray | Not calculated. |
+| Green | Calculated and current. |
+| Orange | Cached result is stale. |
+| Red | Calculation failed. |
 
-- gray: not calculated;
-- green: calculated and current;
-- orange: cached result is stale;
-- red: calculation failed.
+`Calculate all` recalculates every manual node that is not current. `Auto
+Recalculate` can be enabled per manual node, but use it only when the node is
+fast enough for the current image size.
+
+## Example Workflow: 3D PSF-Aware Deconvolution
+
+The `3D Richardson-Lucy / TV Deconvolution` example is the recommended
+restoration starting point when the source is a fluorescence z-stack. Use the
+2D example when planes should be restored independently.
+
+![3D PSF-aware deconvolution graph](assets/user-guide/vipp-3d-deconvolution-graph.png)
+
+The workflow structure is:
+
+```mermaid
+flowchart LR
+    image["Image Source<br/>3D blurred volume"]
+    psf["Image Source<br/>3D measured PSF"]
+    prep["Prepare / Validate PSF"]
+    rl["Richardson-Lucy<br/>Deconvolution"]
+    tv["Richardson-Lucy TV<br/>Deconvolution"]
+
+    psf --> prep
+    image --> rl
+    prep --> rl
+    image --> tv
+    prep --> tv
+```
+
+Review sequence:
+
+1. Open `Open example... -> Restoration & PSF -> 3D Richardson-Lucy / TV
+   Deconvolution`.
+2. Select the PSF source and inspect its axes. It should be `ZYX`.
+3. Select `Prepare / Validate PSF` and confirm the output is `float32`, odd
+   shaped, centered, and normalized.
+4. Select `Richardson-Lucy Deconvolution` and click `Calculate`.
+5. Select `Richardson-Lucy TV Deconvolution` and click `Calculate`.
+6. Compare thumbnails, inspect outputs in napari, and check metadata.
+
+Use ordinary RL as a comparator. Use RL-TV when ordinary RL sharpens noise too
+strongly.
 
 ## Restoration And PSF Workflows
 
 PSF-aware deconvolution lives under `Filtering -> Restoration & PSF`. The first
-supported path is explicit: the image and the PSF are separate graph images, and
-the PSF is prepared before it is reused.
+supported path is explicit: the image and the PSF are separate graph images,
+and the PSF is prepared before it is reused.
 
-`Born-Wolf PSF` can generate scalar 2D or 3D PSFs from the connected image's
-normalized metadata. Keep `Auto from metadata` on when wavelength, objective
-NA, refractive index, and pixel spacing are present; the disabled fields show
-the resolved values used for calculation. For multi-channel images, `Channel =
--1` generates one output port per metadata channel, such as `488 PSF` and
-`561 PSF`. Set `Channel` to a specific index to generate only one
-channel-specific PSF. Missing required auto values are marked red and the node
-will not produce a PSF until the metadata is supplied or `Auto from metadata`
-is turned off. In manual mode the physical fields become editable exact
-numeric inputs and are initialized to non-zero defaults before calculation. PSF
-size and pupil samples are always explicit numeric entries, not sliders,
-because they are generation settings.
+### Measured PSF Workflow
 
-For a measured PSF workflow:
+Use this for bead PSFs or externally generated PSFs.
 
 1. Add an `Image Source` for the microscopy image.
-2. Add a second `Image Source` for the measured PSF image, such as a bead PSF
-   saved as TIFF, OME-TIFF, NumPy, or a napari layer.
+2. Add another `Image Source` for the measured PSF image.
 3. Connect the PSF source to `Prepare / Validate PSF`.
 4. Connect the microscopy image to the deconvolution node's `Image` input.
 5. Connect the prepared PSF to the deconvolution node's `PSF` input.
-6. Choose `2D YX` for plane-wise restoration or `3D ZYX` for volumetric
-   restoration, then click `Calculate`.
+6. Choose `2D YX` or `3D ZYX`.
+7. Click `Calculate`.
 
-Use `Split Channels` first when each fluorescence channel needs its own
-deconvolution branch. Born-Wolf can expose one generated PSF output per
-channel, but Richardson-Lucy nodes still consume one scalar PSF per branch;
-connect the matching channel-specific PSF output to that branch's
-`Prepare / Validate PSF` or deconvolution node.
+Recommended PSF preparation:
 
-`Prepare / Validate PSF` converts the PSF to `float32`, replaces non-finite
-values with zero, optionally clips negatives, centers by peak or centroid,
-optionally forces odd shape, and normalizes the sum. Use `Peak` centering for
-generated or clean measured PSFs. Use `Centroid` when a bead PSF is broader or
-slightly asymmetric. Keep `Normalize sum` on for Richardson-Lucy deconvolution.
-An empty or all-invalid PSF raises an error instead of producing a misleading
-restoration.
+| Parameter | Starting point | Notes |
+| --- | --- | --- |
+| `Center mode` | `Peak` | Good for generated or clean bead PSFs. |
+| `Clip negatives` | On | RL requires non-negative PSFs. |
+| `Normalize sum` | On | Keep on for deconvolution. |
+| `Force odd shape` | On | Gives the PSF a central sample. |
+| `Crop empty border` | Off first | Enable only when a measured PSF has clear empty padding. |
 
-`Richardson-Lucy Deconvolution` is the baseline comparator. It is useful for
-checking whether the PSF and iteration count are plausible. `Richardson-Lucy TV
-Deconvolution` adds total-variation regularization to reduce noise
-amplification while preserving stronger edges. Start with a modest iteration
-count and increase slowly; ordinary RL can sharpen features and noise together.
-For RL-TV, start with the default `TV regularization` and adjust in small steps.
-Too little behaves like ordinary RL. Too much can flatten fine structure.
+### Generated Born-Wolf PSF Workflow
 
-Important caveats:
+`Born-Wolf PSF` generates scalar 2D or 3D PSFs from connected image metadata or
+manual optical parameters.
 
-- The PSF dimensionality must match the selected spatial mode: 2D PSF for
-  `2D YX`, 3D PSF for `3D ZYX`.
-- Deconvolution output is always `float32`, not the input integer dtype.
+Use `Auto from metadata` when acquisition metadata contains:
+
+- emission wavelength;
+- objective numerical aperture;
+- refractive index;
+- XY pixel size;
+- Z step for 3D;
+- channel wavelength metadata when generating channel-specific PSFs.
+
+When auto is on, disabled inputs show the resolved values. Missing required
+values are marked red and the node does not calculate until metadata is
+available or auto is turned off. Manual mode enables exact numeric inputs with
+non-zero defaults.
+
+For multi-channel images, `Channel = -1` generates one output port per metadata
+channel, such as `488 PSF` and `561 PSF`. For a single channel, set `Channel`
+to that index.
+
+### Channel-Specific Deconvolution
+
+Use one deconvolution branch per fluorescence channel:
+
+```mermaid
+flowchart LR
+    source["Image Source<br/>CZYX or TCZYX"]
+    split["Split Channels"]
+    psf["Born-Wolf PSF<br/>Channel = -1"]
+    prep1["Prepare PSF<br/>channel 1"]
+    prep2["Prepare PSF<br/>channel 2"]
+    dec1["RL-TV<br/>channel 1"]
+    dec2["RL-TV<br/>channel 2"]
+
+    source --> split
+    source --> psf
+    psf --> prep1 --> dec1
+    psf --> prep2 --> dec2
+    split --> dec1
+    split --> dec2
+```
+
+Do not connect a multi-channel PSF stack directly into one deconvolution node.
+Each Richardson-Lucy node expects one scalar 2D or 3D PSF matching its selected
+spatial mode.
+
+### Richardson-Lucy Parameters
+
+| Parameter | Guidance |
+| --- | --- |
+| `Spatial processing` | Use `3D ZYX` for true volumetric restoration. Use `2D YX` when each plane should be restored independently. |
+| `Iterations` | Start low. Increase only after checking noise and edges. |
+| `Normalize PSF` | Keep on unless you have a specific reason. |
+| `Clip negative input` | Usually on for microscopy intensity images. |
+| `Clip output negative` | Usually on. |
+| `Preserve input scale` | Keeps output intensities near the input scale after internal normalization. |
+
+RL-TV adds:
+
+| Parameter | Guidance |
+| --- | --- |
+| `TV regularization` | Higher values suppress noise more strongly but can flatten fine structure. |
+| `TV epsilon` | Numerical stability term. Leave at default unless testing. |
+| `Denominator floor` | Stabilizes the TV denominator. Leave at default for first pass. |
+
+### Restoration Caveats
+
+- PSF dimensionality must match the selected spatial mode: 2D PSF for `2D YX`,
+  3D PSF for `3D ZYX`.
+- Deconvolution outputs are `float32`.
 - Output metadata follows the image input, not the PSF input.
 - PSFs are normalized defensively inside deconvolution even when the preparation
   node is skipped.
-- `Preserve input scale` keeps restored intensities near the original image
-  scale after internal normalization.
-- The first implementation uses same-size convolution boundary behavior. Edges
-  can show restoration artifacts; crop margins or interpret image borders with
-  care.
-- GPU acceleration, blind deconvolution, spatially variant PSFs, and
-  vendor-specific file import are outside this first restoration pass.
+- The current boundary policy uses same-size convolution behavior. Edges can
+  show artifacts; crop or interpret borders carefully.
+- GPU acceleration, blind deconvolution, spatially variant PSFs, and formal
+  reference comparisons are later scope.
 
-Reference review workflows:
+## Axis And Channel Workflows
 
-- `examples/synthetic-deconvolution-rl-tv.json`: compact 2D measured-PSF
-  workflow for quick inspection.
-- `examples/synthetic-3d-deconvolution-rl-tv.json`: true ZYX measured-PSF
-  workflow for the more common volumetric microscopy case.
+### Split Channels
 
-Both examples use a blurred/noisy synthetic image sample plus a separate
-measured-PSF sample, prepare the PSF, then run ordinary RL and RL-TV side by
-side.
+Use `Split Channels` when the input has a semantic channel axis, such as OME
+`C` metadata, VIPP sample metadata, `Combine Channels` output, or a conventional
+RGB/RGBA channel-last image. The node creates one graph output port per
+channel. When one retained output is selected, its thumbnail represents that
+specific channel.
 
-## Object And Mesh Morphology
+### Extract Channel
+
+Use `Extract Channel` when you need one channel as a normal image branch. The
+node respects semantic axis metadata, so a `ZCYX` image extracts from the `C`
+axis rather than behaving like a napari slider.
+
+### Split Axis
+
+Use `Split Axis` for non-channel axes such as timepoints, Z slices, or a
+leading custom axis. This keeps accidental Z/time splitting separate from
+fluorescence channel splitting.
+
+## Object, Mesh, And Table Workflows
 
 Use `Measure Objects` for standard region/object measurements from a label
-image. Use `Measure Objects + Intensity` when you also need per-object intensity
-statistics from a separate image input.
+image. Use `Measure Objects + Intensity` when a separate intensity image should
+be measured per object.
 
 Use `Measure 3D Mesh Morphology` only for true 3D label images. It extracts
 per-object surfaces with marching cubes, applies carried Z/Y/X scale metadata,
-and reports mesh surface area, mesh volume, sphericity, 3D solidity, convex-hull
-metrics, and status/error columns for objects that are too small or geometrically
-invalid. The node is manual/cached because these calculations are more expensive
-than ordinary regionprops. The reference workflow is
-`examples/synthetic-3d-mesh-morphology.json`.
+and reports mesh surface area, mesh volume, sphericity, 3D solidity,
+convex-hull metrics, and status/error columns for objects that are too small or
+geometrically invalid. The node is manual/cached because these calculations are
+more expensive than ordinary regionprops.
+
+Reference workflow:
+
+```text
+examples/synthetic-3d-mesh-morphology.json
+```
 
 The broader object, mesh, skeleton, and table-composition contract is documented
-in [measurement-workflows.md](measurement-workflows.md). The bundled workflow
-examples are indexed in [../examples/README.md](../examples/README.md).
+in [measurement-workflows.md](measurement-workflows.md).
 
-## Colocalization And RACC Nodes
+## Colocalization And Association
 
-First-pass colocalization nodes live under `Colocalization & Spatial Analysis`.
-Connect two same-shaped channel images, usually from `Split Channels`, into the
-named `Channel 1 image` and `Channel 2 image` ports.
+Colocalization nodes live under `Colocalization & Spatial Analysis`. Connect
+two same-shaped channel images, usually from `Split Channels`, into the named
+`Channel 1 image` and `Channel 2 image` ports.
 
 Manual thresholds are normalized `0..255` values. VIPP jointly scales the two
-input channels into this range before calculating metrics, inspector scatter
-views, colocalized-voxel views, or RACC. `Costes auto` can be selected instead
-of manual thresholds; the calculated Costes thresholds are written back into the
-threshold controls so the values are visible.
+input channels into this range before calculating metrics, scatter views,
+colocalized-voxel images, or RACC. `Costes auto` writes calculated thresholds
+back into the controls so the values remain visible.
 
 When a colocalization threshold node is selected, the inspector shows a scatter
-density panel with red/green threshold guide lines. Dragging a guide line
-switches that node to manual thresholds and updates the corresponding threshold
-value. Masked variants add a third `ROI mask` input and restrict metrics,
-scatter display, colocalized voxels, and RACC output to that mask.
+density panel with threshold guide lines. Dragging a guide switches the node to
+manual thresholds and updates the corresponding threshold value. Masked
+variants add a third `ROI mask` input.
 
-`Colocalization Metrics`, `Masked Colocalization Metrics`, `RACC Index`, and
-`Masked RACC Index` are manual/cached nodes. `Colocalized Voxels` and `Masked
-Colocalized Voxels` are live visual feedback nodes for threshold tuning. The
-pixel/RACC reference workflow is `examples/synthetic-colocalization-racc.json`.
+Reference workflows:
 
-Object-aware colocalization nodes are also available in the same category.
-Use `Object Colocalization Metrics` when you have object labels plus two
-matching channel images and want one table row per object. Use `Label Overlap
-Association`, `Nearest Object Distance`, and `Event Localization` for
-label-label overlap, nearest-neighbor association, and puncta/event assignment
-against labels, masks, or ROIs. These nodes output tables designed to merge
-with `Measure Objects` and `Measure Objects + Intensity` through `label_id`
-and leading axis index columns. The object-table reference workflow is
-`examples/synthetic-object-colocalization-association.json`.
+```text
+examples/synthetic-colocalization-racc.json
+examples/synthetic-object-colocalization-association.json
+```
 
-## Skeleton Analysis Nodes
+For method details and caveats, see
+[colocalization-method-notes.md](colocalization-method-notes.md).
 
-The skeleton/network nodes are documented in
-[skeleton-nodes.md](skeleton-nodes.md). That guide explains which nodes expect
-binary masks, which expect already skeletonized masks, which nodes produce
-visual QC outputs, and which nodes produce measurement tables. In brief,
-`Measure Skeleton Branches` produces detailed branch rows, `Summarize Skeleton
-Branches` converts those rows into branch-length/tortuosity distributions and
-branch-type fractions, and `Measure Overall Skeleton Network` measures
-whole-network graph metrics directly from a skeleton mask. Use
-`examples/synthetic-skeleton-qc.json` for a compact skeleton check and
-`examples/synthetic-advanced-skeleton-network.json` for a richer time-indexed
-3D skeleton graph/table stress test.
+## Skeleton Analysis
+
+Skeleton/network nodes are documented in
+[skeleton-nodes.md](skeleton-nodes.md). In brief:
+
+| Node | Use |
+| --- | --- |
+| `Measure Skeleton Branches` | Detailed branch rows. |
+| `Summarize Skeleton Branches` | Branch-length/tortuosity summaries and branch-type fractions. |
+| `Measure Overall Skeleton Network` | Whole-network graph metrics from a skeleton mask. |
+
+Reference workflows:
+
+```text
+examples/synthetic-skeleton-qc.json
+examples/synthetic-advanced-skeleton-network.json
+```
+
+## Large Data Tips
+
+For large z-stacks or long workflows:
+
+1. Set `Preview` to `Slice` or `Off`.
+2. Use `Contrast Range = Stack` once the range cache has been built.
+3. Turn `Link napari/VIPP sliders` off when napari scrubbing should not refresh
+   all graph thumbnails.
+4. Use `Run all in BG` when many edits trigger slow recomputation.
+5. Use `Smart interactive cache` or `Low-memory mode`.
+6. Mark expensive stable intermediates with `Keep output cached`.
+
+For OME-Zarr data, VIPP can read local 0.4/0.5 stores, but most operations are
+still eager once they execute. Very large analysis workflows should be designed
+deliberately: restrict outputs, cache only important nodes, and avoid
+unnecessary full-volume branches.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Thumbnail brightness changes while scrubbing Z | Set `Contrast Range` to `Stack`. |
+| Napari Z scrubbing refreshes too much of the graph | Turn off `Link napari/VIPP sliders`. |
+| A manual node says `Not calculated` | Select it and click `Calculate`, or use `Calculate all`. |
+| A manual node is orange/stale | Upstream data or parameters changed. Click `Recalculate`. |
+| Deconvolution refuses the PSF | Check 2D/3D PSF dimensionality against `Spatial processing`. |
+| Born-Wolf PSF auto fields are red | Metadata is missing. Supply manual values or load a source with richer acquisition metadata. |
+| Output looks over-sharpened | Reduce RL iterations or increase RL-TV regularization slightly. |
+| Edges look unreliable after deconvolution | Crop margins or interpret borders cautiously. |
+| Batch saves the wrong output | Add explicit `Batch Output` nodes with clear tags. |
+
+## Related Guides
+
+- [io-user-guide.md](io-user-guide.md): import/export behavior and optional
+  microscope readers.
+- [cache-and-memory.md](cache-and-memory.md): cache modes and memory guard.
+- [measurement-workflows.md](measurement-workflows.md): object/mesh/table
+  workflow contracts.
+- [skeleton-nodes.md](skeleton-nodes.md): skeleton and network analysis.
+- [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): restoration
+  implementation notes and deferred scope.
+- [../examples/README.md](../examples/README.md): bundled workflow index.

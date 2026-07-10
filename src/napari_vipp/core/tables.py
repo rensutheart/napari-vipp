@@ -143,9 +143,10 @@ def save_table_output(
     """Write a table output as CSV or TSV."""
     if not isinstance(table, TableData):
         raise TypeError("save_table_output expects a TableData object.")
-    target = Path(path).expanduser()
-    if not str(target):
+    raw_path = str(path).strip()
+    if not raw_path:
         raise ValueError("Save path cannot be blank.")
+    target = Path(raw_path).expanduser()
     delimiter, suffix = _table_delimiter(format, target)
     if not target.suffix:
         target = target.with_suffix(suffix)

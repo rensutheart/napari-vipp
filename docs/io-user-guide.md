@@ -157,5 +157,5 @@ presented as editable output metadata.
 - OME-Zarr pyramid generation and preview-level selection are not exposed.
 - The graph still materializes lazy arrays when an eager processing node or
   preview requires NumPy data.
-- Plate/well/field browsing, remote URIs, and richer multi-source collection
-  batch execution remain planned work.
+- Plate/well/field browsing, remote URIs, saved batch configuration,
+  semantic-axis iteration, and per-item provenance remain planned work.

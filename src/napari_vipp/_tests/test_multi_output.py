@@ -111,6 +111,7 @@ def test_trim_invalid_output_connections_drops_stale_ports():
 
     # Two slices shrink the node to ports 0 and 1, invalidating port 2.
     pipeline.run(_two_channel_image())
+    assert pipeline.outputs["gaussian"] is None
     removed = pipeline.trim_invalid_output_connections(node.id)
 
     assert [connection.source_port for connection in removed] == [2]
@@ -176,6 +177,26 @@ def test_workflow_roundtrip_preserves_source_port():
     ]
     assert matches
     assert matches[0].source_port == 2
+
+
+def test_workflow_restore_preserves_referenced_dynamic_port_above_default():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    node = pipeline.add_node("split_axis")
+    pipeline.connect("input", node.id)
+    image = np.stack(
+        [np.full((6, 7), index, dtype=np.uint8) for index in range(5)]
+    )
+    pipeline.run(image, input_metadata={"axes": "ZYX"})
+    assert pipeline.connect(node.id, "gaussian", source_port=4).success
+
+    workflow = deserialize_workflow(serialize_workflow(pipeline))
+    restored = PrototypePipeline()
+    restored.restore_graph(workflow["nodes"], workflow["connections"])
+
+    assert len(restored.output_ports(node.id)) == 5
+    restored.run(image, input_metadata={"axes": "ZYX"})
+    np.testing.assert_array_equal(restored.outputs["gaussian"], image[4])
 
 
 def test_export_indexes_multi_output_source():

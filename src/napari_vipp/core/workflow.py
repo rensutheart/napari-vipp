@@ -36,6 +36,10 @@ def serialize_workflow(
     """Return a JSON-serializable dict describing the pipeline graph."""
     positions = positions or {}
     node_id_set = set(pipeline.nodes)
+    unknown_positions = set(positions) - node_id_set
+    if unknown_positions:
+        unknown = ", ".join(repr(node_id) for node_id in sorted(unknown_positions))
+        raise ValueError(f"Workflow positions reference unknown nodes: {unknown}.")
     document = {
         "type": WORKFLOW_TYPE,
         "version": WORKFLOW_VERSION,
@@ -218,7 +222,10 @@ def save_workflow(
     metadata: dict[str, Any] | None = None,
 ) -> Path:
     """Write the pipeline graph to ``path`` as a JSON workflow file."""
-    target = Path(path).expanduser()
+    raw_path = str(path).strip()
+    if not raw_path:
+        raise ValueError("Workflow save path cannot be blank.")
+    target = Path(raw_path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     document = serialize_workflow(pipeline, positions, notes, metadata)
     target.write_text(json.dumps(document, indent=2), encoding="utf-8")
@@ -227,7 +234,10 @@ def save_workflow(
 
 def load_workflow(path: str | Path) -> dict[str, Any]:
     """Read a JSON workflow file and return deserialized graph parts."""
-    source = Path(path).expanduser()
+    raw_path = str(path).strip()
+    if not raw_path:
+        raise ValueError("Workflow path cannot be blank.")
+    source = Path(raw_path).expanduser()
     data = json.loads(source.read_text(encoding="utf-8"))
     return deserialize_workflow(data)
 

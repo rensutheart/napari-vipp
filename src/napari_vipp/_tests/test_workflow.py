@@ -54,6 +54,17 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
     assert workflow["positions"]["gaussian"] == (330.0, 20.0)
 
 
+def test_workflow_rejects_blank_paths_and_unknown_positions(tmp_path):
+    pipeline = _build_pipeline()
+
+    with pytest.raises(ValueError, match="save path.*blank"):
+        save_workflow("", pipeline)
+    with pytest.raises(ValueError, match="path.*blank"):
+        load_workflow("")
+    with pytest.raises(ValueError, match="positions reference unknown"):
+        save_workflow(tmp_path / "invalid.json", pipeline, {"ghost": (0, 0)})
+
+
 def test_restore_graph_runs_after_load(tmp_path):
     pipeline = _build_pipeline()
     path = save_workflow(tmp_path / "wf.json", pipeline, {})
@@ -304,12 +315,15 @@ def test_graph_note_attached_node_must_exist():
 
 def test_restore_graph_rejects_dangling_connection():
     pipeline = _build_pipeline()
+    original_connections = list(pipeline.connections)
 
     with pytest.raises(ValueError, match="references a missing node"):
         pipeline.restore_graph(
             pipeline.nodes.values(),
             [GraphConnection("ghost", "threshold", 0, 0)],
         )
+
+    assert pipeline.connections == original_connections
 
 
 def test_restore_graph_rejects_incompatible_typed_input_connection():
@@ -321,3 +335,59 @@ def test_restore_graph_rejects_incompatible_typed_input_connection():
             pipeline.nodes.values(),
             [GraphConnection("input", measurements.id, 0, 0)],
         )
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        GraphConnection("input", "gaussian", -1, 0),
+        GraphConnection("input", "gaussian", 0, -1),
+    ],
+)
+def test_restore_graph_rejects_negative_ports(connection):
+    pipeline = PrototypePipeline()
+
+    with pytest.raises(ValueError, match="negative port"):
+        pipeline.restore_graph(pipeline.nodes.values(), [connection])
+
+
+def test_restore_graph_rejects_duplicate_target_slots():
+    pipeline = PrototypePipeline()
+
+    with pytest.raises(ValueError, match="multiple connections"):
+        pipeline.restore_graph(
+            pipeline.nodes.values(),
+            [
+                GraphConnection("input", "gaussian", 0, 0),
+                GraphConnection("threshold", "gaussian", 0, 0),
+            ],
+        )
+
+
+def test_restore_graph_rejects_cycles_without_replacing_live_graph():
+    pipeline = PrototypePipeline()
+    original_connections = list(pipeline.connections)
+
+    with pytest.raises(ValueError, match="containing a cycle"):
+        pipeline.restore_graph(
+            pipeline.nodes.values(),
+            [
+                GraphConnection("gaussian", "threshold", 0, 0),
+                GraphConnection("threshold", "gaussian", 0, 0),
+            ],
+        )
+
+    assert pipeline.connections == original_connections
+
+
+def test_restore_graph_rejects_connections_into_source_nodes():
+    pipeline = PrototypePipeline()
+    original_connections = list(pipeline.connections)
+
+    with pytest.raises(ValueError, match="connection to source node"):
+        pipeline.restore_graph(
+            pipeline.nodes.values(),
+            [GraphConnection("gaussian", "input")],
+        )
+
+    assert pipeline.connections == original_connections

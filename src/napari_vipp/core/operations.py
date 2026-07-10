@@ -4286,10 +4286,13 @@ def _matching_input_arrays(
     operation_name: str,
 ) -> list[np.ndarray]:
     arrays = [np.asarray(item) for item in inputs if item is not None]
-    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
-    arrays = arrays[:input_count]
-    if not arrays:
-        raise ValueError(f"{operation_name} needs at least one connected input.")
+    requested = max(int(input_count), 1)
+    if len(arrays) < requested:
+        raise ValueError(
+            f"{operation_name} needs {requested} connected input(s); "
+            f"received {len(arrays)}."
+        )
+    arrays = arrays[:requested]
     shape = arrays[0].shape
     if any(array.shape != shape for array in arrays):
         raise ValueError(f"{operation_name} inputs must have matching shapes.")

@@ -9,6 +9,7 @@ harness so a tuned workflow can be run over a folder of images without napari.
 from __future__ import annotations
 
 import inspect
+import keyword
 import re
 from datetime import datetime, timezone
 
@@ -23,19 +24,26 @@ def export_pipeline_to_python(
     function_name: str = "run_pipeline",
 ) -> str:
     """Return Python source code that reproduces the pipeline headlessly."""
+    if not function_name.isidentifier() or keyword.iskeyword(function_name):
+        raise ValueError(f"Invalid exported function name: {function_name!r}.")
     order = pipeline.topological_order()
-    var_names = {node_id: _var_name(node_id) for node_id in order}
+    var_names = _unique_names(order, prefix="v")
 
     source_ids = [
         node_id
         for node_id in order
         if not NODE_LIBRARY_BY_ID[pipeline.nodes[node_id].operation_id].has_input
     ]
+    source_param_names = _unique_names(source_ids, prefix="src")
     terminal_ids = _terminal_nodes(pipeline, order)
     used_functions = _used_function_names(pipeline, order)
 
     body_lines, missing = _build_function_body(
-        pipeline, order, var_names, function_name
+        pipeline,
+        order,
+        var_names,
+        source_param_names,
+        function_name,
     )
     header = _build_header(pipeline)
     imports = _build_imports(used_functions)
@@ -94,6 +102,7 @@ def _build_function_body(
     pipeline: PrototypePipeline,
     order: list[str],
     var_names: dict[str, str],
+    source_param_names: dict[str, str],
     function_name: str,
 ) -> tuple[list[str], list[str]]:
     source_ids = [
@@ -103,7 +112,7 @@ def _build_function_body(
     ]
     params = []
     for index, node_id in enumerate(source_ids):
-        param = _source_param_name(node_id)
+        param = source_param_names[node_id]
         params.append(param if index == 0 else f"{param}=None")
     signature = ", ".join(params) if params else ""
 
@@ -117,11 +126,11 @@ def _build_function_body(
         spec = NODE_LIBRARY_BY_ID[node.operation_id]
         var = var_names[node_id]
         if not spec.has_input:
-            lines.append(f"{_INDENT}{var} = {_source_param_name(node_id)}")
+            lines.append(f"{_INDENT}{var} = {source_param_names[node_id]}")
             continue
 
-        connections = pipeline._input_connections(node_id)
-        if spec.function is None or not connections:
+        connections = _required_input_connections(pipeline, node)
+        if spec.function is None or connections is None:
             lines.append(f"{_INDENT}{var} = None  # {node.title}: no connected input")
             continue
 
@@ -146,6 +155,20 @@ def _build_function_body(
     )
     lines.append(f"{_INDENT}return {{{returns}}}")
     return lines, _dedupe(missing)
+
+
+def _required_input_connections(pipeline, node):
+    connections = pipeline._input_connections(node.id)
+    if not connections:
+        return None
+    multi_input = node.max_inputs is None or node.max_inputs != 1
+    if not multi_input:
+        return connections[:1]
+    required = pipeline._required_inputs_for(node)
+    by_port = {connection.target_port: connection for connection in connections}
+    if any(port not in by_port for port in range(required)):
+        return None
+    return [by_port[port] for port in range(required)]
 
 
 def _build_call(pipeline, node, spec, connections, var_names) -> str:
@@ -288,12 +311,19 @@ def _used_function_names(pipeline: PrototypePipeline, order: list[str]) -> list[
     return names
 
 
-def _var_name(node_id: str) -> str:
-    return f"v_{_identifier(node_id)}"
-
-
-def _source_param_name(node_id: str) -> str:
-    return f"src_{_identifier(node_id)}"
+def _unique_names(node_ids: list[str], *, prefix: str) -> dict[str, str]:
+    names: dict[str, str] = {}
+    used: set[str] = set()
+    for node_id in node_ids:
+        base = f"{prefix}_{_identifier(node_id)}"
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        names[node_id] = candidate
+        used.add(candidate)
+    return names
 
 
 def _identifier(node_id: str) -> str:

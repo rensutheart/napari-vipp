@@ -100,11 +100,12 @@ def write_image(
     if not raw_path:
         raise ValueError("A save path is required.")
     output_path = Path(raw_path).expanduser()
+    selected = _resolve_write_format(output_path, format, image_state)
+    output_path = _normalized_output_path(output_path, selected)
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"Output already exists: {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    selected = _resolve_write_format(output_path, format, image_state)
     if selected in {"ome-zarr", "ome-zarr-0.4", "ome-zarr-0.5"}:
         if _state_kind(image_state).lower() == "label image":
             raise ValueError(
@@ -141,6 +142,12 @@ def write_image(
             image_state=image_state,
         )
     raise ValueError(f"Unsupported save format: {format}")
+
+
+def _normalized_output_path(path: Path, format: str) -> Path:
+    if format == "npy" and path.suffix.lower() != ".npy":
+        return Path(f"{path}.npy")
+    return path
 
 
 def _resolve_write_format(

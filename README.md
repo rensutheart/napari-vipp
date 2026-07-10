@@ -1,477 +1,106 @@
 # napari-vipp
 
-## Alpha Disclaimer
+napari-vipp is a napari-native visual image-processing pipeline builder for
+bioimage analysis. Build a typed node graph, inspect intermediate images and
+tables, tune parameters, save the workflow, and run the same operations without
+hiding axis or physical-scale metadata.
 
-napari-vipp is an early alpha build in active development.
+> **Alpha software:** expect breaking workflow and parameter changes. Validate
+> outputs on representative data before scientific interpretation or
+> publication.
 
-- Expect breaking changes between releases.
-- Workflows, node parameters, and file compatibility may change.
-- Validate outputs before scientific interpretation or publication use.
+## Install And Open
 
-`napari-vipp` is an early prototype of a napari-native Visual Image Processing
-Pipeline (VIPP): an interactive node-graph workflow composer for bioimage
-analysis.
+VIPP requires Python 3.10 or newer. If napari is not already installed, install
+it with a Qt backend at the same time:
 
-The project is exploring a workflow where the graph is the main work surface:
-users add processing nodes, connect outputs to inputs, tune parameters, inspect
-stage outputs in napari, and compare mask overlays or processing branches while
-the pipeline updates live.
+```bash
+python -m pip install "napari[pyqt6]" napari-vipp
+napari
+```
 
-This is research/prototype software. The current code is useful for exploring
-interaction patterns and metadata-aware pipeline execution, but it is not yet a
-released production analysis package.
+In napari, open:
 
-## Acknowledgement
+```text
+Plugins > VIPP Workflow (napari-vipp)
+```
 
-If VIPP contributes to your work, please acknowledge the project by name
-("napari-vipp") and include a link to the repository:
-https://github.com/rensutheart/napari-vipp
+Use `Open example...` for a runnable workflow with synthetic data. A good first
+choice is `Red-Channel Label Cleanup`; select nodes from left to right to review
+their parameters, thumbnails, metadata, and outputs.
 
-Citation metadata is available in `CITATION.cff`. A DOI or manuscript citation
-can be added once one is available.
+![VIPP example workflow chooser](docs/assets/user-guide/vipp-example-chooser.png)
 
-## License
+## What It Supports
 
-napari-vipp is distributed under the BSD 3-Clause License. See `LICENSE` for
-the full terms.
+| Area | Current alpha capabilities |
+| --- | --- |
+| Graph authoring | Searchable node palette, typed ports, dynamic outputs, cycle prevention, undo/redo, graph notes, named tunnels, auto-layout, and saved positions. |
+| Images and metadata | Semantic T/C/Z/Y/X axes, scale/units/origin, channel and acquisition metadata, source identity, and operation history. |
+| Image processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
+| Measurements | Object and intensity tables, calibrated morphology, 3D mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |
+| Restoration | Born-Wolf PSF generation, measured-PSF preparation, and manual/cached 2D or 3D Richardson-Lucy and RL-TV deconvolution. |
+| Reuse and automation | Workflow JSON, generated headless Python, explicit batch outputs, local collection batch runs, dry-run previews, and workflow/script artifacts. |
+| I/O | OME-TIFF, ImageJ TIFF, TIFF, local OME-Zarr 0.4/0.5, NPY/NPZ, common 2D raster formats, and optional microscope readers. |
 
-## Current Status
+Most graph operations are still eager. Large z-stacks and OME-Zarr datasets
+therefore need deliberate cache, preview, and output choices; see the
+[cache and memory guide](docs/cache-and-memory.md).
 
-The prototype currently supports:
+## Optional Microscope Readers
 
-- a napari `npe2` plugin manifest and dock widget;
-- a large pan/zoom Qt graph canvas;
-- toolbar graph zoom controls with a `100%` reset plus Ctrl/trackpad wheel zoom;
-- draggable node cards with input/output ports and curved connectors;
-- adding nodes from a categorized, fuzzy-searchable node library;
-- connecting nodes by dragging or click-to-connect from output to input ports;
-- named port tunnels for reusing channel, mask, ROI, or reference-image outputs
-  without drawing long repeated wires;
-- explicit image source nodes for napari layers, files, or bundled samples;
-- quick selected-output saving plus graph-level save nodes;
-- first-pass folder batch UI that binds collection Image Source nodes per file
-  and saves explicit `Batch Output` nodes, with terminal graph outputs as a
-  fallback;
-- per-node thumbnails with global show/hide, `Slice`/`MIP` preview modes,
-  contrast modes (`Percentile`, `Min-max`, `Raw`), and monochrome colormaps;
-- optional per-node thumbnail disabling for heavier workflows;
-- selected-node parameter controls in the inspector;
-- slider plus numeric entry controls with soft range expansion where useful;
-- right-panel output histograms plus cutoff-node input histograms with
-  slice/stack and linear/log modes;
-- compact node metadata plus detailed selected-node metadata;
-- normalized axes, channel, acquisition, source, and provenance metadata;
-- OME-TIFF, ImageJ TIFF, conventional TIFF, OME-Zarr 0.4/0.5, and common
-  raster image import plus 2D raster export;
-- adaptive image/series selection for multi-image sources;
-- table outputs for object, intensity, skeleton, merged, annotated, and grouped
-  summary results;
-- image/mask/label pinning as persistent napari preview layers;
-- generated inspect layers for full-resolution napari review.
-
-## Image Metadata
-
-The graph carries an explicit image state object alongside each node output.
-That state records:
-
-- shape and dtype;
-- axis names and axis types, such as `t`, `c`, `z`, `y`, `x`;
-- units, scale, and origin/translation where available;
-- value range, bit depth, memory estimate, and binary-value hints;
-- source layer and operation history.
-- channel names, fluorophore/wavelength fields where available;
-- acquisition and stable source identity records.
-
-When a napari layer provides OME-NGFF-style `multiscales` metadata, VIPP reads
-the axis definitions and coordinate transforms. When the source is a plain array
-without reliable metadata, VIPP falls back to inferred axes and labels that
-fallback explicitly.
-
-OME-TIFF metadata and local OME-Zarr 0.4/0.5 images are supported through the
-shared headless I/O layer. OME-Zarr label groups, HCS plate browsing, generated
-pyramids, remote stores, and full operation-level lazy execution remain future
-work. See `docs/io-user-guide.md` for the current format contract.
-
-Microscope acquisition readers are optional. Install the format-specific extra
-before opening proprietary microscope files, then restart napari:
+Install only the reader family you need, then restart napari:
 
 | Format family | Install command |
 | --- | --- |
-| Zeiss CZI | `pip install "napari-vipp[czi]"` |
-| Nikon ND2 | `pip install "napari-vipp[nd2]"` |
-| Mixed microscope workstation | `pip install "napari-vipp[microscope]"` |
-| BioIO/Bio-Formats fallback | `pip install "napari-vipp[bioformats]"` |
+| Nikon ND2 | `python -m pip install "napari-vipp[nd2]"` |
+| Zeiss CZI | `python -m pip install "napari-vipp[czi]"` |
+| Mixed microscope formats | `python -m pip install "napari-vipp[microscope]"` |
+| BioIO/Bio-Formats fallback | `python -m pip install "napari-vipp[bioformats]"` |
 
-If a reader is missing, VIPP shows an optional-reader dialog with the relevant
-copyable install command.
+These routes are an experimental foundation: axes and common metadata are
+normalized where the source reader exposes them, but format-specific coverage
+still needs validation against a broader corpus of real acquisition files.
 
-## Sample Data
+## Workflow Basics
 
-The plugin contributes synthetic fluorescence-like sample data:
+1. Add or select an `Image Source` for a napari layer, file, or bundled sample.
+2. Add nodes from the palette and connect compatible output and input ports.
+3. Select a node to tune parameters and inspect its output metadata.
+4. Click `Calculate` for manual/cached nodes such as measurements and
+   deconvolution.
+5. Pin important image outputs into napari for full-resolution comparison.
+6. Save the graph with `Save workflow...`.
+7. Add `Batch Output` nodes before `Run batch...` when exact saved outputs
+   matter.
 
-- `VIPP synthetic volume`: grayscale `ZYX` stack;
-- `VIPP synthetic multichannel volume`: `CZYX` volume with blue/DAPI-like
-  nuclei, green/FITC-like neurites, and red/TRITC-like puncta channels;
-- `VIPP synthetic time-lapse multichannel`: `TCZYX` time-lapse, multichannel
-  stack;
-- `VIPP synthetic measurement summary`: `TYX` time-series object sample with
-  known per-timepoint object counts and areas;
-- `VIPP synthetic object morphology`: `YX` object sample with circle, ellipse,
-  rectangle, and concave objects for derived shape-ratio and 2D moment checks;
-- `VIPP synthetic 3D mesh morphology`: anisotropic `ZYX` objects for surface
-  area, mesh volume, convex hull, and sphericity checks;
-- `VIPP synthetic skeleton network`: sparse `ZYX` network sample with known
-  endpoints, branches, a junction, a short spur, and an isolated voxel.
-
-The multichannel samples use separate intensity channels, not baked RGB images.
-Graph thumbnails render these as fluorescence-style pseudo-color composites
-while preserving the underlying channel axis in the carried metadata.
-
-Use bundled samples from an `Image Source` node by setting `Source` to `sample`.
-This exposes the full sample list without first loading raw sample layers into
-napari. Use `Open example...` in the VIPP toolbar when you want a complete
-runnable workflow template with its sample sources already selected.
-
-Napari's sample-data menu is still useful when you specifically want to inspect
-the raw sample layers:
-
-```text
-File > Open Sample > VIPP synthetic microscopy samples
-```
+Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
+tables. `Export Python...` emits direct calls to the headless operation and I/O
+functions; it does not reproduce interactive caches or full runtime metadata
+propagation. See the [user guide](docs/user-guide.md) for details and caveats.
 
 ## Documentation
 
-- End-user workflow usage: `docs/user-guide.md`
-- Measurement/table workflow guide: `docs/measurement-workflows.md`
-- Colocalization/RACC plan: `docs/colocalization-racc-plan.md`
-- Bundled example workflow index: `examples/README.md`
-- Skeleton-specific node guide: `docs/skeleton-nodes.md`
-- Operator tips and performance tuning: `docs/operator-tips.md`
-- Developer and architecture notes: `docs/developer-notes.md`
-
-## Node Library
-
-The current node catalogue includes:
-
-- Image Data:
-  - Source & Output:
-    - Image Source
-    - Save Image
-    - Batch Output
-  - Axes & Regions:
-    - Crop Stack
-    - Select Axis Slice
-    - Split Axis
-    - Reorder Axes
-    - Set Pixel Size / Units
-    - Rescale Axes
-  - Channels & Composites:
-    - Extract Channel
-    - Combine Channels
-    - Split Channels
-    - Composite → RGB
-  - Utilities:
-    - Convert Dtype
-  - Math & Logic:
-    - Calculate New Image
-    - Add
-    - Subtract
-    - Ratio
-    - Mask Image
-    - Logical AND
-    - Logical OR
-    - Logical XOR
-    - Invert
-- Intensity & Contrast:
-  - Linear Scale + Offset
-  - Gamma Correction
-  - Rescale Intensity
-  - Normalize
-  - Clip
-- Filtering:
-  - Smoothing & Denoising:
-    - Average Blur
-    - Gaussian Blur
-    - Gaussian Blur 3D
-    - Median Filter
-    - Bilateral Filtering
-    - Non-Local Means
-  - Edge & Detail:
-    - Difference of Gaussians
-    - Unsharp Mask
-    - Sobel Edges
-    - Canny Edges
-    - Laplace Filter
-- Projection:
-  - Maximum Projection
-  - Project Image (axis-aware dropdown plus multiple projection methods)
-  - Orthogonal Projection
-- Segmentation:
-  - Global Thresholds:
-    - Otsu Threshold
-    - Triangle Threshold
-    - Li Threshold
-    - Yen Threshold
-    - Isodata Threshold
-    - Minimum Threshold
-    - Binary Threshold
-    - Hysteresis Threshold
-  - Local Thresholds:
-    - Adaptive Mean Threshold
-    - Adaptive Gaussian Threshold
-    - Sauvola Threshold
-    - Niblack Threshold
-- Morphology:
-  - Dilation
-  - Erosion
-  - Opening
-  - Closing
-  - Top Hat
-  - Black Hat
-  - Morphological Gradient
-  - Fill Holes
-  - Remove Small Objects
-  - Skeletonize
-  - Skeleton Keypoints
-  - Skeleton Graph Overlay
-  - Prune Skeleton Branches
-- Label Operations:
-  - Label Connected Components
-  - Filter Labels By Volume
-  - Filter Labels By Property
-  - Clear Border Objects
-  - Relabel Sequential
-  - Label Skeleton Components
-  - Label Skeleton Branches
-- Measurements:
-  - Measure Objects
-  - Measure Objects + Intensity
-  - Measure 3D Mesh Morphology
-  - Analyze Skeleton
-  - Measure Skeleton Branches
-  - Summarize Skeleton Branches
-  - Skeleton Graph Tables
-  - Measure Overall Skeleton Network
-  - Merge Tables
-  - Select Table Columns
-  - Add Metadata Columns
-  - Summarize Measurements
-- Colocalization & Spatial Analysis:
-  - Colocalization Metrics
-  - Masked Colocalization Metrics
-  - Colocalized Voxels
-  - Masked Colocalized Voxels
-  - RACC Index
-  - Masked RACC Index
-
-Histogram-based automatic threshold nodes show `Threshold uses` on stack inputs.
-`Stack histogram` computes one cutoff from the whole grayscale input and applies
-it to the full image; `Slice histogram` computes a separate cutoff per displayed
-plane while still producing a full-stack mask. The control is hidden for 2D
-inputs. These nodes also show the input histogram used for threshold selection
-with a live marker at the chosen threshold.
-
-The label pipeline converts binary masks into integer object IDs. Connected
-components can run over full `ZYX` volumes or independently over `YX` images.
-Volume filtering currently uses pixel/voxel counts, preserves retained IDs, and
-leaves compact renumbering to the explicit `Relabel Sequential` node. Its
-volume sliders use the largest observed object as their data-aware upper bound
-and a logarithmic scale for useful control across small and large structures;
-the numeric fields still accept exact values up to one billion. Selecting
-`Filter Labels By Volume` also shows the incoming object-volume distribution
-above the regular histogram. Dashed minimum and enabled maximum markers update
-with the filter controls. Its `Log volume axis` toggle is enabled by
-default and can be switched off for a linear distribution.
-
-`Filter Labels By Property` accepts named `Labels` and `Measurements table`
-inputs and keeps or removes labels using any numeric table column, including
-area/volume, intensity, and skeleton/network measurements. It preserves label
-IDs and leaves compact renumbering to `Relabel Sequential`.
-
-`Clear Border Objects` accepts either a binary mask or integer labels and
-preserves that semantic type. In 3D it can remove objects touching all `ZYX`
-volume boundaries or only the lateral `YX` boundaries, with an optional border
-buffer. Timepoints and channels are processed independently.
-
-`Fill Holes` accepts binary masks and defaults to metadata-aware processing:
-2D images are filled in `YX`, while true z-stacks are filled as complete `ZYX`
-volumes. An advanced 2D-per-slice mode remains available for deliberately
-slice-wise segmentations. A maximum size of `0` fills every enclosed hole;
-positive values fill only holes up to the selected pixel area or voxel volume.
-The inspector hides 3D for true 2D inputs and warns when slice-wise filling is
-selected for a z-stack.
-
-`Remove Small Objects` accepts binary masks or integer labels and preserves the
-connected semantic type. It removes objects below a minimum pixel area or voxel
-volume, supports 2D or 3D processing, and exposes connectivity for mask inputs.
-Its logarithmic size control is bounded by the largest observed input object.
-For labels-only cleanup with both minimum and maximum cutoffs, use
-`Filter Labels By Volume`.
-
-`Measure Objects` accepts a label image and produces a table output instead of
-an image. The default measurement set includes label ID, pixel/voxel area or
-volume, calibrated physical area or volume when spatial scale metadata is
-available, centroid, bounding box, equivalent diameter, extent, and Euler
-number. Optional checkboxes add shape descriptors, axis/inertia descriptors,
-derived shape ratios, and 2D shape moments. The 2D-only groups are hidden for
-true 3D inputs. Derived shape ratios include axis ratios, bounding-box side
-lengths/aspect ratios, fill fraction, and inertia eigenvalue ratios. The 2D
-shape moments group includes Crofton-based circularity, perimeter-to-area
-ratio, and Hu moments. When spatial scale metadata is available, VIPP also
-reports calibrated physical variants for extended object morphology columns
-such as centroids, bounding-box coordinates and side lengths, equivalent
-diameter, Feret diameter, major/minor axis length, and inertia eigenvalues.
-Isotropic 2D inputs also report physical perimeter variants; anisotropic 2D
-physical perimeter values are left as `NaN` rather than guessed from one scale.
-The calibrated morphology checks are documented in
-`docs/analytical-phantom-validation.md`.
-Table outputs show a row preview in the inspector and can be saved as CSV or
-TSV.
-
-`Measure Objects + Intensity` is the first named multi-input measurement node.
-It has separate `Labels` and `Intensity image` input ports, then outputs the
-basic object morphology columns plus per-label mean, minimum, maximum, sum, and
-standard deviation intensity. It exposes the same optional morphology groups as
-`Measure Objects`. The example workflow
-`examples/red-channel-object-intensity-measurements.json` demonstrates this
-pattern.
-
-`Measure 3D Mesh Morphology` accepts true 3D labels and produces an opt-in,
-manual/cached table of surface morphology. It uses marching cubes with carried
-Z/Y/X scale metadata, reports voxel volume, mesh volume, mesh surface area,
-surface-to-volume ratio, equivalent sphere size, sphericity, axis-aligned mesh
-extents, optional convex-hull volume/area, 3D solidity, and per-object
-`mesh_status` / `mesh_error` fields. Tiny or invalid objects remain in the
-table with `NaN` mesh metrics instead of failing the whole node. The example
-workflow `examples/synthetic-3d-mesh-morphology.json` demonstrates merging
-standard object measurements with mesh morphology.
-
-`Merge Tables` joins two or more table outputs into a single table. In `auto`
-mode it joins on stable identity columns such as `t_index` and `label_id`; when
-no identity columns are shared, equal-length tables can be joined by row
-position. `Select Table Columns` shows detected upstream columns as a checklist:
-checked columns are kept, rows can be dragged or moved to set output order, and
-Select all/Deselect all buttons make broad edits explicit. It preserves row
-order and column units. `Add Metadata Columns` appends constant
-treatment, replicate, batch, or condition columns before CSV/TSV export.
-`Summarize Measurements` groups table rows by metadata or axis-index columns
-such as `condition`, `replicate`, and `t_index`, then calculates count, mean,
-median, standard deviation, min/max, and quartiles for selected numeric
-measurement columns. The
-example workflow
-`examples/red-channel-merged-measurement-table.json` demonstrates a
-PCA-oriented table assembly path.
-`examples/synthetic-measurement-summary.json` demonstrates grouped summaries on
-a synthetic time-series object sample with known object counts and areas.
-`examples/synthetic-derived-object-morphology.json` demonstrates the optional
-derived object morphology, circularity, and Hu-moment columns on a deterministic
-2D object-shape sample.
-`examples/synthetic-3d-mesh-morphology.json` demonstrates 3D mesh morphology on
-an anisotropic synthetic object sample and merges the mesh table with ordinary
-object measurements.
-`examples/synthetic-skeleton-qc.json` demonstrates skeleton keypoint masks,
-component labels, branch labels, pruning, and before/after skeleton analysis on
-the bundled skeleton-network sample.
-
-`Skeletonize` accepts a binary mask and produces a skeleton mask using
-metadata-aware 2D or 3D processing. `Analyze Skeleton` accepts a skeleton mask
-and outputs a per-component table with skeleton voxel count, endpoint voxels,
-junction voxels, isolated nodes, branch/graph edge counts, voxel-graph edge
-count, cycle count, per-block component count, component voxel fraction, and
-skeleton length in pixel/voxel and physical units when scale metadata is
-available. `Measure Skeleton Branches` outputs one row per traced graph branch
-with branch type, voxel/edge counts, length, endpoint-to-endpoint distance,
-tortuosity, start/end coordinates, and calibrated physical length when
-available. `Summarize Skeleton Branches` converts branch tables into grouped
-length/tortuosity distributions and branch-type count/fraction summaries.
-`Measure Overall Skeleton Network` reports compact per-block connectedness,
-fragmentation, cycle, component, branch, and normalized per-component/per-length
-network metrics. `Skeleton Keypoints` emits separate endpoint, junction, and
-isolated node masks. `Skeleton Graph Overlay` renders skeleton edges and graph
-nodes as a channel-last RGB QC image with selectable colored-edge or white-edge
-modes.
-For napari 3D viewing, VIPP displays volumetric RGB outputs as separate
-additive red/green/blue layers because napari's native RGB-volume path is not
-reliable for this use case.
-`Label Skeleton Components` and `Label Skeleton Branches` turn network topology
-into inspectable label images, while `Prune Skeleton Branches` removes short
-terminal spurs and optional isolated skeleton voxels. These nodes are generic
-and are intended for mitochondria, neurites, vessels, fibers, hyphae, and other
-curvilinear structures.
-
-See [docs/skeleton-nodes.md](docs/skeleton-nodes.md) for a practical guide to
-the skeleton node inputs, outputs, and intended use.
-
-`Extract Channel` pulls one selected channel from a multichannel image.
-`Split Channels` is its bulk counterpart: it emits one output port per channel
-in the image (losslessly, preserving dtype), with the port count following the
-true channel count when VIPP has channel-axis metadata or a conventional
-RGB/RGBA channel-last image. Use `Split Axis` for arbitrary stack axes such as
-timepoints, Z slices, or a leading non-channel axis. Each split output also
-preserves the semantic type of its input, so splitting a threshold mask produces
-mask ports that connect directly to `Label Connected Components`. `Combine
-Channels` is the inverse multi-input node: set the expected channel/input count,
-connect that many upstream images, and it stacks them into an explicit
-multichannel output. Channel pseudo-colours are carried as metadata from OME
-sources, Image Source overrides, Combine
-Channels, or the `Assign Channel Colors` pass-through node. `Composite → RGB`
-maps a multichannel composite to a channel-last RGB image. Auto mode preserves
-true RGB/RGBA inputs, and otherwise blends all channels by their carried
-pseudo-colours, so yellow contributes to red and green and cyan contributes to
-green and blue. Manual red/green/blue selectors remain available for forced
-single-channel plane mapping. `Calculate New Image` is a multi-input image-math
-node that applies comma separated weights to connected inputs and then adds an
-offset.
-
-`Mask Image` is a typed two-input node with separate `Image` and `Mask` ports.
-The mask port accepts binary masks or labels, treating nonzero values as inside
-the mask. Spatial masks can be broadcast over compatible image axes, including
-channel-last RGB/RGBA images and common channel-first multichannel arrays, so a
-`YX` or `ZYX` mask can mask all colour/channel planes without first splitting
-the image.
-
-`Image Source` can point to an existing napari layer, a local `.npy`, TIFF,
-OME-Zarr, or common raster source such as PNG/JPEG/BMP/GIF/WebP, or one of the
-bundled synthetic samples. `Set Pixel Size / Units` repairs missing or incorrect
-input calibration by setting X/Y pixel size, optional Z step size, and the
-shared physical unit carried in downstream metadata. Scale-aware nodes such as
-`Orthogonal Projection` use this metadata to preserve physical proportions for
-anisotropic z-stacks. `Rescale Axes` changes the sampled pixel grid along X/Y/Z
-with optional X/Y aspect-ratio locking, nearest-neighbor through spline
-interpolation choices, and anti-aliasing for intensity-image downsampling; it
-updates physical scale metadata inversely to the requested scale factors.
-`Save Image` passes data through unchanged and, when `Auto-save on update` is
-set to `on`, writes the node input to disk every time the graph recomputes. For
-quick interactive work, the
-inspector also provides `Save selected output...` for the currently selected
-node; that dialog defaults to TIFF but also allows `.npy` and PNG/JPEG-style
-formats when the selected output is 2D. TIFF output is written in ImageJ
-hyperstack format when axis metadata is available, and binary masks are saved
-as 8-bit `0`/`255` values.
-
-For batch workflows, add `Batch Output` nodes to the images, masks, labels, or
-tables that should be written by `Run batch...`. Each marker is pass-through in
-the graph and can define a filename tag, optional subfolder, filename template,
-format override, and overwrite behavior. The batch dialog can bind each
-`Image Source` node to its own folder/pattern pair; bound sources are matched by
-sorted file order and must contain the same number of files. `Preview batch`
-shows the stable batch ids, paired source files, and planned outputs before the
-graph is executed. If no `Batch Output` nodes are present, batch execution falls
-back to saving terminal graph outputs. Filename templates can use `{batch_id}`,
-`{batch_index}`, `{source_name}`, `{source_stem}`, `{primary_source_stem}`,
-`{tag}`, `{node_id}`, and `{node_title}`.
+- [Documentation index](docs/README.md)
+- [User guide](docs/user-guide.md)
+- [Image import and export](docs/io-user-guide.md)
+- [Example workflow index](examples/README.md)
+- [Measurement workflows](docs/measurement-workflows.md)
+- [Operator tips](docs/operator-tips.md)
+- [Developer notes](docs/developer-notes.md)
+- [Current planning and roadmap](docs/planning.md)
 
 ## Development
 
-Create a local environment and install in editable mode:
+Create a local environment and install the development dependencies:
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 ```
 
-Validate and test:
+Run the required checks:
 
 ```bash
 python -m npe2 validate src/napari_vipp/napari.yaml
@@ -479,60 +108,25 @@ python -m ruff check .
 python -m pytest
 ```
 
-Launch napari manually and open the widget from:
-
-```text
-Plugins > VIPP Workflow (napari-vipp)
-```
-
-Or launch the local sample app:
-
-```bash
-python scripts\launch_vipp_sample.py
-```
-
-To start from a runnable workflow template inside VIPP, use:
-
-```text
-Open example...
-```
-
-To start directly from the red-channel Otsu-to-label cleanup workflow from the
-command line:
-
-```bash
-python scripts\launch_vipp_label_workflow.py
-```
-
-The same graph can be loaded manually from
-`examples/otsu-red-channel-labels.json`. A second review workflow,
-`examples/red-channel-object-intensity-measurements.json`, demonstrates the
-named `Labels` plus `Intensity image` input slots on `Measure Objects +
-Intensity`.
+Launch a development instance with `python scripts/launch_vipp_sample.py`. The
+[architecture reference](docs/architecture.md) explains the graph, metadata,
+execution, persistence, and UI boundaries.
 
 ## Roadmap
 
-The current versioned alpha roadmap is maintained in
-`docs/planning.md`. The current public alpha release is:
+The current public alpha is `0.11.0a1`, which introduced the PSF/restoration
+and optional microscope-reader foundations. The next planned milestone focuses
+on saved batch configuration and per-item provenance, followed by scalable
+OME-Zarr previews and broader scientific validation. See
+[planning.md](docs/planning.md) for the maintained release order and evidence
+gates.
 
-- `0.11.0a1`: PSF generation, PSF-aware Richardson-Lucy/RL-TV restoration,
-  optional microscope import foundations, bundled example-workflow onboarding,
-  and large-data review refinements.
+## Citation, Acknowledgement, And License
 
-Planned next minor milestones are:
+If VIPP contributes to your work, acknowledge `napari-vipp` and link to the
+[project repository](https://github.com/rensutheart/napari-vipp). Citation
+metadata is available in [CITATION.cff](CITATION.cff); a DOI or manuscript
+citation can be added when available.
 
-- `0.12.0a1`: batch configuration, output manifests, semantic-axis iteration,
-  and per-item provenance;
-- `0.13.0a1`: OME-Zarr pyramids, scalable previews, sampled histograms, and
-  large-data strategy;
-- `0.14.0a1`: scientific validation reports for colocalization, object
-  association, watershed separation, skeleton/network analysis, and
-  PSF/restoration;
-- `0.15.0a1`: AI-assisted pipeline authoring through validated workflow JSON.
-
-See `docs/user-guide.md` for end-user operation guidance,
-`docs/operator-tips.md` for operator-focused tuning,
-`docs/developer-notes.md` and `docs/architecture.md` for technical internals,
-`docs/planning.md` for broader planning, `docs/io-user-guide.md` for current
-I/O behavior, `docs/ome-io-plan.md` for the accepted OME architecture, and
-`docs/research-and-publication.md` for the evidence and publication record.
+napari-vipp is distributed under the BSD 3-Clause License. See
+[LICENSE](LICENSE) for the full terms.
