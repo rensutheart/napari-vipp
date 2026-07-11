@@ -5222,13 +5222,35 @@ def test_insert_node_on_connection_does_not_shift_when_gap_is_sufficient(qtbot):
             "threshold": QPointF(1230, 20),
         }
     )
+    source_rect = widget.graph_view.node_scene_rect("input")
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert target_rect is not None
+    generous_gap = 10.0 * max(source_rect.width(), target_rect.width())
+    target_delta_x = source_rect.right() + generous_gap - target_rect.left()
+    widget.graph_view.apply_node_positions(
+        {
+            "gaussian": widget.graph_view.node_position("gaussian")
+            + QPointF(target_delta_x, 0),
+            "threshold": widget.graph_view.node_position("threshold")
+            + QPointF(target_delta_x, 0),
+        }
+    )
     target_before = QPointF(widget.graph_view.node_position("gaussian"))
     downstream_before = QPointF(widget.graph_view.node_position("threshold"))
+    source_rect = widget.graph_view.node_scene_rect("input")
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert target_rect is not None
+    insertion_point = QPointF(
+        (source_rect.right() + target_rect.left()) / 2.0,
+        (source_rect.center().y() + target_rect.center().y()) / 2.0,
+    )
 
     node = widget._insert_node_on_connection(
         "median_filter",
         ("input", "gaussian", 0, 0),
-        QPointF(450, 100),
+        insertion_point,
     )
 
     assert node is not None

@@ -18,7 +18,7 @@ By participating, you agree to follow the
 
 ## Development Setup
 
-VIPP supports Python 3.10 and newer. Create an isolated environment and install
+VIPP supports Python 3.12 and newer. Create an isolated environment and install
 the editable package with its development dependencies.
 
 On Windows PowerShell:

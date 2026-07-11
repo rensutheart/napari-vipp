@@ -67,13 +67,12 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: "3.10"
-          - os: ubuntu-latest
             python-version: "3.12"
           - os: windows-latest
             python-version: "3.12"
     env:
       PYTEST_QT_API: pyqt6
+      QT_QPA_PLATFORM: offscreen
 
     steps:
       - name: Check out repository
@@ -86,32 +85,10 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install Linux display libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            libegl1 \
-            libgl1 \
-            libxkbcommon-x11-0 \
-            libxcb-cursor0 \
-            libxcb-xinerama0 \
-            xauth \
-            xvfb
-
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: Run tests on Linux
-        if: runner.os == 'Linux'
-        env:
-          QT_QPA_PLATFORM: xcb
-        run: xvfb-run --auto-servernum python -m pytest
-
-      - name: Run tests on Windows
-        if: runner.os == 'Windows'
-        env:
-          QT_QPA_PLATFORM: offscreen
+      - name: Run tests
         run: python -m pytest

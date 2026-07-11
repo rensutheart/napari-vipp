@@ -16,7 +16,7 @@ hiding axis or physical-scale metadata.
 
 ## Install And Open
 
-VIPP requires Python 3.10 or newer. If napari is not already installed, install
+VIPP requires Python 3.12 or newer. If napari is not already installed, install
 it with a Qt backend at the same time:
 
 ```bash

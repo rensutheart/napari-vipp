@@ -21,7 +21,7 @@ and confirming discovery on napari hub.
 
 Recommended local tools:
 
-- Python 3.10+
+- Python 3.12+
 - `python -m pip install -U build twine`
 
 ## 2. Verify Metadata

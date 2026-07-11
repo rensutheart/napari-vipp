@@ -4,6 +4,8 @@
 
 ## 0.11.0a2 - 2026-07-11
 
+- Corrected the package's Python requirement to 3.12 or newer, matching the
+  installable OME-Zarr dependency baseline.
 - Added cross-platform Linux/Windows CI for manifest validation, linting,
   packaging, and Qt-aware tests on representative supported Python versions.
 - Added contributor, support, security, conduct, issue, and pull-request

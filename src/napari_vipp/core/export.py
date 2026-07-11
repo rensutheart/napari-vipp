@@ -11,7 +11,7 @@ from __future__ import annotations
 import inspect
 import keyword
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 
@@ -80,7 +80,7 @@ def export_pipeline_to_python(
 
 
 def _build_header(pipeline: PrototypePipeline) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     node_count = len(pipeline.nodes)
     connection_count = len(pipeline.connections)
     return (
