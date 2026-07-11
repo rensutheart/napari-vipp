@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use napari-vipp in research, please cite it using this metadata."
-title: "napari-vipp: visual image processing pipelines for napari"
+title: "VIPP: Visual Image Processing Platform for reproducible bioimage analysis"
 authors:
   - family-names: "Theart"
     given-names: "Rensu P."
