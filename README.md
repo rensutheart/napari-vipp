@@ -7,7 +7,7 @@
 
 # VIPP — Visual Image Processing Platform
 
-**A visual workflow platform for reproducible bioimage analysis.**
+**Visual workflows for reproducible bioimage analysis.**
 
 [![CI](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml/badge.svg)](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
