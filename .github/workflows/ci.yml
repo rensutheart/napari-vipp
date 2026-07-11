@@ -74,7 +74,6 @@ jobs:
             python-version: "3.12"
     env:
       PYTEST_QT_API: pyqt6
-      QT_QPA_PLATFORM: ${{ runner.os == 'Linux' && 'xcb' || 'offscreen' }}
 
     steps:
       - name: Check out repository
@@ -107,8 +106,12 @@ jobs:
 
       - name: Run tests on Linux
         if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: xcb
         run: xvfb-run --auto-servernum python -m pytest
 
       - name: Run tests on Windows
         if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m pytest
