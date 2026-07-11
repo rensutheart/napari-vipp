@@ -5,16 +5,18 @@
   </picture>
 </p>
 
-# napari-vipp
+# VIPP — Visual Image Processing Platform
+
+**A visual workflow platform for reproducible bioimage analysis.**
 
 [![CI](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml/badge.svg)](https://github.com/rensutheart/napari-vipp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
 [![Python](https://img.shields.io/pypi/pyversions/napari-vipp.svg)](https://pypi.org/project/napari-vipp/)
 [![License](https://img.shields.io/pypi/l/napari-vipp.svg)](LICENSE)
 
-napari-vipp is a napari-native visual image-processing pipeline builder for
-bioimage analysis. Build a typed node graph, inspect intermediate images and
-tables, tune parameters, save the workflow, and run the same operations without
+`napari-vipp` is the napari-native implementation of **VIPP, the Visual Image
+Processing Platform**. Build typed node graphs, inspect intermediate images and
+tables, tune parameters, save workflows, and repeat the same operations without
 hiding axis or physical-scale metadata.
 
 > **Alpha software:** expect breaking workflow and parameter changes. Validate
