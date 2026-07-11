@@ -78,6 +78,12 @@ not force a node to calculate if the node has no output yet.
 | Projection and orthogonal views | Eager. | Usually reduce dimensionality, but orthogonal view generation can increase canvas size depending on physical scaling. |
 | Channel split/composite and RGB conversion | Eager. | Split outputs can duplicate channel data; composites may add a channel/RGB axis. |
 | Object, mesh, skeleton, and colocalization measurement nodes | Manual/cached where expensive. | Tables are usually smaller than images, but their source images or intermediate masks can dominate memory. |
+
+Exact interior percentiles require one native-dtype working buffer so that the
+requested order statistics can be selected without histogram approximation.
+The common integer `0..100` percentile pair uses exact extrema and avoids that
+buffer. Integer Rescale then maps in bounded chunks; integer Clip is a native
+pointwise clamp and does not allocate a whole-stack float copy.
 | Save Image and Batch Output nodes | Explicit terminal/output intent. | Batch execution retains these outputs only long enough to write them. |
 
 ## Large-Data Direction
@@ -87,7 +93,9 @@ comfortable on very large OME-Zarr datasets, the next scale work should add:
 
 - operation capability declarations for eager, lazy-safe, memory-heavy, and
   scale-aware nodes;
-- preview-resolution controls for thumbnails and histograms;
-- sampled or chunked histograms for large arrays;
+- optional preview-resolution controls for thumbnails while keeping operational
+  thresholds and inspector histograms exact and free of hidden sampling;
+- broader chunked execution beyond the bounded global-threshold and inspector
+  histogram paths;
 - OME-Zarr pyramid generation and preview-level selection;
 - confirmation before eager-only nodes materialize very large lazy arrays.

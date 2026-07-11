@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-11
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -83,6 +83,81 @@ source identity, and operation history where possible. This metadata drives:
 Always inspect the selected node's `Output Metadata` table when a workflow
 depends on axis order, channel identity, scale, or acquisition settings.
 
+### Automatic Threshold Histograms
+
+Otsu, Triangle, Yen, Isodata, and Minimum calculate their cutoff from every
+finite pixel in the selected scope. VIPP does not silently sample a large image
+or substitute a lower-resolution preview. `Stack histogram` fits one cutoff to
+the complete stack; `Slice histogram` fits each processed YX plane separately.
+
+The histogram resolution follows the input dtype:
+
+| Input | Threshold histogram |
+| --- | --- |
+| Boolean | Already a binary segmentation, so VIPP preserves it unchanged instead of fitting another threshold. The inspector uses 0.5 only as a conventional dividing marker. |
+| Integer | One bin per native integer level between the finite minimum and maximum. `Float histogram bins` is ignored. |
+| Floating point | The explicit `Float histogram bins` value, from 2 to 65,536; default 256. |
+
+An integer range wider than 65,536 levels is rejected rather than silently
+rebinned. Add `Convert Dtype` or `Rescale Intensity` when such data should be
+compressed intentionally. `Float histogram bins` is saved in workflow JSON
+because changing it can change a floating-point threshold. Li Threshold instead
+uses all finite raw values directly and therefore has no bin control. For
+integer Li inputs, VIPP preserves exact native offsets but rejects a relative
+intensity span wider than 2^53, which cannot be represented faithfully by Li's
+float64 iteration; convert or rescale deliberately in that exceptional case.
+
+`Minimum Threshold` exposes `Maximum smoothing iterations`. It repeatedly
+smooths the exact histogram until two peaks remain, following the
+scikit-image method. If two peaks cannot be found within the declared limit,
+the node reports the failure; it does not silently substitute another
+threshold.
+
+NaN, positive infinity, and negative infinity are excluded from cutoff fitting
+and become background in the resulting mask. Large calculations use bounded
+chunks and background workers to control memory and keep the interface
+responsive; chunking does not change which pixels contribute. An empty input or
+an input with no finite pixels reports an error instead of inventing a cutoff.
+
+### Rescale Intensity Cutoffs
+
+`Rescale Intensity` makes the cutoff source explicit:
+
+| `Input cutoffs` | Behavior |
+| --- | --- |
+| `Percentiles (exact)` | Default for new nodes. `Low percentile` and `High percentile` are calculated from every finite input value; the value fields do not override them. |
+| `Explicit values` | `Low value` and `High value` are used directly; the percentile fields do not override them. |
+
+There is no size-dependent percentile sample. Large percentile calculations are
+backgrounded but still use all finite values. The selected mode is saved in
+workflow JSON.
+
+`Clip Intensity` uses the same explicit-mode principle. New nodes default to
+`Data range`, which leaves the input range unchanged until explicit bounds are
+chosen; `Values` applies `Minimum` and `Maximum`.
+
+Integer data retains native-level meaning in both nodes. Integer percentiles
+are calculated from exact order statistics, including the fractional
+interpolation between neighbouring ranked levels, and Rescale performs its
+arithmetic after subtracting a native integer origin. This preserves adjacent
+int64/uint64 values even near their dtype limits. Integer Clip uses whole-number
+bounds and clamps without a float conversion; use `Convert Dtype` first when a
+fractional clipping bound is scientifically intended.
+
+Rescaling still needs floating-point ratio arithmetic. An active integer input
+or output interval wider than 2^53 levels is therefore rejected because
+float64 cannot distinguish every level in that interval. Also, the GUI's
+floating-point spin boxes cannot identify adjacent absolute values above 2^53.
+For those exceptional wide-integer datasets, use exact integer literals in an
+exported/workflow definition, use percentile cutoffs, or deliberately convert
+the dtype. int64/uint64 Rescale outputs default safely to `0..1` instead of an
+imprecise float representation of the full dtype maximum.
+
+The input-histogram slice/stack selector changes the distribution drawn for
+inspection. A percentile-mode Rescale marker and a data-range Clip marker still
+describe the complete connected input, because that is the data those node
+modes actually process.
+
 ## Toolbar Controls
 
 ### Preview
@@ -118,11 +193,22 @@ For large volumes, prefer `Stack` once the cache is built. VIPP calculates stack
 thumbnail limits in the background and reuses them while the node output remains
 unchanged.
 
+`Auto contrast` in the selected-node inspector is also display-only. It derives
+its limits from every finite input value (RGB images use luminance and ignore an
+RGBA alpha channel). Large calculations run in the background; no sampled
+percentile is substituted.
+
+When VIPP adds a large calculated output to napari for inspection or pinning, it
+uses safe provisional display limits immediately and replaces them with exact
+finite extrema once a background calculation finishes. If you adjust the layer
+contrast manually while that calculation is pending, VIPP preserves your
+choice. Neither provisional nor exact display limits change graph data.
+
 ### View Dims
 
 When the selected or pinned image has non-XY axes such as `T`, `Z`, or `C`,
-VIPP shows a `View dims` bar above the graph. These sliders control thumbnail,
-histogram, and metadata sampling positions. They are also useful when napari's
+VIPP shows a `View dims` bar above the graph. These sliders choose the position
+used for thumbnails, slice histograms, and current-view metadata. They are also useful when napari's
 own Z slider is hidden in 3D view.
 
 For downstream nodes whose axis length differs from the source image, such as
@@ -150,7 +236,7 @@ mode.
 
 | Setting | Behavior |
 | --- | --- |
-| Off | Only known slower operations run in the background. |
+| Off | Automatic mode: known slower operations and image updates of at least 32 MiB or four million values run in the background; smaller edits remain inline. |
 | On | Every graph recompute runs in the background. |
 
 Background execution shows progress in the toolbar. If parameters change while
@@ -158,6 +244,12 @@ a calculation is running, VIPP rejects its stale result and queues the latest
 request. Cancellation is cooperative: VIPP can stop between supported work
 units, but it cannot interrupt a NumPy, SciPy, or scikit-image call already in
 progress. CPU use may therefore continue briefly after `Cancel` is clicked.
+
+The same responsiveness rule applies to inspector diagnostics. Large stack
+histograms and automatic-threshold markers are calculated away from the UI
+thread, display `calculating...` briefly, and are cached for repeated views.
+Inspector histograms count all finite pixels in their selected slice or stack;
+they do not switch to a hidden sample for large inputs.
 
 ### Cache And Memory
 
@@ -489,8 +581,21 @@ RL-TV adds:
 Use `Split Channels` when the input has a semantic channel axis, such as OME
 `C` metadata, VIPP sample metadata, `Combine Channels` output, or a conventional
 RGB/RGBA channel-last image. The node creates one graph output port per
-channel. When one retained output is selected, its thumbnail represents that
-specific channel.
+channel.
+
+VIPP chooses one of those ports for the node's presentation surfaces. If the
+downstream graph uses exactly one distinct `Split Channels` output, that output
+drives the node thumbnail and, when the split node is selected, its napari
+inspect or pinned layer, histogram, output metadata, `View dims`, and
+`Save selected output...`. Several branches may consume that same port; it
+still counts as one distinct output. If no output is connected, or two or more
+different channel outputs are used, these surfaces fall back to the saved
+`Thumbnail channel` setting.
+
+This automatic presentation choice does not change `Thumbnail channel`, rewire
+the graph, or alter any channel array delivered to downstream nodes. Select a
+downstream branch itself when you want to inspect that branch's processed
+result.
 
 ### Extract Channel
 
@@ -541,6 +646,12 @@ When a colocalization threshold node is selected, the inspector shows a scatter
 density panel with threshold guide lines. Dragging a guide switches the node to
 manual thresholds and updates the corresponding threshold value. Masked
 variants add a third `ROI mask` input.
+
+The 255 x 255 scatter-density grid and its ROI/colocalized counts include every
+ROI voxel.
+Large inputs are accumulated in bounded chunks on a background worker; VIPP
+does not substitute a sampled scatter view. The inspector result is cached and
+discarded if its inputs or thresholds become stale.
 
 Reference workflows:
 

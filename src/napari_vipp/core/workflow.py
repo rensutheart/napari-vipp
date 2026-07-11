@@ -19,9 +19,12 @@ from napari_vipp.core.pipeline import (
     GraphNode,
     OutputTunnel,
     PrototypePipeline,
+    optional_persisted_parameter_spec,
+    validate_optional_persisted_parameter,
+    validate_parameter_value,
 )
 
-WORKFLOW_VERSION = 1
+WORKFLOW_VERSION = 2
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
@@ -266,7 +269,37 @@ def _node_from_dict(raw: Any, index: int) -> GraphNode:
     if missing_params:
         missing = ", ".join(sorted(missing_params))
         raise ValueError(f"Node {node_id!r} is missing required parameters: {missing}.")
+    unknown_params = [
+        name
+        for name in saved
+        if not isinstance(name, str)
+        or (
+            name not in required_params
+            and not name.startswith("_vipp_")
+            and optional_persisted_parameter_spec(spec, name) is None
+        )
+    ]
+    if unknown_params:
+        unknown = ", ".join(
+            repr(name) for name in sorted(unknown_params, key=str)
+        )
+        raise ValueError(f"Node {node_id!r} has unknown parameters: {unknown}.")
     params = dict(saved)
+    for parameter in spec.parameters:
+        validate_parameter_value(
+            parameter,
+            params[parameter.name],
+            context=f"Node {node_id!r} parameter",
+        )
+    for name, value in params.items():
+        optional_spec = optional_persisted_parameter_spec(spec, name)
+        if optional_spec is not None:
+            validate_optional_persisted_parameter(
+                spec,
+                optional_spec,
+                value,
+                context=f"Node {node_id!r} parameter",
+            )
     return GraphNode(
         node_id,
         spec.id,

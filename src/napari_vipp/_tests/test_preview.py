@@ -143,6 +143,17 @@ def test_raw_float_thumbnail_can_use_cached_stack_contrast_limits():
     assert 20 <= stack_scaled[0, 0, 0] <= 30
 
 
+def test_mask_thumbnail_contrast_limits_do_not_scan_the_stack():
+    class UnreadableMask:
+        def __array__(self):
+            raise AssertionError("mask pixels should not be inspected")
+
+    assert thumbnail_contrast_limits(UnreadableMask(), data_kind="mask") == (
+        0.0,
+        1.0,
+    )
+
+
 def test_percentile_thumbnail_keeps_sparse_foreground_visible_over_low_ramp():
     yy, xx = np.indices((64, 64), dtype=np.uint16)
     data = ((yy + xx) % 32).astype(np.uint16)

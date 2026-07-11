@@ -195,7 +195,8 @@ Still needed:
 - generated OME-Zarr pyramids for exported image datasets;
 - label colors and label-property table round-tripping where practical;
 - preview-resolution controls for thumbnails and inspector views;
-- lazy/sampled histograms and thumbnails for large arrays;
+- lazy/chunked all-pixel histograms and pyramid-aware thumbnails for large
+  arrays, without changing operational results through hidden sampling;
 - operation capability declarations such as eager, lazy-safe, memory-heavy, and
   scale-aware;
 - warnings before eager-only nodes materialize very large lazy arrays;
@@ -247,7 +248,9 @@ Architecture requirements:
 - validate the patch locally, show its assumptions and graph diff, and require
   user approval before applying it;
 - expose only bounded, user-visible context such as metadata summaries,
-  thumbnails, sampled histograms, overlays, table previews, and known caveats;
+  thumbnails, explicitly labelled sampled context summaries, overlays, table
+  previews, and known caveats; never present a sampled context summary as an
+  operational VIPP histogram;
 - support hosted and local/private providers without arbitrary code execution;
 - record provider, model, context summary, validation result, and approval in
   workflow provenance for every applied patch.

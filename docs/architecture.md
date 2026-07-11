@@ -161,11 +161,25 @@ thread. The active worker reports node-start events for the global busy
 indicator and per-node processing state. Operations that accept a
 `ProgressContext` can also report determinate progress and check a worker-owned
 cancel event between internal work units. This is currently wired for
-rolling-ball/subtract-background block processing, `rescale_axes`, and 3D mesh
-morphology label loops. The toolbar `Cancel` control clears queued reruns,
+rolling-ball/subtract-background block processing, `rescale_axes`, 3D mesh
+morphology label loops, and Minimum Threshold's histogram-smoothing loop. Auto
+Watershed From Mask is also treated as known-slow
+even below the large-image cutoff. The toolbar `Cancel` control clears queued reruns,
 requeues in-flight dirty nodes, requests cooperative cancellation, and ignores
 stale worker results. It still cannot forcibly interrupt a NumPy/SciPy/
 scikit-image call already executing inside that worker.
+
+Dispatch is automatic for the known-slow operation allow-list and whenever an
+affected cached input, output, or source payload is at least 32 MiB or four
+million values. `Run all in BG` remains a force-all override; leaving it off
+does not mean that large work runs on Qt's UI thread. Large selected-node input
+histograms and automatic-threshold markers share the worker queue, coalesce
+repeated requests, reject stale results, and cache exact summaries. Operational
+histograms are accumulated in bounded chunks rather than through a full-stack
+finite-value and float64 copy. Chunking limits peak temporary memory; it never
+samples or drops finite pixels. Li remains on its raw-value iterative algorithm
+and relies on background dispatch for large inputs rather than substituting a
+binned approximation.
 
 Special execution cases:
 
@@ -232,7 +246,7 @@ The current high-level groups are:
   - `Local Thresholds`: Adaptive Mean, Adaptive Gaussian, Sauvola, Niblack
     thresholding
 
-Histogram-based global threshold nodes default to
+Automatic global threshold nodes default to
 `Threshold uses = Stack histogram`, meaning one cutoff is computed from the
 whole grayscale input and applied to the full image. On stack inputs the
 inspector exposes `Slice histogram` for per-plane cutoff calculation; that still
@@ -241,6 +255,35 @@ each cutoff. On 2D inputs the control is hidden because stack versus slice is
 not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
 this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
+
+Otsu, Triangle, Yen, Isodata, and Minimum count every finite input value, with
+no data-size-dependent sampling or silent rebinning. Their bin contract is
+dtype-aware:
+
+- boolean inputs bypass automatic fitting and are copied unchanged because
+  they are already binary segmentations; the inspector's 0.5 marker is a
+  display convention rather than a fitted value;
+- integer inputs use one bin for every native integer level from the observed
+  finite minimum through maximum; `Float histogram bins` is ignored;
+- integer spans above 65,536 levels raise an actionable error asking the user to
+  convert or rescale instead of silently quantizing the data;
+- floating-point inputs use the node's explicit `Float histogram bins`
+  (`histogram_bins`) setting, from 2 through 65,536 and defaulting to 256,
+  across the observed finite minimum/maximum range.
+
+NaN, positive infinity, and negative infinity do not participate in fitting and
+are background in the resulting mask. Li is the exception to the bin rules: its
+minimum-cross-entropy iteration uses every finite raw value and has no histogram
+bin setting. Integer Li inputs are translated by their exact native minimum
+before float64 iteration; relative spans above 2^53 fail explicitly rather than
+collapsing levels. Empty/all-nonfinite inputs fail instead of receiving a
+fabricated zero threshold. Local thresholds operate plane-wise and may
+inherently allocate a local-threshold plane; large runs still use the automatic
+background policy.
+
+Minimum exposes a saved `max_iterations` limit (1..10,000, default 10,000) for
+histogram smoothing. It reports an explicit failure when the method cannot
+resolve two maxima; no mean or alternate-threshold fallback is applied.
 
 `Hysteresis Threshold` uses raw low/high intensity thresholds and displays those
 markers on its input histogram. Its spatial processing mode controls whether
@@ -447,7 +490,8 @@ need to know which axes are time, channels, z, y, and x.
   correct napari viewer sliders, including right-aligned layers with fewer axes
   than the current viewer;
 - kind, such as intensity image, binary mask, RGB image, or multi-channel image;
-- bit depth, value range/pattern, and memory estimate;
+- bit depth, exact finite value range/binary pattern when materialized, and
+  memory estimate;
 - metadata source;
 - source name and operation history.
 - normalized channel names, colors, fluorophore/wavelength fields;
@@ -550,13 +594,31 @@ stacks are blended by carried pseudo-colours. A yellow channel therefore writes
 to red and green, while a cyan channel writes to green and blue. Manual
 red/green/blue selectors still force single-channel RGB plane mapping. Split
 Channels exposes a `Thumbnail channel` inspector parameter that chooses which
-output port appears on the node card; it does not alter the generated channel
-outputs or downstream port wiring.
+output port is presented when the downstream graph does not identify one
+unambiguous channel.
+
+The presentation-output resolver collects the distinct `source_port` values of
+connections leaving a `Split Channels` node. Exactly one distinct used port
+becomes the effective presentation output, even when several downstream
+connections consume it. Zero used ports or more than one distinct used port
+fall back to the saved `preview_channel` (`Thumbnail channel`) parameter. The
+same effective output is used consistently for the node thumbnail, napari
+inspect and pin layers, the output histogram, metadata, dimension controls, and
+`Save selected output...`. Resolving a presentation port never mutates
+`preview_channel`, graph connections, cached per-port arrays, or the outputs
+supplied to scientific operations.
 
 For generated napari inspect/pin layers, 2D RGB outputs use napari's native
 `rgb=True` image layer. Volumetric RGB outputs are displayed as synchronized
 additive red/green/blue image layers because napari's scalar-field 3D status
 and rendering path does not reliably handle hidden RGB axes.
+
+Generated large image layers receive explicit dtype-based provisional contrast
+limits so napari never performs an unannounced full-array scan on Qt's thread.
+VIPP then calculates exact full finite extrema in the background, caches them by
+array identity, rejects stale results, and preserves a user's intervening manual
+contrast edit. This state is display provenance only and does not enter graph
+calculations.
 
 Toolbar thumbnail controls are global display settings. `Preview` chooses the
 thumbnail reduction (`Slice`, `MIP`, or `Off`); `Off` disables node-card
@@ -573,12 +635,44 @@ metadata, and do not alter graph outputs or histogram values.
 Histograms live mostly in `_widget.py` through `HistogramPlot` and helper
 functions near the bottom of the file. The general selected-output histogram
 supports slice-vs-stack and linear-vs-log display. Multichannel histograms are
-drawn as separate series using fluorescence-style colours.
+drawn as separate series using fluorescence-style colours. Inspector
+histograms count every finite pixel in the selected slice or stack; there is no
+hidden large-array sampling. Their display bins are separate from the
+dtype-aware operational bins used to calculate automatic thresholds.
 
 Cutoff-style nodes listed in `INPUT_HISTOGRAM_OPERATIONS` also show an
 `Input Histogram` above the general output histogram. It has its own
 `Histogram uses` slice/stack selector, hidden when the connected input has no
 meaningful stack axis, and its markers are driven by the node parameters.
+
+`Rescale Intensity` has an explicit `cutoff_mode`. New nodes default to
+`Percentiles`, which computes the requested low/high percentiles from every
+finite input value. `Values` uses the stored low/high values directly. The
+inactive pair is informative only and cannot silently override the active
+mode. Both the mode and cutoff fields are ordinary serialized node parameters.
+The percentile markers always describe the full connected input, matching the
+operation, even when the inspector is drawing only a slice histogram.
+
+`Clip Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
+default to `Data range`. Its data-range markers likewise describe the complete
+input; the histogram scope affects only the inspector distribution.
+
+For integer Rescale inputs, percentile cutoffs are exact linear order
+statistics over a native-dtype working buffer. The cutoff is retained as an
+integer or rational value, then each bounded processing chunk is translated
+from the cutoff's integer origin before float64 ratio arithmetic. Exact native
+endpoint masks prevent distant saturated values from entering that conversion.
+Input and output intervals wider than 2^53 fail explicitly. Integer Clip takes
+the simpler fully native path: bounds must be integral, inactive out-of-dtype
+sides are clamped to the dtype limit, and `np.clip` never promotes the image to
+float. These rules prevent large int64/uint64 offsets from collapsing adjacent
+levels.
+
+Colocalization threshold nodes build the inspector's 2-D scatter density by
+accumulating a 255 x 255 histogram over every ROI voxel in bounded chunks.
+ROI and colocalized counts are accumulated in the same exact pass. Large inputs
+run on a stale-safe background worker and cache only the compact density/result;
+there is no separate sampled display population.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
@@ -733,10 +827,14 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 1 also stores graph notes and VIPP UI metadata. Inspector
-  metadata is always written when saving through the widget and records the
-  selected node plus right-panel visibility. Per-node thumbnail visibility is
-  written only when `Save thumbnail visibility in workflows` is enabled.
+- Workflow version 2 stores graph notes, VIPP UI metadata, and the required
+  scientific controls introduced for exact threshold/rescale/clip behavior.
+  Version 1 documents are intentionally rejected instead of receiving implicit
+  parameter migrations.
+- Inspector metadata is always written when saving through the widget and
+  records the selected node plus right-panel visibility. Per-node thumbnail
+  visibility is written only when `Save thumbnail visibility in workflows` is
+  enabled.
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
   tables, environment provenance, or YAML.
 - Image Source paths and layer names are serialized as literal parameters;

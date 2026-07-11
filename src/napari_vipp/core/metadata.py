@@ -15,7 +15,8 @@ from napari_vipp.core.tables import (
 )
 
 RGB_CHANNELS = (3, 4)
-MAX_METADATA_VALUES = 500_000
+_METADATA_CHUNK_ELEMENTS = 1_048_576
+DEFERRED_VALUE_RANGE = "pending exact background calculation"
 CHANNEL_COLLAPSE_OPERATIONS = {
     "otsu_threshold",
     "triangle_threshold",
@@ -30,6 +31,13 @@ CHANNEL_COLLAPSE_OPERATIONS = {
     "adaptive_gaussian_threshold",
     "sauvola_threshold",
     "niblack_threshold",
+}
+HISTOGRAM_THRESHOLD_OPERATIONS = {
+    "otsu_threshold",
+    "triangle_threshold",
+    "yen_threshold",
+    "isodata_threshold",
+    "minimum_threshold",
 }
 LABEL_OPERATIONS = {
     "auto_watershed_from_mask",
@@ -337,6 +345,7 @@ def image_state_from_array(
     channels: tuple[ChannelMetadata, ...] | None = None,
     acquisition: AcquisitionMetadata | None = None,
     source: SourceMetadata | None = None,
+    defer_statistics: bool = False,
 ) -> ImageState | None:
     """Create a carried image state from array data and optional metadata."""
     if data is None:
@@ -385,8 +394,14 @@ def image_state_from_array(
         kind=_lazy_kind_label(dtype, shape, axes) if lazy else _kind_label(arr, axes),
         axes=axes,
         bit_depth=_bit_depth_label(dtype),
-        value_range="not computed (lazy)" if lazy else _value_range_label(arr),
-        value_pattern="" if lazy else _value_pattern_label(arr),
+        value_range=(
+            "not computed (lazy)"
+            if lazy
+            else DEFERRED_VALUE_RANGE
+            if defer_statistics
+            else _value_range_label(arr)
+        ),
+        value_pattern="" if lazy or defer_statistics else _value_pattern_label(arr),
         memory=_memory_label(int(np.prod(shape, dtype=np.int64)) * dtype.itemsize),
         metadata_source=metadata_source or "inferred from array shape",
         source_name=source_name,
@@ -1649,6 +1664,41 @@ def _operation_history(
     operation_title: str,
     params: dict[str, Any],
 ) -> str:
+    if operation_id in HISTOGRAM_THRESHOLD_OPERATIONS | {"li_threshold"}:
+        return _automatic_threshold_history(
+            input_state,
+            operation_id,
+            operation_title,
+            params,
+        )
+    if operation_id == "rescale_intensity":
+        mode = str(params.get("cutoff_mode", "Percentiles"))
+        if mode.casefold() == "percentiles":
+            active = (
+                "finite-value percentiles "
+                f"{_format_number(params.get('in_low_percentile', 0.0))}.."
+                f"{_format_number(params.get('in_high_percentile', 100.0))}"
+            )
+        else:
+            active = (
+                "explicit input values "
+                f"{_format_number(params.get('in_low_value', 0.0))}.."
+                f"{_format_number(params.get('in_high_value', 1.0))}"
+            )
+        return (
+            f"{operation_title}: {active}; output "
+            f"{_format_number(params.get('out_min', 0.0))}.."
+            f"{_format_number(params.get('out_max', 1.0))}"
+        )
+    if operation_id == "clip_intensity":
+        mode = str(params.get("cutoff_mode", "Data range"))
+        if mode.casefold() == "data range":
+            return f"{operation_title}: full data range preserved (no clipping)"
+        return (
+            f"{operation_title}: explicit values "
+            f"{_format_number(params.get('minimum', 0.0))}.."
+            f"{_format_number(params.get('maximum', 255.0))}"
+        )
     if operation_id == "mip":
         axis = _axis_label(input_state.axes, params.get("axis", 0))
         return f"{operation_title}: projected {axis}"
@@ -1815,6 +1865,50 @@ def _operation_history(
             f"via {params.get('scaling', 'rescale')}"
         )
     return operation_title
+
+
+def _automatic_threshold_history(
+    input_state: ImageState,
+    operation_id: str,
+    operation_title: str,
+    params: dict[str, Any],
+) -> str:
+    scope = str(params.get("threshold_scope", "Stack histogram"))
+    nonfinite = "non-finite values excluded and set to background"
+    try:
+        dtype = np.dtype(input_state.dtype)
+    except (TypeError, ValueError):
+        dtype = None
+    if dtype == np.dtype(bool):
+        return (
+            f"{operation_title}: existing boolean segmentation preserved; "
+            "automatic threshold bypassed"
+        )
+    if operation_id == "li_threshold":
+        return f"{operation_title}: {scope}; raw finite-value iteration; {nonfinite}"
+
+    bins = int(params.get("histogram_bins", 256))
+    rgb_like = (
+        len(input_state.shape) >= 3
+        and int(input_state.shape[-1]) in RGB_CHANNELS
+    )
+    if rgb_like:
+        mode = (
+            f"{bins} equal-width float bins after RGB grayscale conversion "
+            f"({input_state.dtype} input)"
+        )
+    elif dtype is not None and np.issubdtype(dtype, np.integer):
+        mode = f"native integer levels ({dtype.name}; Float histogram bins ignored)"
+    elif dtype is not None and np.issubdtype(dtype, np.floating):
+        mode = f"{bins} equal-width float bins ({dtype.name})"
+    else:
+        mode = f"{bins} histogram bins ({input_state.dtype or 'unknown dtype'})"
+    if operation_id == "minimum_threshold":
+        mode += (
+            "; maximum smoothing iterations "
+            f"{int(params.get('max_iterations', 10_000))}"
+        )
+    return f"{operation_title}: {scope}; {mode}; {nonfinite}"
 
 
 def _multi_input_history(
@@ -2168,10 +2262,11 @@ def _value_range_label(arr: np.ndarray) -> str:
     if arr.dtype == bool:
         return f"{bool(arr.min())} to {bool(arr.max())}"
 
-    values = _finite_sample(arr)
-    if values.size == 0:
+    extrema = _finite_extrema(arr)
+    if extrema is None:
         return "no finite values"
-    return f"{_format_number(values.min())} to {_format_number(values.max())}"
+    minimum, maximum = extrema
+    return f"{_format_number(minimum)} to {_format_number(maximum)}"
 
 
 def _value_pattern_label(arr: np.ndarray) -> str:
@@ -2182,29 +2277,88 @@ def _value_pattern_label(arr: np.ndarray) -> str:
     if not np.issubdtype(arr.dtype, np.number):
         return ""
 
-    values = _finite_sample(arr)
-    if values.size == 0:
-        return ""
-    unique = np.unique(values)
-    if unique.size <= 2:
+    unique_count = _finite_unique_count_up_to_three(arr)
+    if 0 < unique_count <= 2:
         return "binary-valued"
     return ""
 
 
-def _finite_sample(arr: np.ndarray) -> np.ndarray:
-    values = np.asarray(arr).ravel()
-    if values.size > MAX_METADATA_VALUES:
-        stride = int(np.ceil(values.size / MAX_METADATA_VALUES))
-        values = values[::stride]
+def _finite_extrema(arr: np.ndarray) -> tuple[int | float, int | float] | None:
+    arr = np.asarray(arr)
+    if np.issubdtype(arr.dtype, np.integer):
+        minimum: int | None = None
+        maximum: int | None = None
+        for values in _finite_metadata_chunks(arr):
+            if values.size == 0:
+                continue
+            chunk_minimum = int(values.min())
+            chunk_maximum = int(values.max())
+            minimum = (
+                chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+            )
+            maximum = (
+                chunk_maximum if maximum is None else max(maximum, chunk_maximum)
+            )
+        if minimum is None or maximum is None:
+            return None
+        return minimum, maximum
+
+    minimum = np.inf
+    maximum = -np.inf
+    found = False
+    for values in _finite_metadata_chunks(arr):
+        if values.size == 0:
+            continue
+        found = True
+        minimum = min(minimum, float(values.min()))
+        maximum = max(maximum, float(values.max()))
+    if not found:
+        return None
+    return float(minimum), float(maximum)
+
+
+def _finite_unique_count_up_to_three(arr: np.ndarray) -> int:
+    seen: list[object] = []
+    for values in _finite_metadata_chunks(arr):
+        if values.size == 0:
+            continue
+        for value in np.unique(values):
+            if any(value == prior for prior in seen):
+                continue
+            seen.append(value.item() if hasattr(value, "item") else value)
+            if len(seen) >= 3:
+                return 3
+    return len(seen)
+
+
+def _finite_metadata_chunks(arr: np.ndarray):
+    values = np.asarray(arr)
     if not np.issubdtype(values.dtype, np.number):
-        return np.array([], dtype=np.float32)
-    try:
-        return values[np.isfinite(values)]
-    except TypeError:
-        return values
+        return
+    iterator = np.nditer(
+        values,
+        flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+        op_flags=[["readonly"]],
+        order="K",
+        buffersize=_METADATA_CHUNK_ELEMENTS,
+    )
+    for chunk in iterator:
+        chunk_values = np.asarray(chunk)
+        try:
+            finite = np.isfinite(chunk_values)
+        except TypeError:
+            return
+        if not finite.all():
+            chunk_values = chunk_values[finite]
+        yield chunk_values
 
 
 def _format_number(value) -> str:
+    if isinstance(value, (int, np.integer)) and not isinstance(
+        value,
+        (bool, np.bool_),
+    ):
+        return str(int(value))
     value = float(value)
     if value.is_integer():
         return str(int(value))

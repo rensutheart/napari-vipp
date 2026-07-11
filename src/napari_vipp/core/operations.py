@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from itertools import combinations, product
+from numbers import Integral
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +49,11 @@ BORN_WOLF_PSF_MANUAL_DEFAULTS = {
     "z_step_um": 0.3,
     "channel": 0,
 }
+
+_GLOBAL_THRESHOLD_HISTOGRAM_BINS = 256
+_THRESHOLD_CHUNK_SIZE = 1_048_576
+_MAX_NATIVE_INTEGER_HISTOGRAM_BINS = 65_536
+_FLOAT64_EXACT_INTEGER_LIMIT = 2**53
 
 
 @dataclass(frozen=True)
@@ -774,9 +782,9 @@ def canny_edges(
             low_threshold=low,
             high_threshold=high,
             use_quantiles=True,
-        ).astype(bool)
+        )
 
-    return _apply_plane_wise(arr, canny_plane).astype(bool)
+    return _apply_plane_wise(arr, canny_plane)
 
 
 def hysteresis_threshold(
@@ -797,7 +805,7 @@ def hysteresis_threshold(
 
     def threshold_block(block: np.ndarray) -> np.ndarray:
         values = block.astype(np.float32, copy=False)
-        return filters.apply_hysteresis_threshold(values, low, high).astype(bool)
+        return filters.apply_hysteresis_threshold(values, low, high)
 
     return _apply_spatial_blocks(
         arr,
@@ -807,16 +815,32 @@ def hysteresis_threshold(
     )
 
 
-def otsu_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+def otsu_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> np.ndarray:
     """Return a binary mask from an Otsu threshold."""
     arr = _to_grayscale(np.asarray(data))
-    return _global_threshold(arr, _otsu_value, threshold_scope=threshold_scope)
+    return _global_threshold(
+        arr,
+        lambda values: _otsu_value(values, histogram_bins),
+        threshold_scope=threshold_scope,
+    )
 
 
-def triangle_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+def triangle_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> np.ndarray:
     """Return a binary mask from a triangle threshold."""
     arr = _to_grayscale(np.asarray(data))
-    return _global_threshold(arr, _triangle_value, threshold_scope=threshold_scope)
+    return _global_threshold(
+        arr,
+        lambda values: _triangle_value(values, histogram_bins),
+        threshold_scope=threshold_scope,
+    )
 
 
 def li_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
@@ -824,48 +848,82 @@ def li_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
     arr = _to_grayscale(np.asarray(data))
     return _global_threshold(
         arr,
-        lambda plane: _safe_threshold(plane, filters.threshold_li),
+        _li_value,
         threshold_scope=threshold_scope,
     )
 
 
-def yen_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+def yen_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> np.ndarray:
     """Return a binary mask from a Yen threshold."""
     arr = _to_grayscale(np.asarray(data))
     return _global_threshold(
         arr,
-        lambda plane: _safe_threshold(plane, filters.threshold_yen),
+        lambda values: _yen_value(values, histogram_bins),
         threshold_scope=threshold_scope,
     )
 
 
-def isodata_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+def isodata_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> np.ndarray:
     """Return a binary mask from an Isodata threshold."""
     arr = _to_grayscale(np.asarray(data))
     return _global_threshold(
         arr,
-        lambda plane: _safe_threshold(plane, filters.threshold_isodata),
+        lambda values: _isodata_value(values, histogram_bins),
         threshold_scope=threshold_scope,
     )
 
 
-def minimum_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
+def minimum_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    max_iterations: int = 10_000,
+    progress=None,
+) -> np.ndarray:
     """Return a binary mask from a minimum threshold."""
     arr = _to_grayscale(np.asarray(data))
     return _global_threshold(
         arr,
-        lambda plane: _safe_threshold(plane, filters.threshold_minimum),
+        lambda values: _minimum_value(
+            values,
+            histogram_bins,
+            max_iterations=max_iterations,
+            progress=progress,
+        ),
         threshold_scope=threshold_scope,
     )
 
 
-def automatic_threshold_value(data, operation_id: str) -> float | None:
+def automatic_threshold_value(
+    data,
+    operation_id: str,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    max_iterations: int = 10_000,
+    progress=None,
+) -> int | float | None:
     """Return the scalar threshold value used by a global threshold operation."""
     threshold_func = _automatic_threshold_function(operation_id)
     if threshold_func is None:
         return None
     arr = _to_grayscale(np.asarray(data))
-    return float(threshold_func(arr))
+    if arr.dtype == bool:
+        return 0.5
+    if str(operation_id) == "minimum_threshold":
+        return _minimum_value(
+            arr,
+            histogram_bins,
+            max_iterations=max_iterations,
+            progress=progress,
+        )
+    return threshold_func(arr, histogram_bins)
 
 
 def binary_threshold(data, threshold: float = 0.5) -> np.ndarray:
@@ -908,13 +966,17 @@ def sauvola_threshold(
         values = plane.astype(np.float32, copy=False)
         r = float(dynamic_range)
         if r <= 0.0:
-            finite = values[np.isfinite(values)]
-            r = float(np.ptp(finite) / 2.0) if finite.size else 1.0
+            stats = _finite_array_stats(values)
+            r = (
+                float((stats.maximum - stats.minimum) / 2.0)
+                if stats.count
+                else 1.0
+            )
             r = max(r, 1e-6)
         local = filters.threshold_sauvola(values, window_size=window, k=float(k), r=r)
         return values > local
 
-    return _apply_plane_wise(arr, threshold_plane).astype(bool)
+    return _apply_plane_wise(arr, threshold_plane)
 
 
 def niblack_threshold(
@@ -933,7 +995,7 @@ def niblack_threshold(
         local = filters.threshold_niblack(values, window_size=window, k=float(k))
         return values > local
 
-    return _apply_plane_wise(arr, threshold_plane).astype(bool)
+    return _apply_plane_wise(arr, threshold_plane)
 
 
 def dilate(data, size: int = 10, iterations: int = 1) -> np.ndarray:
@@ -1200,20 +1262,23 @@ def h_maxima_markers(
 
     def marker_block(block: np.ndarray) -> np.ndarray:
         values = np.asarray(block, dtype=np.float32)
-        finite = values[np.isfinite(values)]
-        if finite.size == 0 or float(finite.min()) == float(finite.max()):
+        stats = _finite_array_stats(values)
+        if stats.count == 0 or stats.minimum == stats.maximum:
             return np.zeros(values.shape, dtype=np.int32)
-        safe = np.nan_to_num(
-            values,
-            nan=float(finite.min()),
-            posinf=float(finite.max()),
-            neginf=float(finite.min()),
-        )
+        if stats.count == values.size:
+            safe = values
+        else:
+            safe = np.nan_to_num(
+                values,
+                nan=stats.minimum,
+                posinf=stats.maximum,
+                neginf=stats.minimum,
+            )
         if height > 0:
             peaks = morphology.h_maxima(safe, height)
         else:
             peaks = morphology.local_maxima(safe)
-        peaks &= safe > float(finite.min())
+        peaks &= safe > stats.minimum
         labels, _count = ndi.label(peaks, structure=structure)
         return labels.astype(np.int32, copy=False)
 
@@ -1545,7 +1610,7 @@ def skeletonize_mask(
             return np.zeros_like(block, dtype=bool)
         if method_value == "zhang" and block.ndim != 2:
             raise ValueError("Zhang skeletonization is only valid for 2D blocks.")
-        return morphology.skeletonize(block, method=method_value).astype(bool)
+        return morphology.skeletonize(block, method=method_value)
 
     return _apply_spatial_blocks(mask, spatial_ndim, skeletonize_block, dtype=bool)
 
@@ -4091,47 +4156,315 @@ def rescale_intensity(
     out_max: float = 1.0,
     in_low_value: float | None = None,
     in_high_value: float | None = None,
+    *,
+    cutoff_mode: str = "Percentiles",
 ) -> np.ndarray:
     """Rescale intensity from input cutoffs to a requested output range."""
     arr = np.asarray(data)
-    if arr.dtype == bool:
-        return arr.copy()
-    values = arr[np.isfinite(arr)]
-    if values.size == 0:
-        return np.zeros_like(arr)
-    value_cutoffs = _rescale_value_cutoffs(in_low_value, in_high_value)
-    if value_cutoffs is None:
-        low_p = float(np.clip(in_low_percentile, 0.0, 100.0))
-        high_p = float(np.clip(in_high_percentile, 0.0, 100.0))
+    mode = str(cutoff_mode).strip().casefold()
+    if mode not in {"percentiles", "values"}:
+        raise ValueError(
+            "Rescale Intensity input cutoffs must be 'Percentiles' or 'Values'."
+        )
+    integer_data = np.issubdtype(arr.dtype, np.integer)
+    output_minimum = (
+        _required_finite_fraction(out_min, "Output minimum")
+        if integer_data
+        else _required_finite_float(out_min, "Output minimum")
+    )
+    output_maximum = (
+        _required_finite_fraction(out_max, "Output maximum")
+        if integer_data
+        else _required_finite_float(out_max, "Output maximum")
+    )
+    if mode == "percentiles":
+        low_p = _required_finite_float(in_low_percentile, "Low percentile")
+        high_p = _required_finite_float(in_high_percentile, "High percentile")
+        if not 0.0 <= low_p <= 100.0 or not 0.0 <= high_p <= 100.0:
+            raise ValueError("Rescale percentiles must be between 0 and 100.")
         if low_p > high_p:
-            low_p, high_p = high_p, low_p
-        low, high = np.percentile(values, [low_p, high_p])
+            raise ValueError(
+                "Rescale low percentile must not exceed the high percentile."
+            )
+        if arr.dtype == bool:
+            return arr.copy()
+        if integer_data:
+            low, high = exact_integer_percentiles(arr, (low_p, high_p))
+            return _rescale_integer_intensity(
+                arr,
+                low=low,
+                high=high,
+                output_minimum=output_minimum,
+                output_maximum=output_maximum,
+                output_minimum_source=out_min,
+                output_maximum_source=out_max,
+            )
+        values = arr[np.isfinite(arr)]
+        if values.size == 0:
+            raise ValueError(
+                "Rescale percentile cutoffs require at least one finite input value."
+            )
+        low, high = np.percentile(
+            values,
+            [low_p, high_p],
+            overwrite_input=True,
+        )
     else:
-        low, high = value_cutoffs
+        low = (
+            _required_finite_fraction(in_low_value, "Low input value")
+            if integer_data
+            else _required_finite_float(in_low_value, "Low input value")
+        )
+        high = (
+            _required_finite_fraction(in_high_value, "High input value")
+            if integer_data
+            else _required_finite_float(in_high_value, "High input value")
+        )
+        if low > high:
+            raise ValueError(
+                "Rescale low input value must not exceed the high input value."
+            )
+        if arr.dtype == bool:
+            return arr.copy()
+        if integer_data:
+            _reject_rounded_wide_integer_control(
+                arr,
+                in_low_value,
+                "Low input value",
+            )
+            _reject_rounded_wide_integer_control(
+                arr,
+                in_high_value,
+                "High input value",
+            )
+            return _rescale_integer_intensity(
+                arr,
+                low=low,
+                high=high,
+                output_minimum=output_minimum,
+                output_maximum=output_maximum,
+                output_minimum_source=out_min,
+                output_maximum_source=out_max,
+            )
     if high == low:
         return _cast_rescaled_intensity(
-            np.full(arr.shape, float(out_min), dtype=np.float64),
+            np.full(arr.shape, output_minimum, dtype=np.float64),
             arr.dtype,
         )
     scaled = (arr.astype(np.float64, copy=False) - float(low)) / float(high - low)
     scaled = np.clip(scaled, 0.0, 1.0)
-    output = scaled * (float(out_max) - float(out_min)) + float(out_min)
+    output = scaled * (output_maximum - output_minimum) + output_minimum
     return _cast_rescaled_intensity(output, arr.dtype)
 
 
-def _rescale_value_cutoffs(low, high) -> tuple[float, float] | None:
-    if low is None or high is None:
-        return None
+def _required_finite_float(value, label: str) -> float:
     try:
-        low = float(low)
-        high = float(high)
-    except (TypeError, ValueError):
-        return None
-    if not np.isfinite(low) or not np.isfinite(high):
-        return None
-    if low > high:
-        low, high = high, low
-    return low, high
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite number.") from exc
+    if not np.isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number.")
+    return parsed
+
+
+def _required_finite_fraction(value, label: str) -> Fraction:
+    """Parse a saved numeric value without discarding exact integer levels."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{label} must be a finite number.")
+    if isinstance(value, Integral):
+        return Fraction(int(value))
+    try:
+        parsed = float(value)
+        exact = Fraction(str(value))
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite number.") from exc
+    if not np.isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number.")
+    return exact
+
+
+def exact_integer_percentiles(
+    data,
+    percentiles: Sequence[float],
+) -> tuple[int | Fraction, ...]:
+    """Return exact linear percentiles without converting native levels to float."""
+    arr = np.asarray(data)
+    if not np.issubdtype(arr.dtype, np.integer) or arr.dtype == bool:
+        raise TypeError("Exact integer percentiles require non-boolean integer data.")
+    requested = tuple(
+        _required_finite_float(value, "Percentile") for value in percentiles
+    )
+    if any(value < 0.0 or value > 100.0 for value in requested):
+        raise ValueError("Percentiles must be between 0 and 100.")
+    stats = _integer_array_stats(arr)
+    if stats.count == 0:
+        raise ValueError("Percentile cutoffs require at least one input value.")
+    if stats.minimum == stats.maximum:
+        return tuple(int(stats.minimum) for _value in requested)
+    if all(value in {0.0, 100.0} for value in requested):
+        return tuple(
+            int(stats.minimum) if value == 0.0 else int(stats.maximum)
+            for value in requested
+        )
+
+    ranks: list[Fraction] = []
+    indices: set[int] = set()
+    for value in requested:
+        rank = (Fraction(str(value)) / 100) * (stats.count - 1)
+        ranks.append(rank)
+        indices.add(math.floor(rank))
+        indices.add(math.ceil(rank))
+
+    values = np.asarray(arr).reshape(-1).copy()
+    values.partition(tuple(sorted(indices)))
+    result: list[int | Fraction] = []
+    for rank in ranks:
+        lower_index = math.floor(rank)
+        upper_index = math.ceil(rank)
+        lower = int(values[lower_index])
+        if lower_index == upper_index:
+            result.append(lower)
+            continue
+        upper = int(values[upper_index])
+        cutoff = Fraction(lower) + (rank - lower_index) * (upper - lower)
+        result.append(int(cutoff) if cutoff.denominator == 1 else cutoff)
+    return tuple(result)
+
+
+def _rescale_integer_intensity(
+    arr: np.ndarray,
+    *,
+    low: int | Fraction,
+    high: int | Fraction,
+    output_minimum: Fraction,
+    output_maximum: Fraction,
+    output_minimum_source,
+    output_maximum_source,
+) -> np.ndarray:
+    """Rescale integer levels in translated coordinates and restore them exactly."""
+    low = Fraction(low)
+    high = Fraction(high)
+    if arr.size == 0:
+        return arr.copy()
+    if output_minimum.denominator != 1 or output_maximum.denominator != 1:
+        raise ValueError(
+            "Integer Rescale Intensity output bounds must be whole numbers; "
+            "convert the image to floating point for fractional output bounds."
+        )
+    output_low = int(output_minimum)
+    output_high = int(output_maximum)
+    info = np.iinfo(arr.dtype)
+    if not info.min <= output_low <= info.max or not (
+        info.min <= output_high <= info.max
+    ):
+        raise ValueError(
+            f"Rescale Intensity output bounds must fit the {arr.dtype} range "
+            f"{info.min}..{info.max}."
+        )
+    _reject_rounded_wide_integer_control(
+        arr,
+        output_minimum_source,
+        "Output minimum",
+    )
+    _reject_rounded_wide_integer_control(
+        arr,
+        output_maximum_source,
+        "Output maximum",
+    )
+    output_span = output_high - output_low
+    if abs(output_span) > _FLOAT64_EXACT_INTEGER_LIMIT:
+        raise ValueError(
+            "Integer Rescale Intensity output span exceeds 2^53 levels, so "
+            "float64 scaling cannot preserve every output level. Choose a "
+            "narrower range or convert dtype explicitly."
+        )
+    if high == low:
+        return np.full(arr.shape, output_low, dtype=arr.dtype)
+    input_span = high - low
+    if input_span > _FLOAT64_EXACT_INTEGER_LIMIT:
+        raise ValueError(
+            "Integer Rescale Intensity cutoff span exceeds 2^53 levels, so "
+            "float64 scaling cannot distinguish every native input level. "
+            "Choose narrower explicit cutoffs or convert dtype explicitly."
+        )
+
+    low_floor = math.floor(low)
+    high_ceil = math.ceil(high)
+    output = np.empty_like(arr)
+    iterator = np.nditer(
+        [arr, output],
+        flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+        op_flags=[["readonly"], ["writeonly"]],
+        order="K",
+        buffersize=_THRESHOLD_CHUNK_SIZE,
+    )
+    output_low_native = np.asarray(output_low, dtype=arr.dtype)
+    output_high_native = np.asarray(output_high, dtype=arr.dtype)
+    for source_chunk, output_chunk in iterator:
+        source_values = np.asarray(source_chunk)
+        output_values = np.asarray(output_chunk)
+        low_mask = _integer_at_most(source_values, low_floor)
+        high_mask = _integer_at_least(source_values, high_ceil)
+        interior = ~(low_mask | high_mask)
+        output_values[low_mask] = output_low_native
+        output_values[high_mask] = output_high_native
+        if not np.any(interior):
+            continue
+
+        relative = source_values[interior].astype(np.uint64, copy=True)
+        relative -= np.uint64(low_floor % 2**64)
+        normalized = relative.astype(np.float64, copy=False)
+        normalized -= float(low - low_floor)
+        normalized /= float(input_span)
+        np.clip(normalized, 0.0, 1.0, out=normalized)
+        normalized *= float(output_span)
+        offsets = np.rint(normalized).astype(np.int64)
+        restored = offsets.astype(np.uint64)
+        restored += np.uint64(output_low % 2**64)
+        if arr.dtype == np.dtype(np.int64):
+            output_values[interior] = restored.view(np.int64)
+        else:
+            output_values[interior] = restored.astype(arr.dtype)
+    return output
+
+
+def _integer_at_most(arr: np.ndarray, bound: int) -> np.ndarray:
+    info = np.iinfo(arr.dtype)
+    if bound < info.min:
+        return np.zeros(arr.shape, dtype=bool)
+    if bound >= info.max:
+        return np.ones(arr.shape, dtype=bool)
+    return arr <= np.asarray(bound, dtype=arr.dtype)
+
+
+def _integer_at_least(arr: np.ndarray, bound: int) -> np.ndarray:
+    info = np.iinfo(arr.dtype)
+    if bound <= info.min:
+        return np.ones(arr.shape, dtype=bool)
+    if bound > info.max:
+        return np.zeros(arr.shape, dtype=bool)
+    return arr >= np.asarray(bound, dtype=arr.dtype)
+
+
+def _reject_rounded_wide_integer_control(
+    arr: np.ndarray,
+    source_value,
+    label: str,
+) -> None:
+    """Reject GUI floating values that cannot identify adjacent wide levels."""
+    if isinstance(source_value, Integral):
+        return
+    try:
+        magnitude = abs(float(source_value))
+    except (TypeError, ValueError, OverflowError):
+        return
+    if magnitude <= _FLOAT64_EXACT_INTEGER_LIMIT:
+        return
+    raise ValueError(
+        f"{label} was saved as a floating-point value above 2^53, where adjacent "
+        "integer levels cannot be represented. Use an exact integer workflow "
+        "value, percentile cutoffs, or convert the image dtype first."
+    )
 
 
 def _cast_rescaled_intensity(values: np.ndarray, dtype: np.dtype) -> np.ndarray:
@@ -4179,18 +4512,55 @@ def clip_intensity(
     data,
     minimum: float = 0.0,
     maximum: float = 255.0,
+    *,
+    cutoff_mode: str = "Data range",
 ) -> np.ndarray:
     """Clip intensities while preserving the incoming dtype where possible."""
     arr = np.asarray(data)
+    mode = str(cutoff_mode).strip().casefold()
+    if mode not in {"data range", "values"}:
+        raise ValueError("Clip input cutoffs must be 'Data range' or 'Values'.")
+    if mode == "data range":
+        return arr.copy()
+    integer_data = np.issubdtype(arr.dtype, np.integer)
+    low = (
+        _required_finite_fraction(minimum, "Clip minimum")
+        if integer_data
+        else _required_finite_float(minimum, "Clip minimum")
+    )
+    high = (
+        _required_finite_fraction(maximum, "Clip maximum")
+        if integer_data
+        else _required_finite_float(maximum, "Clip maximum")
+    )
+    if low > high:
+        raise ValueError("Clip minimum must not exceed the maximum.")
     if arr.dtype == bool:
         return arr.copy()
-    low = float(minimum)
-    high = float(maximum)
-    if low > high:
-        low, high = high, low
+    if integer_data:
+        _reject_rounded_wide_integer_control(arr, minimum, "Clip minimum")
+        _reject_rounded_wide_integer_control(arr, maximum, "Clip maximum")
+        if low.denominator != 1 or high.denominator != 1:
+            raise ValueError(
+                "Integer Clip bounds must be whole numbers; convert the image "
+                "to floating point before using fractional bounds."
+            )
+        info = np.iinfo(arr.dtype)
+        low_value = int(low)
+        high_value = int(high)
+        if low_value > info.max or high_value < info.min:
+            raise ValueError(
+                f"Clip bounds lie outside the representable {arr.dtype} range "
+                f"{info.min}..{info.max}."
+            )
+        low_value = max(low_value, int(info.min))
+        high_value = min(high_value, int(info.max))
+        return np.clip(
+            arr,
+            np.asarray(low_value, dtype=arr.dtype),
+            np.asarray(high_value, dtype=arr.dtype),
+        )
     clipped = np.clip(arr, low, high)
-    if np.issubdtype(arr.dtype, np.integer):
-        return clipped.astype(arr.dtype)
     return clipped.astype(arr.dtype, copy=False)
 
 
@@ -4773,35 +5143,54 @@ def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndar
         )
         return plane > local
 
-    return _apply_plane_wise(arr, threshold_plane).astype(bool)
+    return _apply_plane_wise(arr, threshold_plane)
 
 
 def _global_threshold(
     arr: np.ndarray,
-    threshold_func: Callable[[np.ndarray], float],
+    threshold_func: Callable[[np.ndarray], int | float],
     *,
     threshold_scope: str = "Stack histogram",
 ) -> np.ndarray:
-    if str(threshold_scope).strip().lower().startswith("stack"):
-        return arr > threshold_func(arr)
+    scope = str(threshold_scope).strip().casefold()
+    if scope not in {"stack histogram", "slice histogram"}:
+        raise ValueError(
+            "Threshold scope must be 'Stack histogram' or 'Slice histogram'."
+        )
+    # A boolean image is already a binary segmentation. Running histogram
+    # algorithms on only two levels is redundant and some methods (notably
+    # Triangle) choose the True level itself, which would erase foreground.
+    if arr.dtype == bool:
+        return arr.copy()
+    if scope == "stack histogram":
+        return _threshold_mask(arr, threshold_func(arr))
 
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
-        return plane > threshold_func(plane)
+        return _threshold_mask(plane, threshold_func(plane))
 
-    return _apply_plane_wise(arr, threshold_plane).astype(bool)
+    return _apply_plane_wise(arr, threshold_plane)
+
+
+def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
+    mask = arr > threshold
+    if np.issubdtype(arr.dtype, np.inexact):
+        mask &= np.isfinite(arr)
+    return mask
 
 
 def _to_grayscale(arr: np.ndarray) -> np.ndarray:
     if _has_channel_axis(arr):
-        rgb = arr[..., :3].astype(np.float32)
-        return rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
-    return arr.astype(np.float32, copy=False)
+        work_dtype = np.result_type(arr.dtype, np.float32)
+        rgb = arr[..., :3].astype(work_dtype, copy=False)
+        coefficients = np.asarray((0.299, 0.587, 0.114), dtype=work_dtype)
+        return np.sum(rgb * coefficients, axis=-1, dtype=work_dtype)
+    return arr
 
 
 def _to_bool_mask(data) -> np.ndarray:
     arr = np.asarray(data)
     if arr.dtype == bool:
-        return arr.copy()
+        return arr
     return _to_grayscale(arr) > 0
 
 
@@ -4874,29 +5263,393 @@ def _rescale_values(
     return scaled * (target_max - target_min) + target_min
 
 
-def _otsu_value(arr: np.ndarray) -> float:
-    values = arr[np.isfinite(arr)].astype(np.float64, copy=False)
-    if values.size == 0:
-        return 0.0
-    if values.min() == values.max():
-        return float(values.min())
+@dataclass(frozen=True)
+class _FiniteArrayStats:
+    count: int
+    minimum: int | float
+    maximum: int | float
 
-    hist, edges = np.histogram(values, bins=256)
+
+@dataclass(frozen=True)
+class _FiniteHistogram:
+    stats: _FiniteArrayStats
+    counts: np.ndarray | None = None
+    centers: np.ndarray | None = None
+
+
+def _finite_array_stats(arr: np.ndarray) -> _FiniteArrayStats:
+    count = 0
+    minimum = np.inf
+    maximum = -np.inf
+    for values in _finite_float64_chunks(arr):
+        if values.size == 0:
+            continue
+        count += values.size
+        minimum = min(minimum, float(values.min()))
+        maximum = max(maximum, float(values.max()))
+    if count == 0:
+        return _FiniteArrayStats(0, 0.0, 0.0)
+    return _FiniteArrayStats(count, minimum, maximum)
+
+
+def _integer_array_stats(arr: np.ndarray) -> _FiniteArrayStats:
+    """Return exact integer extrema without converting native levels to float."""
+    count = int(arr.size)
+    if count == 0:
+        return _FiniteArrayStats(0, 0, 0)
+    minimum: int | None = None
+    maximum: int | None = None
+    for values in _array_chunks(arr):
+        chunk_minimum = int(values.min())
+        chunk_maximum = int(values.max())
+        minimum = chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+        maximum = chunk_maximum if maximum is None else max(maximum, chunk_maximum)
+    assert minimum is not None and maximum is not None
+    return _FiniteArrayStats(count, minimum, maximum)
+
+
+def _finite_histogram(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> _FiniteHistogram:
+    arr = np.asarray(arr)
+    if arr.dtype == bool:
+        return _boolean_histogram(arr)
+    if np.issubdtype(arr.dtype, np.integer):
+        return _native_integer_histogram(arr)
+    if not np.issubdtype(arr.dtype, np.floating):
+        raise ValueError(
+            "Automatic histogram thresholds require boolean, integer, or "
+            "floating-point image data."
+        )
+
+    bin_count = _validated_histogram_bins(histogram_bins)
+    stats = _finite_array_stats(arr)
+    if stats.count == 0 or stats.minimum == stats.maximum:
+        return _FiniteHistogram(stats)
+
+    # Match ``skimage.exposure.histogram`` for floating-point images. NumPy
+    # deliberately builds float32 edges for float32 input (and likewise for
+    # other floating dtypes); promoting the edges to float64 changes their
+    # centres and can move the reported threshold slightly.
+    edge_limits = np.asarray(
+        [stats.minimum, stats.maximum],
+        dtype=arr.dtype,
+    )
+    edges = np.histogram_bin_edges(edge_limits, bins=bin_count)
+    counts = np.zeros(bin_count, dtype=np.intp)
+    for values in _finite_float64_chunks(arr):
+        if values.size:
+            counts += np.histogram(values, bins=edges)[0]
     centers = (edges[:-1] + edges[1:]) / 2.0
+    return _FiniteHistogram(stats, counts, centers)
+
+
+def _boolean_histogram(arr: np.ndarray) -> _FiniteHistogram:
+    count = int(arr.size)
+    true_count = sum(int(np.count_nonzero(chunk)) for chunk in _array_chunks(arr))
+    false_count = count - true_count
+    if count == 0:
+        stats = _FiniteArrayStats(0, 0, 0)
+    else:
+        stats = _FiniteArrayStats(
+            count,
+            0 if false_count else 1,
+            1 if true_count else 0,
+        )
+    return _FiniteHistogram(
+        stats,
+        np.array([false_count, true_count], dtype=np.intp),
+        np.array([0, 1], dtype=np.uint8),
+    )
+
+
+def _native_integer_histogram(arr: np.ndarray) -> _FiniteHistogram:
+    stats = _integer_array_stats(arr)
+    if stats.count == 0:
+        return _FiniteHistogram(stats)
+    minimum = int(stats.minimum)
+    maximum = int(stats.maximum)
+
+    span = maximum - minimum + 1
+    if span > _MAX_NATIVE_INTEGER_HISTOGRAM_BINS:
+        raise ValueError(
+            f"Integer intensity span contains {span:,} levels; automatic "
+            f"thresholding supports at most "
+            f"{_MAX_NATIVE_INTEGER_HISTOGRAM_BINS:,} exact integer levels. "
+            "Convert or rescale the image to uint16 or floating point instead "
+            "of silently collapsing integer levels."
+        )
+
+    counts = np.zeros(span, dtype=np.intp)
+    for values in _array_chunks(arr):
+        if minimum >= np.iinfo(np.int64).min and maximum <= np.iinfo(np.int64).max:
+            indices = values.astype(np.int64, copy=True)
+            indices -= minimum
+            counts += np.bincount(indices, minlength=span)
+        else:
+            levels, level_counts = np.unique(values, return_counts=True)
+            indices = np.fromiter(
+                (int(level) - minimum for level in levels),
+                dtype=np.intp,
+                count=levels.size,
+            )
+            counts[indices] += level_counts.astype(np.intp, copy=False)
+    center_dtype = (
+        np.uint64 if maximum > np.iinfo(np.int64).max else np.int64
+    )
+    centers = np.fromiter(
+        (minimum + index for index in range(span)),
+        dtype=center_dtype,
+        count=span,
+    )
+    return _FiniteHistogram(stats, counts, centers)
+
+
+def _validated_histogram_bins(histogram_bins: int) -> int:
+    if isinstance(histogram_bins, (bool, np.bool_)):
+        raise ValueError("Float histogram bins must be an integer from 2 to 65,536.")
+    try:
+        bin_count = int(histogram_bins)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "Float histogram bins must be an integer from 2 to 65,536."
+        ) from exc
+    if isinstance(histogram_bins, (float, np.floating)) and not float(
+        histogram_bins
+    ).is_integer():
+        raise ValueError("Float histogram bins must be an integer from 2 to 65,536.")
+    if not 2 <= bin_count <= _MAX_NATIVE_INTEGER_HISTOGRAM_BINS:
+        raise ValueError("Float histogram bins must be an integer from 2 to 65,536.")
+    return bin_count
+
+
+def _threshold_histogram_centers(
+    arr: np.ndarray,
+    summary: _FiniteHistogram,
+) -> tuple[np.ndarray, int | None]:
+    """Return numerically safe centers and an exact integer offset if needed."""
+    assert summary.counts is not None and summary.centers is not None
+    if np.issubdtype(np.asarray(arr).dtype, np.integer):
+        return np.arange(summary.counts.size, dtype=np.int64), int(
+            summary.stats.minimum
+        )
+    return summary.centers, None
+
+
+def _restore_histogram_threshold(
+    threshold: int | float | np.number,
+    integer_offset: int | None,
+) -> int | float:
+    """Map a translated integer level back without a float round trip."""
+    if integer_offset is not None:
+        return integer_offset + int(threshold)
+    return float(threshold)
+
+
+def _otsu_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    summary = _finite_histogram(arr, histogram_bins)
+    _require_finite_threshold_stats(summary.stats)
+    if summary.stats.minimum == summary.stats.maximum:
+        return summary.stats.minimum
+    assert summary.counts is not None and summary.centers is not None
+
+    hist = summary.counts
+    centers, integer_offset = _threshold_histogram_centers(arr, summary)
+    calculation_centers = (
+        centers.astype(np.float64, copy=False)
+        if integer_offset is not None
+        else centers
+    )
     weight1 = np.cumsum(hist)
     weight2 = np.cumsum(hist[::-1])[::-1]
-    mean1 = np.cumsum(hist * centers) / np.maximum(weight1, 1)
+    mean1 = np.cumsum(hist * calculation_centers) / np.maximum(weight1, 1)
     mean2 = (
-        np.cumsum((hist * centers)[::-1]) / np.maximum(weight2[::-1], 1)
+        np.cumsum((hist * calculation_centers)[::-1])
+        / np.maximum(weight2[::-1], 1)
     )[::-1]
     variance12 = weight1[:-1] * weight2[1:] * (mean1[:-1] - mean2[1:]) ** 2
     if variance12.size == 0:
-        return float(values.mean())
-    return float(centers[:-1][np.argmax(variance12)])
+        return (summary.stats.minimum + summary.stats.maximum) / 2.0
+    return _restore_histogram_threshold(
+        centers[:-1][np.argmax(variance12)],
+        integer_offset,
+    )
 
 
-def _triangle_value(arr: np.ndarray) -> float:
-    return _safe_threshold(arr, filters.threshold_triangle)
+def _array_chunks(arr: np.ndarray) -> Iterator[np.ndarray]:
+    """Yield bounded chunks without changing their numeric dtype."""
+    iterator = np.nditer(
+        np.asarray(arr),
+        flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+        op_flags=[["readonly"]],
+        order="K",
+        buffersize=_THRESHOLD_CHUNK_SIZE,
+    )
+    for chunk in iterator:
+        yield np.asarray(chunk)
+
+
+def _finite_float64_chunks(arr: np.ndarray) -> Iterator[np.ndarray]:
+    """Yield bounded finite chunks for automatic-threshold calculations."""
+    for chunk in _array_chunks(arr):
+        values = chunk
+        finite = np.isfinite(values)
+        if not finite.all():
+            values = values[finite]
+        yield values.astype(np.float64, copy=False)
+
+
+def _triangle_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    summary = _finite_histogram(arr, histogram_bins)
+    _require_finite_threshold_stats(summary.stats)
+    if summary.stats.minimum == summary.stats.maximum:
+        return summary.stats.minimum
+    assert summary.counts is not None and summary.centers is not None
+
+    hist = summary.counts
+    centers, integer_offset = _threshold_histogram_centers(arr, summary)
+    bin_count = hist.size
+    peak_index = int(np.argmax(hist))
+    peak_height = float(hist[peak_index])
+    low_index, high_index = np.flatnonzero(hist)[[0, -1]]
+    flip = peak_index - low_index < high_index - peak_index
+    if flip:
+        hist = hist[::-1]
+        low_index = bin_count - high_index - 1
+        peak_index = bin_count - peak_index - 1
+
+    width = peak_index - low_index
+    if width <= 0:
+        return _restore_histogram_threshold(
+            centers[peak_index],
+            integer_offset,
+        )
+    x_values = np.arange(width)
+    y_values = hist[x_values + low_index]
+    norm = np.sqrt(peak_height**2 + width**2)
+    peak_height /= norm
+    normalized_width = width / norm
+    level = int(np.argmax(peak_height * x_values - normalized_width * y_values))
+    level += low_index
+    if flip:
+        level = bin_count - level - 1
+    return _restore_histogram_threshold(centers[level], integer_offset)
+
+
+def _li_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    """Run Li's raw iteration; unlike the other methods it is not histogram based."""
+    del histogram_bins
+    return _safe_threshold(arr, filters.threshold_li)
+
+
+def _histogram_threshold_value(
+    arr: np.ndarray,
+    threshold_func: Callable[..., int | float],
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    summary = _finite_histogram(arr, histogram_bins)
+    _require_finite_threshold_stats(summary.stats)
+    if summary.stats.minimum == summary.stats.maximum:
+        return summary.stats.minimum
+    assert summary.counts is not None and summary.centers is not None
+    centers, integer_offset = _threshold_histogram_centers(arr, summary)
+    threshold = threshold_func(hist=(summary.counts, centers))
+    return _restore_histogram_threshold(threshold, integer_offset)
+
+
+def _yen_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    return _histogram_threshold_value(arr, filters.threshold_yen, histogram_bins)
+
+
+def _isodata_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+) -> int | float:
+    return _histogram_threshold_value(arr, filters.threshold_isodata, histogram_bins)
+
+
+def _minimum_value(
+    arr: np.ndarray,
+    histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    *,
+    max_iterations: int = 10_000,
+    progress=None,
+) -> int | float:
+    error = "Minimum threshold iterations must be an integer from 1 to 10,000."
+    if isinstance(max_iterations, (bool, np.bool_)):
+        raise ValueError(error)
+    try:
+        iteration_limit = int(max_iterations)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(error) from exc
+    if not 1 <= iteration_limit <= 10_000 or iteration_limit != max_iterations:
+        raise ValueError(error)
+
+    summary = _finite_histogram(arr, histogram_bins)
+    _require_finite_threshold_stats(summary.stats)
+    if summary.stats.minimum == summary.stats.maximum:
+        return summary.stats.minimum
+    assert summary.counts is not None and summary.centers is not None
+
+    smooth_histogram = summary.counts.astype(np.float32, copy=False)
+    maxima: list[int] = []
+    if progress is not None:
+        progress.report(0, iteration_limit, "Smoothing threshold histogram")
+    for iteration in range(iteration_limit):
+        if progress is not None:
+            progress.check_cancelled()
+        smooth_histogram = ndi.uniform_filter1d(smooth_histogram, 3)
+        maxima = _minimum_histogram_maxima(smooth_histogram)
+        if len(maxima) < 3:
+            break
+        if progress is not None and (iteration + 1) % 25 == 0:
+            progress.report(
+                iteration + 1,
+                iteration_limit,
+                "Smoothing threshold histogram",
+            )
+
+    if len(maxima) != 2:
+        raise RuntimeError("Unable to find two maxima in histogram")
+    if iteration == iteration_limit - 1:
+        raise RuntimeError("Maximum iteration reached for histogram smoothing")
+    if progress is not None:
+        progress.report(iteration + 1, iteration_limit, "Threshold histogram ready")
+    valley_offset = int(
+        np.argmin(smooth_histogram[maxima[0] : maxima[1] + 1])
+    )
+    centers, integer_offset = _threshold_histogram_centers(arr, summary)
+    return _restore_histogram_threshold(
+        centers[maxima[0] + valley_offset],
+        integer_offset,
+    )
+
+
+def _minimum_histogram_maxima(histogram: np.ndarray) -> list[int]:
+    """Return plateau-safe local maxima using Minimum's published rule."""
+    maxima: list[int] = []
+    direction = 1
+    for index in range(histogram.size - 1):
+        if direction > 0:
+            if histogram[index + 1] < histogram[index]:
+                direction = -1
+                maxima.append(index)
+        elif histogram[index + 1] > histogram[index]:
+            direction = 1
+    return maxima
 
 
 def _ordered_threshold_pair(low, high) -> tuple[float, float]:
@@ -4920,34 +5673,71 @@ def _ordered_threshold_pair(low, high) -> tuple[float, float]:
 def _safe_threshold(
     arr: np.ndarray,
     threshold_func: Callable[[np.ndarray], float],
-) -> float:
-    values = arr[np.isfinite(arr)].astype(np.float64, copy=False)
-    if values.size == 0:
-        return 0.0
-    if values.min() == values.max():
-        return float(values.min())
-    try:
-        return float(threshold_func(values))
-    except Exception:
-        return float(values.mean())
+) -> int | float:
+    arr = np.asarray(arr)
+    if np.issubdtype(arr.dtype, np.integer):
+        stats = _integer_array_stats(arr)
+        _require_finite_threshold_stats(stats)
+        if stats.minimum == stats.maximum:
+            return stats.minimum
+        minimum = int(stats.minimum)
+        maximum = int(stats.maximum)
+        relative_span = maximum - minimum
+        if relative_span > 2**53:
+            raise ValueError(
+                f"Integer intensity span {relative_span:,} exceeds the exact "
+                "float64 range required by Li thresholding. Convert or rescale "
+                "the image before applying Li Threshold."
+            )
+
+        # Subtract in unsigned integer space before converting to float. The
+        # modulo subtraction is the exact native difference for every signed
+        # and unsigned integer dtype as long as the span is below 2**64.
+        relative = arr.astype(np.uint64, copy=True)
+        minimum_native = np.asarray(minimum, dtype=arr.dtype).astype(np.uint64)
+        relative -= minimum_native
+        relative_threshold = float(
+            threshold_func(relative.astype(np.float64, copy=False))
+        )
+        exact_cutoff = minimum + math.floor(relative_threshold)
+        restored_threshold = float(relative_threshold + minimum)
+        if (
+            math.floor(restored_threshold) == exact_cutoff
+            and float(exact_cutoff) == exact_cutoff
+            and float(exact_cutoff + 1) > restored_threshold
+        ):
+            return restored_threshold
+        # Adding a large offset can round a fractional threshold across an
+        # integer boundary, or collapse the next native level onto the same
+        # float. For integer comparison, x > t is exactly x > floor(t).
+        return exact_cutoff
+
+    stats = _finite_array_stats(arr)
+    _require_finite_threshold_stats(stats)
+    if stats.minimum == stats.maximum:
+        return stats.minimum
+    values = np.asarray(arr)
+    values = values[np.isfinite(values)].astype(np.float64, copy=False)
+    return float(threshold_func(values))
+
+
+def _require_finite_threshold_stats(stats: _FiniteArrayStats) -> None:
+    if stats.count == 0:
+        raise ValueError(
+            "Automatic thresholding requires at least one finite input value."
+        )
 
 
 def _automatic_threshold_function(
     operation_id: str,
-) -> Callable[[np.ndarray], float] | None:
+) -> Callable[[np.ndarray, int], int | float] | None:
     return {
         "otsu_threshold": _otsu_value,
         "triangle_threshold": _triangle_value,
-        "li_threshold": lambda arr: _safe_threshold(arr, filters.threshold_li),
-        "yen_threshold": lambda arr: _safe_threshold(arr, filters.threshold_yen),
-        "isodata_threshold": lambda arr: _safe_threshold(
-            arr,
-            filters.threshold_isodata,
-        ),
-        "minimum_threshold": lambda arr: _safe_threshold(
-            arr,
-            filters.threshold_minimum,
-        ),
+        "li_threshold": _li_value,
+        "yen_threshold": _yen_value,
+        "isodata_threshold": _isodata_value,
+        "minimum_threshold": _minimum_value,
     }.get(str(operation_id))
 
 

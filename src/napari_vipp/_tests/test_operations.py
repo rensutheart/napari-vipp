@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import inspect
+from fractions import Fraction
 
 import numpy as np
 import pytest
 import tifffile
 from scipy import signal
+from skimage import exposure
 
+import napari_vipp.core.operations as operations
 from napari_vipp.core.metadata import (
     AcquisitionMetadata,
     AxisMetadata,
@@ -273,6 +276,47 @@ def test_vipp_operation_nodes_are_registered():
     }
 
     assert expected <= set(NODE_LIBRARY_BY_ID)
+
+
+def test_pipeline_resolves_deferred_source_statistics_during_execution():
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    deferred = image_state_from_array(data, defer_statistics=True)
+    pipeline = PrototypePipeline()
+
+    pipeline.run(
+        data,
+        source_payloads={
+            "input": SourcePayload(data, image_state=deferred),
+        },
+    )
+
+    assert pipeline.output_states["input"].value_range == "0 to 15"
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "otsu_threshold",
+        "triangle_threshold",
+        "yen_threshold",
+        "isodata_threshold",
+        "minimum_threshold",
+    ],
+)
+def test_histogram_threshold_nodes_persist_float_bin_count(operation_id):
+    spec = NODE_LIBRARY_BY_ID[operation_id]
+    bins = next(param for param in spec.parameters if param.name == "histogram_bins")
+
+    assert bins.label == "Float histogram bins"
+    assert bins.default == 256
+    assert bins.minimum == 2
+    assert bins.maximum == 65_536
+
+
+def test_li_threshold_does_not_expose_histogram_bins():
+    names = {param.name for param in NODE_LIBRARY_BY_ID["li_threshold"].parameters}
+
+    assert "histogram_bins" not in names
 
 
 def test_registered_operation_specs_match_callable_and_ui_contracts():
@@ -3227,13 +3271,19 @@ def test_intensity_rescale_normalize_and_clip():
 
     rescaled = rescale_intensity(data, out_min=0, out_max=255)
     normalized = normalize_image(data, method="min-max")
-    clipped = clip_intensity(data, minimum=2, maximum=4)
+    clipped = clip_intensity(
+        data,
+        cutoff_mode="Values",
+        minimum=2,
+        maximum=4,
+    )
 
     assert rescaled.dtype == data.dtype
     assert rescaled.min() == 0
     assert rescaled.max() == 255
     value_rescaled = rescale_intensity(
         data,
+        cutoff_mode="Values",
         in_low_value=2,
         in_high_value=4,
         out_min=0,
@@ -3243,6 +3293,29 @@ def test_intensity_rescale_normalize_and_clip():
         value_rescaled,
         np.array([[0, 0, 0], [5, 10, 10]], dtype=np.uint16),
     )
+    percentile_rescaled = rescale_intensity(
+        data,
+        cutoff_mode="Percentiles",
+        in_low_percentile=20,
+        in_high_percentile=80,
+        in_low_value=0,
+        in_high_value=1,
+        out_min=0,
+        out_max=10,
+    )
+    np.testing.assert_array_equal(
+        percentile_rescaled,
+        np.array([[0, 0, 3], [7, 10, 10]], dtype=np.uint16),
+    )
+    np.testing.assert_array_equal(
+        clip_intensity(
+            data,
+            cutoff_mode="Data range",
+            minimum=2,
+            maximum=4,
+        ),
+        data,
+    )
     assert rescale_intensity(data.astype(np.float32)).dtype == np.float32
     assert normalized.dtype == np.float32
     assert normalized.min() == 0
@@ -3250,6 +3323,186 @@ def test_intensity_rescale_normalize_and_clip():
     assert normalize_image(data.astype(np.float64)).dtype == np.float64
     assert clipped.dtype == data.dtype
     np.testing.assert_array_equal(clipped, np.array([[2, 2, 2], [3, 4, 4]]))
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (np.int64, np.iinfo(np.int64).min),
+        (np.int64, 2**60),
+        (np.int64, np.iinfo(np.int64).max - 3),
+        (np.uint64, 2**63 + 123),
+        (np.uint64, np.iinfo(np.uint64).max - 3),
+    ],
+)
+def test_wide_integer_rescale_and_clip_preserve_adjacent_native_levels(
+    dtype,
+    base,
+):
+    data = np.asarray([base + offset for offset in range(4)], dtype=dtype)
+
+    percentile_result = rescale_intensity(
+        data,
+        cutoff_mode="Percentiles",
+        in_low_percentile=0,
+        in_high_percentile=100,
+        out_min=0,
+        out_max=3,
+    )
+    value_result = rescale_intensity(
+        data,
+        cutoff_mode="Values",
+        in_low_value=base + 1,
+        in_high_value=base + 2,
+        out_min=0,
+        out_max=2,
+    )
+    clipped = clip_intensity(
+        data,
+        cutoff_mode="Values",
+        minimum=base + 1,
+        maximum=base + 2,
+    )
+
+    np.testing.assert_array_equal(
+        percentile_result,
+        np.asarray([0, 1, 2, 3], dtype=dtype),
+    )
+    np.testing.assert_array_equal(
+        value_result,
+        np.asarray([0, 0, 2, 2], dtype=dtype),
+    )
+    np.testing.assert_array_equal(
+        clipped,
+        np.asarray([base + 1, base + 1, base + 2, base + 2], dtype=dtype),
+    )
+
+
+def test_wide_integer_percentiles_keep_fractional_cutoffs_exact():
+    base = 2**60
+    data = np.asarray([base + offset for offset in range(4)], dtype=np.int64)
+
+    low, high = operations.exact_integer_percentiles(data, (25, 75))
+    result = rescale_intensity(
+        data,
+        cutoff_mode="Percentiles",
+        in_low_percentile=25,
+        in_high_percentile=75,
+        out_min=0,
+        out_max=6,
+    )
+
+    assert low == Fraction(4 * base + 3, 4)
+    assert high == Fraction(4 * base + 9, 4)
+    np.testing.assert_array_equal(result, np.array([0, 1, 5, 6]))
+
+
+def test_integer_rescale_rejects_unrepresentable_input_or_output_spans():
+    data = np.asarray([0, 2**53 + 1], dtype=np.int64)
+
+    with pytest.raises(ValueError, match=r"cutoff span exceeds 2\^53"):
+        rescale_intensity(data, out_min=0, out_max=1)
+    with pytest.raises(ValueError, match=r"output span exceeds 2\^53"):
+        rescale_intensity(
+            np.asarray([0, 1], dtype=np.int64),
+            out_min=0,
+            out_max=2**53 + 1,
+        )
+
+
+def test_integer_clip_rejects_fractional_or_rounded_wide_bounds():
+    data = np.arange(4, dtype=np.int64)
+    with pytest.raises(ValueError, match="bounds must be whole numbers"):
+        clip_intensity(
+            data,
+            cutoff_mode="Values",
+            minimum=0.5,
+            maximum=2,
+        )
+
+    base = 2**60
+    wide = np.asarray([base, base + 1], dtype=np.int64)
+    with pytest.raises(
+        ValueError,
+        match=r"saved as a floating-point value above 2\^53",
+    ):
+        clip_intensity(
+            wide,
+            cutoff_mode="Values",
+            minimum=float(base),
+            maximum=float(base + 1),
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs", "message"),
+    [
+        (
+            rescale_intensity,
+            {"cutoff_mode": "estimated"},
+            "must be 'Percentiles' or 'Values'",
+        ),
+        (
+            rescale_intensity,
+            {
+                "cutoff_mode": "Values",
+                "in_low_value": 0.0,
+                "in_high_value": np.nan,
+            },
+            "High input value must be a finite number",
+        ),
+        (
+            rescale_intensity,
+            {
+                "cutoff_mode": "Percentiles",
+                "in_low_percentile": 90.0,
+                "in_high_percentile": 10.0,
+            },
+            "low percentile must not exceed",
+        ),
+        (
+            clip_intensity,
+            {"cutoff_mode": "automatic"},
+            "must be 'Data range' or 'Values'",
+        ),
+        (
+            clip_intensity,
+            {"cutoff_mode": "Values", "minimum": 0.0, "maximum": np.inf},
+            "Clip maximum must be a finite number",
+        ),
+    ],
+)
+def test_intensity_cutoff_modes_reject_invalid_or_ambiguous_values(
+    operation,
+    kwargs,
+    message,
+):
+    data = np.arange(6, dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        operation(data, **kwargs)
+
+
+def test_boolean_intensity_passthrough_still_validates_active_cutoffs():
+    mask = np.array([[False, True], [True, False]])
+
+    with pytest.raises(ValueError, match="low input value must not exceed"):
+        rescale_intensity(
+            mask,
+            cutoff_mode="Values",
+            in_low_value=2,
+            in_high_value=1,
+        )
+    with pytest.raises(ValueError, match="Clip minimum must not exceed"):
+        clip_intensity(
+            mask,
+            cutoff_mode="Values",
+            minimum=2,
+            maximum=1,
+        )
+
+    np.testing.assert_array_equal(rescale_intensity(mask), mask)
+    np.testing.assert_array_equal(clip_intensity(mask), mask)
 
 
 def test_image_math_nodes_add_subtract_ratio_and_mask():
@@ -3647,6 +3900,467 @@ def test_global_threshold_scope_can_use_stack_or_slice_histogram():
     assert stack_mask.dtype == bool
     assert slice_mask.dtype == bool
     assert not np.array_equal(stack_mask, slice_mask)
+
+
+def test_global_threshold_scope_rejects_unknown_mode():
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+
+    with pytest.raises(ValueError, match="must be 'Stack histogram' or 'Slice"):
+        otsu_threshold(data, threshold_scope="banana")
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (np.full(17, 3.25, dtype=np.float32), 3.25),
+        (np.full(17, 42, dtype=np.uint16), 42.0),
+    ],
+)
+def test_otsu_value_handles_constant_data(data, expected):
+    assert operations._otsu_value(data) == expected
+
+
+@pytest.mark.parametrize(
+    "threshold_func",
+    [
+        otsu_threshold,
+        triangle_threshold,
+        li_threshold,
+        yen_threshold,
+        isodata_threshold,
+        minimum_threshold,
+    ],
+)
+@pytest.mark.parametrize(
+    "data",
+    [
+        np.array([], dtype=np.float32),
+        np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
+    ],
+)
+def test_automatic_thresholds_reject_inputs_without_finite_values(
+    threshold_func,
+    data,
+):
+    with pytest.raises(ValueError, match="at least one finite input value"):
+        threshold_func(data)
+
+
+@pytest.mark.parametrize(
+    ("value_func", "reference_func"),
+    [
+        (operations._otsu_value, operations.filters.threshold_otsu),
+        (operations._triangle_value, operations.filters.threshold_triangle),
+        (operations._yen_value, operations.filters.threshold_yen),
+        (operations._isodata_value, operations.filters.threshold_isodata),
+        (operations._minimum_value, operations.filters.threshold_minimum),
+    ],
+)
+@pytest.mark.parametrize(
+    "data",
+    [
+        np.concatenate(
+            [
+                np.linspace(-4.0, -1.0, 613, dtype=np.float32),
+                np.linspace(2.0, 8.0, 1_009, dtype=np.float32),
+                np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
+            ]
+        ),
+        np.concatenate(
+            [
+                np.full(1_000, 10, dtype=np.uint16),
+                np.full(1_000, 200, dtype=np.uint16),
+            ]
+        ).reshape(40, 50)[:, ::2],
+        np.concatenate(
+            [
+                np.full(1_000, 10, dtype=np.uint8),
+                np.full(1_000, 200, dtype=np.uint8),
+            ]
+        ),
+        np.concatenate(
+            [
+                np.full(1_000, -1_000, dtype=np.int16),
+                np.full(1_000, 1_000, dtype=np.int16),
+            ]
+        ),
+    ],
+)
+def test_histogram_thresholds_match_full_array_implementations(
+    value_func,
+    reference_func,
+    data,
+):
+    if np.issubdtype(data.dtype, np.integer):
+        values = data
+    else:
+        # Keep the input floating dtype: scikit-image deliberately uses
+        # dtype-native histogram edges and centres, which is part of the
+        # threshold algorithm's numerical contract.
+        values = data[np.isfinite(data)]
+    try:
+        expected = float(reference_func(values))
+    except Exception as exc:
+        with pytest.raises(type(exc)):
+            value_func(data)
+    else:
+        assert value_func(data) == expected
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.int16])
+def test_integer_histogram_uses_every_native_intensity_level(dtype):
+    data = np.array([3, 3, 5, 8, 8, 8], dtype=dtype)
+
+    summary = operations._finite_histogram(data, histogram_bins=2)
+    expected_counts, expected_centers = exposure.histogram(data)
+
+    np.testing.assert_array_equal(summary.counts, expected_counts)
+    np.testing.assert_array_equal(summary.centers, expected_centers)
+    assert summary.stats.count == data.size
+
+
+def test_boolean_histogram_has_exact_false_and_true_levels():
+    data = np.array([False, True, True, False, True], dtype=bool)
+
+    summary = operations._finite_histogram(data)
+
+    np.testing.assert_array_equal(summary.counts, [2, 3])
+    np.testing.assert_array_equal(summary.centers, [0, 1])
+    assert summary.stats.count == data.size
+
+
+def test_float_histogram_counts_every_finite_value_with_requested_bins():
+    data = np.array([0.0, 0.25, 0.5, 1.0, np.nan, np.inf, -np.inf])
+
+    summary = operations._finite_histogram(data, histogram_bins=17)
+
+    assert summary.counts is not None
+    assert summary.counts.size == 17
+    assert int(summary.counts.sum()) == 4
+    assert summary.stats.count == 4
+
+
+@pytest.mark.parametrize(
+    ("value_func", "reference_func"),
+    [
+        (operations._otsu_value, operations.filters.threshold_otsu),
+        (operations._triangle_value, operations.filters.threshold_triangle),
+        (operations._yen_value, operations.filters.threshold_yen),
+        (operations._isodata_value, operations.filters.threshold_isodata),
+        (operations._minimum_value, operations.filters.threshold_minimum),
+    ],
+)
+def test_float_thresholds_honor_requested_histogram_bins(value_func, reference_func):
+    data = np.concatenate(
+        [
+            np.linspace(-4.0, -1.0, 613, dtype=np.float32),
+            np.linspace(2.0, 8.0, 1_009, dtype=np.float32),
+        ]
+    ).astype(np.float64)
+    try:
+        expected = float(reference_func(data, nbins=17))
+    except Exception as exc:
+        with pytest.raises(type(exc)):
+            value_func(data, histogram_bins=17)
+    else:
+        assert value_func(data, histogram_bins=17) == expected
+
+
+def test_wide_integer_histogram_requires_explicit_dtype_conversion():
+    data = np.array([0, 100_000], dtype=np.int32)
+
+    with pytest.raises(ValueError, match="100,001 levels"):
+        otsu_threshold(data)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (np.int64, np.iinfo(np.int64).min),
+        (np.int64, 2**60),
+        (np.int64, np.iinfo(np.int64).max - 220),
+        (np.uint64, 2**63 + 123),
+        (np.uint64, np.iinfo(np.uint64).max - 220),
+    ],
+)
+@pytest.mark.parametrize(
+    ("operation_id", "threshold_func"),
+    [
+        ("otsu_threshold", otsu_threshold),
+        ("triangle_threshold", triangle_threshold),
+        ("li_threshold", li_threshold),
+        ("yen_threshold", yen_threshold),
+        ("isodata_threshold", isodata_threshold),
+        ("minimum_threshold", minimum_threshold),
+    ],
+)
+def test_large_magnitude_integer_thresholds_preserve_native_level_distinctions(
+    dtype,
+    base,
+    operation_id,
+    threshold_func,
+):
+    rng = np.random.default_rng(2026)
+    relative = np.rint(
+        np.concatenate(
+            [
+                rng.normal(30, 6, 3_000),
+                rng.normal(180, 9, 3_000),
+            ]
+        )
+    )
+    relative = np.clip(relative, 0, 220).astype(np.uint16)
+    shifted = np.fromiter(
+        (int(base) + int(value) for value in relative),
+        dtype=dtype,
+        count=relative.size,
+    )
+
+    expected = threshold_func(relative)
+    result = threshold_func(shifted)
+    threshold = operations.automatic_threshold_value(shifted, operation_id)
+
+    np.testing.assert_array_equal(result, expected)
+    assert isinstance(threshold, int)
+    assert int(shifted.min()) <= threshold <= int(shifted.max())
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        2**51,
+        2**52,
+        2**53,
+        -(2**52),
+        -(2**53),
+    ],
+)
+def test_li_integer_cutoff_survives_float_boundary_rounding(base):
+    rng = np.random.default_rng(2026)
+    relative = np.rint(
+        np.concatenate(
+            [
+                rng.normal(30, 6, 3_000),
+                rng.normal(180, 9, 3_000),
+            ]
+        )
+    )
+    relative = np.clip(relative, 0, 220).astype(np.uint16)
+    relative_threshold = operations.automatic_threshold_value(
+        relative,
+        "li_threshold",
+    )
+    assert isinstance(relative_threshold, float)
+    shifted = np.fromiter(
+        (int(base) + int(value) for value in relative),
+        dtype=np.int64,
+        count=relative.size,
+    )
+
+    threshold = operations.automatic_threshold_value(shifted, "li_threshold")
+
+    assert threshold == int(base) + int(np.floor(relative_threshold))
+    assert isinstance(threshold, int)
+    np.testing.assert_array_equal(li_threshold(shifted), li_threshold(relative))
+
+
+def test_li_rejects_integer_span_that_float64_cannot_represent_exactly():
+    data = np.array([0, 2**53 + 1], dtype=np.uint64)
+
+    with pytest.raises(ValueError, match="exceeds the exact float64 range"):
+        li_threshold(data)
+
+
+@pytest.mark.parametrize(
+    "threshold_func",
+    [
+        otsu_threshold,
+        triangle_threshold,
+        li_threshold,
+        yen_threshold,
+        isodata_threshold,
+    ],
+)
+def test_global_thresholds_mark_all_nonfinite_pixels_as_background(threshold_func):
+    data = np.array([0.0, 1.0, np.nan, np.inf, -np.inf], dtype=np.float32)
+
+    mask = threshold_func(data)
+
+    assert not mask[2:].any()
+
+
+def test_minimum_threshold_marks_nonfinite_pixels_as_background():
+    rng = np.random.default_rng(11)
+    data = np.concatenate(
+        [
+            rng.normal(0.0, 0.1, 2_000),
+            rng.normal(1.0, 0.1, 2_000),
+            np.array([np.nan, np.inf, -np.inf]),
+        ]
+    ).astype(np.float32)
+
+    mask = minimum_threshold(data)
+
+    assert not mask[-3:].any()
+
+
+@pytest.mark.parametrize(
+    "threshold_func",
+    [
+        otsu_threshold,
+        triangle_threshold,
+        li_threshold,
+        yen_threshold,
+        isodata_threshold,
+        minimum_threshold,
+    ],
+)
+def test_automatic_thresholds_preserve_existing_boolean_masks(threshold_func):
+    mask = np.array([[False, True, False], [True, True, False]])
+
+    result = threshold_func(mask)
+
+    np.testing.assert_array_equal(result, mask)
+    assert result is not mask
+
+
+def test_automatic_boolean_threshold_marker_represents_passthrough_boundary():
+    mask = np.array([False, True, True])
+
+    assert operations.automatic_threshold_value(mask, "triangle_threshold") == 0.5
+
+
+def test_minimum_threshold_does_not_silently_fall_back_to_image_mean():
+    data = np.arange(16, dtype=np.float32)
+
+    with pytest.raises(RuntimeError, match="Unable to find two maxima"):
+        operations._minimum_value(data)
+
+
+def test_minimum_threshold_smoothing_is_cooperatively_cancellable():
+    data = np.random.default_rng(7).integers(
+        0,
+        65_536,
+        size=10_000,
+        dtype=np.uint16,
+    )
+    checks = 0
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    progress = ProgressContext(cancelled=cancelled)
+
+    with pytest.raises(OperationCancelled):
+        operations._minimum_value(
+            data,
+            max_iterations=1_000,
+            progress=progress,
+        )
+
+
+@pytest.mark.parametrize(
+    "value_func",
+    [
+        operations._otsu_value,
+        operations._triangle_value,
+        operations._yen_value,
+        operations._isodata_value,
+        operations._minimum_value,
+    ],
+)
+def test_histogram_thresholds_read_large_arrays_in_bounded_chunks(
+    monkeypatch,
+    value_func,
+):
+    data = np.linspace(-5.0, 10.0, 101, dtype=np.float32)
+    data[::19] = np.nan
+    expected = value_func(data)
+    inspected_sizes = []
+    original_isfinite = operations.np.isfinite
+
+    def recording_isfinite(values):
+        inspected_sizes.append(np.asarray(values).size)
+        return original_isfinite(values)
+
+    with monkeypatch.context() as context:
+        context.setattr(operations, "_THRESHOLD_CHUNK_SIZE", 11)
+        context.setattr(operations.np, "isfinite", recording_isfinite)
+        threshold = value_func(data)
+
+    assert threshold == expected
+    assert len(inspected_sizes) > 2
+    assert max(inspected_sizes) <= 11
+
+
+def test_native_integer_histogram_is_built_in_bounded_chunks(monkeypatch):
+    data = np.arange(101, dtype=np.uint16)
+    inspected_sizes = []
+    original_bincount = operations.np.bincount
+
+    def recording_bincount(values, *args, **kwargs):
+        inspected_sizes.append(np.asarray(values).size)
+        return original_bincount(values, *args, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setattr(operations, "_THRESHOLD_CHUNK_SIZE", 11)
+        context.setattr(operations.np, "bincount", recording_bincount)
+        summary = operations._finite_histogram(data)
+
+    assert summary.counts is not None
+    assert int(summary.counts.sum()) == data.size
+    assert inspected_sizes
+    assert max(inspected_sizes) <= 11
+
+
+def test_li_threshold_keeps_its_raw_iterative_path(monkeypatch):
+    data = np.concatenate(
+        [
+            np.linspace(0.0, 1.0, 101, dtype=np.float32),
+            np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
+        ]
+    )
+    finite = data[np.isfinite(data)].astype(np.float64, copy=False)
+    expected = operations.filters.threshold_li(finite)
+    monkeypatch.setattr(
+        operations,
+        "_finite_histogram",
+        lambda _data: pytest.fail("Li must not use the binned histogram path"),
+    )
+
+    threshold = operations._li_value(data)
+
+    assert threshold == expected
+
+
+def test_scalar_grayscale_and_boolean_masks_do_not_make_input_copies():
+    image = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    mask = image > 4
+
+    grayscale = operations._to_grayscale(image)
+    converted_mask = operations._to_bool_mask(mask)
+
+    assert grayscale is image
+    assert grayscale.dtype == np.uint16
+    assert converted_mask is mask
+
+
+def test_rgb_grayscale_conversion_does_not_downcast_float64_data():
+    rgb = np.array(
+        [[[10_000_000_000.25, 10_000_000_001.5, 10_000_000_002.75]]],
+        dtype=np.float64,
+    )
+
+    grayscale = operations._to_grayscale(rgb)
+    expected = np.sum(
+        rgb[..., :3] * np.array([0.299, 0.587, 0.114], dtype=np.float64),
+        axis=-1,
+    )
+
+    assert grayscale.dtype == np.float64
+    np.testing.assert_array_equal(grayscale, expected)
 
 
 def test_morphology_and_small_object_operations_return_masks():

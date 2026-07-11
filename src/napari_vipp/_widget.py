@@ -8,10 +8,13 @@ import os
 import re
 import textwrap
 import threading
+import weakref
+from collections.abc import Iterable
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from html import escape
+from numbers import Rational
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -134,6 +137,7 @@ from napari_vipp.core.operations import (
     automatic_threshold_value,
     colocalization_normalized_inputs,
     colocalization_threshold_values,
+    exact_integer_percentiles,
     resolve_born_wolf_psf_parameters,
     save_array_output,
 )
@@ -163,7 +167,7 @@ from napari_vipp.core.preview import (
     thumbnail_channel_contrast_limits,
     thumbnail_contrast_limits,
 )
-from napari_vipp.core.progress import OperationCancelled
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
@@ -186,6 +190,12 @@ _BATCH_IMAGE_FORMAT_SUFFIXES = {
     "npy": ".npy",
 }
 ASYNC_SOURCE_FILE_BYTES = 32 * 1024 * 1024
+AUTO_BACKGROUND_MIN_BYTES = 32 * 1024 * 1024
+AUTO_BACKGROUND_MIN_ELEMENTS = 4_000_000
+AUTO_CONTRAST_BACKGROUND_MIN_ELEMENTS = 1_000_000
+INSPECTOR_STATISTICS_CHUNK_ELEMENTS = 1_048_576
+INSPECTOR_DISPLAY_HISTOGRAM_BINS = 128
+COLOCALIZATION_SCATTER_BINS = 255
 
 
 @dataclass(frozen=True)
@@ -503,6 +513,133 @@ class ThumbnailContrastLimitResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class InputHistogramDistribution:
+    counts: object = None
+    x_range: tuple[float, float] | None = None
+    colors: object = None
+    total_values: int = 0
+    finite_values: int = 0
+    display_bins: int = 0
+
+
+@dataclass(frozen=True)
+class InputHistogramRequest:
+    run_id: int
+    key: tuple
+    node_id: str
+    operation_id: str
+    data: object
+    state: object
+    scope: str
+    current_step: tuple | None
+    current_step_nsteps: tuple | None
+    params: dict
+    title: str
+    cancel_event: threading.Event | None = None
+    distribution_key: tuple = ()
+    distribution: InputHistogramDistribution | None = None
+
+
+@dataclass(frozen=True)
+class InputHistogramResult:
+    run_id: int
+    key: tuple
+    node_id: str
+    counts: object = None
+    x_range: tuple[float, float] | None = None
+    colors: object = None
+    markers: object = None
+    title: str = "Input Histogram"
+    error: str = ""
+    marker_error: str = ""
+    total_values: int = 0
+    finite_values: int = 0
+    display_bins: int = 0
+    distribution_key: tuple = ()
+
+
+@dataclass(frozen=True)
+class ColocalizationScatterRequest:
+    run_id: int
+    key: tuple
+    node_id: str
+    inputs: tuple[object, ...]
+    threshold_mode: str
+    threshold_1: float
+    threshold_2: float
+    intensity_max: float = 255.0
+    bins: int = COLOCALIZATION_SCATTER_BINS
+    cancel_event: threading.Event | None = None
+
+
+@dataclass(frozen=True)
+class ColocalizationScatterResult:
+    run_id: int
+    key: tuple
+    node_id: str
+    threshold_mode: str
+    threshold_1: float
+    threshold_2: float
+    intensity_max: float = 255.0
+    density_counts: object = None
+    roi_voxels: int = 0
+    colocalized_voxels: int = 0
+    warnings: tuple[str, ...] = ()
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class ExactFiniteStats:
+    count: int
+    minimum: int | float
+    maximum: int | float
+
+
+@dataclass(frozen=True)
+class AutoContrastRequest:
+    run_id: int
+    key: tuple
+    node_id: str
+    data: object
+    saturation_percent: float
+
+
+@dataclass(frozen=True)
+class AutoContrastResult:
+    run_id: int
+    key: tuple
+    node_id: str
+    saturation_percent: float
+    scale_offset: tuple[float, float, float, float] | None = None
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class GeneratedLayerContrastRequest:
+    key: tuple
+    layer_name: str
+    data: object
+    identity: object
+
+
+@dataclass(frozen=True)
+class GeneratedLayerContrastResult:
+    key: tuple
+    layer_name: str
+    limits: tuple[float, float] | None = None
+    error: str = ""
+    identity: object = None
+
+
+@dataclass(frozen=True)
+class GeneratedLayerContrastPlan:
+    key: tuple
+    limits: tuple[float, float]
+    pending: bool
+    exact: bool
+
+
 class SourceFileLoadSignals(QObject):
     finished = Signal(object)
 
@@ -593,6 +730,283 @@ class ThumbnailContrastLimitWorker(QRunnable):
             return
         self.signals.finished.emit(
             ThumbnailContrastLimitResult(self.run_id, keys, limits)
+        )
+
+
+class InputHistogramSignals(QObject):
+    finished = Signal(object)
+
+
+class InputHistogramWorker(QRunnable):
+    """Build a large input histogram without blocking Qt's event loop."""
+
+    def __init__(self, request: InputHistogramRequest):
+        super().__init__()
+        self.request = request
+        self.signals = InputHistogramSignals()
+
+    def run(self) -> None:
+        request = self.request
+        distribution = request.distribution
+        if distribution is None:
+            try:
+                counts, x_range, colors = _histogram_summary(
+                    request.data,
+                    state=request.state,
+                    scope=request.scope,
+                    current_step=request.current_step,
+                    current_step_nsteps=request.current_step_nsteps,
+                )
+                source = _histogram_source(
+                    request.data,
+                    state=request.state,
+                    scope=request.scope,
+                    current_step=request.current_step,
+                    current_step_nsteps=request.current_step_nsteps,
+                )
+                distribution = InputHistogramDistribution(
+                    counts=counts,
+                    x_range=x_range,
+                    colors=colors,
+                    total_values=(
+                        int(source[0].size) if source is not None else 0
+                    ),
+                    finite_values=(
+                        int(np.asarray(counts).sum()) if counts is not None else 0
+                    ),
+                    display_bins=(
+                        int(np.asarray(counts).shape[-1])
+                        if counts is not None
+                        else 0
+                    ),
+                )
+            except Exception as exc:
+                self.signals.finished.emit(
+                    InputHistogramResult(
+                        request.run_id,
+                        request.key,
+                        request.node_id,
+                        title=request.title,
+                        error=str(exc),
+                        distribution_key=request.distribution_key,
+                    )
+                )
+                return
+        marker_error = ""
+        try:
+            markers = _input_histogram_markers(
+                request.operation_id,
+                request.data,
+                state=request.state,
+                scope=request.scope,
+                current_step=request.current_step,
+                current_step_nsteps=request.current_step_nsteps,
+                params=request.params,
+                progress=(
+                    ProgressContext(cancelled=request.cancel_event.is_set)
+                    if request.cancel_event is not None
+                    else None
+                ),
+            )
+        except OperationCancelled as exc:
+            self.signals.finished.emit(
+                InputHistogramResult(
+                    request.run_id,
+                    request.key,
+                    request.node_id,
+                    counts=distribution.counts,
+                    x_range=distribution.x_range,
+                    colors=distribution.colors,
+                    title=request.title,
+                    error=str(exc),
+                    total_values=distribution.total_values,
+                    finite_values=distribution.finite_values,
+                    display_bins=distribution.display_bins,
+                    distribution_key=request.distribution_key,
+                )
+            )
+            return
+        except Exception as exc:
+            markers = []
+            marker_error = str(exc)
+        self.signals.finished.emit(
+            InputHistogramResult(
+                request.run_id,
+                request.key,
+                request.node_id,
+                counts=distribution.counts,
+                x_range=distribution.x_range,
+                colors=distribution.colors,
+                markers=markers,
+                title=request.title,
+                marker_error=marker_error,
+                total_values=distribution.total_values,
+                finite_values=distribution.finite_values,
+                display_bins=distribution.display_bins,
+                distribution_key=request.distribution_key,
+            )
+        )
+
+
+class ColocalizationScatterSignals(QObject):
+    finished = Signal(object)
+
+
+class ColocalizationScatterWorker(QRunnable):
+    """Prepare a large colocalization inspector without blocking Qt."""
+
+    def __init__(self, request: ColocalizationScatterRequest):
+        super().__init__()
+        self.request = request
+        self.signals = ColocalizationScatterSignals()
+
+    def run(self) -> None:
+        request = self.request
+        threshold_1 = float(request.threshold_1)
+        threshold_2 = float(request.threshold_2)
+        progress = (
+            ProgressContext(cancelled=request.cancel_event.is_set)
+            if request.cancel_event is not None
+            else None
+        )
+        try:
+            if progress is not None:
+                progress.check_cancelled()
+            if str(request.threshold_mode).lower().startswith("costes"):
+                threshold_1, threshold_2 = colocalization_threshold_values(
+                    request.inputs,
+                    threshold_mode=request.threshold_mode,
+                    channel_1_threshold=threshold_1,
+                    channel_2_threshold=threshold_2,
+                    intensity_max=request.intensity_max,
+                )
+            if progress is not None:
+                progress.check_cancelled()
+            ch1, ch2, roi_mask, warnings = colocalization_normalized_inputs(
+                request.inputs,
+                intensity_max=request.intensity_max,
+            )
+            if progress is not None:
+                progress.check_cancelled()
+            (
+                density_counts,
+                roi_voxels,
+                colocalized_voxels,
+            ) = _prepare_colocalization_scatter_density(
+                ch1,
+                ch2,
+                threshold_1=threshold_1,
+                threshold_2=threshold_2,
+                roi_mask=roi_mask,
+                intensity_max=request.intensity_max,
+                bins=request.bins,
+                progress=progress,
+            )
+        except Exception as exc:
+            self.signals.finished.emit(
+                ColocalizationScatterResult(
+                    request.run_id,
+                    request.key,
+                    request.node_id,
+                    request.threshold_mode,
+                    threshold_1,
+                    threshold_2,
+                    intensity_max=request.intensity_max,
+                    error=str(exc),
+                )
+            )
+            return
+        self.signals.finished.emit(
+            ColocalizationScatterResult(
+                request.run_id,
+                request.key,
+                request.node_id,
+                request.threshold_mode,
+                threshold_1,
+                threshold_2,
+                intensity_max=request.intensity_max,
+                density_counts=density_counts,
+                roi_voxels=roi_voxels,
+                colocalized_voxels=colocalized_voxels,
+                warnings=tuple(warnings),
+            )
+        )
+
+
+class AutoContrastSignals(QObject):
+    finished = Signal(object)
+
+
+class AutoContrastWorker(QRunnable):
+    """Calculate exact automatic scale/offset parameters off the GUI thread."""
+
+    def __init__(self, request: AutoContrastRequest):
+        super().__init__()
+        self.request = request
+        self.signals = AutoContrastSignals()
+
+    def run(self) -> None:
+        request = self.request
+        try:
+            scale_offset = _auto_contrast_scale_offset(
+                request.data,
+                request.saturation_percent,
+            )
+        except Exception as exc:
+            self.signals.finished.emit(
+                AutoContrastResult(
+                    request.run_id,
+                    request.key,
+                    request.node_id,
+                    request.saturation_percent,
+                    error=str(exc),
+                )
+            )
+            return
+        self.signals.finished.emit(
+            AutoContrastResult(
+                request.run_id,
+                request.key,
+                request.node_id,
+                request.saturation_percent,
+                scale_offset=scale_offset,
+            )
+        )
+
+
+class GeneratedLayerContrastSignals(QObject):
+    finished = Signal(object)
+
+
+class GeneratedLayerContrastWorker(QRunnable):
+    """Calculate exact generated-layer display limits off the GUI thread."""
+
+    def __init__(self, request: GeneratedLayerContrastRequest):
+        super().__init__()
+        self.request = request
+        self.signals = GeneratedLayerContrastSignals()
+
+    def run(self) -> None:
+        request = self.request
+        try:
+            limits = _exact_generated_layer_contrast_limits(request.data)
+        except Exception as exc:
+            self.signals.finished.emit(
+                GeneratedLayerContrastResult(
+                    request.key,
+                    request.layer_name,
+                    error=str(exc),
+                    identity=request.identity,
+                )
+            )
+            return
+        self.signals.finished.emit(
+            GeneratedLayerContrastResult(
+                request.key,
+                request.layer_name,
+                limits=limits,
+                identity=request.identity,
+            )
         )
 
 
@@ -703,6 +1117,7 @@ class PipelineRunWorker(QRunnable):
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
+RESCALE_CUTOFF_MODE_PARAMETER = "cutoff_mode"
 CLIP_CUTOFF_PARAMETERS = {"minimum", "maximum"}
 INPUT_HISTOGRAM_OPERATIONS = {
     "binary_threshold",
@@ -728,11 +1143,13 @@ COLOCALIZATION_SCATTER_COLORMAPS = (
     "Gray",
 )
 BACKGROUND_PIPELINE_OPERATIONS = {
+    "auto_watershed_from_mask",
     "born_wolf_psf",
     "euclidean_distance_transform",
     "gaussian_blur_3d",
     "h_maxima_markers",
     "marker_controlled_watershed",
+    "minimum_threshold",
     "non_local_means_filter",
     "orthogonal_projection",
     "project_image",
@@ -3507,12 +3924,24 @@ class HistogramPlot(QWidget):
                 text,
             )
 
-    def _x_fraction(self, value: float) -> float:
+    def _x_fraction(self, value: int | float | Rational) -> float:
         if self._x_range is None:
             return 0.0
         minimum, maximum = self._x_range
         if maximum <= minimum:
             return 0.0
+        integer_range = all(
+            isinstance(item, (int, np.integer)) for item in (minimum, maximum)
+        )
+        if integer_range and isinstance(value, Rational):
+            shifted_maximum = int(maximum) - int(minimum)
+            shifted_value = min(max(value - int(minimum), 0), shifted_maximum)
+            if self._x_scale == "log":
+                return float(
+                    np.log1p(float(shifted_value))
+                    / np.log1p(max(shifted_maximum, 1))
+                )
+            return float(shifted_value / shifted_maximum)
         value = float(np.clip(value, minimum, maximum))
         if self._x_scale == "log":
             shifted_value = max(value - minimum, 0.0)
@@ -3578,6 +4007,71 @@ class HistogramPlot(QWidget):
         return float(minimum + fraction * (maximum - minimum))
 
 
+def _prepare_colocalization_scatter_density(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    roi_mask: np.ndarray | None,
+    intensity_max: float,
+    bins: int,
+    progress=None,
+) -> tuple[np.ndarray, int, int]:
+    """Return an exact bounded-memory density and exact summary counts."""
+    ch1 = np.asarray(channel_1)
+    ch2 = np.asarray(channel_2)
+    if ch1.shape != ch2.shape or ch1.size == 0:
+        raise ValueError("Scatter channels must be non-empty and have matching shapes.")
+    flat_1 = ch1.reshape(-1)
+    flat_2 = ch2.reshape(-1)
+    flat_roi: np.ndarray | None = None
+    if roi_mask is not None:
+        roi = np.asarray(roi_mask, dtype=bool)
+        if roi.shape != ch1.shape:
+            raise ValueError(
+                f"ROI mask shape {roi.shape} does not match channels {ch1.shape}."
+            )
+        flat_roi = roi.reshape(-1)
+
+    bins = int(np.clip(int(bins), 32, 512))
+    intensity_max = max(float(intensity_max), 1.0)
+    edges = np.linspace(0.0, intensity_max, bins + 1)
+    density_counts = np.zeros((bins, bins), dtype=np.float64)
+    roi_voxels = 0
+    colocalized_voxels = 0
+    threshold_1 = float(threshold_1)
+    threshold_2 = float(threshold_2)
+    for start in range(0, int(flat_1.size), INSPECTOR_STATISTICS_CHUNK_ELEMENTS):
+        if progress is not None:
+            progress.check_cancelled()
+        stop = min(start + INSPECTOR_STATISTICS_CHUNK_ELEMENTS, int(flat_1.size))
+        values_1 = flat_1[start:stop]
+        values_2 = flat_2[start:stop]
+        positive = np.greater_equal(values_1, threshold_1)
+        np.logical_and(positive, values_2 >= threshold_2, out=positive)
+        if flat_roi is None:
+            roi_voxels += stop - start
+            density_values_1 = values_1
+            density_values_2 = values_2
+        else:
+            chunk_roi = flat_roi[start:stop]
+            roi_voxels += int(np.count_nonzero(chunk_roi))
+            np.logical_and(positive, chunk_roi, out=positive)
+            density_values_1 = values_1[chunk_roi]
+            density_values_2 = values_2[chunk_roi]
+        colocalized_voxels += int(np.count_nonzero(positive))
+        if density_values_1.size:
+            chunk_density, _x_edges, _y_edges = np.histogram2d(
+                density_values_1,
+                density_values_2,
+                bins=(edges, edges),
+            )
+            density_counts += chunk_density
+
+    return density_counts, roi_voxels, colocalized_voxels
+
+
 class ColocalizationScatterPlot(QWidget):
     """Interactive two-channel scatter-density plot with threshold guides."""
 
@@ -3597,22 +4091,20 @@ class ColocalizationScatterPlot(QWidget):
         self.setMinimumHeight(300)
         self.setMouseTracking(True)
 
-    def set_scatter(
+    def set_density(
         self,
-        channel_1: np.ndarray | None,
-        channel_2: np.ndarray | None,
+        density_counts: np.ndarray | None,
         *,
         threshold_1: float,
         threshold_2: float,
-        roi_mask: np.ndarray | None = None,
         intensity_max: float = 255.0,
         channel_1_color: object = "Red",
         channel_2_color: object = "Green",
         colormap: str = "Viridis",
         log_counts: bool = True,
-        bins: int = 192,
         summary: str = "",
     ) -> None:
+        """Render worker-prepared density counts without touching source images."""
         self._threshold_1 = float(threshold_1)
         self._threshold_2 = float(threshold_2)
         self._intensity_max = max(float(intensity_max), 1.0)
@@ -3626,13 +4118,7 @@ class ColocalizationScatterPlot(QWidget):
         )
         self._colormap = str(colormap or "Viridis")
         self._summary = str(summary)
-        self._image = self._scatter_image(
-            channel_1,
-            channel_2,
-            roi_mask=roi_mask,
-            log_counts=log_counts,
-            bins=bins,
-        )
+        self._image = self._density_image(density_counts, log_counts=log_counts)
         self.update()
 
     def clear(self, message: str = "Connect two channel inputs.") -> None:
@@ -3699,46 +4185,17 @@ class ColocalizationScatterPlot(QWidget):
             self.thresholdChanged.emit(2, value)
         self.update()
 
-    def _scatter_image(
+    def _density_image(
         self,
-        channel_1: np.ndarray | None,
-        channel_2: np.ndarray | None,
+        density_counts: np.ndarray | None,
         *,
-        roi_mask: np.ndarray | None,
         log_counts: bool,
-        bins: int,
     ) -> QImage | None:
-        if channel_1 is None or channel_2 is None:
+        if density_counts is None:
             return None
-        ch1 = np.asarray(channel_1, dtype=np.float32)
-        ch2 = np.asarray(channel_2, dtype=np.float32)
-        if ch1.shape != ch2.shape or ch1.size == 0:
+        hist = np.asarray(density_counts)
+        if hist.ndim != 2 or hist.size == 0:
             return None
-        if roi_mask is not None:
-            roi = np.asarray(roi_mask, dtype=bool)
-            if roi.shape != ch1.shape:
-                return None
-            x_values = ch1[roi]
-            y_values = ch2[roi]
-        else:
-            x_values = ch1.ravel()
-            y_values = ch2.ravel()
-        finite = np.isfinite(x_values) & np.isfinite(y_values)
-        x_values = x_values[finite]
-        y_values = y_values[finite]
-        if x_values.size == 0:
-            return None
-        if x_values.size > 500_000:
-            stride = int(np.ceil(x_values.size / 500_000))
-            x_values = x_values[::stride]
-            y_values = y_values[::stride]
-        bins = int(np.clip(int(bins), 32, 512))
-        hist, _x_edges, _y_edges = np.histogram2d(
-            x_values,
-            y_values,
-            bins=bins,
-            range=((0.0, self._intensity_max), (0.0, self._intensity_max)),
-        )
         values = hist.T
         if bool(log_counts):
             values = np.log1p(values)
@@ -4335,8 +4792,6 @@ class VippWidget(QWidget):
         self._redo_stack: list[WorkflowHistorySnapshot] = []
         self._restoring_history = False
         self._pending_parameter_undo_key: tuple[str, str] | None = None
-        self._clip_auto_input_ranges: dict[str, tuple[float, float]] = {}
-        self._rescale_auto_input_cutoffs: dict[str, tuple[float, float]] = {}
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self._code_dialogs: list[QDialog] = []
         self._pending_dirty_node_ids: set[str] = set()
@@ -4358,6 +4813,48 @@ class VippWidget(QWidget):
         self._active_thumbnail_contrast_run_id: int | None = None
         self._thumbnail_contrast_serial = 0
         self._thumbnail_contrast_busy_visible = False
+        self._input_histogram_serial = 0
+        self._active_input_histogram_run_id: int | None = None
+        self._active_input_histogram_key: tuple | None = None
+        self._active_input_histogram_cancel_event: threading.Event | None = None
+        self._pending_input_histogram_request: InputHistogramRequest | None = None
+        self._current_input_histogram_key: tuple | None = None
+        self._input_histogram_cache: dict[tuple, InputHistogramResult] = {}
+        self._input_histogram_distribution_cache: dict[
+            tuple,
+            InputHistogramDistribution,
+        ] = {}
+        self._output_histogram_serial = 0
+        self._active_output_histogram_run_id: int | None = None
+        self._active_output_histogram_key: tuple | None = None
+        self._pending_output_histogram_request: InputHistogramRequest | None = None
+        self._current_output_histogram_key: tuple | None = None
+        self._output_histogram_cache: dict[tuple, InputHistogramResult] = {}
+        self._colocalization_scatter_serial = 0
+        self._active_colocalization_scatter_run_id: int | None = None
+        self._active_colocalization_scatter_key: tuple | None = None
+        self._active_colocalization_scatter_cancel_event: (
+            threading.Event | None
+        ) = None
+        self._pending_colocalization_scatter_request: (
+            ColocalizationScatterRequest | None
+        ) = None
+        self._current_colocalization_scatter_key: tuple | None = None
+        self._colocalization_scatter_cache: dict[
+            tuple,
+            ColocalizationScatterResult,
+        ] = {}
+        self._auto_contrast_serial = 0
+        self._active_auto_contrast_run_id: int | None = None
+        self._active_auto_contrast_key: tuple | None = None
+        self._auto_contrast_busy_visible = False
+        self._generated_layer_contrast_generation = 0
+        self._generated_layer_contrast_cache: dict[
+            tuple,
+            tuple[weakref.ReferenceType, tuple[float, float]],
+        ] = {}
+        self._generated_layer_contrast_pending: set[tuple] = set()
+        self._generated_layer_contrast_keys: dict[str, tuple] = {}
         self._syncing_view_dims_bar = False
         self._vipp_current_step: tuple[int, ...] | None = None
         self._vipp_current_nsteps: tuple[int, ...] | None = None
@@ -4512,7 +5009,8 @@ class VippWidget(QWidget):
         self.background_all_checkbox.setChecked(False)
         self.background_all_checkbox.setToolTip(
             "Run all pipeline updates in background. "
-            "When off, only known-slower operations use background processing."
+            "When off, VIPP still backgrounds known-slower operations and "
+            "updates that process large images."
         )
         self.view_dims_bar = ViewDimsBar()
         self.pipeline_busy_label = QLabel("Processing")
@@ -4589,6 +5087,7 @@ class VippWidget(QWidget):
         self._active_pipeline_node_id: str | None = None
         self._pipeline_run_pending = False
         self._pipeline_run_context: dict[int, tuple] = {}
+        self._pipeline_run_manual_node_ids: dict[int, frozenset[str]] = {}
         self._pipeline_cancel_events: dict[int, threading.Event] = {}
 
         self.selected_title = QLabel("Gaussian Blur")
@@ -4627,6 +5126,11 @@ class VippWidget(QWidget):
             ),
         )
         self.auto_contrast_button = QPushButton("Auto")
+        self.auto_contrast_button.setToolTip(
+            "Set scale and offset from exact full-input finite percentiles. "
+            "RGB and RGBA inputs use weighted RGB luminance; alpha is ignored. "
+            "Large inputs are calculated in the background."
+        )
         self.metadata_group = QGroupBox("Output Metadata")
         self.table_group = QGroupBox("Table Preview")
         self.table_summary = QLabel("No table output.")
@@ -5803,6 +6307,13 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._refresh_graph_search_matches(reset_index=True)
         self.graph_view.select_node(node.id)
+        if self._active_pipeline_run_id is not None:
+            # A loose node does not need calculation yet, but it does change the
+            # serialized workflow owned by the active worker. Register that
+            # additive graph edit as independent pending work so the worker's
+            # still-valid result can be applied before the new node is visited.
+            self._mark_pipeline_dirty(node.id)
+            self.run_pipeline()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Added '{node.title}'.")
         return node
@@ -6159,6 +6670,9 @@ class VippWidget(QWidget):
         return reason
 
     def _apply_connection_result_to_graph(self, result) -> None:
+        affected_sources = {
+            connection.source_id for connection in result.removed
+        }
         for connection in result.removed:
             self.graph_view.remove_connection(
                 connection.source_id,
@@ -6167,6 +6681,7 @@ class VippWidget(QWidget):
                 notify=False,
             )
         if result.connection is not None:
+            affected_sources.add(result.connection.source_id)
             if not getattr(result.connection, "tunnel_name", ""):
                 self.graph_view.add_connection(
                     result.connection.source_id,
@@ -6175,6 +6690,7 @@ class VippWidget(QWidget):
                     result.connection.source_port,
                 )
         self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(affected_sources)
 
     @staticmethod
     def _normalize_connection_key(connection_key) -> tuple[str, str, int, int]:
@@ -6857,8 +7373,6 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         self.pipeline.reset_empty_graph()
         self._preview_disabled_node_ids.clear()
-        self._clip_auto_input_ranges.clear()
-        self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
         self._graph_notes.clear()
         self._clear_active_pin(status=False)
@@ -7003,8 +7517,6 @@ class VippWidget(QWidget):
         if selected_node_id not in valid_node_ids:
             selected_node_id = ""
         right_panel_visible = inspector_metadata.get("right_panel_visible", None)
-        self._clip_auto_input_ranges.clear()
-        self._rescale_auto_input_cutoffs.clear()
         self._rescale_auto_output_ranges.clear()
         self._restore_graph_notes(workflow.get("notes", ()))
         self._clear_active_pin(status=False)
@@ -7020,7 +7532,7 @@ class VippWidget(QWidget):
         self._sync_all_output_ports()
         self._refresh_graph_search_matches(reset_index=True)
         self._invalidate_pipeline_cache()
-        self.run_pipeline(force_sync=True)
+        self.run_pipeline()
         if selected_node_id:
             self.graph_view.select_node(selected_node_id)
         else:
@@ -7738,6 +8250,7 @@ class VippWidget(QWidget):
         }
         if not valid_node_ids:
             return False
+        self._clear_colocalization_scatter_cache()
         self._pending_dirty_node_ids.update(valid_node_ids)
         self.pipeline.mark_manual_descendants_stale(valid_node_ids)
         self._sync_execution_ui()
@@ -7749,6 +8262,10 @@ class VippWidget(QWidget):
         self._inflight_dirty_node_ids = None
         self._last_pipeline_source_signature = None
         self._clear_thumbnail_contrast_limit_state()
+        self._clear_input_histogram_cache()
+        self._clear_output_histogram_cache()
+        self._clear_colocalization_scatter_cache()
+        self._clear_generated_layer_contrast_state()
         self.pipeline.completed_node_ids.clear()
         self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
         self._sync_execution_ui()
@@ -8368,6 +8885,7 @@ class VippWidget(QWidget):
             data,
             layer_metadata=metadata,
             source_name=name,
+            defer_statistics=_should_auto_background_data(data),
         )
         return self._viewer_aligned_state(state)
 
@@ -8802,6 +9320,9 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         removed = self.pipeline.remove_output_tunnel(name)
         self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(
+            {connection.source_id for connection in removed}
+        )
         self.graph_view.clear_tunnel_highlight(sticky=True)
         if removed:
             self._mark_pipeline_branches_dirty(
@@ -8841,6 +9362,7 @@ class VippWidget(QWidget):
             connection.target_port,
         ):
             self._sync_port_tunnels()
+            self._refresh_split_channel_display_surfaces({connection.source_id})
             if self._mark_pipeline_dirty(node_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -8916,6 +9438,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         if self.pipeline.disconnect(source_id, target_id, target_port):
             self._sync_port_tunnels()
+            self._refresh_split_channel_display_surfaces({source_id})
             if self._mark_pipeline_dirty(target_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -8936,6 +9459,11 @@ class VippWidget(QWidget):
             for connection in self.pipeline.connections
             if connection.source_id == node_id
         }
+        affected_split_sources = {
+            connection.source_id
+            for connection in self.pipeline.connections
+            if connection.target_id == node_id
+        }
         if not self.pipeline.remove_node(node_id):
             return
         attached_note_ids = [
@@ -8948,14 +9476,13 @@ class VippWidget(QWidget):
             self.graph_view.remove_note(note_id)
         self.graph_view.remove_node(node_id)
         self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(affected_split_sources)
         self._preview_disabled_node_ids.discard(node_id)
         self._recent_cache_node_ids = [
             recent_id
             for recent_id in self._recent_cache_node_ids
             if recent_id != node_id
         ]
-        self._clip_auto_input_ranges.pop(node_id, None)
-        self._rescale_auto_input_cutoffs.pop(node_id, None)
         self._rescale_auto_output_ranges.pop(node_id, None)
         if self._active_pinned_node_id == node_id:
             self._clear_active_pin(status=False)
@@ -9035,9 +9562,9 @@ class VippWidget(QWidget):
         self._keep_active_pin_on_top()
         self._sync_view_dims_bar()
         self._update_metadata_panel()
+        self._restore_selected_output_for_interactive_cache(node_id)
         self._update_histogram()
         self._sync_execution_ui()
-        self._restore_selected_output_for_interactive_cache(node_id)
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._cache_mode() != CACHE_MODE_SMART:
@@ -9057,6 +9584,7 @@ class VippWidget(QWidget):
                 True,
                 self._active_pipeline_node_id,
                 queued=True,
+                preserve_progress=True,
             )
             self.status_label.setText(
                 f"Queued '{self._node_title(node_id)}' for cache restore."
@@ -9304,8 +9832,6 @@ class VippWidget(QWidget):
             self._render_born_wolf_psf_parameters(node_id)
             return
 
-        self._sync_clip_intensity_defaults(node_id)
-        self._sync_rescale_input_cutoff_defaults(node_id)
         self._sync_rescale_output_range_defaults(node_id)
         rendered = False
         for spec in specs:
@@ -9313,6 +9839,16 @@ class VippWidget(QWidget):
                 continue
             spec = self._effective_parameter_spec(node_id, spec)
             bounds = self._parameter_bounds_for(node_id, spec)
+            locked_split_channel = (
+                node.operation_id == "split_channels"
+                and spec.name == "preview_channel"
+                and self._single_used_split_channel_port(node.id) is not None
+            )
+            presented_value = (
+                self._single_used_split_channel_port(node.id)
+                if locked_split_channel
+                else node.params.get(spec.name)
+            )
             if self._parameter_uses_numeric_entry_only(node_id, spec):
                 control_class = NumericEntryControl
             elif spec.kind == "choice":
@@ -9323,8 +9859,9 @@ class VippWidget(QWidget):
                 control_class = BoolControl
             else:
                 control_class = ParameterControl
-            widget = control_class(spec, node.params.get(spec.name), bounds)
-            node.params[spec.name] = widget.value()
+            widget = control_class(spec, presented_value, bounds)
+            if not locked_split_channel:
+                node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
                 lambda value, name=spec.name: self._on_param_changed(name, value)
             )
@@ -10224,10 +10761,6 @@ class VippWidget(QWidget):
             return False
         if self._sync_rescale_output_range_defaults(self._selected_node_id):
             changed = True
-        if self._sync_clip_intensity_defaults(self._selected_node_id):
-            changed = True
-        if self._sync_rescale_input_cutoff_defaults(self._selected_node_id):
-            changed = True
         for spec in self.pipeline.node_parameter_specs(self._selected_node_id):
             widget = self._parameter_widgets.get(spec.name)
             if widget is None:
@@ -10239,17 +10772,29 @@ class VippWidget(QWidget):
                 node.params[spec.name] = previous
                 changed = True
             bounds = self._parameter_bounds_for(self._selected_node_id, spec)
+            locked_split_channel = (
+                node.operation_id == "split_channels"
+                and spec.name == "preview_channel"
+                and self._single_used_split_channel_port(node.id) is not None
+            )
+            presented_value = (
+                self._single_used_split_channel_port(node.id)
+                if locked_split_channel
+                else previous
+            )
             if isinstance(widget, ChoiceControl):
                 widget.set_choices(
                     spec.choices,
-                    previous,
+                    presented_value,
                     emit=False,
                     choice_labels=spec.choice_labels,
                 )
-            widget.set_bounds(bounds, previous, emit=False)
+            widget.set_bounds(bounds, presented_value, emit=False)
             label = self.parameter_form.labelForField(widget)
             if isinstance(label, QLabel):
                 label.setText(spec.label)
+            if locked_split_channel:
+                continue
             current = widget.value()
             if self._parameter_value_changed(spec, previous, current):
                 changed = True
@@ -10311,6 +10856,22 @@ class VippWidget(QWidget):
             and spec.name == "z_scale"
         ):
             return self._input_spatial_count(node_id) < 3
+        if node is not None and node.operation_id == "rescale_intensity":
+            percentile_mode = str(
+                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+            ).lower().startswith("percent")
+            if spec.name in RESCALE_VALUE_PARAMETERS:
+                return percentile_mode
+            if spec.name in RESCALE_PERCENTILE_PARAMETERS:
+                return not percentile_mode
+        if (
+            node is not None
+            and node.operation_id == "clip_intensity"
+            and spec.name in CLIP_CUTOFF_PARAMETERS
+        ):
+            return str(node.params.get("cutoff_mode", "Data range")).lower().startswith(
+                "data"
+            )
         return False
 
     def _parameter_uses_numeric_entry_only(self, node_id: str, spec) -> bool:
@@ -10329,6 +10890,13 @@ class VippWidget(QWidget):
 
     def _effective_parameter_spec(self, node_id: str, spec):
         node = self.pipeline.nodes.get(node_id)
+        if (
+            node is not None
+            and node.operation_id == "split_channels"
+            and spec.name == "preview_channel"
+            and self._single_used_split_channel_port(node_id) is not None
+        ):
+            return replace(spec, label=f"{spec.label} (only used output)")
         if spec.name == "spatial_mode":
             choices = self._available_spatial_modes(node_id)
             return replace(
@@ -10644,6 +11212,9 @@ class VippWidget(QWidget):
             and node.operation_id == "split_channels"
             and spec.name == "preview_channel"
         ):
+            single_port = self._single_used_split_channel_port(node_id)
+            if single_port is not None:
+                return ParameterBounds(single_port, single_port, 1, 0)
             return self._channel_bounds(node_id, spec)
         if (
             node is not None
@@ -11086,24 +11657,67 @@ class VippWidget(QWidget):
             return None
         return self._combine_channels_colors(node)
 
-    def _thumbnail_payload_for_node(self, node_id: str, data):
-        state = self.pipeline.output_states.get(node_id)
+    def _used_split_channel_ports(self, node_id: str) -> tuple[int, ...]:
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "split_channels":
-            return data, state
+            return ()
+        port_count = len(self.pipeline.output_ports(node_id))
+        return tuple(
+            sorted(
+                {
+                    int(connection.source_port)
+                    for connection in self.pipeline.connections
+                    if connection.source_id == node_id
+                    and 0 <= int(connection.source_port) < port_count
+                }
+            )
+        )
+
+    def _single_used_split_channel_port(self, node_id: str) -> int | None:
+        used_ports = self._used_split_channel_ports(node_id)
+        return used_ports[0] if len(used_ports) == 1 else None
+
+    def _split_channel_display_port(self, node_id: str) -> int:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "split_channels":
+            return 0
         outputs = self.pipeline.node_outputs.get(node_id) or []
-        if not outputs:
-            return data, state
-        states = self.pipeline.node_output_states.get(node_id) or []
+        port_count = max(len(outputs), len(self.pipeline.output_ports(node_id)), 1)
+        single_used = self._single_used_split_channel_port(node_id)
+        if single_used is not None:
+            return int(np.clip(single_used, 0, port_count - 1))
         try:
             index = int(node.params.get("preview_channel", 0))
         except Exception:
             index = 0
-        index = int(np.clip(index, 0, len(outputs) - 1))
-        selected = outputs[index]
-        if selected is not None:
-            selected_state = states[index] if 0 <= index < len(states) else state
-            return selected, selected_state
+        return int(np.clip(index, 0, port_count - 1))
+
+    def _node_output_state(self, node_id: str, output_port: int = 0):
+        states = self.pipeline.node_output_states.get(node_id) or []
+        if 0 <= int(output_port) < len(states) and states[int(output_port)] is not None:
+            return states[int(output_port)]
+        if int(output_port) == 0:
+            return self.pipeline.output_states.get(node_id)
+        return None
+
+    def _node_display_payload(self, node_id: str, data=None):
+        primary_data = self.pipeline.outputs.get(node_id) if data is None else data
+        primary_state = self.pipeline.output_states.get(node_id)
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "split_channels":
+            return primary_data, primary_state, 0
+        outputs = self.pipeline.node_outputs.get(node_id) or []
+        if not outputs:
+            return primary_data, primary_state, 0
+        index = self._split_channel_display_port(node_id)
+        if 0 <= index < len(outputs) and outputs[index] is not None:
+            return outputs[index], self._node_output_state(node_id, index), index
+
+        # A connected port is an explicit presentation choice. If its cached
+        # output is unavailable, leave the surface empty instead of silently
+        # presenting a different channel with mismatched scientific meaning.
+        if self._single_used_split_channel_port(node_id) is not None:
+            return None, None, index
 
         available = [
             (output_index, output)
@@ -11112,11 +11726,54 @@ class VippWidget(QWidget):
         ]
         if len(available) == 1:
             output_index, output = available[0]
-            output_state = (
-                states[output_index] if 0 <= output_index < len(states) else state
+            return (
+                output,
+                self._node_output_state(node_id, output_index),
+                output_index,
             )
-            return output, output_state
-        return data, state
+        if index == 0:
+            return primary_data, primary_state, 0
+        return None, None, index
+
+    def _thumbnail_payload_for_node(self, node_id: str, data):
+        preview_data, preview_state, _output_port = self._node_display_payload(
+            node_id,
+            data,
+        )
+        return preview_data, preview_state
+
+    def _refresh_split_channel_display_surfaces(
+        self,
+        node_ids: Iterable[str],
+    ) -> None:
+        affected = {
+            node_id
+            for node_id in node_ids
+            if node_id in self.pipeline.nodes
+            and self.pipeline.nodes[node_id].operation_id == "split_channels"
+        }
+        if not affected:
+            return
+        if self._selected_node_id in affected:
+            self._refresh_selected_parameter_controls()
+        self._discard_pending_thumbnail_contrast_limit_requests()
+        self._update_thumbnails()
+        inspection_layer = self._layer_by_name(self._inspect_layer_name)
+        inspected_node_id = (
+            getattr(inspection_layer, "metadata", {}).get("node_id")
+            if inspection_layer is not None
+            else None
+        )
+        if inspected_node_id in affected:
+            self._refresh_inspection_layer_if_active()
+        if self._selected_node_id in affected:
+            self._clear_output_histogram_cache()
+            self._inspect_selected_node()
+            self._sync_view_dims_bar()
+            self._update_metadata_panel()
+            self._update_histogram()
+        if self._active_pinned_node_id in affected:
+            self._refresh_pinned_layer_if_active()
 
     def _thumbnail_contrast_limits_for_node(
         self,
@@ -11145,6 +11802,45 @@ class VippWidget(QWidget):
     def _clear_thumbnail_contrast_limit_state(self) -> None:
         self._thumbnail_contrast_limit_cache.clear()
         self._discard_pending_thumbnail_contrast_limit_requests()
+
+    def _clear_input_histogram_cache(self) -> None:
+        if self._active_input_histogram_cancel_event is not None:
+            self._active_input_histogram_cancel_event.set()
+        self._input_histogram_serial += 1
+        self._active_input_histogram_run_id = None
+        self._active_input_histogram_key = None
+        self._active_input_histogram_cancel_event = None
+        self._input_histogram_cache.clear()
+        self._input_histogram_distribution_cache.clear()
+        self._current_input_histogram_key = None
+        self._pending_input_histogram_request = None
+
+    def _clear_output_histogram_cache(self) -> None:
+        self._output_histogram_serial += 1
+        self._active_output_histogram_run_id = None
+        self._active_output_histogram_key = None
+        self._output_histogram_cache.clear()
+        self._current_output_histogram_key = None
+        self._pending_output_histogram_request = None
+
+    def _clear_colocalization_scatter_cache(self) -> None:
+        """Invalidate cached and in-flight colocalization inspector results."""
+        if self._active_colocalization_scatter_cancel_event is not None:
+            self._active_colocalization_scatter_cancel_event.set()
+        self._colocalization_scatter_serial += 1
+        self._active_colocalization_scatter_run_id = None
+        self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_cancel_event = None
+        self._pending_colocalization_scatter_request = None
+        self._current_colocalization_scatter_key = None
+        self._colocalization_scatter_cache.clear()
+
+    def _clear_generated_layer_contrast_state(self) -> None:
+        """Invalidate cached and in-flight generated-layer display statistics."""
+        self._generated_layer_contrast_generation += 1
+        self._generated_layer_contrast_cache.clear()
+        self._generated_layer_contrast_pending.clear()
+        self._generated_layer_contrast_keys.clear()
 
     def _discard_pending_thumbnail_contrast_limit_requests(self) -> None:
         self._queued_thumbnail_contrast_limit_requests.clear()
@@ -11376,151 +12072,11 @@ class VippWidget(QWidget):
         )
 
     def _resync_autodefault_nodes(self) -> set[str]:
-        """Re-sync all auto-tracked range params and report changed nodes.
-
-        Clip/Rescale Intensity nodes track their input's data range. When an
-        upstream edit shifts that range, the matching node's params update and
-        it must recompute. Returns the ids of nodes whose params actually
-        changed so the follow-up run can start there (reusing cached upstream
-        output) instead of recomputing from the original dirty set's source.
-        """
+        """Re-sync dtype-dependent output defaults and report changed nodes."""
         changed: set[str] = set()
         for node_id in tuple(self.pipeline.nodes):
-            if self._sync_clip_intensity_defaults(node_id):
-                changed.add(node_id)
-            if self._sync_rescale_input_cutoff_defaults(node_id):
-                changed.add(node_id)
             if self._sync_rescale_output_range_defaults(node_id):
                 changed.add(node_id)
-        return changed
-
-    def _sync_clip_intensity_defaults(self, node_id: str) -> bool:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "clip_intensity":
-            return False
-        values = self._rescale_input_values(node_id)
-        if values.size == 0:
-            return False
-
-        minimum = float(values.min())
-        maximum = float(values.max())
-        current = (
-            _safe_float(node.params.get("minimum"), 0.0),
-            _safe_float(node.params.get("maximum"), 255.0),
-        )
-        if current[0] > current[1]:
-            current = (current[1], current[0])
-        previous_auto = self._clip_auto_input_ranges.get(node_id, (0.0, 255.0))
-        self._clip_auto_input_ranges[node_id] = (minimum, maximum)
-        if not _ranges_close(current, previous_auto):
-            return False
-        if _ranges_close(current, (minimum, maximum)):
-            return False
-        node.params["minimum"] = minimum
-        node.params["maximum"] = maximum
-        return True
-
-    def _sync_rescale_input_cutoff_defaults(self, node_id: str) -> bool:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "rescale_intensity":
-            return False
-        values = self._rescale_input_values(node_id)
-        if values.size == 0:
-            return False
-
-        low_p, high_p = _rescale_percentile_pair(node.params)
-        low_value, high_value = _percentile_cutoff_values(values, low_p, high_p)
-        current = _rescale_value_pair(node.params)
-        previous_auto = self._rescale_auto_input_cutoffs.get(node_id)
-        has_values = "in_low_value" in node.params and "in_high_value" in node.params
-        should_update = (
-            not has_values
-            or (
-                previous_auto is None
-                and _ranges_close(current, (0.0, 1.0))
-                and not _ranges_close((low_value, high_value), (0.0, 1.0))
-            )
-            or (previous_auto is not None and _ranges_close(current, previous_auto))
-        )
-        self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
-        if not should_update:
-            return False
-        if _ranges_close(current, (low_value, high_value)):
-            return False
-        node.params["in_low_value"] = low_value
-        node.params["in_high_value"] = high_value
-        return True
-
-    def _sync_rescale_cutoff_parameters(
-        self,
-        node_id: str,
-        driver: str,
-    ) -> bool:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None or node.operation_id != "rescale_intensity":
-            return False
-        values = self._rescale_input_values(node_id)
-        if values.size == 0:
-            return False
-
-        changed = False
-        if driver in RESCALE_PERCENTILE_PARAMETERS:
-            low_p, high_p = _rescale_percentile_pair(node.params)
-            low_value, high_value = _percentile_cutoff_values(values, low_p, high_p)
-            changed = self._set_node_param_if_changed(
-                node_id,
-                "in_low_value",
-                low_value,
-            )
-            changed = (
-                self._set_node_param_if_changed(
-                    node_id,
-                    "in_high_value",
-                    high_value,
-                )
-                or changed
-            )
-            self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
-            return changed
-
-        low_value, high_value = _rescale_value_pair(node.params)
-        if low_value > high_value:
-            low_value, high_value = high_value, low_value
-            changed = self._set_node_param_if_changed(
-                node_id,
-                "in_low_value",
-                low_value,
-            )
-            changed = (
-                self._set_node_param_if_changed(
-                    node_id,
-                    "in_high_value",
-                    high_value,
-                )
-                or changed
-            )
-        low_p, high_p = _percentiles_for_cutoff_values(
-            values,
-            low_value,
-            high_value,
-        )
-        changed = (
-            self._set_node_param_if_changed(
-                node_id,
-                "in_low_percentile",
-                low_p,
-            )
-            or changed
-        )
-        changed = (
-            self._set_node_param_if_changed(
-                node_id,
-                "in_high_percentile",
-                high_p,
-            )
-            or changed
-        )
-        self._rescale_auto_input_cutoffs[node_id] = (low_value, high_value)
         return changed
 
     def _set_node_param_if_changed(
@@ -11699,39 +12255,18 @@ class VippWidget(QWidget):
                 label.setText(spec.label)
         return changed
 
-    def _refresh_rescale_cutoff_widgets(self, node_id: str) -> None:
-        for name in RESCALE_CUTOFF_PARAMETERS:
-            widget = self._parameter_widgets.get(name)
-            if widget is None or name not in self.pipeline.nodes[node_id].params:
-                continue
-            spec = self._parameter_spec_by_name(node_id, name)
-            if spec is None:
-                continue
-            spec = self._effective_parameter_spec(node_id, spec)
-            widget.set_bounds(
-                self._parameter_bounds_for(node_id, spec),
-                self.pipeline.nodes[node_id].params[name],
-                emit=False,
-            )
-
     def _parameter_spec_by_name(self, node_id: str, name: str):
         for spec in self.pipeline.node_parameter_specs(node_id):
             if spec.name == name:
                 return spec
         return None
 
-    def _rescale_input_values(self, node_id: str) -> np.ndarray:
-        data = self.pipeline.input_data_for_node(node_id)
-        if data is None:
-            return np.array([], dtype=np.float64)
-        return _rescale_reference_values(data)
-
     def _rescale_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
         return self._intensity_input_value_bounds(node_id, spec)
 
     def _intensity_input_value_bounds(self, node_id: str, spec) -> ParameterBounds:
-        values = self._rescale_input_values(node_id)
-        if values.size == 0:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
             return ParameterBounds(
                 spec.minimum,
                 spec.maximum,
@@ -11740,15 +12275,45 @@ class VippWidget(QWidget):
                 expandable=True,
             )
 
-        data = self.pipeline.input_data_for_node(node_id)
         dtype = np.asarray(data).dtype
         if dtype == np.dtype(bool):
             return ParameterBounds(0, 1, 1, 0)
         if dtype == np.dtype(np.uint8):
             return ParameterBounds(0.0, 255.0, 0.1, 2, expandable=True)
+        if _should_auto_background_data(data):
+            if np.issubdtype(dtype, np.integer):
+                info = np.iinfo(dtype)
+                return _slider_safe_bounds(
+                    float(info.min),
+                    float(info.max),
+                    max((float(info.max) - float(info.min)) / 500.0, 1.0),
+                    2,
+                    expandable=True,
+                )
+            current = _safe_float(
+                self.pipeline.nodes[node_id].params.get(spec.name),
+                spec.default,
+            )
+            extent = max(abs(current) * 1.25, 1.0)
+            return _slider_safe_bounds(
+                min(float(spec.minimum), -extent),
+                max(float(spec.maximum), extent),
+                max(extent / 500.0, 1e-6),
+                spec.decimals,
+                expandable=True,
+            )
 
-        minimum = float(values.min())
-        maximum = float(values.max())
+        stats = _exact_finite_stats(data)
+        if stats.count == 0:
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+                expandable=True,
+            )
+        minimum = stats.minimum
+        maximum = stats.maximum
         if minimum == maximum:
             minimum, maximum = _expanded_bounds(minimum)
         if np.issubdtype(dtype, np.integer):
@@ -11825,6 +12390,23 @@ class VippWidget(QWidget):
         arr = np.asarray(data)
         if arr.dtype == bool:
             return ParameterBounds(0, 1, 1, 0)
+        if _should_auto_background_data(arr):
+            if np.issubdtype(arr.dtype, np.integer):
+                info = np.iinfo(arr.dtype)
+                return ParameterBounds(
+                    float(info.min),
+                    float(info.max),
+                    1,
+                    0,
+                    expandable=True,
+                )
+            return ParameterBounds(
+                spec.minimum,
+                spec.maximum,
+                spec.step,
+                spec.decimals,
+                expandable=True,
+            )
         if np.issubdtype(arr.dtype, np.integer):
             if arr.dtype == np.uint8:
                 return ParameterBounds(0, 255, 1, 0)
@@ -12103,6 +12685,12 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if node.operation_id == "split_channels" and name == "preview_channel":
+            self._refresh_split_channel_display_surfaces({node.id})
+            self.status_label.setText(
+                f"Showing channel {int(value) + 1} for '{node.title}'."
+            )
+            return
         if name == "tag":
             self._refresh_graph_search_matches(reset_index=True)
         self._mark_pipeline_dirty(self._selected_node_id)
@@ -12197,12 +12785,24 @@ class VippWidget(QWidget):
             self._sync_node_output_ports(self._selected_node_id)
         if name in {"min_volume", "max_volume", "spatial_mode"}:
             self._update_label_volume_histogram()
-        if (
+        if node.operation_id == "rescale_intensity" and name == (
+            RESCALE_CUTOFF_MODE_PARAMETER
+        ):
+            self._render_parameters(self._selected_node_id)
+            self._update_rescale_input_histogram(
+                self._selected_node_id,
+                self._current_step(),
+            )
+        elif node.operation_id == "clip_intensity" and name == "cutoff_mode":
+            self._render_parameters(self._selected_node_id)
+            self._update_rescale_input_histogram(
+                self._selected_node_id,
+                self._current_step(),
+            )
+        elif (
             node.operation_id == "rescale_intensity"
             and name in RESCALE_CUTOFF_PARAMETERS
         ):
-            if self._sync_rescale_cutoff_parameters(self._selected_node_id, name):
-                self._refresh_rescale_cutoff_widgets(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
                 self._current_step(),
@@ -12255,11 +12855,131 @@ class VippWidget(QWidget):
         if node is None or node.operation_id != "linear_scale_offset":
             return
 
+        if self._active_auto_contrast_run_id is not None:
+            self.status_label.setText(
+                "Exact auto-contrast calculation is already running."
+            )
+            return
+
         data = self.pipeline.input_data_for_node(node_id)
-        result = _auto_contrast_scale_offset(
-            data,
+        saturation = float(self.auto_saturation_control.value())
+        key = self._auto_contrast_request_key(node_id, data, saturation)
+        if _should_background_auto_contrast(data):
+            self._auto_contrast_serial += 1
+            request = AutoContrastRequest(
+                self._auto_contrast_serial,
+                key,
+                node_id,
+                data,
+                saturation,
+            )
+            self._active_auto_contrast_run_id = request.run_id
+            self._active_auto_contrast_key = request.key
+            self.auto_contrast_button.setEnabled(False)
+            self._show_auto_contrast_busy(node_id)
+            self.status_label.setText(
+                "Calculating exact full-input auto-contrast percentiles..."
+            )
+            worker = AutoContrastWorker(request)
+            worker.signals.finished.connect(self._on_auto_contrast_finished)
+            self._pipeline_thread_pool.start(worker, -1)
+            return
+
+        result = _auto_contrast_scale_offset(data, saturation)
+        self._commit_auto_contrast_result(
+            node_id,
+            saturation,
+            result,
+        )
+
+    def _auto_contrast_request_key(
+        self,
+        node_id: str,
+        data,
+        saturation: float,
+    ) -> tuple:
+        node = self.pipeline.nodes.get(node_id)
+        return (
+            node_id,
+            id(data),
+            tuple(getattr(data, "shape", ())),
+            str(getattr(data, "dtype", "")),
+            float(saturation),
+            repr(node.params.get("alpha")) if node is not None else "",
+            repr(node.params.get("beta")) if node is not None else "",
+        )
+
+    def _show_auto_contrast_busy(self, node_id: str) -> None:
+        if (
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+            or self._thumbnail_contrast_busy_visible
+        ):
+            self._auto_contrast_busy_visible = False
+            return
+        self._auto_contrast_busy_visible = True
+        self._set_pipeline_busy(True, node_id, cancelable=False)
+        self.pipeline_busy_label.setText("Calculating exact auto contrast...")
+
+    def _clear_auto_contrast_busy(self) -> None:
+        if not self._auto_contrast_busy_visible:
+            return
+        self._auto_contrast_busy_visible = False
+        if (
+            self._active_pipeline_run_id is None
+            and self._active_source_load_id is None
+            and not self._thumbnail_contrast_busy_visible
+        ):
+            self._set_pipeline_busy(False)
+
+    def _on_auto_contrast_finished(self, result: AutoContrastResult) -> None:
+        if result.run_id != self._active_auto_contrast_run_id:
+            return
+        active_key = self._active_auto_contrast_key
+        self._active_auto_contrast_run_id = None
+        self._active_auto_contrast_key = None
+        self._clear_auto_contrast_busy()
+        self._sync_auto_contrast_ui()
+
+        if result.error:
+            self.status_label.setText(
+                f"Exact auto-contrast calculation failed: {result.error}"
+            )
+            return
+
+        current_data = self.pipeline.input_data_for_node(result.node_id)
+        current_key = self._auto_contrast_request_key(
+            result.node_id,
+            current_data,
             self.auto_saturation_control.value(),
         )
+        if (
+            result.key != active_key
+            or result.key != current_key
+            or result.node_id != self._selected_node_id
+        ):
+            if result.node_id == self._selected_node_id:
+                self.status_label.setText(
+                    "Auto-contrast input or settings changed; the stale result "
+                    "was ignored."
+                )
+            return
+
+        self._commit_auto_contrast_result(
+            result.node_id,
+            result.saturation_percent,
+            result.scale_offset,
+        )
+
+    def _commit_auto_contrast_result(
+        self,
+        node_id: str,
+        saturation: float,
+        result: tuple[float, float, float, float] | None,
+    ) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "linear_scale_offset":
+            return
         if result is None:
             self.status_label.setText(
                 "Auto contrast needs connected input with intensity variation."
@@ -12279,7 +12999,6 @@ class VippWidget(QWidget):
         self._render_parameters(node_id)
         self.run_pipeline()
         self._push_undo_if_changed(before)
-        saturation = self.auto_saturation_control.value()
         self.status_label.setText(
             f"Auto contrast set '{node.title}' to {saturation:.2f}% saturation "
             f"({lower:.3g} to {upper:.3g})."
@@ -12311,15 +13030,18 @@ class VippWidget(QWidget):
         try:
             source_payloads, source_layers = self._source_payloads_for_pipeline()
         except OptionalMicroscopeReaderError as exc:
+            self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
             self._show_optional_reader_error(exc)
             return
         except Exception as exc:
+            self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
             self.status_label.setText(f"Image source error: {exc}")
             return
 
         if not source_payloads:
+            self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
             self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
@@ -12357,11 +13079,27 @@ class VippWidget(QWidget):
                 dirty_node_ids = set(manual_node_ids)
             else:
                 dirty_node_ids.update(manual_node_ids)
-        if (
+        if force_sync and self._active_pipeline_run_id is not None:
+            inflight_dirty = self._inflight_dirty_node_ids
+            if inflight_dirty is None:
+                dirty_node_ids = None
+                self._pending_dirty_node_ids.clear()
+            elif dirty_node_ids is not None:
+                dirty_node_ids.update(inflight_dirty)
+            manual_node_ids.update(
+                self._pipeline_run_manual_node_ids.get(
+                    self._active_pipeline_run_id,
+                    frozenset(),
+                )
+            )
+            self._abandon_background_pipeline_run()
+        if self._active_pipeline_run_id is not None or (
             not force_sync
-        ) and self._should_run_pipeline_in_background(
-            dirty_node_ids,
-            manual_node_ids,
+            and self._should_run_pipeline_in_background(
+                dirty_node_ids,
+                manual_node_ids,
+                source_payloads,
+            )
         ):
             self._start_background_pipeline_run(
                 input_data,
@@ -12386,6 +13124,22 @@ class VippWidget(QWidget):
             dirty_node_ids,
             manual_node_ids,
         )
+
+    def _abandon_background_pipeline_run(self) -> None:
+        """Cancel and detach an in-flight clone whose result must be ignored."""
+        run_id = self._active_pipeline_run_id
+        if run_id is None:
+            return
+        cancel_event = self._pipeline_cancel_events.pop(run_id, None)
+        if cancel_event is not None:
+            cancel_event.set()
+        self._pipeline_run_context.pop(run_id, None)
+        self._pipeline_run_manual_node_ids.pop(run_id, None)
+        self._active_pipeline_run_id = None
+        self._active_pipeline_node_id = None
+        self._pipeline_run_pending = False
+        self._inflight_dirty_node_ids = None
+        self._set_pipeline_busy(False)
 
     def _manual_node_ids_for_run(
         self,
@@ -12460,6 +13214,8 @@ class VippWidget(QWidget):
         self._finish_pipeline_update(primary_layer, source_label)
 
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
+        self._clear_output_histogram_cache()
+        self._clear_colocalization_scatter_cache()
         self._hide_input_layer_for_inspection(primary_layer)
         self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
@@ -12547,9 +13303,14 @@ class VippWidget(QWidget):
         self,
         dirty_node_ids: set[str] | None = None,
         manual_node_ids: set[str] | None = None,
+        source_payloads: dict[str, SourcePayload] | None = None,
     ) -> bool:
         return (
-            self._background_processing_node_id(dirty_node_ids, manual_node_ids)
+            self._background_processing_node_id(
+                dirty_node_ids,
+                manual_node_ids,
+                source_payloads,
+            )
             is not None
         )
 
@@ -12557,6 +13318,7 @@ class VippWidget(QWidget):
         self,
         dirty_node_ids: set[str] | None = None,
         manual_node_ids: set[str] | None = None,
+        source_payloads: dict[str, SourcePayload] | None = None,
     ) -> str | None:
         manual_node_ids = set(manual_node_ids or set())
         if manual_node_ids:
@@ -12578,11 +13340,33 @@ class VippWidget(QWidget):
         affected_node_ids = None
         if dirty_node_ids:
             affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
+        large_source_descendants: set[str] = set()
+        for source_id, payload in (source_payloads or {}).items():
+            if source_id in self.pipeline.nodes and _should_auto_background_data(
+                payload.data
+            ):
+                large_source_descendants.update(
+                    self.pipeline.descendants_inclusive({source_id})
+                )
         for node_id in self.pipeline.topological_order():
             if affected_node_ids is not None and node_id not in affected_node_ids:
                 continue
             node = self.pipeline.nodes.get(node_id)
             if node is not None and node.operation_id in BACKGROUND_PIPELINE_OPERATIONS:
+                return node_id
+            payload = (source_payloads or {}).get(node_id)
+            if payload is not None and _should_auto_background_data(payload.data):
+                return node_id
+            inputs = self.pipeline.input_data_by_port_for_node(node_id)
+            if any(_should_auto_background_data(data) for data in inputs.values()):
+                return node_id
+            if (
+                inputs
+                and any(data is None for data in inputs.values())
+                and node_id in large_source_descendants
+            ):
+                return node_id
+            if _should_auto_background_data(self.pipeline.outputs.get(node_id)):
                 return node_id
         return None
 
@@ -12602,6 +13386,7 @@ class VippWidget(QWidget):
         processing_node_id = self._background_processing_node_id(
             dirty_node_ids,
             manual_node_ids,
+            source_payloads,
         )
         if self._active_pipeline_run_id is not None:
             self._pipeline_run_pending = True
@@ -12618,22 +13403,36 @@ class VippWidget(QWidget):
                 for node_id in manual_node_ids
                 if self.pipeline.is_manual_node(node_id)
             )
-            event = self._pipeline_cancel_events.get(self._active_pipeline_run_id)
-            if event is not None:
-                event.set()
+            active_node_id = self._active_pipeline_node_id
+            pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
+            cancel_active = (
+                active_node_id not in self.pipeline.nodes
+                or not pending_dirty
+                or self._dirty_nodes_affect_node(pending_dirty, active_node_id)
+            )
+            if cancel_active:
+                event = self._pipeline_cancel_events.get(self._active_pipeline_run_id)
+                if event is not None:
+                    event.set()
             self._set_pipeline_busy(
                 True,
                 self._active_pipeline_node_id or processing_node_id,
                 queued=True,
+                preserve_progress=not cancel_active,
             )
             title = (
                 self._node_title(self._active_pipeline_node_id)
                 if (self._active_pipeline_node_id in self.pipeline.nodes)
                 else "graph"
             )
-            self.status_label.setText(
-                f"Canceling '{title}' and queuing the latest calculation."
-            )
+            if cancel_active:
+                self.status_label.setText(
+                    f"Canceling '{title}' and queuing the latest calculation."
+                )
+            else:
+                self.status_label.setText(
+                    f"Finishing '{title}'; independent graph edit queued."
+                )
             return
 
         self._pipeline_run_serial += 1
@@ -12692,6 +13491,7 @@ class VippWidget(QWidget):
             source_signature,
             dirty_node_ids,
         )
+        self._pipeline_run_manual_node_ids[run_id] = frozenset(manual_node_ids)
         self._set_pipeline_busy(True, processing_node_id)
         title = (
             self._node_title(processing_node_id)
@@ -12747,6 +13547,9 @@ class VippWidget(QWidget):
             return
         self._active_pipeline_run_id = None
         self._pipeline_cancel_events.pop(result.run_id, None)
+        inflight_manual_node_ids = set(
+            self._pipeline_run_manual_node_ids.pop(result.run_id, frozenset())
+        )
         (
             primary_layer,
             source_label,
@@ -12763,28 +13566,66 @@ class VippWidget(QWidget):
         if self._pipeline_run_pending and not can_apply_before_pending:
             self._pipeline_run_pending = False
             self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
             self.status_label.setText(
                 "Restarting background processing with latest edit."
             )
             QTimer.singleShot(0, self.run_pipeline)
             return
         if result.cancelled:
+            if self._pipeline_run_pending:
+                self._pipeline_run_pending = False
+                self._requeue_inflight_dirty_nodes()
+                self._pending_manual_node_ids.update(
+                    node_id
+                    for node_id in inflight_manual_node_ids
+                    if self.pipeline.is_manual_node(node_id)
+                )
+                self.status_label.setText(
+                    "Restarting background processing after cancellation."
+                )
+                QTimer.singleShot(0, self.run_pipeline)
+                return
             self._set_pipeline_busy(False)
             self.status_label.setText("Background processing canceled.")
             return
         if result.error:
             self.pipeline.set_node_execution_error(processing_node_id, result.error)
-            self._sync_execution_ui()
+            continue_pending = bool(self._pipeline_run_pending and pending_dirty)
+            self._pipeline_run_pending = False
+            self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
-            self.status_label.setText(f"Pipeline error: {result.error}")
+            suffix = "; continuing queued graph edit" if continue_pending else ""
+            self.status_label.setText(f"Pipeline error: {result.error}{suffix}")
+            if continue_pending:
+                QTimer.singleShot(0, self.run_pipeline)
             return
         if result.pipeline is None:
+            self.pipeline.set_node_execution_error(
+                processing_node_id,
+                "No result returned.",
+            )
+            continue_pending = bool(self._pipeline_run_pending and pending_dirty)
+            self._pipeline_run_pending = False
+            self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
-            self.status_label.setText("Pipeline error: no result returned.")
+            suffix = "; continuing queued graph edit" if continue_pending else ""
+            self.status_label.setText(f"Pipeline error: no result returned{suffix}.")
+            if continue_pending:
+                QTimer.singleShot(0, self.run_pipeline)
             return
         if not self._workflow_matches_current_pipeline(result.workflow):
             if not can_apply_before_pending:
                 self._requeue_inflight_dirty_nodes()
+                self._pending_manual_node_ids.update(
+                    node_id
+                    for node_id in inflight_manual_node_ids
+                    if self.pipeline.is_manual_node(node_id)
+                )
                 self.status_label.setText(
                     "Discarded stale background result; rerunning latest graph."
                 )
@@ -12798,6 +13639,7 @@ class VippWidget(QWidget):
         if can_apply_before_pending:
             self._last_pipeline_source_signature = source_signature
             self._inflight_dirty_node_ids = None
+            self._pipeline_run_pending = False
         else:
             self._complete_pipeline_run(source_signature, dirty_node_ids)
         autodefault_changed = self._resync_autodefault_nodes()
@@ -12818,7 +13660,6 @@ class VippWidget(QWidget):
                 return
         self._set_pipeline_busy(False)
         if can_apply_before_pending:
-            self._pipeline_run_pending = False
             self.status_label.setText(
                 "Cached upstream result; rerunning latest downstream edit."
             )
@@ -12842,23 +13683,67 @@ class VippWidget(QWidget):
             if update_params:
                 node.params = dict(result_node.params)
         self._discard_pending_thumbnail_contrast_limit_requests()
-        self.pipeline.outputs = dict(result_pipeline.outputs)
-        self.pipeline.output_states = dict(result_pipeline.output_states)
+        result_node_ids = set(result_pipeline.nodes)
+        live_node_ids = tuple(self.pipeline.nodes)
+        live_node_id_set = set(live_node_ids)
+        self.pipeline.outputs = {
+            node_id: (
+                result_pipeline.outputs.get(node_id)
+                if node_id in result_node_ids
+                else self.pipeline.outputs.get(node_id)
+            )
+            for node_id in live_node_ids
+        }
+        self.pipeline.output_states = {
+            node_id: (
+                result_pipeline.output_states.get(node_id)
+                if node_id in result_node_ids
+                else self.pipeline.output_states.get(node_id)
+            )
+            for node_id in live_node_ids
+        }
         self.pipeline.node_outputs = {
-            node_id: list(outputs)
-            for node_id, outputs in result_pipeline.node_outputs.items()
+            node_id: list(
+                result_pipeline.node_outputs.get(node_id, [])
+                if node_id in result_node_ids
+                else self.pipeline.node_outputs.get(node_id, [])
+            )
+            for node_id in live_node_ids
         }
         self.pipeline.node_output_states = {
-            node_id: list(states)
-            for node_id, states in result_pipeline.node_output_states.items()
+            node_id: list(
+                result_pipeline.node_output_states.get(node_id, [])
+                if node_id in result_node_ids
+                else self.pipeline.node_output_states.get(node_id, [])
+            )
+            for node_id in live_node_ids
         }
-        self.pipeline.completed_node_ids = set(result_pipeline.completed_node_ids)
-        self.pipeline.node_execution_states = dict(
-            result_pipeline.node_execution_states,
-        )
-        self.pipeline.node_execution_messages = dict(
-            result_pipeline.node_execution_messages,
-        )
+        self.pipeline.completed_node_ids = (
+            set(result_pipeline.completed_node_ids)
+            | (self.pipeline.completed_node_ids - result_node_ids)
+        ) & live_node_id_set
+        self.pipeline.node_execution_states = {
+            node_id: (
+                result_pipeline.node_execution_states.get(
+                    node_id,
+                    EXECUTION_NOT_CALCULATED,
+                )
+                if node_id in result_node_ids
+                else self.pipeline.node_execution_states.get(
+                    node_id,
+                    EXECUTION_NOT_CALCULATED,
+                )
+            )
+            for node_id in live_node_ids
+        }
+        self.pipeline.node_execution_messages = {
+            node_id: (
+                result_pipeline.node_execution_messages.get(node_id, "")
+                if node_id in result_node_ids
+                else self.pipeline.node_execution_messages.get(node_id, "")
+            )
+            for node_id in live_node_ids
+        }
 
     def _cancel_background_pipeline_run(self) -> None:
         run_id = self._active_pipeline_run_id
@@ -12875,6 +13760,7 @@ class VippWidget(QWidget):
         self._pipeline_run_pending = False
         self._pending_manual_node_ids.clear()
         self._pipeline_run_context.pop(run_id, None)
+        self._pipeline_run_manual_node_ids.pop(run_id, None)
         self._requeue_inflight_dirty_nodes()
         self._set_pipeline_busy(False)
         self.status_label.setText(
@@ -12889,7 +13775,11 @@ class VippWidget(QWidget):
         *,
         queued: bool = False,
         cancelable: bool = True,
+        preserve_progress: bool = False,
     ) -> None:
+        keep_current_progress = bool(
+            busy and preserve_progress and not self.pipeline_busy_bar.isHidden()
+        )
         self.pipeline_busy_label.setVisible(busy)
         self.pipeline_busy_bar.setVisible(busy)
         self.pipeline_cancel_button.setVisible(busy and cancelable)
@@ -12901,8 +13791,9 @@ class VippWidget(QWidget):
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
             return
-        self.pipeline_busy_bar.setRange(0, 0)
-        self.pipeline_busy_bar.setTextVisible(False)
+        if not keep_current_progress:
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
         if node_id is None:
             node_id = self._active_pipeline_node_id
         if node_id not in self.pipeline.nodes:
@@ -12976,12 +13867,14 @@ class VippWidget(QWidget):
 
     def _view_dims_state(self):
         if self._active_pinned_node_id in self.pipeline.output_states:
-            data = self.pipeline.outputs.get(self._active_pinned_node_id)
-            state = self.pipeline.output_states.get(self._active_pinned_node_id)
+            data, state, _output_port = self._node_display_payload(
+                self._active_pinned_node_id
+            )
             if state is not None and data is not None and not is_table_data(data):
                 return state
-        data = self.pipeline.outputs.get(self._selected_node_id)
-        state = self.pipeline.output_states.get(self._selected_node_id)
+        data, state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
         if state is not None and data is not None and not is_table_data(data):
             return state
         data = self.pipeline.outputs.get("input")
@@ -13094,7 +13987,8 @@ class VippWidget(QWidget):
         if not isinstance(metadata, dict):
             return int(step_axis)
         node_id = metadata.get("node_id")
-        state = self.pipeline.output_states.get(node_id)
+        output_port = int(metadata.get("output_port", 0) or 0)
+        state = self._node_output_state(node_id, output_port)
         axes = tuple(getattr(state, "axes", ()))
         if not axes:
             return int(step_axis)
@@ -13137,10 +14031,13 @@ class VippWidget(QWidget):
         contrast_scope = self.thumbnail_scope_combo.currentText()
         previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
+            preview_data, preview_state, _output_port = self._node_display_payload(
+                node_id,
+                data,
+            )
             node_output_type = self._node_output_type(node_id)
             self.graph_view.set_node_metadata(
-                node_id,
-                format_compact_metadata(self.pipeline.output_states.get(node_id)),
+                node_id, format_compact_metadata(preview_state)
             )
             self.graph_view.set_node_output_type(node_id, node_output_type)
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
@@ -13151,10 +14048,6 @@ class VippWidget(QWidget):
             if not preview_enabled:
                 self.graph_view.set_thumbnail(node_id, None)
                 continue
-            preview_data, preview_state = self._thumbnail_payload_for_node(
-                node_id,
-                data,
-            )
             contrast_limits = self._thumbnail_contrast_limits_for_node(
                 node_id,
                 preview_data,
@@ -13227,7 +14120,9 @@ class VippWidget(QWidget):
         if self._selected_node_id not in self.pipeline.nodes:
             self._clear_empty_inspector()
             return
-        state = self.pipeline.output_states.get(self._selected_node_id)
+        _data, state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
         rows = metadata_table_rows(state)
         current_view = self._current_view_label(state)
         if current_view:
@@ -13290,13 +14185,19 @@ class VippWidget(QWidget):
         self._update_colocalization_scatter()
         node = self.pipeline.nodes.get(self._selected_node_id)
         if node is None:
+            self._current_output_histogram_key = None
+            self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
             self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
             self.histogram_plot.set_histogram(None, log_scale=False)
             return
-        data = self.pipeline.outputs.get(self._selected_node_id)
+        data, state, output_port = self._node_display_payload(
+            self._selected_node_id
+        )
         if is_table_data(data):
+            self._current_output_histogram_key = None
+            self._pending_output_histogram_request = None
             self.rescale_input_histogram_group.setHidden(True)
             self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
@@ -13307,11 +14208,38 @@ class VippWidget(QWidget):
         current_step_nsteps = self._current_step_nsteps()
         self._update_rescale_input_histogram(node.id, current_step)
         self.histogram_group.setHidden(False)
-        self.histogram_group.setTitle("Output Histogram")
-        state = self.pipeline.output_states.get(self._selected_node_id)
+        histogram_title = "Output Histogram"
+        if node.operation_id == "split_channels":
+            ports = self.pipeline.output_ports(node.id)
+            if 0 <= output_port < len(ports):
+                histogram_title = f"Output Histogram — {ports[output_port].label}"
+        self.histogram_group.setTitle(histogram_title)
         scope_available = _histogram_has_stack_scope(data, state)
         self.histogram_scope_row.setHidden(not scope_available)
         scope = self.histogram_scope_combo.currentText() if scope_available else "Slice"
+        histogram_source = _histogram_source(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
+        if histogram_source is not None and _should_auto_background_data(
+            histogram_source[0]
+        ):
+            self._queue_output_histogram(
+                node_id=node.id,
+                data=data,
+                state=state,
+                scope=scope,
+                current_step=current_step,
+                current_step_nsteps=current_step_nsteps,
+                title=histogram_title,
+            )
+            return
+
+        self._current_output_histogram_key = None
+        self._pending_output_histogram_request = None
         counts, x_range, colors = _histogram_summary(
             data,
             state=state,
@@ -13325,6 +14253,18 @@ class VippWidget(QWidget):
             x_range=x_range,
             colors=colors,
         )
+        self._set_histogram_explanation(
+            self.histogram_group,
+            total_values=(
+                int(histogram_source[0].size) if histogram_source is not None else 0
+            ),
+            finite_values=(
+                int(np.asarray(counts).sum()) if counts is not None else 0
+            ),
+            display_bins=(
+                int(np.asarray(counts).shape[-1]) if counts is not None else 0
+            ),
+        )
 
     def _update_colocalization_scatter(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -13334,66 +14274,295 @@ class VippWidget(QWidget):
         )
         self.colocalization_scatter_group.setHidden(not visible)
         if not visible or node is None:
+            self._current_colocalization_scatter_key = None
+            self._pending_colocalization_scatter_request = None
             self.colocalization_scatter_summary.setText("Connect two channel inputs.")
+            self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear()
+            self.colocalization_scatter_plot.setToolTip("")
             return
 
         inputs = self._colocalization_inputs_for_node(node.id)
         if inputs is None:
+            self._current_colocalization_scatter_key = None
+            self._pending_colocalization_scatter_request = None
             self.colocalization_scatter_summary.setText(
                 "Connect all required channel and ROI inputs."
             )
+            self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear(
                 "Connect all required channel and ROI inputs."
             )
+            self.colocalization_scatter_plot.setToolTip("")
             return
+        mode = str(node.params.get("threshold_mode", "Manual"))
+        threshold_1 = _safe_float(node.params.get("channel_1_threshold"), 25.0)
+        threshold_2 = _safe_float(node.params.get("channel_2_threshold"), 25.0)
+        intensity_max = max(
+            _safe_float(node.params.get("intensity_max"), 255.0),
+            1.0,
+        )
+        key = self._colocalization_scatter_key(
+            node.id,
+            inputs,
+            threshold_mode=mode,
+            threshold_1=threshold_1,
+            threshold_2=threshold_2,
+            intensity_max=intensity_max,
+        )
+        self._current_colocalization_scatter_key = key
+        cached = self._colocalization_scatter_cache.get(key)
+        if cached is not None:
+            self._apply_colocalization_scatter_result(cached)
+            return
+
+        if any(_should_auto_background_data(value) for value in inputs):
+            self._queue_colocalization_scatter(
+                ColocalizationScatterRequest(
+                    0,
+                    key,
+                    node.id,
+                    tuple(inputs),
+                    mode,
+                    threshold_1,
+                    threshold_2,
+                    intensity_max=intensity_max,
+                )
+            )
+            return
+
         try:
-            ch1, ch2, roi_mask, warnings = colocalization_normalized_inputs(inputs)
-            if str(node.params.get("threshold_mode", "Manual")).lower().startswith(
-                "costes"
-            ):
+            ch1, ch2, roi_mask, warnings = colocalization_normalized_inputs(
+                inputs,
+                intensity_max=intensity_max,
+            )
+            if mode.lower().startswith("costes"):
                 self._sync_colocalization_costes_thresholds(
                     node.id,
                     update_controls=True,
                 )
-            threshold_1 = _safe_float(node.params.get("channel_1_threshold"), 25.0)
-            threshold_2 = _safe_float(node.params.get("channel_2_threshold"), 25.0)
+                threshold_1 = _safe_float(
+                    node.params.get("channel_1_threshold"),
+                    threshold_1,
+                )
+                threshold_2 = _safe_float(
+                    node.params.get("channel_2_threshold"),
+                    threshold_2,
+                )
+            density_counts, roi_voxels, coloc_voxels = (
+                _prepare_colocalization_scatter_density(
+                    ch1,
+                    ch2,
+                    threshold_1=threshold_1,
+                    threshold_2=threshold_2,
+                    roi_mask=roi_mask,
+                    intensity_max=intensity_max,
+                    bins=COLOCALIZATION_SCATTER_BINS,
+                )
+            )
         except Exception as exc:
             message = f"Scatter unavailable: {exc}"
             self.colocalization_scatter_summary.setText(message)
+            self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
+            self.colocalization_scatter_plot.setToolTip(message)
             return
+        result = ColocalizationScatterResult(
+            0,
+            key,
+            node.id,
+            mode,
+            threshold_1,
+            threshold_2,
+            intensity_max=intensity_max,
+            density_counts=density_counts,
+            roi_voxels=roi_voxels,
+            colocalized_voxels=coloc_voxels,
+            warnings=tuple(warnings),
+        )
+        self._cache_colocalization_scatter_result(result)
+        self._apply_colocalization_scatter_result(result)
 
-        roi_voxels = (
-            int(np.count_nonzero(roi_mask)) if roi_mask is not None else ch1.size
-        )
-        coloc_voxels = int(
-            np.count_nonzero(
-                (ch1 >= threshold_1)
-                & (ch2 >= threshold_2)
-                & (roi_mask if roi_mask is not None else True)
+    @staticmethod
+    def _colocalization_scatter_key(
+        node_id: str,
+        inputs: list[object],
+        *,
+        threshold_mode: str,
+        threshold_1: float,
+        threshold_2: float,
+        intensity_max: float,
+    ) -> tuple:
+        identities = tuple(
+            (
+                id(value),
+                tuple(getattr(value, "shape", ())),
+                str(getattr(value, "dtype", "")),
             )
+            for value in inputs
         )
-        mode = str(node.params.get("threshold_mode", "Manual"))
+        thresholds = (
+            (None, None)
+            if str(threshold_mode).lower().startswith("costes")
+            else (float(threshold_1), float(threshold_2))
+        )
+        return (
+            node_id,
+            identities,
+            str(threshold_mode).strip().lower(),
+            thresholds,
+            float(intensity_max),
+            COLOCALIZATION_SCATTER_BINS,
+        )
+
+    def _queue_colocalization_scatter(
+        self,
+        request: ColocalizationScatterRequest,
+    ) -> None:
         summary = (
-            f"{mode} thresholds. Drag threshold lines to switch to manual "
-            "thresholds."
+            f"{request.threshold_mode} thresholds. Calculating the exact scatter "
+            "density, ROI count, and colocalized count in the background..."
         )
-        if warnings:
-            summary += " " + "; ".join(warnings)
+        detail = (
+            "Every ROI voxel contributes to the scatter density and summary counts. "
+            "The exact calculation uses bounded-memory chunks."
+        )
         self.colocalization_scatter_summary.setText(summary)
-        self.colocalization_scatter_plot.set_scatter(
-            ch1,
-            ch2,
-            threshold_1=threshold_1,
-            threshold_2=threshold_2,
-            roi_mask=roi_mask,
+        self.colocalization_scatter_summary.setToolTip(detail)
+        self.colocalization_scatter_plot.clear("Calculating exact counts...")
+        self.colocalization_scatter_plot.setToolTip(detail)
+        if self._active_colocalization_scatter_run_id is not None:
+            if self._active_colocalization_scatter_key == request.key:
+                if (
+                    self._active_colocalization_scatter_cancel_event is None
+                    or not self._active_colocalization_scatter_cancel_event.is_set()
+                ):
+                    self._pending_colocalization_scatter_request = None
+                else:
+                    self._pending_colocalization_scatter_request = request
+                return
+            if self._active_colocalization_scatter_cancel_event is not None:
+                self._active_colocalization_scatter_cancel_event.set()
+            self._pending_colocalization_scatter_request = request
+            return
+        self._start_colocalization_scatter_request(request)
+
+    def _start_colocalization_scatter_request(
+        self,
+        request: ColocalizationScatterRequest,
+    ) -> None:
+        self._colocalization_scatter_serial += 1
+        cancel_event = threading.Event()
+        request = replace(
+            request,
+            run_id=self._colocalization_scatter_serial,
+            cancel_event=cancel_event,
+        )
+        self._active_colocalization_scatter_run_id = request.run_id
+        self._active_colocalization_scatter_key = request.key
+        self._active_colocalization_scatter_cancel_event = cancel_event
+        worker = ColocalizationScatterWorker(request)
+        worker.signals.finished.connect(self._on_colocalization_scatter_finished)
+        self._pipeline_thread_pool.start(worker, -1)
+
+    def _on_colocalization_scatter_finished(
+        self,
+        result: ColocalizationScatterResult,
+    ) -> None:
+        if result.run_id != self._active_colocalization_scatter_run_id:
+            return
+        self._active_colocalization_scatter_run_id = None
+        self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_cancel_event = None
+        if not result.error:
+            self._cache_colocalization_scatter_result(result)
+        if (
+            result.key == self._current_colocalization_scatter_key
+            and result.node_id == self._selected_node_id
+        ):
+            self._apply_colocalization_scatter_result(result)
+
+        pending = self._pending_colocalization_scatter_request
+        self._pending_colocalization_scatter_request = None
+        if (
+            pending is not None
+            and pending.key == self._current_colocalization_scatter_key
+        ):
+            self._start_colocalization_scatter_request(pending)
+
+    def _cache_colocalization_scatter_result(
+        self,
+        result: ColocalizationScatterResult,
+    ) -> None:
+        self._colocalization_scatter_cache[result.key] = result
+        while len(self._colocalization_scatter_cache) > 16:
+            self._colocalization_scatter_cache.pop(
+                next(iter(self._colocalization_scatter_cache))
+            )
+
+    def _apply_colocalization_scatter_result(
+        self,
+        result: ColocalizationScatterResult,
+    ) -> None:
+        if result.key != self._current_colocalization_scatter_key:
+            return
+        node = self.pipeline.nodes.get(result.node_id)
+        if node is None or result.node_id != self._selected_node_id:
+            return
+        if result.error:
+            message = f"Scatter unavailable: {result.error}"
+            self.colocalization_scatter_summary.setText(message)
+            self.colocalization_scatter_summary.setToolTip(message)
+            self.colocalization_scatter_plot.clear(message)
+            self.colocalization_scatter_plot.setToolTip(message)
+            return
+        if (
+            str(result.threshold_mode).lower().startswith("costes")
+            and str(node.params.get("threshold_mode", "")).lower().startswith(
+                "costes"
+            )
+        ):
+            for name, value in (
+                ("channel_1_threshold", result.threshold_1),
+                ("channel_2_threshold", result.threshold_2),
+            ):
+                node.params[name] = float(value)
+                self._set_parameter_control_value(node.id, name, float(value))
+
+        display_detail = (
+            f"Exact scatter density from all {result.roi_voxels:,} ROI voxels."
+        )
+        self.colocalization_scatter_plot.set_density(
+            result.density_counts,
+            threshold_1=result.threshold_1,
+            threshold_2=result.threshold_2,
+            intensity_max=result.intensity_max,
             channel_1_color=node.params.get("channel_1_color", "Red"),
             channel_2_color=node.params.get("channel_2_color", "Green"),
             colormap=self.colocalization_scatter_colormap_combo.currentText(),
             log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
-            summary=f"{coloc_voxels}/{roi_voxels}",
+            summary=(
+                f"Exact: {result.colocalized_voxels:,}/"
+                f"{result.roi_voxels:,}"
+            ),
         )
+        summary = (
+            f"{result.threshold_mode} thresholds. Exact colocalized count: "
+            f"{result.colocalized_voxels:,}/{result.roi_voxels:,}. "
+            f"{display_detail}"
+        )
+        if result.warnings:
+            summary += " " + "; ".join(result.warnings)
+        tooltip = (
+            f"Exact summary and scatter density from all {result.roi_voxels:,} "
+            "ROI voxels; "
+            f"{result.colocalized_voxels:,} meet both thresholds. {display_detail} "
+            "Every ROI voxel contributes. Drag a threshold line to switch to manual "
+            "thresholds."
+        )
+        self.colocalization_scatter_summary.setText(summary)
+        self.colocalization_scatter_summary.setToolTip(tooltip)
+        self.colocalization_scatter_plot.setToolTip(tooltip)
 
     def _colocalization_inputs_for_node(self, node_id: str) -> list[object] | None:
         ports = self.pipeline.input_ports(node_id)
@@ -13503,6 +14672,20 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return
+        if (
+            node.operation_id == "rescale_intensity"
+            and not str(
+                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+            ).lower().startswith("value")
+        ):
+            return
+        if (
+            node.operation_id == "clip_intensity"
+            and not str(node.params.get("cutoff_mode", "Data range"))
+            .lower()
+            .startswith("value")
+        ):
+            return
         name = _input_histogram_marker_parameter(node.operation_id, label)
         if name is None:
             return
@@ -13510,9 +14693,6 @@ class VippWidget(QWidget):
         value = self._coerce_histogram_parameter_value(node_id, name, value)
         if not self._set_histogram_parameter_value(node_id, name, value):
             return
-        if node.operation_id == "rescale_intensity":
-            if self._sync_rescale_cutoff_parameters(node_id, name):
-                self._refresh_rescale_cutoff_widgets(node_id)
         self._mark_pipeline_dirty(node_id)
         self._update_rescale_input_histogram(
             node_id,
@@ -13612,6 +14792,8 @@ class VippWidget(QWidget):
         visible = node is not None and node.operation_id in INPUT_HISTOGRAM_OPERATIONS
         self.rescale_input_histogram_group.setHidden(not visible)
         if not visible:
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
             self.rescale_input_histogram_group.setTitle("Input Histogram")
             self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
@@ -13619,6 +14801,8 @@ class VippWidget(QWidget):
 
         data = self.pipeline.input_data_for_node(node_id)
         if data is None or is_table_data(data):
+            self._current_input_histogram_key = None
+            self._pending_input_histogram_request = None
             self.rescale_input_histogram_group.setTitle("Input Histogram")
             self.rescale_input_histogram_scope_row.setHidden(True)
             self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
@@ -13630,21 +14814,60 @@ class VippWidget(QWidget):
             if scope_available:
                 scope = str(node.params.get("threshold_scope", "Stack histogram"))
                 scope_label = _threshold_histogram_scope_label(scope)
-                self.rescale_input_histogram_group.setTitle(
-                    f"Input Histogram ({scope_label})"
-                )
+                title = f"Input Histogram ({scope_label})"
             else:
                 scope = "Slice histogram"
-                self.rescale_input_histogram_group.setTitle("Input Histogram")
+                title = "Input Histogram"
             self.rescale_input_histogram_scope_row.setHidden(True)
         else:
-            self.rescale_input_histogram_group.setTitle("Input Histogram")
+            title = "Input Histogram"
             self.rescale_input_histogram_scope_row.setHidden(not scope_available)
             scope = (
                 self.rescale_input_histogram_scope_combo.currentText()
                 if scope_available
                 else "Slice"
             )
+        self.rescale_input_histogram_group.setTitle(title)
+        histogram_source = _histogram_source(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
+        marker_scans_full_input = (
+            node.operation_id == "rescale_intensity"
+            and str(
+                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+            ).casefold()
+            == "percentiles"
+        ) or (
+            node.operation_id == "clip_intensity"
+            and str(node.params.get("cutoff_mode", "Data range")).casefold()
+            == "data range"
+        )
+        marker_requires_background = node.operation_id == "minimum_threshold"
+        if (
+            histogram_source is not None
+            and _should_auto_background_data(histogram_source[0])
+        ) or (marker_scans_full_input and _should_auto_background_data(data)) or (
+            marker_requires_background
+        ):
+            self._queue_input_histogram(
+                node_id=node.id,
+                operation_id=node.operation_id,
+                data=data,
+                state=state,
+                scope=scope,
+                current_step=current_step,
+                current_step_nsteps=current_step_nsteps,
+                params=node.params,
+                title=title,
+            )
+            return
+
+        self._current_input_histogram_key = None
+        self._pending_input_histogram_request = None
         counts, x_range, colors = _histogram_summary(
             data,
             state=state,
@@ -13652,22 +14875,331 @@ class VippWidget(QWidget):
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
         )
-        markers = _input_histogram_markers(
-            node.operation_id,
-            data,
-            state=state,
-            scope=scope,
-            current_step=current_step,
-            current_step_nsteps=current_step_nsteps,
-            params=node.params,
-        )
+        marker_error = ""
+        try:
+            markers = _input_histogram_markers(
+                node.operation_id,
+                data,
+                state=state,
+                scope=scope,
+                current_step=current_step,
+                current_step_nsteps=current_step_nsteps,
+                params=node.params,
+            )
+        except Exception as exc:
+            markers = []
+            marker_error = str(exc)
+            self.rescale_input_histogram_group.setTitle(
+                f"{title} (marker unavailable)"
+            )
         self.rescale_input_histogram_plot.set_histogram(
             counts,
             log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
             x_range=x_range,
             colors=colors,
             markers=markers,
-            draggable_markers=_input_histogram_draggable_markers(node.operation_id),
+            draggable_markers=_input_histogram_draggable_markers(
+                node.operation_id,
+                node.params,
+            ),
+        )
+        self._set_histogram_explanation(
+            self.rescale_input_histogram_group,
+            total_values=(
+                int(histogram_source[0].size) if histogram_source is not None else 0
+            ),
+            finite_values=(
+                int(np.asarray(counts).sum()) if counts is not None else 0
+            ),
+            display_bins=(
+                int(np.asarray(counts).shape[-1]) if counts is not None else 0
+            ),
+            marker_error=marker_error,
+        )
+
+    def _queue_input_histogram(
+        self,
+        *,
+        node_id: str,
+        operation_id: str,
+        data,
+        state,
+        scope: str,
+        current_step,
+        current_step_nsteps,
+        params: dict,
+        title: str,
+    ) -> None:
+        stack_scope = str(scope).strip().lower().startswith("stack")
+        step_key = None if stack_scope else tuple(current_step or ())
+        nsteps_key = None if stack_scope else tuple(current_step_nsteps or ())
+        arr_shape = tuple(getattr(data, "shape", ()))
+        arr_dtype = str(getattr(data, "dtype", ""))
+        params_key = tuple(
+            sorted((str(name), repr(value)) for name, value in params.items())
+        )
+        key = (
+            node_id,
+            operation_id,
+            id(data),
+            arr_shape,
+            arr_dtype,
+            str(scope).strip().lower(),
+            step_key,
+            nsteps_key,
+            params_key,
+        )
+        self._current_input_histogram_key = key
+        cached = self._input_histogram_cache.get(key)
+        if cached is not None:
+            self._apply_input_histogram_result(cached)
+            return
+
+        self.rescale_input_histogram_group.setTitle(f"{title} (calculating...)")
+        self.rescale_input_histogram_plot.set_histogram(
+            None,
+            log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
+        )
+        request = InputHistogramRequest(
+            0,
+            key,
+            node_id,
+            operation_id,
+            data,
+            state,
+            scope,
+            tuple(current_step) if current_step is not None else None,
+            (
+                tuple(current_step_nsteps)
+                if current_step_nsteps is not None
+                else None
+            ),
+            deepcopy(params),
+            title,
+        )
+        if self._active_input_histogram_run_id is not None:
+            if self._active_input_histogram_key == key:
+                if (
+                    self._active_input_histogram_cancel_event is None
+                    or not self._active_input_histogram_cancel_event.is_set()
+                ):
+                    self._pending_input_histogram_request = None
+                else:
+                    self._pending_input_histogram_request = request
+                return
+            if self._active_input_histogram_cancel_event is not None:
+                self._active_input_histogram_cancel_event.set()
+            self._pending_input_histogram_request = request
+            return
+        self._start_input_histogram_request(request)
+
+    def _start_input_histogram_request(
+        self,
+        request: InputHistogramRequest,
+    ) -> None:
+        self._input_histogram_serial += 1
+        cancel_event = threading.Event()
+        request = replace(
+            request,
+            run_id=self._input_histogram_serial,
+            cancel_event=cancel_event,
+        )
+        self._active_input_histogram_run_id = request.run_id
+        self._active_input_histogram_key = request.key
+        self._active_input_histogram_cancel_event = cancel_event
+        worker = InputHistogramWorker(request)
+        worker.signals.finished.connect(self._on_input_histogram_finished)
+        self._pipeline_thread_pool.start(worker, -1)
+
+    def _on_input_histogram_finished(self, result: InputHistogramResult) -> None:
+        if result.run_id != self._active_input_histogram_run_id:
+            return
+        self._active_input_histogram_run_id = None
+        self._active_input_histogram_key = None
+        self._active_input_histogram_cancel_event = None
+        if not result.error:
+            self._input_histogram_cache[result.key] = result
+            while len(self._input_histogram_cache) > 16:
+                self._input_histogram_cache.pop(next(iter(self._input_histogram_cache)))
+        if (
+            result.key == self._current_input_histogram_key
+            and result.node_id == self._selected_node_id
+        ):
+            self._apply_input_histogram_result(result)
+
+        pending = self._pending_input_histogram_request
+        self._pending_input_histogram_request = None
+        if pending is not None and pending.key == self._current_input_histogram_key:
+            self._start_input_histogram_request(pending)
+
+    def _apply_input_histogram_result(
+        self,
+        result: InputHistogramResult,
+    ) -> None:
+        if result.key != self._current_input_histogram_key:
+            return
+        node = self.pipeline.nodes.get(result.node_id)
+        if node is None:
+            return
+        self.rescale_input_histogram_group.setTitle(
+            f"{result.title} (marker unavailable)"
+            if result.marker_error
+            else result.title
+        )
+        if result.error:
+            self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
+            return
+        self.rescale_input_histogram_plot.set_histogram(
+            result.counts,
+            log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
+            x_range=result.x_range,
+            colors=result.colors,
+            markers=result.markers,
+            draggable_markers=_input_histogram_draggable_markers(
+                node.operation_id,
+                node.params,
+            ),
+        )
+        self._set_histogram_explanation(
+            self.rescale_input_histogram_group,
+            total_values=result.total_values,
+            finite_values=result.finite_values,
+            display_bins=result.display_bins,
+            marker_error=result.marker_error,
+        )
+
+    @staticmethod
+    def _set_histogram_explanation(
+        group: QGroupBox,
+        *,
+        total_values: int,
+        finite_values: int,
+        display_bins: int,
+        marker_error: str = "",
+    ) -> None:
+        ignored = max(int(total_values) - int(finite_values), 0)
+        detail = (
+            f"Exact counts from all {int(finite_values):,} finite pixels, grouped "
+            f"into {int(display_bins):,} display bins."
+        )
+        if ignored:
+            detail += f" {ignored:,} non-finite pixels are ignored."
+        detail += " Display bins do not affect processing thresholds or cutoffs."
+        if marker_error:
+            detail += f" Processing marker unavailable: {marker_error}"
+        group.setToolTip(detail)
+
+    def _queue_output_histogram(
+        self,
+        *,
+        node_id: str,
+        data,
+        state,
+        scope: str,
+        current_step,
+        current_step_nsteps,
+        title: str = "Output Histogram",
+    ) -> None:
+        stack_scope = str(scope).strip().lower().startswith("stack")
+        key = (
+            node_id,
+            id(data),
+            tuple(getattr(data, "shape", ())),
+            str(getattr(data, "dtype", "")),
+            str(scope).strip().lower(),
+            None if stack_scope else tuple(current_step or ()),
+            None if stack_scope else tuple(current_step_nsteps or ()),
+            title,
+        )
+        self._current_output_histogram_key = key
+        cached = self._output_histogram_cache.get(key)
+        if cached is not None:
+            self._apply_output_histogram_result(cached)
+            return
+
+        self.histogram_group.setTitle(f"{title} (calculating exact counts...)")
+        self.histogram_plot.set_histogram(
+            None,
+            log_scale=self.histogram_log_checkbox.isChecked(),
+        )
+        request = InputHistogramRequest(
+            0,
+            key,
+            node_id,
+            "",
+            data,
+            state,
+            scope,
+            tuple(current_step) if current_step is not None else None,
+            (
+                tuple(current_step_nsteps)
+                if current_step_nsteps is not None
+                else None
+            ),
+            {},
+            title,
+        )
+        if self._active_output_histogram_run_id is not None:
+            if self._active_output_histogram_key == key:
+                self._pending_output_histogram_request = None
+                return
+            self._pending_output_histogram_request = request
+            return
+        self._start_output_histogram_request(request)
+
+    def _start_output_histogram_request(
+        self,
+        request: InputHistogramRequest,
+    ) -> None:
+        self._output_histogram_serial += 1
+        request = replace(request, run_id=self._output_histogram_serial)
+        self._active_output_histogram_run_id = request.run_id
+        self._active_output_histogram_key = request.key
+        worker = InputHistogramWorker(request)
+        worker.signals.finished.connect(self._on_output_histogram_finished)
+        self._pipeline_thread_pool.start(worker, -1)
+
+    def _on_output_histogram_finished(self, result: InputHistogramResult) -> None:
+        if result.run_id != self._active_output_histogram_run_id:
+            return
+        self._active_output_histogram_run_id = None
+        self._active_output_histogram_key = None
+        if not result.error:
+            self._output_histogram_cache[result.key] = result
+            while len(self._output_histogram_cache) > 16:
+                self._output_histogram_cache.pop(next(iter(self._output_histogram_cache)))
+        if (
+            result.key == self._current_output_histogram_key
+            and result.node_id == self._selected_node_id
+        ):
+            self._apply_output_histogram_result(result)
+
+        pending = self._pending_output_histogram_request
+        self._pending_output_histogram_request = None
+        if pending is not None and pending.key == self._current_output_histogram_key:
+            self._start_output_histogram_request(pending)
+
+    def _apply_output_histogram_result(
+        self,
+        result: InputHistogramResult,
+    ) -> None:
+        if result.key != self._current_output_histogram_key:
+            return
+        self.histogram_group.setTitle(result.title)
+        if result.error:
+            self.histogram_plot.set_histogram(None, log_scale=False)
+            return
+        self.histogram_plot.set_histogram(
+            result.counts,
+            log_scale=self.histogram_log_checkbox.isChecked(),
+            x_range=result.x_range,
+            colors=result.colors,
+        )
+        self._set_histogram_explanation(
+            self.histogram_group,
+            total_values=result.total_values,
+            finite_values=result.finite_values,
+            display_bins=result.display_bins,
         )
 
     def _update_table_preview(self) -> None:
@@ -13791,7 +15323,10 @@ class VippWidget(QWidget):
 
     def _save_selected_output_dialog(self) -> None:
         node_id = self._selected_node_id
-        if is_table_data(self.pipeline.outputs.get(node_id)):
+        selected_data, _selected_state, _output_port = self._node_display_payload(
+            node_id
+        )
+        if is_table_data(selected_data):
             default_name = f"{self._node_title(node_id).replace(' ', '_')}.csv"
             path, selected_filter = QFileDialog.getSaveFileName(
                 self,
@@ -13855,7 +15390,7 @@ class VippWidget(QWidget):
             self._save_node_output(node_id, path, format=format)
 
     def _can_save_selected_output_as_raster(self, node_id: str) -> bool:
-        data = self.pipeline.outputs.get(node_id)
+        data, _state, _output_port = self._node_display_payload(node_id)
         if data is None or is_table_data(data):
             return False
         shape = getattr(data, "shape", None)
@@ -13874,7 +15409,7 @@ class VippWidget(QWidget):
         *,
         format: str = "auto",
     ) -> Path | None:
-        data = self.pipeline.outputs.get(node_id)
+        data, state, _output_port = self._node_display_payload(node_id)
         if data is None:
             self.status_label.setText("That node has no output to save yet.")
             return None
@@ -13892,7 +15427,7 @@ class VippWidget(QWidget):
                     path,
                     format=format,
                     overwrite=True,
-                    image_state=self.pipeline.output_states.get(node_id),
+                    image_state=state,
                 )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
@@ -13903,7 +15438,7 @@ class VippWidget(QWidget):
         return output_path
 
     def inspect_node(self, node_id: str) -> None:
-        data = self.pipeline.outputs.get(node_id)
+        data, state, output_port = self._node_display_payload(node_id)
         if data is None:
             self.status_label.setText("That node has no output to inspect yet.")
             return
@@ -13920,7 +15455,12 @@ class VippWidget(QWidget):
             metadata={
                 "napari_vipp_kind": "inspect",
                 "node_id": node_id,
-                "vipp_image_state": self._node_state_dict(node_id),
+                "output_port": output_port,
+                "vipp_image_state": self._node_state_dict(
+                    node_id,
+                    output_port,
+                    state=state,
+                ),
             },
             role="inspect",
         )
@@ -13928,9 +15468,18 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def _inspect_selected_node(self) -> None:
-        data = self.pipeline.outputs.get(self._selected_node_id)
+        data, _state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
         if data is not None and not is_table_data(data):
             self.inspect_node(self._selected_node_id)
+            return
+        layer = self._layer_by_name(self._inspect_layer_name)
+        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
+        if isinstance(metadata, dict) and metadata.get("node_id") == (
+            self._selected_node_id
+        ):
+            self._remove_layer(layer)
 
     def pin_node(self, node_id: str) -> None:
         if not self._node_can_pin(node_id):
@@ -13945,7 +15494,7 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=True)
             self._push_undo_if_changed(before)
             return
-        data = self.pipeline.outputs.get(node_id)
+        data, _state, _output_port = self._node_display_payload(node_id)
         if data is None:
             self.status_label.setText("That node has no output to pin yet.")
             return
@@ -13955,6 +15504,7 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Pinned '{self._node_title(node_id)}'.")
 
     def _set_active_pin_layer(self, node_id: str, data) -> None:
+        data, state, output_port = self._node_display_payload(node_id, data)
         title = self._node_title(node_id)
         layer_name = self._pinned_layer_name(title)
         for layer in self._active_pinned_layers():
@@ -13966,7 +15516,12 @@ class VippWidget(QWidget):
             metadata={
                 "napari_vipp_kind": "pinned",
                 "node_id": node_id,
-                "vipp_image_state": self._node_state_dict(node_id),
+                "output_port": output_port,
+                "vipp_image_state": self._node_state_dict(
+                    node_id,
+                    output_port,
+                    state=state,
+                ),
             },
             role="pinned",
         )
@@ -13994,19 +15549,23 @@ class VippWidget(QWidget):
         if layer is None:
             return
         node_id = getattr(layer, "metadata", {}).get("node_id")
-        if (
-            node_id in self.pipeline.outputs
-            and self.pipeline.outputs[node_id] is not None
-        ):
-            if is_table_data(self.pipeline.outputs[node_id]):
+        if node_id in self.pipeline.outputs:
+            data, state, output_port = self._node_display_payload(node_id)
+            if data is None or is_table_data(data):
+                self._remove_layer(layer)
                 return
             self._set_or_add_generated_layer(
                 self._inspect_layer_name,
-                self.pipeline.outputs[node_id],
+                data,
                 metadata={
                     "napari_vipp_kind": "inspect",
                     "node_id": node_id,
-                    "vipp_image_state": self._node_state_dict(node_id),
+                    "output_port": output_port,
+                    "vipp_image_state": self._node_state_dict(
+                        node_id,
+                        output_port,
+                        state=state,
+                    ),
                 },
                 role="inspect",
             )
@@ -14015,7 +15574,9 @@ class VippWidget(QWidget):
     def _refresh_pinned_layer_if_active(self) -> None:
         if self._active_pinned_node_id is None:
             return
-        data = self.pipeline.outputs.get(self._active_pinned_node_id)
+        data, _state, _output_port = self._node_display_payload(
+            self._active_pinned_node_id
+        )
         if data is None:
             self._clear_active_pin(status=False)
             return
@@ -14039,15 +15600,28 @@ class VippWidget(QWidget):
     ) -> None:
         saved_step = self._raw_current_step()
         saved_nsteps = self._viewer_nsteps()
-        display_data = self._display_data(data)
-        data_kind = self._data_kind(data, metadata.get("node_id"))
+        output_port = int(metadata.get("output_port", 0) or 0)
+        data_kind = self._data_kind(
+            data,
+            metadata.get("node_id"),
+            output_port,
+        )
+        display_kind = self._display_kind(data_kind, role)
+        display_data = self._display_data(
+            data,
+            as_labels=display_kind == "labels",
+        )
         metadata = {
             **metadata,
             "data_kind": data_kind,
-            "display_kind": self._display_kind(data_kind, role),
+            "display_kind": display_kind,
             "display_ndim": np.asarray(display_data).ndim,
             "display_shape": tuple(np.asarray(display_data).shape),
-            "display_rgb": self._display_rgb(data, metadata.get("node_id")),
+            "display_rgb": self._display_rgb(
+                data,
+                metadata.get("node_id"),
+                output_port,
+            ),
         }
         if self._display_rgb_as_channel_layers(display_data, metadata):
             self._set_or_add_rgb_channel_layers(name, display_data, metadata)
@@ -14056,12 +15630,22 @@ class VippWidget(QWidget):
         self._remove_rgb_channel_layers(name)
         layer = self._layer_by_name(name)
         if layer is None:
-            self._add_image_or_labels(name, data, metadata=metadata)
+            self._add_image_or_labels(
+                name,
+                data,
+                metadata=metadata,
+                display_data=display_data,
+            )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
         if self._generated_layer_needs_replacement(layer, metadata):
             self._remove_layer(layer)
-            self._add_image_or_labels(name, data, metadata=metadata)
+            self._add_image_or_labels(
+                name,
+                data,
+                metadata=metadata,
+                display_data=display_data,
+            )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
         layer.data = display_data
@@ -14130,8 +15714,18 @@ class VippWidget(QWidget):
             except Exception:
                 pass
 
-    def _add_image_or_labels(self, name: str, data, metadata: dict):
-        display_data = self._display_data(data)
+    def _add_image_or_labels(
+        self,
+        name: str,
+        data,
+        metadata: dict,
+        display_data=None,
+    ):
+        if display_data is None:
+            display_data = self._display_data(
+                data,
+                as_labels=metadata.get("display_kind") == "labels",
+            )
         scale = _layer_scale_from_metadata(metadata)
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             kwargs = {"name": name, "metadata": metadata}
@@ -14152,9 +15746,9 @@ class VippWidget(QWidget):
                 }
             )
         else:
-            limits = self._signed_image_contrast_limits(data)
-            if limits is not None:
-                kwargs["contrast_limits"] = limits
+            plan = self._generated_layer_contrast_plan(name, data)
+            metadata.update(self._generated_layer_contrast_metadata(plan))
+            kwargs["contrast_limits"] = plan.limits
         return self.viewer.add_image(display_data, **kwargs)
 
     def _display_rgb_as_channel_layers(self, display_data, metadata: dict) -> bool:
@@ -14202,12 +15796,20 @@ class VippWidget(QWidget):
                     channel_data,
                     channel_metadata,
                     colormap,
+                    identity_data=arr,
+                    channel_index=index,
                 )
                 continue
             layer.data = channel_data
             layer.metadata.update(channel_metadata)
             layer.visible = True
-            self._configure_rgb_channel_layer(layer, channel_data, channel_metadata)
+            self._configure_rgb_channel_layer(
+                layer,
+                channel_data,
+                channel_metadata,
+                identity_data=arr,
+                channel_index=index,
+            )
         self._remove_extra_rgb_channel_layers(name)
 
     def _add_rgb_channel_layer(
@@ -14216,6 +15818,9 @@ class VippWidget(QWidget):
         data,
         metadata: dict,
         colormap: str,
+        *,
+        identity_data,
+        channel_index: int,
     ):
         kwargs = {
             "name": name,
@@ -14226,12 +15831,25 @@ class VippWidget(QWidget):
         scale = _layer_scale_from_metadata(metadata)
         if scale is not None:
             kwargs["scale"] = scale
-        limits = _rgb_channel_contrast_limits(data)
-        if limits is not None:
-            kwargs["contrast_limits"] = limits
+        plan = self._generated_layer_contrast_plan(
+            name,
+            data,
+            identity_data=identity_data,
+            channel_index=channel_index,
+        )
+        metadata.update(self._generated_layer_contrast_metadata(plan))
+        kwargs["contrast_limits"] = plan.limits
         return self.viewer.add_image(data, **kwargs)
 
-    def _configure_rgb_channel_layer(self, layer, data, metadata: dict) -> None:
+    def _configure_rgb_channel_layer(
+        self,
+        layer,
+        data,
+        metadata: dict,
+        *,
+        identity_data,
+        channel_index: int,
+    ) -> None:
         channel_index = int(metadata["display_rgb_channel_index"])
         colormap = _RGB_VOLUME_CHANNELS[channel_index][2]
         for attr, value in (
@@ -14248,12 +15866,17 @@ class VippWidget(QWidget):
                 layer.scale = scale
             except Exception:
                 pass
-        limits = _rgb_channel_contrast_limits(data)
-        if limits is not None:
-            try:
-                layer.contrast_limits = limits
-            except Exception:
-                pass
+        plan = self._generated_layer_contrast_plan(
+            layer.name,
+            data,
+            identity_data=identity_data,
+            channel_index=channel_index,
+        )
+        layer.metadata.update(self._generated_layer_contrast_metadata(plan))
+        try:
+            layer.contrast_limits = plan.limits
+        except Exception:
+            pass
 
     def _rgb_channel_layers(self, group_name: str) -> list:
         layers = []
@@ -14328,60 +15951,212 @@ class VippWidget(QWidget):
                 except Exception:
                     pass
         else:
-            limits = self._reused_image_contrast_limits(data)
-            if limits is not None:
-                try:
-                    layer.contrast_limits = limits
-                except Exception:
-                    pass
+            plan = self._generated_layer_contrast_plan(layer.name, data)
+            layer.metadata.update(self._generated_layer_contrast_metadata(plan))
+            try:
+                layer.contrast_limits = plan.limits
+            except Exception:
+                pass
 
-    def _reused_image_contrast_limits(self, data) -> tuple[float, float] | None:
-        """Return contrast limits for an existing generated image layer.
+    def _generated_layer_contrast_plan(
+        self,
+        layer_name: str,
+        data,
+        *,
+        identity_data=None,
+        channel_index: int | None = None,
+    ) -> GeneratedLayerContrastPlan:
+        """Return explicit limits now and queue an exact scan when data is large.
 
-        Napari keeps an image layer's contrast limits when ``layer.data`` is
-        replaced. Refresh limits here so a reused inspect/pin layer does not
-        render a newly rescaled ``0..1`` float image against an older high-range
-        window.
-        """
-        signed_limits = self._signed_image_contrast_limits(data)
-        if signed_limits is not None:
-            return signed_limits
-        arr = np.asarray(data)
-        if arr.dtype == bool or arr.size == 0:
-            return None
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0:
-            return None
-        high = float(finite.max())
-        if high <= 0.0:
-            return None
-        return (0.0, max(high, 1.0) if np.issubdtype(arr.dtype, np.floating) else high)
-
-    def _signed_image_contrast_limits(self, data) -> tuple[float, float] | None:
-        """Anchor the display black point at zero for signed images.
-
-        Bioimage intensities are non-negative, but arithmetic nodes such as
-        Subtract can yield negative float values. Letting napari auto-scale from
-        the negative minimum renders the zero background grey. Anchoring the
-        black point at zero keeps the background black and matches the thumbnail.
-        Non-negative images return ``None`` so napari's default contrast is kept.
+        Supplying provisional limits is important: without them napari may scan
+        the complete array synchronously while constructing the layer. The
+        provisional values affect display only and are replaced by exact finite
+        extrema calculated over the full data, never by a sample.
         """
         arr = np.asarray(data)
-        if arr.dtype == bool or arr.size == 0:
-            return None
-        finite = arr[np.isfinite(arr)]
-        if finite.size == 0 or float(finite.min()) >= 0.0:
-            return None
-        non_negative = finite[finite >= 0.0]
-        if non_negative.size:
-            high = float(np.percentile(non_negative, 99))
+        identity = data if identity_data is None else identity_data
+        identity_arr = np.asarray(identity)
+        key = (
+            self._generated_layer_contrast_generation,
+            str(layer_name),
+            id(identity),
+            tuple(int(size) for size in identity_arr.shape),
+            str(identity_arr.dtype),
+            tuple(int(size) for size in arr.shape),
+            str(arr.dtype),
+            None if channel_index is None else int(channel_index),
+        )
+        self._generated_layer_contrast_keys[str(layer_name)] = key
+
+        cached = self._generated_layer_contrast_cache.get(key)
+        if cached is not None:
+            identity_ref, cached_limits = cached
+            if identity_ref() is identity:
+                return GeneratedLayerContrastPlan(
+                    key,
+                    cached_limits,
+                    False,
+                    True,
+                )
+            self._generated_layer_contrast_cache.pop(key, None)
+
+        provisional = _provisional_generated_layer_contrast_limits(arr)
+        if arr.size == 0:
+            return GeneratedLayerContrastPlan(key, provisional, False, False)
+
+        if _should_auto_background_data(identity_arr):
+            if key not in self._generated_layer_contrast_pending:
+                self._generated_layer_contrast_pending.add(key)
+                request = GeneratedLayerContrastRequest(
+                    key,
+                    str(layer_name),
+                    arr,
+                    identity,
+                )
+                worker = GeneratedLayerContrastWorker(request)
+                worker.signals.finished.connect(
+                    self._on_generated_layer_contrast_finished
+                )
+                self._pipeline_thread_pool.start(worker, -1)
+            return GeneratedLayerContrastPlan(key, provisional, True, False)
+
+        limits = _exact_generated_layer_contrast_limits(arr)
+        if limits is None:
+            return GeneratedLayerContrastPlan(key, provisional, False, False)
+        self._cache_generated_layer_contrast(key, identity, limits)
+        return GeneratedLayerContrastPlan(key, limits, False, True)
+
+    @staticmethod
+    def _generated_layer_contrast_metadata(
+        plan: GeneratedLayerContrastPlan,
+    ) -> dict[str, object]:
+        if plan.exact:
+            basis = "Exact full finite data range (display only)"
+        elif plan.pending:
+            basis = "Provisional dtype range; exact full-data scan pending"
         else:
-            high = 0.0
-        if high <= 0.0:
-            high = float(finite.max())
-        if high <= 0.0:
-            return None
-        return (0.0, high)
+            basis = "Provisional dtype range; no finite values available"
+        metadata = {
+            "vipp_display_contrast_basis": basis,
+            "vipp_display_contrast_pending": bool(plan.pending),
+            "vipp_display_contrast_adjustable": True,
+            "_vipp_display_contrast_key": plan.key,
+            "_vipp_display_contrast_initial_limits": plan.limits,
+        }
+        if plan.exact:
+            metadata["vipp_exact_finite_data_range"] = plan.limits
+        return metadata
+
+    def _cache_generated_layer_contrast(
+        self,
+        key: tuple,
+        identity,
+        limits: tuple[float, float],
+    ) -> None:
+        try:
+            identity_ref = weakref.ref(identity)
+        except TypeError:
+            return
+        self._generated_layer_contrast_cache[key] = (identity_ref, limits)
+        while len(self._generated_layer_contrast_cache) > 32:
+            self._generated_layer_contrast_cache.pop(
+                next(iter(self._generated_layer_contrast_cache))
+            )
+
+    def _on_generated_layer_contrast_finished(
+        self,
+        result: GeneratedLayerContrastResult,
+    ) -> None:
+        self._generated_layer_contrast_pending.discard(result.key)
+        if not result.key or (
+            result.key[0] != self._generated_layer_contrast_generation
+        ):
+            return
+        if (
+            not result.error
+            and result.limits is not None
+            and result.identity is not None
+        ):
+            self._cache_generated_layer_contrast(
+                result.key,
+                result.identity,
+                result.limits,
+            )
+        if self._generated_layer_contrast_keys.get(result.layer_name) != result.key:
+            return
+        layer = self._layer_by_name(result.layer_name)
+        if layer is None:
+            return
+        try:
+            if layer.metadata.get("_vipp_display_contrast_key") != result.key:
+                return
+        except Exception:
+            return
+
+        if result.error:
+            layer.metadata.update(
+                {
+                    "vipp_display_contrast_basis": (
+                        "Provisional dtype range; exact full-data scan failed"
+                    ),
+                    "vipp_display_contrast_pending": False,
+                }
+            )
+            self.status_label.setText(
+                f"Display contrast calculation failed: {result.error}"
+            )
+            return
+        if result.limits is None:
+            layer.metadata.update(
+                {
+                    "vipp_display_contrast_basis": (
+                        "Provisional dtype range; no finite values available"
+                    ),
+                    "vipp_display_contrast_pending": False,
+                }
+            )
+            return
+        try:
+            initial_limits = tuple(
+                float(value)
+                for value in layer.metadata.get(
+                    "_vipp_display_contrast_initial_limits",
+                    (),
+                )
+            )
+            current_limits = tuple(float(value) for value in layer.contrast_limits)
+        except (TypeError, ValueError):
+            initial_limits = ()
+            current_limits = ()
+        if (
+            len(initial_limits) == 2
+            and len(current_limits) == 2
+            and current_limits != initial_limits
+        ):
+            layer.metadata.update(
+                {
+                    "vipp_display_contrast_basis": (
+                        "User-adjusted display limits; exact full finite data "
+                        "range retained in metadata"
+                    ),
+                    "vipp_display_contrast_pending": False,
+                    "vipp_exact_finite_data_range": result.limits,
+                }
+            )
+            return
+        try:
+            layer.contrast_limits = result.limits
+        except Exception:
+            return
+        layer.metadata.update(
+            {
+                "vipp_display_contrast_basis": (
+                    "Exact full finite data range (display only)"
+                ),
+                "vipp_display_contrast_pending": False,
+                "vipp_exact_finite_data_range": result.limits,
+            }
+        )
 
     def _display_kind(self, data_kind: str, role: str) -> str:
         if data_kind == "labels":
@@ -14390,34 +16165,45 @@ class VippWidget(QWidget):
             return "labels"
         return "image"
 
-    def _data_kind(self, data, node_id: str | None = None) -> str:
+    def _data_kind(
+        self,
+        data,
+        node_id: str | None = None,
+        output_port: int = 0,
+    ) -> str:
         if is_table_data(data):
             return "table"
         if node_id is not None:
             ports = self.pipeline.output_ports(node_id)
-            if ports and ports[0].output_type == "table":
+            port_index = int(np.clip(output_port, 0, max(len(ports) - 1, 0)))
+            if ports and ports[port_index].output_type == "table":
                 return "table"
-            if ports and ports[0].output_type == "labels":
+            if ports and ports[port_index].output_type == "labels":
                 return "labels"
         return "mask" if np.asarray(data).dtype == bool else "image"
 
-    def _display_rgb(self, data, node_id: str | None = None) -> bool:
+    def _display_rgb(
+        self,
+        data,
+        node_id: str | None = None,
+        output_port: int = 0,
+    ) -> bool:
         if data is None or is_table_data(data):
             return False
         arr = np.asarray(data)
         if arr.ndim < 3 or arr.shape[-1] not in (3, 4):
             return False
-        state = self.pipeline.output_states.get(node_id) if node_id else None
+        state = self._node_output_state(node_id, output_port) if node_id else None
         kind = str(getattr(state, "kind", "")).lower()
         return kind in {"rgb image", "rgba image"}
 
-    def _display_data(self, data):
+    def _display_data(self, data, *, as_labels: bool = False):
         if is_table_data(data):
             raise ValueError(
                 "Table outputs cannot be displayed as napari image layers."
             )
         arr = np.asarray(data)
-        if arr.dtype == bool:
+        if as_labels and arr.dtype == bool:
             arr = arr.astype(np.uint8)
         if arr.ndim == 0:
             return arr.reshape(1, 1)
@@ -14510,6 +16296,9 @@ class VippWidget(QWidget):
         self.auto_contrast_group.setVisible(
             node is not None and node.operation_id == "linear_scale_offset"
         )
+        self.auto_contrast_button.setEnabled(
+            self._active_auto_contrast_run_id is None
+        )
 
     def _node_preview_enabled(self, node_id: str) -> bool:
         if self._node_output_type(node_id) == "table":
@@ -14520,26 +16309,36 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return False
-        data = self.pipeline.outputs.get(node_id)
+        data, _state, output_port = self._node_display_payload(node_id)
         if data is not None:
-            return not is_table_data(data) and self._data_kind(data, node_id) != "table"
+            return not is_table_data(data) and self._data_kind(
+                data,
+                node_id,
+                output_port,
+            ) != "table"
         return node.output_type != "table"
 
     def _node_output_type(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
         ports = self.pipeline.output_ports(node_id)
+        output_port = (
+            self._split_channel_display_port(node_id)
+            if node is not None and node.operation_id == "split_channels"
+            else 0
+        )
+        output_port = int(np.clip(output_port, 0, max(len(ports) - 1, 0)))
         if (
             node is not None
             and ports
             and (
                 self.pipeline.operation_spec(node.operation_id).preserves_input_type
-                or ports[0].output_type == "labels"
+                or ports[output_port].output_type == "labels"
             )
         ):
-            return ports[0].output_type
-        data = self.pipeline.outputs.get(node_id)
+            return ports[output_port].output_type
+        data, _state, output_port = self._node_display_payload(node_id)
         if data is not None:
-            return self._data_kind(data, node_id)
+            return self._data_kind(data, node_id, output_port)
         return node.output_type if node is not None else "image"
 
     def _remove_layer(self, layer) -> None:
@@ -14637,7 +16436,8 @@ class VippWidget(QWidget):
         if not isinstance(metadata, dict):
             return tuple(int(value) for value in values)
         node_id = metadata.get("node_id")
-        state = self.pipeline.output_states.get(node_id)
+        output_port = int(metadata.get("output_port", 0) or 0)
+        state = self._node_output_state(node_id, output_port)
         axes = tuple(getattr(state, "axes", ()))
         if not axes:
             return tuple(int(value) for value in values)
@@ -14673,8 +16473,18 @@ class VippWidget(QWidget):
     def _node_title(self, node_id: str) -> str:
         return self.pipeline.nodes[node_id].title
 
-    def _node_state_dict(self, node_id: str) -> dict | None:
-        state = self.pipeline.output_states.get(node_id)
+    def _node_state_dict(
+        self,
+        node_id: str,
+        output_port: int | None = None,
+        *,
+        state=None,
+    ) -> dict | None:
+        if state is None:
+            if output_port is None:
+                _data, state, output_port = self._node_display_payload(node_id)
+            else:
+                state = self._node_output_state(node_id, output_port)
         return state.to_dict() if state is not None else None
 
     def _is_vipp_generated_layer(self, layer) -> bool:
@@ -14727,19 +16537,25 @@ def _auto_contrast_scale_offset(
     if data is None:
         return None
 
-    values = _finite_values(np.asarray(data)).ravel()
-    if values.size == 0:
-        return None
-    if values.size > 1_000_000:
-        stride = int(np.ceil(values.size / 1_000_000))
-        values = values[::stride]
-
     saturation = min(max(float(saturation_percent), 0.0), 100.0)
     tail_percent = saturation / 2.0
-    lower, upper = np.percentile(
-        values.astype(np.float64, copy=False),
-        [tail_percent, 100.0 - tail_percent],
+    reference = np.asarray(data)
+    if reference.ndim >= 3 and reference.shape[-1] in (3, 4):
+        # Auto contrast applies one scale/offset pair to an RGB image, so retain
+        # its established luminance reference and never let an RGBA alpha plane
+        # distort the intensity range.
+        reference = (
+            reference[..., 0].astype(np.float32) * 0.299
+            + reference[..., 1].astype(np.float32) * 0.587
+            + reference[..., 2].astype(np.float32) * 0.114
+        )
+    percentiles = _exact_finite_percentiles(
+        reference,
+        (tail_percent, 100.0 - tail_percent),
     )
+    if percentiles is None:
+        return None
+    lower, upper = percentiles
     lower = float(lower)
     upper = float(upper)
     if not np.isfinite(lower) or not np.isfinite(upper) or upper <= lower:
@@ -14750,6 +16566,18 @@ def _auto_contrast_scale_offset(
     if not np.isfinite(alpha) or not np.isfinite(beta):
         return None
     return float(alpha), float(beta), lower, upper
+
+
+def _should_background_auto_contrast(data) -> bool:
+    """Keep exact percentile selection for large arrays off the GUI thread."""
+    try:
+        element_count = int(getattr(data, "size", 0))
+    except (TypeError, ValueError, OverflowError):
+        element_count = 0
+    return (
+        element_count > AUTO_CONTRAST_BACKGROUND_MIN_ELEMENTS
+        or _should_auto_background_data(data)
+    )
 
 
 def _safe_float(value, default: float) -> float:
@@ -14767,6 +16595,11 @@ def _rescale_dtype_output_range(
         return 0.0, 1.0, 1.0, 0
     if np.issubdtype(dtype, np.integer):
         info = np.iinfo(dtype)
+        if info.min < -(2**53) or info.max > 2**53:
+            # QDoubleSpinBox cannot distinguish adjacent int64/uint64 levels.
+            # Keep an exact, safe normalized default instead of installing a
+            # rounded value beyond the native dtype range.
+            return 0.0, 1.0, 1.0, 0
         return 0.0, float(info.max), 1.0, 0
     if np.issubdtype(dtype, np.floating):
         return 0.0, 1.0, 0.01, 3
@@ -14908,6 +16741,7 @@ def _input_histogram_markers(
     current_step=None,
     current_step_nsteps=None,
     params: dict | None = None,
+    progress=None,
 ) -> list[tuple[str, float, QColor]]:
     if operation_id == "rescale_intensity":
         return _rescale_percentile_markers(
@@ -14919,13 +16753,27 @@ def _input_histogram_markers(
             params=params,
         )
     if operation_id == "clip_intensity":
-        low = _safe_float((params or {}).get("minimum"), 0.0)
-        high = _safe_float((params or {}).get("maximum"), 255.0)
+        mode = str((params or {}).get("cutoff_mode", "Data range")).casefold()
+        if mode == "data range":
+            # Data-range mode describes the complete connected input. The
+            # inspector scope changes only the displayed histogram counts.
+            stats = _exact_finite_stats(data)
+            if stats.count == 0:
+                return []
+            low, high = stats.minimum, stats.maximum
+        elif mode == "values":
+            low = _finite_marker_value((params or {}).get("minimum"), "Clip minimum")
+            high = _finite_marker_value(
+                (params or {}).get("maximum"),
+                "Clip maximum",
+            )
+        else:
+            raise ValueError("Clip input cutoffs must be 'Data range' or 'Values'.")
         if low > high:
-            low, high = high, low
-        markers = [("min", float(low), QColor("#f59e0b"))]
-        if not np.isclose(low, high):
-            markers.append(("max", float(high), QColor("#38bdf8")))
+            raise ValueError("Clip minimum must not exceed the maximum.")
+        markers = [("min", low, QColor("#f59e0b"))]
+        if low != high:
+            markers.append(("max", high, QColor("#38bdf8")))
         return markers
     if operation_id == "binary_threshold":
         threshold = _safe_float((params or {}).get("threshold"), 0.0)
@@ -14949,18 +16797,41 @@ def _input_histogram_markers(
         )
         if source is None:
             return []
-        value = automatic_threshold_value(source[0], operation_id)
+        value = automatic_threshold_value(
+            source[0],
+            operation_id,
+            histogram_bins=(params or {}).get(
+                "histogram_bins",
+                256,
+            ),
+            max_iterations=(params or {}).get("max_iterations", 10_000),
+            progress=progress,
+        )
         if value is None or not np.isfinite(value):
             return []
-        return [("threshold", float(value), QColor("#f59e0b"))]
+        marker_value = (
+            int(value) if isinstance(value, (int, np.integer)) else float(value)
+        )
+        return [("threshold", marker_value, QColor("#f59e0b"))]
     return []
 
 
-def _input_histogram_draggable_markers(operation_id: str) -> set[str]:
+def _input_histogram_draggable_markers(
+    operation_id: str,
+    params: dict | None = None,
+) -> set[str]:
     if operation_id == "rescale_intensity":
-        return {"low", "high"}
+        if str(
+            (params or {}).get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+        ).lower().startswith("value"):
+            return {"low", "high"}
+        return set()
     if operation_id == "clip_intensity":
-        return {"min", "max"}
+        if str((params or {}).get("cutoff_mode", "Data range")).lower().startswith(
+            "value"
+        ):
+            return {"min", "max"}
+        return set()
     if operation_id == "binary_threshold":
         return {"threshold"}
     if operation_id == "hysteresis_threshold":
@@ -14998,110 +16869,196 @@ def _rescale_percentile_markers(
     current_step_nsteps=None,
     params: dict | None = None,
 ) -> list[tuple[str, float, QColor]]:
-    if params is not None and {
-        "in_low_value",
-        "in_high_value",
-    } <= set(params):
-        low, high = _rescale_value_pair(params)
-        markers = [("low", float(low), QColor("#f59e0b"))]
-        if not np.isclose(low, high):
-            markers.append(("high", float(high), QColor("#22c55e")))
+    mode = str(
+        (params or {}).get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+    ).casefold()
+    if mode == "values":
+        low, high = _rescale_value_pair(params or {})
+        markers = [("low", low, QColor("#f59e0b"))]
+        if low != high:
+            markers.append(("high", high, QColor("#22c55e")))
         return markers
+    if mode != "percentiles":
+        raise ValueError(
+            "Rescale Intensity input cutoffs must be 'Percentiles' or 'Values'."
+        )
 
-    source = _histogram_source(
-        data,
-        state=state,
-        scope=scope,
-        current_step=current_step,
-        current_step_nsteps=current_step_nsteps,
-    )
-    if source is None:
-        return []
-    values = _sample_histogram_values(source[0])
-    if values.size == 0:
-        return []
     low_p, high_p = _rescale_percentile_pair(params or {})
-    low, high = _percentile_cutoff_values(values, low_p, high_p)
-    markers = [("low", float(low), QColor("#f59e0b"))]
-    if not np.isclose(low, high):
-        markers.append(("high", float(high), QColor("#22c55e")))
+    # Rescale Intensity applies percentiles to the complete connected input.
+    # The inspector scope changes only the displayed histogram counts.
+    cutoffs = _exact_finite_percentiles(data, (low_p, high_p))
+    if cutoffs is None:
+        return []
+    low, high = cutoffs
+    markers = [("low", low, QColor("#f59e0b"))]
+    if low != high:
+        markers.append(("high", high, QColor("#22c55e")))
     return markers
 
 
-def _rescale_reference_values(data) -> np.ndarray:
-    arr = np.asarray(data)
-    if arr.size == 0:
-        return np.array([], dtype=np.float64)
-    values = arr.ravel()
+def _iter_finite_numeric_chunks(data):
+    """Yield finite numeric values without a full-size temporary mask."""
+    if data is None:
+        return
     try:
-        values = values[np.isfinite(values)]
-    except TypeError:
-        return np.array([], dtype=np.float64)
-    if values.size > 500_000:
-        stride = int(np.ceil(values.size / 500_000))
-        values = values[::stride]
-    return values.astype(np.float64, copy=False)
+        iterator = np.nditer(
+            np.asarray(data),
+            flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+            op_flags=[["readonly"]],
+            order="K",
+            buffersize=INSPECTOR_STATISTICS_CHUNK_ELEMENTS,
+        )
+    except (TypeError, ValueError):
+        return
+    for chunk in iterator:
+        values = np.asarray(chunk)
+        try:
+            finite = np.isfinite(values)
+        except TypeError:
+            return
+        if not finite.all():
+            values = values[finite]
+        yield values
+
+
+def _exact_finite_stats(data) -> ExactFiniteStats:
+    """Return exact finite count and extrema using bounded temporaries."""
+    arr = np.asarray(data)
+    integer_data = np.issubdtype(arr.dtype, np.integer)
+    count = 0
+    minimum: int | float | None = None
+    maximum: int | float | None = None
+    for values in _iter_finite_numeric_chunks(arr):
+        if values.size == 0:
+            continue
+        count += int(values.size)
+        chunk_minimum = (
+            int(values.min()) if integer_data else float(values.min())
+        )
+        chunk_maximum = (
+            int(values.max()) if integer_data else float(values.max())
+        )
+        minimum = chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+        maximum = chunk_maximum if maximum is None else max(maximum, chunk_maximum)
+    if count == 0:
+        return ExactFiniteStats(0, 0.0, 0.0)
+    assert minimum is not None and maximum is not None
+    return ExactFiniteStats(count, minimum, maximum)
+
+
+def _exact_generated_layer_contrast_limits(
+    data,
+) -> tuple[float, float] | None:
+    """Return display limits containing every finite value and zero.
+
+    Zero remains in the window because zero-valued background is common in
+    bioimages. Unlike the old signed-image path, negative results are not
+    clipped and no percentile approximation is used.
+    """
+    stats = _exact_finite_stats(data)
+    if stats.count == 0:
+        return None
+    low = min(float(stats.minimum), 0.0)
+    high = max(float(stats.maximum), 0.0)
+    if low == high:
+        if low == 0.0:
+            return (0.0, 1.0)
+        low, high = _expanded_bounds(low)
+    return (float(low), float(high))
+
+
+def _provisional_generated_layer_contrast_limits(
+    data,
+) -> tuple[float, float]:
+    """Return scan-free temporary limits while exact extrema are calculated."""
+    arr = np.asarray(data)
+    dtype = arr.dtype
+    if dtype == np.dtype(bool):
+        return (0.0, 1.0)
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        low = min(float(info.min), 0.0)
+        high = max(float(info.max), 0.0)
+        if low < high:
+            return (low, high)
+    return (0.0, 1.0)
+
+
+def _exact_finite_percentiles(
+    data,
+    percentiles: tuple[float, ...],
+) -> tuple[int | float | Rational, ...] | None:
+    """Calculate exact NumPy percentiles over every finite input value.
+
+    Extrema avoid a full-data copy. Interior percentiles necessarily retain
+    the finite values because exact order statistics cannot be recovered from
+    fixed display bins.
+    """
+    requested = tuple(float(np.clip(value, 0.0, 100.0)) for value in percentiles)
+    stats = _exact_finite_stats(data)
+    if stats.count == 0:
+        return None
+    if stats.minimum == stats.maximum:
+        return tuple(stats.minimum for _value in requested)
+    if all(value in {0.0, 100.0} for value in requested):
+        return tuple(
+            stats.minimum if value == 0.0 else stats.maximum
+            for value in requested
+        )
+
+    arr = np.asarray(data)
+    if np.issubdtype(arr.dtype, np.integer):
+        return exact_integer_percentiles(arr, requested)
+    values = np.empty(stats.count, dtype=arr.dtype)
+    offset = 0
+    for chunk in _iter_finite_numeric_chunks(arr):
+        if chunk.size == 0:
+            continue
+        stop = offset + int(chunk.size)
+        values[offset:stop] = chunk
+        offset = stop
+    if offset != stats.count:
+        raise RuntimeError("Finite-value count changed during percentile calculation.")
+    result = np.percentile(values, requested, overwrite_input=True)
+    return tuple(float(value) for value in np.asarray(result).ravel())
 
 
 def _rescale_percentile_pair(params: dict) -> tuple[float, float]:
-    low = _safe_float(params.get("in_low_percentile"), 0.0)
-    high = _safe_float(params.get("in_high_percentile"), 100.0)
-    low = float(np.clip(low, 0.0, 100.0))
-    high = float(np.clip(high, 0.0, 100.0))
-    if low > high:
-        low, high = high, low
-    return low, high
-
-
-def _rescale_value_pair(params: dict) -> tuple[float, float]:
-    low = _safe_float(params.get("in_low_value"), 0.0)
-    high = _safe_float(params.get("in_high_value"), 1.0)
-    if low > high:
-        low, high = high, low
-    return low, high
-
-
-def _percentile_cutoff_values(
-    values: np.ndarray,
-    low_percentile: float,
-    high_percentile: float,
-) -> tuple[float, float]:
-    if values.size == 0:
-        return 0.0, 1.0
-    low, high = np.percentile(
-        values.astype(np.float64, copy=False),
-        [low_percentile, high_percentile],
+    low = _finite_marker_value(params.get("in_low_percentile"), "Low percentile")
+    high = _finite_marker_value(
+        params.get("in_high_percentile"),
+        "High percentile",
     )
-    return float(low), float(high)
-
-
-def _percentiles_for_cutoff_values(
-    values: np.ndarray,
-    low_value: float,
-    high_value: float,
-) -> tuple[float, float]:
-    if values.size <= 1:
-        return 0.0, 100.0
-    sorted_values = np.sort(values.astype(np.float64, copy=False))
-    low = _percentile_for_cutoff_value(sorted_values, low_value)
-    high = _percentile_for_cutoff_value(sorted_values, high_value)
+    if not 0.0 <= low <= 100.0 or not 0.0 <= high <= 100.0:
+        raise ValueError("Rescale percentiles must be between 0 and 100.")
     if low > high:
-        low, high = high, low
+        raise ValueError("Rescale low percentile must not exceed the high percentile.")
     return low, high
 
 
-def _percentile_for_cutoff_value(
-    sorted_values: np.ndarray,
-    value: float,
-) -> float:
-    if sorted_values.size <= 1:
-        return 0.0
-    if value <= sorted_values[0]:
-        return 0.0
-    if value >= sorted_values[-1]:
-        return 100.0
-    index = int(np.searchsorted(sorted_values, float(value), side="left"))
-    return float(np.clip((index / (sorted_values.size - 1)) * 100.0, 0.0, 100.0))
+def _rescale_value_pair(params: dict) -> tuple[int | float, int | float]:
+    low = _finite_marker_value(params.get("in_low_value"), "Low input value")
+    high = _finite_marker_value(params.get("in_high_value"), "High input value")
+    if low > high:
+        raise ValueError(
+            "Rescale low input value must not exceed the high input value."
+        )
+    return low, high
+
+
+def _finite_marker_value(value, label: str) -> int | float:
+    if isinstance(value, (int, np.integer)) and not isinstance(
+        value,
+        (bool, np.bool_),
+    ):
+        return int(value)
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite number.") from exc
+    if not np.isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number.")
+    return parsed
 
 
 def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:
@@ -15109,21 +17066,6 @@ def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:
         return base_name
     channel_name = _RGB_VOLUME_CHANNELS[int(channel_index)][1]
     return f"{base_name} {channel_name}"
-
-
-def _rgb_channel_contrast_limits(data) -> tuple[float, float] | None:
-    arr = np.asarray(data)
-    if arr.size == 0:
-        return None
-    finite = arr[np.isfinite(arr)]
-    if finite.size == 0:
-        return None
-    high = float(finite.max())
-    if high <= 0.0:
-        return None
-    if np.issubdtype(arr.dtype, np.integer):
-        return (0.0, high)
-    return (0.0, max(high, 1.0))
 
 
 def _local_dim_value_from_viewer(
@@ -15236,7 +17178,7 @@ def _state_histogram_slice(
             current_step,
             current_step_nsteps=current_step_nsteps,
         )
-        result = np.take(result, index, axis=local_axis)
+        result = _axis_index_view(result, local_axis, index)
         remaining.pop(local_axis)
 
     if channel_axis is None or channel_axis not in remaining:
@@ -15544,6 +17486,12 @@ def _clamped_index(index: int, size: int) -> int:
     return int(np.clip(index, 0, maximum))
 
 
+def _axis_index_view(arr: np.ndarray, axis: int, index: int) -> np.ndarray:
+    selection = [slice(None)] * arr.ndim
+    selection[int(axis)] = int(index)
+    return arr[tuple(selection)]
+
+
 def _parse_int_list(value) -> list[int]:
     if value is None or value == "":
         return []
@@ -15564,104 +17512,229 @@ def _parse_int_list(value) -> list[int]:
 
 def _single_histogram(
     arr: np.ndarray,
-) -> tuple[np.ndarray | None, tuple[float, float] | None]:
+) -> tuple[np.ndarray | None, tuple[int | float, int | float] | None]:
     if arr.dtype == bool:
-        return np.bincount(arr.ravel().astype(np.uint8), minlength=2), (0.0, 1.0)
+        true_count = int(np.count_nonzero(arr))
+        return (
+            np.array([arr.size - true_count, true_count], dtype=np.int64),
+            (0.0, 1.0),
+        )
 
-    values = _sample_histogram_values(arr)
-    if values.size == 0:
+    stats = _exact_finite_stats(arr)
+    if stats.count == 0:
         return None, None
-
-    if np.issubdtype(values.dtype, np.integer):
-        finite_min = int(values.min())
-        finite_max = int(values.max())
-        if finite_min == finite_max:
-            return np.array([values.size], dtype=np.int64), (
-                float(finite_min),
-                float(finite_max),
-            )
-        if 0 <= finite_min and finite_max <= 255:
-            counts, _edges = np.histogram(values, bins=256, range=(0, 255))
-            x_range = (0.0, 255.0)
-        else:
-            counts, _edges = np.histogram(values, bins=128)
-            x_range = (float(finite_min), float(finite_max))
-    else:
-        finite_min = float(values.min())
-        finite_max = float(values.max())
-        if finite_min == finite_max:
-            return np.array([values.size], dtype=np.int64), (
-                finite_min,
-                finite_max,
-            )
-        counts, _edges = np.histogram(values, bins=128)
-        x_range = (finite_min, finite_max)
-    return counts, x_range
+    if stats.minimum == stats.maximum:
+        return np.array([stats.count], dtype=np.int64), (
+            stats.minimum,
+            stats.maximum,
+        )
+    if np.issubdtype(arr.dtype, np.integer):
+        return _exact_integer_display_histogram(arr, stats)
+    edges, x_range = _display_histogram_edges(stats)
+    return _exact_histogram_counts(arr, edges), x_range
 
 
 def _multichannel_histogram(
     arr: np.ndarray,
     channel_axis: int,
-) -> tuple[np.ndarray | None, tuple[float, float] | None]:
+) -> tuple[np.ndarray | None, tuple[int | float, int | float] | None]:
     channel_axis = int(np.clip(channel_axis, 0, arr.ndim - 1))
-    values_by_channel = [
-        _sample_histogram_values(np.take(arr, channel, axis=channel_axis))
+    channels = [
+        _axis_index_view(arr, channel_axis, channel)
         for channel in range(arr.shape[channel_axis])
     ]
-    values_by_channel = [values for values in values_by_channel if values.size]
-    if not values_by_channel:
+    channel_stats = [_exact_finite_stats(values) for values in channels]
+    valid_stats = [stats for stats in channel_stats if stats.count]
+    if not valid_stats:
         return None, None
 
-    if all(values.dtype == bool for values in values_by_channel):
-        counts = [
-            np.bincount(values.astype(np.uint8), minlength=2)
-            for values in values_by_channel
-        ]
+    if arr.dtype == bool:
+        counts = []
+        for values in channels:
+            true_count = int(np.count_nonzero(values))
+            counts.append(
+                np.array(
+                    [values.size - true_count, true_count],
+                    dtype=np.int64,
+                )
+            )
         return np.vstack(counts), (0.0, 1.0)
 
-    if all(np.issubdtype(values.dtype, np.integer) for values in values_by_channel):
-        finite_min = min(int(values.min()) for values in values_by_channel)
-        finite_max = max(int(values.max()) for values in values_by_channel)
-        if finite_min == finite_max:
-            counts = np.array(
-                [[values.size] for values in values_by_channel],
-                dtype=np.int64,
+    combined = ExactFiniteStats(
+        sum(stats.count for stats in valid_stats),
+        min(stats.minimum for stats in valid_stats),
+        max(stats.maximum for stats in valid_stats),
+    )
+    if combined.minimum == combined.maximum:
+        counts = np.array(
+            [[stats.count] for stats in channel_stats],
+            dtype=np.int64,
+        )
+        return counts, (combined.minimum, combined.maximum)
+    if np.issubdtype(arr.dtype, np.integer):
+        first_counts, x_range = _exact_integer_display_histogram(
+            channels[0],
+            combined,
+        )
+        histogram_minimum, histogram_maximum, bin_count = (
+            _integer_display_histogram_configuration(arr.dtype, combined)
+        )
+        counts = [first_counts]
+        counts.extend(
+            _exact_integer_display_histogram_counts(
+                values,
+                histogram_minimum=histogram_minimum,
+                histogram_maximum=histogram_maximum,
+                bin_count=bin_count,
             )
-            return counts, (float(finite_min), float(finite_max))
-        if 0 <= finite_min and finite_max <= 255:
-            bins = 256
-            hist_range = (0.0, 255.0)
-        else:
-            bins = 128
-            hist_range = (float(finite_min), float(finite_max))
-    else:
-        finite_min = min(float(values.min()) for values in values_by_channel)
-        finite_max = max(float(values.max()) for values in values_by_channel)
-        if finite_min == finite_max:
-            counts = np.array(
-                [[values.size] for values in values_by_channel],
-                dtype=np.int64,
-            )
-            return counts, (finite_min, finite_max)
-        bins = 128
-        hist_range = (finite_min, finite_max)
-
+            for values in channels[1:]
+        )
+        return np.vstack(counts), x_range
+    edges, x_range = _display_histogram_edges(combined)
     counts = [
-        np.histogram(values, bins=bins, range=hist_range)[0]
-        for values in values_by_channel
+        (
+            _exact_histogram_counts(values, edges)
+            if stats.count
+            else np.zeros(edges.size - 1, dtype=np.int64)
+        )
+        for values, stats in zip(channels, channel_stats, strict=True)
     ]
-    return np.vstack(counts), hist_range
+    return np.vstack(counts), x_range
 
 
-def _sample_histogram_values(arr: np.ndarray) -> np.ndarray:
-    values = np.asarray(arr).ravel()
-    if values.size == 0:
-        return values
-    values = values[np.isfinite(values)]
-    if values.size > 500_000:
-        stride = int(np.ceil(values.size / 500_000))
-        values = values[::stride]
-    return values
+def _exact_integer_display_histogram(
+    data,
+    stats: ExactFiniteStats,
+) -> tuple[np.ndarray, tuple[int, int]]:
+    histogram_minimum, histogram_maximum, bin_count = (
+        _integer_display_histogram_configuration(np.asarray(data).dtype, stats)
+    )
+    counts = _exact_integer_display_histogram_counts(
+        data,
+        histogram_minimum=histogram_minimum,
+        histogram_maximum=histogram_maximum,
+        bin_count=bin_count,
+    )
+    return counts, (histogram_minimum, histogram_maximum)
+
+
+def _integer_display_histogram_configuration(
+    dtype: np.dtype,
+    stats: ExactFiniteStats,
+) -> tuple[int, int, int]:
+    minimum = int(stats.minimum)
+    maximum = int(stats.maximum)
+    if 0 <= minimum and maximum <= 255:
+        return 0, 255, 256
+    level_span = maximum - minimum + 1
+    return minimum, maximum, min(INSPECTOR_DISPLAY_HISTOGRAM_BINS, level_span)
+
+
+def _exact_integer_display_histogram_counts(
+    data,
+    *,
+    histogram_minimum: int,
+    histogram_maximum: int,
+    bin_count: int,
+) -> np.ndarray:
+    """Count integer levels exactly after subtracting a Python-int offset."""
+    level_span = histogram_maximum - histogram_minimum + 1
+    counts = np.zeros(bin_count, dtype=np.int64)
+    if level_span <= 65_536:
+        native_counts = np.zeros(level_span, dtype=np.int64)
+        for values in _iter_finite_numeric_chunks(data):
+            if values.size == 0:
+                continue
+            levels, level_counts = np.unique(values, return_counts=True)
+            indices = np.fromiter(
+                (int(level) - histogram_minimum for level in levels),
+                dtype=np.intp,
+                count=levels.size,
+            )
+            native_counts[indices] += level_counts.astype(np.int64, copy=False)
+        if bin_count == level_span:
+            return native_counts
+        boundaries = (
+            np.arange(bin_count + 1, dtype=np.int64) * level_span // bin_count
+        )
+        return np.asarray(
+            [
+                native_counts[start:stop].sum(dtype=np.int64)
+                for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
+            ],
+            dtype=np.int64,
+        )
+
+    for values in _iter_finite_numeric_chunks(data):
+        if values.size == 0:
+            continue
+        levels, level_counts = np.unique(values, return_counts=True)
+        indices = np.fromiter(
+            (
+                min(
+                    ((int(level) - histogram_minimum) * bin_count) // level_span,
+                    bin_count - 1,
+                )
+                for level in levels
+            ),
+            dtype=np.intp,
+            count=levels.size,
+        )
+        np.add.at(counts, indices, level_counts.astype(np.int64, copy=False))
+    return counts
+
+
+def _display_histogram_edges(
+    stats: ExactFiniteStats,
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Return floating-point display edges after dtype-specific handling."""
+    return (
+        np.linspace(
+            stats.minimum,
+            stats.maximum,
+            INSPECTOR_DISPLAY_HISTOGRAM_BINS + 1,
+        ),
+        (stats.minimum, stats.maximum),
+    )
+
+
+def _exact_histogram_counts(data, edges: np.ndarray) -> np.ndarray:
+    counts = np.zeros(int(edges.size) - 1, dtype=np.int64)
+    for values in _iter_finite_numeric_chunks(data):
+        if values.size:
+            counts += np.histogram(values, bins=edges)[0]
+    return counts
+
+
+def _should_auto_background_data(data) -> bool:
+    """Return whether image-sized work should leave the GUI thread."""
+    if data is None or is_table_data(data):
+        return False
+    size = getattr(data, "size", None)
+    if size is None:
+        shape = getattr(data, "shape", None)
+        if shape is not None:
+            try:
+                size = int(np.prod(tuple(shape), dtype=np.int64))
+            except (TypeError, ValueError):
+                size = None
+    try:
+        element_count = int(size) if size is not None else 0
+    except (TypeError, ValueError, OverflowError):
+        element_count = 0
+    if element_count >= AUTO_BACKGROUND_MIN_ELEMENTS:
+        return True
+
+    nbytes = getattr(data, "nbytes", None)
+    if nbytes is None and element_count:
+        try:
+            nbytes = element_count * int(np.dtype(data.dtype).itemsize)
+        except (AttributeError, TypeError, ValueError):
+            nbytes = 0
+    try:
+        return int(nbytes or 0) >= AUTO_BACKGROUND_MIN_BYTES
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _histogram_series_colors(count: int, channel_axis_name: str = "") -> list[QColor]:
@@ -15783,7 +17856,15 @@ def _windows_memory_bytes() -> tuple[int | None, int | None]:
     return int(status.ullAvailPhys), int(status.ullTotalPhys)
 
 
-def _format_histogram_label(value: float) -> str:
+def _format_histogram_label(value: int | float | Rational) -> str:
+    if isinstance(value, Rational):
+        if value.denominator == 1:
+            return str(int(value))
+        whole = value.numerator // value.denominator
+        remainder = value - whole
+        return f"{whole} + {remainder.numerator}/{remainder.denominator}"
+    if isinstance(value, (int, np.integer)):
+        return str(int(value))
     if not np.isfinite(value):
         return ""
     if abs(value - round(value)) < 1e-9:
