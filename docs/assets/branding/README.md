@@ -1,7 +1,7 @@
 # VIPP logo
 
-VIPP stands for **Visual Image Processing Platform**. Its tagline is **A visual
-workflow platform for reproducible bioimage analysis.**
+VIPP stands for **Visual Image Processing Platform**. Its tagline is **Visual
+workflows for reproducible bioimage analysis.**
 
 The VIPP mark is a **voxel V**: connected square nodes form the initial of the
 platform while also suggesting image pixels moving through a visual workflow.

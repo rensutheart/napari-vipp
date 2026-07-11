@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "napari-vipp"
 version = "0.11.0a2"
-description = "A visual workflow platform for reproducible bioimage analysis"
+description = "Visual workflows for reproducible bioimage analysis"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
