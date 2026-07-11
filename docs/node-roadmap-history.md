@@ -5,8 +5,9 @@ This file preserves the longer node-roadmap discussion that was replaced on
 [node-roadmap.md](node-roadmap.md). It is useful historical context, but it is
 not the active planning source.
 
-Status: working discussion document
-Last reviewed: 2026-07-01
+Status: archived historical snapshot; not a current planning source
+
+Last reviewed: 2026-07-10
 
 This document prioritizes future VIPP nodes for bioimage analysis. It is not a
 commitment to reproduce every function in OpenCV, scikit-image, or SciPy.

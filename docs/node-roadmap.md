@@ -1,7 +1,8 @@
 # VIPP Node Roadmap
 
 Status: current node-family planning document
-Last reviewed: 2026-07-08
+
+Last reviewed: 2026-07-10
 
 This document tracks the node catalogue at the level of workflow capability:
 what VIPP can already do, which node families are still worth building, and
@@ -41,10 +42,12 @@ library feature parity. The important workflow families remain:
 - reproducible export and batch execution with explicit outputs and
   provenance.
 
-PSF generation, deconvolution foundations, and broader microscope import are
-active next-version work. Registration, model-backed segmentation, stitching,
-object tracking, and specialist mitochondrial indices remain later work unless
-a current validation or publication workflow needs them.
+PSF generation, deconvolution foundations, and optional microscope-reader
+routing are implemented foundations. Their remaining work is real-data
+validation, metadata coverage, and performance polish. Registration,
+model-backed segmentation, stitching, object tracking, and specialist
+mitochondrial indices remain later work unless a current validation or
+publication workflow needs them.
 
 ## Priority Definitions
 
@@ -106,7 +109,7 @@ and reproducible.
 | Named heterogeneous ports | Implemented | Required for labels + intensity, image + mask, image + PSF, and channel-pair analyses. | Add optional input-port semantics only where a real workflow needs them. |
 | Manual/cached execution | Baseline implemented | Prevents expensive measurements from live-recomputing on every parameter change. | Broaden cooperative cancellation and determinate progress coverage. |
 | Spatial scope and units | Partially implemented | Users must know whether operations are per-plane or volumetric and whether units are pixels or physical units. | Normalize wording across nodes and add direct physical-unit controls where the table route is awkward. |
-| Batch configuration and provenance | Partial | Batch outputs exist, but reproducibility needs saved run configuration and per-item manifests. | Keep as the next major workflow-hardening milestone after the active PSF/import release. |
+| Batch configuration and provenance | Partial | Batch outputs exist, but reproducibility needs saved run configuration and per-item manifests. | Keep as the next major workflow-hardening milestone after the 0.11 PSF/import foundation. |
 | OME-Zarr preview and lazy execution strategy | Partial | Large OME data must not be accidentally materialized for previews or eager-only nodes. | Add pyramids, preview controls, operation capability declarations, and materialization warnings. |
 | Optional microscope reader boundary | Initial foundation implemented | Nikon, Zeiss, Leica, Olympus, and other proprietary readers need optional dependencies and common metadata mapping without bloating the core install. | Validate the new optional reader routes against real sample files and expand per-format metadata extraction. |
 | Acquisition metadata normalization | Partial | PSF generation and publication provenance need objective, channel, wavelength, scale, scene, source identity, and upstream processing flags regardless of file format. | Extend every reader to populate the same normalized `ImageState`/source metadata fields where possible. |

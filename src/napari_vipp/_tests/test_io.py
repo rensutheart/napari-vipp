@@ -202,6 +202,19 @@ def test_write_image_rejects_stack_raster_export(tmp_path):
         write_image(np.zeros((3, 6, 7), dtype=np.uint8), path, format="png")
 
 
+def test_explicit_numpy_save_normalizes_path_and_honors_overwrite(tmp_path):
+    data = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    requested = tmp_path / "array"
+
+    saved = write_image(data, requested, format="npy")
+
+    assert saved == tmp_path / "array.npy"
+    assert saved.exists()
+    np.testing.assert_array_equal(np.load(saved), data)
+    with pytest.raises(FileExistsError):
+        write_image(data + 1, requested, format="npy", overwrite=False)
+
+
 @pytest.mark.parametrize(
     ("format", "expected_format"),
     [("ome-zarr", "ome-zarr-0.4"), ("ome-zarr-0.5", "ome-zarr-0.5")],

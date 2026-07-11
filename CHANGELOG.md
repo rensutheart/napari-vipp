@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+## 0.11.0a2 - 2026-07-11
+
+- Corrected the package's Python requirement to 3.12 or newer, matching the
+  installable OME-Zarr dependency baseline.
+- Added cross-platform Linux/Windows CI for manifest validation, linting,
+  packaging, and Qt-aware tests on representative supported Python versions.
+- Added contributor, support, security, conduct, issue, and pull-request
+  guidance for safer and more reviewable community participation.
+- Hardened graph restoration so invalid cycles, ports, duplicate input targets,
+  source-node targets, and tunnel definitions are rejected atomically.
+- Preserved dynamic output-count hints during workflow restore and stopped
+  invalid dynamic source ports from silently falling back to port 0, including
+  saved multi-channel Born-Wolf PSF outputs before runtime shape inference.
+- Fixed generated Python for incomplete multi-input nodes, invalid or colliding
+  identifiers, source-only graphs, custom entry-point names, generated-helper
+  collisions, and workflows whose node ids normalize to the same variable.
+- Tightened NumPy, workflow, and table output path validation, including NPY
+  suffix normalization and overwrite protection.
+- Improved background clipboard retry behavior and input-count consistency.
+- Added graph, operation-registry, export, I/O, documentation-link, and workflow
+  contract tests while replacing a slow redundant widget smoke test with a
+  focused palette invariant.
+- Reworked the README and user documentation, added a documentation index, and
+  reconciled planning, architecture, research, and release records with the
+  current 0.11 baseline.
+- Expanded the development example launcher to cover every bundled workflow,
+  list valid example ids, accept external JSON files, and reject misspelled ids
+  instead of silently opening an unrelated workflow.
+- Added a deterministic dark-theme documentation screenshot generator for
+  full-context, floating-workflow, focused-inspector, and 3D napari views.
+- Corrected the OME-Zarr label-export error so it points to the already
+  available image-linked analysis-dataset export.
+- Preserved saved `Select Table Columns` choices when its inspector opens
+  before an upstream manual measurement has been calculated.
+
 ## 0.11.0a1 - 2026-07-09
 
 - Changed the project license to BSD 3-Clause for compatibility with napari and

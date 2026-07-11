@@ -1,7 +1,8 @@
 # First-Class OME Import And Export
 
-Status: accepted architecture; Phase 1 complete, Phase 2 image foundation implemented  
-Last reviewed: 2026-06-20
+Status: accepted architecture; phases 1-3 foundations implemented
+
+Last reviewed: 2026-07-10
 
 This document defines how VIPP should treat OME-TIFF, OME-Zarr, and conventional
 TIFF/ImageJ files as first-class image sources and outputs.
@@ -150,7 +151,7 @@ processed array.
 
 ## Import Design
 
-### OME-TIFF
+### OME-TIFF Import
 
 Use `tifffile.TiffFile` for pixel/series access and `ome-types` for typed
 OME-XML parsing.
@@ -186,7 +187,7 @@ Field: 2
 The selected item remains one complete image, potentially containing all of
 its `T`, `C`, `Z`, `Y`, and `X` axes.
 
-### OME-Zarr
+### OME-Zarr Import
 
 Use `ome-zarr-py`/Zarr for OME-Zarr access and Dask-compatible arrays for
 chunked data.
@@ -219,7 +220,7 @@ suffixes.
 
 ## Export Design
 
-### OME-TIFF
+### OME-TIFF Export
 
 Write a real OME-TIFF/BigTIFF with OME-XML. Include, when valid:
 
@@ -255,7 +256,7 @@ Keep conventional TIFF for broad compatibility and for arrays that should not
 be forced into ImageJ conventions. Preserve integer label IDs and write basic
 resolution/unit tags where possible.
 
-### OME-Zarr
+### OME-Zarr Export
 
 Write:
 

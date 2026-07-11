@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
+import pytest
 
 from napari_vipp.core.export import export_pipeline_to_python
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 
 
 def _starter_pipeline() -> PrototypePipeline:
@@ -75,6 +78,106 @@ def test_export_handles_multi_input_nodes():
     # Multi-input call should pass a list of upstream variables.
     assert "add_images([" in code
     assert "add_images([v_input, v_gaussian]" in code
+
+
+def test_export_keeps_incomplete_multi_input_node_uncomputed():
+    pipeline = PrototypePipeline()
+    add = pipeline.add_node("add_images")
+    pipeline.connect("input", add.id, target_port=0)
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+
+    results = namespace["run_pipeline"](np.ones((3, 4), dtype=np.float32))
+    assert results[add.id] is None
+    assert f"v_{add.id} = None" in code
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bad-name",
+        "class",
+        "",
+        "OUTPUT_NODES",
+        "Path",
+        "batch_process",
+        "load_image",
+        "read_image",
+        "save_image",
+    ],
+)
+def test_export_rejects_invalid_function_name(name):
+    with pytest.raises(ValueError, match="function name"):
+        export_pipeline_to_python(PrototypePipeline(), function_name=name)
+
+
+def test_export_rejects_function_name_that_shadows_used_operation():
+    with pytest.raises(ValueError, match="function name"):
+        export_pipeline_to_python(
+            _starter_pipeline(),
+            function_name="gaussian_blur",
+        )
+
+
+def test_source_only_export_compiles_without_empty_operation_import():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.ones((3, 4), dtype=np.float32)
+
+    assert "from napari_vipp.core.operations import" not in code
+    np.testing.assert_array_equal(namespace["run_pipeline"](image)["input"], image)
+
+
+def test_custom_export_function_name_is_used_by_generated_harness():
+    pipeline = _starter_pipeline()
+
+    code = export_pipeline_to_python(pipeline, function_name="analyze_image")
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.ones((3, 4), dtype=np.float32)
+
+    assert "def analyze_image(" in code
+    assert "results = analyze_image(load_image(source_path))" in code
+    assert namespace["analyze_image"](image)["threshold"].dtype == bool
+
+
+def test_export_uses_unique_variables_for_colliding_node_identifiers():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    first = pipeline.add_node("linear_scale_offset")
+    second = pipeline.add_node("linear_scale_offset")
+    combined = pipeline.add_node("add_images")
+    pipeline.set_param(first.id, "alpha", 2.0)
+    pipeline.set_param(first.id, "beta", 0.0)
+    pipeline.set_param(second.id, "alpha", 3.0)
+    pipeline.set_param(second.id, "beta", 0.0)
+    renamed_ids = {first.id: "branch-a", second.id: "branch a"}
+    renamed_nodes = [
+        replace(node, id=renamed_ids.get(node.id, node.id))
+        for node in pipeline.nodes.values()
+    ]
+    pipeline.restore_graph(
+        renamed_nodes,
+        [
+            GraphConnection("input", "branch-a"),
+            GraphConnection("input", "branch a"),
+            GraphConnection("branch-a", combined.id, target_port=0),
+            GraphConnection("branch a", combined.id, target_port=1),
+        ],
+    )
+
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    image = np.ones((3, 4), dtype=np.float32)
+
+    np.testing.assert_array_equal(namespace["run_pipeline"](image)[combined.id], 5.0)
 
 
 def test_export_includes_richardson_lucy_deconvolution_call():

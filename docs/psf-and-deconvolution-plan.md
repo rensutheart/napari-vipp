@@ -1,7 +1,7 @@
 # PSF Generation And Deconvolution Plan
 
 Status: first implementation complete; follow-up validation and polish tracked below
-Last reviewed: 2026-07-08
+Last reviewed: 2026-07-10
 
 This plan tracks VIPP's restoration work: first-class point-spread functions
 and PSF-aware deconvolution. The immediate implementation target is

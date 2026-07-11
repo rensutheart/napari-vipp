@@ -9,12 +9,28 @@ harness so a tuned workflow can be run over a folder of images without napari.
 from __future__ import annotations
 
 import inspect
+import keyword
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
 
 _INDENT = " " * 4
+_RESERVED_FUNCTION_NAMES = {
+    "OUTPUT_NODES",
+    "Path",
+    "SOURCE_NODES",
+    "_table_output_path",
+    "argparse",
+    "batch_process",
+    "is_table_data",
+    "load_image",
+    "np",
+    "read_image",
+    "save_image",
+    "save_table_output",
+    "write_image",
+}
 
 
 def export_pipeline_to_python(
@@ -23,25 +39,37 @@ def export_pipeline_to_python(
     function_name: str = "run_pipeline",
 ) -> str:
     """Return Python source code that reproduces the pipeline headlessly."""
+    if not function_name.isidentifier() or keyword.iskeyword(function_name):
+        raise ValueError(f"Invalid exported function name: {function_name!r}.")
     order = pipeline.topological_order()
-    var_names = {node_id: _var_name(node_id) for node_id in order}
+    var_names = _unique_names(order, prefix="v")
 
     source_ids = [
         node_id
         for node_id in order
         if not NODE_LIBRARY_BY_ID[pipeline.nodes[node_id].operation_id].has_input
     ]
+    source_param_names = _unique_names(source_ids, prefix="src")
     terminal_ids = _terminal_nodes(pipeline, order)
     used_functions = _used_function_names(pipeline, order)
+    if (
+        function_name in _RESERVED_FUNCTION_NAMES
+        or function_name in used_functions
+    ):
+        raise ValueError(f"Invalid exported function name: {function_name!r}.")
 
     body_lines, missing = _build_function_body(
-        pipeline, order, var_names, function_name
+        pipeline,
+        order,
+        var_names,
+        source_param_names,
+        function_name,
     )
     header = _build_header(pipeline)
     imports = _build_imports(used_functions)
     helpers = _build_helpers()
     constants = _build_constants(source_ids, terminal_ids)
-    main = _build_main(source_ids)
+    main = _build_main(source_ids, function_name)
 
     sections = [header, imports, constants, "\n".join(body_lines), helpers, main]
     document = "\n\n\n".join(section for section in sections if section)
@@ -52,7 +80,7 @@ def export_pipeline_to_python(
 
 
 def _build_header(pipeline: PrototypePipeline) -> str:
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     node_count = len(pipeline.nodes)
     connection_count = len(pipeline.connections)
     return (
@@ -72,13 +100,17 @@ def _build_header(pipeline: PrototypePipeline) -> str:
 
 def _build_imports(function_names: list[str]) -> str:
     names = sorted(set(function_names))
-    inner = ",\n".join(f"{_INDENT}{name}" for name in names)
-    operations = f"from napari_vipp.core.operations import (\n{inner},\n)"
-    return (
-        f"{operations}\n"
-        "from napari_vipp.core.io import read_image, write_image\n"
-        "from napari_vipp.core.tables import is_table_data, save_table_output"
+    imports: list[str] = []
+    if names:
+        inner = ",\n".join(f"{_INDENT}{name}" for name in names)
+        imports.append(f"from napari_vipp.core.operations import (\n{inner},\n)")
+    imports.extend(
+        (
+            "from napari_vipp.core.io import read_image, write_image",
+            "from napari_vipp.core.tables import is_table_data, save_table_output",
+        )
     )
+    return "\n".join(imports)
 
 
 def _build_constants(source_ids: list[str], terminal_ids: list[str]) -> str:
@@ -94,6 +126,7 @@ def _build_function_body(
     pipeline: PrototypePipeline,
     order: list[str],
     var_names: dict[str, str],
+    source_param_names: dict[str, str],
     function_name: str,
 ) -> tuple[list[str], list[str]]:
     source_ids = [
@@ -103,7 +136,7 @@ def _build_function_body(
     ]
     params = []
     for index, node_id in enumerate(source_ids):
-        param = _source_param_name(node_id)
+        param = source_param_names[node_id]
         params.append(param if index == 0 else f"{param}=None")
     signature = ", ".join(params) if params else ""
 
@@ -117,11 +150,11 @@ def _build_function_body(
         spec = NODE_LIBRARY_BY_ID[node.operation_id]
         var = var_names[node_id]
         if not spec.has_input:
-            lines.append(f"{_INDENT}{var} = {_source_param_name(node_id)}")
+            lines.append(f"{_INDENT}{var} = {source_param_names[node_id]}")
             continue
 
-        connections = pipeline._input_connections(node_id)
-        if spec.function is None or not connections:
+        connections = _required_input_connections(pipeline, node)
+        if spec.function is None or connections is None:
             lines.append(f"{_INDENT}{var} = None  # {node.title}: no connected input")
             continue
 
@@ -146,6 +179,20 @@ def _build_function_body(
     )
     lines.append(f"{_INDENT}return {{{returns}}}")
     return lines, _dedupe(missing)
+
+
+def _required_input_connections(pipeline, node):
+    connections = pipeline._input_connections(node.id)
+    if not connections:
+        return None
+    multi_input = node.max_inputs is None or node.max_inputs != 1
+    if not multi_input:
+        return connections[:1]
+    required = pipeline._required_inputs_for(node)
+    by_port = {connection.target_port: connection for connection in connections}
+    if any(port not in by_port for port in range(required)):
+        return None
+    return [by_port[port] for port in range(required)]
 
 
 def _build_call(pipeline, node, spec, connections, var_names) -> str:
@@ -211,9 +258,10 @@ def _build_helpers() -> str:
     )
 
 
-def _build_main(source_ids: list[str]) -> str:
+def _build_main(source_ids: list[str], function_name: str) -> str:
     primary = source_ids[0] if source_ids else None
     feed = "load_image(in_path)" if primary else ""
+    batch_feed = "load_image(source_path)" if primary else ""
     return (
         "def batch_process(input_dir, output_dir, pattern=\"*.tif\"):\n"
         f'{_INDENT}"""Run the pipeline over every matching file in a folder."""\n'
@@ -221,7 +269,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}output_dir = Path(output_dir)\n"
         f"{_INDENT}output_dir.mkdir(parents=True, exist_ok=True)\n"
         f"{_INDENT}for source_path in sorted(input_dir.glob(pattern)):\n"
-        f"{_INDENT}{_INDENT}results = run_pipeline(load_image(source_path))\n"
+        f"{_INDENT}{_INDENT}results = {function_name}({batch_feed})\n"
         f"{_INDENT}{_INDENT}for name in OUTPUT_NODES:\n"
         f"{_INDENT}{_INDENT}{_INDENT}output = results.get(name)\n"
         f"{_INDENT}{_INDENT}{_INDENT}if output is None:\n"
@@ -249,7 +297,7 @@ def _build_main(source_ids: list[str]) -> str:
         f"{_INDENT}if in_path.is_dir():\n"
         f"{_INDENT}{_INDENT}batch_process(in_path, args.output, pattern=args.pattern)\n"
         f"{_INDENT}else:\n"
-        f"{_INDENT}{_INDENT}results = run_pipeline({feed})\n"
+        f"{_INDENT}{_INDENT}results = {function_name}({feed})\n"
         f"{_INDENT}{_INDENT}out_path = Path(args.output)\n"
         f"{_INDENT}{_INDENT}if len(OUTPUT_NODES) == 1:\n"
         f"{_INDENT}{_INDENT}{_INDENT}save_image(results[OUTPUT_NODES[0]], out_path)\n"
@@ -288,12 +336,19 @@ def _used_function_names(pipeline: PrototypePipeline, order: list[str]) -> list[
     return names
 
 
-def _var_name(node_id: str) -> str:
-    return f"v_{_identifier(node_id)}"
-
-
-def _source_param_name(node_id: str) -> str:
-    return f"src_{_identifier(node_id)}"
+def _unique_names(node_ids: list[str], *, prefix: str) -> dict[str, str]:
+    names: dict[str, str] = {}
+    used: set[str] = set()
+    for node_id in node_ids:
+        base = f"{prefix}_{_identifier(node_id)}"
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f"{base}_{suffix}"
+            suffix += 1
+        names[node_id] = candidate
+        used.add(candidate)
+    return names
 
 
 def _identifier(node_id: str) -> str:

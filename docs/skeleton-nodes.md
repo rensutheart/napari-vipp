@@ -1,5 +1,7 @@
 # Skeleton Nodes
 
+Last reviewed: 2026-07-10
+
 VIPP skeleton nodes are generic graph-analysis tools for curvilinear or
 network-like structures such as mitochondria, neurites, vessels, fibers, and
 similar segmented objects. They are not mitochondria-specific, but the same

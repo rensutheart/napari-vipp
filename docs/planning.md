@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-09
+Last reviewed: 2026-07-10
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -25,11 +25,11 @@ The core workflow families are:
   axes, channel, objective, and scale metadata;
 - reproducible batch execution with explicit outputs.
 
-PSF generation, deconvolution foundations, and broader microscope import are
-now active next-version work. Registration, model-backed segmentation,
-stitching, and AI-assisted graph authoring remain later milestones. They should
-not displace metadata fidelity, batch provenance, scalable previews, and
-scientific validation.
+PSF generation, deconvolution foundations, and optional microscope-reader
+routing are part of the 0.11 baseline. Near-term work is validation on real
+data, batch provenance, and scalable OME-Zarr previews. Registration,
+model-backed segmentation, stitching, and AI-assisted graph authoring remain
+later milestones.
 
 ## Reference Documents
 
@@ -56,10 +56,11 @@ scientific validation.
 
 ## Current Public Baseline
 
-Current public release: `0.11.0a1`.
+Current public release: `0.11.0a2`.
 
-The 0.11 alpha is now the PSF/restoration and microscope-import-foundation
-baseline on top of the 0.10 graph-readability and interactive-memory work.
+The 0.11 alpha is now the hardened PSF/restoration and
+microscope-import-foundation baseline on top of the 0.10 graph-readability and
+interactive-memory work.
 Implemented and documented work includes:
 
 - searchable categorized palette and searchable graph canvas;
@@ -71,7 +72,7 @@ Implemented and documented work includes:
   `Split Channels`, and explicit `Split Axis`;
 - workflow JSON with canvas positions, named tunnels, graph notes, selected
   inspector state, optional per-node thumbnail visibility, strict loading, and
-  old-workflow compatibility;
+  compatibility when optional VIPP UI metadata is absent;
 - Python export, first-pass collection batch execution, explicit `Batch Output`
   nodes, dry-run preview, multi-source bindings, and saved workflow/script
   artifacts;
@@ -237,14 +238,24 @@ Revisit only when very large workflows show the need:
 
 This remains later-platform work.
 
-Still needed:
+Architecture requirements:
 
-- provider-agnostic AI settings with user-managed keys and local-provider room;
-- generated workflow JSON from natural language plus the live node registry;
-- validation against real operation ids, port contracts, and parameter schemas;
-- preview/diff before applying generated graph changes;
-- optional sharing of metadata summaries and downsampled thumbnails;
-- no full-resolution pixel sharing by default.
+- keep a provider-neutral assistance contract; MCP may be an external adapter,
+  but not the internal graph representation;
+- accept a structured workflow patch that uses normal operation ids, typed
+  ports, and parameter schemas; never let a model mutate the graph directly;
+- validate the patch locally, show its assumptions and graph diff, and require
+  user approval before applying it;
+- expose only bounded, user-visible context such as metadata summaries,
+  thumbnails, sampled histograms, overlays, table previews, and known caveats;
+- support hosted and local/private providers without arbitrary code execution;
+- record provider, model, context summary, validation result, and approval in
+  workflow provenance for every applied patch.
+
+Candidate follow-up features can use the same contract for metadata audits,
+stale/error and memory-risk review, suspicious-output checks, and proposed
+parameter changes. The first implementation should prove safe graph generation
+and review before attempting automated tuning.
 
 ## Versioned Roadmap
 
@@ -285,6 +296,24 @@ Delivered:
   `ImageDataset`/`ImageState` boundaries with normalized first-pass metadata;
 - docs explain which vendor formats are supported, experimental, or still under
   evaluation.
+
+### Released: 0.11.0a2 - Workflow And Release Hardening
+
+Theme: make saved graphs, generated scripts, and packaged examples fail safely
+and behave consistently at the 0.11 baseline.
+
+Delivered:
+
+- atomic validation of restored connections, dynamic outputs, cycles, and
+  tunnel definitions;
+- generated-Python validation for incomplete, colliding, source-only, and
+  custom-entry-point graphs;
+- stricter output-path, overwrite, clipboard-retry, and input-count behavior;
+- complete example-launcher coverage with explicit unknown-id errors;
+- preservation of saved table-column choices before upstream manual
+  calculation;
+- cross-platform CI, package verification, community guidance, and
+  reproducible documentation screenshot capture.
 
 ### Next: 0.12.0a1 - Batch Configuration And Provenance
 
@@ -329,6 +358,12 @@ Release gate:
 
 - generated graphs are ordinary saved workflows;
 - invalid generated graphs are rejected before touching the canvas;
+- model output is a validated workflow patch, not direct graph mutation;
+- user-visible diff/assumption review is required before applying generated
+  changes;
+- AI context is bounded and uses metadata summaries plus optional low-resolution
+  previews, not full-resolution pixels by default;
+- applied AI changes record provider/model/context/provenance summaries;
 - docs clearly state what leaves the machine for hosted providers.
 
 ## Later Milestones

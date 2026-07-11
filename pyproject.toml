@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "napari-vipp"
-version = "0.11.0a1"
+version = "0.11.0a2"
 description = "Visual image processing pipelines for napari"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     {name = "Rensu P. Theart"},
 ]
@@ -26,6 +26,7 @@ classifiers = [
     "Framework :: napari",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Image Processing",
@@ -48,8 +49,10 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/rensutheart/napari-vipp"
+Documentation = "https://rensutheart.github.io/vipp-mkdocs/"
 Repository = "https://github.com/rensutheart/napari-vipp"
 Issues = "https://github.com/rensutheart/napari-vipp/issues"
+Discussions = "https://github.com/rensutheart/napari-vipp/discussions"
 
 [project.optional-dependencies]
 czi = [

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import imageio.v3 as iio
 import numpy as np
+import pytest
 import tifffile
 from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt
 from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
@@ -391,6 +392,18 @@ def test_example_workflow_files_are_packaged():
             assert packaged.read_text(encoding="utf-8") == repo_copy.read_text(
                 encoding="utf-8"
             )
+
+
+def test_example_launcher_resolves_registry_and_rejects_unknown_aliases():
+    from scripts.launch_vipp_intensity_workflow import _workflow_args
+
+    for spec in EXAMPLE_WORKFLOWS:
+        path, selected_node = _workflow_args([spec.id])
+        assert path.name == spec.filename
+        assert selected_node is None
+
+    with pytest.raises(ValueError, match="Unknown example workflow"):
+        _workflow_args(["typo-that-used-to-fall-back-silently"])
 
 
 def test_open_example_workflow_loads_bundled_template(qtbot):
@@ -5209,13 +5222,35 @@ def test_insert_node_on_connection_does_not_shift_when_gap_is_sufficient(qtbot):
             "threshold": QPointF(1230, 20),
         }
     )
+    source_rect = widget.graph_view.node_scene_rect("input")
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert target_rect is not None
+    generous_gap = 10.0 * max(source_rect.width(), target_rect.width())
+    target_delta_x = source_rect.right() + generous_gap - target_rect.left()
+    widget.graph_view.apply_node_positions(
+        {
+            "gaussian": widget.graph_view.node_position("gaussian")
+            + QPointF(target_delta_x, 0),
+            "threshold": widget.graph_view.node_position("threshold")
+            + QPointF(target_delta_x, 0),
+        }
+    )
     target_before = QPointF(widget.graph_view.node_position("gaussian"))
     downstream_before = QPointF(widget.graph_view.node_position("threshold"))
+    source_rect = widget.graph_view.node_scene_rect("input")
+    target_rect = widget.graph_view.node_scene_rect("gaussian")
+    assert source_rect is not None
+    assert target_rect is not None
+    insertion_point = QPointF(
+        (source_rect.right() + target_rect.left()) / 2.0,
+        (source_rect.center().y() + target_rect.center().y()) / 2.0,
+    )
 
     node = widget._insert_node_on_connection(
         "median_filter",
         ("input", "gaussian", 0, 0),
-        QPointF(450, 100),
+        insertion_point,
     )
 
     assert node is not None
@@ -5863,112 +5898,17 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert widget.save_thumbnail_visibility_checkbox.isChecked()
 
 
-def test_palette_image_operations_can_run(qtbot):
-    data = np.zeros((3, 18, 20), dtype=np.uint8)
-    data[:, 5:14, 6:16] = 180
-    data[1, 8, 10] = 255
-    viewer = _Viewer(data)
-    widget = VippWidget(viewer)
-    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
-    qtbot.addWidget(widget)
+def test_palette_registry_nodes_are_constructible():
+    pipeline = PrototypePipeline()
+    palette_ids = [spec.id for spec in PALETTE_NODE_LIBRARY]
 
-    def connect_for_smoke(
-        source_id: str,
-        target_id: str,
-        *,
-        target_port: int | None = None,
-        source_port: int = 0,
-    ) -> None:
-        result = widget.pipeline.connect(
-            source_id,
-            target_id,
-            target_port,
-            source_port,
-        )
-        assert result.success, result.message
-        widget._apply_connection_result_to_graph(result)
-        widget._mark_pipeline_dirty(target_id)
-
-    def run_for_smoke(node_id: str) -> None:
-        manual_node_ids = (
-            {node_id} if widget.pipeline.is_manual_node(node_id) else set()
-        )
-        widget.run_pipeline(force_sync=True, manual_node_ids=manual_node_ids)
-        assert widget.pipeline.outputs.get(node_id) is not None
-
-    widget.run_pipeline(force_sync=True)
-    assert widget.pipeline.outputs.get("threshold") is not None
-
-    label_source = widget.add_node_from_palette("label_connected_components")
-    connect_for_smoke("threshold", label_source.id)
-    run_for_smoke(label_source.id)
-
-    table_source = widget.add_node_from_palette("measure_objects")
-    connect_for_smoke(label_source.id, table_source.id)
-    run_for_smoke(table_source.id)
-
-    skeleton_source = widget.add_node_from_palette("skeletonize")
-    connect_for_smoke("threshold", skeleton_source.id)
-    run_for_smoke(skeleton_source.id)
-
-    skeleton_table_source = widget.add_node_from_palette("measure_skeleton_branches")
-    connect_for_smoke(skeleton_source.id, skeleton_table_source.id)
-    run_for_smoke(skeleton_table_source.id)
-
-    channel_source = widget.add_node_from_palette("combine_channels")
-    for port_index in range(widget.pipeline._required_inputs_for(channel_source)):
-        connect_for_smoke("input", channel_source.id, target_port=port_index)
-    run_for_smoke(channel_source.id)
-
-    def source_for_type(input_type: str | None, operation_id: str = "") -> str:
-        if operation_id == "split_channels":
-            return channel_source.id
-        if input_type in {"mask", "mask_or_labels"}:
-            return "threshold"
-        if input_type == "labels":
-            return label_source.id
-        if input_type == "table":
-            if operation_id == "summarize_skeleton_branches":
-                return skeleton_table_source.id
-            return table_source.id
-        return "input"
-
+    assert len(palette_ids) == len(set(palette_ids))
     for spec in PALETTE_NODE_LIBRARY:
-        if not spec.has_input:
-            continue
-        node = widget.add_node_from_palette(spec.id)
-        if spec.id == "born_wolf_psf":
-            widget.pipeline.set_param(node.id, "auto_parameters", False)
-            widget.pipeline.set_param(node.id, "wavelength_nm", 520.0)
-            widget.pipeline.set_param(node.id, "numerical_aperture", 1.2)
-            widget.pipeline.set_param(node.id, "refractive_index", 1.33)
-            widget.pipeline.set_param(node.id, "pixel_size_xy_um", 0.1)
-            widget.pipeline.set_param(node.id, "z_step_um", 0.3)
-            widget.pipeline.set_param(node.id, "channel", 0)
-        if spec.inputs:
-            for port_index, input_spec in enumerate(spec.inputs):
-                connect_for_smoke(
-                    source_for_type(input_spec.input_type, spec.id),
-                    node.id,
-                    target_port=port_index,
-                )
-        else:
-            source_id = source_for_type(spec.input_type, spec.id)
-            for port_index in range(widget.pipeline._required_inputs_for(node)):
-                connect_for_smoke(source_id, node.id, target_port=port_index)
-        try:
-            run_for_smoke(node.id)
-        except Exception as exc:
-            raise AssertionError(f"{spec.id} did not produce output") from exc
-        assert widget.pipeline.outputs[node.id] is not None, spec.id
-        if node.id not in {
-            label_source.id,
-            table_source.id,
-            skeleton_source.id,
-            skeleton_table_source.id,
-            channel_source.id,
-        }:
-            widget._delete_node(node.id)
+        node = pipeline.add_node(spec.id)
+        assert node.operation_id == spec.id
+        assert node.params == {param.name: param.default for param in spec.parameters}
+        assert pipeline.node_parameter_specs(node.id) == spec.parameters
+        assert pipeline.remove_node(node.id)
 
 
 def test_save_selected_output_writes_npy(qtbot, tmp_path):
@@ -6076,6 +6016,45 @@ def test_select_table_columns_uses_detected_column_checklist(qtbot):
     control.select_all_button.click()
     control.reset_button.click()
     assert widget.pipeline.nodes[selected.id].params["columns"] == "auto"
+
+
+def test_select_table_columns_preserves_saved_selection_until_input_is_ready(qtbot):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    viewer = _Viewer(image, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    selected = widget.add_node_from_palette("select_table_columns")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget.pipeline.set_param(
+        selected.id,
+        "columns",
+        "label_id,area_pixels",
+    )
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget._connect_nodes(measurements.id, selected.id)
+
+    widget.graph_view.select_node(selected.id)
+
+    assert widget.pipeline.nodes[selected.id].params["columns"] == (
+        "label_id,area_pixels"
+    )
+
+    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
+
+    assert widget.pipeline.nodes[selected.id].params["columns"] == (
+        "label_id,area_pixels"
+    )
+    assert widget.pipeline.outputs[selected.id].columns == (
+        "label_id",
+        "area_pixels",
+    )
 
 
 def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):

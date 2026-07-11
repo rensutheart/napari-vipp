@@ -1,16 +1,18 @@
 # VIPP Developer and Architecture Notes
 
+Last reviewed: 2026-07-10
+
 This page is the technical entry point for contributors. It maps common
 development questions to the canonical architecture and planning documents.
 
 ## Start Here
 
-- Core architecture: `docs/architecture.md`
-- Implementation planning and priorities: `docs/planning.md`
-- Node roadmap and migration choices: `docs/node-roadmap.md`
-- Object and 3D mesh morphology plan: `docs/object-mesh-morphology-plan.md`
-- I/O behavior contract: `docs/io-user-guide.md`
-- OME architecture and constraints: `docs/ome-io-plan.md`
+- [Documentation index](README.md)
+- [Core architecture](architecture.md)
+- [Implementation planning and priorities](planning.md)
+- [Node roadmap and migration choices](node-roadmap.md)
+- [I/O behavior contract](io-user-guide.md)
+- [OME architecture and constraints](ome-io-plan.md)
 
 ## Runtime Model (Quick Index)
 
@@ -50,4 +52,4 @@ Focused test modules are located under `src/napari_vipp/_tests/`.
 
 - End-user workflow guide: `docs/user-guide.md`
 - Operator performance tuning: `docs/operator-tips.md`
-- Technical architecture references: this page and linked docs above.
+- Technical architecture references: this page and the links above.

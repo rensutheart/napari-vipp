@@ -421,6 +421,7 @@ SPATIAL_OPERATIONS = {
 
 
 DEFAULT_DYNAMIC_OUTPUT_PORTS = 3
+DYNAMIC_OUTPUT_COUNT_PARAM = "_vipp_dynamic_output_count"
 
 
 def _split_channels_outputs(count: int) -> tuple[OutputSpec, ...]:
@@ -3603,24 +3604,50 @@ class PrototypePipeline:
     ) -> None:
         """Replace the current graph with deserialized nodes and connections."""
         node_list = list(nodes)
-        self.nodes = {node.id: _clone_node(node) for node in node_list}
-        if len(self.nodes) != len(node_list):
+        connection_list = list(connections)
+        tunnel_list = list(output_tunnels or ())
+        restored = object.__new__(type(self))
+        restored.nodes = {}
+        for node in node_list:
+            try:
+                spec = NODE_LIBRARY_BY_ID[node.operation_id]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Cannot restore unknown operation {node.operation_id!r}."
+                ) from exc
+            restored.nodes[node.id] = GraphNode(
+                node.id,
+                spec.id,
+                spec.title,
+                spec.category,
+                spec.input_type,
+                spec.output_type,
+                dict(node.params),
+                spec.max_inputs,
+            )
+        if len(restored.nodes) != len(node_list):
             raise ValueError("Cannot restore a graph with duplicate node ids.")
-        valid = set(self.nodes)
-        self.connections = list(connections)
-        self.outputs = {node_id: None for node_id in self.nodes}
-        self.output_states = {node_id: None for node_id in self.nodes}
-        self.node_outputs = {node_id: [] for node_id in self.nodes}
-        self.node_output_states = {node_id: [] for node_id in self.nodes}
-        self.output_tunnels = {}
-        self.completed_node_ids = set()
-        self.node_execution_states = {
-            node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
+        valid = set(restored.nodes)
+        restored.connections = connection_list
+        restored.outputs = {node_id: None for node_id in restored.nodes}
+        restored.output_states = {node_id: None for node_id in restored.nodes}
+        restored.node_outputs = {node_id: [] for node_id in restored.nodes}
+        restored.node_output_states = {node_id: [] for node_id in restored.nodes}
+        restored.output_tunnels = {}
+        restored.completed_node_ids = set()
+        restored.node_execution_states = {
+            node_id: EXECUTION_NOT_CALCULATED for node_id in restored.nodes
         }
-        self.node_execution_messages = {node_id: "" for node_id in self.nodes}
-        for tunnel in output_tunnels or ():
-            self._restore_output_tunnel(tunnel)
-        for connection in self.connections:
+        restored.node_execution_messages = {
+            node_id: "" for node_id in restored.nodes
+        }
+        restored._counters = Counter()
+        restored._ensure_dynamic_output_hints(connection_list, tunnel_list)
+        for tunnel in tunnel_list:
+            restored._restore_output_tunnel(tunnel)
+
+        occupied_inputs: set[tuple[str, int]] = set()
+        for connection in restored.connections:
             if (
                 connection.source_id not in valid
                 or connection.target_id not in valid
@@ -3629,10 +3656,32 @@ class PrototypePipeline:
                     "Cannot restore a connection that references a missing node: "
                     f"{connection.source_id!r} -> {connection.target_id!r}."
                 )
-            self._validate_restored_connection(connection)
-        self._counters = Counter()
-        for node in self.nodes.values():
-            self._counters[node.operation_id] += 1
+            target_slot = (connection.target_id, connection.target_port)
+            if target_slot in occupied_inputs:
+                raise ValueError(
+                    "Cannot restore multiple connections to "
+                    f"{connection.target_id!r} input {connection.target_port}."
+                )
+            occupied_inputs.add(target_slot)
+            restored._validate_restored_connection(connection)
+        cyclic_nodes = restored._cyclic_node_ids()
+        if cyclic_nodes:
+            names = ", ".join(repr(node_id) for node_id in cyclic_nodes)
+            raise ValueError(f"Cannot restore a graph containing a cycle: {names}.")
+
+        for node in restored.nodes.values():
+            restored._counters[node.operation_id] += 1
+        self.nodes = restored.nodes
+        self.connections = restored.connections
+        self.outputs = restored.outputs
+        self.output_states = restored.output_states
+        self.node_outputs = restored.node_outputs
+        self.node_output_states = restored.node_output_states
+        self.output_tunnels = restored.output_tunnels
+        self.completed_node_ids = restored.completed_node_ids
+        self.node_execution_states = restored.node_execution_states
+        self.node_execution_messages = restored.node_execution_messages
+        self._counters = restored._counters
 
     def topological_order(self) -> list[str]:
         """Return node ids in dependency order (sources first).
@@ -4039,6 +4088,14 @@ class PrototypePipeline:
 
     def _validate_restored_connection(self, connection: GraphConnection) -> None:
         target = self.nodes[connection.target_id]
+        if connection.source_id == connection.target_id:
+            raise ValueError("Cannot restore a connection from a node to itself.")
+        if connection.target_port < 0 or connection.source_port < 0:
+            raise ValueError("Cannot restore a connection with a negative port.")
+        if not target.has_input:
+            raise ValueError(
+                f"Cannot restore a connection to source node {connection.target_id!r}."
+            )
         input_count = self.input_port_count(connection.target_id)
         if connection.target_port >= input_count:
             raise ValueError(
@@ -4074,6 +4131,48 @@ class PrototypePipeline:
                     f"Connection tunnel {connection.tunnel_name!r} does not match "
                     "its declared source output."
                 )
+
+    def _ensure_dynamic_output_hints(
+        self,
+        connections: Iterable[GraphConnection],
+        output_tunnels: Iterable[OutputTunnel],
+    ) -> None:
+        """Keep referenced dynamic ports available until source data is loaded."""
+        required_counts: dict[str, int] = {}
+        for item in (*tuple(connections), *tuple(output_tunnels)):
+            source_id = item.source_id
+            source_port = int(item.source_port)
+            if source_id not in self.nodes or source_port < 0:
+                continue
+            required_counts[source_id] = max(
+                required_counts.get(source_id, 0),
+                source_port + 1,
+            )
+        for source_id, required in required_counts.items():
+            node = self.nodes[source_id]
+            spec = self.operation_spec(node.operation_id)
+            if spec.output_factory is None:
+                continue
+            current = _dynamic_output_count_hint(node.params)
+            if required > max(current or 0, DEFAULT_DYNAMIC_OUTPUT_PORTS):
+                node.params[DYNAMIC_OUTPUT_COUNT_PARAM] = required
+
+    def _cyclic_node_ids(self) -> tuple[str, ...]:
+        indegree = {node_id: 0 for node_id in self.nodes}
+        downstream: dict[str, list[str]] = {node_id: [] for node_id in self.nodes}
+        for connection in self.connections:
+            indegree[connection.target_id] += 1
+            downstream[connection.source_id].append(connection.target_id)
+        ready = [node_id for node_id in self.nodes if indegree[node_id] == 0]
+        visited: set[str] = set()
+        while ready:
+            node_id = ready.pop()
+            visited.add(node_id)
+            for target_id in downstream[node_id]:
+                indegree[target_id] -= 1
+                if indegree[target_id] == 0:
+                    ready.append(target_id)
+        return tuple(node_id for node_id in self.nodes if node_id not in visited)
 
     def _restore_output_tunnel(self, tunnel: OutputTunnel) -> None:
         self._validate_new_output_tunnel(tunnel)
@@ -4126,7 +4225,10 @@ class PrototypePipeline:
             if inferred is None:
                 count = len(self.node_outputs.get(node_id, ()))
                 if count <= 0:
-                    count = DEFAULT_DYNAMIC_OUTPUT_PORTS
+                    count = (
+                        _dynamic_output_count_hint(node.params)
+                        or DEFAULT_DYNAMIC_OUTPUT_PORTS
+                    )
             else:
                 count = inferred
             ports = spec.output_factory(count)
@@ -4271,7 +4373,7 @@ class PrototypePipeline:
         state = self._resolved_output_state(source_id, source_port)
         shape = self._resolved_output_shape(source_id, source_port)
         count = _state_channel_count(state, shape)
-        return max(count, 1) if count is not None else 1
+        return max(count, 1) if count is not None else None
 
     def _labeled_split_axis_ports(
         self,
@@ -4361,7 +4463,7 @@ class PrototypePipeline:
         if outputs:
             if 0 <= source_port < len(outputs):
                 return outputs[source_port]
-            return outputs[0]
+            return None
         return self.outputs.get(source_id)
 
     def _resolved_output_state(
@@ -4371,7 +4473,7 @@ class PrototypePipeline:
         if states:
             if 0 <= source_port < len(states):
                 return states[source_port]
-            return states[0]
+            return None
         return self.output_states.get(source_id)
 
     def node_parameter_specs(self, node_id: str) -> tuple[ParameterSpec, ...]:
@@ -5499,6 +5601,17 @@ def _clean_tunnel_name(name: str) -> str:
 
 def _tunnel_key(name: str) -> str:
     return _clean_tunnel_name(name).casefold()
+
+
+def _dynamic_output_count_hint(params: dict[str, Any]) -> int | None:
+    value = params.get(DYNAMIC_OUTPUT_COUNT_PARAM)
+    if isinstance(value, bool):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 0 else None
 
 
 def _default_combined_channel_axis(input_state: ImageState | None) -> int:

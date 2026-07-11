@@ -1,0 +1,47 @@
+name: Focused usage question
+description: Report a narrowly reproducible VIPP question; prefer Discussions for open-ended help
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For installation help, workflow design, and open-ended questions, prefer [GitHub Discussions](https://github.com/rensutheart/napari-vipp/discussions). Use this form when a precise, reproducible question needs issue tracking.
+  - type: input
+    id: version
+    attributes:
+      label: napari-vipp version
+      placeholder: 0.11.0a2
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the analysis goal and the output you need.
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Input characteristics
+      description: Describe image dimensions, axes, dtype, calibration, and file format without sharing restricted data.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Name the nodes, example workflow, or documentation page you used and explain where you became stuck.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the documentation and existing issues.
+          required: true
+        - label: I removed confidential, identifiable, and ethics-restricted information.
+          required: true

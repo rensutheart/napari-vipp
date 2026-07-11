@@ -1,6 +1,8 @@
 # Colocalization And RACC Plan
 
-Last reviewed: 2026-07-03
+Status: implementation record; core nodes complete, follow-up work tracked below
+
+Last reviewed: 2026-07-10
 
 This document tracks the VIPP colocalization phase. The goal is to support
 transparent two-channel colocalization workflows, per-object/object-association

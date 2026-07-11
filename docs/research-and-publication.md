@@ -1,6 +1,6 @@
 # Research And Publication Record
 
-Last reviewed: 2026-07-04
+Last reviewed: 2026-07-10
 
 This file is the persistent record for a future VIPP journal paper and public
 online documentation. It separates design intent from claims that have been
@@ -20,7 +20,9 @@ Primary workflow domains:
 - pixel-based and object-based colocalization;
 - 2D images, true 3D fluorescence z-stacks, and time/channel dimensions.
 
-Registration and deconvolution are deliberately later scope.
+PSF-aware deconvolution now has an implemented foundation but still needs
+reference and real-data validation before it can support publication claims.
+Registration remains later scope.
 
 The mitochondrial measurement target is also exploratory and statistical: VIPP
 should eventually extract selectable high-dimensional object, intensity,
@@ -73,6 +75,8 @@ Implemented and covered by automated tests:
 - ImageJ hyperstack axes and calibration;
 - lazy OME-Zarr image reads;
 - OME-Zarr label groups and image-plus-label analysis package export.
+- Born-Wolf PSF generation, measured-PSF preparation, and 2D/3D
+  Richardson-Lucy/Richardson-Lucy-TV execution with deterministic examples.
 
 Not yet evidence-backed and therefore not suitable as paper claims:
 
@@ -81,6 +85,8 @@ Not yet evidence-backed and therefore not suitable as paper claims:
 - numerical equivalence to Fiji, CellProfiler, scikit-image, or other tools
   across a benchmark corpus;
 - reproducible collection batch execution;
+- numerical or biological validation of deconvolution outputs on a reference
+  corpus;
 - complete OME metadata fidelity;
 - HCS plate/well/field interoperability;
 - biological validity of segmentation or measurement workflows;
@@ -130,6 +136,7 @@ Target paper release artifacts:
 
 Use these persistent roles:
 
+- `docs/README.md`: audience-oriented documentation index;
 - `README.md`: product overview and installation entry point;
 - `docs/io-user-guide.md`: user-facing import/export behavior;
 - `docs/planning.md`: current priorities and milestones;

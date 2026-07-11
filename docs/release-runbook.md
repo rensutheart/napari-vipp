@@ -1,11 +1,14 @@
 # VIPP Alpha Release Runbook
 
+Last reviewed: 2026-07-10
+
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
 
 ## Scope
 
-- Target package version for the next alpha: `0.11.0a1`
+- Target package version: set `<version>` from the release milestone before
+  starting; do not reuse the current package version by accident.
 - Release maturity: Alpha
 - Distribution channels: PyPI, GitHub release, napari hub index
 
@@ -18,7 +21,7 @@ and confirming discovery on napari hub.
 
 Recommended local tools:
 
-- Python 3.10+
+- Python 3.12+
 - `python -m pip install -U build twine`
 
 ## 2. Verify Metadata
@@ -35,7 +38,7 @@ Confirm these are set:
 - CHANGELOG has an `Unreleased` section or a dated section for the target
   version with the release highlights
 
-Optional but recommended checks:
+Required checks:
 
 - `python -m npe2 validate src/napari_vipp/napari.yaml`
 - `python -m ruff check .`
@@ -47,14 +50,17 @@ From repository root:
 
 ```powershell
 python -m pip install -U build twine
-python -m build
-python -m twine check dist/*
+python -m build --outdir "dist/<version>"
+python -m twine check "dist/<version>/*"
 ```
 
 Expected output artifacts:
 
-- `dist/napari_vipp-<version>.tar.gz`
-- `dist/napari_vipp-<version>-py3-none-any.whl`
+- `dist/<version>/napari_vipp-<version>.tar.gz`
+- `dist/<version>/napari_vipp-<version>-py3-none-any.whl`
+
+Using a version-specific directory prevents an upload command from including
+artifacts from an older release.
 
 ## 4. Publish To PyPI
 
@@ -63,7 +69,7 @@ Set token in the shell (PowerShell):
 ```powershell
 $env:TWINE_USERNAME = "__token__"
 $env:TWINE_PASSWORD = "<pypi-api-token>"
-python -m twine upload dist/*
+python -m twine upload "dist/<version>/*"
 ```
 
 Post-upload validation:
@@ -82,7 +88,14 @@ git tag -a v<version> -m "napari-vipp <version> alpha"
 git push origin v<version>
 ```
 
-Create release page in GitHub UI:
+Prepare the release notes body below in a temporary file, then create the
+release with GitHub CLI (or use the equivalent GitHub UI fields):
+
+```powershell
+gh release create v<version> --prerelease --verify-tag --notes-file release-notes.md
+```
+
+If using the GitHub UI:
 
 1. GitHub repository -> Releases -> Draft a new release
 2. Tag: `v<version>`
@@ -90,7 +103,8 @@ Create release page in GitHub UI:
 4. Mark as pre-release: enabled
 5. Add release notes (suggested template below)
 
-Suggested release notes body:
+Write release highlights from the target CHANGELOG section. The following is a
+structure, not a reusable list of 0.11 features:
 
 ```markdown
 ## napari-vipp v<version> (Alpha)
@@ -103,16 +117,9 @@ This is an early alpha build and is still in active development.
 - This release is distributed under the BSD 3-Clause License.
 
 ### Highlights
-- Added PSF-aware restoration nodes: Born-Wolf PSF generation, PSF preparation,
-  baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution.
-- Added deterministic 2D and 3D deconvolution samples and example workflows.
-- Added optional microscope-reader routing for ND2, CZI/LSM, Leica, Olympus,
-  and BioIO/Bio-Formats-backed fallback paths.
-- Added normalized acquisition metadata fields used by PSF generation and
-  provenance checks.
-- Added the grouped Open example workflow chooser and packaged workflow
-  templates.
-- Restored BSD 3-Clause licensing for ecosystem compatibility.
+- Summarize the target release's user-visible changes.
+- Call out workflow/schema compatibility changes.
+- Link new guides, validation reports, or examples.
 ```
 
 ## 6. napari Hub Listing/Refresh

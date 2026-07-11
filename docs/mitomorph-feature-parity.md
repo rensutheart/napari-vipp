@@ -1,6 +1,8 @@
 # MitoMorph Feature Parity And Measurement Roadmap
 
-Last reviewed: 2026-07-01
+Status: current specialist gap tracker; implemented items are marked in place
+
+Last reviewed: 2026-07-10
 
 This document captures the MitoMorph-derived capabilities that should become
 first-class VIPP workflows. The goal is not to copy the old implementation
