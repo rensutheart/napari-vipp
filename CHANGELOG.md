@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0a2 - 2026-07-11
+
 - Added cross-platform Linux/Windows CI for manifest validation, linting,
   packaging, and Qt-aware tests on representative supported Python versions.
 - Added contributor, support, security, conduct, issue, and pull-request

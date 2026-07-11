@@ -1,14 +1,18 @@
-name: Usage question
-description: Ask for help with a specific VIPP workflow or interface task
+name: Focused usage question
+description: Report a narrowly reproducible VIPP question; prefer Discussions for open-ended help
 title: "[Question]: "
 labels:
   - question
 body:
+  - type: markdown
+    attributes:
+      value: |
+        For installation help, workflow design, and open-ended questions, prefer [GitHub Discussions](https://github.com/rensutheart/napari-vipp/discussions). Use this form when a precise, reproducible question needs issue tracking.
   - type: input
     id: version
     attributes:
       label: napari-vipp version
-      placeholder: 0.11.0a1
+      placeholder: 0.11.0a2
     validations:
       required: true
   - type: textarea

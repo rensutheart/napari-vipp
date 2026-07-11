@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Workflow questions and community help
+    url: https://github.com/rensutheart/napari-vipp/discussions
+    about: Ask installation or workflow questions and share reusable examples.
+  - name: Broader bioimage-analysis questions
+    url: https://forum.image.sc/tag/napari
+    about: Ask method questions that benefit from the wider image.sc community; include napari-vipp and its version.
   - name: Support guide
     url: https://github.com/rensutheart/napari-vipp/blob/main/SUPPORT.md
     about: Check support scope and the information needed for a useful report.

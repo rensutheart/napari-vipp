@@ -10,11 +10,19 @@ before scientific interpretation, publication, or operational use.
 2. Check the [operator tips](docs/operator-tips.md) for execution and UI
    problems, and the [I/O guide](docs/io-user-guide.md) for file-format issues.
 3. Search [existing issues](https://github.com/rensutheart/napari-vipp/issues)
-   for a known limitation or workaround.
+   and [discussions](https://github.com/rensutheart/napari-vipp/discussions) for
+   a known limitation, answer, or workaround.
 
-If the problem remains, open a
-[GitHub issue](https://github.com/rensutheart/napari-vipp/issues/new/choose) with
-the appropriate template.
+Choose the route that matches the question:
+
+| Route | Use it for |
+| --- | --- |
+| [GitHub Issues](https://github.com/rensutheart/napari-vipp/issues/new/choose) | Reproducible defects, incorrect documentation, and focused feature requests. |
+| [GitHub Discussions](https://github.com/rensutheart/napari-vipp/discussions) | Installation help, workflow questions, ideas, and sharing reusable examples. |
+| [image.sc](https://forum.image.sc/tag/napari) | Broader bioimage-analysis and method questions that benefit from the community beyond VIPP. Include `napari-vipp` and its version in the topic. |
+
+When a discussion reveals a reproducible software defect, open or link a
+focused issue so the fix can be tracked.
 
 ## What To Include
 
@@ -32,9 +40,8 @@ identifiers before attaching logs, screenshots, metadata, or workflows.
 
 ## Scope
 
-The issue tracker is suitable for reproducible bugs, documentation problems,
-and focused feature proposals. It cannot provide emergency support, guarantee a
-response time, validate an unpublished biological conclusion, or recover data
-that was not backed up.
+These public channels cannot provide emergency support, guarantee a response
+time, validate an unpublished biological conclusion, or recover data that was
+not backed up.
 
 Report security concerns privately using [SECURITY.md](SECURITY.md).

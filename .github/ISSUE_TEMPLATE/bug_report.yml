@@ -13,7 +13,7 @@ body:
     attributes:
       label: napari-vipp version
       description: Copy the version shown in VIPP or from `python -m pip show napari-vipp`.
-      placeholder: 0.11.0a1
+      placeholder: 0.11.0a2
     validations:
       required: true
   - type: input

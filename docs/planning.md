@@ -56,10 +56,11 @@ later milestones.
 
 ## Current Public Baseline
 
-Current public release: `0.11.0a1`.
+Current public release: `0.11.0a2`.
 
-The 0.11 alpha is now the PSF/restoration and microscope-import-foundation
-baseline on top of the 0.10 graph-readability and interactive-memory work.
+The 0.11 alpha is now the hardened PSF/restoration and
+microscope-import-foundation baseline on top of the 0.10 graph-readability and
+interactive-memory work.
 Implemented and documented work includes:
 
 - searchable categorized palette and searchable graph canvas;
@@ -295,6 +296,24 @@ Delivered:
   `ImageDataset`/`ImageState` boundaries with normalized first-pass metadata;
 - docs explain which vendor formats are supported, experimental, or still under
   evaluation.
+
+### Released: 0.11.0a2 - Workflow And Release Hardening
+
+Theme: make saved graphs, generated scripts, and packaged examples fail safely
+and behave consistently at the 0.11 baseline.
+
+Delivered:
+
+- atomic validation of restored connections, dynamic outputs, cycles, and
+  tunnel definitions;
+- generated-Python validation for incomplete, colliding, source-only, and
+  custom-entry-point graphs;
+- stricter output-path, overwrite, clipboard-retry, and input-count behavior;
+- complete example-launcher coverage with explicit unknown-id errors;
+- preservation of saved table-column choices before upstream manual
+  calculation;
+- cross-platform CI, package verification, community guidance, and
+  reproducible documentation screenshot capture.
 
 ### Next: 0.12.0a1 - Batch Configuration And Provenance
 
