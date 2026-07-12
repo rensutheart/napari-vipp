@@ -3,11 +3,11 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-12
 
-It reflects the live codebase through the 0.11 alpha, including restoration,
-optional microscope-reader routing, collection batch execution, and graph
-restore hardening.
+It reflects the live codebase through current 0.12 development, including
+restoration, optional microscope-reader routing, reproducible collection batch
+execution, and graph restore hardening.
 
 For product framing and longer-range ideas, see [README.md](../README.md) and
 [planning.md](planning.md). The accepted OME I/O architecture is documented in
@@ -40,6 +40,7 @@ headless core
   core/operations.py  pure NumPy/scikit-image/scipy node functions
   core/metadata.py    OME-NGFF-inspired ImageState propagation
   core/tables.py      TableData/TableState and CSV/TSV table saving
+  core/batch.py       batch config, deterministic planning, runner, provenance
   core/io/            normalized OME/TIFF/Zarr/raster/NumPy readers and writers
   core/preview.py     thumbnail and fluorescence composite reduction
   core/workflow.py    JSON workflow save/load
@@ -71,6 +72,8 @@ src/napari_vipp/
       ome_zarr.py      OME-Zarr 0.4/0.5 image support
       numpy_io.py      NPY/NPZ support
     tables.py          TableData, TableState, CSV/TSV writer
+    batch.py           collection config, planning, execution, and manifests
+    batch_demo.py      deterministic paired collection and ground-truth validator
     preview.py         slice/MIP/RGB thumbnail generation
     workflow.py        workflow JSON persistence
     export.py          headless Python export
@@ -885,14 +888,18 @@ Collection batch UI:
   execution, so folder processing does not replace the live canvas outputs with
   the last processed file.
 - `CollectionBatchDialog` lists every `Image Source` node as a possible batch
-  source binding. Blank rows keep their normal fixed layer/file/sample source.
-- `BatchSourceBinding` stores the node id, display title, folder, and glob
-  pattern for one collection-bound source. `BatchItem` stores a stable item
-  index/id plus the source path assigned to every bound source. `BatchPreviewRow`
-  is the non-executing dry-run representation shown by `Preview batch`.
+  source binding. A blank row is accepted only for an existing fixed file-path
+  source; napari-layer and sample sources must be collection-bound.
+- `core.batch.BatchSourceConfig`, `BatchItemPlan`, and `BatchOutputPlan` are the
+  Qt-free source, item, and output contracts. `BatchPreviewResult` exposes a
+  limited row sample plus full-plan item and collision totals to the dialog.
 - When several sources are bound, matched paths are sorted per source and paired
   by position. All bound sources must match the same number of files. The first
   bound source becomes the primary source for default naming.
+- Batch planning is deterministic and separate from graph execution. Preview
+  and execution use the same planner instead of calculating names through
+  separate UI paths. Execution performs a fresh preflight, then passes that
+  exact plan into the runner so changes since an earlier preview are detected.
 - `Batch Output` nodes are the authoritative save markers. They pass data
   through during normal graph execution and provide tag, format, subfolder,
   filename-template, and overwrite controls for batch saves.
@@ -901,12 +908,50 @@ Collection batch UI:
   `{tag}`, `{node_id}`, and `{node_title}`.
 - If a graph has no `Batch Output` nodes, terminal graph outputs are saved as a
   compatibility fallback. Image-like fallback outputs use the selected batch
-  image format; table fallback outputs are saved as CSV.
-- The dialog can write `vipp_batch_workflow.json` and
-  `vipp_batch_pipeline.py` beside the results for reproducibility.
-- This is a local-folder first pass. Per-item provenance manifests,
-  plate/well/field identities, HCS traversal, and semantic-axis iteration remain
-  future work.
+  image format; table fallback outputs are saved as CSV. Planning exposes a
+  warning because terminal membership is less stable than explicit output
+  declarations. A terminal with multiple output ports is rejected because the
+  fallback cannot represent a port selection.
+- `vipp_batch_config.json` is a versioned schema independent of workflow schema
+  version 2. It persists source bindings and patterns, output location and
+  default format, existing-file policy, the required workflow companion, the
+  optional runner choice, the workflow hash, and resolved output declarations.
+  Load validates the workflow hash so a configuration cannot silently select
+  outputs from a different graph.
+- The batch-level existing-file choices are `Error`, `Skip`, and `Overwrite`.
+  A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
+  precedence over the default. Collision state is part of the plan and shown
+  before execution.
+- Dialog-started runs write the resolved `vipp_batch_config.json` and required
+  `vipp_batch_workflow.json`; headless replays use those files at their existing
+  locations. Every execution writes a `vipp_batch_manifest.json` latest-run view.
+  A run-id manifest archive embeds the canonical config and scientific graph,
+  while a run-id sidecar directory atomically records each item as it runs and
+  after every output. The final manifest contains hashes, software versions,
+  input identity and available source metadata, output policy/path/status,
+  errors, and summary counts. Output statuses are `pending`, `completed`,
+  `skipped`, and `failed`; item statuses additionally include `running` and
+  `partial`. After an interrupted process, the sidecars are the recovery
+  checkpoints; the canonical latest/archive manifests are finalized on normal
+  runner exit rather than reconciled automatically.
+- Batch failures are isolated at item/output boundaries. Successful writes and
+  manifest records remain available; later items continue by default or are
+  marked skipped when continuation is disabled. The returned summary
+  distinguishes completed, partial, skipped, and failed items.
+- The dialog can additionally write a thin `vipp_batch_pipeline.py` launcher
+  beside the required workflow/config artifacts. The launcher resolves the
+  workflow recorded by its config unless an override is supplied and delegates
+  to the shared headless batch core; it is distinct from the direct-operation
+  code emitted by `Export Python...`.
+- Collection execution remains local-folder oriented. Semantic-axis iteration
+  and plate/well/field HCS traversal are deliberately deferred rather than
+  inferred from array axes or directory names.
+- `core.batch_demo` generates a portable three-item, two-source NumPy bundle
+  without Qt or napari state. Its bundled graph writes explicit NPY, TIFF, and
+  TSV outputs; the validator compares decoded results with exact ground truth
+  and checks config/workflow hashes, source identities, final/archive
+  manifests, and item sidecars. The batch dialog and flagged example entry use
+  this same generator and always choose a new directory.
 
 ## Sample Data
 
@@ -988,6 +1033,9 @@ Implemented now:
 - graph-aware OME-Zarr analysis dataset export with reference image plus label
   groups;
 - adaptive TIFF/OME-Zarr image selection and stored collection-binding intent;
+- deterministic local collection planning with saved batch configuration,
+  explicit output declarations, collision policies, resilient per-item
+  execution, and checkpointed provenance records;
 - first-class labels, connected-component labeling, volume filtering,
   border-object clearing, axis-aware hole filling and small-object removal,
   sequential relabeling, and label-volume distribution controls;
@@ -1022,8 +1070,7 @@ Still incomplete or deliberately future-facing:
 - operation-level lazy execution, remote URI reads, and collection batch
   execution beyond the first-pass local folder UI;
 - richer channel/probe naming and colour metadata from real microscopy files;
-- saved batch configuration, richer failure/output manifests, semantic-axis
-  iteration, HCS traversal, and per-item provenance;
+- semantic-axis batch iteration and HCS traversal;
 - plugin/template generation for arbitrary new analysis nodes.
 
 When continuing work, prefer this order: implement data behaviour in `core/`,

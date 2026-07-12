@@ -1,0 +1,222 @@
+{
+  "type": "napari-vipp-workflow",
+  "version": 2,
+  "metadata": {
+    "vipp": {
+      "inspector": {
+        "selected_node_id": "measure_objects_1",
+        "right_panel_visible": true
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "file path",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "collection"
+      }
+    },
+    {
+      "id": "input_2",
+      "operation_id": "input",
+      "params": {
+        "source_mode": "file path",
+        "layer_name": "",
+        "file_path": "",
+        "sample_name": "",
+        "series_index": 0,
+        "channel_colors": "",
+        "binding_mode": "collection"
+      }
+    },
+    {
+      "id": "binary_threshold_1",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 50
+      }
+    },
+    {
+      "id": "binary_threshold_2",
+      "operation_id": "binary_threshold",
+      "params": {
+        "threshold": 50
+      }
+    },
+    {
+      "id": "logical_and_1",
+      "operation_id": "logical_and",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "label_connected_components_1",
+      "operation_id": "label_connected_components",
+      "params": {
+        "spatial_mode": "2D YX",
+        "connectivity": "Full connectivity"
+      }
+    },
+    {
+      "id": "measure_objects_1",
+      "operation_id": "measure_objects",
+      "params": {
+        "spatial_mode": "2D YX",
+        "include_shape_descriptors": false,
+        "include_axis_descriptors": false,
+        "include_2d_boundary_descriptors": false,
+        "include_derived_shape_ratios": false,
+        "include_2d_shape_moments": false
+      }
+    },
+    {
+      "id": "add_images_1",
+      "operation_id": "add_images",
+      "params": {
+        "input_count": 2
+      }
+    },
+    {
+      "id": "batch_output_1",
+      "operation_id": "batch_output",
+      "params": {
+        "tag": "combined",
+        "format": "batch default",
+        "subfolder": "images/combined",
+        "filename_template": "{batch_index}_{source_stem}__{tag}",
+        "overwrite": "batch default"
+      }
+    },
+    {
+      "id": "batch_output_2",
+      "operation_id": "batch_output",
+      "params": {
+        "tag": "overlap_labels",
+        "format": "tiff",
+        "subfolder": "labels",
+        "filename_template": "{batch_id}__{tag}",
+        "overwrite": "batch default"
+      }
+    },
+    {
+      "id": "batch_output_3",
+      "operation_id": "batch_output",
+      "params": {
+        "tag": "overlap_measurements",
+        "format": "tsv",
+        "subfolder": "tables",
+        "filename_template": "{source_stem}__{tag}",
+        "overwrite": "batch default"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "source": "input",
+      "target": "binary_threshold_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "binary_threshold_2",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "binary_threshold_1",
+      "target": "logical_and_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "binary_threshold_2",
+      "target": "logical_and_1",
+      "source_port": 0,
+      "target_port": 1
+    },
+    {
+      "source": "logical_and_1",
+      "target": "label_connected_components_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "measure_objects_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "input",
+      "target": "add_images_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "input_2",
+      "target": "add_images_1",
+      "source_port": 0,
+      "target_port": 1
+    },
+    {
+      "source": "add_images_1",
+      "target": "batch_output_1",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "label_connected_components_1",
+      "target": "batch_output_2",
+      "source_port": 0,
+      "target_port": 0
+    },
+    {
+      "source": "measure_objects_1",
+      "target": "batch_output_3",
+      "source_port": 0,
+      "target_port": 0
+    }
+  ],
+  "positions": {
+    "input": [0.0, 80.0],
+    "input_2": [0.0, 420.0],
+    "binary_threshold_1": [360.0, 80.0],
+    "binary_threshold_2": [360.0, 420.0],
+    "logical_and_1": [720.0, 250.0],
+    "label_connected_components_1": [1080.0, 250.0],
+    "measure_objects_1": [1440.0, 420.0],
+    "add_images_1": [720.0, 620.0],
+    "batch_output_1": [1080.0, 620.0],
+    "batch_output_2": [1440.0, 180.0],
+    "batch_output_3": [1800.0, 420.0]
+  },
+  "notes": [
+    {
+      "id": "note_1",
+      "text": "The two generated source folders use different filenames. Batch pairing is deterministic sorted position, not name matching.",
+      "position": [0.0, -60.0],
+      "width": 310.0,
+      "attached_node": "input"
+    },
+    {
+      "id": "note_2",
+      "text": "Three explicit Batch Output nodes demonstrate mixed NPY, TIFF, and TSV outputs, subfolders, naming templates, policies, and provenance.",
+      "position": [1440.0, 20.0],
+      "width": 340.0,
+      "attached_node": "batch_output_2"
+    }
+  ],
+  "view": {
+    "zoom": 0.9,
+    "pan": [0.0, 0.0]
+  }
+}

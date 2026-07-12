@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Added loadable, versioned `vipp_batch_config.json` files that preserve source
+  bindings, resolved selected outputs, naming/format choices, the required
+  workflow companion, the optional runner choice, the workflow hash, and the
+  `Error`/`Skip`/`Overwrite` existing-file policy.
+- Changed batch-created `vipp_batch_pipeline.py` into a thin command-line
+  launcher that defaults to its sibling config, resolves the workflow recorded
+  there, and uses the shared headless batch core; `Export Python...` remains the
+  direct-operation code export.
+- Unified batch preview and execution around deterministic sorted positional
+  source pairing and output planning, including collision state before graph
+  execution. Explicit `Batch Output` nodes remain authoritative; terminal
+  outputs retain a warned compatibility fallback when each terminal has one
+  output port.
+- Added latest-run and archived `vipp_batch_manifest.json` provenance plus
+  atomic per-item checkpoints, with workflow/config hashes, software versions,
+  input identity and source metadata, and
+  `pending`/`completed`/`skipped`/`failed` output records.
+- Isolated batch failures by item and output so successful files remain visible
+  and later items continue by default, with completed/partial/skipped/failed
+  item totals in the final summary.
+- Added an app-generated deterministic batch validation bundle with three
+  sorted-position source pairs, explicit NPY/TIFF/TSV outputs, exact scientific
+  ground truth, a bundled demonstration workflow, and portable config/runner
+  artifacts. Demo runs automatically reconcile the decoded outputs, saved
+  configuration, workflow hash, manifest/archive, and sidecars against that
+  ground truth.
+- Kept semantic-axis iteration and plate/well/field HCS traversal outside the
+  0.12 local-collection release scope.
+
 ## 0.11.0a3 - 2026-07-12
 
 - Standardized the public name as VIPP, the Visual Image Processing Platform,

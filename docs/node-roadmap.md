@@ -86,7 +86,7 @@ truth is `NODE_LIBRARY` in `src/napari_vipp/core/pipeline.py`.
 
 | Family | Implemented enough to build on | Important remaining work |
 | --- | --- | --- |
-| Sources, outputs, and persistence | `Image Source`, `Save Image`, `Batch Output`, workflow JSON, Python export, local collection batch execution, OME-TIFF/ImageJ TIFF/TIFF/OME-Zarr/NumPy/common raster I/O. | Proprietary microscope readers, saved batch configs, richer output manifests, per-item provenance, OME-Zarr pyramids, preview-level selection, label colours/properties, HCS traversal, remote reads, and operation-level lazy execution. |
+| Sources, outputs, and persistence | `Image Source`, `Save Image`, `Batch Output`, workflow JSON, Python export, local collection batch execution, versioned batch configs, per-item/output manifests, OME-TIFF/ImageJ TIFF/TIFF/OME-Zarr/NumPy/common raster I/O. | Proprietary microscope-reader validation, OME-Zarr pyramids, preview-level selection, label colours/properties, semantic-axis/HCS traversal, remote reads, and operation-level lazy execution. |
 | Axes, calibration, and channels | Crop, axis slice, split/reorder axes, `Set Pixel Size / Units`, `Rescale Axes`, channel extraction/splitting/combining, channel colour assignment, RGB compositing. | Resample to target physical spacing, pad/crop to target shape, flip/rotate, richer channel/probe/objective metadata from real microscope files. |
 | Intensity and math | Linear scale/offset, gamma, rescale intensity, normalize, clip, weighted image calculation, add/subtract/ratio, mask image, logical operations, invert, dtype conversion. | Clarify old names where needed; avoid growing a generic image-calculator surface until reproducibility and safety rules are clear. |
 | Filtering, enhancement, and restoration foundation | Average/Gaussian/3D Gaussian/median/bilateral/non-local-means filtering, rolling-ball background, subtract background, DoG, unsharp mask, Sobel, Canny, Laplace, `Born-Wolf PSF`, `Prepare / Validate PSF`, baseline Richardson-Lucy, and Richardson-Lucy TV deconvolution. | Real microscopy/PSF validation, reflect-padded edge-policy follow-up, performance profiling for large 3D restoration, wavelet denoising, noise estimation, Laplacian-of-Gaussian/blob-oriented helpers, and clearer performance/progress guidance on expensive restoration steps. |
@@ -109,7 +109,7 @@ and reproducible.
 | Named heterogeneous ports | Implemented | Required for labels + intensity, image + mask, image + PSF, and channel-pair analyses. | Add optional input-port semantics only where a real workflow needs them. |
 | Manual/cached execution | Baseline implemented | Prevents expensive measurements from live-recomputing on every parameter change. | Broaden cooperative cancellation and determinate progress coverage. |
 | Spatial scope and units | Partially implemented | Users must know whether operations are per-plane or volumetric and whether units are pixels or physical units. | Normalize wording across nodes and add direct physical-unit controls where the table route is awkward. |
-| Batch configuration and provenance | Partial | Batch outputs exist, but reproducibility needs saved run configuration and per-item manifests. | Keep as the next major workflow-hardening milestone after the 0.11 PSF/import foundation. |
+| Batch configuration and provenance | Implemented baseline | Saved configuration, deterministic planning, collision policies, per-item/output provenance, and failure isolation make local collection runs reviewable and reproducible. | Validate against real multi-source runs; keep semantic-axis and HCS iteration as explicit later work. |
 | OME-Zarr preview and lazy execution strategy | Partial | Large OME data must not be accidentally materialized for previews or eager-only nodes. | Add pyramids, preview controls, operation capability declarations, and materialization warnings. |
 | Optional microscope reader boundary | Initial foundation implemented | Nikon, Zeiss, Leica, Olympus, and other proprietary readers need optional dependencies and common metadata mapping without bloating the core install. | Validate the new optional reader routes against real sample files and expand per-format metadata extraction. |
 | Acquisition metadata normalization | Partial | PSF generation and publication provenance need objective, channel, wavelength, scale, scene, source identity, and upstream processing flags regardless of file format. | Extend every reader to populate the same normalized `ImageState`/source metadata fields where possible. |
@@ -120,9 +120,9 @@ and reproducible.
 ## P1: Near-Term Node And Workflow Work
 
 P1 work should stay aligned with the active release themes:
-PSF/deconvolution, microscope import, batch provenance, large-data preview, and
-scientific validation. New nodes should be small, clearly useful additions to
-existing workflows.
+PSF/deconvolution, microscope import, real-run validation of batch provenance,
+large-data preview, and scientific validation. New nodes should be small,
+clearly useful additions to existing workflows.
 
 ### Label And Segmentation Polish
 
@@ -178,10 +178,12 @@ Reader requirements:
 
 | Feature | Notes |
 | --- | --- |
-| Saved `batch_config.yaml` or equivalent | Should capture source bindings, selected outputs, naming templates, formats, and overwrite policy. |
-| Per-item provenance manifest | Include workflow hash, VIPP/package versions, input identity, source metadata, outputs, and status. |
-| Richer batch failure summary | Separate skipped, failed, completed, and partial outputs. |
-| Semantic-axis iteration | Run the same graph over timepoints, channels, z-slices, or selected combinations when that is explicit and reproducible. |
+| Saved `vipp_batch_config.json` | Implemented as a versioned record of source bindings, selected outputs, naming templates, formats, required workflow companion, optional runner choice, workflow hash, and existing-file policy. |
+| Per-item/output provenance manifest | Implemented with latest/archive manifests and atomic per-item sidecars containing workflow/config hashes, software versions, input identity/source metadata, planned outputs, errors, and status. |
+| Batch collision and failure summary | Implemented with `Error`/`Skip`/`Overwrite`, default-on configurable continuation after item failures, and completed/partial/skipped/failed totals. |
+| Deterministic batch validation bundle | Implemented as an app-generated three-item, two-source collection with exact combined-image, label, and table ground truth plus portable workflow/config/runner artifacts. |
+| Semantic-axis iteration | Deferred beyond 0.12. Run the same graph over timepoints, channels, z-slices, or selected combinations only when that selection can be explicit and reproducible. |
+| Plate/well/field HCS traversal | Deferred beyond 0.12. Do not infer HCS identities from filenames or directory layout without a saved traversal contract. |
 
 ## P2: Add After Core Platform And Validation Work
 

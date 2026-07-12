@@ -92,6 +92,12 @@ still needs validation against a broader corpus of real acquisition files.
 6. Save the graph with `Save workflow...`.
 7. Add `Batch Output` nodes before `Run batch...` when exact saved outputs
    matter.
+8. Preview collection runs, save `vipp_batch_config.json`, and review
+   `vipp_batch_manifest.json` for item/output provenance.
+9. To validate the complete batch path without your own files, open
+   `Run batch...`, choose `Create demo...`, select a parent folder, and run the
+   generated three-item paired collection. VIPP checks the finished outputs and
+   provenance against its exact ground truth automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
 tables. `Export Python...` emits direct calls to the headless operation and I/O
@@ -142,9 +148,11 @@ guidance, and report suspected vulnerabilities privately through
 The current public alpha is `0.11.0a3`. This patch alpha makes large-image
 analysis exact and responsive, preserves native threshold and cutoff semantics,
 introduces explicit workflow schema version 2 parameters, and improves
-histogram and colocalization inspection. The next planned milestone focuses on
-saved batch configuration and per-item provenance, followed by scalable
-OME-Zarr previews and broader scientific validation. See
+histogram and colocalization inspection. Current 0.12 development adds saved
+batch configuration, deterministic collision-aware planning, per-item/output
+provenance, and resilient continuation after item failures; semantic-axis and
+HCS iteration remain later work. Scalable OME-Zarr previews and broader
+scientific validation follow. See
 [planning.md](docs/planning.md) for the maintained release order and evidence
 gates.
 

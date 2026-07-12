@@ -387,18 +387,44 @@ def run_pipeline(src_input):
     }
 ```
 
-The full export also includes shared VIPP image I/O, a folder batch helper, and
-a command-line entry point. Manual nodes calculate normally in exported runs.
-The script contains the resolved parameters stored on the graph, but it does
-not reproduce interactive caches or the full runtime `ImageState` metadata
-propagation. Its generated folder helper binds the first image source; workflows
-with additional independent sources need manual source binding in the script.
+The full export also includes shared VIPP image I/O, a simple single-source
+folder helper, and a command-line entry point. It is a standalone code export,
+not the saved-configuration batch runner. Manual nodes calculate normally in
+exported runs. The script contains the resolved parameters stored on the graph,
+but it does not reproduce interactive caches or the full runtime `ImageState`
+metadata propagation. Its folder helper binds the first image source;
+workflows with additional independent sources need manual source binding in
+the script. A batch-created `vipp_batch_pipeline.py` instead defaults to its
+sibling batch config, resolves the workflow recorded by that config, and
+delegates to the shared batch core.
 
 ### Batch Output Basics
 
+For a deterministic end-to-end check, open `Run batch...` and choose `Create
+demo...`, or select `Deterministic Batch & Provenance` under `Open example...`.
+Choose a parent folder; VIPP creates a new uniquely named demo directory and
+never overwrites an earlier one. It loads the bundled two-source workflow,
+applies its portable config, and previews three paired 8 x 8 fields. Because
+loading the demo replaces the current graph, VIPP asks for confirmation first;
+save any graph changes you want to keep.
+
+The generated bundle includes the two NumPy input collections,
+`vipp_batch_workflow.json`, `vipp_batch_config.json`,
+`vipp_batch_pipeline.py`, `vipp_batch_ground_truth.json`, and an empty `results`
+folder. A successful run writes nine outputs: combined images, overlap labels,
+and overlap-measurement tables. The exact decoded arrays and object rows are
+recorded in the ground-truth file. The first run uses `Error`; use `Skip` or
+`Overwrite` deliberately when testing replay behavior. A demo run also checks
+the input hashes, exact outputs, workflow/config binding, runtime versions,
+latest/archive manifests, and finalized item sidecars, then reports the result
+in the batch summary.
+
 Add `Batch Output` nodes to mark exactly which image, labels, mask, RGB, or
 table outputs should be saved during batch execution. If no `Batch Output`
-nodes are present, VIPP falls back to terminal graph outputs.
+nodes are present, VIPP still falls back to terminal graph outputs for
+compatibility, but the batch dialog warns that the saved-output intent is not
+explicit. A terminal with multiple output ports cannot use this fallback. Add
+`Batch Output` nodes before saving a reproducible batch configuration.
 
 Use clear tags, because they become output identifiers:
 
@@ -409,10 +435,43 @@ object_measurements
 colocalization_metrics
 ```
 
-The current batch dialog supports local folder bindings, positional pairing of
-multiple sources, a dry-run preview, and optional saved workflow/script
-artifacts. The next roadmap milestone adds a saved batch configuration and
-per-item provenance manifests.
+The batch dialog supports local folder bindings, sorted positional pairing of
+multiple sources, and a non-executing preview. `Save config...` writes a
+versioned `vipp_batch_config.json`; `Load config...` restores its source
+bindings, output folder, default format, existing-file policy, continuation
+behavior, required workflow companion, and optional runner choice, and validates
+the resolved output declarations against the current graph. The saved workflow
+and config carry enough information to reproduce which outputs are selected and
+how their file names are planned. A workflow-hash mismatch is reported rather
+than silently running a different graph under an old configuration.
+
+Choose the existing-file policy deliberately:
+
+| Policy | Behavior |
+| --- | --- |
+| `Error` | Treat a planned path that already exists as a collision and require it to be resolved before the batch proceeds. |
+| `Skip` | Leave the existing file unchanged and record the output as skipped. |
+| `Overwrite` | Replace the existing destination. |
+
+An explicit overwrite choice on a `Batch Output` node takes precedence over
+the batch default. `Preview batch` uses the same deterministic pairing and
+output-planning rules as execution and shows existing-path collisions before
+expensive processing starts. `Run` performs a fresh preflight to detect changes
+since that preview.
+
+A dialog-started run writes `vipp_batch_config.json` beside the outputs; a
+headless replay uses its existing config and workflow paths. Every execution
+writes `vipp_batch_manifest.json` beside the outputs. The manifest records the
+workflow and config hashes, VIPP and runtime package versions, input identity
+and available source metadata, every planned output path/policy, and
+per-item/output status. It embeds the canonical config and scientific graph;
+run-id archives preserve prior runs, while small per-item sidecars are updated
+during execution. Output records use `pending`,
+`completed`, `skipped`, or `failed`; item records additionally use `running`
+and `partial`. An item failure is recorded without discarding successful
+outputs from the same or earlier items, and later items continue to run by
+default. The final summary separates completed, partial, skipped, and failed
+items.
 
 ## Manual Calculation Nodes
 

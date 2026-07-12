@@ -56,6 +56,21 @@ from napari_vipp._widget import (
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
 )
+from napari_vipp.core.batch import (
+    BATCH_CONFIG_FILENAME,
+    BATCH_CONFIG_TYPE,
+    BATCH_MANIFEST_FILENAME,
+    BATCH_MANIFEST_TYPE,
+    BATCH_SCRIPT_FILENAME,
+    BATCH_WORKFLOW_FILENAME,
+    BatchStatus,
+    ExistingFilePolicy,
+)
+from napari_vipp.core.batch_demo import (
+    SYNTHETIC_BATCH_DEMO_DIRNAME,
+    SyntheticBatchDemo,
+    validate_synthetic_batch_demo,
+)
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
     ImageDataset,
@@ -405,6 +420,11 @@ def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
     dialog.select_example("racc-colocalization")
     assert dialog.selected_example().id == "racc-colocalization"
     assert dialog.open_button.isEnabled()
+
+    dialog.filter_edit.clear()
+    dialog.select_example("batch-provenance")
+    assert dialog.open_button.text() == "Create..."
+    assert "Generated input" in dialog.details_label.text()
 
 
 def test_example_workflow_files_are_packaged():
@@ -1490,8 +1510,7 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
     assert widget.pipeline.nodes[filtered.id].params["min_volume"] == 24
     assert widget._parameter_widgets["min_volume"].value() == 24
     assert [
-        (label, value)
-        for label, value, _color in widget.label_volume_plot._markers
+        (label, value) for label, value, _color in widget.label_volume_plot._markers
     ][0] == ("min", 24.0)
 
     widget._parameter_widgets["min_volume"].value_box.setValue(20)
@@ -1773,8 +1792,7 @@ def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
     assert refreshed_pin is pinned
     assert refreshed_pin.scale == (10.0, 1.0, 1.0)
     assert [
-        axis["scale"]
-        for axis in refreshed.metadata["vipp_image_state"]["axes"]
+        axis["scale"] for axis in refreshed.metadata["vipp_image_state"]["axes"]
     ] == [10.0, 1.0, 1.0]
 
 
@@ -2792,16 +2810,14 @@ def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     channel_2 = ((indices * 37 + 11) % 256).astype(np.float32)
     roi = indices % 11 != 0
 
-    density, roi_voxels, colocalized_voxels = (
-        _prepare_colocalization_scatter_density(
-            channel_1,
-            channel_2,
-            threshold_1=125.0,
-            threshold_2=140.0,
-            roi_mask=roi,
-            intensity_max=255.0,
-            bins=64,
-        )
+    density, roi_voxels, colocalized_voxels = _prepare_colocalization_scatter_density(
+        channel_1,
+        channel_2,
+        threshold_1=125.0,
+        threshold_2=140.0,
+        roi_mask=roi,
+        intensity_max=255.0,
+        bins=64,
     )
 
     expected_density = np.histogram2d(
@@ -4304,9 +4320,7 @@ def _assert_split_channel_presentation(
     assert control.value() == output_port
     used_ports = widget._used_split_channel_ports(node_id)
     expected_bounds = (
-        (output_port, output_port)
-        if len(used_ports) == 1
-        else (0, len(outputs) - 1)
+        (output_port, output_port) if len(used_ports) == 1 else (0, len(outputs) - 1)
     )
     assert (control.slider.minimum(), control.slider.maximum()) == expected_bounds
     assert widget.pipeline.nodes[node_id].params["preview_channel"] == (
@@ -4823,9 +4837,7 @@ def test_graph_search_matches_title_operation_tunnel_and_output_tag():
         ("node", "counter")
     ]
     assert operation_matches[0].matched_fields == ("operation id",)
-    assert [(match.kind, match.node_id) for match in tag_matches] == [
-        ("node", "batch")
-    ]
+    assert [(match.kind, match.node_id) for match in tag_matches] == [("node", "batch")]
     assert tag_matches[0].matched_fields == ("output tag",)
     assert [(match.kind, match.tunnel_name) for match in tunnel_matches] == [
         ("tunnel", "Raw Reference")
@@ -4885,9 +4897,7 @@ def test_graph_search_focuses_output_tag_and_tunnel_matches(qtbot):
 
     assert widget.graph_view._active_tunnel_name == "Raw Reference"
     assert (
-        widget.graph_view._proxies["input"]
-        .output_port_at(0)
-        ._tunnel_highlight_role
+        widget.graph_view._proxies["input"].output_port_at(0)._tunnel_highlight_role
         == "source"
     )
     assert widget.graph_view._proxies["input"].opacity() == 1.0
@@ -6198,9 +6208,7 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     widget._create_output_tunnel("input", 0)
 
     assert widget.pipeline.output_tunnel("Raw") is not None
-    assert (
-        widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == "Raw"
-    )
+    assert widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == "Raw"
     output_badge = widget.graph_view._proxies["input"].output_port_at(0)._tunnel_badge
     assert output_badge.kind == "output"
     assert output_badge._label == "Raw"
@@ -6275,21 +6283,15 @@ def test_tunnel_management_summary_highlight_and_rename(qtbot, monkeypatch):
     widget._highlight_output_tunnel("Raw")
     assert widget.graph_view._active_tunnel_name == "Raw"
     assert (
-        widget.graph_view._proxies["input"]
-        .output_port_at(0)
-        ._tunnel_highlight_role
+        widget.graph_view._proxies["input"].output_port_at(0)._tunnel_highlight_role
         == "source"
     )
     assert (
-        widget.graph_view._proxies["gaussian"]
-        .input_port_at(0)
-        ._tunnel_highlight_role
+        widget.graph_view._proxies["gaussian"].input_port_at(0)._tunnel_highlight_role
         == "subscriber"
     )
     assert (
-        widget.graph_view._proxies["threshold"]
-        .output_port_at(0)
-        ._tunnel_highlight_role
+        widget.graph_view._proxies["threshold"].output_port_at(0)._tunnel_highlight_role
         == "dimmed"
     )
     assert widget.graph_view._proxies["threshold"].opacity() < 1.0
@@ -6342,8 +6344,7 @@ def test_graph_notes_are_undoable_and_restored(qtbot):
 
     assert widget._graph_notes[note_id].text == "Review threshold and mask"
     assert (
-        widget.graph_view._notes[note_id].toPlainText()
-        == "Review threshold and mask"
+        widget.graph_view._notes[note_id].toPlainText() == "Review threshold and mask"
     )
 
     widget.undo()
@@ -6577,14 +6578,15 @@ def test_insert_node_on_connection_ambiguous_chooser_options(qtbot):
     assert axis_mode == "choose"
     assert preview_mode == "partial"
     assert "choose ports" in preview_text
-    assert [
-        (mapping.input_port, mapping.output_port) for mapping in axis_options
-    ] == [(0, index) for index in range(12)]
+    assert [(mapping.input_port, mapping.output_port) for mapping in axis_options] == [
+        (0, index) for index in range(12)
+    ]
     assert axis_options[10].output_label == "output 11: Z 11"
     assert axis_options[10].params == (("axis", "axis:0"),)
-    assert [
-        (mapping.input_port, mapping.output_port) for mapping in add_options
-    ] == [(0, 0), (1, 0)]
+    assert [(mapping.input_port, mapping.output_port) for mapping in add_options] == [
+        (0, 0),
+        (1, 0),
+    ]
     assert add_options[1].input_label == "input 2: Input 2"
 
 
@@ -7040,8 +7042,7 @@ def test_auto_structure_graph_is_undoable_position_only_edit(qtbot):
     widget.undo()
 
     assert widget.graph_view.node_positions() == {
-        node_id: (float(x), float(y))
-        for node_id, (x, y) in messy_positions.items()
+        node_id: (float(x), float(y)) for node_id, (x, y) in messy_positions.items()
     }
     assert widget.graph_view._notes[note_id].pos() == messy_note_pos
 
@@ -7287,8 +7288,7 @@ def test_select_table_columns_uses_detected_column_checklist(qtbot):
 
     control.deselect_all_button.click()
     assert (
-        widget.pipeline.nodes[selected.id].params["columns"]
-        == NO_TABLE_COLUMNS_VALUE
+        widget.pipeline.nodes[selected.id].params["columns"] == NO_TABLE_COLUMNS_VALUE
     )
     widget.run_pipeline(force_sync=True)
     assert widget.pipeline.outputs[selected.id].columns == ()
@@ -7515,8 +7515,181 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert values["source_bindings"][0]["node_id"] == "input"
     assert "*.ome.tif" in values["source_bindings"][0]["pattern"]
     assert values["image_format"] == "ome-tiff"
+    assert values["existing_file_policy"] == ExistingFilePolicy.ERROR.value
     assert values["save_workflow_snapshot"] is True
+    assert not dialog.workflow_checkbox.isEnabled()
     assert values["save_python_script"] is True
+    assert values["continue_on_error"] is True
+    assert dialog.load_config_button.text() == "Load config..."
+    assert dialog.load_config_button.isEnabled()
+    assert dialog.save_config_button.text() == "Save config..."
+    assert dialog.save_config_button.isEnabled()
+    assert dialog.demo_config_button.text() == "Create demo..."
+    assert dialog.demo_config_button.isEnabled()
+
+
+def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    qtbot.addWidget(dialog)
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+
+    qtbot.mouseClick(dialog.demo_config_button, Qt.LeftButton)
+
+    demo_root = tmp_path / SYNTHETIC_BATCH_DEMO_DIRNAME
+    assert (demo_root / BATCH_WORKFLOW_FILENAME).is_file()
+    assert (demo_root / BATCH_CONFIG_FILENAME).is_file()
+    assert (demo_root / BATCH_SCRIPT_FILENAME).is_file()
+    assert "batch_output_3" in widget.pipeline.nodes
+    assert [str(row["node_id"]) for row in dialog._source_rows] == [
+        "input",
+        "input_2",
+    ]
+    assert [str(row["title"]) for row in dialog._source_rows] == [
+        "Primary signal",
+        "Secondary reference",
+    ]
+    assert dialog._source_rows[0]["folder"].text() == str(
+        demo_root / "inputs" / "primary"
+    )
+    assert dialog._source_rows[1]["folder"].text() == str(
+        demo_root / "inputs" / "reference"
+    )
+    assert dialog.output_edit.text() == str(demo_root / "results")
+    assert dialog.preview_table.rowCount() == 3
+    assert dialog.preview_table.item(0, 2).text().count("\n") == 2
+    assert dialog.preview_table.item(0, 3).text().splitlines() == [
+        "new",
+        "new",
+        "new",
+    ]
+    assert "3 deterministic paired items" in dialog.preview_status.text()
+
+    result = widget._run_collection_batch(**dialog.values())
+    validation = validate_synthetic_batch_demo(
+        SyntheticBatchDemo.from_root(demo_root),
+        result=result,
+    )
+
+    assert validation.ok
+    assert result.summary == {
+        "completed": 3,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+    assert {path.name for path in result.artifact_paths} == {
+        BATCH_WORKFLOW_FILENAME,
+        BATCH_SCRIPT_FILENAME,
+    }
+    validation_text = widget._validate_collection_batch_demo_result(
+        demo_root / BATCH_CONFIG_FILENAME,
+        result,
+    )
+    assert validation_text == "Synthetic ground truth passed (5 checks)."
+
+
+def test_batch_provenance_example_is_registered_as_generated_demo():
+    spec = next(item for item in EXAMPLE_WORKFLOWS if item.id == "batch-provenance")
+
+    assert spec.generated_batch_demo
+    assert spec.filename == "synthetic-batch-provenance.json"
+    assert _example_workflow_path(spec).is_file()
+
+
+def test_generated_batch_example_uses_demo_creation_branch(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    spec = next(item for item in EXAMPLE_WORKFLOWS if item.id == "batch-provenance")
+    demo = SyntheticBatchDemo.from_root(tmp_path / "demo")
+
+    class AcceptedExampleDialog:
+        def __init__(self, _parent):
+            pass
+
+        def exec(self):
+            return 1
+
+        def selected_example(self):
+            return spec
+
+    opened = []
+    monkeypatch.setattr(
+        "napari_vipp._widget.ExampleWorkflowDialog",
+        AcceptedExampleDialog,
+    )
+    monkeypatch.setattr(
+        widget,
+        "load_example_workflow",
+        lambda *_args: pytest.fail("Generated demo used ordinary example loading"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_choose_collection_batch_demo",
+        lambda: demo,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_batch_collection_dialog",
+        lambda **kwargs: opened.append(kwargs),
+    )
+
+    widget._open_example_workflow_dialog()
+
+    assert opened == [{"config_path": demo.config_path}]
+
+    monkeypatch.setattr(widget, "_choose_collection_batch_demo", lambda: None)
+    widget._open_example_workflow_dialog()
+    assert opened == [{"config_path": demo.config_path}]
+
+
+def test_collection_batch_demo_confirmation_uses_active_dialog_parent(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    qtbot.addWidget(dialog)
+    captured = []
+
+    def decline(owner, *_args, **_kwargs):
+        captured.append(owner)
+        return QMessageBox.No
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        decline,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Folder chooser opened after replacement was declined"
+        ),
+    )
+    original_nodes = tuple(widget.pipeline.nodes)
+
+    result = widget._choose_collection_batch_demo(dialog_parent=dialog)
+
+    assert result is None
+    assert captured == [dialog]
+    assert tuple(widget.pipeline.nodes) == original_nodes
 
 
 def test_run_collection_batch_writes_terminal_outputs(qtbot, tmp_path):
@@ -7577,11 +7750,11 @@ def test_run_collection_batch_prefers_explicit_batch_outputs(qtbot, tmp_path):
         output_dir,
         "*.tif",
         image_format="ome-tiff",
-        save_workflow_snapshot=False,
+        save_workflow_snapshot=True,
         save_python_script=False,
     )
 
-    saved_names = {path.name for path in saved}
+    saved_names = {path.name for path in saved.saved_paths}
     assert saved_names == {"field_a_blurred.npy"}
     explicit_path = output_dir / "images" / "blurred" / "field_a_blurred.npy"
     terminal_path = output_dir / "field_a__Otsu_Threshold-threshold.ome.tif"
@@ -7628,13 +7801,13 @@ def test_run_collection_batch_uses_low_memory_retention(
         output_dir,
         "*.tif",
         image_format="ome-tiff",
-        save_workflow_snapshot=False,
+        save_workflow_snapshot=True,
         save_python_script=False,
     )
 
     batch_calls = [call for call in calls if call["prune_unretained"]]
     assert batch_calls
-    assert {path.name for path in saved} == {"field_a__output.npy"}
+    assert {path.name for path in saved.saved_paths} == {"field_a__output.npy"}
     assert all(call["retain_node_ids"] == (batch_output.id,) for call in batch_calls)
 
 
@@ -7698,12 +7871,12 @@ def test_run_collection_batch_supports_independent_source_bindings(qtbot, tmp_pa
         "",
         output_dir,
         image_format="ome-tiff",
-        save_workflow_snapshot=False,
+        save_workflow_snapshot=True,
         save_python_script=False,
         source_bindings=source_bindings,
     )
 
-    assert {path.name for path in saved} == {
+    assert {path.name for path in saved.saved_paths} == {
         "0001_field_a_secondary.npy",
         "0002_field_b_secondary.npy",
     }
@@ -7753,6 +7926,383 @@ def test_collection_batch_rejects_mismatched_source_binding_counts(qtbot, tmp_pa
         assert "same number" in str(exc)
     else:
         raise AssertionError("Expected mismatched batch source counts to fail.")
+
+
+def test_collection_batch_config_roundtrip_maps_sources_by_node_id(
+    qtbot,
+    tmp_path,
+):
+    primary_dir = tmp_path / "primary"
+    secondary_dir = tmp_path / "secondary"
+    output_dir = tmp_path / "outputs"
+    primary_dir.mkdir()
+    secondary_dir.mkdir()
+    (primary_dir / "primary-a.tif").write_bytes(b"primary")
+    (secondary_dir / "secondary-a.tif").write_bytes(b"secondary")
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    secondary = widget.add_node_from_palette("input")
+    config_path = tmp_path / "saved_batch.json"
+    source_bindings = [
+        {
+            "node_id": "input",
+            "title": "Primary",
+            "input_dir": str(primary_dir),
+            "pattern": "primary-*.tif",
+        },
+        {
+            "node_id": secondary.id,
+            "title": "Secondary",
+            "input_dir": str(secondary_dir),
+            "pattern": "secondary-*.tif",
+        },
+    ]
+
+    saved_config, saved_workflow = widget._save_collection_batch_config(
+        config_path,
+        input_dir=primary_dir,
+        output_dir=output_dir,
+        pattern="*.tif",
+        image_format="npy",
+        existing_file_policy=ExistingFilePolicy.SKIP.value,
+        save_workflow_snapshot=True,
+        save_python_script=False,
+        source_bindings=source_bindings,
+        continue_on_error=True,
+    )
+    loaded = widget._load_collection_batch_config(saved_config)
+
+    assert saved_workflow.name == BATCH_WORKFLOW_FILENAME
+    assert [source.node_id for source in loaded.sources] == ["input", secondary.id]
+    dialog = CollectionBatchDialog(
+        widget,
+        source_nodes=list(reversed(widget._batch_source_rows())),
+    )
+    qtbot.addWidget(dialog)
+    dialog._apply_config(loaded)
+    rows = {str(row["node_id"]): row for row in dialog._source_rows}
+    assert [str(row["node_id"]) for row in dialog._source_rows[:2]] == [
+        "input",
+        secondary.id,
+    ]
+    assert rows["input"]["folder"].text() == str(primary_dir)
+    assert rows["input"]["pattern"].text() == "primary-*.tif"
+    assert rows[secondary.id]["folder"].text() == str(secondary_dir)
+    assert rows[secondary.id]["pattern"].text() == "secondary-*.tif"
+    assert [
+        binding["title"] for binding in dialog.values()["source_bindings"][:2]
+    ] == ["Primary", "Secondary"]
+    assert dialog.values()["existing_file_policy"] == "skip"
+    preview = widget._preview_collection_batch(**dialog.values())
+    assert preview[0].batch_id == "0001_primary-a"
+
+    widget.pipeline.set_param("gaussian", "sigma", 3.5)
+    with pytest.raises(ValueError, match="different workflow"):
+        widget._load_collection_batch_config(saved_config)
+
+
+def test_collection_batch_preview_reports_new_collision_and_terminal_fallback(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    np.save(input_dir / "field_a.npy", np.arange(20, dtype=np.uint8).reshape(4, 5))
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    preview = widget._preview_collection_batch(
+        input_dir,
+        output_dir,
+        "*.npy",
+        image_format="npy",
+    )
+
+    assert preview[0].explicit_outputs is False
+    assert set(preview[0].output_statuses) == {"new"}
+    existing_path = preview[0].outputs[0]
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(b"already here")
+
+    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(input_dir))
+    dialog.pattern_edit.setText("*.npy")
+    dialog.output_edit.setText(str(output_dir))
+    dialog.format_combo.setCurrentText("npy")
+    dialog._preview_batch()
+
+    assert dialog.preview_table.rowCount() == 1
+    assert "exists; collision" in dialog.preview_table.item(0, 3).text()
+    assert "collision" in dialog.preview_status.text().lower()
+    assert "Compatibility fallback" in dialog.preview_status.text()
+
+
+def test_collection_batch_config_clears_omitted_fixed_source_binding(
+    qtbot,
+    tmp_path,
+):
+    primary_dir = tmp_path / "primary"
+    primary_dir.mkdir()
+    fixed_path = tmp_path / "fixed.npy"
+    np.save(fixed_path, np.ones((2, 3), dtype=np.uint8))
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    fixed = widget.add_node_from_palette("input")
+    widget.pipeline.set_param(fixed.id, "source_mode", "file path")
+    widget.pipeline.set_param(fixed.id, "file_path", str(fixed_path))
+    workflow = widget._batch_workflow_document()
+    config = widget._collection_batch_config(
+        input_dir=primary_dir,
+        output_dir=tmp_path / "outputs",
+        source_bindings=[
+            {
+                "node_id": "input",
+                "input_dir": str(primary_dir),
+                "pattern": "*.npy",
+            }
+        ],
+        workflow=workflow,
+    )
+    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    qtbot.addWidget(dialog)
+    rows = {str(row["node_id"]): row for row in dialog._source_rows}
+    rows[fixed.id]["folder"].setText(str(tmp_path / "stale"))
+
+    dialog._apply_config(config)
+
+    assert rows[fixed.id]["folder"].text() == ""
+
+
+def test_collection_batch_config_rejects_reserved_companion_filename(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    with pytest.raises(ValueError, match="reserved"):
+        widget._save_collection_batch_config(
+            tmp_path / BATCH_WORKFLOW_FILENAME,
+            input_dir=input_dir,
+            output_dir=tmp_path / "outputs",
+            save_workflow_snapshot=True,
+            save_python_script=False,
+        )
+
+
+def test_collection_batch_preview_resolves_table_default_to_csv(qtbot, tmp_path):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    np.save(input_dir / "field_a.npy", np.arange(20, dtype=np.uint8).reshape(4, 5))
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    widget._connect_nodes("threshold", labels.id)
+    measurements = widget.add_node_from_palette("measure_objects")
+    widget._connect_nodes(labels.id, measurements.id)
+    output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes(measurements.id, output.id)
+    widget.pipeline.set_param(output.id, "tag", "measurements")
+
+    preview = widget._preview_collection_batch(
+        input_dir,
+        tmp_path / "outputs",
+        "*.npy",
+        image_format="npy",
+    )
+
+    assert preview[0].outputs[0].name == "field_a__measurements.csv"
+    assert preview[0].output_statuses == ("new",)
+
+
+def test_collection_batch_preview_reports_collisions_beyond_display_limit(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    for index in range(26):
+        np.save(
+            input_dir / f"field_{index:02d}.npy",
+            np.full((2, 3), index, dtype=np.uint8),
+        )
+    output_dir.mkdir()
+    np.save(
+        output_dir / "field_25__output.npy",
+        np.zeros((2, 3), dtype=np.uint8),
+    )
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("input", output.id)
+    widget.pipeline.set_param(output.id, "format", "npy")
+
+    preview = widget._preview_collection_batch(
+        input_dir,
+        output_dir,
+        "*.npy",
+        image_format="npy",
+        preview_limit=25,
+    )
+
+    assert len(preview) == 25
+    assert preview.total_items == 26
+    assert preview.collision_count == 1
+
+
+def test_run_collection_batch_writes_reproducibility_artifacts_and_manifest(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    source = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    np.save(input_dir / "field_a.npy", source)
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("input", batch_output.id)
+    widget.pipeline.set_param(batch_output.id, "tag", "image")
+    widget.pipeline.set_param(batch_output.id, "format", "npy")
+
+    result = widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.npy",
+        image_format="npy",
+        save_workflow_snapshot=True,
+        save_python_script=True,
+    )
+
+    config_path = output_dir / BATCH_CONFIG_FILENAME
+    manifest_path = output_dir / BATCH_MANIFEST_FILENAME
+    runner_path = output_dir / BATCH_SCRIPT_FILENAME
+    workflow_path = output_dir / BATCH_WORKFLOW_FILENAME
+    assert config_path.is_file()
+    assert manifest_path.is_file()
+    assert runner_path.is_file()
+    assert workflow_path.is_file()
+    assert result.manifest_archive_path is not None
+    assert result.manifest_archive_path.is_file()
+    assert {path.name for path in result.artifact_paths} == {
+        BATCH_SCRIPT_FILENAME,
+        BATCH_WORKFLOW_FILENAME,
+    }
+    runner = runner_path.read_text(encoding="utf-8")
+    assert "from napari_vipp.core.batch import run_batch_from_files" in runner
+    assert "PrototypePipeline" not in runner
+
+    config_document = json.loads(config_path.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert config_document["type"] == BATCH_CONFIG_TYPE
+    assert manifest["type"] == BATCH_MANIFEST_TYPE
+    assert manifest["workflow"]["sha256"] == config_document["workflow"]["sha256"]
+    assert manifest["summary"] == {
+        "completed": 1,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+    item = manifest["items"][0]
+    assert item["status"] == BatchStatus.COMPLETED.value
+    assert item["sources"][0]["node_id"] == "input"
+    assert item["sources"][0]["identity"]["size_bytes"] > source.nbytes
+    assert item["sources"][0]["series"]["shape"] == [4, 5]
+    assert item["outputs"][0]["node_id"] == batch_output.id
+    assert item["outputs"][0]["status"] == BatchStatus.COMPLETED.value
+    assert item["outputs"][0]["size_bytes"] > 0
+    assert manifest["finished_at"]
+    assert manifest["runtime"]["packages"]["napari-vipp"] == VIPP_VERSION
+
+
+def test_run_collection_batch_continues_after_middle_read_failure(qtbot, tmp_path):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    first = np.full((3, 4), 11, dtype=np.uint8)
+    last = np.full((3, 4), 33, dtype=np.uint8)
+    np.save(input_dir / "01_first.npy", first)
+    (input_dir / "02_broken.npy").write_bytes(b"not a NumPy file")
+    np.save(input_dir / "03_last.npy", last)
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    batch_output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("input", batch_output.id)
+    widget.pipeline.set_param(batch_output.id, "tag", "result")
+    widget.pipeline.set_param(batch_output.id, "format", "npy")
+
+    result = widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.npy",
+        image_format="npy",
+        save_workflow_snapshot=True,
+        save_python_script=False,
+        continue_on_error=True,
+    )
+
+    assert result.summary == {
+        "completed": 2,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 1,
+    }
+    assert [item.status for item in result.manifest.items] == [
+        BatchStatus.COMPLETED,
+        BatchStatus.FAILED,
+        BatchStatus.COMPLETED,
+    ]
+    assert {path.name for path in result.saved_paths} == {
+        "01_first__result.npy",
+        "03_last__result.npy",
+    }
+    np.testing.assert_array_equal(np.load(output_dir / "01_first__result.npy"), first)
+    np.testing.assert_array_equal(np.load(output_dir / "03_last__result.npy"), last)
+    assert "Batch 3/3" in widget.status_label.text()
+
+
+def test_collection_batch_collision_does_not_replace_prior_artifacts(
+    qtbot,
+    tmp_path,
+):
+    input_dir = tmp_path / "inputs"
+    output_dir = tmp_path / "outputs"
+    input_dir.mkdir()
+    np.save(input_dir / "field.npy", np.ones((2, 3), dtype=np.uint8))
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    output = widget.add_node_from_palette("batch_output")
+    widget._connect_nodes("input", output.id)
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._run_collection_batch(
+        input_dir,
+        output_dir,
+        "*.npy",
+        image_format="npy",
+    )
+    artifact_paths = (
+        output_dir / BATCH_CONFIG_FILENAME,
+        output_dir / BATCH_WORKFLOW_FILENAME,
+        output_dir / BATCH_SCRIPT_FILENAME,
+        output_dir / BATCH_MANIFEST_FILENAME,
+    )
+    before = {path: path.read_bytes() for path in artifact_paths}
+
+    with pytest.raises(FileExistsError, match="preflight found output collisions"):
+        widget._run_collection_batch(
+            input_dir,
+            output_dir,
+            "*.npy",
+            image_format="npy",
+        )
+
+    assert {path: path.read_bytes() for path in artifact_paths} == before
 
 
 def test_save_image_node_writes_when_enabled(qtbot, tmp_path):
@@ -8423,12 +8973,8 @@ def test_large_rgb_channels_receive_exact_background_contrast(qtbot, monkeypatch
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     data = np.zeros((2, 4, 5, 6, 3), dtype=np.float32)
-    data[..., 0] = np.linspace(-2.0, 5.0, data[..., 0].size).reshape(
-        data[..., 0].shape
-    )
-    data[..., 1] = np.linspace(0.25, 2.0, data[..., 1].size).reshape(
-        data[..., 1].shape
-    )
+    data[..., 0] = np.linspace(-2.0, 5.0, data[..., 0].size).reshape(data[..., 0].shape)
+    data[..., 1] = np.linspace(0.25, 2.0, data[..., 1].size).reshape(data[..., 1].shape)
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
     monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
     started = threading.Event()

@@ -1,6 +1,6 @@
 # VIPP Alpha Release Runbook
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-12
 
 This runbook covers publishing napari-vipp to PyPI, creating a GitHub release,
 and confirming discovery on napari hub.
@@ -43,6 +43,10 @@ Required checks:
 - `python -m npe2 validate src/napari_vipp/napari.yaml`
 - `python -m ruff check .`
 - `python -m pytest`
+
+For a batch/provenance release, also use `Run batch...` -> `Create demo...` and
+complete the generated three-item run. Confirm three completed items, nine
+outputs, and a finalized latest manifest, archive, and three item sidecars.
 
 ## 3. Build Artifacts
 
@@ -153,6 +157,8 @@ If not updated after indexing delay:
 - [ ] Manual UI smoke pass completed for graph search, tunnel manager, graph
       notes, insert-on-wire mapping, workflow save/load, cache modes, and
       example workflows
+- [ ] Deterministic batch demo completed with 3 items, 9 outputs, exact
+      ground-truth validation, manifest archive, and 3 finalized sidecars
 - [ ] Build and twine checks pass
 - [ ] Uploaded to PyPI
 - [ ] Git tag pushed

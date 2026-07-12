@@ -52,10 +52,7 @@ def export_pipeline_to_python(
     source_param_names = _unique_names(source_ids, prefix="src")
     terminal_ids = _terminal_nodes(pipeline, order)
     used_functions = _used_function_names(pipeline, order)
-    if (
-        function_name in _RESERVED_FUNCTION_NAMES
-        or function_name in used_functions
-    ):
+    if function_name in _RESERVED_FUNCTION_NAMES or function_name in used_functions:
         raise ValueError(f"Invalid exported function name: {function_name!r}.")
 
     body_lines, missing = _build_function_body(
@@ -77,6 +74,61 @@ def export_pipeline_to_python(
         note = "\n".join(f"# NOTE: {line}" for line in missing)
         document = f"{document}\n\n\n{note}\n"
     return document.rstrip() + "\n"
+
+
+def export_batch_runner_to_python() -> str:
+    """Return a thin launcher for a saved workflow and batch configuration.
+
+    Unlike :func:`export_pipeline_to_python`, this companion deliberately keeps
+    the shared batch engine as the source of truth for pairing, filenames,
+    provenance, and failure handling.
+    """
+    return '''"""Run a saved napari-vipp batch workflow reproducibly."""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from napari_vipp.core.batch import run_batch_from_files
+
+
+def main(argv=None):
+    script_dir = Path(__file__).resolve().parent
+    parser = argparse.ArgumentParser(
+        description="Run a saved napari-vipp workflow and batch configuration."
+    )
+    parser.add_argument(
+        "--workflow",
+        default=None,
+        help="Workflow override (default: the path recorded by the config).",
+    )
+    parser.add_argument(
+        "--config",
+        default=str(script_dir / "vipp_batch_config.json"),
+        help="Saved VIPP batch config JSON (default: sibling config artifact).",
+    )
+    args = parser.parse_args(argv)
+    try:
+        result = run_batch_from_files(args.workflow, args.config)
+    except Exception as exc:
+        print(f"Batch failed before or during execution: {exc}", file=sys.stderr)
+        return 2
+    summary = result.summary
+    print(
+        f"{summary['completed']} completed, "
+        f"{summary['partial']} partial, "
+        f"{summary['skipped']} skipped, "
+        f"{summary['failed']} failed; "
+        f"{len(result.saved_paths)} outputs saved; "
+        f"manifest: {result.manifest_path}"
+    )
+    return 1 if result.has_failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
 
 
 def _build_header(pipeline: PrototypePipeline) -> str:
@@ -174,9 +226,7 @@ def _build_function_body(
                 "each channel."
             )
 
-    returns = ", ".join(
-        f"{node_id!r}: {var_names[node_id]}" for node_id in order
-    )
+    returns = ", ".join(f"{node_id!r}: {var_names[node_id]}" for node_id in order)
     lines.append(f"{_INDENT}return {{{returns}}}")
     return lines, _dedupe(missing)
 
@@ -263,7 +313,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
     feed = "load_image(in_path)" if primary else ""
     batch_feed = "load_image(source_path)" if primary else ""
     return (
-        "def batch_process(input_dir, output_dir, pattern=\"*.tif\"):\n"
+        'def batch_process(input_dir, output_dir, pattern="*.tif"):\n'
         f'{_INDENT}"""Run the pipeline over every matching file in a folder."""\n'
         f"{_INDENT}input_dir = Path(input_dir)\n"
         f"{_INDENT}output_dir = Path(output_dir)\n"

@@ -170,16 +170,25 @@ Still needed:
 ### 3. Batch Configuration And Provenance
 
 Already implemented: local collection batch execution, explicit `Batch Output`
-nodes, dry-run preview, multi-source binding, low-memory batch retention, and
-workflow/script reproducibility artifacts.
+nodes, sorted multi-source binding, shared-planner dry-run preview, low-memory
+batch retention, workflow/script reproducibility artifacts, versioned
+`vipp_batch_config.json`, existing-file policies, latest/archive manifests with
+atomic per-item checkpoints, and default-on configurable continuation after
+item failures.
 
-Still needed:
+A bundled deterministic batch/provenance demo now supplies the release-gate
+fixture: three sorted-position pairs, mixed image/label/table outputs, exact
+ground truth, a portable saved config and runner, and checks for hashes,
+manifests, archives, sidecars, replay policies, and isolated corrupt inputs.
 
-- saved `batch_config.yaml` or equivalent batch configuration;
-- per-item provenance manifest with workflow hash, package versions, input
-  identity, source metadata, output paths, and status;
-- clearer failure summary with skipped, failed, and completed items;
-- richer output manifest for all `Batch Output` nodes;
+The 0.12 implementation records workflow/config hashes, software versions,
+input identity and source metadata, resolved output paths, item/output status,
+and completed/partial/skipped/failed summary counts. `Batch Output` nodes remain
+the authoritative selected outputs; single-output terminal nodes remain only
+as a warned compatibility fallback.
+
+Deferred beyond this milestone:
+
 - semantic-axis iteration for timepoints, channels, z-slices, or selected
   combinations;
 - first-pass plate/well/field collection traversal for HCS-style layouts.
@@ -346,6 +355,13 @@ Release gate:
 - every item can emit provenance/status metadata;
 - failed items do not hide successful item outputs;
 - docs explain how `Batch Output` nodes define what gets saved.
+
+Implementation for this gate includes the saved `vipp_batch_config.json`,
+shared deterministic preview/execution planning, `Error`/`Skip`/`Overwrite`
+collision policy, latest/archive `vipp_batch_manifest.json` files with atomic
+per-item checkpoints, per-item failure isolation with default continuation,
+and a final completed/partial/skipped/failed summary. Semantic-axis iteration and
+plate/well/field HCS traversal are intentionally outside the 0.12 release gate.
 
 ### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 

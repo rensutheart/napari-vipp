@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.export import (
+    export_batch_runner_to_python,
+    export_pipeline_to_python,
+)
 from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 
 
@@ -13,6 +17,137 @@ def _starter_pipeline() -> PrototypePipeline:
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
     return pipeline
+
+
+def test_exported_batch_runner_uses_sibling_defaults_and_prints_summary(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    script_path = tmp_path / "vipp_batch_runner.py"
+    manifest_path = tmp_path / "vipp_batch_manifest.json"
+    calls: list[tuple[str, str]] = []
+    result = SimpleNamespace(
+        summary={
+            "completed": 3,
+            "partial": 0,
+            "skipped": 2,
+            "failed": 0,
+        },
+        saved_paths=[tmp_path / "first.tif", tmp_path / "second.tif"],
+        manifest_path=manifest_path,
+        has_failures=False,
+    )
+
+    def fake_run_batch_from_files(workflow, config):
+        calls.append((workflow, config))
+        return result
+
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch_from_files",
+        fake_run_batch_from_files,
+    )
+    code = export_batch_runner_to_python()
+    compiled = compile(code, "<exported-batch-runner>", "exec")
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(script_path),
+    }
+    exec(compiled, namespace)
+
+    assert namespace["main"]([]) == 0
+    assert calls == [
+        (
+            None,
+            str(tmp_path / "vipp_batch_config.json"),
+        )
+    ]
+    assert capsys.readouterr().out == (
+        "3 completed, 0 partial, 2 skipped, 0 failed; "
+        f"2 outputs saved; manifest: {manifest_path}\n"
+    )
+
+
+def test_exported_batch_runner_passes_cli_overrides_and_reports_failure(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    workflow_path = tmp_path / "custom-workflow.json"
+    config_path = tmp_path / "custom-config.json"
+    calls: list[tuple[str, str]] = []
+    result = SimpleNamespace(
+        summary={
+            "completed": 1,
+            "partial": 0,
+            "skipped": 0,
+            "failed": 1,
+        },
+        saved_paths=[tmp_path / "successful-output.tif"],
+        manifest_path=tmp_path / "manifest.json",
+        has_failures=True,
+    )
+
+    def fake_run_batch_from_files(workflow, config):
+        calls.append((workflow, config))
+        return result
+
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch_from_files",
+        fake_run_batch_from_files,
+    )
+    code = export_batch_runner_to_python()
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_runner.py"),
+    }
+    exec(compile(code, "<exported-batch-runner>", "exec"), namespace)
+
+    assert (
+        namespace["main"](
+            [
+                "--workflow",
+                str(workflow_path),
+                "--config",
+                str(config_path),
+            ]
+        )
+        == 1
+    )
+    assert calls == [(str(workflow_path), str(config_path))]
+    assert capsys.readouterr().out == (
+        "1 completed, 0 partial, 0 skipped, 1 failed; "
+        f"1 outputs saved; manifest: {result.manifest_path}\n"
+    )
+
+
+def test_exported_batch_runner_reports_preflight_exception(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    def failing_run(_workflow, _config):
+        raise ValueError("workflow/config mismatch")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch_from_files",
+        failing_run,
+    )
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_pipeline.py"),
+    }
+    exec(
+        compile(
+            export_batch_runner_to_python(),
+            "<exported-batch-runner>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    assert namespace["main"]([]) == 2
+    assert "workflow/config mismatch" in capsys.readouterr().err
 
 
 def test_export_produces_valid_python():

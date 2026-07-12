@@ -74,9 +74,21 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 `Run batch...` executes the current graph over local image collections. The
 dialog shows one source row for each `Image Source` node in the workflow. Bind a
 source row to a folder and one or more glob patterns, separated by semicolons,
-when that node should receive a different file for every batch item. Leave a
-source row blank when that source should keep its current fixed layer, file, or
-sample data.
+when that node should receive a different file for every batch item. A blank
+row is reproducible only when that `Image Source` already uses a fixed local
+file path; napari-layer and bundled-sample sources must be bound to a collection
+before saving or running a batch config.
+
+Use `Create demo...` in this dialog when you need a deterministic validation
+collection. After you select a parent folder, VIPP creates a new portable demo
+directory, loads its two-source workflow and config, and previews three tiny
+paired NumPy fields. The bundle includes exact ground truth for its combined
+images, overlap labels, and TSV measurement rows, plus the same workflow,
+config, and Python runner artifacts used by ordinary batches. Existing demo
+directories are never replaced. Loading is confirmed because it replaces the
+current graph. After execution, the app validates the bundle inputs, scientific
+outputs, config/workflow hashes, manifest records, archive, and sidecars and
+shows the pass/fail result in the batch summary.
 
 When multiple source rows are bound, VIPP sorts the matched files for each row
 and pairs them by position. Each bound source must match the same number of
@@ -86,8 +98,10 @@ primary source used for default naming. Each item gets a stable batch index
 (`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
 
 Use `Preview batch` before running to check the item ids, bound source files,
-and planned output filenames. The preview does not execute the image-processing
-graph; it only resolves the file pairing and output paths.
+planned output filenames, and existing-path collision state. The preview does
+not execute the image-processing graph; it uses the same deterministic pairing
+and output-planning rules as execution. `Run` performs a fresh preflight so
+filesystem changes since the preview are detected.
 
 Add `Batch Output` nodes to mark the exact images, masks, labels, RGB outputs,
 or tables that should be saved. Each `Batch Output` marker is pass-through
@@ -95,7 +109,11 @@ during normal graph execution and can define a tag, optional subfolder, filename
 template, format override, and overwrite behavior. If the graph has no
 `Batch Output` nodes, VIPP falls back to saving terminal graph outputs for every
 matched item. Image-like fallback outputs use the dialog format; table fallback
-outputs are saved as CSV.
+outputs are saved as CSV. This fallback preserves older and ad-hoc workflows,
+but the preview warns because terminal-node selection can change when the graph
+is edited. A terminal node with multiple output ports is rejected because the
+fallback cannot identify which port to save. Use explicit `Batch Output` nodes
+for a saved, reviewable run.
 
 Default explicit-output naming is:
 
@@ -108,17 +126,74 @@ Supported filename-template fields are `{batch_id}`, `{batch_index}`,
 `{node_id}`, and `{node_title}`. VIPP appends the appropriate extension unless
 the template already includes a known image or table extension.
 
-The dialog can also write two reproducibility companions into the output
+Use `Save config...` to write a versioned `vipp_batch_config.json`, and `Load
+config...` to restore it. The configuration records the source-node bindings,
+folders and patterns, output folder, default image format, existing-file
+policy, required workflow companion, optional runner choice, workflow hash, and
+resolved declarations for the selected outputs. Loading it against a different
+workflow reports the hash mismatch instead of silently using stale output
+selections.
+
+`Continue after item failures` is enabled by default. Clear it only when a
+pipeline exception or failed output should stop execution; intentional skips
+alone do not stop the run. Any items not attempted after that point are
+recorded as skipped.
+
+The existing-file policy applies wherever a `Batch Output` node uses `batch
+default`:
+
+| Policy | Existing planned destination |
+| --- | --- |
+| `Error` | Report a collision and require it to be resolved before execution. |
+| `Skip` | Preserve the file and record the planned output as `skipped`. |
+| `Overwrite` | Replace the file and record the new write normally. |
+
+An explicit `yes` or `no` overwrite value on a `Batch Output` node overrides
+that default. Preview the batch again after changing either policy.
+
+A run started from the dialog writes the resolved configuration into the output
 folder:
 
-- `vipp_batch_workflow.json`: the workflow graph and node positions;
-- `vipp_batch_pipeline.py`: the same headless Python export used by
-  `Export Python...`.
+- `vipp_batch_config.json`: the resolved configuration used for that run;
 
-Current batch execution is intentionally local-file oriented. It does not yet
-provide stable plate/well/field identities, per-item provenance manifests, HCS
-plate traversal, or iteration over semantic axes such as each timepoint or each
-channel.
+Every dialog or headless execution writes:
+
+- `vipp_batch_manifest.json`: the latest run metadata plus per-item and
+  per-output status.
+
+A headless replay uses the existing config and workflow files at their recorded
+locations rather than copying them into the output folder.
+
+The manifest identifies the workflow/config hashes, embeds the canonical config
+and scientific graph, records VIPP and relevant runtime package versions, each
+input and available source metadata, every planned output policy/path, and
+errors. A run-id manifest preserves each finished run. During execution, a
+run-id sidecar directory checkpoints each item and its outputs. There is a
+small interruption window between promoting an output and updating its
+sidecar, so the sidecars are a recovery trail rather than a transaction log.
+After a process interruption, inspect that run-id sidecar directory for the
+last checkpoints; the canonical latest/archive manifests are finalized only
+when the runner exits normally.
+Output records move through `pending` to `completed`, `skipped`, or `failed`.
+Item records may also be `running` or `partial`; the final summary counts
+completed, partial, skipped, and failed items separately.
+
+The dialog always writes:
+
+- `vipp_batch_workflow.json`: the workflow graph and node positions;
+
+It can additionally write:
+
+- `vipp_batch_pipeline.py`: a thin command-line runner that defaults to the
+  workflow recorded by the config and delegates to the same headless batch core
+  as the dialog. `--workflow` can override that recorded path.
+
+This batch runner is intentionally different from `Export Python...`, which
+emits direct operation calls and a simpler single-source folder harness.
+
+Current batch execution remains local-file oriented. Time, channel, and Z stay
+inside each paired source item; VIPP does not yet iterate selected semantic-axis
+combinations. Plate/well/field discovery and HCS traversal are also deferred.
 
 ## Export OME Analysis Dataset
 
@@ -157,5 +232,5 @@ presented as editable output metadata.
 - OME-Zarr pyramid generation and preview-level selection are not exposed.
 - The graph still materializes lazy arrays when an eager processing node or
   preview requires NumPy data.
-- Plate/well/field browsing, remote URIs, saved batch configuration,
-  semantic-axis iteration, and per-item provenance remain planned work.
+- Plate/well/field browsing, HCS traversal, remote URIs, and semantic-axis
+  batch iteration remain planned work.

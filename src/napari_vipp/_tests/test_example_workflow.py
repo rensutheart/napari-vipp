@@ -68,6 +68,11 @@ DECONVOLUTION_3D_EXAMPLE_WORKFLOW = (
     / "examples"
     / "synthetic-3d-deconvolution-rl-tv.json"
 )
+BATCH_PROVENANCE_EXAMPLE_WORKFLOW = (
+    Path(__file__).resolve().parents[3]
+    / "examples"
+    / "synthetic-batch-provenance.json"
+)
 
 
 def _restore_workflow(pipeline: PrototypePipeline, workflow: dict) -> None:
@@ -85,6 +90,59 @@ def _label_volumes(labels: np.ndarray) -> dict[int, int]:
         int(label_id): int(np.count_nonzero(labels == label_id))
         for label_id in label_ids
     }
+
+
+def test_synthetic_batch_provenance_workflow_loads_and_runs_exactly():
+    workflow = load_workflow(BATCH_PROVENANCE_EXAMPLE_WORKFLOW)
+    pipeline = PrototypePipeline()
+    _restore_workflow(pipeline, workflow)
+    primary = np.zeros((8, 8), dtype=np.uint16)
+    primary[1:4, 1:4] = 100
+    reference = np.zeros((8, 8), dtype=np.uint16)
+    reference[2:5, 2:5] = 200
+
+    outputs = pipeline.run(
+        None,
+        source_payloads={
+            "input": SourcePayload(
+                primary,
+                {"vipp_axis_order": "YX"},
+                "primary",
+            ),
+            "input_2": SourcePayload(
+                reference,
+                {"vipp_axis_order": "YX"},
+                "reference",
+            ),
+        },
+    )
+
+    expected_combined = primary.astype(np.float32) + reference
+    expected_labels = np.zeros((8, 8), dtype=np.int32)
+    expected_labels[2:4, 2:4] = 1
+    assert np.array_equal(outputs["batch_output_1"], expected_combined)
+    assert np.array_equal(outputs["batch_output_2"], expected_labels)
+    table = outputs["batch_output_3"]
+    assert table.records() == [
+        {
+            "label_id": 1,
+            "area_pixels": 4,
+            "centroid_y": 2.5,
+            "centroid_x": 2.5,
+            "bbox_y_min": 2,
+            "bbox_x_min": 2,
+            "bbox_y_max": 4,
+            "bbox_x_max": 4,
+            "equivalent_diameter_pixels": 2.256758334191025,
+            "extent": 1.0,
+            "euler_number": 1,
+        }
+    ]
+    assert [
+        node_id
+        for node_id in pipeline.topological_order()
+        if pipeline.nodes[node_id].operation_id == "batch_output"
+    ] == ["batch_output_1", "batch_output_2", "batch_output_3"]
 
 
 def test_otsu_red_channel_label_workflow_loads_and_runs():

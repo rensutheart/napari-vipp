@@ -94,6 +94,34 @@ from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import OPERATION_MIME, PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp._theme import category_color, category_tint
+from napari_vipp.core.batch import (
+    BATCH_CONFIG_FILENAME,
+    BATCH_MANIFEST_FILENAME,
+    BATCH_SCRIPT_FILENAME,
+    BATCH_WORKFLOW_FILENAME,
+    BatchConfig,
+    BatchOutputConfig,
+    BatchRunResult,
+    BatchSourceConfig,
+    ExistingFilePolicy,
+    atomic_write_json,
+    atomic_write_text,
+    load_batch_config,
+    plan_batch,
+    preflight_batch,
+    run_batch,
+    safe_batch_filename,
+    save_batch_config,
+    scientific_workflow_hash,
+    validate_batch_config,
+)
+from napari_vipp.core.batch_demo import (
+    SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME,
+    SyntheticBatchDemo,
+    create_synthetic_batch_demo,
+    next_synthetic_batch_demo_root,
+    validate_synthetic_batch_demo,
+)
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
     CHANNEL_COLOR_HEX,
@@ -101,7 +129,10 @@ from napari_vipp.core.channel_colors import (
     channel_color_labels_from_metadata,
     color_value_to_rgb,
 )
-from napari_vipp.core.export import export_pipeline_to_python
+from napari_vipp.core.export import (
+    export_batch_runner_to_python,
+    export_pipeline_to_python,
+)
 from napari_vipp.core.graph_layout import (
     LayoutEdge,
     LayoutNode,
@@ -182,13 +213,6 @@ _RGB_VOLUME_CHANNELS = (
     (2, "Blue", "blue"),
 )
 
-_BATCH_PATTERN_SEPARATORS = re.compile(r"[;,\n]+")
-_BATCH_IMAGE_FORMAT_SUFFIXES = {
-    "ome-tiff": ".ome.tif",
-    "imagej-tiff": ".tif",
-    "tiff": ".tif",
-    "npy": ".npy",
-}
 ASYNC_SOURCE_FILE_BYTES = 32 * 1024 * 1024
 AUTO_BACKGROUND_MIN_BYTES = 32 * 1024 * 1024
 AUTO_BACKGROUND_MIN_ELEMENTS = 4_000_000
@@ -206,9 +230,21 @@ class ExampleWorkflowSpec:
     filename: str
     samples: tuple[str, ...]
     description: str
+    generated_batch_demo: bool = False
 
 
 EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
+    ExampleWorkflowSpec(
+        "batch-provenance",
+        "Batch & Reproducibility",
+        "Deterministic Batch & Provenance",
+        "synthetic-batch-provenance.json",
+        ("Generated paired .npy collection",),
+        "Create three deterministic paired fields, preview collision-aware "
+        "planning, and write explicit image, label, table, config, runner, "
+        "manifest, archive, and per-item provenance artifacts.",
+        generated_batch_demo=True,
+    ),
     ExampleWorkflowSpec(
         "label-cleanup",
         "Segmentation & Labels",
@@ -425,19 +461,30 @@ class BatchSourceBinding:
 
 
 @dataclass(frozen=True)
-class BatchItem:
-    index: int
-    batch_id: str
-    primary_source: Path
-    source_paths: dict[str, Path]
-
-
-@dataclass(frozen=True)
 class BatchPreviewRow:
     batch_index: int
     batch_id: str
     sources: dict[str, Path]
     outputs: list[Path]
+    output_statuses: tuple[str, ...] = ()
+    explicit_outputs: bool = True
+
+
+@dataclass(frozen=True)
+class BatchPreviewResult:
+    rows: tuple[BatchPreviewRow, ...]
+    total_items: int
+    collision_count: int
+    explicit_outputs: bool
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index):
+        return self.rows[index]
 
 
 @dataclass(frozen=True)
@@ -2359,7 +2406,7 @@ class ExampleWorkflowDialog(QDialog):
         layout.addWidget(self.filter_edit)
 
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Example", "Bundled sample"])
+        self.tree.setHeaderLabels(["Example", "Input"])
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tree.setRootIsDecorated(True)
         layout.addWidget(self.tree, 1)
@@ -2450,11 +2497,16 @@ class ExampleWorkflowDialog(QDialog):
         self._selected_example_id = spec.id if spec is not None else ""
         self.open_button.setEnabled(spec is not None)
         if spec is None:
+            self.open_button.setText("Open")
             self.details_label.setText("Select an example workflow.")
             return
         samples = ", ".join(spec.samples)
+        self.open_button.setText("Create..." if spec.generated_batch_demo else "Open")
+        source_label = (
+            "Generated input" if spec.generated_batch_demo else "Source sample"
+        )
         self.details_label.setText(
-            f"{spec.title}\n\n{spec.description}\n\nSource sample: {samples}"
+            f"{spec.title}\n\n{spec.description}\n\n{source_label}: {samples}"
         )
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -2472,8 +2524,9 @@ class CollectionBatchDialog(QDialog):
     def __init__(self, parent=None, source_nodes: list[dict] | None = None):
         super().__init__(parent)
         self.setWindowTitle("Run collection batch")
-        self.setMinimumWidth(760)
+        self.setMinimumWidth(880)
         self._source_rows: list[dict[str, object]] = []
+        self._loaded_config_path: Path | None = None
 
         source_nodes = source_nodes or [
             {
@@ -2486,38 +2539,39 @@ class CollectionBatchDialog(QDialog):
         self.output_edit = QLineEdit()
         self.format_combo = QComboBox()
         self.format_combo.addItems(["ome-tiff", "imagej-tiff", "tiff", "npy"])
+        self.existing_policy_combo = QComboBox()
+        self.existing_policy_combo.addItem("Error", ExistingFilePolicy.ERROR.value)
+        self.existing_policy_combo.addItem("Skip", ExistingFilePolicy.SKIP.value)
+        self.existing_policy_combo.addItem(
+            "Overwrite", ExistingFilePolicy.OVERWRITE.value
+        )
         self.workflow_checkbox = QCheckBox("Save workflow JSON")
         self.workflow_checkbox.setChecked(True)
-        self.script_checkbox = QCheckBox("Save exported Python script")
+        self.workflow_checkbox.setEnabled(False)
+        self.workflow_checkbox.setToolTip(
+            "The workflow companion is required for reproducible batch configs."
+        )
+        self.script_checkbox = QCheckBox("Save batch runner Python script")
         self.script_checkbox.setChecked(True)
+        self.continue_checkbox = QCheckBox("Continue after item failures")
+        self.continue_checkbox.setChecked(True)
         self.preview_button = QPushButton("Preview batch")
         self.preview_button.clicked.connect(self._preview_batch)
         self.preview_status = QLabel("")
         self.preview_status.setWordWrap(True)
         self.preview_status.setStyleSheet("color: #94a3b8;")
-        self.preview_table = QTableWidget(0, 3)
-        self.preview_table.setHorizontalHeaderLabels(["#", "Batch item", "Outputs"])
+        self.preview_table = QTableWidget(0, 4)
+        self.preview_table.setHorizontalHeaderLabels(
+            ["#", "Batch item", "Outputs", "Preflight"]
+        )
         self.preview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.preview_table.setMinimumHeight(170)
         self.preview_table.setMaximumHeight(260)
 
         source_group = QGroupBox("Batch sources")
-        source_layout = QVBoxLayout(source_group)
-        for index, source in enumerate(source_nodes):
-            row = self._make_source_row(
-                str(source.get("node_id", f"source_{index + 1}")),
-                str(source.get("title", f"Image Source {index + 1}")),
-                str(source.get("binding_mode", "")),
-                index=index,
-            )
-            source_layout.addWidget(row)
-        if self._source_rows:
-            self.input_edit = self._source_rows[0]["folder"]
-            self.pattern_edit = self._source_rows[0]["pattern"]
-        else:
-            self.input_edit = QLineEdit()
-            self.pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+        self.source_layout = QVBoxLayout(source_group)
+        self._set_source_nodes(source_nodes)
 
         output_button = QPushButton("Folder...")
         output_button.clicked.connect(self._browse_output)
@@ -2530,8 +2584,28 @@ class CollectionBatchDialog(QDialog):
         form = QFormLayout()
         form.addRow("Output folder", output_row)
         form.addRow("Default image format", self.format_combo)
+        form.addRow("Existing files", self.existing_policy_combo)
         form.addRow("", self.workflow_checkbox)
         form.addRow("", self.script_checkbox)
+        form.addRow("", self.continue_checkbox)
+
+        self.load_config_button = QPushButton("Load config...")
+        self.load_config_button.clicked.connect(self._load_config)
+        self.save_config_button = QPushButton("Save config...")
+        self.save_config_button.clicked.connect(self._save_config)
+        self.demo_config_button = QPushButton("Create demo...")
+        self.demo_config_button.setToolTip(
+            "Create a deterministic paired collection and replace the current "
+            "graph with its validation workflow."
+        )
+        self.demo_config_button.clicked.connect(self._create_demo)
+        config_row = QWidget()
+        config_layout = QHBoxLayout(config_row)
+        config_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.addWidget(self.load_config_button)
+        config_layout.addWidget(self.save_config_button)
+        config_layout.addWidget(self.demo_config_button)
+        config_layout.addStretch(1)
 
         help_label = QLabel(
             "Bind each Image Source that should change per batch item to a "
@@ -2555,12 +2629,36 @@ class CollectionBatchDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
+        layout.addWidget(config_row)
         layout.addWidget(source_group)
         layout.addLayout(form)
         layout.addWidget(help_label)
         layout.addWidget(preview_row)
         layout.addWidget(self.preview_table)
         layout.addWidget(buttons)
+
+    def _set_source_nodes(self, source_nodes: list[dict]) -> None:
+        self.preview_table.setRowCount(0)
+        self.preview_status.clear()
+        for row in self._source_rows:
+            widget = row["widget"]
+            self.source_layout.removeWidget(widget)
+            widget.deleteLater()
+        self._source_rows.clear()
+        for index, source in enumerate(source_nodes):
+            row = self._make_source_row(
+                str(source.get("node_id", f"source_{index + 1}")),
+                str(source.get("title", f"Image Source {index + 1}")),
+                str(source.get("binding_mode", "")),
+                index=index,
+            )
+            self.source_layout.addWidget(row)
+        if self._source_rows:
+            self.input_edit = self._source_rows[0]["folder"]
+            self.pattern_edit = self._source_rows[0]["pattern"]
+        else:
+            self.input_edit = QLineEdit()
+            self.pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
 
     def _make_source_row(
         self,
@@ -2614,6 +2712,9 @@ class CollectionBatchDialog(QDialog):
                 "folder": folder_edit,
                 "pattern": pattern_edit,
                 "index": index,
+                "widget": row,
+                "title_label": title_label,
+                "binding_mode": binding_mode,
             }
         )
         return row
@@ -2635,15 +2736,17 @@ class CollectionBatchDialog(QDialog):
             "pattern": self.pattern_edit.text(),
             "source_bindings": bindings,
             "image_format": self.format_combo.currentText(),
+            "existing_file_policy": str(self.existing_policy_combo.currentData()),
             "save_workflow_snapshot": self.workflow_checkbox.isChecked(),
             "save_python_script": self.script_checkbox.isChecked(),
+            "continue_on_error": self.continue_checkbox.isChecked(),
         }
 
-    def _preview_batch(self) -> None:
+    def _preview_batch(self) -> bool:
         parent = self.parent()
         if parent is None or not hasattr(parent, "_preview_collection_batch"):
             self.preview_status.setText("Preview is available from the VIPP widget.")
-            return
+            return False
         try:
             rows = parent._preview_collection_batch(
                 **self.values(),
@@ -2652,7 +2755,7 @@ class CollectionBatchDialog(QDialog):
         except Exception as exc:
             self.preview_table.setRowCount(0)
             self.preview_status.setText(f"Preview failed: {exc}")
-            return
+            return False
         self.preview_table.setRowCount(len(rows))
         for row_index, item in enumerate(rows):
             self.preview_table.setItem(
@@ -2670,10 +2773,171 @@ class CollectionBatchDialog(QDialog):
             )
             output_text = "\n".join(str(path) for path in item.outputs)
             self.preview_table.setItem(row_index, 2, QTableWidgetItem(output_text))
+            status_text = "\n".join(item.output_statuses)
+            self.preview_table.setItem(row_index, 3, QTableWidgetItem(status_text))
         self.preview_table.resizeColumnsToContents()
         self.preview_table.resizeRowsToContents()
-        suffix = " shown" if rows else ""
-        self.preview_status.setText(f"{len(rows)} planned batch item(s){suffix}.")
+        total_items = getattr(rows, "total_items", len(rows))
+        collision_count = getattr(
+            rows,
+            "collision_count",
+            sum(
+                status
+                in {
+                    "exists; collision",
+                    "duplicate planned destination",
+                    "destination overlaps an input",
+                }
+                for row in rows
+                for status in row.output_statuses
+            ),
+        )
+        explicit_outputs = getattr(
+            rows,
+            "explicit_outputs",
+            bool(not rows or rows[0].explicit_outputs),
+        )
+        messages = [
+            f"Showing {len(rows)} of {total_items} planned batch item(s)."
+        ]
+        if collision_count:
+            messages.append(f"{collision_count} collision(s) need attention.")
+        if not explicit_outputs:
+            messages.append(
+                "Compatibility fallback: terminal graph outputs will be saved; "
+                "add Batch Output nodes to make the selection explicit."
+            )
+        self.preview_status.setText(" ".join(messages))
+        return True
+
+    def _create_demo(self) -> None:
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "_choose_collection_batch_demo"):
+            self.preview_status.setText(
+                "Creating the synthetic demo is available from the VIPP widget."
+            )
+            return
+        try:
+            demo = parent._choose_collection_batch_demo(dialog_parent=self)
+            if demo is None:
+                return
+            self._set_source_nodes(parent._batch_source_rows())
+            config = parent._load_collection_batch_config(demo.config_path)
+            self._apply_config(config)
+            self._loaded_config_path = demo.config_path
+            if not self._preview_batch():
+                return
+        except Exception as exc:
+            self.preview_status.setText(f"Could not create batch demo: {exc}")
+            return
+        self.preview_status.setText(
+            f"Created {demo.root.name}. Previewed "
+            f"{self.preview_table.rowCount()} deterministic paired items."
+        )
+
+    def _load_config(self) -> None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Load batch configuration",
+            str(self._loaded_config_path or BATCH_CONFIG_FILENAME),
+            "VIPP batch config (*.json);;JSON files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "_load_collection_batch_config"):
+                config = parent._load_collection_batch_config(path)
+            else:
+                config = load_batch_config(path)
+            self._apply_config(config)
+        except Exception as exc:
+            self.preview_status.setText(f"Could not load batch config: {exc}")
+            return
+        self._loaded_config_path = Path(path)
+        self.preview_status.setText(f"Loaded {Path(path).name}.")
+
+    def _save_config(self) -> None:
+        default_dir = Path(self.output_edit.text()).expanduser()
+        default_path = (
+            default_dir / BATCH_CONFIG_FILENAME
+            if str(default_dir).strip()
+            else Path(BATCH_CONFIG_FILENAME)
+        )
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save batch configuration",
+            str(default_path),
+            "VIPP batch config (*.json);;JSON files (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        parent = self.parent()
+        if parent is None or not hasattr(parent, "_save_collection_batch_config"):
+            self.preview_status.setText(
+                "Saving a batch config is available from the VIPP widget."
+            )
+            return
+        try:
+            saved = parent._save_collection_batch_config(path, **self.values())
+        except Exception as exc:
+            self.preview_status.setText(f"Could not save batch config: {exc}")
+            return
+        self._loaded_config_path = Path(path)
+        names = ", ".join(item.name for item in saved)
+        self.preview_status.setText(f"Saved {names}.")
+
+    def _apply_config(self, config: BatchConfig) -> None:
+        rows = {str(row["node_id"]): row for row in self._source_rows}
+        missing = [
+            source.node_id for source in config.sources if source.node_id not in rows
+        ]
+        if missing:
+            raise ValueError(
+                "Config references source nodes not present in this workflow: "
+                + ", ".join(missing)
+                + "."
+            )
+        configured_ids = [source.node_id for source in config.sources]
+        ordered_rows = [rows[node_id] for node_id in configured_ids]
+        ordered_rows.extend(
+            row
+            for row in self._source_rows
+            if str(row["node_id"]) not in configured_ids
+        )
+        self._source_rows = ordered_rows
+        for row in self._source_rows:
+            row["folder"].clear()
+            self.source_layout.removeWidget(row["widget"])
+            self.source_layout.addWidget(row["widget"])
+        for source in config.sources:
+            row = rows[source.node_id]
+            row["title"] = source.title
+            suffix = (
+                "  - collection" if row["binding_mode"] == "collection" else ""
+            )
+            row["title_label"].setText(
+                f"{source.title} ({source.node_id}){suffix}"
+            )
+            row["folder"].setText(str(config.resolve_path(source.input_dir)))
+            row["pattern"].setText(source.pattern)
+        if self._source_rows:
+            self.input_edit = self._source_rows[0]["folder"]
+            self.pattern_edit = self._source_rows[0]["pattern"]
+        self.output_edit.setText(str(config.resolve_path(config.output_dir)))
+        format_index = self.format_combo.findText(config.default_image_format)
+        if format_index >= 0:
+            self.format_combo.setCurrentIndex(format_index)
+        policy_index = self.existing_policy_combo.findData(
+            config.existing_file_policy.value
+        )
+        if policy_index >= 0:
+            self.existing_policy_combo.setCurrentIndex(policy_index)
+        self.workflow_checkbox.setChecked(True)
+        self.script_checkbox.setChecked(config.save_python_script)
+        self.continue_checkbox.setChecked(config.continue_on_error)
 
     def _browse_input(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -7486,7 +7750,12 @@ class VippWidget(QWidget):
         if example is None:
             return
         try:
-            self.load_example_workflow(example.id)
+            if example.generated_batch_demo:
+                demo = self._choose_collection_batch_demo()
+                if demo is not None:
+                    self._batch_collection_dialog(config_path=demo.config_path)
+            else:
+                self.load_example_workflow(example.id)
         except Exception as exc:
             self.status_label.setText(f"Open example failed: {exc}")
 
@@ -7576,21 +7845,145 @@ class VippWidget(QWidget):
             return
         self.status_label.setText(f"Pipeline exported to {target.name}.")
 
-    def _batch_collection_dialog(self) -> None:
+    def _batch_collection_dialog(
+        self,
+        *,
+        config_path: str | Path | None = None,
+    ) -> None:
         dialog = CollectionBatchDialog(self, source_nodes=self._batch_source_rows())
+        if config_path is not None:
+            try:
+                config = self._load_collection_batch_config(config_path)
+                dialog._apply_config(config)
+                dialog._loaded_config_path = Path(config_path)
+                dialog._preview_batch()
+            except Exception as exc:
+                self.status_label.setText(f"Could not open batch config: {exc}")
+                return
         if dialog.exec() != QDialog.Accepted:
             return
         values = dialog.values()
         try:
-            saved = self._run_collection_batch(**values)
+            result = self._run_collection_batch(**values)
         except Exception as exc:
             self._set_pipeline_busy(False)
             self.status_label.setText(f"Batch failed: {exc}")
             return
-        self.status_label.setText(
-            f"Batch completed with {len(saved)} saved file(s) in "
-            f"{Path(str(values['output_dir'])).expanduser()}."
+        validation_text = self._validate_collection_batch_demo_result(
+            dialog._loaded_config_path,
+            result,
         )
+        summary = result.summary
+        self.status_label.setText(
+            f"Batch finished: {summary['completed']} completed, "
+            f"{summary['partial']} partial, {summary['skipped']} skipped, "
+            f"{summary['failed']} failed; {len(result.saved_paths)} output(s) "
+            f"saved. Manifest: {result.manifest_path}."
+            + (f" {validation_text}" if validation_text else "")
+        )
+        self._show_collection_batch_summary(result, validation_text)
+
+    def _choose_collection_batch_demo(
+        self,
+        *,
+        dialog_parent: QWidget | None = None,
+    ) -> SyntheticBatchDemo | None:
+        owner = dialog_parent or self
+        answer = QMessageBox.question(
+            owner,
+            "Load synthetic batch demo",
+            "Create and load the deterministic batch demo? This replaces the "
+            "current graph even if you later cancel the batch dialog. Save any "
+            "workflow changes you want to keep before continuing.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return None
+        parent_path = QFileDialog.getExistingDirectory(
+            owner,
+            "Choose a parent folder for the synthetic batch demo",
+            "",
+        )
+        if not parent_path:
+            return None
+        target = next_synthetic_batch_demo_root(parent_path)
+        return self._create_collection_batch_demo(target)
+
+    def _create_collection_batch_demo(
+        self,
+        root: str | Path,
+    ) -> SyntheticBatchDemo:
+        demo = create_synthetic_batch_demo(root)
+        self.load_workflow_file(demo.workflow_path)
+        self.status_label.setText(
+            f"Created deterministic batch demo at {demo.root}."
+        )
+        return demo
+
+    def _validate_collection_batch_demo_result(
+        self,
+        config_path: Path | None,
+        result: BatchRunResult,
+    ) -> str:
+        if config_path is None:
+            return ""
+        root = Path(config_path).expanduser().resolve().parent
+        if not (root / SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME).is_file():
+            return ""
+        try:
+            validation = validate_synthetic_batch_demo(root, result=result)
+        except Exception as exc:
+            return f"Synthetic ground-truth validation failed: {exc}"
+        return f"Synthetic ground truth passed ({len(validation.checks)} checks)."
+
+    def _show_collection_batch_summary(
+        self,
+        result: BatchRunResult,
+        validation_text: str = "",
+    ) -> None:
+        summary = result.summary
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Collection batch summary")
+        validation_failed = "validation failed" in validation_text.lower()
+        dialog.setIcon(
+            QMessageBox.Warning
+            if result.has_failures or validation_failed
+            else QMessageBox.Information
+        )
+        dialog.setText(
+            f"{summary['completed']} completed, {summary['partial']} partial, "
+            f"{summary['skipped']} skipped, and {summary['failed']} failed."
+        )
+        dialog.setInformativeText(
+            f"{len(result.saved_paths)} output(s) saved.\n"
+            f"Manifest: {result.manifest_path}"
+            + (f"\n{validation_text}" if validation_text else "")
+        )
+        exceptional = [
+            item
+            for item in result.manifest.items
+            if item.status.value in {"partial", "failed", "skipped"}
+        ]
+        if exceptional:
+            details = []
+            for item in exceptional:
+                details.append(
+                    f"{item.batch_id}: {item.status.value}"
+                    + (f" - {item.error_message}" if item.error_message else "")
+                )
+                details.extend(
+                    f"  {output.tag}: {output.status.value} - {output.path}"
+                    + (
+                        f" - {output.error_message}"
+                        if output.error_message
+                        else ""
+                    )
+                    for output in item.outputs
+                    if output.status.value != "completed"
+                )
+            dialog.setDetailedText("\n".join(details))
+        dialog.exec()
 
     def _run_collection_batch(
         self,
@@ -7601,24 +7994,109 @@ class VippWidget(QWidget):
         save_workflow_snapshot: bool = True,
         save_python_script: bool = True,
         source_bindings: list[dict] | None = None,
-    ) -> list[Path]:
-        input_text = str(input_dir).strip()
-        output_text = str(output_dir).strip()
-        input_path = Path(input_text).expanduser()
-        output_path = Path(output_text).expanduser()
-        if source_bindings is None and (not input_text or not input_path.is_dir()):
-            raise ValueError("Batch input folder does not exist.")
-        if not output_text:
-            raise ValueError("Batch output folder cannot be blank.")
-
-        output_path.mkdir(parents=True, exist_ok=True)
+        existing_file_policy: str = ExistingFilePolicy.ERROR.value,
+        continue_on_error: bool = True,
+    ) -> BatchRunResult:
+        del save_workflow_snapshot
         positions = self.graph_view.node_positions()
+        workflow = self._batch_workflow_document(positions)
+        config = self._collection_batch_config(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            pattern=pattern,
+            image_format=image_format,
+            save_workflow_snapshot=True,
+            save_python_script=save_python_script,
+            source_bindings=source_bindings,
+            existing_file_policy=existing_file_policy,
+            continue_on_error=continue_on_error,
+            workflow=workflow,
+        )
+        output_path = config.resolve_path(config.output_dir)
+        config_path = output_path / BATCH_CONFIG_FILENAME
+        workflow_path = output_path / BATCH_WORKFLOW_FILENAME
+        script_path = output_path / BATCH_SCRIPT_FILENAME
+        plan = preflight_batch(workflow, config, workflow_path=workflow_path)
+        output_path.mkdir(parents=True, exist_ok=True)
+        artifact_paths: list[Path] = [
+            atomic_write_json(workflow_path, workflow)
+        ]
+        if save_python_script:
+            atomic_write_text(
+                script_path,
+                export_batch_runner_to_python(),
+            )
+            artifact_paths.append(script_path)
+        save_batch_config(config_path, config)
+
+        self._set_pipeline_busy(True, cancelable=False)
+        try:
+            result = run_batch(
+                workflow,
+                config,
+                workflow_path=workflow_path,
+                config_path=config_path,
+                plan=plan,
+                progress_callback=self._collection_batch_progress,
+            )
+        finally:
+            self._set_pipeline_busy(False)
+        return replace(
+            result,
+            artifact_paths=tuple(artifact_paths),
+        )
+
+    def _collection_batch_progress(
+        self,
+        index: int,
+        total: int,
+        batch_id: str,
+        status: str,
+    ) -> None:
+        self.status_label.setText(f"Batch {index}/{total}: {batch_id} ({status}).")
+        QApplication.processEvents()
+
+    def _batch_workflow_document(
+        self,
+        positions: dict[str, tuple[float, float]] | None = None,
+    ) -> dict:
         workflow = serialize_workflow(
             self.pipeline,
-            positions,
+            positions or self.graph_view.node_positions(),
             self._graph_note_documents(),
             self._workflow_metadata(),
         )
+        for node in workflow.get("nodes", ()):
+            if node.get("operation_id") != "input":
+                continue
+            params = node.get("params", {})
+            if str(params.get("source_mode", "napari layer")) != "file path":
+                continue
+            raw_path = str(params.get("file_path", "")).strip()
+            if raw_path:
+                params["file_path"] = str(Path(raw_path).expanduser().resolve())
+        return workflow
+
+    def _collection_batch_config(
+        self,
+        input_dir: str | Path,
+        output_dir: str | Path,
+        pattern: str = "*.tif",
+        image_format: str = "ome-tiff",
+        save_workflow_snapshot: bool = True,
+        save_python_script: bool = True,
+        source_bindings: list[dict] | None = None,
+        existing_file_policy: str = ExistingFilePolicy.ERROR.value,
+        continue_on_error: bool = True,
+        workflow: dict | None = None,
+    ) -> BatchConfig:
+        input_text = str(input_dir).strip()
+        output_text = str(output_dir).strip()
+        if not output_text:
+            raise ValueError("Batch output folder cannot be blank.")
+        input_path = Path(input_text).expanduser()
+        if workflow is None:
+            workflow = self._batch_workflow_document()
         restored = deserialize_workflow(workflow)
         batch_pipeline = PrototypePipeline()
         batch_pipeline.restore_graph(
@@ -7635,83 +8113,103 @@ class VippWidget(QWidget):
             pattern,
             source_bindings,
         )
-        batch_items = self._batch_items_for_bindings(bindings)
-
-        saved: list[Path] = []
-        if save_workflow_snapshot:
-            saved.append(
-                save_workflow(
-                    output_path / "vipp_batch_workflow.json",
-                    self.pipeline,
-                    positions,
-                    self._graph_note_documents(),
-                    self._workflow_metadata(),
-                )
+        sources = tuple(
+            BatchSourceConfig(
+                node_id=binding.node_id,
+                title=binding.title,
+                input_dir=Path(binding.input_dir or "").expanduser().resolve(),
+                pattern=binding.pattern,
             )
-        if save_python_script:
-            target = output_path / "vipp_batch_pipeline.py"
-            target.write_text(
-                export_pipeline_to_python(self.pipeline),
-                encoding="utf-8",
-            )
-            saved.append(target)
-
-        self._set_pipeline_busy(True, cancelable=False)
-        try:
-            for item in batch_items:
-                self.status_label.setText(
-                    f"Batch {item.index}/{len(batch_items)}: "
-                    f"processing {item.batch_id}."
-                )
-                source_payloads = self._batch_source_payloads_for_item(
-                    batch_pipeline,
-                    item,
-                )
-                batch_pipeline.run(
-                    None,
-                    input_metadata=None,
-                    input_name="",
-                    source_payloads=source_payloads,
-                    retain_node_ids=output_node_ids,
-                    prune_unretained=True,
-                )
-                for node_id in output_node_ids:
-                    data = batch_pipeline.outputs.get(node_id)
-                    if data is None:
-                        continue
-                    target = self._batch_output_path(
-                        output_path,
-                        item,
-                        batch_pipeline,
-                        node_id,
-                        data,
-                        image_format,
-                    )
-                    saved.append(
-                        self._save_batch_output(
-                            data,
-                            target,
-                            image_format=self._batch_node_image_format(
-                                batch_pipeline,
-                                node_id,
-                                data,
-                                image_format,
-                            ),
-                            table_format=self._batch_node_table_format(
-                                batch_pipeline,
-                                node_id,
-                            ),
-                            overwrite=self._batch_node_overwrite(
-                                batch_pipeline,
-                                node_id,
-                            ),
-                            image_state=batch_pipeline.output_states.get(node_id),
+            for binding in bindings
+        )
+        outputs = []
+        for node_id in output_node_ids:
+            node = batch_pipeline.nodes[node_id]
+            params = node.params if node.operation_id == "batch_output" else {}
+            ports = batch_pipeline.output_ports(node_id)
+            output_type = ports[0].output_type if ports else "any"
+            outputs.append(
+                BatchOutputConfig(
+                    node_id=node_id,
+                    node_title=node.title,
+                    tag=self._batch_output_tag(batch_pipeline, node_id),
+                    kind="table" if output_type == "table" else "image",
+                    format=str(params.get("format", "batch default")),
+                    subfolder=str(params.get("subfolder", "")),
+                    filename_template=str(
+                        params.get(
+                            "filename_template",
+                            "{source_stem}__{tag}",
                         )
-                    )
-                batch_pipeline.prune_cached_outputs(())
-        finally:
-            self._set_pipeline_busy(False)
-        return saved
+                    ),
+                    overwrite=str(params.get("overwrite", "batch default")),
+                )
+            )
+        try:
+            policy = ExistingFilePolicy(str(existing_file_policy))
+        except ValueError as exc:
+            raise ValueError(
+                f"Unsupported existing-file policy: {existing_file_policy!r}."
+            ) from exc
+        config = BatchConfig(
+            workflow_file=Path(BATCH_WORKFLOW_FILENAME),
+            workflow_sha256=scientific_workflow_hash(workflow),
+            output_dir=Path(output_text).expanduser().resolve(),
+            sources=sources,
+            outputs=tuple(outputs),
+            default_image_format=image_format,
+            existing_file_policy=policy,
+            save_workflow_snapshot=True,
+            save_python_script=save_python_script,
+            continue_on_error=continue_on_error,
+        )
+        validate_batch_config(
+            workflow,
+            config,
+            workflow_path=(config.output_dir / BATCH_WORKFLOW_FILENAME),
+        )
+        return config
+
+    def _save_collection_batch_config(
+        self,
+        path: str | Path,
+        **values,
+    ) -> tuple[Path, Path]:
+        target = Path(path).expanduser()
+        reserved = {
+            BATCH_WORKFLOW_FILENAME.casefold(),
+            BATCH_MANIFEST_FILENAME.casefold(),
+        }
+        if target.name.casefold() in reserved:
+            raise ValueError(
+                f"Choose a config filename other than {target.name!r}; that "
+                "name is reserved for a batch companion artifact."
+            )
+        workflow = self._batch_workflow_document()
+        config = self._collection_batch_config(**values, workflow=workflow)
+        workflow_path = target.parent / BATCH_WORKFLOW_FILENAME
+        validate_batch_config(workflow, config, workflow_path=workflow_path)
+        saved_workflow = atomic_write_json(workflow_path, workflow)
+        saved_config = save_batch_config(target, config)
+        return saved_config, saved_workflow
+
+    def _load_collection_batch_config(self, path: str | Path) -> BatchConfig:
+        config = load_batch_config(path)
+        workflow = self._batch_workflow_document()
+        try:
+            validate_batch_config(
+                workflow,
+                config,
+                workflow_path=config.resolve_path(config.workflow_file),
+            )
+        except ValueError as exc:
+            if "workflow hash" in str(exc):
+                raise ValueError(
+                    "This config belongs to a different workflow. Load its saved "
+                    "workflow before applying the batch config."
+                ) from exc
+            raise
+        return config
 
     def _preview_collection_batch(
         self,
@@ -7723,81 +8221,55 @@ class VippWidget(QWidget):
         save_python_script: bool = True,
         source_bindings: list[dict] | None = None,
         preview_limit: int = 25,
-    ) -> list[BatchPreviewRow]:
-        del save_workflow_snapshot, save_python_script
-        input_text = str(input_dir).strip()
-        output_text = str(output_dir).strip()
-        input_path = Path(input_text).expanduser()
-        output_path = Path(output_text).expanduser()
-        if not output_text:
-            raise ValueError("Batch output folder cannot be blank.")
-        workflow = serialize_workflow(
-            self.pipeline,
-            self.graph_view.node_positions(),
-            self._graph_note_documents(),
-            self._workflow_metadata(),
+        existing_file_policy: str = ExistingFilePolicy.ERROR.value,
+        continue_on_error: bool = True,
+    ) -> BatchPreviewResult:
+        workflow = self._batch_workflow_document()
+        config = self._collection_batch_config(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            pattern=pattern,
+            image_format=image_format,
+            save_workflow_snapshot=save_workflow_snapshot,
+            save_python_script=save_python_script,
+            source_bindings=source_bindings,
+            existing_file_policy=existing_file_policy,
+            continue_on_error=continue_on_error,
+            workflow=workflow,
         )
-        restored = deserialize_workflow(workflow)
-        batch_pipeline = PrototypePipeline()
-        batch_pipeline.restore_graph(
-            restored["nodes"],
-            restored["connections"],
-            restored.get("output_tunnels", ()),
+        plan = plan_batch(
+            workflow,
+            config,
+            workflow_path=(config.output_dir / BATCH_WORKFLOW_FILENAME),
         )
-        output_node_ids = self._batch_saved_node_ids(batch_pipeline)
-        if not output_node_ids:
-            raise ValueError("The workflow has no outputs to save.")
-        bindings = self._normalize_batch_source_bindings(
-            batch_pipeline,
-            input_path,
-            pattern,
-            source_bindings,
-        )
-        batch_items = self._batch_items_for_bindings(bindings)
-        rows: list[BatchPreviewRow] = []
-        for item in batch_items[: max(int(preview_limit), 0)]:
-            outputs = []
-            for node_id in output_node_ids:
-                data = self.pipeline.outputs.get(node_id)
-                outputs.append(
-                    self._batch_output_path(
-                        output_path,
-                        item,
-                        batch_pipeline,
-                        node_id,
-                        data,
-                        image_format,
-                    )
-                )
-            rows.append(
-                BatchPreviewRow(
-                    batch_index=item.index,
-                    batch_id=item.batch_id,
-                    sources=dict(item.source_paths),
-                    outputs=outputs,
-                )
+        explicit = bool(self._batch_output_node_ids(self.pipeline))
+        rows = tuple(
+            BatchPreviewRow(
+                batch_index=item.index,
+                batch_id=item.batch_id,
+                sources=dict(item.source_paths),
+                outputs=[output.path for output in item.outputs],
+                output_statuses=tuple(output.status_text for output in item.outputs),
+                explicit_outputs=explicit,
             )
-        return rows
-
-    def _iter_batch_source_paths(
-        self,
-        input_dir: Path,
-        pattern: str,
-    ) -> list[Path]:
-        patterns = [
-            item.strip()
-            for item in _BATCH_PATTERN_SEPARATORS.split(str(pattern))
-            if item.strip()
-        ] or ["*.tif"]
-        paths: list[Path] = []
-        seen: set[Path] = set()
-        for item in patterns:
-            for path in sorted(input_dir.glob(item)):
-                if not path.is_file() or path in seen:
-                    continue
-                seen.add(path)
-                paths.append(path)
-        return paths
+            for item in plan.items[: max(int(preview_limit), 0)]
+        )
+        collision_count = sum(
+            output.duplicate
+            or output.input_collision
+            or (
+                output.exists
+                and output.existing_file_policy == ExistingFilePolicy.ERROR
+            )
+            for item in plan.items
+            for output in item.outputs
+        )
+        return BatchPreviewResult(
+            rows=rows,
+            total_items=len(plan.items),
+            collision_count=collision_count,
+            explicit_outputs=explicit,
+        )
 
     def _batch_source_rows(self) -> list[dict[str, str]]:
         rows = []
@@ -7867,55 +8339,6 @@ class VippWidget(QWidget):
             for node_id in source_ids
         ]
 
-    def _batch_items_for_bindings(
-        self,
-        bindings: list[BatchSourceBinding],
-    ) -> list[BatchItem]:
-        if not bindings:
-            raise ValueError("No Image Source nodes are available for batch input.")
-        source_lists: dict[str, list[Path]] = {}
-        counts: dict[str, int] = {}
-        for binding in bindings:
-            if binding.input_dir is None or not binding.input_dir.is_dir():
-                raise ValueError(
-                    f"Batch source '{binding.title}' folder does not exist."
-                )
-            paths = self._iter_batch_source_paths(binding.input_dir, binding.pattern)
-            if not paths:
-                raise ValueError(
-                    f"No files matched '{binding.pattern}' for "
-                    f"batch source '{binding.title}'."
-                )
-            source_lists[binding.node_id] = paths
-            counts[binding.title] = len(paths)
-        expected = len(next(iter(source_lists.values())))
-        if any(len(paths) != expected for paths in source_lists.values()):
-            summary = ", ".join(f"{title}={count}" for title, count in counts.items())
-            raise ValueError(
-                "Bound batch sources must contain the same number of matched files "
-                f"so they can be paired by sorted order ({summary})."
-            )
-        items: list[BatchItem] = []
-        primary_id = bindings[0].node_id
-        for index in range(expected):
-            source_paths = {
-                binding.node_id: source_lists[binding.node_id][index]
-                for binding in bindings
-            }
-            primary_source = source_paths[primary_id]
-            batch_id = self._safe_batch_filename(
-                f"{index + 1:04d}_{self._batch_source_stem(primary_source)}"
-            )
-            items.append(
-                BatchItem(
-                    index=index + 1,
-                    batch_id=batch_id,
-                    primary_source=primary_source,
-                    source_paths=source_paths,
-                )
-            )
-        return items
-
     def _batch_collection_source_node_ids(
         self,
         pipeline: PrototypePipeline,
@@ -7937,38 +8360,6 @@ class VippWidget(QWidget):
             return collection_ids
         return {source_ids[0]} if source_ids else set()
 
-    def _batch_source_payloads_for_item(
-        self,
-        pipeline: PrototypePipeline,
-        item: BatchItem,
-    ) -> dict[str, SourcePayload]:
-        payloads: dict[str, SourcePayload] = {}
-        for node_id, node in pipeline.nodes.items():
-            if node.operation_id != "input":
-                continue
-            if node_id in item.source_paths:
-                payloads[node_id] = self._batch_file_payload(
-                    item.source_paths[node_id],
-                    node,
-                )
-                continue
-            payload, _layer = self._resolve_source_payload(node)
-            if payload is not None:
-                payloads[node_id] = payload
-        return payloads
-
-    def _batch_file_payload(self, path: Path, node) -> SourcePayload:
-        dataset = read_image(
-            path,
-            series_index=int(node.params.get("series_index", 0)),
-        )
-        return SourcePayload(
-            dataset.data,
-            {"vipp_source_path": str(path)},
-            dataset.selected_series.name or path.name,
-            dataset.image_state,
-        )
-
     def _terminal_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
         order = pipeline.topological_order()
         consumed = {connection.source_id for connection in pipeline.connections}
@@ -7986,182 +8377,12 @@ class VippWidget(QWidget):
         explicit = self._batch_output_node_ids(pipeline)
         return explicit if explicit else self._terminal_node_ids(pipeline)
 
-    def _batch_output_path(
-        self,
-        output_dir: Path,
-        batch_item: BatchItem | Path,
-        pipeline: PrototypePipeline,
-        node_id: str,
-        data,
-        image_format: str,
-    ) -> Path:
-        node = pipeline.nodes[node_id]
-        params = node.params if node.operation_id == "batch_output" else {}
-        if isinstance(batch_item, BatchItem):
-            source_path = batch_item.primary_source
-            batch_id = batch_item.batch_id
-            batch_index = f"{batch_item.index:04d}"
-        else:
-            source_path = Path(batch_item)
-            batch_id = self._safe_batch_filename(
-                f"0001_{self._batch_source_stem(source_path)}"
-            )
-            batch_index = "0001"
-        source_stem = self._batch_source_stem(source_path)
-        tag = self._batch_output_tag(pipeline, node_id)
-        template = str(
-            params.get("filename_template", "{source_stem}__{tag}")
-            or "{source_stem}__{tag}"
-        )
-        filename = self._format_batch_filename_template(
-            template,
-            {
-                "source_stem": source_stem,
-                "tag": tag,
-                "node_id": self._safe_batch_filename(node_id),
-                "node_title": self._safe_batch_filename(node.title),
-                "batch_id": batch_id,
-                "batch_index": batch_index,
-                "source_name": self._safe_batch_filename(source_path.name),
-                "primary_source_stem": source_stem,
-            },
-        )
-        suffix = self._batch_output_suffix(pipeline, node_id, data, image_format)
-        if not self._batch_filename_has_known_suffix(filename):
-            filename = f"{filename}{suffix}"
-        return self._batch_output_folder(output_dir, params) / filename
-
-    def _save_batch_output(
-        self,
-        data,
-        path: Path,
-        *,
-        image_format: str,
-        table_format: str = "csv",
-        overwrite: bool = True,
-        image_state,
-    ) -> Path:
-        if is_table_data(data):
-            return save_table_output(
-                data,
-                path,
-                format=table_format,
-                overwrite=overwrite,
-            )
-        return save_array_output(
-            data,
-            path,
-            format=image_format,
-            overwrite=overwrite,
-            image_state=image_state,
-        )
-
     def _batch_output_tag(self, pipeline: PrototypePipeline, node_id: str) -> str:
         node = pipeline.nodes[node_id]
         if node.operation_id == "batch_output":
             raw = str(node.params.get("tag", "")).strip()
-            return self._safe_batch_filename(raw or node_id)
-        return self._safe_batch_filename(f"{node.title}-{node_id}")
-
-    def _batch_node_image_format(
-        self,
-        pipeline: PrototypePipeline,
-        node_id: str,
-        data,
-        batch_default: str,
-    ) -> str:
-        if is_table_data(data):
-            return batch_default
-        selected = str(
-            pipeline.nodes[node_id].params.get("format", "batch default")
-        ).strip()
-        if selected in {"", "batch default", "csv", "tsv"}:
-            return batch_default
-        return selected
-
-    def _batch_node_table_format(
-        self,
-        pipeline: PrototypePipeline,
-        node_id: str,
-    ) -> str:
-        selected = str(
-            pipeline.nodes[node_id].params.get("format", "batch default")
-        ).strip()
-        return selected if selected in {"csv", "tsv"} else "csv"
-
-    def _batch_node_overwrite(
-        self,
-        pipeline: PrototypePipeline,
-        node_id: str,
-    ) -> bool:
-        selected = str(
-            pipeline.nodes[node_id].params.get("overwrite", "batch default")
-        ).strip()
-        if selected == "no":
-            return False
-        return True
-
-    def _batch_output_suffix(
-        self,
-        pipeline: PrototypePipeline,
-        node_id: str,
-        data,
-        batch_default: str,
-    ) -> str:
-        if is_table_data(data):
-            format = self._batch_node_table_format(pipeline, node_id)
-            return ".tsv" if format == "tsv" else ".csv"
-        return self._batch_image_suffix(
-            self._batch_node_image_format(pipeline, node_id, data, batch_default)
-        )
-
-    def _batch_output_folder(self, output_dir: Path, params: dict) -> Path:
-        raw = str(params.get("subfolder", "")).strip()
-        if not raw:
-            return output_dir
-        folder = output_dir
-        for part in re.split(r"[\\/]+", raw):
-            safe = self._safe_batch_filename(part)
-            if safe:
-                folder /= safe
-        return folder
-
-    def _format_batch_filename_template(
-        self,
-        template: str,
-        values: dict[str, str],
-    ) -> str:
-        try:
-            filename = template.format(**values)
-        except Exception:
-            filename = "{source_stem}__{tag}".format(**values)
-        parts = [
-            self._safe_batch_filename(part)
-            for part in re.split(r"[\\/]+", filename)
-            if part
-        ]
-        return "_".join(part for part in parts if part) or values["tag"]
-
-    def _batch_filename_has_known_suffix(self, filename: str) -> bool:
-        lower = filename.lower()
-        return lower.endswith(
-            (".ome.tif", ".ome.tiff", ".tif", ".tiff", ".npy", ".csv", ".tsv")
-        )
-
-    def _batch_image_suffix(self, image_format: str) -> str:
-        return _BATCH_IMAGE_FORMAT_SUFFIXES.get(str(image_format), ".ome.tif")
-
-    def _batch_source_stem(self, path: Path) -> str:
-        name = path.name
-        lower = name.lower()
-        for suffix in (".ome.tiff", ".ome.tif", ".tiff", ".tif"):
-            if lower.endswith(suffix):
-                return self._safe_batch_filename(name[: -len(suffix)])
-        return self._safe_batch_filename(path.stem)
-
-    def _safe_batch_filename(self, value: str) -> str:
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("._")
-        return safe or "output"
+            return safe_batch_filename(raw or node_id)
+        return safe_batch_filename(f"{node.title}-{node_id}")
 
     def _export_ome_dataset_dialog(self) -> None:
         reference_id = self._default_analysis_reference_node()

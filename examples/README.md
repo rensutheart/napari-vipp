@@ -27,6 +27,7 @@ custom or external workflow JSON files.
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
+| `synthetic-batch-provenance.json` | Generated paired NumPy collections | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Use `Create demo...` in the batch dialog or select this entry through `Open example...`. |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: split the red/TRITC-like channel, blur, Otsu threshold, fill holes, connected components, clear border objects, and volume filtering. |
 | `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |
 | `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |
@@ -65,13 +66,21 @@ The current measurement/morphology phase is represented by:
 - `synthetic-colocalization-racc.json`;
 - `synthetic-object-colocalization-association.json`;
 - `synthetic-deconvolution-rl-tv.json`;
-- `synthetic-3d-deconvolution-rl-tv.json`.
+- `synthetic-3d-deconvolution-rl-tv.json`;
+- `synthetic-batch-provenance.json`.
 
 Together these cover object morphology, intensity per object, table merging,
 metadata annotation, grouped summaries, skeleton/network measurements, 3D mesh
 morphology, first-pass pixel colocalization/RACC outputs with ROI-masked
 variants, named channel tunnels, object-aware colocalization/association
 tables, and 2D/3D PSF-aware Richardson-Lucy/RL-TV restoration.
+
+The batch example is different from the layer-backed examples. VIPP generates
+a portable directory containing two input collections, the workflow, config,
+thin runner, exact ground truth, and an empty results folder. The input names
+intentionally differ between folders to prove that pairing follows sorted
+position. Its expected overlap object counts are 1, 2, and 0 across the three
+items.
 
 Graph tunnels in these examples are used as readability aids for reused sources:
 `Red intensity` avoids long back-reference wires from a split channel, while
