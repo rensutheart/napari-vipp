@@ -645,6 +645,17 @@ Cutoff-style nodes listed in `INPUT_HISTOGRAM_OPERATIONS` also show an
 `Histogram uses` slice/stack selector, hidden when the connected input has no
 meaningful stack axis, and its markers are driven by the node parameters.
 
+Input histogram caching separates two dependency domains. The bounded display
+distribution is keyed only by array identity, shape/dtype, semantic axis
+signature, normalized slice/stack scope, and the effective slice position. A
+second key contains the operation plus only parameters that affect its guide
+markers. Manual Binary/Hysteresis and explicit Rescale/Clip markers are rebuilt
+synchronously over cached counts; exact percentile and automatic-threshold
+markers can run independently in the background. Small and large inputs use
+the same cache contract. Pipeline completion invalidates the selected-output
+histogram but does not discard an unchanged upstream input distribution; full
+workflow/source invalidation clears both caches.
+
 `Rescale Intensity` has an explicit `cutoff_mode`. New nodes default to
 `Percentiles`, which computes the requested low/high percentiles from every
 finite input value. `Values` uses the stored low/high values directly. The
@@ -678,7 +689,10 @@ When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
 label input. Its `Log volume axis` toggle defaults on, and it draws live
 minimum and enabled maximum threshold markers. Because the distribution uses
-the input labels, it remains stable while the filter removes objects.
+the input labels, it remains stable while the filter removes objects. The
+per-object volume population is cached independently of the live minimum and
+maximum guides, avoiding another full label-image scan while either guide is
+dragged.
 
 When a table node is selected, the general histogram is hidden and the inspector
 shows a `Table Preview` group with the first rows and unit-annotated headers.

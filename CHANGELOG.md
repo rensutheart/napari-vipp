@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.11.0a3 - 2026-07-12
+
+- Standardized the public name as VIPP, the Visual Image Processing Platform,
+  and added the reusable logo/mark asset set and concise README presentation.
 - Automatically dispatch pipeline updates to the background for image data at
   least 32 MiB or four million values, while retaining the explicit
   `Run all in BG` override for smaller work.
@@ -47,12 +51,23 @@
   cutoffs. Li similarly uses exact native offsets and rejects only relative
   spans that exceed float64's exact integer range.
 - Advanced workflow JSON to version 2 so histogram-bin and cutoff-mode controls
-  are explicit required scientific parameters.
+  are explicit required scientific parameters. Version 1 files are rejected
+  rather than silently receiving defaults that could change scientific output;
+  keep `0.11.0a2` to run them unchanged or recreate them in the current release.
 - Made `Split Channels` present its sole distinct downstream-used output across
   the thumbnail, inspect/pin, histogram, metadata, dimension, and selected-save
   surfaces. Nodes with zero or multiple distinct used outputs still use the
   saved `Thumbnail channel`; this display choice does not mutate that setting
   or any scientific graph output.
+- Decoupled input-histogram distributions from parameter-dependent guide
+  markers. Dragging Binary/Hysteresis thresholds or explicit Rescale/Clip
+  cutoffs now reuses unchanged counts immediately, while computed automatic
+  markers refresh independently and real input, scope, or slice changes still
+  invalidate the distribution. Label-volume filters likewise reuse their
+  unchanged object-volume population while minimum/maximum guides move.
+- Let the wrapped colocalization description expand instead of clipping it, and
+  added the ROI-based percentage beside exact colocalized/ROI voxel counts in
+  the description, plot annotation, and tooltip. Empty ROIs report `n/a`.
 
 ## 0.11.0a2 - 2026-07-11
 

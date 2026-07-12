@@ -139,12 +139,12 @@ guidance, and report suspected vulnerabilities privately through
 
 ## Roadmap
 
-The current public alpha is `0.11.0a2`. This patch alpha hardens workflow
-restoration, generated Python, output-path validation, example launching, and
-saved table-column state, and adds cross-platform CI and release-readiness
-guidance. The next planned milestone focuses on saved batch configuration and
-per-item provenance, followed by scalable OME-Zarr previews and broader
-scientific validation. See
+The current public alpha is `0.11.0a3`. This patch alpha makes large-image
+analysis exact and responsive, preserves native threshold and cutoff semantics,
+introduces explicit workflow schema version 2 parameters, and improves
+histogram and colocalization inspection. The next planned milestone focuses on
+saved batch configuration and per-item provenance, followed by scalable
+OME-Zarr previews and broader scientific validation. See
 [planning.md](docs/planning.md) for the maintained release order and evidence
 gates.
 

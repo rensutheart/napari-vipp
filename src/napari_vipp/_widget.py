@@ -521,6 +521,7 @@ class InputHistogramDistribution:
     total_values: int = 0
     finite_values: int = 0
     display_bins: int = 0
+    identity_ref: object = None
 
 
 @dataclass(frozen=True)
@@ -557,6 +558,7 @@ class InputHistogramResult:
     finite_values: int = 0
     display_bins: int = 0
     distribution_key: tuple = ()
+    distribution: InputHistogramDistribution | None = None
 
 
 @dataclass(frozen=True)
@@ -764,6 +766,10 @@ class InputHistogramWorker(QRunnable):
                     current_step=request.current_step,
                     current_step_nsteps=request.current_step_nsteps,
                 )
+                try:
+                    identity_ref = weakref.ref(request.data)
+                except TypeError:
+                    identity_ref = None
                 distribution = InputHistogramDistribution(
                     counts=counts,
                     x_range=x_range,
@@ -779,6 +785,7 @@ class InputHistogramWorker(QRunnable):
                         if counts is not None
                         else 0
                     ),
+                    identity_ref=identity_ref,
                 )
             except Exception as exc:
                 self.signals.finished.emit(
@@ -823,6 +830,7 @@ class InputHistogramWorker(QRunnable):
                     finite_values=distribution.finite_values,
                     display_bins=distribution.display_bins,
                     distribution_key=request.distribution_key,
+                    distribution=distribution,
                 )
             )
             return
@@ -844,6 +852,7 @@ class InputHistogramWorker(QRunnable):
                 finite_values=distribution.finite_values,
                 display_bins=distribution.display_bins,
                 distribution_key=request.distribution_key,
+                distribution=distribution,
             )
         )
 
@@ -4824,6 +4833,10 @@ class VippWidget(QWidget):
             tuple,
             InputHistogramDistribution,
         ] = {}
+        self._label_volume_cache: dict[
+            tuple,
+            tuple[weakref.ReferenceType, np.ndarray],
+        ] = {}
         self._output_histogram_serial = 0
         self._active_output_histogram_run_id: int | None = None
         self._active_output_histogram_key: tuple | None = None
@@ -5193,7 +5206,7 @@ class VippWidget(QWidget):
             "Connect two channel inputs."
         )
         self.colocalization_scatter_summary.setWordWrap(True)
-        self.colocalization_scatter_summary.setFixedHeight(42)
+        self.colocalization_scatter_summary.setMinimumHeight(42)
         self.colocalization_scatter_colormap_combo = QComboBox()
         self.colocalization_scatter_colormap_combo.addItems(
             COLOCALIZATION_SCATTER_COLORMAPS
@@ -8264,6 +8277,7 @@ class VippWidget(QWidget):
         self._clear_thumbnail_contrast_limit_state()
         self._clear_input_histogram_cache()
         self._clear_output_histogram_cache()
+        self._label_volume_cache.clear()
         self._clear_colocalization_scatter_cache()
         self._clear_generated_layer_contrast_state()
         self.pipeline.completed_node_ids.clear()
@@ -12529,8 +12543,9 @@ class VippWidget(QWidget):
                     max(arr.ndim, 1),
                 )
             )
+            volumes = self._cached_label_volumes(arr, spatial_ndim)
             maximum = max(
-                self._largest_label_volume(arr, spatial_ndim),
+                int(volumes.max()) if volumes.size else 0,
                 int(spec.default),
                 1,
             )
@@ -12646,6 +12661,33 @@ class VippWidget(QWidget):
     def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
         volumes = VippWidget._label_volumes(labels, spatial_ndim)
         return int(volumes.max()) if volumes.size else 0
+
+    def _cached_label_volumes(
+        self,
+        labels: np.ndarray,
+        spatial_ndim: int,
+    ) -> np.ndarray:
+        key = (
+            id(labels),
+            tuple(labels.shape),
+            str(labels.dtype),
+            int(spatial_ndim),
+        )
+        cached = self._label_volume_cache.get(key)
+        if cached is not None:
+            identity_ref, volumes = cached
+            if identity_ref() is labels:
+                return volumes
+            self._label_volume_cache.pop(key, None)
+        volumes = self._label_volumes(labels, spatial_ndim)
+        try:
+            identity_ref = weakref.ref(labels)
+        except TypeError:
+            return volumes
+        self._label_volume_cache[key] = (identity_ref, volumes)
+        while len(self._label_volume_cache) > 16:
+            self._label_volume_cache.pop(next(iter(self._label_volume_cache)))
+        return volumes
 
     @staticmethod
     def _label_volumes(labels: np.ndarray, spatial_ndim: int) -> np.ndarray:
@@ -12816,7 +12858,8 @@ class VippWidget(QWidget):
             )
             or (
                 node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
-                and name == "threshold_scope"
+                and name
+                in {"threshold_scope", "histogram_bins", "max_iterations"}
             )
         ):
             self._update_rescale_input_histogram(
@@ -14532,6 +14575,15 @@ class VippWidget(QWidget):
         display_detail = (
             f"Exact scatter density from all {result.roi_voxels:,} ROI voxels."
         )
+        colocalized_percentage = (
+            f"{100.0 * result.colocalized_voxels / result.roi_voxels:.1f}%"
+            if result.roi_voxels
+            else "n/a"
+        )
+        count_detail = (
+            f"{result.colocalized_voxels:,}/{result.roi_voxels:,} "
+            f"({colocalized_percentage})"
+        )
         self.colocalization_scatter_plot.set_density(
             result.density_counts,
             threshold_1=result.threshold_1,
@@ -14541,22 +14593,18 @@ class VippWidget(QWidget):
             channel_2_color=node.params.get("channel_2_color", "Green"),
             colormap=self.colocalization_scatter_colormap_combo.currentText(),
             log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
-            summary=(
-                f"Exact: {result.colocalized_voxels:,}/"
-                f"{result.roi_voxels:,}"
-            ),
+            summary=f"Exact: {count_detail}",
         )
         summary = (
             f"{result.threshold_mode} thresholds. Exact colocalized count: "
-            f"{result.colocalized_voxels:,}/{result.roi_voxels:,}. "
-            f"{display_detail}"
+            f"{count_detail}. {display_detail}"
         )
         if result.warnings:
             summary += " " + "; ".join(result.warnings)
         tooltip = (
             f"Exact summary and scatter density from all {result.roi_voxels:,} "
             "ROI voxels; "
-            f"{result.colocalized_voxels:,} meet both thresholds. {display_detail} "
+            f"{count_detail} meet both thresholds. {display_detail} "
             "Every ROI voxel contributes. Drag a threshold line to switch to manual "
             "thresholds."
         )
@@ -14780,6 +14828,194 @@ class VippWidget(QWidget):
             return float(min(float(value), other_value))
         return float(max(float(value), other_value))
 
+    @staticmethod
+    def _input_histogram_keys(
+        node_id: str,
+        operation_id: str,
+        data,
+        state,
+        scope: str,
+        current_step,
+        current_step_nsteps,
+        params: dict,
+    ) -> tuple[tuple, tuple]:
+        stack_scope = str(scope).strip().lower().startswith("stack")
+        normalized_scope = "stack" if stack_scope else "slice"
+        distribution_key = (
+            id(data),
+            tuple(getattr(data, "shape", ())),
+            str(getattr(data, "dtype", "")),
+            _histogram_state_signature(state),
+            normalized_scope,
+            (
+                None
+                if stack_scope
+                else _histogram_slice_signature(
+                    data,
+                    state,
+                    current_step,
+                    current_step_nsteps,
+                )
+            ),
+        )
+        marker_key = _input_histogram_marker_key(operation_id, params)
+        return distribution_key, (
+            str(node_id),
+            str(operation_id),
+            distribution_key,
+            marker_key,
+        )
+
+    def _cached_input_histogram_distribution(self, key: tuple, data):
+        distribution = self._input_histogram_distribution_cache.get(key)
+        if distribution is None:
+            return None
+        identity_ref = distribution.identity_ref
+        if identity_ref is not None and identity_ref() is data:
+            return distribution
+        self._input_histogram_distribution_cache.pop(key, None)
+        for result_key in tuple(self._input_histogram_cache):
+            if self._input_histogram_cache[result_key].distribution_key == key:
+                self._input_histogram_cache.pop(result_key, None)
+        return None
+
+    def _cache_input_histogram_distribution(
+        self,
+        key: tuple,
+        distribution: InputHistogramDistribution,
+    ) -> None:
+        if distribution.identity_ref is None:
+            return
+        self._input_histogram_distribution_cache[key] = distribution
+        while len(self._input_histogram_distribution_cache) > 16:
+            expired_key = next(iter(self._input_histogram_distribution_cache))
+            self._input_histogram_distribution_cache.pop(expired_key)
+            for result_key in tuple(self._input_histogram_cache):
+                if (
+                    self._input_histogram_cache[result_key].distribution_key
+                    == expired_key
+                ):
+                    self._input_histogram_cache.pop(result_key, None)
+
+    @staticmethod
+    def _calculate_input_histogram_distribution(
+        data,
+        *,
+        state,
+        scope: str,
+        current_step,
+        current_step_nsteps,
+    ) -> InputHistogramDistribution:
+        counts, x_range, colors = _histogram_summary(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
+        source = _histogram_source(
+            data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
+        try:
+            identity_ref = weakref.ref(data)
+        except TypeError:
+            identity_ref = None
+        return InputHistogramDistribution(
+            counts=counts,
+            x_range=x_range,
+            colors=colors,
+            total_values=int(source[0].size) if source is not None else 0,
+            finite_values=(
+                int(np.asarray(counts).sum()) if counts is not None else 0
+            ),
+            display_bins=(
+                int(np.asarray(counts).shape[-1]) if counts is not None else 0
+            ),
+            identity_ref=identity_ref,
+        )
+
+    @staticmethod
+    def _input_histogram_result(
+        *,
+        key: tuple,
+        distribution_key: tuple,
+        node_id: str,
+        operation_id: str,
+        data,
+        state,
+        scope: str,
+        current_step,
+        current_step_nsteps,
+        params: dict,
+        title: str,
+        distribution: InputHistogramDistribution,
+    ) -> InputHistogramResult:
+        marker_error = ""
+        try:
+            markers = _input_histogram_markers(
+                operation_id,
+                data,
+                state=state,
+                scope=scope,
+                current_step=current_step,
+                current_step_nsteps=current_step_nsteps,
+                params=params,
+            )
+        except Exception as exc:
+            markers = []
+            marker_error = str(exc)
+        return InputHistogramResult(
+            0,
+            key,
+            node_id,
+            counts=distribution.counts,
+            x_range=distribution.x_range,
+            colors=distribution.colors,
+            markers=markers,
+            title=title,
+            marker_error=marker_error,
+            total_values=distribution.total_values,
+            finite_values=distribution.finite_values,
+            display_bins=distribution.display_bins,
+            distribution_key=distribution_key,
+            distribution=distribution,
+        )
+
+    def _cache_input_histogram_result(self, result: InputHistogramResult) -> None:
+        self._input_histogram_cache[result.key] = result
+        while len(self._input_histogram_cache) > 32:
+            self._input_histogram_cache.pop(next(iter(self._input_histogram_cache)))
+
+    @staticmethod
+    def _input_histogram_marker_requires_background(
+        operation_id: str,
+        params: dict,
+        data,
+        histogram_source,
+    ) -> bool:
+        if operation_id == "minimum_threshold":
+            return True
+        if operation_id == "rescale_intensity":
+            percentile_mode = str(
+                params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+            ).casefold() == "percentiles"
+            return percentile_mode and _should_auto_background_data(data)
+        if operation_id == "clip_intensity":
+            data_range_mode = (
+                str(params.get("cutoff_mode", "Data range")).casefold()
+                == "data range"
+            )
+            return data_range_mode and _should_auto_background_data(data)
+        return (
+            operation_id in GLOBAL_THRESHOLD_OPERATIONS
+            and histogram_source is not None
+            and _should_auto_background_data(histogram_source[0])
+        )
+
     def _update_rescale_input_histogram(
         self,
         node_id: str,
@@ -14835,24 +15071,38 @@ class VippWidget(QWidget):
             current_step=current_step,
             current_step_nsteps=current_step_nsteps,
         )
-        marker_scans_full_input = (
-            node.operation_id == "rescale_intensity"
-            and str(
-                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-            ).casefold()
-            == "percentiles"
-        ) or (
-            node.operation_id == "clip_intensity"
-            and str(node.params.get("cutoff_mode", "Data range")).casefold()
-            == "data range"
+        distribution_key, key = self._input_histogram_keys(
+            node.id,
+            node.operation_id,
+            data,
+            state,
+            scope,
+            current_step,
+            current_step_nsteps,
+            node.params,
         )
-        marker_requires_background = node.operation_id == "minimum_threshold"
-        if (
-            histogram_source is not None
+        self._current_input_histogram_key = key
+        distribution = self._cached_input_histogram_distribution(
+            distribution_key,
+            data,
+        )
+        cached = self._input_histogram_cache.get(key)
+        if cached is not None and distribution is not None:
+            self._apply_input_histogram_result(cached)
+            return
+
+        distribution_requires_background = (
+            distribution is None
+            and histogram_source is not None
             and _should_auto_background_data(histogram_source[0])
-        ) or (marker_scans_full_input and _should_auto_background_data(data)) or (
-            marker_requires_background
-        ):
+        )
+        marker_requires_background = self._input_histogram_marker_requires_background(
+            node.operation_id,
+            node.params,
+            data,
+            histogram_source,
+        )
+        if distribution_requires_background or marker_requires_background:
             self._queue_input_histogram(
                 node_id=node.id,
                 operation_id=node.operation_id,
@@ -14866,56 +15116,32 @@ class VippWidget(QWidget):
             )
             return
 
-        self._current_input_histogram_key = None
         self._pending_input_histogram_request = None
-        counts, x_range, colors = _histogram_summary(
-            data,
-            state=state,
-            scope=scope,
-            current_step=current_step,
-            current_step_nsteps=current_step_nsteps,
-        )
-        marker_error = ""
-        try:
-            markers = _input_histogram_markers(
-                node.operation_id,
+        if distribution is None:
+            distribution = self._calculate_input_histogram_distribution(
                 data,
                 state=state,
                 scope=scope,
                 current_step=current_step,
                 current_step_nsteps=current_step_nsteps,
-                params=node.params,
             )
-        except Exception as exc:
-            markers = []
-            marker_error = str(exc)
-            self.rescale_input_histogram_group.setTitle(
-                f"{title} (marker unavailable)"
-            )
-        self.rescale_input_histogram_plot.set_histogram(
-            counts,
-            log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
-            x_range=x_range,
-            colors=colors,
-            markers=markers,
-            draggable_markers=_input_histogram_draggable_markers(
-                node.operation_id,
-                node.params,
-            ),
+            self._cache_input_histogram_distribution(distribution_key, distribution)
+        result = self._input_histogram_result(
+            key=key,
+            distribution_key=distribution_key,
+            node_id=node.id,
+            operation_id=node.operation_id,
+            data=data,
+            state=state,
+            scope=scope,
+            current_step=current_step,
+            current_step_nsteps=current_step_nsteps,
+            params=node.params,
+            title=title,
+            distribution=distribution,
         )
-        self._set_histogram_explanation(
-            self.rescale_input_histogram_group,
-            total_values=(
-                int(histogram_source[0].size) if histogram_source is not None else 0
-            ),
-            finite_values=(
-                int(np.asarray(counts).sum()) if counts is not None else 0
-            ),
-            display_bins=(
-                int(np.asarray(counts).shape[-1]) if counts is not None else 0
-            ),
-            marker_error=marker_error,
-        )
+        self._cache_input_histogram_result(result)
+        self._apply_input_histogram_result(result)
 
     def _queue_input_histogram(
         self,
@@ -14930,36 +15156,42 @@ class VippWidget(QWidget):
         params: dict,
         title: str,
     ) -> None:
-        stack_scope = str(scope).strip().lower().startswith("stack")
-        step_key = None if stack_scope else tuple(current_step or ())
-        nsteps_key = None if stack_scope else tuple(current_step_nsteps or ())
-        arr_shape = tuple(getattr(data, "shape", ()))
-        arr_dtype = str(getattr(data, "dtype", ""))
-        params_key = tuple(
-            sorted((str(name), repr(value)) for name, value in params.items())
-        )
-        key = (
+        distribution_key, key = self._input_histogram_keys(
             node_id,
             operation_id,
-            id(data),
-            arr_shape,
-            arr_dtype,
-            str(scope).strip().lower(),
-            step_key,
-            nsteps_key,
-            params_key,
+            data,
+            state,
+            scope,
+            current_step,
+            current_step_nsteps,
+            params,
         )
         self._current_input_histogram_key = key
+        distribution = self._cached_input_histogram_distribution(
+            distribution_key,
+            data,
+        )
         cached = self._input_histogram_cache.get(key)
-        if cached is not None:
+        if cached is not None and distribution is not None:
             self._apply_input_histogram_result(cached)
             return
 
-        self.rescale_input_histogram_group.setTitle(f"{title} (calculating...)")
-        self.rescale_input_histogram_plot.set_histogram(
-            None,
-            log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
-        )
+        if distribution is None:
+            self.rescale_input_histogram_group.setTitle(f"{title} (calculating...)")
+            self.rescale_input_histogram_plot.set_histogram(
+                None,
+                log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
+            )
+        else:
+            self.rescale_input_histogram_group.setTitle(
+                f"{title} (calculating marker...)"
+            )
+            self.rescale_input_histogram_plot.set_histogram(
+                distribution.counts,
+                log_scale=self.rescale_input_histogram_log_checkbox.isChecked(),
+                x_range=distribution.x_range,
+                colors=distribution.colors,
+            )
         request = InputHistogramRequest(
             0,
             key,
@@ -14976,6 +15208,8 @@ class VippWidget(QWidget):
             ),
             deepcopy(params),
             title,
+            distribution_key=distribution_key,
+            distribution=distribution,
         )
         if self._active_input_histogram_run_id is not None:
             if self._active_input_histogram_key == key:
@@ -15017,10 +15251,13 @@ class VippWidget(QWidget):
         self._active_input_histogram_run_id = None
         self._active_input_histogram_key = None
         self._active_input_histogram_cancel_event = None
+        if result.distribution is not None and result.distribution_key:
+            self._cache_input_histogram_distribution(
+                result.distribution_key,
+                result.distribution,
+            )
         if not result.error:
-            self._input_histogram_cache[result.key] = result
-            while len(self._input_histogram_cache) > 16:
-                self._input_histogram_cache.pop(next(iter(self._input_histogram_cache)))
+            self._cache_input_histogram_result(result)
         if (
             result.key == self._current_input_histogram_key
             and result.node_id == self._selected_node_id
@@ -15030,6 +15267,12 @@ class VippWidget(QWidget):
         pending = self._pending_input_histogram_request
         self._pending_input_histogram_request = None
         if pending is not None and pending.key == self._current_input_histogram_key:
+            distribution = self._cached_input_histogram_distribution(
+                pending.distribution_key,
+                pending.data,
+            )
+            if distribution is not None:
+                pending = replace(pending, distribution=distribution)
             self._start_input_histogram_request(pending)
 
     def _apply_input_histogram_result(
@@ -15252,7 +15495,7 @@ class VippWidget(QWidget):
             self._selected_node_id,
             arr,
         )
-        volumes = self._label_volumes(arr, spatial_ndim)
+        volumes = self._cached_label_volumes(arr, spatial_ndim)
         if volumes.size == 0:
             self.label_volume_summary.setText("No labeled objects.")
             self.label_volume_plot.set_histogram(None, log_scale=False)
@@ -16730,6 +16973,87 @@ def _histogram_has_stack_scope(data, state=None) -> bool:
     if arr.ndim == 3 and arr.shape[-1] in (3, 4):
         return False
     return True
+
+
+def _histogram_state_signature(state) -> tuple:
+    axes = tuple(getattr(state, "axes", ()))
+    return tuple(
+        (
+            str(getattr(axis, "name", "")).casefold(),
+            str(getattr(axis, "type", "")).casefold(),
+            getattr(axis, "source_axis", None),
+        )
+        for axis in axes
+    )
+
+
+def _histogram_slice_signature(
+    data,
+    state,
+    current_step,
+    current_step_nsteps,
+) -> tuple:
+    arr = np.asarray(data)
+    axes = tuple(getattr(state, "axes", ()))
+    if len(axes) == arr.ndim:
+        y_axis = _metadata_axis_index_by_name(state, "y")
+        x_axis = _metadata_axis_index_by_name(state, "x")
+        if y_axis is not None and x_axis is not None:
+            channel_axis, _channel_name = _histogram_channel_axis(arr, state)
+            keep_axes = {y_axis, x_axis, channel_axis}
+            return tuple(
+                (
+                    axis_index,
+                    _histogram_axis_index(
+                        _metadata_current_step_axis(
+                            state,
+                            axis_index,
+                            current_step,
+                        ),
+                        int(arr.shape[axis_index]),
+                        current_step,
+                        current_step_nsteps=current_step_nsteps,
+                    ),
+                )
+                for axis_index in range(arr.ndim)
+                if axis_index not in keep_axes
+            )
+    return (
+        tuple(current_step or ()),
+        tuple(current_step_nsteps or ()),
+    )
+
+
+def _input_histogram_marker_key(operation_id: str, params: dict | None) -> tuple:
+    values = params or {}
+
+    def selected(*names: str) -> tuple:
+        return tuple((name, repr(values.get(name))) for name in names)
+
+    if operation_id == "rescale_intensity":
+        mode = str(
+            values.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+        ).casefold()
+        names = (
+            ("in_low_value", "in_high_value")
+            if mode == "values"
+            else ("in_low_percentile", "in_high_percentile")
+        )
+        return (mode, selected(*names))
+    if operation_id == "clip_intensity":
+        mode = str(values.get("cutoff_mode", "Data range")).casefold()
+        names = ("minimum", "maximum") if mode == "values" else ()
+        return (mode, selected(*names))
+    if operation_id == "binary_threshold":
+        return selected("threshold")
+    if operation_id == "hysteresis_threshold":
+        return selected("low_threshold", "high_threshold")
+    if operation_id in GLOBAL_THRESHOLD_OPERATIONS:
+        names = ["histogram_bins"] if "histogram_bins" in values else []
+        if operation_id == "minimum_threshold":
+            names.append("max_iterations")
+        return selected(*names)
+    return ()
 
 
 def _input_histogram_markers(

@@ -119,6 +119,17 @@ chunks and background workers to control memory and keep the interface
 responsive; chunking does not change which pixels contribute. An empty input or
 an input with no finite pixels reports an error instead of inventing a cutoff.
 
+For manual guides, dragging a Binary Threshold, either Hysteresis guide, or an
+explicit Rescale/Clip cutoff reuses the already calculated input distribution.
+Only the guide moves immediately and the node output is queued for
+recalculation; VIPP does not rescan unchanged input pixels. The output
+histogram still refreshes after that output changes, as it should. Parameters
+that change a computed guide, such as floating-point histogram bins, refresh
+that guide independently while retaining the displayed counts. A replacement
+connected input array, a different slice, or a different histogram scope still
+calculates a new distribution because the inspected population has genuinely
+changed.
+
 ### Rescale Intensity Cutoffs
 
 `Rescale Intensity` makes the cutoff source explicit:
@@ -327,6 +338,13 @@ tunnels, graph notes, and selected inspector state.
 
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
+
+VIPP `0.11.0a3` writes workflow schema version 2. Version 1 workflows are
+intentionally rejected because silently inventing the newly explicit threshold,
+rescale, and clip settings could change scientific results. Keep a `0.11.0a2`
+environment to run an older workflow unchanged, or use its JSON as a reference
+while recreating and saving the graph in the current release. Do not change the
+JSON version number alone; version 2 requires the new scientific parameters.
 
 VIPP stores optional UI state under `metadata.vipp`; this state affects how the
 workflow reopens, not how it calculates:
