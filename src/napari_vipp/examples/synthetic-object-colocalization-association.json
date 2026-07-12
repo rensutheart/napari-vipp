@@ -1,6 +1,6 @@
 {
   "type": "napari-vipp-workflow",
-  "version": 1,
+  "version": 2,
   "metadata": {
     "vipp": {
       "inspector": {
@@ -65,7 +65,6 @@
       "operation_id": "measure_objects",
       "params": {
         "spatial_mode": "3D ZYX",
-        "measurement_set": "Basic morphology",
         "include_shape_descriptors": false,
         "include_axis_descriptors": false,
         "include_2d_boundary_descriptors": false,

@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 
 import imageio.v3 as iio
@@ -33,15 +34,27 @@ from napari_vipp._widget import (
     CACHE_MODE_SMART,
     EXAMPLE_WORKFLOWS,
     CollectionBatchDialog,
+    ColocalizationScatterRequest,
+    ColocalizationScatterResult,
     ConnectionInsertDialog,
     ConnectionInsertMappingDialog,
     ConnectionInsertPortMapping,
     ExampleWorkflowDialog,
     FlexibleDoubleSpinBox,
+    GeneratedLayerContrastResult,
     HistogramPlot,
+    InputHistogramResult,
+    PipelineRunResult,
     SelectTableColumnsControl,
     VippWidget,
+    _auto_contrast_scale_offset,
+    _exact_finite_percentiles,
+    _exact_generated_layer_contrast_limits,
     _example_workflow_path,
+    _histogram_summary,
+    _input_histogram_markers,
+    _prepare_colocalization_scatter_density,
+    _rescale_dtype_output_range,
 )
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
@@ -58,7 +71,10 @@ from napari_vipp.core.metadata import (
     ChannelMetadata,
     image_state_from_array,
 )
-from napari_vipp.core.operations import NO_TABLE_COLUMNS_VALUE
+from napari_vipp.core.operations import (
+    NO_TABLE_COLUMNS_VALUE,
+    automatic_threshold_value,
+)
 from napari_vipp.core.pipeline import (
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
@@ -71,6 +87,7 @@ from napari_vipp.core.pipeline import (
     SourcePayload,
 )
 from napari_vipp.core.preview import make_preview
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.workflow import save_workflow
 
 
@@ -84,6 +101,14 @@ class _Event:
     def emit(self):
         if self.callback is not None:
             self.callback()
+
+
+class _QueuedThreadPool:
+    def __init__(self):
+        self.workers = []
+
+    def start(self, worker, _priority=0):
+        self.workers.append(worker)
 
 
 class _LayerEvents:
@@ -1487,6 +1512,56 @@ def test_label_volume_histogram_tracks_filter_thresholds(qtbot):
     assert widget.label_volume_group.isHidden()
 
 
+def test_label_volume_histogram_reuses_input_distribution(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((3, 12, 12), dtype=np.float32)
+    data[:, 1:5, 1:5] = 10
+    data[:, 7:11, 7:11] = 10
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    labels = widget.add_node_from_palette("label_connected_components")
+    filtered = widget.add_node_from_palette("filter_labels_by_volume")
+    widget._connect_nodes("threshold", labels.id)
+    widget._connect_nodes(labels.id, filtered.id)
+
+    calls: list[int] = []
+    original = VippWidget._label_volumes
+
+    def counted_label_volumes(values, spatial_ndim):
+        calls.append(int(spatial_ndim))
+        return original(values, spatial_ndim)
+
+    monkeypatch.setattr(
+        VippWidget,
+        "_label_volumes",
+        staticmethod(counted_label_volumes),
+    )
+    widget._label_volume_cache.clear()
+    widget._update_label_volume_histogram()
+
+    widget._on_label_volume_marker_changed("min", 12.0)
+    widget._debounce_timer.stop()
+    widget._on_label_volume_marker_changed("max", 40.0)
+    widget._debounce_timer.stop()
+
+    assert calls == [3]
+    assert widget.pipeline.nodes[filtered.id].params["min_volume"] == 12
+    assert widget.pipeline.nodes[filtered.id].params["max_volume"] == 40
+
+    widget.pipeline.set_param(filtered.id, "spatial_mode", "2D YX")
+    widget._update_label_volume_histogram()
+    assert calls == [3, 2]
+
+    replacement = widget.pipeline.input_data_for_node(filtered.id).copy()
+    widget.pipeline.outputs[labels.id] = replacement
+    widget.pipeline.node_outputs[labels.id] = [replacement]
+    widget._update_label_volume_histogram()
+
+    assert calls == [3, 2, 2]
+
+
 def test_pin_toggles_active_node_layer(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -2371,6 +2446,286 @@ def test_global_threshold_input_histogram_shows_chosen_threshold(qtbot):
     assert not np.isclose(stack_markers["threshold"], slice_markers["threshold"])
 
 
+def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("threshold")
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
+    calls = {"count": 0}
+
+    def blocking_threshold(
+        values,
+        operation_id,
+        histogram_bins=256,
+        max_iterations=10_000,
+        progress=None,
+    ):
+        calls["count"] += 1
+        started.set()
+        assert release.wait(5)
+        return automatic_threshold_value(
+            values,
+            operation_id,
+            histogram_bins=histogram_bins,
+            max_iterations=max_iterations,
+            progress=progress,
+        )
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.automatic_threshold_value",
+        blocking_threshold,
+    )
+    widget._input_histogram_cache.clear()
+
+    widget._update_histogram()
+
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    assert "calculating" in widget.rescale_input_histogram_group.title()
+    release.set()
+    qtbot.waitUntil(
+        lambda: widget._active_input_histogram_run_id is None,
+        timeout=5_000,
+    )
+    assert any(
+        label == "threshold"
+        for label, _value, _color in widget.rescale_input_histogram_plot._markers
+    )
+
+    widget._update_histogram()
+    widget._update_histogram()
+    viewer.dims.set_current_step(0, 1)
+
+    assert calls["count"] == 1
+
+
+@pytest.mark.parametrize(
+    (
+        "operation_id",
+        "initial_params",
+        "marker_label",
+        "parameter_name",
+        "new_value",
+    ),
+    [
+        ("binary_threshold", {}, "threshold", "threshold", 64.0),
+        (
+            "hysteresis_threshold",
+            {"low_threshold": 20.0, "high_threshold": 180.0},
+            "low",
+            "low_threshold",
+            64.0,
+        ),
+        (
+            "rescale_intensity",
+            {
+                "cutoff_mode": "Values",
+                "in_low_value": 10.0,
+                "in_high_value": 180.0,
+            },
+            "low",
+            "in_low_value",
+            64.0,
+        ),
+        (
+            "clip_intensity",
+            {"cutoff_mode": "Values", "minimum": 10.0, "maximum": 180.0},
+            "min",
+            "minimum",
+            64.0,
+        ),
+    ],
+)
+def test_large_input_histogram_reuses_distribution_for_marker_drag(
+    qtbot,
+    monkeypatch,
+    operation_id,
+    initial_params,
+    marker_label,
+    parameter_name,
+    new_value,
+):
+    data = np.arange(200, dtype=np.uint8).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette(operation_id)
+    widget._connect_nodes("input", node.id)
+    for name, value in initial_params.items():
+        widget.pipeline.set_param(node.id, name, value)
+    widget.graph_view.select_node(node.id)
+
+    calls = {"count": 0}
+    original = _histogram_summary
+
+    def counted_histogram(*args, **kwargs):
+        if args and args[0] is data:
+            calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("napari_vipp._widget._histogram_summary", counted_histogram)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 1)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 1)
+    widget._clear_input_histogram_cache()
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+    qtbot.waitUntil(
+        lambda: widget._active_input_histogram_run_id is None,
+        timeout=5_000,
+    )
+
+    assert calls["count"] == 1
+    assert len(widget._input_histogram_distribution_cache) == 1
+
+    widget._on_input_histogram_marker_changed(marker_label, new_value)
+    widget._debounce_timer.stop()
+
+    markers = {
+        label: value
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    }
+    assert calls["count"] == 1
+    assert widget._active_input_histogram_run_id is None
+    assert widget.pipeline.nodes[node.id].params[parameter_name] == new_value
+    assert markers[marker_label] == new_value
+
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.input_data_for_node(node.id) is data
+    assert calls["count"] == 1
+    assert {
+        label: value
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    }[marker_label] == new_value
+
+
+def test_input_histogram_distribution_invalidates_for_data_scope_and_slice(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    calls = {"count": 0}
+    original = _histogram_summary
+
+    def counted_histogram(*args, **kwargs):
+        if args and args[0] is widget.pipeline.input_data_for_node(node.id):
+            calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("napari_vipp._widget._histogram_summary", counted_histogram)
+    widget._clear_input_histogram_cache()
+
+    widget._update_rescale_input_histogram(node.id, (0, 0, 0))
+    widget._update_rescale_input_histogram(node.id, (0, 0, 0))
+    assert calls["count"] == 1
+
+    widget.rescale_input_histogram_log_checkbox.setChecked(True)
+    assert calls["count"] == 1
+
+    widget._update_rescale_input_histogram(node.id, (1, 0, 0))
+    assert calls["count"] == 2
+
+    with QSignalBlocker(widget.rescale_input_histogram_scope_combo):
+        widget.rescale_input_histogram_scope_combo.setCurrentText("Stack histogram")
+    widget._update_rescale_input_histogram(node.id, (1, 0, 0))
+    assert calls["count"] == 3
+
+    replacement = data.copy()
+    widget.pipeline.outputs["input"] = replacement
+    widget.pipeline.node_outputs["input"] = [replacement]
+    widget._update_rescale_input_histogram(node.id, (1, 0, 0))
+    assert calls["count"] == 4
+
+
+def test_otsu_histogram_bins_refresh_marker_but_reuse_distribution(
+    qtbot,
+    monkeypatch,
+):
+    data = np.linspace(0.0, 1.0, 200, dtype=np.float32).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    histogram_calls = {"count": 0}
+    threshold_calls: list[tuple[int, float]] = []
+    original_histogram = _histogram_summary
+    original_threshold = automatic_threshold_value
+
+    def counted_histogram(*args, **kwargs):
+        histogram_calls["count"] += 1
+        return original_histogram(*args, **kwargs)
+
+    def counted_threshold(
+        values,
+        operation_id,
+        histogram_bins=256,
+        max_iterations=10_000,
+        progress=None,
+    ):
+        result = original_threshold(
+            values,
+            operation_id,
+            histogram_bins=histogram_bins,
+            max_iterations=max_iterations,
+            progress=progress,
+        )
+        threshold_calls.append((int(histogram_bins), float(result)))
+        return result
+
+    monkeypatch.setattr("napari_vipp._widget._histogram_summary", counted_histogram)
+    monkeypatch.setattr(
+        "napari_vipp._widget.automatic_threshold_value",
+        counted_threshold,
+    )
+    widget._clear_input_histogram_cache()
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+
+    widget._on_param_changed("histogram_bins", 512)
+    widget._debounce_timer.stop()
+
+    markers = {
+        label: value
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    }
+    assert histogram_calls["count"] == 1
+    assert [bins for bins, _value in threshold_calls] == [256, 512]
+    assert np.isclose(markers["threshold"], threshold_calls[-1][1])
+
+
+def test_histogram_cache_invalidation_rejects_an_inflight_result(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    key = ("old-input",)
+    widget._active_input_histogram_run_id = 7
+    widget._active_input_histogram_key = key
+    widget._current_input_histogram_key = key
+
+    widget._clear_input_histogram_cache()
+    widget._on_input_histogram_finished(
+        InputHistogramResult(
+            7,
+            key,
+            "threshold",
+            counts=np.array([1]),
+        )
+    )
+
+    assert widget._active_input_histogram_run_id is None
+    assert widget._current_input_histogram_key is None
+    assert widget._input_histogram_cache == {}
+
+
 def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     data = np.zeros((2, 16, 16), dtype=np.uint16)
     data[0, 3:11, 3:11] = 6000
@@ -2400,7 +2755,11 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert widget.colocalization_scatter_plot._channel_2_color.name() == "#ffff00"
     assert widget.colocalization_scatter_plot.minimumHeight() == 300
     assert widget.colocalization_scatter_summary.minimumHeight() == 42
-    assert widget.colocalization_scatter_summary.maximumHeight() == 42
+    assert widget.colocalization_scatter_summary.maximumHeight() > 42
+    assert widget.colocalization_scatter_summary.wordWrap()
+    wrapped_height = widget.colocalization_scatter_summary.heightForWidth(240)
+    assert wrapped_height > 42
+    assert widget.colocalization_scatter_summary.maximumHeight() >= wrapped_height
     assert widget.colocalization_scatter_colormap_combo.currentText() == "Viridis"
     widget.colocalization_scatter_plot.resize(620, 260)
     plot_rect = widget.colocalization_scatter_plot._plot_rect()
@@ -2424,6 +2783,256 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     widget.colocalization_scatter_colormap_combo.setCurrentText("Magma")
 
     assert widget.colocalization_scatter_plot._colormap == "Magma"
+
+
+def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
+    size = 600_123
+    indices = np.arange(size, dtype=np.uint32)
+    channel_1 = (indices % 256).astype(np.float32)
+    channel_2 = ((indices * 37 + 11) % 256).astype(np.float32)
+    roi = indices % 11 != 0
+
+    density, roi_voxels, colocalized_voxels = (
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=125.0,
+            threshold_2=140.0,
+            roi_mask=roi,
+            intensity_max=255.0,
+            bins=64,
+        )
+    )
+
+    expected_density = np.histogram2d(
+        channel_1[roi],
+        channel_2[roi],
+        bins=64,
+        range=((0.0, 255.0), (0.0, 255.0)),
+    )[0]
+    expected_colocalized = np.count_nonzero(
+        (channel_1 >= 125.0) & (channel_2 >= 140.0) & roi
+    )
+    assert roi_voxels > 500_000
+    assert roi_voxels == int(np.count_nonzero(roi))
+    assert colocalized_voxels == int(expected_colocalized)
+    np.testing.assert_array_equal(density, expected_density)
+    assert int(density.sum()) == roi_voxels
+
+
+def test_colocalization_scatter_density_is_cooperatively_cancellable(monkeypatch):
+    channel_1 = np.arange(100, dtype=np.float32)
+    channel_2 = channel_1[::-1].copy()
+    checks = 0
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.INSPECTOR_STATISTICS_CHUNK_ELEMENTS",
+        10,
+    )
+    with pytest.raises(OperationCancelled):
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=25.0,
+            threshold_2=25.0,
+            roi_mask=None,
+            intensity_max=255.0,
+            bins=32,
+            progress=ProgressContext(cancelled=cancelled),
+        )
+
+
+def test_large_colocalization_scatter_returns_immediately_and_is_exact(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((100, 100), dtype=np.uint8)
+    data.ravel()[::2] = 200
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget.pipeline.set_param(coloc.id, "threshold_mode", "Manual")
+    widget.pipeline.set_param(coloc.id, "channel_1_threshold", 100.0)
+    widget.pipeline.set_param(coloc.id, "channel_2_threshold", 100.0)
+    widget._connect_nodes("input", coloc.id, target_port=0)
+    widget._connect_nodes("input", coloc.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(coloc.id)
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    import napari_vipp._widget as widget_module
+
+    real_normalize = widget_module.colocalization_normalized_inputs
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_normalize(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.colocalization_normalized_inputs",
+        blocking_normalize,
+    )
+    widget._clear_colocalization_scatter_cache()
+
+    before = time.perf_counter()
+    widget._update_colocalization_scatter()
+    elapsed = time.perf_counter() - before
+    try:
+        qtbot.waitUntil(started.is_set, timeout=5_000)
+        assert elapsed < 0.2
+        assert "Calculating the exact" in widget.colocalization_scatter_summary.text()
+    finally:
+        release.set()
+
+    qtbot.waitUntil(
+        lambda: widget._active_colocalization_scatter_run_id is None,
+        timeout=5_000,
+    )
+    summary = widget.colocalization_scatter_summary.text()
+    tooltip = widget.colocalization_scatter_summary.toolTip()
+    assert "Exact colocalized count: 5,000/10,000 (50.0%)" in summary
+    assert "Exact scatter density from all 10,000 ROI voxels" in summary
+    assert "Every ROI voxel contributes" in tooltip
+    assert "5,000/10,000 (50.0%) meet both thresholds" in tooltip
+    assert "Exact: 5,000/10,000 (50.0%)" == widget.colocalization_scatter_plot._summary
+    result = widget._colocalization_scatter_cache[
+        widget._current_colocalization_scatter_key
+    ]
+    assert np.asarray(result.density_counts).shape == (255, 255)
+    assert int(np.asarray(result.density_counts).sum()) == 10_000
+
+
+def test_colocalization_scatter_zero_roi_reports_percentage_unavailable(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget.graph_view.select_node(coloc.id)
+    key = ("empty-roi",)
+    widget._current_colocalization_scatter_key = key
+
+    widget._apply_colocalization_scatter_result(
+        ColocalizationScatterResult(
+            0,
+            key,
+            coloc.id,
+            "Manual",
+            25.0,
+            25.0,
+            density_counts=np.zeros((32, 32), dtype=np.float64),
+            roi_voxels=0,
+            colocalized_voxels=0,
+        )
+    )
+
+    assert "Exact colocalized count: 0/0 (n/a)" in (
+        widget.colocalization_scatter_summary.text()
+    )
+    assert widget.colocalization_scatter_plot._summary == "Exact: 0/0 (n/a)"
+    assert "0/0 (n/a) meet both thresholds" in (
+        widget.colocalization_scatter_summary.toolTip()
+    )
+
+
+def test_colocalization_scatter_rejects_result_for_superseded_key(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    old_key = ("old-scatter",)
+    new_key = ("new-scatter",)
+    widget._active_colocalization_scatter_run_id = 7
+    widget._active_colocalization_scatter_key = old_key
+    widget._current_colocalization_scatter_key = new_key
+    widget.colocalization_scatter_summary.setText("New request is pending")
+
+    widget._on_colocalization_scatter_finished(
+        ColocalizationScatterResult(
+            7,
+            old_key,
+            coloc.id,
+            "Manual",
+            25.0,
+            25.0,
+            density_counts=np.ones((32, 32), dtype=np.float64),
+            roi_voxels=100,
+            colocalized_voxels=50,
+        )
+    )
+
+    assert widget.colocalization_scatter_summary.text() == "New request is pending"
+    assert widget.colocalization_scatter_plot._image is None
+
+
+def test_colocalization_scatter_a_b_a_requeues_cancelled_request(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    started = []
+
+    def fake_start(request):
+        started.append(request)
+        widget._active_colocalization_scatter_run_id = 1
+        widget._active_colocalization_scatter_key = request.key
+        widget._active_colocalization_scatter_cancel_event = threading.Event()
+
+    monkeypatch.setattr(widget, "_start_colocalization_scatter_request", fake_start)
+    common = {
+        "run_id": 0,
+        "node_id": "coloc",
+        "inputs": (np.zeros((2, 2)), np.zeros((2, 2))),
+        "threshold_mode": "Manual",
+        "threshold_1": 25.0,
+        "threshold_2": 25.0,
+    }
+    first = ColocalizationScatterRequest(key=("a",), **common)
+    second = ColocalizationScatterRequest(key=("b",), **common)
+
+    widget._queue_colocalization_scatter(first)
+    widget._queue_colocalization_scatter(second)
+    assert widget._active_colocalization_scatter_cancel_event.is_set()
+    widget._queue_colocalization_scatter(first)
+
+    assert len(started) == 1
+    assert widget._pending_colocalization_scatter_request is not None
+    assert widget._pending_colocalization_scatter_request.key == first.key
+
+
+def test_pipeline_edit_invalidates_colocalization_scatter_cache(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    key = ("cached-scatter",)
+    result = ColocalizationScatterResult(
+        4,
+        key,
+        "input",
+        "Manual",
+        25.0,
+        25.0,
+        density_counts=np.ones((32, 32), dtype=np.float64),
+    )
+    widget._colocalization_scatter_cache[key] = result
+    widget._current_colocalization_scatter_key = key
+    widget._active_colocalization_scatter_run_id = 4
+    cancel_event = threading.Event()
+    widget._active_colocalization_scatter_cancel_event = cancel_event
+    old_serial = widget._colocalization_scatter_serial
+
+    assert widget._mark_pipeline_dirty("input")
+
+    assert widget._colocalization_scatter_cache == {}
+    assert widget._current_colocalization_scatter_key is None
+    assert widget._active_colocalization_scatter_run_id is None
+    assert cancel_event.is_set()
+    assert widget._colocalization_scatter_serial == old_serial + 1
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
@@ -2480,6 +3089,294 @@ def test_inspector_shows_histogram_before_metadata(qtbot):
     assert layout.indexOf(widget.histogram_group) < layout.indexOf(
         widget.metadata_group
     )
+
+
+def test_exact_histogram_and_percentile_markers_retain_rare_extrema():
+    values = np.zeros(600_123, dtype=np.float32)
+    values[500_001] = -17.0
+    values[-1] = 1_000.0
+    values[511_111] = np.nan
+
+    counts, x_range, _colors = _histogram_summary(values, scope="Stack")
+    percentiles = _exact_finite_percentiles(values, (0.0, 50.0, 100.0))
+
+    assert counts is not None
+    assert int(counts.sum()) == values.size - 1
+    assert x_range == (-17.0, 1_000.0)
+    assert counts[0] >= 1
+    assert counts[-1] >= 1
+    assert percentiles == (-17.0, 0.0, 1_000.0)
+
+
+def test_multichannel_histogram_preserves_all_nonfinite_channel_position():
+    data = np.empty((4, 5, 3), dtype=np.float32)
+    data[..., 0] = np.nan
+    data[..., 1] = np.arange(20, dtype=np.float32).reshape(4, 5)
+    data[..., 2] = np.arange(20, 40, dtype=np.float32).reshape(4, 5)
+
+    counts, _x_range, colors = _histogram_summary(data, scope="Stack")
+
+    assert counts is not None
+    assert counts.shape[0] == 3
+    np.testing.assert_array_equal(counts.sum(axis=1), [0, 20, 20])
+    assert colors is not None
+    assert [color.name() for color in colors] == ["#ef4444", "#22c55e", "#60a5fa"]
+
+
+@pytest.mark.parametrize(
+    ("dtype", "base"),
+    [
+        (np.int64, 2**60),
+        (np.uint64, np.iinfo(np.uint64).max - 3),
+    ],
+)
+def test_integer_histogram_and_marker_preserve_wide_native_levels(dtype, base):
+    data = np.fromiter(
+        [int(base), int(base) + 1, int(base) + 1, int(base) + 3],
+        dtype=dtype,
+        count=4,
+    )
+
+    counts, x_range, _colors = _histogram_summary(data, scope="Stack")
+    markers = _input_histogram_markers(
+        "otsu_threshold",
+        data,
+        scope="Stack histogram",
+        params={"histogram_bins": 256},
+    )
+
+    assert x_range == (int(base), int(base) + 3)
+    np.testing.assert_array_equal(counts, [1, 2, 0, 1])
+    assert markers and isinstance(markers[0][1], int)
+    plot = HistogramPlot()
+    plot.set_histogram(counts, False, x_range=x_range, markers=markers)
+    assert plot._x_min_label == str(int(base))
+    assert plot._x_max_label == str(int(base) + 3)
+    expected_fraction = (markers[0][1] - int(base)) / 3
+    assert plot._x_fraction(markers[0][1]) == expected_fraction
+
+
+def test_wide_integer_display_span_is_grouped_without_float_collapse():
+    data = np.array([0, 2**60], dtype=np.int64)
+
+    counts, x_range, _colors = _histogram_summary(data, scope="Stack")
+
+    assert x_range == (0, 2**60)
+    assert counts is not None and counts.size == 128
+    assert int(counts.sum()) == 2
+    assert counts[0] == 1
+    assert counts[-1] == 1
+
+
+def test_wide_integer_rescale_percentile_markers_keep_exact_fractional_levels(
+    qtbot,
+):
+    base = 2**60
+    data = np.asarray([base + offset for offset in range(4)], dtype=np.int64)
+
+    cutoffs = _exact_finite_percentiles(data, (25.0, 75.0))
+    markers = _input_histogram_markers(
+        "rescale_intensity",
+        data,
+        scope="Stack",
+        params={
+            "cutoff_mode": "Percentiles",
+            "in_low_percentile": 25.0,
+            "in_high_percentile": 75.0,
+        },
+    )
+
+    assert cutoffs == (
+        Fraction(4 * base + 3, 4),
+        Fraction(4 * base + 9, 4),
+    )
+    plot = HistogramPlot()
+    qtbot.addWidget(plot)
+    plot.set_histogram(
+        np.ones(4),
+        False,
+        x_range=(base, base + 3),
+        markers=markers,
+    )
+    assert plot._x_fraction(markers[0][1]) == 0.25
+    assert plot._x_fraction(markers[1][1]) == 0.75
+
+
+def test_wide_integer_rescale_defaults_do_not_round_past_dtype_limits():
+    assert _rescale_dtype_output_range(np.dtype(np.int64)) == (0.0, 1.0, 1.0, 0)
+    assert _rescale_dtype_output_range(np.dtype(np.uint64)) == (0.0, 1.0, 1.0, 0)
+    assert _rescale_dtype_output_range(np.dtype(np.uint16)) == (
+        0.0,
+        65_535.0,
+        1.0,
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "params", "expected"),
+    [
+        (
+            "rescale_intensity",
+            {
+                "cutoff_mode": "Percentiles",
+                "in_low_percentile": 0.0,
+                "in_high_percentile": 100.0,
+            },
+            [("low", 0.0), ("high", 100.0)],
+        ),
+        (
+            "clip_intensity",
+            {"cutoff_mode": "Data range"},
+            [("min", 0.0), ("max", 100.0)],
+        ),
+    ],
+)
+def test_full_input_cutoff_markers_do_not_follow_displayed_slice(
+    operation_id,
+    params,
+    expected,
+):
+    data = np.zeros((2, 10, 10), dtype=np.float32)
+    data[1] = 100.0
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("z", "space"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+
+    markers = _input_histogram_markers(
+        operation_id,
+        data,
+        state=state,
+        scope="Slice histogram",
+        current_step=(0, 0, 0),
+        current_step_nsteps=data.shape,
+        params=params,
+    )
+
+    assert [(label, value) for label, value, _color in markers] == expected
+
+
+def test_large_full_input_marker_uses_worker_when_displayed_slice_is_small(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((2, 10, 10), dtype=np.float32)
+    data[1] = 100.0
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 10**9)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 150)
+    widget._input_histogram_cache.clear()
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+
+    assert widget._active_input_histogram_run_id is not None
+    qtbot.waitUntil(
+        lambda: widget._active_input_histogram_run_id is None,
+        timeout=5_000,
+    )
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("low", 0.0), ("high", 100.0)]
+
+
+def test_histogram_a_b_a_race_requeues_canceled_original_request(qtbot, monkeypatch):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    started = []
+
+    def fake_start(request):
+        started.append(request)
+        widget._active_input_histogram_run_id = 1
+        widget._active_input_histogram_key = request.key
+        widget._active_input_histogram_cancel_event = threading.Event()
+
+    monkeypatch.setattr(widget, "_start_input_histogram_request", fake_start)
+    common = {
+        "node_id": "input",
+        "operation_id": "binary_threshold",
+        "data": data,
+        "state": widget.pipeline.output_states.get("input"),
+        "current_step_nsteps": data.shape,
+        "params": {"threshold": 0.5},
+        "title": "Input Histogram",
+    }
+    widget._queue_input_histogram(
+        **common,
+        scope="Slice",
+        current_step=(0, 0, 0),
+    )
+    first_key = widget._active_input_histogram_key
+    widget._queue_input_histogram(
+        **common,
+        scope="Slice",
+        current_step=(1, 0, 0),
+    )
+    assert widget._active_input_histogram_cancel_event.is_set()
+    widget._queue_input_histogram(
+        **common,
+        scope="Slice",
+        current_step=(0, 0, 0),
+    )
+
+    assert len(started) == 1
+    assert widget._pending_input_histogram_request is not None
+    assert widget._pending_input_histogram_request.key == first_key
+
+
+def test_minimum_marker_failure_keeps_exact_histogram_visible(qtbot):
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("minimum_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and widget._active_input_histogram_run_id is None
+        ),
+        timeout=10_000,
+    )
+
+    assert widget.rescale_input_histogram_plot._counts.sum() == data.size
+    assert widget.rescale_input_histogram_plot._markers == []
+    assert "marker unavailable" in widget.rescale_input_histogram_group.title()
+    assert "Unable to find two maxima" in (
+        widget.rescale_input_histogram_group.toolTip()
+    )
+
+
+def test_large_output_histogram_is_calculated_in_background(qtbot, monkeypatch):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    widget._output_histogram_cache.clear()
+    widget._update_histogram()
+
+    qtbot.waitUntil(
+        lambda: widget._active_output_histogram_run_id is None,
+        timeout=5_000,
+    )
+    assert widget.histogram_plot._counts.sum() == 100
+    assert "all 100 finite pixels" in widget.histogram_group.toolTip()
 
 
 def test_side_panels_can_be_collapsed_and_restored(qtbot):
@@ -2758,13 +3655,12 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
     assert widget.pipeline.outputs[node.id].dtype == np.uint8
     assert widget.pipeline.nodes[node.id].params["out_min"] == 0.0
     assert widget.pipeline.nodes[node.id].params["out_max"] == 255.0
-    assert widget.pipeline.nodes[node.id].params["in_low_value"] == 0.0
-    assert widget.pipeline.nodes[node.id].params["in_high_value"] == 255.0
+    assert widget.pipeline.nodes[node.id].params["cutoff_mode"] == "Percentiles"
     assert list(widget._parameter_widgets)[:4] == [
-        "in_low_value",
-        "in_high_value",
+        "cutoff_mode",
         "in_low_percentile",
         "in_high_percentile",
+        "out_min",
     ]
     assert not widget.rescale_input_histogram_group.isHidden()
     assert widget.rescale_input_histogram_scope_row.isHidden()
@@ -2813,7 +3709,7 @@ def test_input_histogram_scope_switches_between_slice_and_stack(qtbot):
     assert widget.histogram_plot._counts.sum() == 100.0
 
 
-def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
+def test_rescale_cutoff_modes_keep_inactive_parameters_from_driving_output(qtbot):
     data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
     viewer = _Viewer(data)
     widget = VippWidget(viewer)
@@ -2825,29 +3721,19 @@ def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
 
     widget._parameter_widgets["in_low_percentile"].value_box.setValue(25.0)
 
-    assert np.isclose(
-        widget.pipeline.nodes[node.id].params["in_low_value"],
-        63.75,
-    )
-    assert np.isclose(
-        widget._parameter_widgets["in_low_value"].value(),
-        63.75,
-    )
+    assert widget.pipeline.nodes[node.id].params["in_low_value"] == 0.0
     assert [
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ][0] == ("low", 63.75)
 
+    mode_combo = widget._parameter_widgets["cutoff_mode"].combo
+    mode_combo.setCurrentIndex(mode_combo.findData("Values"))
+    assert "in_low_value" in widget._parameter_widgets
+    assert "in_low_percentile" not in widget._parameter_widgets
     widget._parameter_widgets["in_high_value"].value_box.setValue(127.5)
 
-    assert np.isclose(
-        widget.pipeline.nodes[node.id].params["in_high_percentile"],
-        50.19607843137255,
-    )
-    assert np.isclose(
-        widget._parameter_widgets["in_high_percentile"].value(),
-        50.2,
-    )
+    assert widget.pipeline.nodes[node.id].params["in_high_percentile"] == 100.0
     assert [
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
@@ -2857,14 +3743,61 @@ def test_rescale_cutoff_values_and_percentiles_stay_in_sync(qtbot):
 
     assert widget.pipeline.nodes[node.id].params["in_low_value"] == 32.0
     assert widget._parameter_widgets["in_low_value"].value() == 32.0
-    assert np.isclose(
-        widget.pipeline.nodes[node.id].params["in_low_percentile"],
-        12.549019607843137,
-    )
+    assert widget.pipeline.nodes[node.id].params["in_low_percentile"] == 25.0
     assert [
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ][0] == ("low", 32.0)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "params", "message"),
+    [
+        (
+            "rescale_intensity",
+            {
+                "cutoff_mode": "Percentiles",
+                "in_low_percentile": 90.0,
+                "in_high_percentile": 10.0,
+            },
+            "low percentile must not exceed",
+        ),
+        (
+            "rescale_intensity",
+            {
+                "cutoff_mode": "Values",
+                "in_low_value": 90.0,
+                "in_high_value": 10.0,
+            },
+            "low input value must not exceed",
+        ),
+        (
+            "clip_intensity",
+            {"cutoff_mode": "Values", "minimum": 90.0, "maximum": 10.0},
+            "Clip minimum must not exceed",
+        ),
+    ],
+)
+def test_crossed_cutoffs_show_marker_error_instead_of_silent_reordering(
+    qtbot,
+    operation_id,
+    params,
+    message,
+):
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette(operation_id)
+    widget._connect_nodes("input", node.id)
+    for name, value in params.items():
+        widget.pipeline.set_param(node.id, name, value)
+
+    widget.graph_view.select_node(node.id)
+    widget._update_rescale_input_histogram(node.id, widget._current_step())
+
+    assert "marker unavailable" in widget.rescale_input_histogram_group.title()
+    assert message in widget.rescale_input_histogram_group.toolTip()
+    assert widget.rescale_input_histogram_plot._markers == []
 
 
 def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbot):
@@ -2878,8 +3811,9 @@ def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbo
     widget.graph_view.select_node(node.id)
 
     assert widget.pipeline.outputs[node.id].dtype == np.uint16
+    assert widget.pipeline.nodes[node.id].params["cutoff_mode"] == "Data range"
     assert widget.pipeline.nodes[node.id].params["minimum"] == 0.0
-    assert widget.pipeline.nodes[node.id].params["maximum"] == 99.0
+    assert widget.pipeline.nodes[node.id].params["maximum"] == 255.0
     assert not widget.rescale_input_histogram_group.isHidden()
     assert widget.histogram_group.title() == "Output Histogram"
     assert widget.rescale_input_histogram_plot._counts.sum() == 100.0
@@ -2888,8 +3822,16 @@ def test_clip_intensity_shows_input_and_output_histograms_with_live_markers(qtbo
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ] == [("min", 0.0), ("max", 99.0)]
+
+    mode_combo = widget._parameter_widgets["cutoff_mode"].combo
+    mode_combo.setCurrentIndex(mode_combo.findData("Values"))
+    assert "minimum" in widget._parameter_widgets
+    assert [
+        (label, value)
+        for label, value, _color in widget.rescale_input_histogram_plot._markers
+    ] == [("min", 0.0), ("max", 255.0)]
     assert np.isclose(widget._parameter_widgets["minimum"]._bounds.minimum, 0.0)
-    assert np.isclose(widget._parameter_widgets["maximum"]._bounds.maximum, 99.0)
+    assert widget._parameter_widgets["maximum"]._bounds.maximum >= 255.0
 
     widget._parameter_widgets["minimum"].value_box.setValue(25.0)
 
@@ -3323,6 +4265,110 @@ def test_split_channels_thumbnail_uses_single_retained_output(qtbot):
     assert preview_state is widget.pipeline.node_output_states[split.id][1]
     assert preview_data.shape == (2, 4, 5)
     assert int(np.max(preview_data)) == 20
+
+
+def _assert_split_channel_presentation(
+    widget,
+    viewer,
+    node_id: str,
+    output_port: int,
+    saved_preview_channel: int,
+):
+    outputs = widget.pipeline.node_outputs[node_id]
+    states = widget.pipeline.node_output_states[node_id]
+    expected_value = (output_port + 1) * 10
+    preview_data, preview_state = widget._thumbnail_payload_for_node(
+        node_id,
+        widget.pipeline.outputs[node_id],
+    )
+
+    assert preview_data is outputs[output_port]
+    assert preview_state is states[output_port]
+    assert int(np.max(preview_data)) == expected_value
+
+    inspect_layer = viewer.layers["VIPP Inspect"]
+    assert inspect_layer.metadata["node_id"] == node_id
+    assert inspect_layer.metadata["output_port"] == output_port
+    assert inspect_layer.metadata["vipp_image_state"] == states[output_port].to_dict()
+    assert int(np.max(inspect_layer.data)) == expected_value
+
+    port = widget.pipeline.output_ports(node_id)[output_port]
+    assert widget.histogram_group.title().endswith(port.label)
+    assert widget.histogram_plot._x_min_label == str(expected_value)
+    assert widget.histogram_plot._x_max_label == str(expected_value)
+    assert _metadata_value(widget, "Value range") == (
+        f"{expected_value} to {expected_value}"
+    )
+
+    control = widget._parameter_widgets["preview_channel"]
+    assert control.value() == output_port
+    used_ports = widget._used_split_channel_ports(node_id)
+    expected_bounds = (
+        (output_port, output_port)
+        if len(used_ports) == 1
+        else (0, len(outputs) - 1)
+    )
+    assert (control.slider.minimum(), control.slider.maximum()) == expected_bounds
+    assert widget.pipeline.nodes[node_id].params["preview_channel"] == (
+        saved_preview_channel
+    )
+
+
+def test_split_channels_presentation_follows_distinct_used_output_ports(qtbot):
+    data = np.zeros((3, 2, 4, 5), dtype=np.uint16)
+    data[0] = 10
+    data[1] = 20
+    data[2] = 30
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    split = widget.add_node_from_palette("split_channels")
+    widget._connect_nodes("input", split.id)
+    widget.run_pipeline()
+    first_consumer = widget.add_node_from_palette("gaussian_blur")
+    second_consumer = widget.add_node_from_palette("gaussian_blur")
+    widget.graph_view.select_node(split.id)
+
+    widget._connect_nodes(split.id, first_consumer.id, source_port=2)
+    assert widget._used_split_channel_ports(split.id) == (2,)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2, 0)
+
+    # Replacing the sole connection must immediately switch every display surface,
+    # while leaving the workflow's saved fallback selection untouched.
+    widget._connect_nodes(
+        split.id,
+        first_consumer.id,
+        target_port=0,
+        source_port=1,
+    )
+    assert widget._used_split_channel_ports(split.id) == (1,)
+    _assert_split_channel_presentation(widget, viewer, split.id, 1, 0)
+
+    widget.pipeline.set_param(split.id, "preview_channel", 2)
+    widget._connect_nodes(split.id, second_consumer.id, source_port=1)
+    assert widget._used_split_channel_ports(split.id) == (1,)
+    _assert_split_channel_presentation(widget, viewer, split.id, 1, 2)
+
+    # Two distinct used ports are ambiguous, so presentation falls back to the
+    # saved selector even though two consumers of one port were not ambiguous.
+    widget._connect_nodes(
+        split.id,
+        second_consumer.id,
+        target_port=0,
+        source_port=0,
+    )
+    assert widget._used_split_channel_ports(split.id) == (0, 1)
+    _assert_split_channel_presentation(widget, viewer, split.id, 2, 2)
+
+    widget._delete_node(second_consumer.id)
+    assert widget._used_split_channel_ports(split.id) == (1,)
+    _assert_split_channel_presentation(widget, viewer, split.id, 1, 2)
+
+    # Deleting the sole remaining consumer must refresh back to the saved selector.
+    widget._delete_node(first_consumer.id)
+    assert widget._used_split_channel_ports(split.id) == ()
+    _assert_split_channel_presentation(widget, viewer, split.id, 2, 2)
 
 
 def test_extract_channel_thumbnail_uses_selected_semantic_channel(qtbot):
@@ -3986,6 +5032,7 @@ def test_workflow_roundtrip_restores_inspector_and_optional_thumbnails(
 def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
     qtbot,
     tmp_path,
+    monkeypatch,
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -4009,11 +5056,20 @@ def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
     qtbot.addWidget(restored)
     restored._preview_disabled_node_ids.add("threshold")
     restored._set_right_panel_visible(False)
+    run_calls = []
+    original_run_pipeline = restored.run_pipeline
+
+    def recorded_run_pipeline(*args, **kwargs):
+        run_calls.append((args, kwargs))
+        return original_run_pipeline(*args, **kwargs)
+
+    monkeypatch.setattr(restored, "run_pipeline", recorded_run_pipeline)
     restored.load_workflow_file(path)
 
     assert restored._selected_node_id == "gaussian"
     assert not restored.inspector_panel.isHidden()
     assert restored._preview_disabled_node_ids == set()
+    assert run_calls == [((), {})]
 
 
 def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
@@ -4091,6 +5147,54 @@ def test_gaussian_blur_3d_can_lock_xy_sigma(qtbot):
     assert widget.pipeline.nodes[node.id].params["sigma_x"] == 1.6
 
 
+def test_large_inputs_automatically_use_background_processing(qtbot, monkeypatch):
+    viewer = _Viewer(np.zeros((2, 8, 8), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget._background_processing_node_id({"threshold"}) is None
+    watershed = widget.pipeline.add_node("auto_watershed_from_mask")
+    assert widget._background_processing_node_id({watershed.id}) == watershed.id
+    minimum = widget.pipeline.add_node("minimum_threshold")
+    assert widget._background_processing_node_id({minimum.id}) == minimum.id
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 1_000)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 1_000)
+    large = np.zeros(1_001, dtype=np.uint8)
+    widget.pipeline.outputs["gaussian"] = large
+    widget.pipeline.node_outputs["gaussian"] = [large]
+
+    assert widget._background_processing_node_id({"threshold"}) == "threshold"
+
+    small = np.zeros(100, dtype=np.uint8)
+    widget.pipeline.outputs["gaussian"] = small
+    widget.pipeline.node_outputs["gaussian"] = [small]
+    assert widget._background_processing_node_id({"threshold"}) is None
+    assert (
+        widget._background_processing_node_id(
+            {"input"},
+            source_payloads={"input": SourcePayload(large)},
+        )
+        == "input"
+    )
+
+    widget.background_all_checkbox.setChecked(True)
+    assert widget._background_processing_node_id({"threshold"}) == "threshold"
+
+
+def test_large_viewer_source_defers_exact_metadata_until_background(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.zeros((4, 4), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 10**9)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    data = np.arange(101, dtype=np.float32)
+
+    state = widget._viewer_aligned_image_state(data, {}, "large")
+
+    assert state.value_range == "pending exact background calculation"
+    assert state.value_pattern == ""
+
+
 def test_slow_pipeline_run_shows_busy_indicator(qtbot):
     viewer = _Viewer(np.zeros((3, 12, 12), dtype=np.float32))
     widget = VippWidget(viewer)
@@ -4114,6 +5218,83 @@ def test_slow_pipeline_run_shows_busy_indicator(qtbot):
     assert widget.pipeline_busy_bar.isHidden()
     assert not widget.graph_view._cards[node.id].is_processing()
     assert widget.pipeline.outputs[node.id].shape == (3, 12, 12)
+
+
+def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_pipeline_run_id is None,
+        timeout=30_000,
+    )
+
+    deconvolution = widget.add_node_from_palette("richardson_lucy_deconvolution")
+    widget.pipeline.set_param(deconvolution.id, "iterations", 1)
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes("input", deconvolution.id, target_port=1)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget._calculate_node(deconvolution.id)
+
+    run_id = widget._active_pipeline_run_id
+    assert run_id is not None
+    assert len(pool.workers) == 1
+    cancel_event = widget._pipeline_cancel_events[run_id]
+    inflight_dirty = set(widget._inflight_dirty_node_ids or set())
+    widget._on_background_pipeline_progress(
+        (
+            run_id,
+            deconvolution.id,
+            2,
+            5,
+            "Richardson-Lucy deconvolution",
+        )
+    )
+
+    parallel = widget.add_node_from_palette("binary_threshold")
+
+    assert widget._active_pipeline_run_id == run_id
+    assert widget._pipeline_run_pending is True
+    assert parallel.id in widget._pending_dirty_node_ids
+    assert not cancel_event.is_set()
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_busy_bar.maximum() == 5
+    assert widget.pipeline_busy_bar.value() == 2
+    assert widget.graph_view._cards[deconvolution.id].is_processing()
+    assert (
+        widget.graph_view._cards[deconvolution.id]._execution_summary()
+        == "Calculating..."
+    )
+
+    widget._connect_nodes("input", parallel.id)
+
+    assert widget._active_pipeline_run_id == run_id
+    assert widget._inflight_dirty_node_ids == inflight_dirty
+    assert parallel.id in widget._pending_dirty_node_ids
+    assert not cancel_event.is_set()
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_busy_bar.maximum() == 5
+    assert widget.pipeline_busy_bar.value() == 2
+    assert widget.graph_view._cards[deconvolution.id].is_processing()
+
+    # Complete the old workflow snapshot. The unrelated graph addition must not
+    # invalidate its deconvolution result; the cheap parallel branch runs next.
+    pool.workers[0].run()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_pipeline_run_id is None
+            and not widget._pipeline_run_pending
+            and not widget._pending_dirty_node_ids
+            and widget.pipeline.outputs.get(deconvolution.id) is not None
+            and widget.pipeline.outputs.get(parallel.id) is not None
+        ),
+        timeout=30_000,
+    )
+
+    assert not cancel_event.is_set()
+    assert widget.pipeline.outputs[deconvolution.id].shape == (8, 8)
 
 
 def test_downstream_parameter_change_reuses_cached_upstream_slow_node(
@@ -4261,7 +5442,9 @@ def test_cancel_background_run_requeues_dirty_nodes(qtbot):
     assert "result will be ignored" in widget.status_label.text()
 
 
-def test_new_background_request_cancels_active_run_and_remembers_manual(qtbot):
+def test_affecting_background_request_cancels_active_run_and_remembers_manual(
+    qtbot,
+):
     viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -4281,21 +5464,103 @@ def test_new_background_request_cancels_active_run_and_remembers_manual(qtbot):
         None,
         "input volume",
         ("sources", ()),
-        {measurements.id},
+        {"input"},
         {measurements.id},
     )
 
     assert cancel_event.is_set()
     assert widget._pipeline_run_pending is True
-    assert measurements.id in widget._pending_dirty_node_ids
+    assert "input" in widget._pending_dirty_node_ids
     assert measurements.id in widget._pending_manual_node_ids
     assert "Canceling" in widget.status_label.text()
+
+
+def test_cancelled_run_with_independent_pending_work_restarts(qtbot, monkeypatch):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    manual = widget.add_node_from_palette("measure_objects")
+    parallel = widget.add_node_from_palette("gamma_correction")
+    reruns = []
+    monkeypatch.setattr(widget, "run_pipeline", lambda: reruns.append("run"))
+
+    widget._active_pipeline_run_id = 123
+    widget._active_pipeline_node_id = manual.id
+    widget._pipeline_run_pending = True
+    widget._pipeline_run_context[123] = (
+        None,
+        "input volume",
+        manual.id,
+        widget._last_pipeline_source_signature,
+        {manual.id},
+    )
+    widget._pipeline_run_manual_node_ids[123] = frozenset({manual.id})
+    widget._inflight_dirty_node_ids = {manual.id}
+    widget._pending_dirty_node_ids = {parallel.id}
+    widget.pipeline.node_execution_states[manual.id] = "running"
+    widget._set_pipeline_busy(True, manual.id, queued=True)
+
+    widget._on_background_pipeline_finished(PipelineRunResult(123, {}, cancelled=True))
+
+    assert widget._active_pipeline_run_id is None
+    assert widget._pipeline_run_pending is False
+    assert {manual.id, parallel.id} <= widget._pending_dirty_node_ids
+    assert manual.id in widget._pending_manual_node_ids
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert widget.graph_view._cards[manual.id].is_processing()
+    qtbot.waitUntil(lambda: reruns == ["run"], timeout=5_000)
+
+
+def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint8) * 20))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(
+        lambda: widget._active_pipeline_run_id is None,
+        timeout=30_000,
+    )
+    manual = widget.add_node_from_palette("measure_objects")
+    pending = widget.add_node_from_palette("gamma_correction")
+    cancel_event = threading.Event()
+    captured = []
+
+    widget._active_pipeline_run_id = 123
+    widget._active_pipeline_node_id = "gaussian"
+    widget._pipeline_cancel_events[123] = cancel_event
+    widget._pipeline_run_context[123] = (
+        None,
+        "input volume",
+        "gaussian",
+        widget._last_pipeline_source_signature,
+        None,
+    )
+    widget._pipeline_run_manual_node_ids[123] = frozenset({manual.id})
+    widget._inflight_dirty_node_ids = None
+    widget._pending_dirty_node_ids = {pending.id}
+    widget._set_pipeline_busy(True, "gaussian")
+    monkeypatch.setattr(
+        widget,
+        "_run_pipeline_synchronously",
+        lambda *args: captured.append(args),
+    )
+
+    widget.run_pipeline(force_sync=True)
+
+    assert len(captured) == 1
+    assert captured[0][-2] is None
+    assert manual.id in captured[0][-1]
+    assert cancel_event.is_set()
+    assert widget._active_pipeline_run_id is None
+    assert widget._pending_dirty_node_ids == set()
+    assert 123 not in widget._pipeline_run_context
+    assert 123 not in widget._pipeline_run_manual_node_ids
+    assert widget.pipeline_busy_bar.isHidden()
 
 
 def test_background_progress_updates_busy_bar(qtbot):
     viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    rolling = widget.add_node_from_palette("rolling_ball_background")
 
     widget._active_pipeline_run_id = 321
     widget._set_pipeline_busy(True, "gaussian")
@@ -4310,7 +5575,6 @@ def test_background_progress_updates_busy_bar(qtbot):
     assert widget.pipeline_busy_bar.isTextVisible()
     assert "Rolling-ball background" in widget.pipeline_busy_label.text()
 
-    rolling = widget.add_node_from_palette("rolling_ball_background")
     widget._set_pipeline_busy(True, rolling.id)
     widget._on_background_pipeline_progress(
         (321, rolling.id, 3, 5, "Rolling-ball background")
@@ -4436,7 +5700,6 @@ def test_rescale_axes_dirty_run_starts_at_rescale_and_reuses_upstream_cache(
 
     def fake_rescale_axes(image, **_kwargs):
         calls["rescale"] += 1
-        time.sleep(0.1)
         return np.asarray(image)
 
     monkeypatch.setitem(
@@ -4467,27 +5730,22 @@ def test_rescale_axes_dirty_run_starts_at_rescale_and_reuses_upstream_cache(
         timeout=30_000,
     )
     subtract_calls_before = calls["subtract"]
+    rescale_calls_before = calls["rescale"]
 
     widget.graph_view.select_node(rescale.id)
     widget._parameter_widgets["x_scale"].value_box.setValue(1.25)
     qtbot.waitUntil(
         lambda: (
-            widget._active_pipeline_run_id is not None
-            and widget._active_pipeline_node_id == rescale.id
-        ),
-        timeout=30_000,
-    )
-    qtbot.waitUntil(
-        lambda: (
             widget._active_pipeline_run_id is None
             and not widget._pending_dirty_node_ids
+            and calls["rescale"] > rescale_calls_before
             and widget.pipeline.nodes[rescale.id].params["x_scale"] == 1.25
         ),
         timeout=30_000,
     )
 
     assert calls["subtract"] == subtract_calls_before
-    assert calls["rescale"] >= 1
+    assert calls["rescale"] > rescale_calls_before
 
 
 def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
@@ -4787,6 +6045,29 @@ def test_smart_cache_selection_restores_pruned_selected_output(qtbot):
     assert widget.pipeline.outputs["gaussian"] is not None
     assert widget.pipeline.outputs["threshold"] is not None
     assert widget.graph_view._cards["threshold"].preview.isHidden() is False
+
+
+def test_large_pruned_threshold_restores_in_background(qtbot, monkeypatch):
+    data = np.arange(200, dtype=np.float32).reshape(2, 10, 10)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_SMART)
+    assert widget.pipeline.outputs["threshold"] is None
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    dispatches = []
+    monkeypatch.setattr(
+        widget,
+        "_start_background_pipeline_run",
+        lambda *_args, **_kwargs: dispatches.append("pipeline"),
+    )
+
+    widget.graph_view.select_node("threshold")
+
+    assert dispatches == ["pipeline"]
 
 
 def test_low_memory_cache_keeps_working_node_input_and_explicit_outputs(qtbot):
@@ -6658,7 +7939,22 @@ def test_optional_reader_dialog_copies_install_command(qtbot, monkeypatch):
         def clickedButton(self):
             return self.clicked
 
+    class FakeClipboard:
+        def __init__(self):
+            self.value = ""
+
+        def setText(self, value):
+            self.value = str(value)
+
+        def text(self):
+            return self.value
+
+    clipboard = FakeClipboard()
     monkeypatch.setattr("napari_vipp._widget.QMessageBox", FakeMessageBox)
+    monkeypatch.setattr(
+        "napari_vipp._widget.QApplication.clipboard",
+        lambda: clipboard,
+    )
 
     widget._show_optional_reader_error(error)
 
@@ -6667,7 +7963,7 @@ def test_optional_reader_dialog_copies_install_command(qtbot, monkeypatch):
     assert "CZI reader is not installed" in box.text
     assert command in box.informative_text
     assert "restart napari" in box.informative_text
-    assert QApplication.clipboard().text() == command
+    assert clipboard.text() == command
     assert widget.status_label.text() == f"Copied reader install command: {command}"
 
 
@@ -6959,6 +8255,11 @@ def test_inspect_shows_mask_as_standalone_image(qtbot):
     assert second_inspect.metadata["node_id"] == "threshold"
     assert second_inspect.contrast_limits == (0, 1)
     assert second_inspect.blending == "opaque"
+    assert second_inspect.data.dtype == bool
+    assert np.shares_memory(
+        second_inspect.data,
+        widget.pipeline.outputs["threshold"],
+    )
 
 
 def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
@@ -6981,7 +8282,7 @@ def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
     assert viewer.layers[-1] is pinned
 
 
-def test_signed_image_inspect_anchors_contrast_at_zero(qtbot):
+def test_signed_image_inspect_contrast_includes_negative_values(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -7001,17 +8302,182 @@ def test_signed_image_inspect_anchors_contrast_at_zero(qtbot):
     layer = widget._add_image_or_labels("VIPP Inspect", signed, metadata=metadata)
 
     assert layer.metadata["data_kind"] == "image"
-    assert layer.contrast_limits == (0.0, 1.0)
+    assert layer.contrast_limits == (-1.0, 1.0)
+    assert layer.metadata["vipp_display_contrast_basis"] == (
+        "Exact full finite data range (display only)"
+    )
+    assert layer.metadata["vipp_display_contrast_adjustable"] is True
 
 
-def test_non_negative_image_keeps_default_contrast(qtbot):
+def test_generated_image_contrast_uses_exact_full_finite_range():
+    positive = np.linspace(0, 200, 4 * 16 * 18, dtype=np.float32).reshape(4, 16, 18)
+    non_finite = np.array([-np.inf, -2.0, np.nan, 5.0, np.inf], dtype=np.float32)
+
+    assert _exact_generated_layer_contrast_limits(positive) == (0.0, 200.0)
+    assert _exact_generated_layer_contrast_limits(non_finite) == (-2.0, 5.0)
+
+
+def test_large_float_inspect_contrast_is_calculated_in_background(
+    qtbot,
+    monkeypatch,
+):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    data = np.linspace(-7.0, 42.0, 200, dtype=np.float32).reshape(2, 10, 10)
+    widget.pipeline.outputs["gaussian"] = data
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
 
-    positive = np.linspace(0, 200, 4 * 16 * 18, dtype=np.float32).reshape(4, 16, 18)
+    def blocking_exact_limits(values):
+        assert values is data
+        started.set()
+        assert release.wait(5)
+        return (-7.0, 42.0)
 
-    assert widget._signed_image_contrast_limits(positive) is None
+    monkeypatch.setattr(
+        "napari_vipp._widget._exact_generated_layer_contrast_limits",
+        blocking_exact_limits,
+    )
+
+    before = time.perf_counter()
+    widget.inspect_node("gaussian")
+    elapsed = time.perf_counter() - before
+
+    inspect = viewer.layers["VIPP Inspect"]
+    assert elapsed < 0.25
+    assert inspect.contrast_limits == (0.0, 1.0)
+    assert inspect.metadata["vipp_display_contrast_pending"] is True
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: not widget._generated_layer_contrast_pending,
+        timeout=5_000,
+    )
+
+    assert inspect.contrast_limits == (-7.0, 42.0)
+    assert inspect.metadata["vipp_display_contrast_pending"] is False
+    assert inspect.metadata["vipp_display_contrast_basis"] == (
+        "Exact full finite data range (display only)"
+    )
+
+
+def test_generated_layer_contrast_rejects_stale_worker_result(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    layer = viewer.layers[0]
+    layer.name = "VIPP Inspect"
+    generation = widget._generated_layer_contrast_generation
+    old_key = (generation, "old")
+    new_key = (generation, "new")
+    layer.metadata["_vipp_display_contrast_key"] = new_key
+    layer.contrast_limits = (-2.0, 3.0)
+    widget._generated_layer_contrast_keys[layer.name] = new_key
+
+    widget._on_generated_layer_contrast_finished(
+        GeneratedLayerContrastResult(
+            old_key,
+            layer.name,
+            limits=(-100.0, 100.0),
+        )
+    )
+
+    assert layer.contrast_limits == (-2.0, 3.0)
+
+
+def test_generated_layer_contrast_preserves_user_adjustment(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    layer = viewer.layers[0]
+    layer.name = "VIPP Inspect"
+    key = (widget._generated_layer_contrast_generation, "current")
+    layer.metadata.update(
+        {
+            "_vipp_display_contrast_key": key,
+            "_vipp_display_contrast_initial_limits": (0.0, 1.0),
+        }
+    )
+    layer.contrast_limits = (0.2, 0.8)
+    widget._generated_layer_contrast_keys[layer.name] = key
+
+    widget._on_generated_layer_contrast_finished(
+        GeneratedLayerContrastResult(
+            key,
+            layer.name,
+            limits=(-7.0, 42.0),
+        )
+    )
+
+    assert layer.contrast_limits == (0.2, 0.8)
+    assert layer.metadata["vipp_exact_finite_data_range"] == (-7.0, 42.0)
+    assert "User-adjusted" in layer.metadata["vipp_display_contrast_basis"]
+
+
+def test_large_rgb_channels_receive_exact_background_contrast(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    data = np.zeros((2, 4, 5, 6, 3), dtype=np.float32)
+    data[..., 0] = np.linspace(-2.0, 5.0, data[..., 0].size).reshape(
+        data[..., 0].shape
+    )
+    data[..., 1] = np.linspace(0.25, 2.0, data[..., 1].size).reshape(
+        data[..., 1].shape
+    )
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
+    original = _exact_generated_layer_contrast_limits
+
+    def blocking_exact_limits(values):
+        started.set()
+        assert release.wait(5)
+        return original(values)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget._exact_generated_layer_contrast_limits",
+        blocking_exact_limits,
+    )
+    metadata = {
+        "napari_vipp_kind": "inspect",
+        "node_id": "manual-rgb",
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_rgb": True,
+        "display_ndim": data.ndim,
+        "display_shape": data.shape,
+    }
+
+    widget._set_or_add_rgb_channel_layers("Scientific RGB", data, metadata)
+
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    for layer in widget._rgb_channel_layers("Scientific RGB"):
+        assert layer.contrast_limits == (0.0, 1.0)
+        assert layer.metadata["vipp_display_contrast_pending"] is True
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: not widget._generated_layer_contrast_pending,
+        timeout=5_000,
+    )
+
+    assert viewer.layers["Scientific RGB"].contrast_limits == (-2.0, 5.0)
+    assert viewer.layers["Scientific RGB Green"].contrast_limits == (0.0, 2.0)
+    assert viewer.layers["Scientific RGB Blue"].contrast_limits == (0.0, 1.0)
+    assert all(
+        layer.metadata["vipp_display_contrast_pending"] is False
+        for layer in widget._rgb_channel_layers("Scientific RGB")
+    )
+
+    widget._set_or_add_rgb_channel_layers("Scientific RGB", data, metadata)
+
+    assert not widget._generated_layer_contrast_pending
 
 
 def test_rescaled_float_inspect_refreshes_reused_contrast_limits(qtbot):
@@ -7059,7 +8525,10 @@ def test_inspecting_input_after_mask_resets_inspect_display(qtbot):
     assert input_inspect.layer_type == "image"
     assert input_inspect.metadata["data_kind"] == "image"
     assert input_inspect.metadata["node_id"] == "input"
-    assert input_inspect.contrast_limits is None
+    assert input_inspect.contrast_limits == (0.0, 255.0)
+    assert input_inspect.metadata["vipp_display_contrast_basis"] == (
+        "Exact full finite data range (display only)"
+    )
     assert input_inspect.blending is None
     assert viewer.layers[-2] is input_inspect
     assert viewer.layers[-1] is pinned
@@ -7262,3 +8731,124 @@ def test_auto_contrast_button_updates_scale_and_offset(qtbot):
     )
     assert output.min() == 0
     assert output.max() == 255
+
+
+def test_auto_contrast_uses_rare_values_beyond_old_sampling_limit():
+    values = np.zeros(1_000_003, dtype=np.float32)
+    values[777_777] = -17.0
+    values[999_999] = 1_000.0
+
+    result = _auto_contrast_scale_offset(values, 0.0)
+
+    assert result is not None
+    _alpha, _beta, lower, upper = result
+    assert lower == -17.0
+    assert upper == 1_000.0
+
+
+def test_auto_contrast_uses_all_values_in_large_periodic_input():
+    values = np.empty(1_000_002, dtype=np.uint16)
+    values[::2] = 0
+    values[1::2] = 4_096
+
+    result = _auto_contrast_scale_offset(values, 0.35)
+
+    assert result is not None
+    _alpha, _beta, lower, upper = result
+    assert lower == 0.0
+    assert upper == 4_096.0
+
+
+def test_auto_contrast_rgb_uses_weighted_luminance_reference():
+    rgb = np.array(
+        [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
+        dtype=np.uint8,
+    )
+
+    result = _auto_contrast_scale_offset(rgb, 0.0)
+
+    assert result is not None
+    _alpha, _beta, lower, upper = result
+    assert lower == 0.0
+    np.testing.assert_allclose(upper, 58.7, rtol=0.0, atol=1e-5)
+
+
+def test_auto_contrast_rgba_ignores_alpha_channel():
+    rgb = np.array(
+        [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
+        dtype=np.uint8,
+    )
+    alpha = np.array([[[255], [0], [17], [240]]], dtype=np.uint8)
+    rgba = np.concatenate((rgb, alpha), axis=-1)
+
+    rgb_result = _auto_contrast_scale_offset(rgb, 0.0)
+    rgba_result = _auto_contrast_scale_offset(rgba, 0.0)
+
+    assert rgb_result is not None
+    assert rgba_result is not None
+    np.testing.assert_allclose(rgba_result, rgb_result, rtol=0.0, atol=1e-12)
+
+
+def test_large_auto_contrast_dispatches_exact_work_without_blocking(qtbot):
+    data = np.empty(1_000_002, dtype=np.uint8)
+    data[::2] = 0
+    data[1::2] = 100
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+    widget.auto_saturation_control.value_box.setValue(0.0)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    undo_count = len(widget._undo_stack)
+
+    started = time.perf_counter()
+    widget.auto_contrast_button.click()
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.5
+    assert len(pool.workers) == 1
+    assert widget._active_auto_contrast_run_id is not None
+    assert not widget.auto_contrast_button.isEnabled()
+    assert not widget.pipeline_busy_label.isHidden()
+    assert "exact full-input" in widget.status_label.text()
+
+    pool.workers[0].run()
+    qtbot.waitUntil(lambda: widget._active_auto_contrast_run_id is None)
+
+    params = widget.pipeline.nodes[node.id].params
+    np.testing.assert_allclose(params["alpha"], 2.55, atol=0.0001)
+    np.testing.assert_allclose(params["beta"], 0.0, atol=0.0001)
+    assert len(widget._undo_stack) == undo_count + 1
+    assert widget.auto_contrast_button.isEnabled()
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline.outputs[node.id].min() == 0
+    assert widget.pipeline.outputs[node.id].max() == 255
+
+
+def test_large_auto_contrast_ignores_stale_setting_result(qtbot):
+    data = np.arange(1_000_002, dtype=np.float32)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    undo_count = len(widget._undo_stack)
+
+    widget.auto_contrast_button.click()
+    widget.auto_saturation_control.value_box.setValue(5.0)
+    pool.workers[0].run()
+    qtbot.waitUntil(lambda: widget._active_auto_contrast_run_id is None)
+
+    params = widget.pipeline.nodes[node.id].params
+    assert params["alpha"] == 3.0
+    assert params["beta"] == 1.0
+    assert len(widget._undo_stack) == undo_count
+    assert "stale result was ignored" in widget.status_label.text()

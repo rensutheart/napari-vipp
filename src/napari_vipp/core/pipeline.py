@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import inspect
+import math
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from numbers import Integral, Real
 from typing import Any
 
 from napari_vipp.core.metadata import (
+    DEFERRED_VALUE_RANGE,
     ImageState,
     image_state_from_array,
     transform_image_state,
@@ -142,6 +145,145 @@ class ParameterSpec:
     decimals: int = 0
     choices: tuple[str, ...] = ()
     choice_labels: tuple[str, ...] = ()
+    dynamic_choices: bool = False
+
+
+_RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
+    "resolved_spatial_ndim",
+    "Resolved spatial dimensions",
+    "int",
+    2,
+    1,
+    3,
+    1,
+)
+
+_OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
+    "select_axis_slice": (
+        ParameterSpec("axes", "Selected axes", "text", "", 0, 0, 1),
+        ParameterSpec("indices", "Selected indices", "text", "", 0, 0, 1),
+        ParameterSpec("ranges", "Selected ranges", "text", "", 0, 0, 1),
+        ParameterSpec("range_mode", "Use ranges", "bool", True, 0, 1, 1),
+        ParameterSpec("remove_axes", "Removed axes", "text", "", 0, 0, 1),
+        ParameterSpec(
+            "remove_indices",
+            "Removed indices",
+            "text",
+            "",
+            0,
+            0,
+            1,
+        ),
+    ),
+    "rescale_axes": (
+        ParameterSpec(
+            "resize_mode",
+            "Resize mode",
+            "choice",
+            "Scale factor",
+            0,
+            0,
+            1,
+            choices=("Scale factor", "Output size"),
+        ),
+        ParameterSpec("x_size", "X output size", "int", 1, 1, 2**31 - 1, 1),
+        ParameterSpec("y_size", "Y output size", "int", 1, 1, 2**31 - 1, 1),
+        ParameterSpec("z_size", "Z output size", "int", 1, 1, 2**31 - 1, 1),
+    ),
+    "combine_channels": (
+        ParameterSpec("channel_axis", "Channel axis", "int", -1, -1, 64, 1),
+        ParameterSpec("channel_colors", "Channel colours", "text", "", 0, 0, 1),
+    ),
+}
+
+
+def optional_persisted_parameter_spec(
+    operation_spec: OperationSpec,
+    name: object,
+) -> ParameterSpec | None:
+    """Return an explicitly supported, non-required serialized parameter."""
+    if not isinstance(name, str):
+        return None
+    if name == "resolved_spatial_ndim":
+        if operation_spec.id in _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS:
+            return _RESOLVED_SPATIAL_NDIM_PARAMETER
+        return None
+    return next(
+        (
+            parameter
+            for parameter in _OPTIONAL_PERSISTED_PARAMETER_SPECS.get(
+                operation_spec.id,
+                (),
+            )
+            if parameter.name == name
+        ),
+        None,
+    )
+
+
+def validate_optional_persisted_parameter(
+    operation_spec: OperationSpec,
+    parameter: ParameterSpec,
+    value: Any,
+    *,
+    context: str,
+) -> None:
+    """Validate saved UI/derived state that is not a required node control."""
+    validate_parameter_value(parameter, value, context=context)
+    label = f"{context} {parameter.name!r}"
+    if parameter.name == "resolved_spatial_ndim" and int(value) not in {1, 2, 3}:
+        raise ValueError(f"{label} must be 1, 2, or 3.")
+    if operation_spec.id == "rescale_axes" and parameter.name.endswith("_size"):
+        if int(value) < 1:
+            raise ValueError(f"{label} must be a positive integer.")
+
+
+def validate_parameter_value(
+    spec: ParameterSpec,
+    value: Any,
+    *,
+    context: str = "Parameter",
+) -> None:
+    """Reject malformed persisted or programmatic parameter values.
+
+    UI bounds remain presentation hints for most numeric parameters because
+    several controls intentionally expand to the connected data range. Choice
+    membership, scalar type, finiteness, and the scientific histogram-bin
+    range are invariant and are therefore validated centrally.
+    """
+    label = f"{context} {spec.name!r}"
+    if spec.kind == "choice":
+        if spec.dynamic_choices:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{label} must be a non-empty choice value.")
+            return
+        if value not in spec.choices:
+            choices = ", ".join(repr(choice) for choice in spec.choices)
+            raise ValueError(f"{label} must be one of: {choices}.")
+        return
+    if spec.kind == "bool":
+        if not isinstance(value, bool):
+            raise ValueError(f"{label} must be a boolean.")
+        return
+    if spec.kind == "int":
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(f"{label} must be an integer.")
+        if spec.name in {"histogram_bins", "max_iterations"} and not (
+            spec.minimum <= value <= spec.maximum
+        ):
+            raise ValueError(
+                f"{label} must be between {int(spec.minimum):,} and "
+                f"{int(spec.maximum):,}."
+            )
+        return
+    if spec.kind == "float":
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"{label} must be a finite number.")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{label} must be a finite number.")
+        return
+    if spec.kind == "text" and not isinstance(value, str):
+        raise ValueError(f"{label} must be text.")
 
 
 @dataclass(frozen=True)
@@ -358,6 +500,7 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     0,
     1,
     choices=("Auto from axes", "2D YX", "3D ZYX"),
+    dynamic_choices=True,
 )
 
 BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
@@ -369,6 +512,7 @@ BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
     0,
     1,
     choices=("2D YX", "3D ZYX", "Auto from axes"),
+    dynamic_choices=True,
 )
 
 THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
@@ -380,6 +524,15 @@ THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
     0,
     1,
     choices=("Stack histogram", "Slice histogram"),
+)
+HISTOGRAM_BINS_PARAMETER = ParameterSpec(
+    "histogram_bins",
+    "Float histogram bins",
+    "int",
+    256,
+    2,
+    65_536,
+    1,
 )
 
 SPATIAL_OPERATIONS = {
@@ -1084,6 +1237,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "Auto (Z if present)",
                     "All non-YX spatial axes",
                 ),
+                dynamic_choices=True,
             ),
             ParameterSpec(
                 "method",
@@ -1171,6 +1325,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 choices=("axis:0",),
                 choice_labels=("Axis 0",),
+                dynamic_choices=True,
             ),
         ),
         split_axis,
@@ -1341,7 +1496,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
         otsu_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1351,7 +1506,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
         triangle_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1371,7 +1526,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
         yen_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1381,7 +1536,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
         isodata_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1391,7 +1546,19 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (
+            THRESHOLD_SCOPE_PARAMETER,
+            HISTOGRAM_BINS_PARAMETER,
+            ParameterSpec(
+                "max_iterations",
+                "Maximum smoothing iterations",
+                "int",
+                10_000,
+                1,
+                10_000,
+                25,
+            ),
+        ),
         minimum_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -3233,6 +3400,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec(
+                "cutoff_mode",
+                "Input cutoffs",
+                "choice",
+                "Percentiles",
+                0,
+                0,
+                1,
+                choices=("Percentiles", "Values"),
+                choice_labels=("Percentiles (exact)", "Explicit values"),
+            ),
+            ParameterSpec(
                 "in_low_value",
                 "Low value",
                 "float",
@@ -3322,6 +3500,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
+            ParameterSpec(
+                "cutoff_mode",
+                "Input cutoffs",
+                "choice",
+                "Data range",
+                0,
+                0,
+                1,
+                choices=("Data range", "Values"),
+                choice_labels=("Full data range", "Explicit values"),
+            ),
             ParameterSpec(
                 "minimum",
                 "Minimum",
@@ -3497,6 +3686,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
 )
 
 NODE_LIBRARY_BY_ID = {spec.id: spec for spec in NODE_LIBRARY}
+_RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS = frozenset(
+    spec.id
+    for spec in NODE_LIBRARY
+    if spec.function is not None
+    and "resolved_spatial_ndim" in inspect.signature(spec.function).parameters
+)
 PALETTE_NODE_LIBRARY = NODE_LIBRARY
 
 PROTOTYPE_NODES = [
@@ -3525,7 +3720,7 @@ PROTOTYPE_NODES = [
         "Segmentation",
         "image",
         "mask",
-        {"threshold_scope": "Stack histogram"},
+        {"threshold_scope": "Stack histogram", "histogram_bins": 256},
     ),
 ]
 PROTOTYPE_CONNECTIONS = [
@@ -4073,7 +4268,39 @@ class PrototypePipeline:
         return removed
 
     def set_param(self, node_id: str, name: str, value: Any) -> None:
-        self.nodes[node_id].params[name] = value
+        node = self.nodes[node_id]
+        spec = next(
+            (
+                parameter
+                for parameter in self.operation_spec(node.operation_id).parameters
+                if parameter.name == name
+            ),
+            None,
+        )
+        if spec is None:
+            operation_spec = self.operation_spec(node.operation_id)
+            optional_spec = optional_persisted_parameter_spec(
+                operation_spec,
+                name,
+            )
+            if optional_spec is not None:
+                validate_optional_persisted_parameter(
+                    operation_spec,
+                    optional_spec,
+                    value,
+                    context=f"Node {node_id!r} parameter",
+                )
+            elif not isinstance(name, str) or not name.startswith("_vipp_"):
+                raise ValueError(
+                    f"Node {node_id!r} has no public parameter {name!r}."
+                )
+        else:
+            validate_parameter_value(
+                spec,
+                value,
+                context=f"Node {node_id!r} parameter",
+            )
+        node.params[name] = value
 
     def node_auto_recalculate(self, node_id: str) -> bool:
         node = self.nodes.get(node_id)
@@ -4599,7 +4826,30 @@ class PrototypePipeline:
         }
 
     def _operation_kwargs(self, node: GraphNode) -> dict[str, Any]:
-        return self._public_params(node.params)
+        kwargs = self._public_params(node.params)
+        operation_spec = self.operation_spec(node.operation_id)
+        required_specs = {
+            parameter.name: parameter for parameter in operation_spec.parameters
+        }
+        for name, value in kwargs.items():
+            parameter = required_specs.get(name)
+            if parameter is not None:
+                validate_parameter_value(
+                    parameter,
+                    value,
+                    context=f"Node {node.id!r} parameter",
+                )
+                continue
+            parameter = optional_persisted_parameter_spec(operation_spec, name)
+            if parameter is None:
+                raise ValueError(f"Node {node.id!r} has no public parameter {name!r}.")
+            validate_optional_persisted_parameter(
+                operation_spec,
+                parameter,
+                value,
+                context=f"Node {node.id!r} parameter",
+            )
+        return kwargs
 
     def _sync_born_wolf_psf_resolution(
         self,
@@ -4982,11 +5232,21 @@ class PrototypePipeline:
             payload = source_payloads.get(node_id)
             if payload is None:
                 payload = SourcePayload(input_data, input_metadata, input_name)
-            state = payload.image_state or image_state_from_array(
-                payload.data,
-                layer_metadata=payload.metadata,
-                source_name=payload.name,
-            )
+            state = payload.image_state
+            if state is None or state.value_range == DEFERRED_VALUE_RANGE:
+                state = image_state_from_array(
+                    payload.data,
+                    layer_metadata=payload.metadata,
+                    source_name=payload.name,
+                    axes=(state.axes if state is not None else None),
+                    metadata_source=(
+                        state.metadata_source if state is not None else None
+                    ),
+                    history=(state.history if state is not None else ()),
+                    channels=(state.channels if state is not None else None),
+                    acquisition=(state.acquisition if state is not None else None),
+                    source=(state.source if state is not None else None),
+                )
             state = with_channel_colors(state, node.params.get("channel_colors", ""))
             return [
                 (

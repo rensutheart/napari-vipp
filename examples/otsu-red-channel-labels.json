@@ -1,6 +1,6 @@
 {
   "type": "napari-vipp-workflow",
-  "version": 1,
+  "version": 2,
   "metadata": {
     "vipp": {
       "inspector": {
@@ -34,7 +34,8 @@
       "id": "threshold",
       "operation_id": "otsu_threshold",
       "params": {
-        "threshold_scope": "Stack histogram"
+        "threshold_scope": "Stack histogram",
+        "histogram_bins": 256
       }
     },
     {

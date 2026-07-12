@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -32,7 +34,7 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
 
     document = serialize_workflow(pipeline, positions)
     assert document["type"] == WORKFLOW_TYPE
-    assert document["version"] == 1
+    assert document["version"] == 2
 
     path = tmp_path / "workflow.json"
     saved = save_workflow(path, pipeline, positions)
@@ -52,6 +54,211 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
     }
     assert ("gaussian", "median_filter_1") in connection_pairs
     assert workflow["positions"]["gaussian"] == (330.0, 20.0)
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "otsu_threshold",
+        "triangle_threshold",
+        "yen_threshold",
+        "isodata_threshold",
+        "minimum_threshold",
+    ],
+)
+def test_workflow_roundtrip_preserves_float_histogram_bins(operation_id):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+    pipeline.set_param(node.id, "histogram_bins", 4_096)
+
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert serialized["params"]["histogram_bins"] == 4_096
+    assert restored_node.params["histogram_bins"] == 4_096
+
+
+def test_rescale_cutoff_mode_roundtrips():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("rescale_intensity")
+    assert node.params["cutoff_mode"] == "Percentiles"
+    pipeline.set_param(node.id, "cutoff_mode", "Percentiles")
+
+    document = serialize_workflow(pipeline)
+    explicit = deserialize_workflow(document)
+    explicit_node = next(item for item in explicit["nodes"] if item.id == node.id)
+    assert explicit_node.params["cutoff_mode"] == "Percentiles"
+
+
+def test_workflow_roundtrip_preserves_exact_wide_integer_cutoffs():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("rescale_intensity")
+    base = 2**60
+    pipeline.set_param(node.id, "cutoff_mode", "Values")
+    pipeline.set_param(node.id, "in_low_value", base + 1)
+    pipeline.set_param(node.id, "in_high_value", base + 2)
+
+    document = json.loads(json.dumps(serialize_workflow(pipeline)))
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params["in_low_value"] == base + 1
+    assert restored_node.params["in_high_value"] == base + 2
+    assert isinstance(restored_node.params["in_low_value"], int)
+
+
+def test_clip_cutoff_mode_roundtrips():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("clip_intensity")
+    assert node.params["cutoff_mode"] == "Data range"
+
+    document = serialize_workflow(pipeline)
+    explicit = deserialize_workflow(document)
+    explicit_node = next(item for item in explicit["nodes"] if item.id == node.id)
+    assert explicit_node.params["cutoff_mode"] == "Data range"
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter"),
+    [
+        ("otsu_threshold", "histogram_bins"),
+        ("minimum_threshold", "max_iterations"),
+        ("rescale_intensity", "cutoff_mode"),
+        ("clip_intensity", "cutoff_mode"),
+    ],
+)
+def test_current_scientific_workflow_parameters_are_required(
+    operation_id,
+    parameter,
+):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"].pop(parameter)
+
+    with pytest.raises(ValueError, match=f"missing required parameters: {parameter}"):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter", "value", "message"),
+    [
+        (
+            "otsu_threshold",
+            "threshold_scope",
+            "banana",
+            "must be one of: 'Stack histogram', 'Slice histogram'",
+        ),
+        (
+            "otsu_threshold",
+            "histogram_bins",
+            1,
+            "must be between 2 and 65,536",
+        ),
+        (
+            "rescale_intensity",
+            "cutoff_mode",
+            "Estimated",
+            "must be one of: 'Percentiles', 'Values'",
+        ),
+        (
+            "clip_intensity",
+            "cutoff_mode",
+            "Automatic",
+            "must be one of: 'Data range', 'Values'",
+        ),
+        (
+            "rescale_intensity",
+            "out_min",
+            float("nan"),
+            "must be a finite number",
+        ),
+    ],
+)
+def test_workflow_rejects_malformed_scientific_parameters(
+    operation_id,
+    parameter,
+    value,
+    message,
+):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"][parameter] = value
+
+    with pytest.raises(ValueError, match=message):
+        deserialize_workflow(document)
+
+
+def test_set_param_rejects_invalid_choice_before_execution():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("otsu_threshold")
+
+    with pytest.raises(ValueError, match="must be one of"):
+        pipeline.set_param(node.id, "threshold_scope", "banana")
+
+
+def test_set_param_rejects_unknown_public_parameter():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("otsu_threshold")
+
+    with pytest.raises(ValueError, match="has no public parameter 'histogram_bin'"):
+        pipeline.set_param(node.id, "histogram_bin", 256)
+
+
+def test_workflow_rejects_unknown_public_parameter_but_keeps_vipp_state():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("otsu_threshold")
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"]["unexpected"] = 1
+
+    with pytest.raises(ValueError, match="unknown parameters: 'unexpected'"):
+        deserialize_workflow(document)
+
+    serialized["params"].pop("unexpected")
+    serialized["params"]["_vipp_review_state"] = {"expanded": True}
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+    assert restored_node.params["_vipp_review_state"] == {"expanded": True}
+
+
+def test_workflow_preserves_valid_runtime_derived_parameter():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("hysteresis_threshold")
+    pipeline.set_param(node.id, "resolved_spatial_ndim", 3)
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params["resolved_spatial_ndim"] == 3
+
+
+def test_workflow_preserves_supported_optional_ui_parameters():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("rescale_axes")
+    pipeline.set_param(node.id, "resize_mode", "Output size")
+    pipeline.set_param(node.id, "x_size", 12)
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params["resize_mode"] == "Output size"
+    assert restored_node.params["x_size"] == 12
+
+
+def test_dynamic_choice_parameters_still_require_nonempty_text():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("split_axis")
+
+    with pytest.raises(ValueError, match="non-empty choice value"):
+        pipeline.set_param(node.id, "axis", 1)
+    with pytest.raises(ValueError, match="non-empty choice value"):
+        pipeline.set_param(node.id, "axis", "")
 
 
 def test_workflow_rejects_blank_paths_and_unknown_positions(tmp_path):
@@ -229,7 +436,7 @@ def test_unknown_operation_is_rejected():
 
 def test_wrong_workflow_version_is_rejected():
     document = serialize_workflow(_build_pipeline())
-    document["version"] = 2
+    document["version"] = 1
 
     with pytest.raises(ValueError, match="Unsupported workflow version"):
         deserialize_workflow(document)

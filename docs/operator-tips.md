@@ -1,6 +1,6 @@
 # VIPP Operator Tips and Performance
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-11
 
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
@@ -9,13 +9,15 @@ It focuses on responsiveness, stability, and practical tuning.
 
 VIPP supports two background-processing behaviors in the toolbar:
 
-- `Run all in BG` off: background mode is used for known slower operations.
+- `Run all in BG` off: automatic mode backgrounds known slower operations and
+  updates involving at least 32 MiB or four million image values. Smaller,
+  quick edits remain inline.
 - `Run all in BG` on: all recomputes use background mode.
 
 Use `Run all in BG` on when:
 
-- images are large;
 - pipelines are long;
+- mid-sized operations still make interaction feel uneven;
 - users need visible progress feedback during recompute.
 
 Use `Run all in BG` off when:
@@ -45,6 +47,12 @@ For heavy scenes, these settings can help reduce UI churn:
 - set preview mode to `Off` when tuning non-visual parameters;
 - keep histogram scope to `Slice` while iterating.
 
+Large stack histograms and automatic-threshold markers are calculated in the
+background. The inspector briefly shows `calculating...` and reuses the result
+when napari emits repeated dimension events or the node is revisited. Choosing
+`Slice` reduces the requested scope, but both slice and stack histograms count
+all finite pixels in that scope; VIPP does not introduce hidden sampling.
+
 ## Practical Workflow Habits
 
 - Add expensive nodes later in graph construction and tune early nodes first.
@@ -56,7 +64,8 @@ For heavy scenes, these settings can help reduce UI churn:
 
 If updates feel slow:
 
-1. Turn `Run all in BG` off and compare interactive latency.
+1. Turn `Run all in BG` on if a mid-sized operation falls below the automatic
+   cutoff but still pauses interaction.
 2. Set preview mode to `Off` and retest.
 3. Switch preview mode from `MIP` to `Slice`.
 4. Reduce graph fan-out while tuning upstream nodes.

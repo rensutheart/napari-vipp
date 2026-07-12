@@ -1,6 +1,6 @@
 # VIPP Developer and Architecture Notes
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-11
 
 This page is the technical entry point for contributors. It maps common
 development questions to the canonical architecture and planning documents.
@@ -29,8 +29,10 @@ Background processing and progress behavior are coordinated in
 
 - dirty-node tracking;
 - background allow-list logic;
+- automatic size-based dispatch at 32 MiB or four million values;
 - optional all-background mode;
 - queueing and rerun coalescing;
+- asynchronous, stale-safe, all-pixel input-histogram diagnostics;
 - cooperative progress and cancellation events passed into operation functions
   through `napari_vipp.core.progress.ProgressContext`.
 

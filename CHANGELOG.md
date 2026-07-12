@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+## 0.11.0a3 - 2026-07-12
+
+- Standardized the public name as VIPP, the Visual Image Processing Platform,
+  and added the reusable logo/mark asset set and concise README presentation.
+- Automatically dispatch pipeline updates to the background for image data at
+  least 32 MiB or four million values, while retaining the explicit
+  `Run all in BG` override for smaller work.
+- Moved large input-histogram and automatic-threshold diagnostics off the Qt
+  thread, coalesced repeated dimension refreshes, and cached completed results.
+- Reduced global-threshold, histogram, thumbnail, and segmentation memory
+  pressure with exact bounded chunks, dtype and boolean-mask reuse, zero-copy
+  mask inspection, and known mask contrast limits. Histogram calculations still
+  count every finite pixel and do not introduce hidden large-array sampling.
+- Added dtype-aware automatic-threshold handling: explicit boolean-mask
+  passthrough, exact native integer levels, a saved `Float histogram bins`
+  setting, actionable rejection of integer spans above 65,536 levels, and
+  background treatment of all non-finite pixels.
+- Added an explicit saved `Input cutoffs` mode to Rescale Intensity. New nodes
+  default to exact all-finite-value percentiles.
+- Added an explicit saved cutoff mode to Clip Intensity. New nodes default to
+  `Data range`.
+- Preserved adjacent int64/uint64 levels in Rescale Intensity by calculating
+  integer percentiles as exact native order statistics and applying the mapping
+  in translated coordinates. Clip now clamps integer data in its native dtype.
+  Unrepresentable fractional integer bounds, rounded GUI values above 2^53,
+  and rescale spans too wide for level-faithful float64 arithmetic fail with an
+  actionable error instead of silently corrupting the result.
+- Boolean inputs to automatic thresholds are now preserved explicitly as
+  already-segmented masks. Minimum Threshold exposes its saved smoothing limit
+  and reports failure instead of substituting an unrelated cutoff. Empty or
+  all-nonfinite threshold inputs also fail instead of receiving a fabricated
+  zero cutoff.
+- Made selected-node auto contrast and generated napari-layer contrast exact
+  over all finite values while moving large calculations off the Qt thread;
+  provisional layer limits are display-only and never affect graph data.
+- Replaced sampled metadata range/pattern inference with exact bounded scans.
+- Made colocalization scatter density, ROI counts, and colocalized counts exact
+  over every ROI voxel using bounded background accumulation; removed the old
+  hidden stride/sample display paths.
+- Increased the exact colocalization scatter-density display grid from
+  192 x 192 to 255 x 255 cells for finer visual detail without changing
+  thresholds or reported counts.
+- Preserved float64 precision when RGB inputs are converted to luminance for
+  automatic thresholding instead of silently downcasting them to float32.
+- Preserved exact native threshold decisions for large-magnitude int64/uint64
+  images by calculating on translated levels and restoring Python-integer
+  cutoffs. Li similarly uses exact native offsets and rejects only relative
+  spans that exceed float64's exact integer range.
+- Advanced workflow JSON to version 2 so histogram-bin and cutoff-mode controls
+  are explicit required scientific parameters. Version 1 files are rejected
+  rather than silently receiving defaults that could change scientific output;
+  keep `0.11.0a2` to run them unchanged or recreate them in the current release.
+- Made `Split Channels` present its sole distinct downstream-used output across
+  the thumbnail, inspect/pin, histogram, metadata, dimension, and selected-save
+  surfaces. Nodes with zero or multiple distinct used outputs still use the
+  saved `Thumbnail channel`; this display choice does not mutate that setting
+  or any scientific graph output.
+- Decoupled input-histogram distributions from parameter-dependent guide
+  markers. Dragging Binary/Hysteresis thresholds or explicit Rescale/Clip
+  cutoffs now reuses unchanged counts immediately, while computed automatic
+  markers refresh independently and real input, scope, or slice changes still
+  invalidate the distribution. Label-volume filters likewise reuse their
+  unchanged object-volume population while minimum/maximum guides move.
+- Let the wrapped colocalization description expand instead of clipping it, and
+  added the ROI-based percentage beside exact colocalized/ROI voxel counts in
+  the description, plot annotation, and tooltip. Empty ROIs report `n/a`.
+
 ## 0.11.0a2 - 2026-07-11
 
 - Corrected the package's Python requirement to 3.12 or newer, matching the

@@ -144,13 +144,16 @@ def thumbnail_contrast_limits(
     data_kind: str = "image",
 ) -> tuple[float, float] | None:
     """Return reusable thumbnail contrast limits for an image-like array."""
-    if data is None or str(data_kind or "").lower() in {
+    normalized_kind = str(data_kind or "").lower()
+    if data is None or normalized_kind in {
         "label",
         "labels",
         "label image",
         "table",
     }:
         return None
+    if normalized_kind == "mask":
+        return (0.0, 1.0)
     arr = np.asarray(data)
     if arr.size == 0:
         return (0.0, 0.0)

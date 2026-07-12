@@ -129,9 +129,9 @@ def test_otsu_red_channel_label_workflow_loads_and_runs():
     assert filtered.shape == labels.shape
     assert filtered.dtype == np.int32
     assert np.count_nonzero(filtered) < np.count_nonzero(cleared)
-    assert len(_label_volumes(labels)) == 4
-    assert len(_label_volumes(cleared)) == 3
-    assert len(_label_volumes(filtered)) == 2
+    assert len(_label_volumes(labels)) == 5
+    assert len(_label_volumes(cleared)) == 4
+    assert len(_label_volumes(filtered)) == 3
     assert min(_label_volumes(filtered).values()) >= 120
 
 

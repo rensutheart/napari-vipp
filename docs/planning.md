@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-12
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -56,7 +56,7 @@ later milestones.
 
 ## Current Public Baseline
 
-Current public release: `0.11.0a2`.
+Current public release: `0.11.0a3`.
 
 The 0.11 alpha is now the hardened PSF/restoration and
 microscope-import-foundation baseline on top of the 0.10 graph-readability and
@@ -195,7 +195,8 @@ Still needed:
 - generated OME-Zarr pyramids for exported image datasets;
 - label colors and label-property table round-tripping where practical;
 - preview-resolution controls for thumbnails and inspector views;
-- lazy/sampled histograms and thumbnails for large arrays;
+- lazy/chunked all-pixel histograms and pyramid-aware thumbnails for large
+  arrays, without changing operational results through hidden sampling;
 - operation capability declarations such as eager, lazy-safe, memory-heavy, and
   scale-aware;
 - warnings before eager-only nodes materialize very large lazy arrays;
@@ -247,7 +248,9 @@ Architecture requirements:
 - validate the patch locally, show its assumptions and graph diff, and require
   user approval before applying it;
 - expose only bounded, user-visible context such as metadata summaries,
-  thumbnails, sampled histograms, overlays, table previews, and known caveats;
+  thumbnails, explicitly labelled sampled context summaries, overlays, table
+  previews, and known caveats; never present a sampled context summary as an
+  operational VIPP histogram;
 - support hosted and local/private providers without arbitrary code execution;
 - record provider, model, context summary, validation result, and approval in
   workflow provenance for every applied patch.
@@ -314,6 +317,23 @@ Delivered:
   calculation;
 - cross-platform CI, package verification, community guidance, and
   reproducible documentation screenshot capture.
+
+### Released: 0.11.0a3 - Exact And Responsive Large-Image Analysis
+
+Theme: keep large-image scientific calculations exact while moving expensive
+inspection and pipeline work away from the Qt thread.
+
+Delivered:
+
+- exact bounded-memory threshold, percentile, metadata, contrast, and
+  colocalization calculations without hidden large-array sampling;
+- explicit dtype-faithful threshold, Rescale, and Clip behavior plus workflow
+  schema version 2 scientific parameters;
+- serialized background reruns, stale-result rejection, and responsive
+  histogram/label-volume cache reuse;
+- consistent split-channel inspection and clearer exact colocalization counts
+  with ROI percentages;
+- refreshed VIPP name, tagline, and reusable branding assets.
 
 ### Next: 0.12.0a1 - Batch Configuration And Provenance
 
