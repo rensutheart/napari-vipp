@@ -585,26 +585,72 @@ def bilateral_filter(
     diameter: int = 5,
     sigma_color: float = 5.0,
     sigma_space: float = 5.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Apply a slice-wise bilateral denoising filter."""
+    """Denoise planes with ``sigma_color`` in input intensity units.
+
+    One whole-array affine intensity scale is shared by every plane and inverted
+    on output. Data is scalar by default, even when its last dimension has length
+    3 or 4. Set ``channel_axis`` explicitly for multichannel data. Spatial
+    boundaries use reflection instead of artificial zeros.
+    """
     arr = np.asarray(data)
-    if arr.dtype == bool:
-        arr = arr.astype(np.float32)
-    sigma_color = _scaled_sigma_color(arr, sigma_color)
-    sigma_space = max(float(sigma_space), 0.01)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Bilateral filter",
+    )
+    diameter = _validated_odd_filter_size(
+        diameter,
+        operation="Bilateral filter",
+        name="diameter",
+        minimum=3,
+    )
+    sigma_color = _validated_filter_scale(
+        sigma_color,
+        operation="Bilateral filter",
+        name="sigma_color",
+        minimum=0.0,
+        inclusive=False,
+    )
+    sigma_space = _validated_filter_scale(
+        sigma_space,
+        operation="Bilateral filter",
+        name="sigma_space",
+        minimum=0.0,
+        inclusive=False,
+    )
+    unit_arr, intensity_scale = _to_float_unit(
+        arr,
+        operation="Bilateral filter",
+    )
+    unit_sigma_color = sigma_color / intensity_scale.span
+    if not np.isfinite(unit_sigma_color) or unit_sigma_color <= 0.0:
+        raise ValueError(
+            "Bilateral filter sigma_color is too small for the input intensity span."
+        )
 
     def filter_plane(plane: np.ndarray) -> np.ndarray:
-        plane_float = _to_float_unit(plane)
-        channel_axis = -1 if _has_channel_axis(plane_float) else None
         return restoration.denoise_bilateral(
-            plane_float,
-            win_size=_odd_size(diameter, minimum=3),
-            sigma_color=sigma_color,
+            plane,
+            win_size=diameter,
+            sigma_color=unit_sigma_color,
             sigma_spatial=sigma_space,
-            channel_axis=channel_axis,
-        ).astype(np.float32)
+            mode="reflect",
+            channel_axis=-1 if channel_axis is not None else None,
+        ).astype(unit_arr.dtype, copy=False)
 
-    return _restore_unit_float_dtype(_apply_plane_wise(arr, filter_plane), arr)
+    filtered = _apply_filter_plane_wise(
+        unit_arr,
+        filter_plane,
+        channel_axis=channel_axis,
+    )
+    return _restore_unit_float_dtype(
+        filtered,
+        arr,
+        intensity_scale,
+        operation="Bilateral filter",
+    )
 
 
 def difference_of_gaussians_filter(
@@ -626,24 +672,58 @@ def unsharp_mask_filter(
     data,
     radius: float = 1.0,
     amount: float = 1.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Sharpen image detail using skimage's unsharp mask per plane."""
+    """Sharpen planes while preserving the input float intensity units.
+
+    One whole-array affine intensity scale is shared by every plane and inverted
+    on output. Data is scalar by default, even when its last dimension has length
+    3 or 4. Set ``channel_axis`` explicitly for multichannel data. Float
+    sharpening overshoot is retained in the original units.
+    """
     arr = np.asarray(data)
-    radius = max(float(radius), 0.0)
-    amount = max(float(amount), 0.0)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Unsharp mask",
+    )
+    radius = _validated_filter_scale(
+        radius,
+        operation="Unsharp mask",
+        name="radius",
+        minimum=0.0,
+    )
+    amount = _validated_filter_scale(
+        amount,
+        operation="Unsharp mask",
+        name="amount",
+        minimum=0.0,
+    )
+    unit_arr, intensity_scale = _to_float_unit(
+        arr,
+        operation="Unsharp mask",
+    )
 
     def sharpen_plane(plane: np.ndarray) -> np.ndarray:
-        plane_float = _to_float_unit(plane)
-        channel_axis = -1 if _has_channel_axis(plane_float) else None
         return filters.unsharp_mask(
-            plane_float,
+            plane,
             radius=radius,
             amount=amount,
-            channel_axis=channel_axis,
-            preserve_range=False,
-        ).astype(np.float32)
+            channel_axis=-1 if channel_axis is not None else None,
+            preserve_range=True,
+        ).astype(unit_arr.dtype, copy=False)
 
-    return _restore_unit_float_dtype(_apply_plane_wise(arr, sharpen_plane), arr)
+    sharpened = _apply_filter_plane_wise(
+        unit_arr,
+        sharpen_plane,
+        channel_axis=channel_axis,
+    )
+    return _restore_unit_float_dtype(
+        sharpened,
+        arr,
+        intensity_scale,
+        operation="Unsharp mask",
+    )
 
 
 def rolling_ball_background(
@@ -710,26 +790,67 @@ def non_local_means_filter(
     patch_distance: int = 6,
     h: float = 0.08,
     fast_mode: bool = True,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Denoise image planes using skimage non-local means."""
+    """Denoise planes using one shared global intensity scale.
+
+    ``h`` is expressed on the normalized global scale: 1.0 is the full integer
+    dtype span, 1.0 for float data already in 0..1, or the whole-array finite
+    min-to-max span for other float data. Data is scalar by default, including
+    trailing dimensions of length 3 or 4. Set ``channel_axis`` explicitly for
+    multichannel data. Output is restored to input units.
+    """
     arr = np.asarray(data)
-    patch_size = _odd_size(patch_size, minimum=3)
-    patch_distance = max(int(patch_distance), 1)
-    h = max(float(h), 0.0)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Non-local means",
+    )
+    patch_size = _validated_odd_filter_size(
+        patch_size,
+        operation="Non-local means",
+        name="patch_size",
+        minimum=3,
+    )
+    patch_distance = _validated_filter_integer(
+        patch_distance,
+        operation="Non-local means",
+        name="patch_distance",
+        minimum=1,
+    )
+    h = _validated_filter_scale(
+        h,
+        operation="Non-local means",
+        name="h",
+        minimum=0.0,
+    )
+    unit_arr, intensity_scale = _to_float_unit(
+        arr,
+        operation="Non-local means",
+    )
 
     def denoise_plane(plane: np.ndarray) -> np.ndarray:
-        plane_float = _to_float_unit(plane)
-        channel_axis = -1 if _has_channel_axis(plane_float) else None
         return restoration.denoise_nl_means(
-            plane_float,
+            plane,
             patch_size=patch_size,
             patch_distance=patch_distance,
             h=h,
             fast_mode=bool(fast_mode),
-            channel_axis=channel_axis,
-        ).astype(np.float32)
+            preserve_range=True,
+            channel_axis=-1 if channel_axis is not None else None,
+        ).astype(unit_arr.dtype, copy=False)
 
-    return _restore_unit_float_dtype(_apply_plane_wise(arr, denoise_plane), arr)
+    denoised = _apply_filter_plane_wise(
+        unit_arr,
+        denoise_plane,
+        channel_axis=channel_axis,
+    )
+    return _restore_unit_float_dtype(
+        denoised,
+        arr,
+        intensity_scale,
+        operation="Non-local means",
+    )
 
 
 def sobel_filter(data) -> np.ndarray:
@@ -5811,6 +5932,42 @@ def _apply_plane_wise(arr: np.ndarray, func: Callable[[np.ndarray], np.ndarray])
     return out
 
 
+def _apply_filter_plane_wise(
+    arr: np.ndarray,
+    func: Callable[[np.ndarray], np.ndarray],
+    *,
+    channel_axis: int | None,
+) -> np.ndarray:
+    """Apply a filter to scalar YX or explicitly declared YXC planes."""
+    arr = np.asarray(arr)
+    if channel_axis is None:
+        working = arr
+        plane_ndim = 2
+    else:
+        working = np.moveaxis(arr, channel_axis, -1)
+        plane_ndim = 3
+
+    leading_shape = working.shape[: max(working.ndim - plane_ndim, 0)]
+    if not leading_shape:
+        filtered = np.asarray(func(working))
+    else:
+        sample = np.asarray(func(working[(0,) * len(leading_shape)]))
+        filtered = np.empty(leading_shape + sample.shape, dtype=sample.dtype)
+        filtered[(0,) * len(leading_shape)] = sample
+        for index in np.ndindex(leading_shape):
+            if all(i == 0 for i in index):
+                continue
+            filtered[index] = func(working[index])
+
+    if channel_axis is not None:
+        if filtered.ndim != arr.ndim:
+            raise ValueError(
+                "A multichannel plane filter must preserve the declared channel axis."
+            )
+        filtered = np.moveaxis(filtered, -1, channel_axis)
+    return np.ascontiguousarray(filtered)
+
+
 def _apply_spatial_blocks(
     arr: np.ndarray,
     spatial_ndim: int,
@@ -10310,45 +10467,151 @@ def _restore_numeric_dtype(values: np.ndarray, original: np.ndarray) -> np.ndarr
     return values.astype(original.dtype, copy=False)
 
 
-def _restore_unit_float_dtype(values: np.ndarray, original: np.ndarray) -> np.ndarray:
-    values = np.nan_to_num(
-        np.clip(np.asarray(values), 0.0, 1.0),
-        nan=0.0,
-        posinf=1.0,
-        neginf=0.0,
-    )
+@dataclass(frozen=True)
+class _UnitIntensityScale:
+    offset: float
+    span: float
+
+
+def _restore_unit_float_dtype(
+    values: np.ndarray,
+    original: np.ndarray,
+    intensity_scale: _UnitIntensityScale,
+    *,
+    operation: str,
+) -> np.ndarray:
+    values = np.asarray(values)
+    if not np.isfinite(values).all():
+        raise ValueError(f"{operation} produced non-finite output intensities.")
+    restored = values * intensity_scale.span + intensity_scale.offset
     if original.dtype == bool:
-        return values > 0.5
+        return restored > 0.5
     if np.issubdtype(original.dtype, np.integer):
-        info = np.iinfo(original.dtype)
-        scaled = values * float(info.max)
-        return _restore_numeric_dtype(scaled, original)
+        return _restore_numeric_dtype(restored, original)
     if np.issubdtype(original.dtype, np.floating):
-        return values.astype(original.dtype, copy=False)
-    return values.astype(original.dtype, copy=False)
+        return restored.astype(original.dtype, copy=False)
+    return restored.astype(original.dtype, copy=False)
 
 
-def _to_float_unit(arr: np.ndarray) -> np.ndarray:
+def _to_float_unit(
+    arr: np.ndarray,
+    *,
+    operation: str,
+) -> tuple[np.ndarray, _UnitIntensityScale]:
+    """Map one complete input to a shared unit scale without modifying it."""
     arr = np.asarray(arr)
+    if arr.size == 0:
+        raise ValueError(f"{operation} requires non-empty image data.")
+    work_dtype = np.float64 if arr.dtype == np.float64 else np.float32
+    try:
+        values = arr.astype(work_dtype, copy=True)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{operation} requires numeric image data.") from exc
+    if not np.isfinite(values).all():
+        raise ValueError(f"{operation} requires finite image intensities.")
+
     if arr.dtype == bool:
-        return arr.astype(np.float32)
-    if np.issubdtype(arr.dtype, np.integer):
-        return arr.astype(np.float32) / float(np.iinfo(arr.dtype).max)
-    values = arr.astype(np.float32, copy=False)
-    finite = values[np.isfinite(values)]
-    if finite.size and (finite.min() < 0.0 or finite.max() > 1.0):
-        lo = float(finite.min())
-        hi = float(finite.max())
-        if hi > lo:
-            values = (values - lo) / (hi - lo)
-    return np.clip(values, 0, 1)
+        offset = 0.0
+        span = 1.0
+    elif np.issubdtype(arr.dtype, np.integer):
+        info = np.iinfo(arr.dtype)
+        offset = float(info.min)
+        span = float(info.max) - offset
+    else:
+        minimum = float(np.min(values))
+        maximum = float(np.max(values))
+        if 0.0 <= minimum and maximum <= 1.0:
+            offset = 0.0
+            span = 1.0
+        else:
+            offset = minimum
+            span = maximum - minimum if maximum > minimum else 1.0
+    if not np.isfinite(offset) or not np.isfinite(span) or span <= 0.0:
+        raise ValueError(f"{operation} could not resolve a finite intensity span.")
+
+    values -= offset
+    values /= span
+    np.clip(values, 0.0, 1.0, out=values)
+    return values, _UnitIntensityScale(offset=offset, span=span)
 
 
-def _scaled_sigma_color(arr: np.ndarray, sigma_color: float) -> float:
-    sigma = max(float(sigma_color), 0.001)
-    if np.issubdtype(arr.dtype, np.integer):
-        return sigma / float(np.iinfo(arr.dtype).max)
-    return sigma
+def _validated_filter_channel_axis(
+    value,
+    ndim: int,
+    *,
+    operation: str,
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{operation} channel_axis must be an integer or None.")
+    if ndim < 3:
+        raise ValueError(
+            f"{operation} requires at least two spatial dimensions when "
+            "channel_axis is set."
+        )
+    axis = int(value)
+    if axis < -ndim or axis >= ndim:
+        raise ValueError(
+            f"{operation} channel_axis {axis} is out of range for {ndim}D input."
+        )
+    return axis % ndim
+
+
+def _validated_filter_scale(
+    value,
+    *,
+    operation: str,
+    name: str,
+    minimum: float,
+    inclusive: bool = True,
+) -> float:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{operation} {name} must be a finite number.") from exc
+    if not np.isfinite(resolved):
+        raise ValueError(f"{operation} {name} must be a finite number.")
+    valid = resolved >= minimum if inclusive else resolved > minimum
+    if not valid:
+        comparison = "at least" if inclusive else "greater than"
+        raise ValueError(
+            f"{operation} {name} must be {comparison} {minimum:g}."
+        )
+    return resolved
+
+
+def _validated_filter_integer(
+    value,
+    *,
+    operation: str,
+    name: str,
+    minimum: int,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{operation} {name} must be an integer.")
+    resolved = int(value)
+    if resolved < minimum:
+        raise ValueError(f"{operation} {name} must be at least {minimum}.")
+    return resolved
+
+
+def _validated_odd_filter_size(
+    value,
+    *,
+    operation: str,
+    name: str,
+    minimum: int,
+) -> int:
+    resolved = _validated_filter_integer(
+        value,
+        operation=operation,
+        name=name,
+        minimum=minimum,
+    )
+    if resolved % 2 == 0:
+        raise ValueError(f"{operation} {name} must be odd; got {resolved}.")
+    return resolved
 
 
 def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:

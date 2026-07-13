@@ -615,6 +615,30 @@ _EXPLICIT_CHANNEL_AXIS_OPERATIONS = {
     "extract_channel",
     "split_channels",
 }
+SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
+    {
+        "bilateral_filter",
+        "non_local_means_filter",
+        "unsharp_mask",
+    }
+)
+
+
+def operation_call_parameter_value(
+    operation_id: str,
+    name: str,
+    value: Any,
+) -> Any:
+    """Translate persisted UI sentinels to the direct operation API contract."""
+    if (
+        operation_id in SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS
+        and name == "channel_axis"
+        and isinstance(value, Integral)
+        and not isinstance(value, bool)
+        and int(value) == -1
+    ):
+        return None
+    return value
 
 
 DEFAULT_DYNAMIC_OUTPUT_PORTS = 3
@@ -1062,6 +1086,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.1,
                 2,
             ),
+            ParameterSpec(
+                "channel_axis",
+                "Channel axis (-1 = none)",
+                "int",
+                -1,
+                -1,
+                64,
+                1,
+            ),
         ),
         bilateral_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1078,6 +1111,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("patch_distance", "Patch distance", "int", 6, 1, 20, 1),
             ParameterSpec("h", "Filter strength", "float", 0.08, 0.0, 1.0, 0.01, 3),
             ParameterSpec("fast_mode", "Fast mode", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "channel_axis",
+                "Channel axis (-1 = none)",
+                "int",
+                -1,
+                -1,
+                64,
+                1,
+            ),
         ),
         non_local_means_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1185,6 +1227,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("radius", "Radius", "float", 1.0, 0.0, 50.0, 0.1, 2),
             ParameterSpec("amount", "Amount", "float", 1.0, 0.0, 10.0, 0.1, 2),
+            ParameterSpec(
+                "channel_axis",
+                "Channel axis (-1 = none)",
+                "int",
+                -1,
+                -1,
+                64,
+                1,
+            ),
         ),
         unsharp_mask_filter,
         subcategory=EDGE_DETAIL_GROUP,
@@ -4996,7 +5047,14 @@ class PrototypePipeline:
                 value,
                 context=f"Node {node.id!r} parameter",
             )
-        return kwargs
+        return {
+            name: operation_call_parameter_value(
+                node.operation_id,
+                name,
+                value,
+            )
+            for name, value in kwargs.items()
+        }
 
     def _sync_born_wolf_psf_resolution(
         self,

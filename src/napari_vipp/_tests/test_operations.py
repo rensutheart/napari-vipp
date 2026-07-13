@@ -2640,6 +2640,392 @@ def test_additional_filter_nodes_preserve_shape():
     assert not np.allclose(laplace, 0)
 
 
+def _different_range_filter_stack(dtype=np.float32):
+    rng = np.random.default_rng(3)
+    first = 100.0 + 50.0 * rng.random((12, 13))
+    return np.stack((first, first + 1_000.0)).astype(dtype)
+
+
+@pytest.mark.parametrize("x_size", (3, 4))
+@pytest.mark.parametrize(
+    ("operation", "module", "function_name", "kwargs"),
+    (
+        pytest.param(
+            bilateral_filter,
+            operations.restoration,
+            "denoise_bilateral",
+            {"diameter": 3, "sigma_color": 5.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            unsharp_mask_filter,
+            operations.filters,
+            "unsharp_mask",
+            {"radius": 1.0, "amount": 0.5},
+            id="unsharp",
+        ),
+        pytest.param(
+            non_local_means_filter,
+            operations.restoration,
+            "denoise_nl_means",
+            {"patch_size": 3, "patch_distance": 1, "h": 0.05},
+            id="non-local-means",
+        ),
+    ),
+)
+def test_denoising_filters_treat_rgb_sized_x_as_scalar_by_default(
+    monkeypatch,
+    operation,
+    module,
+    function_name,
+    kwargs,
+    x_size,
+):
+    calls = []
+
+    def record_filter(image, **filter_kwargs):
+        calls.append((tuple(image.shape), filter_kwargs.get("channel_axis")))
+        return np.asarray(image).copy()
+
+    monkeypatch.setattr(module, function_name, record_filter)
+    data = np.arange(2 * 5 * x_size, dtype=np.float32).reshape(2, 5, x_size)
+
+    result = operation(data, **kwargs)
+
+    assert calls == [((5, x_size), None), ((5, x_size), None)]
+    np.testing.assert_allclose(result, data, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "module", "function_name", "kwargs"),
+    (
+        pytest.param(
+            bilateral_filter,
+            operations.restoration,
+            "denoise_bilateral",
+            {"diameter": 3, "sigma_color": 5.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            unsharp_mask_filter,
+            operations.filters,
+            "unsharp_mask",
+            {"radius": 1.0, "amount": 0.5},
+            id="unsharp",
+        ),
+        pytest.param(
+            non_local_means_filter,
+            operations.restoration,
+            "denoise_nl_means",
+            {"patch_size": 3, "patch_distance": 1, "h": 0.05},
+            id="non-local-means",
+        ),
+    ),
+)
+def test_denoising_filters_use_declared_yxc_channel_axis_only(
+    monkeypatch,
+    operation,
+    module,
+    function_name,
+    kwargs,
+):
+    calls = []
+
+    def record_filter(image, **filter_kwargs):
+        calls.append((tuple(image.shape), filter_kwargs.get("channel_axis")))
+        return np.asarray(image).copy()
+
+    monkeypatch.setattr(module, function_name, record_filter)
+    data = np.arange(5 * 4 * 3, dtype=np.float32).reshape(5, 4, 3)
+
+    scalar_result = operation(data, **kwargs)
+    scalar_calls = list(calls)
+    calls.clear()
+    color_result = operation(data, channel_axis=2, **kwargs)
+
+    assert scalar_calls == [((4, 3), None)] * 5
+    assert calls == [((5, 4, 3), -1)]
+    np.testing.assert_allclose(scalar_result, data, rtol=1e-6, atol=1e-6)
+    np.testing.assert_allclose(color_result, data, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "module", "function_name", "kwargs"),
+    (
+        pytest.param(
+            bilateral_filter,
+            operations.restoration,
+            "denoise_bilateral",
+            {"diameter": 3, "sigma_color": 5.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            unsharp_mask_filter,
+            operations.filters,
+            "unsharp_mask",
+            {"radius": 1.0, "amount": 0.5},
+            id="unsharp",
+        ),
+        pytest.param(
+            non_local_means_filter,
+            operations.restoration,
+            "denoise_nl_means",
+            {"patch_size": 3, "patch_distance": 1, "h": 0.05},
+            id="non-local-means",
+        ),
+    ),
+)
+def test_denoising_filters_restore_nontrailing_channel_axis(
+    monkeypatch,
+    operation,
+    module,
+    function_name,
+    kwargs,
+):
+    calls = []
+
+    def record_filter(image, **filter_kwargs):
+        calls.append((tuple(image.shape), filter_kwargs.get("channel_axis")))
+        return np.asarray(image).copy()
+
+    monkeypatch.setattr(module, function_name, record_filter)
+    data = np.arange(3 * 5 * 4, dtype=np.float32).reshape(3, 5, 4)
+    original = data.copy()
+
+    result = operation(data, channel_axis=0, **kwargs)
+
+    assert calls == [((5, 4, 3), -1)]
+    assert result.shape == data.shape
+    np.testing.assert_allclose(result, data, rtol=1e-6, atol=1e-6)
+    np.testing.assert_array_equal(data, original)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (bilateral_filter, unsharp_mask_filter, non_local_means_filter),
+)
+@pytest.mark.parametrize("channel_axis", (3, -4))
+def test_denoising_filters_reject_out_of_range_channel_axis(
+    operation,
+    channel_axis,
+):
+    data = np.zeros((2, 5, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="channel_axis .* is out of range"):
+        operation(data, channel_axis=channel_axis)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (bilateral_filter, unsharp_mask_filter, non_local_means_filter),
+)
+@pytest.mark.parametrize("channel_axis", (True, 1.5, "2"))
+def test_denoising_filters_reject_noninteger_channel_axis(
+    operation,
+    channel_axis,
+):
+    data = np.zeros((2, 5, 4), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="channel_axis must be an integer or None"):
+        operation(data, channel_axis=channel_axis)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (bilateral_filter, unsharp_mask_filter, non_local_means_filter),
+)
+def test_denoising_filters_require_two_spatial_axes_for_channel_data(operation):
+    data = np.zeros((5, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="requires at least two spatial dimensions"):
+        operation(data, channel_axis=1)
+
+
+@pytest.mark.parametrize("dtype", (np.float32, np.float64))
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    (
+        pytest.param(
+            bilateral_filter,
+            {"diameter": 3, "sigma_color": 10.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            unsharp_mask_filter,
+            {"radius": 1.0, "amount": 0.5},
+            id="unsharp",
+        ),
+        pytest.param(
+            non_local_means_filter,
+            {
+                "patch_size": 3,
+                "patch_distance": 2,
+                "h": 0.05,
+                "fast_mode": True,
+            },
+            id="non-local-means",
+        ),
+    ),
+)
+def test_denoising_filters_preserve_float_scale_across_planes(
+    operation,
+    kwargs,
+    dtype,
+):
+    data = _different_range_filter_stack(dtype)
+    original = data.copy()
+
+    result = operation(data, **kwargs)
+
+    assert result.dtype == dtype
+    assert result[0].min() > 50.0
+    assert result[1].min() > 1_050.0
+    np.testing.assert_allclose(result[1] - result[0], 1_000.0, atol=0.2)
+    np.testing.assert_array_equal(data, original)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    (
+        pytest.param(
+            bilateral_filter,
+            {"diameter": 3, "sigma_color": 5.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            unsharp_mask_filter,
+            {"radius": 1.0, "amount": 1.0},
+            id="unsharp",
+        ),
+        pytest.param(
+            non_local_means_filter,
+            {"patch_size": 3, "patch_distance": 2, "h": 0.05},
+            id="non-local-means",
+        ),
+    ),
+)
+@pytest.mark.parametrize("value", (-10.0, 100.0))
+def test_denoising_filters_preserve_constant_float_outside_unit_range(
+    operation,
+    kwargs,
+    value,
+):
+    data = np.full((2, 8, 8), value, dtype=np.float32)
+
+    result = operation(data, **kwargs)
+
+    np.testing.assert_array_equal(result, data)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "operation", "params"),
+    (
+        pytest.param(
+            "bilateral_filter",
+            bilateral_filter,
+            {"diameter": 3, "sigma_color": 10.0, "sigma_space": 1.0},
+            id="bilateral",
+        ),
+        pytest.param(
+            "unsharp_mask",
+            unsharp_mask_filter,
+            {"radius": 1.0, "amount": 0.5},
+            id="unsharp",
+        ),
+        pytest.param(
+            "non_local_means_filter",
+            non_local_means_filter,
+            {
+                "patch_size": 3,
+                "patch_distance": 2,
+                "h": 0.05,
+                "fast_mode": True,
+            },
+            id="non-local-means",
+        ),
+    ),
+)
+def test_pipeline_denoising_filters_preserve_float_scale(
+    operation_id,
+    operation,
+    params,
+):
+    data = _different_range_filter_stack()
+    original = data.copy()
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+    pipeline.connect("input", node.id)
+    for name, value in params.items():
+        pipeline.set_param(node.id, name, value)
+
+    result = pipeline.run(data)[node.id]
+
+    np.testing.assert_allclose(result, operation(data, **params), rtol=1e-6, atol=1e-5)
+    np.testing.assert_allclose(result[1] - result[0], 1_000.0, atol=0.2)
+    np.testing.assert_array_equal(data, original)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs", "message"),
+    (
+        (bilateral_filter, {"diameter": 4}, "diameter must be odd"),
+        (
+            bilateral_filter,
+            {"sigma_color": np.nan},
+            "sigma_color must be a finite number",
+        ),
+        (
+            bilateral_filter,
+            {"sigma_color": 0.0},
+            "sigma_color must be greater than 0",
+        ),
+        (
+            bilateral_filter,
+            {"sigma_space": np.inf},
+            "sigma_space must be a finite number",
+        ),
+        (
+            bilateral_filter,
+            {"sigma_space": 0.0},
+            "sigma_space must be greater than 0",
+        ),
+        (unsharp_mask_filter, {"radius": np.nan}, "radius must be a finite number"),
+        (unsharp_mask_filter, {"radius": -1.0}, "radius must be at least 0"),
+        (unsharp_mask_filter, {"amount": np.inf}, "amount must be a finite number"),
+        (unsharp_mask_filter, {"amount": -1.0}, "amount must be at least 0"),
+        (non_local_means_filter, {"patch_size": 4}, "patch_size must be odd"),
+        (
+            non_local_means_filter,
+            {"patch_distance": 0},
+            "patch_distance must be at least 1",
+        ),
+        (non_local_means_filter, {"h": np.nan}, "h must be a finite number"),
+        (non_local_means_filter, {"h": -0.1}, "h must be at least 0"),
+    ),
+)
+def test_denoising_filters_reject_invalid_scale_parameters(
+    operation,
+    kwargs,
+    message,
+):
+    data = np.zeros((8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        operation(data, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (bilateral_filter, unsharp_mask_filter, non_local_means_filter),
+)
+def test_denoising_filters_reject_nonfinite_image_intensities(operation):
+    data = np.zeros((8, 8), dtype=np.float32)
+    data[3, 4] = np.nan
+
+    with pytest.raises(ValueError, match="requires finite image intensities"):
+        operation(data)
+
+
 @pytest.mark.parametrize(
     ("low_sigma", "high_sigma", "message"),
     (
@@ -2937,7 +3323,11 @@ def test_hysteresis_accepts_finite_native_intensity_thresholds():
         ),
         (
             "hysteresis_threshold",
-            {"low_threshold": 0.8, "high_threshold": 0.4},
+            {
+                "low_threshold": 0.8,
+                "high_threshold": 0.4,
+                "spatial_mode": "2D YX",
+            },
             "Hysteresis low threshold .* must not exceed",
         ),
         (
@@ -3161,7 +3551,7 @@ def test_set_pixel_size_updates_spatial_axis_metadata_and_pipeline_projection():
     pipeline.set_param(pixel_size.id, "z_size", 2.0)
     pipeline.connect("input", pixel_size.id)
     pipeline.connect(pixel_size.id, projection.id)
-    pipeline.run(data)
+    pipeline.run(data, input_metadata={"axes": "ZYX"})
 
     assert pipeline.outputs[projection.id].shape == (11, 13)
     assert [axis.scale for axis in pipeline.output_states[projection.id].axes] == [
