@@ -111,14 +111,17 @@ from napari_vipp.core.workflow import save_workflow
 
 class _Event:
     def __init__(self):
-        self.callback = None
+        self.callbacks = []
 
     def connect(self, callback):
-        self.callback = callback
+        self.callbacks.append(callback)
+
+    def disconnect(self, callback):
+        self.callbacks.remove(callback)
 
     def emit(self):
-        if self.callback is not None:
-            self.callback()
+        for callback in tuple(self.callbacks):
+            callback()
 
 
 class _QueuedThreadPool:
@@ -139,6 +142,25 @@ class _DimsEvents:
     def __init__(self):
         self.current_step = _Event()
         self.point = _Event()
+
+
+class _SourceEvents:
+    def __init__(self):
+        for name in (
+            "data",
+            "set_data",
+            "metadata",
+            "name",
+            "scale",
+            "translate",
+            "rotate",
+            "shear",
+            "affine",
+            "units",
+            "axis_labels",
+            "labels_update",
+        ):
+            setattr(self, name, _Event())
 
 
 class _Dims:
@@ -176,7 +198,14 @@ class _Layer:
         self.visible = True
         self.rgb = False
         self.scale = None
+        self.translate = None
+        self.rotate = None
+        self.shear = None
+        self.affine = None
+        self.units = None
+        self.axis_labels = None
         self.editable = True
+        self.events = _SourceEvents()
 
 
 class _LayerList(list):
@@ -705,6 +734,132 @@ def test_image_source_node_can_select_napari_layer(qtbot):
     assert widget.pipeline.nodes["input"].params["layer_name"] == "second layer"
     assert widget.pipeline.outputs["input"].shape == second.shape
     assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
+
+
+def test_live_napari_source_uses_one_owned_read_only_revision(qtbot):
+    data = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    source_output = widget.pipeline.outputs["input"]
+    first_payload, _layer = widget._resolve_source_payload(
+        widget.pipeline.nodes["input"]
+    )
+    second_payload, _layer = widget._resolve_source_payload(
+        widget.pipeline.nodes["input"]
+    )
+
+    assert first_payload is not None
+    assert second_payload is not None
+    assert first_payload.data is second_payload.data
+    assert source_output is first_payload.data
+    assert not np.shares_memory(source_output, data)
+    assert not source_output.flags.writeable
+    expected = source_output.copy()
+    data[:] = 0
+    np.testing.assert_array_equal(source_output, expected)
+
+
+def test_live_source_data_event_advances_revision_and_recalculates(qtbot):
+    original = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    viewer = _Viewer(original, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    layer = viewer.layers["input volume"]
+    old_output = widget.pipeline.outputs["input"]
+    old_signature = widget._last_pipeline_source_signature
+
+    replacement = np.full((4, 5), 17, dtype=np.uint16)
+    layer.data = replacement
+    layer.events.data.emit()
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    updated = widget.pipeline.outputs["input"]
+    assert updated is not old_output
+    assert widget._last_pipeline_source_signature != old_signature
+    assert not np.shares_memory(updated, replacement)
+    assert not updated.flags.writeable
+    np.testing.assert_array_equal(updated, replacement)
+
+
+def test_explicit_refresh_captures_direct_live_array_mutation(qtbot):
+    live_data = np.zeros((4, 5), dtype=np.uint8)
+    viewer = _Viewer(live_data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    old_output = widget.pipeline.outputs["input"]
+
+    live_data[:] = 31
+    widget._refresh_and_run()
+
+    updated = widget.pipeline.outputs["input"]
+    assert updated is not old_output
+    assert not np.shares_memory(updated, live_data)
+    np.testing.assert_array_equal(updated, live_data)
+
+
+def test_live_napari_scale_translation_and_units_enter_image_state(qtbot):
+    viewer = _Viewer(
+        np.zeros((4, 5), dtype=np.float32),
+        metadata={"axes": "YX"},
+    )
+    layer = viewer.layers["input volume"]
+    layer.scale = (0.5, 0.25)
+    layer.translate = (10.0, 20.0)
+    layer.units = ("micrometer", "micrometer")
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    state = widget.pipeline.output_states["input"]
+
+    assert tuple(axis.scale for axis in state.axes) == (0.5, 0.25)
+    assert tuple(axis.translation for axis in state.axes) == (10.0, 20.0)
+    assert tuple(axis.unit for axis in state.axes) == (
+        "micrometer",
+        "micrometer",
+    )
+    assert "napari layer transform" in state.metadata_source
+
+
+def test_live_napari_rotation_is_rejected_instead_of_discarded(qtbot):
+    viewer = _Viewer(
+        np.zeros((4, 5), dtype=np.float32),
+        metadata={"axes": "YX"},
+    )
+    viewer.layers["input volume"].rotate = (
+        (0.0, -1.0),
+        (1.0, 0.0),
+    )
+
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert "has rotation" in widget.status_label.text()
+    assert "does not silently discard" in widget.status_label.text()
+    assert widget.pipeline.outputs.get("input") is None
+
+
+def test_replacing_bound_layer_object_recalculates_same_named_source(qtbot):
+    viewer = _Viewer(np.zeros((4, 5), dtype=np.uint8), metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    old_layer = viewer.layers["input volume"]
+    replacement_data = np.full((4, 5), 9, dtype=np.uint8)
+    replacement = _Layer(
+        replacement_data,
+        "input volume",
+        metadata={"axes": "YX"},
+    )
+
+    viewer.layers.remove(old_layer)
+    viewer.layers.append(replacement)
+    viewer.layers.events.removed.emit()
+
+    output = widget.pipeline.outputs["input"]
+    assert not np.shares_memory(output, replacement_data)
+    np.testing.assert_array_equal(output, replacement_data)
 
 
 def test_image_source_mode_change_autoselects_napari_layer(qtbot):
@@ -2608,9 +2763,10 @@ def test_large_input_histogram_reuses_distribution_for_marker_drag(
 
     calls = {"count": 0}
     original = _histogram_summary
+    scientific_input = widget.pipeline.outputs["input"]
 
     def counted_histogram(*args, **kwargs):
-        if args and args[0] is data:
+        if args and args[0] is scientific_input:
             calls["count"] += 1
         return original(*args, **kwargs)
 
@@ -2641,7 +2797,8 @@ def test_large_input_histogram_reuses_distribution_for_marker_drag(
 
     widget.run_pipeline(force_sync=True)
 
-    assert widget.pipeline.input_data_for_node(node.id) is data
+    assert widget.pipeline.input_data_for_node(node.id) is scientific_input
+    assert not np.shares_memory(scientific_input, data)
     assert calls["count"] == 1
     assert {
         label: value
@@ -5229,6 +5386,52 @@ def test_large_viewer_source_defers_exact_metadata_until_background(qtbot, monke
 
     assert state.value_range == "pending exact background calculation"
     assert state.value_pattern == ""
+
+
+def test_background_result_from_old_live_source_revision_is_rejected(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.background_all_checkbox.setChecked(True)
+    widget._mark_pipeline_dirty("input")
+    widget.run_pipeline()
+
+    run_id = widget._active_pipeline_run_id
+    assert run_id is not None
+    request = pool.workers[-1].request
+    assert request.source_revisions
+    applied = []
+    reruns = []
+    monkeypatch.setattr(
+        widget,
+        "_apply_pipeline_run_result",
+        lambda *_args, **_kwargs: applied.append("applied"),
+    )
+    monkeypatch.setattr(widget, "run_pipeline", lambda: reruns.append("run"))
+
+    source_layer = viewer.layers["input volume"]
+    source_layer.data = np.full((8, 8), 23, dtype=np.uint8)
+    source_layer.events.data.emit()
+    widget._debounce_timer.stop()
+
+    assert widget._pipeline_cancel_events[run_id].is_set()
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(
+            run_id,
+            request.workflow,
+            widget.pipeline,
+            source_revisions=request.source_revisions,
+        )
+    )
+
+    assert applied == []
+    assert "old live-source revision" in widget.status_label.text()
+    qtbot.waitUntil(lambda: reruns == ["run"], timeout=5_000)
 
 
 def test_slow_pipeline_run_shows_busy_indicator(qtbot):

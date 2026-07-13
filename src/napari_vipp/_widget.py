@@ -301,6 +301,12 @@ from napari_vipp.ui.search import (
     _fuzzy_token_match as _fuzzy_token_match,
 )
 from napari_vipp.ui.search import _normalize_search_text
+from napari_vipp.ui.source_adapter import (
+    LiveLayerSnapshot,
+    LiveLayerSourceAdapter,
+    SourceRevisionToken,
+    apply_live_layer_axis_transform,
+)
 
 _RGB_VOLUME_CHANNELS = (
     (0, "Red", "red"),
@@ -415,6 +421,7 @@ class PipelineRunRequest:
     retain_node_ids: frozenset[str] = frozenset()
     prune_unretained: bool = False
     cancel_event: threading.Event | None = None
+    source_revisions: tuple[SourceRevisionToken, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -424,6 +431,7 @@ class PipelineRunResult:
     pipeline: PrototypePipeline | None = None
     error: str = ""
     cancelled: bool = False
+    source_revisions: tuple[SourceRevisionToken, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1011,6 +1019,7 @@ class PipelineRunWorker(QRunnable):
                     self.request.workflow,
                     error=str(exc),
                     cancelled=True,
+                    source_revisions=self.request.source_revisions,
                 )
             )
             return
@@ -1020,11 +1029,17 @@ class PipelineRunWorker(QRunnable):
                     self.request.run_id,
                     self.request.workflow,
                     error=str(exc),
+                    source_revisions=self.request.source_revisions,
                 )
             )
             return
         self.signals.finished.emit(
-            PipelineRunResult(self.request.run_id, self.request.workflow, pipeline)
+            PipelineRunResult(
+                self.request.run_id,
+                self.request.workflow,
+                pipeline,
+                source_revisions=self.request.source_revisions,
+            )
         )
 
     def _emit_node_started(self, node_id: str) -> None:
@@ -2707,6 +2722,10 @@ class VippWidget(QWidget):
         self.viewer = viewer
         self._closing = False
         self._lifecycle = WidgetLifecycle(self)
+        self._live_source_adapter = LiveLayerSourceAdapter(
+            self._on_live_source_invalidated
+        )
+        self._live_source_node_layers: dict[str, object] = {}
         self.pipeline = PrototypePipeline()
         self._selected_node_id = "gaussian"
         self._active_pinned_node_id: str | None = None
@@ -6185,6 +6204,12 @@ class VippWidget(QWidget):
         return candidate
 
     def _refresh_and_run(self) -> None:
+        refreshed_layer_ids: set[int] = set()
+        for layer in self._live_source_node_layers.values():
+            if id(layer) in refreshed_layer_ids:
+                continue
+            refreshed_layer_ids.add(id(layer))
+            self._live_source_adapter.invalidate(layer, notify=False)
         self._invalidate_pipeline_cache()
         self._autobind_default_image_sources()
         self._refresh_image_source_controls()
@@ -6258,8 +6283,20 @@ class VippWidget(QWidget):
                         (
                             node_id,
                             payload.name,
-                            id(payload.data),
-                            id(payload.metadata),
+                            (
+                                "revision",
+                                payload.revision_token.layer_id,
+                                payload.revision_token.revision,
+                            )
+                            if isinstance(
+                                payload.revision_token,
+                                SourceRevisionToken,
+                            )
+                            else (
+                                "object",
+                                id(payload.data),
+                                id(payload.metadata),
+                            ),
                         )
                         for node_id, payload in source_payloads.items()
                     )
@@ -6563,9 +6600,58 @@ class VippWidget(QWidget):
         if self._closing:
             return
         changed_node_ids = self._autobind_default_image_sources()
+        changed_node_ids.update(self._changed_live_source_bindings())
         self._refresh_image_source_controls()
         if changed_node_ids and self._mark_pipeline_branches_dirty(changed_node_ids):
             self.run_pipeline()
+
+    def _changed_live_source_bindings(self) -> set[str]:
+        changed: set[str] = set()
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input":
+                continue
+            if str(node.params.get("source_mode", "napari layer")) != "napari layer":
+                continue
+            layer_name = str(node.params.get("layer_name", "")).strip()
+            if not layer_name:
+                layer_name = self._default_input_layer_name()
+            current = self._layer_by_name(layer_name) if layer_name else None
+            previous = self._live_source_node_layers.get(node_id)
+            if current is not previous:
+                changed.add(node_id)
+        return changed
+
+    def _on_live_source_invalidated(self, layer) -> None:
+        if self._closing:
+            return
+        node_ids = {
+            node_id
+            for node_id, bound_layer in self._live_source_node_layers.items()
+            if bound_layer is layer and node_id in self.pipeline.nodes
+        }
+        if not node_ids or not self._mark_pipeline_branches_dirty(node_ids):
+            return
+        self._clear_input_histogram_cache()
+        self._clear_output_histogram_cache()
+        self._label_volume_cache.clear()
+        self._clear_generated_layer_contrast_state()
+        active_run_id = self._active_pipeline_run_id
+        if active_run_id is not None:
+            self._pipeline_run_pending = True
+            active_node_id = self._active_pipeline_node_id
+            if self._dirty_nodes_affect_node(node_ids, active_node_id):
+                cancel_event = self._pipeline_cancel_events.get(active_run_id)
+                if cancel_event is not None:
+                    cancel_event.set()
+            self._set_pipeline_busy(
+                True,
+                active_node_id,
+                queued=True,
+            )
+        self.status_label.setText(
+            "Live source changed; queued a calculation from the new revision."
+        )
+        self._debounce_timer.start()
 
     def _autobind_default_image_sources(self) -> set[str]:
         default_layer_name = self._default_input_layer_name()
@@ -6745,6 +6831,7 @@ class VippWidget(QWidget):
     ) -> tuple[dict[str, SourcePayload], list[object]]:
         payloads: dict[str, SourcePayload] = {}
         layers: list[object] = []
+        live_bindings: dict[str, object] = {}
         for node_id, node in self.pipeline.nodes.items():
             if node.operation_id != "input":
                 continue
@@ -6753,6 +6840,9 @@ class VippWidget(QWidget):
                 payloads[node_id] = payload
             if layer is not None:
                 layers.append(layer)
+                live_bindings[node_id] = layer
+        self._live_source_adapter.sync_layers(layers)
+        self._live_source_node_layers = live_bindings
         return payloads, layers
 
     def _resolve_source_payload(
@@ -6803,15 +6893,21 @@ class VippWidget(QWidget):
         layer = self._layer_by_name(layer_name) if layer_name else None
         if layer is None:
             return None, None
-        data = layer.data
-        metadata = getattr(layer, "metadata", None)
-        name = getattr(layer, "name", "")
+        snapshot = self._live_source_adapter.snapshot(layer)
+        if not snapshot.data_is_detached:
+            raise ValueError(
+                f"Live napari source '{snapshot.name}' uses "
+                f"{type(snapshot.data).__name__} data that VIPP cannot detach "
+                "into a stable scientific revision. Materialize it as a NumPy "
+                "layer or use an immutable file source before calculating."
+            )
         return (
             SourcePayload(
-                data,
-                metadata,
-                name,
-                self._viewer_aligned_image_state(data, metadata, str(name)),
+                snapshot.data,
+                snapshot.metadata,
+                snapshot.name,
+                self._viewer_aligned_live_layer_state(snapshot),
+                snapshot.token,
             ),
             layer,
         )
@@ -6862,6 +6958,16 @@ class VippWidget(QWidget):
             source_name=name,
             defer_statistics=_should_auto_background_data(data),
         )
+        return self._viewer_aligned_state(state)
+
+    def _viewer_aligned_live_layer_state(self, snapshot: LiveLayerSnapshot):
+        state = image_state_from_array(
+            snapshot.data,
+            layer_metadata=snapshot.metadata,
+            source_name=snapshot.name,
+            defer_statistics=_should_auto_background_data(snapshot.data),
+        )
+        state = apply_live_layer_axis_transform(state, snapshot)
         return self._viewer_aligned_state(state)
 
     def _viewer_aligned_state(self, state):
@@ -11498,6 +11604,16 @@ class VippWidget(QWidget):
             retain_node_ids=frozenset(self._cache_retention_node_ids()),
             prune_unretained=self._cache_pruning_enabled(),
             cancel_event=cancel_event,
+            source_revisions=tuple(
+                dict.fromkeys(
+                    payload.revision_token
+                    for node_id, payload in sorted(source_payloads.items())
+                    if isinstance(
+                        payload.revision_token,
+                        SourceRevisionToken,
+                    )
+                )
+            ),
         )
         self._active_pipeline_run_id = run_id
         self._pipeline_cancel_events[run_id] = cancel_event
@@ -11575,6 +11691,28 @@ class VippWidget(QWidget):
             source_signature,
             dirty_node_ids,
         ) = self._pipeline_run_context.pop(result.run_id, (None, "", None, None, None))
+        if result.source_revisions and not self._live_source_adapter.tokens_are_current(
+            result.source_revisions
+        ):
+            self._pipeline_run_pending = False
+            self._requeue_inflight_dirty_nodes()
+            self._pending_manual_node_ids.update(
+                node_id
+                for node_id in inflight_manual_node_ids
+                if self.pipeline.is_manual_node(node_id)
+            )
+            self._pending_dirty_node_ids.update(
+                node_id
+                for node_id in self._live_source_node_layers
+                if node_id in self.pipeline.nodes
+            )
+            self._set_pipeline_busy(False)
+            self.status_label.setText(
+                "Discarded a result from an old live-source revision; "
+                "calculating the current source."
+            )
+            QTimer.singleShot(0, self.run_pipeline)
+            return
         pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
         can_apply_before_pending = bool(
             self._pipeline_run_pending

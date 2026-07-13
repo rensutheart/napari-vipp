@@ -111,6 +111,19 @@ def test_metadata_and_transform_events_also_invalidate_source_revision():
     assert adapter.tokens_are_current((after_scale.token,))
 
 
+def test_explicit_refresh_can_invalidate_without_scheduling_callback():
+    layer = _Layer(np.zeros((2, 2), dtype=np.uint8))
+    invalidated = []
+    adapter = LiveLayerSourceAdapter(invalidated.append)
+    initial = adapter.snapshot(layer)
+
+    adapter.invalidate(layer, notify=False)
+    refreshed = adapter.snapshot(layer)
+
+    assert invalidated == []
+    assert refreshed.token.revision == initial.token.revision + 1
+
+
 def test_sync_layers_and_shutdown_disconnect_external_events():
     first = _Layer(np.zeros((1,), dtype=np.uint8))
     second = _Layer(np.ones((1,), dtype=np.uint8))

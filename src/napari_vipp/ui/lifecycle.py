@@ -52,6 +52,8 @@ class WidgetLifecycle:
         widget._closing = True
 
         self._disconnect_external_objects()
+        widget._live_source_adapter.shutdown()
+        widget._live_source_node_layers.clear()
         widget._debounce_timer.stop()
 
         for cancel_event in tuple(widget._pipeline_cancel_events.values()):

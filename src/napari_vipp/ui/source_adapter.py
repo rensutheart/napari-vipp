@@ -15,10 +15,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
+
+from napari_vipp.core.metadata import ImageState
 
 SOURCE_REVISION_EVENTS = (
     "data",
@@ -122,7 +124,12 @@ class LiveLayerSourceAdapter:
         """Return whether every supplied source revision is still current."""
         return all(self.token_is_current(token) for token in tokens)
 
-    def invalidate(self, layer: Any) -> SourceRevisionToken | None:
+    def invalidate(
+        self,
+        layer: Any,
+        *,
+        notify: bool = True,
+    ) -> SourceRevisionToken | None:
         """Advance a tracked layer revision and discard its cached snapshot."""
         if self._closed:
             return None
@@ -131,7 +138,7 @@ class LiveLayerSourceAdapter:
             return None
         tracked.revision += 1
         tracked.snapshot = None
-        if self._on_invalidated is not None:
+        if notify and self._on_invalidated is not None:
             self._on_invalidated(layer)
         return SourceRevisionToken(id(layer), tracked.revision)
 
@@ -198,6 +205,150 @@ class LiveLayerSourceAdapter:
         )
 
 
+def apply_live_layer_axis_transform(
+    state: ImageState | None,
+    snapshot: LiveLayerSnapshot,
+) -> ImageState | None:
+    """Carry an axis-aligned napari layer transform into scientific metadata."""
+    if state is None:
+        return None
+    ndim = len(state.axes)
+    _require_supported_axis_transform(snapshot, ndim)
+
+    scale = snapshot.scale
+    translate = snapshot.translate
+    units = snapshot.units
+    if scale is not None and len(scale) != ndim:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has {len(scale)} scale values "
+            f"for {ndim} data axes."
+        )
+    if translate is not None and len(translate) != ndim:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has {len(translate)} translation "
+            f"values for {ndim} data axes."
+        )
+    if units is not None and len(units) != ndim:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has {len(units)} units for "
+            f"{ndim} data axes."
+        )
+    if scale is not None and any(
+        not np.isfinite(value) or value <= 0 for value in scale
+    ):
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has a non-positive or non-finite "
+            "axis scale. VIPP requires a positive axis-aligned physical grid."
+        )
+
+    use_scale = bool(
+        scale is not None
+        and (
+            any(not np.isclose(value, 1.0) for value in scale)
+            or all(np.isclose(axis.scale, 1.0) for axis in state.axes)
+        )
+    )
+    use_translate = bool(
+        translate is not None
+        and (
+            any(not np.isclose(value, 0.0) for value in translate)
+            or all(np.isclose(axis.translation, 0.0) for axis in state.axes)
+        )
+    )
+    physical_units = (
+        tuple(_normalized_axis_unit(unit) for unit in units)
+        if units is not None
+        else ()
+    )
+    use_units = bool(physical_units and any(physical_units))
+    if not (use_scale or use_translate or use_units):
+        return state
+
+    axes = tuple(
+        replace(
+            axis,
+            scale=(
+                float(scale[index])
+                if use_scale and scale is not None
+                else axis.scale
+            ),
+            translation=(
+                float(translate[index])
+                if use_translate and translate is not None
+                else axis.translation
+            ),
+            unit=(
+                physical_units[index]
+                if use_units and physical_units[index]
+                else axis.unit
+            ),
+        )
+        for index, axis in enumerate(state.axes)
+    )
+    source = state.metadata_source
+    if "napari layer transform" not in source.lower():
+        source = f"{source}; napari layer transform"
+    return replace(state, axes=axes, metadata_source=source)
+
+
+def _require_supported_axis_transform(
+    snapshot: LiveLayerSnapshot,
+    ndim: int,
+) -> None:
+    if snapshot.shear is not None and any(
+        not np.isclose(value, 0.0) for value in snapshot.shear
+    ):
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has shear. VIPP does not "
+            "silently discard non-axis-aligned transforms; resample or register "
+            "the image explicitly before calculating."
+        )
+    if snapshot.rotate is not None and not _matrix_is_identity(
+        snapshot.rotate,
+        ndim,
+        allow_zero_scalar=True,
+    ):
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has rotation. VIPP does not "
+            "silently discard non-axis-aligned transforms; resample or register "
+            "the image explicitly before calculating."
+        )
+    if snapshot.affine is not None and not _matrix_is_identity(
+        snapshot.affine,
+        ndim + 1,
+    ):
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has an additional affine "
+            "transform. VIPP requires explicit resampling or registration before "
+            "calculation."
+        )
+
+
+def _matrix_is_identity(
+    matrix: tuple[tuple[float, ...], ...],
+    dimension: int,
+    *,
+    allow_zero_scalar: bool = False,
+) -> bool:
+    try:
+        arr = np.asarray(matrix, dtype=float)
+    except (TypeError, ValueError):
+        return False
+    if allow_zero_scalar and arr.size == 1:
+        return bool(np.isclose(float(arr.reshape(-1)[0]), 0.0))
+    return bool(
+        arr.shape == (dimension, dimension)
+        and np.allclose(arr, np.eye(dimension))
+    )
+
+
+def _normalized_axis_unit(unit: str) -> str | None:
+    normalized = str(unit).strip()
+    if normalized.lower() in {"", "pixel", "pixels", "px", "dimensionless"}:
+        return None
+    return normalized
+
+
 def _snapshot_data(data: Any) -> tuple[Any, bool]:
     """Detach writable in-memory NumPy data without realizing lazy arrays."""
     if not isinstance(data, np.ndarray):
@@ -256,4 +407,5 @@ __all__ = [
     "LiveLayerSnapshot",
     "LiveLayerSourceAdapter",
     "SourceRevisionToken",
+    "apply_live_layer_axis_transform",
 ]
