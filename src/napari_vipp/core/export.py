@@ -13,7 +13,11 @@ import keyword
 import re
 from datetime import UTC, datetime
 
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID, PrototypePipeline
+from napari_vipp.core.pipeline import (
+    NODE_LIBRARY_BY_ID,
+    PrototypePipeline,
+    operation_call_parameter_value,
+)
 
 _INDENT = " " * 4
 _RESERVED_FUNCTION_NAMES = {
@@ -250,7 +254,7 @@ def _build_call(pipeline, node, spec, connections, var_names) -> str:
     accepted = list(inspect.signature(spec.function).parameters)
     data_param = accepted[0] if accepted else ""
     kwargs = {
-        key: value
+        key: operation_call_parameter_value(node.operation_id, key, value)
         for key, value in node.params.items()
         if key in accepted and key != data_param
     }

@@ -35,6 +35,8 @@ CHANNEL_COLLAPSE_OPERATIONS = {
     "binary_threshold",
     "hysteresis_threshold",
     "canny_edges",
+    "laplace_filter",
+    "sobel_filter",
     "adaptive_mean_threshold",
     "adaptive_gaussian_threshold",
     "sauvola_threshold",
@@ -845,7 +847,7 @@ def _infer_axes_from_shape(shape: tuple[int, ...]) -> str:
             return "ZYXC"
         if spatial_ndim == 4:
             return "TZYXC"
-        return _fallback_axes(spatial_ndim - 2) + "YXC"
+        return _fallback_axis_order(spatial_ndim - 2, ("Y", "X", "C"))
 
     if ndim == 2:
         return "YX"
@@ -853,7 +855,7 @@ def _infer_axes_from_shape(shape: tuple[int, ...]) -> str:
         return "ZYX"
     if ndim == 4:
         return "TZYX"
-    return _fallback_axes(ndim - 2) + "YX"
+    return _fallback_axis_order(ndim - 2, ("Y", "X"))
 
 
 def _axes_from_layer_metadata(
@@ -1057,9 +1059,14 @@ def _transformed_axes(
             return _remove_axis(axes, channel_index)
 
     if (
-        operation_id in CHANNEL_COLLAPSE_OPERATIONS | {"convert_dtype"}
+        operation_id in CHANNEL_COLLAPSE_OPERATIONS
         and arr.ndim == len(axes) - 1
     ):
+        channel_index = _explicit_channel_axis_parameter(params, len(axes))
+        if channel_index is not None:
+            return _remove_axis(axes, channel_index)
+
+    if operation_id == "convert_dtype" and arr.ndim == len(axes) - 1:
         channel_index = _channel_axis_index(axes)
         if channel_index is not None:
             return _remove_axis(axes, channel_index)
@@ -1250,9 +1257,28 @@ def _transformed_channels(
         projected_axes = _projection_axis_indices_from_params(input_state.axes, params)
         if channel_index is not None and channel_index in projected_axes:
             return ()
-    if operation_id in CHANNEL_COLLAPSE_OPERATIONS:
+    if operation_id in CHANNEL_COLLAPSE_OPERATIONS and (
+        _explicit_channel_axis_parameter(params, len(input_state.axes)) is not None
+    ):
         return ()
     return channels
+
+
+def _explicit_channel_axis_parameter(
+    params: dict[str, Any],
+    ndim: int,
+) -> int | None:
+    """Return a persisted, explicit channel axis; ``-1`` means scalar data."""
+    value = params.get("channel_axis", -1)
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        axis = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if axis < 0 or axis >= ndim:
+        return None
+    return axis
 
 
 def _multi_input_channels(
@@ -1768,6 +1794,16 @@ def _operation_history(
             operation_title,
             params,
         )
+    if operation_id in CHANNEL_COLLAPSE_OPERATIONS:
+        channel_axis = _explicit_channel_axis_parameter(
+            params,
+            len(input_state.axes),
+        )
+        if channel_axis is not None:
+            return (
+                f"{operation_title}: BT.601 RGB/RGBA luma reduction from "
+                f"channel axis {channel_axis}; alpha ignored"
+            )
     if operation_id == "rescale_intensity":
         mode = str(params.get("cutoff_mode", "Percentiles"))
         if mode.casefold() == "percentiles":
@@ -1981,18 +2017,23 @@ def _automatic_threshold_history(
             f"{operation_title}: existing boolean segmentation preserved; "
             "automatic threshold bypassed"
         )
+    channel_axis = _explicit_channel_axis_parameter(params, len(input_state.axes))
+    luma = (
+        f"; BT.601 RGB/RGBA luma from channel axis {channel_axis}; alpha ignored"
+        if channel_axis is not None
+        else ""
+    )
     if operation_id == "li_threshold":
-        return f"{operation_title}: {scope}; raw finite-value iteration; {nonfinite}"
+        return (
+            f"{operation_title}: {scope}; raw finite-value iteration"
+            f"{luma}; {nonfinite}"
+        )
 
     bins = int(params.get("histogram_bins", 256))
-    rgb_like = (
-        len(input_state.shape) >= 3
-        and int(input_state.shape[-1]) in RGB_CHANNELS
-    )
-    if rgb_like:
+    if channel_axis is not None:
         mode = (
-            f"{bins} equal-width float bins after RGB grayscale conversion "
-            f"({input_state.dtype} input)"
+            f"{bins} equal-width float bins after BT.601 RGB/RGBA luma from "
+            f"channel axis {channel_axis}; alpha ignored ({input_state.dtype} input)"
         )
     elif dtype is not None and np.issubdtype(dtype, np.integer):
         mode = f"native integer levels ({dtype.name}; Float histogram bins ignored)"
@@ -2491,14 +2532,24 @@ def _axis_type_for_name(name: str) -> str:
     return "unknown"
 
 
-def _fallback_axes(prefix_count: int) -> str:
-    if prefix_count <= 0:
-        return ""
+def _fallback_axis_order(
+    prefix_count: int,
+    suffix: tuple[str, ...],
+) -> str:
+    """Build a rank-preserving inferred order, including multi-letter axes."""
     labels = ["P", "T", "Z"]
-    if prefix_count <= len(labels):
-        return "".join(labels[-prefix_count:])
-    extra = "".join(f"D{index}" for index in range(prefix_count - len(labels)))
-    return extra + "".join(labels)
+    if prefix_count <= 0:
+        prefix: list[str] = []
+    elif prefix_count <= len(labels):
+        prefix = labels[-prefix_count:]
+    else:
+        prefix = [
+            f"D{index}" for index in range(prefix_count - len(labels))
+        ] + labels
+    names = prefix + list(suffix)
+    if any(len(name) != 1 for name in names):
+        return ",".join(names)
+    return "".join(names)
 
 
 def _has_channel_axis(arr: np.ndarray) -> bool:

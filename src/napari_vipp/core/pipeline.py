@@ -568,6 +568,16 @@ HISTOGRAM_BINS_PARAMETER = ParameterSpec(
     1,
 )
 
+SCALAR_LUMA_CHANNEL_AXIS_PARAMETER = ParameterSpec(
+    "channel_axis",
+    "RGB/RGBA channel axis (-1 = scalar)",
+    "int",
+    -1,
+    -1,
+    64,
+    1,
+)
+
 SPATIAL_OPERATIONS = {
     "auto_watershed_from_mask",
     "born_wolf_psf",
@@ -617,9 +627,24 @@ _EXPLICIT_CHANNEL_AXIS_OPERATIONS = {
 }
 SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
     {
+        "adaptive_gaussian_threshold",
+        "adaptive_mean_threshold",
         "bilateral_filter",
+        "binary_threshold",
+        "canny_edges",
+        "hysteresis_threshold",
+        "isodata_threshold",
+        "laplace_filter",
+        "li_threshold",
+        "minimum_threshold",
+        "niblack_threshold",
         "non_local_means_filter",
+        "otsu_threshold",
+        "sauvola_threshold",
+        "sobel_filter",
+        "triangle_threshold",
         "unsharp_mask",
+        "yen_threshold",
     }
 )
 
@@ -1247,7 +1272,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         FILTERING_CATEGORY,
         "array",
         "image",
-        (),
+        (SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,),
         sobel_filter,
         subcategory=EDGE_DETAIL_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
@@ -1280,6 +1305,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.01,
                 3,
             ),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         canny_edges,
         subcategory=EDGE_DETAIL_GROUP,
@@ -1293,6 +1319,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec("kernel_size", "Kernel size", "int", 3, 3, 15, 2),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         laplace_filter,
         subcategory=EDGE_DETAIL_GROUP,
@@ -1591,7 +1618,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
+        (
+            THRESHOLD_SCOPE_PARAMETER,
+            HISTOGRAM_BINS_PARAMETER,
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        ),
         otsu_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1601,7 +1632,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
+        (
+            THRESHOLD_SCOPE_PARAMETER,
+            HISTOGRAM_BINS_PARAMETER,
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        ),
         triangle_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1611,7 +1646,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER,),
+        (THRESHOLD_SCOPE_PARAMETER, SCALAR_LUMA_CHANNEL_AXIS_PARAMETER),
         li_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1621,7 +1656,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
+        (
+            THRESHOLD_SCOPE_PARAMETER,
+            HISTOGRAM_BINS_PARAMETER,
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        ),
         yen_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1631,7 +1670,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         SEGMENTATION_CATEGORY,
         "array",
         "mask",
-        (THRESHOLD_SCOPE_PARAMETER, HISTOGRAM_BINS_PARAMETER),
+        (
+            THRESHOLD_SCOPE_PARAMETER,
+            HISTOGRAM_BINS_PARAMETER,
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        ),
         isodata_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
@@ -1653,6 +1696,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 10_000,
                 25,
             ),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         minimum_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
@@ -1665,6 +1709,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "mask",
         (
             ParameterSpec("threshold", "Threshold", "float", 0.5, 0.0, 1.0, 0.01, 3),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         binary_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
@@ -1697,6 +1742,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 3,
             ),
             SPATIAL_MODE_PARAMETER,
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         hysteresis_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
@@ -1710,6 +1756,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("block_size", "Block size", "int", 11, 3, 101, 2),
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         adaptive_mean_threshold,
         subcategory=LOCAL_THRESHOLDS_GROUP,
@@ -1724,6 +1771,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("block_size", "Block size", "int", 11, 3, 101, 2),
             ParameterSpec("c", "C", "float", 2.0, -50.0, 50.0, 0.1, 2),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         adaptive_gaussian_threshold,
         subcategory=LOCAL_THRESHOLDS_GROUP,
@@ -1748,6 +1796,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.1,
                 3,
             ),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         sauvola_threshold,
         subcategory=LOCAL_THRESHOLDS_GROUP,
@@ -1762,6 +1811,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("window_size", "Window size", "int", 15, 3, 151, 2),
             ParameterSpec("k", "k", "float", 0.2, -2.0, 2.0, 0.01, 3),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         niblack_threshold,
         subcategory=LOCAL_THRESHOLDS_GROUP,
@@ -3889,7 +3939,11 @@ PROTOTYPE_NODES = [
         "Segmentation",
         "image",
         "mask",
-        {"threshold_scope": "Stack histogram", "histogram_bins": 256},
+        {
+            "threshold_scope": "Stack histogram",
+            "histogram_bins": 256,
+            "channel_axis": -1,
+        },
     ),
 ]
 PROTOTYPE_CONNECTIONS = [

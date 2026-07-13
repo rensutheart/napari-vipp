@@ -5149,11 +5149,15 @@ def _fallback_imagej_axes(arr: np.ndarray) -> str:
 def max_intensity_projection(data, axis: int = 0) -> np.ndarray:
     """Project an image along one axis using maximum intensity."""
     arr = np.asarray(data)
-    if arr.ndim <= 2:
-        return arr.copy()
+    if isinstance(axis, (bool, np.bool_)) or not isinstance(axis, Integral):
+        raise ValueError("Maximum Projection axis must be an integer.")
     axis = int(axis)
     if axis < 0 or axis >= arr.ndim:
-        axis = 0
+        raise ValueError(
+            f"Maximum Projection axis {axis} is out of range for {arr.ndim}D input."
+        )
+    if arr.ndim <= 2:
+        return arr.copy()
     return np.max(arr, axis=axis)
 
 

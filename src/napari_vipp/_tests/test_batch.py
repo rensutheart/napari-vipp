@@ -294,6 +294,29 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
     assert scientific_workflow_hash(changed) != scientific_workflow_hash(plain)
 
 
+def test_scientific_workflow_hash_ignores_runtime_resolution_and_vipp_state():
+    pipeline = PrototypePipeline()
+    hysteresis = pipeline.add_node("hysteresis_threshold")
+    pipeline.connect("input", hysteresis.id)
+    before = serialize_workflow(pipeline)
+    before_hash = scientific_workflow_hash(before)
+
+    pipeline.run(
+        np.zeros((5, 7), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+    pipeline.nodes[hysteresis.id].params["_vipp_review_state"] = {
+        "expanded": True
+    }
+    after = serialize_workflow(pipeline)
+
+    assert pipeline.nodes[hysteresis.id].params["resolved_spatial_ndim"] == 2
+    assert scientific_workflow_hash(after) == before_hash
+
+    pipeline.set_param(hysteresis.id, "low_threshold", 0.1)
+    assert scientific_workflow_hash(serialize_workflow(pipeline)) != before_hash
+
+
 @pytest.mark.parametrize("value", ["CON", "nul.txt", "LPT1", "com9.npy"])
 def test_safe_batch_filename_avoids_windows_device_names(value):
     assert safe_batch_filename(value).startswith("_")

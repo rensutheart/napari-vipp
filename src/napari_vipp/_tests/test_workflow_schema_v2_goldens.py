@@ -13,43 +13,43 @@ from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "otsu-red-channel-labels.json": (
-        "de87415b87c441dd67fe66ef569c8b6b30056a45746674b2a2c73a0238ffc65b"
+        "461280af600f9ec90397a92c4ced878e0a0086c4378c7624d2c54385cfbb6280"
     ),
     "red-channel-merged-measurement-table.json": (
-        "9ad68d48b28facd9d13bd3213dbe0fb5ce2ebe50a2e98cbc9709562fb18032b2"
+        "3c2515b64455b2280c96e61bc329211cb5b592403d00e54d37c6d00990c6f45a"
     ),
     "red-channel-object-intensity-measurements.json": (
-        "1e8597f05ce7ec244f4ce3442ba9bbd92573ea832ec4caf7569012c9ea6263aa"
+        "33c91555828d492e383fed4e04764a3d636289eb964546a30a1d23f30e0a65cf"
     ),
     "synthetic-3d-deconvolution-rl-tv.json": (
         "b0488e929147080955832079ab262dd7f687544045fd26633cd4b47f7a27af4f"
     ),
     "synthetic-3d-mesh-morphology.json": (
-        "899969dfd208911717de51dd728220c2d4f87c224785b3b143487925473f704b"
+        "29d8e1b39f807382a4119960e49382e1638f154d4816167ae2f8331d06805b63"
     ),
     "synthetic-advanced-skeleton-network.json": (
-        "1e08097831a37e1e6698a13421a18842a926cc62484a659a61e935a5026bb666"
+        "30951b47bc347de6fe308d249059d3f49c111a5767f487ced28168c391dcdd11"
     ),
     "synthetic-batch-provenance.json": (
-        "69c733875107d5fc55fde1b64b5eb6baf953b96fe1e8336618feb8c7571dd43b"
+        "9c7b452c189fbaba2673cdaa7ff2920d94b9aceeaacb9b15e61ee4a3870e592c"
     ),
     "synthetic-colocalization-racc.json": (
-        "c12b0b379cd28a72a3ad37b5b9cc06f6597996c1f6cd9e8dcc12f2137ce188e1"
+        "9bd6d65ca61487ecf6ddefa12515e9219cc4581c8771e352e38635fd842b59a6"
     ),
     "synthetic-deconvolution-rl-tv.json": (
         "45292a3d958810c14a1d43929616b9f2a26f55266f1dfaa15490223e9b842c3b"
     ),
     "synthetic-derived-object-morphology.json": (
-        "de45106d4b2efd5a8f42e0030c19547313c4ae9e3b8bd179db792791b5ad8bf4"
+        "c3794ca2e41e39ecea52d651ff73769a0b03d84fc3227c4c000e53ea3746a249"
     ),
     "synthetic-measurement-summary.json": (
-        "2c369eeb35d2770cfc00bafdccccb2b8579a3a02f524378e0c8be56d2f24e0a5"
+        "203e92fba7e9d154f1c675b150243859011b6f65a28b875f2d306597d79fa876"
     ),
     "synthetic-object-colocalization-association.json": (
-        "64f2a1c0832a02fcf35725b8ab631834febf0b030d983892da3f8c9c882f9a1d"
+        "106202db71283ad18f6b4febc78313c4ffa06845b12d723a58e575594e9cd1a7"
     ),
     "synthetic-skeleton-qc.json": (
-        "30c9a8d3409f96fbb92d084ed7b54d36669a7e007e92421cf091443a5a5604f0"
+        "b73cd1afcefe97f928e6ddf9bfa5f97dcceb7030f4a19df8b5ee4da568914a45"
     ),
 }
 

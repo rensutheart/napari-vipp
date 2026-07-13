@@ -34,14 +34,16 @@
       "id": "binary_threshold_1",
       "operation_id": "binary_threshold",
       "params": {
-        "threshold": 8000
+        "threshold": 8000,
+        "channel_axis": -1
       }
     },
     {
       "id": "binary_threshold_2",
       "operation_id": "binary_threshold",
       "params": {
-        "threshold": 8000
+        "threshold": 8000,
+        "channel_axis": -1
       }
     },
     {

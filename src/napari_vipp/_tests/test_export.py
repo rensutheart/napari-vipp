@@ -183,6 +183,23 @@ def test_exported_run_pipeline_executes():
     assert namespace["OUTPUT_NODES"] == ("threshold",)
 
 
+def test_export_translates_scalar_channel_sentinel_with_pipeline_parity():
+    pipeline = PrototypePipeline()
+    filtered = pipeline.add_node("bilateral_filter")
+    pipeline.connect("input", filtered.id)
+    image = np.random.default_rng(12).random((5, 7, 3), dtype=np.float32)
+
+    native = pipeline.run(image, input_metadata={"axes": "ZYX"})[filtered.id]
+    code = export_pipeline_to_python(pipeline)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    exported = namespace["run_pipeline"](image)[filtered.id]
+
+    assert "channel_axis=None" in code
+    assert "channel_axis=-1" not in code
+    np.testing.assert_allclose(exported, native, rtol=0.0, atol=0.0)
+
+
 def test_exported_rescale_axes_preserves_output_size_mode():
     pipeline = PrototypePipeline()
     node = pipeline.add_node("rescale_axes")

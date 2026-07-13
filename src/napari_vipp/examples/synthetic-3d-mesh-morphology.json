@@ -27,7 +27,8 @@
       "id": "binary_threshold_1",
       "operation_id": "binary_threshold",
       "params": {
-        "threshold": 1000
+        "threshold": 1000,
+        "channel_axis": -1
       }
     },
     {

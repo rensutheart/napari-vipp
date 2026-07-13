@@ -645,7 +645,7 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
     # Full deserialization validates operation ids, params, ports, and references.
     deserialize_workflow(data)
     nodes = sorted(
-        (_canonical_mapping(item) for item in data["nodes"]),
+        (_canonical_scientific_node(item) for item in data["nodes"]),
         key=lambda item: str(item.get("id", "")),
     )
     connections = sorted(
@@ -2046,6 +2046,31 @@ def _config_path_text(path: Path) -> str:
 def _canonical_mapping(value: object) -> dict[str, object]:
     data = _require_object(value, "Canonical workflow record")
     return {str(key): _json_safe(data[key]) for key in sorted(data)}
+
+
+def _canonical_scientific_node(value: object) -> dict[str, object]:
+    """Exclude runtime/UI cache fields while retaining declared node intent."""
+    node = _canonical_mapping(value)
+    params = _require_object(node.get("params", {}), "Workflow node parameters")
+    operation_id = str(node.get("operation_id", ""))
+    threshold_mode = str(params.get("threshold_mode", "Manual")).casefold()
+    filtered: dict[str, object] = {}
+    for key in sorted(params):
+        name = str(key)
+        if name.startswith("_vipp_") or name == "resolved_spatial_ndim":
+            continue
+        if operation_id == "combine_channels" and name == "channel_axis":
+            # The executor derives this optional cache from input metadata.
+            continue
+        if threshold_mode.startswith("costes") and name in {
+            "channel_1_threshold",
+            "channel_2_threshold",
+        }:
+            # Costes mode derives these values from the current inputs.
+            continue
+        filtered[name] = _json_safe(params[key])
+    node["params"] = filtered
+    return node
 
 
 def _json_safe(value: object) -> object:

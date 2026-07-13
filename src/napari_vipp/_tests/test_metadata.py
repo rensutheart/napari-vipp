@@ -8,8 +8,10 @@ from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
     DEFERRED_VALUE_RANGE,
+    ChannelMetadata,
     ImageState,
     image_state_from_array,
+    infer_axis_metadata_from_shape,
     transform_image_state,
 )
 
@@ -38,6 +40,25 @@ def test_shape_only_channel_guess_is_marked_inferred_not_explicit():
     assert explicit_rgb.axis_order == "YXC"
     assert explicit_rgb.axes_explicit
     assert explicit_rgb.kind == "RGB image"
+
+
+@pytest.mark.parametrize("ndim", range(11))
+def test_inferred_axis_metadata_preserves_rank_and_unique_names(ndim):
+    axes = infer_axis_metadata_from_shape((5,) * ndim)
+
+    assert len(axes) == ndim
+    assert len({axis.name for axis in axes}) == ndim
+    assert all(axis.confidence == AXIS_CONFIDENCE_INFERRED for axis in axes)
+
+
+def test_high_rank_shape_inferred_rgb_state_constructs_without_axis_overflow():
+    data = np.zeros((2, 5, 6, 7, 8, 9, 3), dtype=np.uint8)
+
+    state = image_state_from_array(data)
+
+    assert len(state.axes) == data.ndim
+    assert state.axes[-1].name == "c"
+    assert state.kind == "RGB image"
 
 
 def test_explicit_ome_and_carried_axis_confidence_survive_roundtrip():
@@ -254,6 +275,49 @@ def test_composite_creates_explicit_rgb_axis_without_promoting_spatial_guesses()
     ]
 
 
+@pytest.mark.parametrize("operation_id", ["binary_threshold", "sobel_filter"])
+def test_explicit_luma_reduction_removes_the_selected_numeric_axis(operation_id):
+    data = np.zeros((3, 5, 7), dtype=np.float32)
+    state = image_state_from_array(
+        data,
+        channels=tuple(ChannelMetadata(name=name) for name in ("R", "G", "B")),
+    )
+
+    reduced = transform_image_state(
+        np.zeros((5, 7), dtype=bool),
+        state,
+        operation_id=operation_id,
+        operation_title="Explicit luma operation",
+        params={"channel_axis": 0},
+    )
+
+    assert reduced.axis_order == "YX"
+    assert reduced.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert reduced.channels == ()
+
+
+def test_scalar_threshold_retains_explicit_channel_axis_and_channel_metadata():
+    data = np.zeros((5, 7, 3), dtype=np.float32)
+    channels = tuple(ChannelMetadata(name=name) for name in ("R", "G", "B"))
+    state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "YXC"},
+        channels=channels,
+    )
+
+    scalar = transform_image_state(
+        np.zeros(data.shape, dtype=bool),
+        state,
+        operation_id="binary_threshold",
+        operation_title="Binary Threshold",
+        params={"threshold": 0.5, "channel_axis": -1},
+    )
+
+    assert scalar.axis_order == "YXC"
+    assert scalar.axes_explicit
+    assert scalar.channels == channels
+
+
 def test_large_metadata_value_range_and_pattern_use_all_finite_values():
     data = np.zeros(600_123, dtype=np.float32)
     data[500_001] = -17.0
@@ -365,6 +429,38 @@ def test_li_threshold_history_records_raw_finite_value_policy():
         "Li Threshold: Stack histogram; raw finite-value iteration; "
         "non-finite values excluded and set to background"
     )
+
+
+def test_threshold_history_never_infers_rgb_conversion_from_x_size():
+    data = np.zeros((5, 7, 3), dtype=np.float32)
+    scalar_state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+    color_state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+
+    scalar = transform_image_state(
+        np.zeros(data.shape, dtype=bool),
+        scalar_state,
+        operation_id="otsu_threshold",
+        operation_title="Otsu Threshold",
+        params={
+            "threshold_scope": "Stack histogram",
+            "histogram_bins": 256,
+            "channel_axis": -1,
+        },
+    )
+    color = transform_image_state(
+        np.zeros(data.shape[:-1], dtype=bool),
+        color_state,
+        operation_id="otsu_threshold",
+        operation_title="Otsu Threshold",
+        params={
+            "threshold_scope": "Stack histogram",
+            "histogram_bins": 256,
+            "channel_axis": 2,
+        },
+    )
+
+    assert "RGB" not in scalar.history[-1]
+    assert "BT.601 RGB/RGBA luma from channel axis 2" in color.history[-1]
 
 
 @pytest.mark.parametrize(

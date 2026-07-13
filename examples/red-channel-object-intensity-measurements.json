@@ -42,7 +42,8 @@
       "operation_id": "otsu_threshold",
       "params": {
         "threshold_scope": "Stack histogram",
-        "histogram_bins": 256
+        "histogram_bins": 256,
+        "channel_axis": -1
       }
     },
     {

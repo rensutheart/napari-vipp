@@ -135,6 +135,7 @@ from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
     SourcePayload,
+    operation_call_parameter_value,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from napari_vipp.core.tables import save_table_output, table_from_columns
@@ -317,6 +318,37 @@ def test_li_threshold_does_not_expose_histogram_bins():
     names = {param.name for param in NODE_LIBRARY_BY_ID["li_threshold"].parameters}
 
     assert "histogram_bins" not in names
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "adaptive_gaussian_threshold",
+        "adaptive_mean_threshold",
+        "binary_threshold",
+        "canny_edges",
+        "hysteresis_threshold",
+        "isodata_threshold",
+        "laplace_filter",
+        "li_threshold",
+        "minimum_threshold",
+        "niblack_threshold",
+        "otsu_threshold",
+        "sauvola_threshold",
+        "sobel_filter",
+        "triangle_threshold",
+        "yen_threshold",
+    ],
+)
+def test_edge_threshold_nodes_expose_scalar_default_channel_contract(operation_id):
+    spec = NODE_LIBRARY_BY_ID[operation_id]
+    channel_axis = next(
+        parameter for parameter in spec.parameters if parameter.name == "channel_axis"
+    )
+
+    assert channel_axis.label == "RGB/RGBA channel axis (-1 = scalar)"
+    assert channel_axis.default == -1
+    assert operation_call_parameter_value(operation_id, "channel_axis", -1) is None
 
 
 def test_registered_operation_specs_match_callable_and_ui_contracts():
@@ -3759,6 +3791,25 @@ def test_orthogonal_projection_keeps_xy_native_when_z_spacing_is_finer():
     )
 
     assert projected.shape == (108, 140)
+
+
+@pytest.mark.parametrize("axis", [5, -1, 1.5, True, "1"])
+def test_maximum_projection_rejects_invalid_axis_instead_of_repairing(axis):
+    data = np.zeros((2, 3, 4), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="Maximum Projection axis"):
+        operations.max_intensity_projection(data, axis=axis)
+
+
+def test_pipeline_maximum_projection_cannot_diverge_from_output_metadata():
+    data = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    pipeline = PrototypePipeline()
+    projection = pipeline.add_node("mip")
+    pipeline.connect("input", projection.id)
+    pipeline.set_param(projection.id, "axis", 5)
+
+    with pytest.raises(ValueError, match="axis 5 is out of range for 3D input"):
+        pipeline.run(data, input_metadata={"axes": "ZYX"})
 
 
 def test_projection_metadata_updates_axes():
