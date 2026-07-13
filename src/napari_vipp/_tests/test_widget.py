@@ -176,6 +176,7 @@ class _Layer:
         self.visible = True
         self.rgb = False
         self.scale = None
+        self.editable = True
 
 
 class _LayerList(list):
@@ -1219,6 +1220,16 @@ def test_selecting_node_updates_inspection_layer(qtbot):
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "input"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
+    assert not np.shares_memory(
+        inspect_layer.data,
+        viewer.layers["input volume"].data,
+    )
+    expected_source = viewer.layers["input volume"].data.copy()
+    inspect_layer.data.flat[0] = 1
+    np.testing.assert_array_equal(
+        viewer.layers["input volume"].data,
+        expected_source,
+    )
     assert not widget.pin_button.isHidden()
     assert widget.pin_button.text() == "Pin selected"
 
@@ -1233,6 +1244,8 @@ def test_widget_pins_threshold_as_labels(qtbot):
     pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
     assert pinned.metadata["napari_vipp_kind"] == "pinned"
     assert pinned.data.dtype == np.uint8
+    assert pinned.editable is False
+    assert not np.shares_memory(pinned.data, widget.pipeline.outputs["threshold"])
     assert widget.graph_view._cards["threshold"]._pinned
     assert (
         "border: 4px solid #facc15"
@@ -1260,16 +1273,26 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     inspect = viewer.layers["VIPP Inspect"]
     assert inspect.layer_type == "labels"
     assert inspect.data.dtype == np.int32
+    assert inspect.editable is False
     assert inspect.metadata["data_kind"] == "labels"
     assert inspect.metadata["display_kind"] == "labels"
     assert widget.pipeline.output_states[filtered.id].kind == "label image"
+    labels_output = widget.pipeline.outputs[filtered.id]
+    expected_labels = labels_output.copy()
+    assert not np.shares_memory(inspect.data, labels_output)
 
     widget.pin_node(filtered.id)
 
     pinned = viewer.layers["VIPP Pinned: Filter Labels By Volume"]
     assert pinned.layer_type == "labels"
     assert pinned.data.dtype == np.int32
+    assert pinned.editable is False
     assert pinned.metadata["data_kind"] == "labels"
+    assert not np.shares_memory(pinned.data, labels_output)
+    assert not np.shares_memory(pinned.data, inspect.data)
+    inspect.data.flat[0] = 101
+    pinned.data.flat[-1] = 202
+    np.testing.assert_array_equal(labels_output, expected_labels)
 
 
 def test_clear_border_node_preserves_label_display_type(qtbot):
@@ -8779,6 +8802,23 @@ def test_rgb_volume_pin_uses_additive_channel_layers(qtbot):
         "Green",
         "Blue",
     }
+    rgb_output = widget.pipeline.outputs[node.id]
+    expected_rgb = rgb_output.copy()
+    red = viewer.layers[base_name]
+    green = viewer.layers[f"{base_name} Green"]
+    blue = viewer.layers[f"{base_name} Blue"]
+    for layer in (red, green, blue):
+        assert not np.may_share_memory(layer.data, rgb_output)
+        assert layer.data.flags.owndata
+    assert not np.may_share_memory(red.data, green.data)
+    assert not np.may_share_memory(red.data, blue.data)
+    assert not np.may_share_memory(green.data, blue.data)
+    expected_green = green.data.copy()
+    expected_blue = blue.data.copy()
+    red.data.flat[0] = 0 if red.data.flat[0] != 0 else 1
+    np.testing.assert_array_equal(rgb_output, expected_rgb)
+    np.testing.assert_array_equal(green.data, expected_green)
+    np.testing.assert_array_equal(blue.data, expected_blue)
     assert widget._active_pinned_node_id == node.id
 
     widget.pin_node(node.id)
@@ -8940,10 +8980,14 @@ def test_inspect_shows_mask_as_standalone_image(qtbot):
     assert second_inspect.contrast_limits == (0, 1)
     assert second_inspect.blending == "opaque"
     assert second_inspect.data.dtype == bool
-    assert np.shares_memory(
+    cached_mask = widget.pipeline.outputs["threshold"]
+    expected_mask = cached_mask.copy()
+    assert not np.shares_memory(
         second_inspect.data,
-        widget.pipeline.outputs["threshold"],
+        cached_mask,
     )
+    second_inspect.data.flat[0] = not second_inspect.data.flat[0]
+    np.testing.assert_array_equal(cached_mask, expected_mask)
 
 
 def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):

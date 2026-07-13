@@ -13871,7 +13871,7 @@ class VippWidget(QWidget):
             )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
-        layer.data = display_data
+        layer.data = _detached_presentation_array(display_data)
         layer.metadata.update(metadata)
         layer.visible = True
         self._configure_generated_layer(layer, data, metadata)
@@ -13949,12 +13949,15 @@ class VippWidget(QWidget):
                 data,
                 as_labels=metadata.get("display_kind") == "labels",
             )
+        presentation_data = _detached_presentation_array(display_data)
         scale = _layer_scale_from_metadata(metadata)
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             kwargs = {"name": name, "metadata": metadata}
             if scale is not None:
                 kwargs["scale"] = scale
-            return self.viewer.add_labels(display_data, **kwargs)
+            layer = self.viewer.add_labels(presentation_data, **kwargs)
+            self._make_integer_labels_noneditable(layer)
+            return layer
         kwargs = {"name": name, "metadata": metadata}
         if scale is not None:
             kwargs["scale"] = scale
@@ -13972,7 +13975,7 @@ class VippWidget(QWidget):
             plan = self._generated_layer_contrast_plan(name, data)
             metadata.update(self._generated_layer_contrast_metadata(plan))
             kwargs["contrast_limits"] = plan.limits
-        return self.viewer.add_image(display_data, **kwargs)
+        return self.viewer.add_image(presentation_data, **kwargs)
 
     def _display_rgb_as_channel_layers(self, display_data, metadata: dict) -> bool:
         arr = np.asarray(display_data)
@@ -13995,7 +13998,7 @@ class VippWidget(QWidget):
         ):
             self._remove_layer(base_layer)
         for index, channel_name, colormap in _RGB_VOLUME_CHANNELS:
-            channel_data = arr[..., index]
+            channel_data = _detached_presentation_array(arr[..., index])
             layer_name = _rgb_channel_layer_name(name, index)
             channel_metadata = {
                 **metadata,
@@ -14162,6 +14165,7 @@ class VippWidget(QWidget):
             except Exception:
                 pass
         if metadata["display_kind"] != "image":
+            self._make_integer_labels_noneditable(layer)
             return
         if metadata["data_kind"] == "mask":
             for attr, value in (
@@ -14180,6 +14184,22 @@ class VippWidget(QWidget):
                 layer.contrast_limits = plan.limits
             except Exception:
                 pass
+
+    @staticmethod
+    def _make_integer_labels_noneditable(layer) -> None:
+        try:
+            is_integer = np.issubdtype(np.asarray(layer.data).dtype, np.integer)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if not is_integer:
+            return
+        try:
+            layer.editable = False
+        except Exception:
+            # Older napari versions and lightweight test viewers may not expose
+            # an editable Labels property. Array detachment remains the safety
+            # boundary in those environments.
+            pass
 
     def _generated_layer_contrast_plan(
         self,
@@ -15331,6 +15351,11 @@ def _finite_marker_value(value, label: str) -> int | float:
     if not np.isfinite(parsed):
         raise ValueError(f"{label} must be a finite number.")
     return parsed
+
+
+def _detached_presentation_array(data) -> np.ndarray:
+    """Return viewer-owned data that cannot mutate a scientific result cache."""
+    return np.array(np.asarray(data), copy=True, order="K", subok=False)
 
 
 def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:
