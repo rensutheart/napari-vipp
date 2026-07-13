@@ -89,9 +89,7 @@ from napari_vipp.core.batch import (
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
     BatchConfig,
-    BatchOutputConfig,
     BatchRunResult,
-    BatchSourceConfig,
     ExistingFilePolicy,
     atomic_write_json,
     atomic_write_text,
@@ -99,9 +97,7 @@ from napari_vipp.core.batch import (
     plan_batch,
     preflight_batch,
     run_batch,
-    safe_batch_filename,
     save_batch_config,
-    scientific_workflow_hash,
     validate_batch_config,
 )
 from napari_vipp.core.batch_demo import (
@@ -110,6 +106,11 @@ from napari_vipp.core.batch_demo import (
     create_synthetic_batch_demo,
     next_synthetic_batch_demo_root,
     validate_synthetic_batch_demo,
+)
+from napari_vipp.core.batch_setup import (
+    batch_output_node_ids,
+    batch_source_rows,
+    build_collection_batch_config,
 )
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
@@ -204,7 +205,6 @@ from napari_vipp.core.source_identity import (
 )
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
-    deserialize_workflow,
     load_workflow,
     save_workflow,
     serialize_workflow,
@@ -271,7 +271,6 @@ from napari_vipp.ui.batch import (
     BatchPreviewResult as BatchPreviewResult,
 )
 from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
-from napari_vipp.ui.batch import BatchSourceBinding as BatchSourceBinding
 from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.controls import (
@@ -4376,85 +4375,20 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         workflow: dict | None = None,
     ) -> BatchConfig:
-        input_text = str(input_dir).strip()
-        output_text = str(output_dir).strip()
-        if not output_text:
-            raise ValueError("Batch output folder cannot be blank.")
-        input_path = Path(input_text).expanduser()
+        del save_workflow_snapshot
         if workflow is None:
             workflow = self._batch_workflow_document()
-        restored = deserialize_workflow(workflow)
-        batch_pipeline = PrototypePipeline()
-        batch_pipeline.restore_graph(
-            restored["nodes"],
-            restored["connections"],
-            restored.get("output_tunnels", ()),
-        )
-        output_node_ids = self._batch_saved_node_ids(batch_pipeline)
-        if not output_node_ids:
-            raise ValueError("The workflow has no outputs to save.")
-        bindings = self._normalize_batch_source_bindings(
-            batch_pipeline,
-            input_path,
-            pattern,
-            source_bindings,
-        )
-        sources = tuple(
-            BatchSourceConfig(
-                node_id=binding.node_id,
-                title=binding.title,
-                input_dir=Path(binding.input_dir or "").expanduser().resolve(),
-                pattern=binding.pattern,
-            )
-            for binding in bindings
-        )
-        outputs = []
-        for node_id in output_node_ids:
-            node = batch_pipeline.nodes[node_id]
-            params = node.params if node.operation_id == "batch_output" else {}
-            ports = batch_pipeline.output_ports(node_id)
-            output_type = ports[0].output_type if ports else "any"
-            outputs.append(
-                BatchOutputConfig(
-                    node_id=node_id,
-                    node_title=node.title,
-                    tag=self._batch_output_tag(batch_pipeline, node_id),
-                    kind="table" if output_type == "table" else "image",
-                    format=str(params.get("format", "batch default")),
-                    subfolder=str(params.get("subfolder", "")),
-                    filename_template=str(
-                        params.get(
-                            "filename_template",
-                            "{source_stem}__{tag}",
-                        )
-                    ),
-                    overwrite=str(params.get("overwrite", "batch default")),
-                )
-            )
-        try:
-            policy = ExistingFilePolicy(str(existing_file_policy))
-        except ValueError as exc:
-            raise ValueError(
-                f"Unsupported existing-file policy: {existing_file_policy!r}."
-            ) from exc
-        config = BatchConfig(
-            workflow_file=Path(BATCH_WORKFLOW_FILENAME),
-            workflow_sha256=scientific_workflow_hash(workflow),
-            output_dir=Path(output_text).expanduser().resolve(),
-            sources=sources,
-            outputs=tuple(outputs),
-            default_image_format=image_format,
-            existing_file_policy=policy,
-            save_workflow_snapshot=True,
+        return build_collection_batch_config(
+            workflow,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            pattern=pattern,
+            image_format=image_format,
             save_python_script=save_python_script,
+            source_bindings=source_bindings,
+            existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
         )
-        validate_batch_config(
-            workflow,
-            config,
-            workflow_path=(config.output_dir / BATCH_WORKFLOW_FILENAME),
-        )
-        return config
 
     def _save_collection_batch_config(
         self,
@@ -4528,7 +4462,7 @@ class VippWidget(QWidget):
             config,
             workflow_path=(config.output_dir / BATCH_WORKFLOW_FILENAME),
         )
-        explicit = bool(self._batch_output_node_ids(self.pipeline))
+        explicit = bool(batch_output_node_ids(self.pipeline))
         rows = tuple(
             BatchPreviewRow(
                 batch_index=item.index,
@@ -4558,117 +4492,7 @@ class VippWidget(QWidget):
         )
 
     def _batch_source_rows(self) -> list[dict[str, str]]:
-        rows = []
-        for node_id in self.pipeline.topological_order():
-            node = self.pipeline.nodes[node_id]
-            if node.operation_id != "input":
-                continue
-            rows.append(
-                {
-                    "node_id": node_id,
-                    "title": node.title,
-                    "binding_mode": str(
-                        node.params.get("binding_mode", "single item")
-                    ),
-                }
-            )
-        return rows or [
-            {
-                "node_id": "input",
-                "title": "Image Source",
-                "binding_mode": "collection",
-            }
-        ]
-
-    def _normalize_batch_source_bindings(
-        self,
-        pipeline: PrototypePipeline,
-        input_dir: Path,
-        pattern: str,
-        source_bindings: list[dict] | None,
-    ) -> list[BatchSourceBinding]:
-        bindings: list[BatchSourceBinding] = []
-        if source_bindings is not None:
-            for row in source_bindings:
-                node_id = str(row.get("node_id", "")).strip()
-                if node_id not in pipeline.nodes:
-                    continue
-                node = pipeline.nodes[node_id]
-                if node.operation_id != "input":
-                    continue
-                raw_dir = str(row.get("input_dir", "")).strip()
-                if not raw_dir:
-                    continue
-                bindings.append(
-                    BatchSourceBinding(
-                        node_id=node_id,
-                        title=str(row.get("title", node.title) or node.title),
-                        input_dir=Path(raw_dir).expanduser(),
-                        pattern=str(row.get("pattern", "") or pattern or "*.tif"),
-                    )
-                )
-        if bindings:
-            return bindings
-        if source_bindings is not None:
-            raise ValueError("At least one batch source needs an input folder.")
-
-        source_ids = self._batch_collection_source_node_ids(pipeline)
-        if not input_dir.is_dir():
-            raise ValueError("Batch input folder does not exist.")
-        return [
-            BatchSourceBinding(
-                node_id=node_id,
-                title=pipeline.nodes[node_id].title,
-                input_dir=input_dir,
-                pattern=pattern or "*.tif",
-            )
-            for node_id in source_ids
-        ]
-
-    def _batch_collection_source_node_ids(
-        self,
-        pipeline: PrototypePipeline,
-    ) -> set[str]:
-        source_ids = [
-            node_id
-            for node_id in pipeline.topological_order()
-            if pipeline.nodes[node_id].operation_id == "input"
-        ]
-        collection_ids = {
-            node_id
-            for node_id in source_ids
-            if str(
-                pipeline.nodes[node_id].params.get("binding_mode", "single item")
-            )
-            == "collection"
-        }
-        if collection_ids:
-            return collection_ids
-        return {source_ids[0]} if source_ids else set()
-
-    def _terminal_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
-        order = pipeline.topological_order()
-        consumed = {connection.source_id for connection in pipeline.connections}
-        terminals = [node_id for node_id in order if node_id not in consumed]
-        return terminals or list(order)
-
-    def _batch_output_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
-        return [
-            node_id
-            for node_id in pipeline.topological_order()
-            if pipeline.nodes[node_id].operation_id == "batch_output"
-        ]
-
-    def _batch_saved_node_ids(self, pipeline: PrototypePipeline) -> list[str]:
-        explicit = self._batch_output_node_ids(pipeline)
-        return explicit if explicit else self._terminal_node_ids(pipeline)
-
-    def _batch_output_tag(self, pipeline: PrototypePipeline, node_id: str) -> str:
-        node = pipeline.nodes[node_id]
-        if node.operation_id == "batch_output":
-            raw = str(node.params.get("tag", "")).strip()
-            return safe_batch_filename(raw or node_id)
-        return safe_batch_filename(f"{node.title}-{node_id}")
+        return batch_source_rows(self.pipeline)
 
     def _export_ome_dataset_dialog(self) -> None:
         reference_id = self._default_analysis_reference_node()
