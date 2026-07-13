@@ -20,13 +20,17 @@ from typing import Any
 
 import numpy as np
 
-from napari_vipp.core.metadata import ImageState
+from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_EXPLICIT,
+    ImageState,
+)
 
 SOURCE_REVISION_EVENTS = (
     "data",
     "set_data",
     "metadata",
     "name",
+    "rgb",
     "scale",
     "translate",
     "rotate",
@@ -54,6 +58,7 @@ class LiveLayerSnapshot:
     data: Any
     metadata: dict[str, Any]
     name: str
+    rgb: bool | None
     scale: tuple[float, ...] | None
     translate: tuple[float, ...] | None
     rotate: tuple[tuple[float, ...], ...] | None
@@ -194,6 +199,7 @@ class LiveLayerSourceAdapter:
             data=data,
             metadata=metadata,
             name=str(getattr(layer, "name", "")),
+            rgb=_optional_bool(getattr(layer, "rgb", None)),
             scale=_float_tuple(getattr(layer, "scale", None)),
             translate=_float_tuple(getattr(layer, "translate", None)),
             rotate=_matrix_tuple(getattr(layer, "rotate", None)),
@@ -209,29 +215,37 @@ def apply_live_layer_axis_transform(
     state: ImageState | None,
     snapshot: LiveLayerSnapshot,
 ) -> ImageState | None:
-    """Carry an axis-aligned napari layer transform into scientific metadata."""
+    """Carry napari axis declarations and aligned transforms into metadata."""
     if state is None:
         return None
     ndim = len(state.axes)
-    _require_supported_axis_transform(snapshot, ndim)
+    rgb_axis = _declared_rgb_axis(state, snapshot)
+    transform_ndim = ndim - 1 if rgb_axis is not None else ndim
+    _require_supported_axis_transform(snapshot, transform_ndim)
 
     scale = snapshot.scale
     translate = snapshot.translate
     units = snapshot.units
-    if scale is not None and len(scale) != ndim:
+    axis_labels = snapshot.axis_labels
+    if scale is not None and len(scale) != transform_ndim:
         raise ValueError(
             f"Live napari source '{snapshot.name}' has {len(scale)} scale values "
-            f"for {ndim} data axes."
+            f"for {transform_ndim} displayed data axes."
         )
-    if translate is not None and len(translate) != ndim:
+    if translate is not None and len(translate) != transform_ndim:
         raise ValueError(
             f"Live napari source '{snapshot.name}' has {len(translate)} translation "
-            f"values for {ndim} data axes."
+            f"values for {transform_ndim} displayed data axes."
         )
-    if units is not None and len(units) != ndim:
+    if units is not None and len(units) != transform_ndim:
         raise ValueError(
             f"Live napari source '{snapshot.name}' has {len(units)} units for "
-            f"{ndim} data axes."
+            f"{transform_ndim} displayed data axes."
+        )
+    if axis_labels is not None and len(axis_labels) != transform_ndim:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' has {len(axis_labels)} axis "
+            f"labels for {transform_ndim} displayed data axes."
         )
     if scale is not None and any(
         not np.isfinite(value) or value <= 0 for value in scale
@@ -241,18 +255,19 @@ def apply_live_layer_axis_transform(
             "axis scale. VIPP requires a positive axis-aligned physical grid."
         )
 
+    transform_axes = state.axes[:transform_ndim]
     use_scale = bool(
         scale is not None
         and (
             any(not np.isclose(value, 1.0) for value in scale)
-            or all(np.isclose(axis.scale, 1.0) for axis in state.axes)
+            or all(np.isclose(axis.scale, 1.0) for axis in transform_axes)
         )
     )
     use_translate = bool(
         translate is not None
         and (
             any(not np.isclose(value, 0.0) for value in translate)
-            or all(np.isclose(axis.translation, 0.0) for axis in state.axes)
+            or all(np.isclose(axis.translation, 0.0) for axis in transform_axes)
         )
     )
     physical_units = (
@@ -261,34 +276,160 @@ def apply_live_layer_axis_transform(
         else ()
     )
     use_units = bool(physical_units and any(physical_units))
-    if not (use_scale or use_translate or use_units):
-        return state
-
     axes = tuple(
         replace(
             axis,
             scale=(
                 float(scale[index])
-                if use_scale and scale is not None
+                if index < transform_ndim and use_scale and scale is not None
                 else axis.scale
             ),
             translation=(
                 float(translate[index])
-                if use_translate and translate is not None
+                if index < transform_ndim
+                and use_translate
+                and translate is not None
                 else axis.translation
             ),
             unit=(
                 physical_units[index]
-                if use_units and physical_units[index]
+                if index < transform_ndim
+                and use_units
+                and physical_units[index]
                 else axis.unit
             ),
         )
         for index, axis in enumerate(state.axes)
     )
+    axes = _axes_with_live_declarations(
+        axes,
+        axis_labels=axis_labels,
+        rgb_axis=rgb_axis,
+        rgb_channel_count=(state.shape[rgb_axis] if rgb_axis is not None else None),
+    )
+    axes_changed = axes != state.axes
+    transform_applied = use_scale or use_translate or use_units
+    if not (axes_changed or transform_applied):
+        return state
+
     source = state.metadata_source
-    if "napari layer transform" not in source.lower():
-        source = f"{source}; napari layer transform"
+    if transform_applied:
+        source = _appended_metadata_source(source, "napari layer transform")
+    if axes_changed:
+        source = _appended_metadata_source(source, "napari layer axis declarations")
     return replace(state, axes=axes, metadata_source=source)
+
+
+def _declared_rgb_axis(
+    state: ImageState,
+    snapshot: LiveLayerSnapshot,
+) -> int | None:
+    if snapshot.rgb is not True:
+        return None
+    ndim = len(state.axes)
+    if ndim < 3 or len(state.shape) != ndim:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' declares rgb=True, but its "
+            "image does not have a 2D-or-higher image plus a final colour axis."
+        )
+    channel_count = int(state.shape[-1])
+    if channel_count not in {3, 4}:
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' declares rgb=True, but its "
+            f"final data axis has size {channel_count}; napari RGB/RGBA data "
+            "requires 3 or 4 colour components."
+        )
+    last_axis = state.axes[-1]
+    if last_axis.is_explicit and last_axis.type != "channel":
+        raise ValueError(
+            f"Live napari source '{snapshot.name}' declares its final axis as "
+            "RGB/RGBA, but authoritative image metadata declares that axis as "
+            f"{last_axis.name!r} ({last_axis.type})."
+        )
+    return ndim - 1
+
+
+def _axes_with_live_declarations(
+    axes,
+    *,
+    axis_labels: tuple[str, ...] | None,
+    rgb_axis: int | None,
+    rgb_channel_count: int | None,
+):
+    updated = list(axes)
+    if axis_labels is not None:
+        for index, label in enumerate(axis_labels):
+            declaration = _axis_label_declaration(label)
+            if declaration is None or updated[index].is_explicit:
+                continue
+            name, axis_type, semantic = declaration
+            updated[index] = replace(
+                updated[index],
+                name=name,
+                type=axis_type if semantic else updated[index].type,
+                confidence=(
+                    AXIS_CONFIDENCE_EXPLICIT
+                    if semantic
+                    else updated[index].confidence
+                ),
+            )
+    if rgb_axis is not None and not updated[rgb_axis].is_explicit:
+        updated[rgb_axis] = replace(
+            updated[rgb_axis],
+            name="rgba" if rgb_channel_count == 4 else "rgb",
+            type="channel",
+            confidence=AXIS_CONFIDENCE_EXPLICIT,
+        )
+    return tuple(updated)
+
+
+def _axis_label_declaration(label: str) -> tuple[str, str, bool] | None:
+    text = str(label).strip()
+    if not text or _is_default_axis_label(text):
+        return None
+    normalized = text.casefold()
+    aliases = {
+        "time": "t",
+        "channel": "c",
+        "channels": "c",
+    }
+    name = aliases.get(normalized, normalized)
+    if name in {"x", "y", "z"}:
+        axis_type = "space"
+        semantic = True
+    elif name == "t":
+        axis_type = "time"
+        semantic = True
+    elif name in {"c", "rgb", "rgba"}:
+        axis_type = "channel"
+        semantic = True
+    else:
+        axis_type = "unknown"
+        semantic = False
+    return name, axis_type, semantic
+
+
+def _is_default_axis_label(label: str) -> bool:
+    normalized = label.strip().casefold()
+    try:
+        int(normalized)
+    except ValueError:
+        pass
+    else:
+        return True
+    compact = normalized.replace("_", " ").replace("-", " ")
+    pieces = compact.split()
+    return bool(
+        len(pieces) == 2
+        and pieces[0] in {"axis", "dim", "dimension"}
+        and pieces[1].lstrip("+-").isdigit()
+    )
+
+
+def _appended_metadata_source(source: str, label: str) -> str:
+    if label.casefold() in source.casefold():
+        return source
+    return f"{source}; {label}" if source else label
 
 
 def _require_supported_axis_transform(
@@ -400,6 +541,12 @@ def _string_tuple(value: Any) -> tuple[str, ...] | None:
         return tuple(str(item) for item in value)
     except TypeError:
         return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    return None
 
 
 __all__ = [
