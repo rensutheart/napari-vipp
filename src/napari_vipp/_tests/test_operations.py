@@ -2569,8 +2569,8 @@ def test_deconvolution_pipeline_metadata_follows_image_input():
     psf_state = image_state_from_array(
         psf,
         axes=(
-            AxisMetadata("y", "space", unit="micrometer", scale=0.05),
-            AxisMetadata("x", "space", unit="micrometer", scale=0.05),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.2),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.2),
         ),
         source_name="psf source",
         channels=(ChannelMetadata(name="PSF channel", color=0xFF00FF),),

@@ -11,6 +11,10 @@ from dataclasses import dataclass, field, replace
 from numbers import Integral, Real
 from typing import Any
 
+from napari_vipp.core.grid import (
+    validate_aligned_image_states,
+    validate_psf_image_states,
+)
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
     ImageState,
@@ -361,6 +365,7 @@ class SourcePayload:
     metadata: dict | None = None
     name: str = ""
     image_state: ImageState | None = None
+    revision_token: object | None = None
 
 
 @dataclass
@@ -461,6 +466,33 @@ LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "measure_objects_intensity",
     "nearest_object_distance",
     "object_colocalization_metrics",
+}
+SAME_SHAPE_GRID_OPERATIONS = {
+    "add_images",
+    "calculate_weighted_image",
+    "colocalization_metrics",
+    "colocalized_voxels",
+    "combine_channels",
+    "event_localization",
+    "label_overlap_association",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
+    "marker_controlled_watershed",
+    "mask_image",
+    "masked_colocalization_metrics",
+    "masked_colocalized_voxels",
+    "masked_racc_index",
+    "measure_objects_intensity",
+    "nearest_object_distance",
+    "object_colocalization_metrics",
+    "racc_index",
+    "ratio_image",
+    "subtract_images",
+}
+PSF_SAMPLING_GRID_OPERATIONS = {
+    "richardson_lucy_deconvolution",
+    "richardson_lucy_tv_deconvolution",
 }
 
 SOURCE_PARAMETERS = (
@@ -5448,6 +5480,7 @@ class PrototypePipeline:
                     kwargs["axis_types"] = tuple(
                         axis.type for axis in labels_state.axes
                     )
+            self._validate_multi_input_grids(node, input_states, kwargs)
             self._sync_colocalization_costes_thresholds(
                 node,
                 source_outputs,
@@ -5622,6 +5655,54 @@ class PrototypePipeline:
             params=transform_params,
         )
         return [(output, state)]
+
+    def _validate_multi_input_grids(
+        self,
+        node: GraphNode,
+        input_states: list[ImageState | TableState | None],
+        kwargs: dict[str, Any],
+    ) -> None:
+        """Enforce explicit physical-grid contracts before array operations."""
+        if node.operation_id in PSF_SAMPLING_GRID_OPERATIONS:
+            if (
+                len(input_states) >= 2
+                and isinstance(input_states[0], ImageState)
+                and isinstance(input_states[1], ImageState)
+            ):
+                validate_psf_image_states(
+                    input_states[0],
+                    input_states[1],
+                    spatial_ndim=int(kwargs["resolved_spatial_ndim"]),
+                    operation_title=node.title,
+                )
+            return
+
+        if node.operation_id not in SAME_SHAPE_GRID_OPERATIONS:
+            return
+        ports = self.input_ports(node.id)
+        image_inputs = [
+            (state, ports[index].label if index < len(ports) else f"Input {index + 1}")
+            for index, state in enumerate(input_states)
+            if isinstance(state, ImageState)
+        ]
+        if len(image_inputs) < 2:
+            return
+
+        # Some operations intentionally support a projected/broadcast mask or
+        # RGB reduction.  Their operation-level shape checks remain authoritative;
+        # this contract covers every group that claims the same sampled shape.
+        shape_groups: dict[
+            tuple[int, ...],
+            list[tuple[ImageState, str]],
+        ] = {}
+        for state, label in image_inputs:
+            shape_groups.setdefault(state.shape, []).append((state, label))
+        for same_shape_inputs in shape_groups.values():
+            validate_aligned_image_states(
+                tuple(state for state, _label in same_shape_inputs),
+                input_labels=tuple(label for _state, label in same_shape_inputs),
+                operation_title=node.title,
+            )
 
     def _inject_progress_context(
         self,
