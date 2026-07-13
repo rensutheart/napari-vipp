@@ -13,6 +13,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from napari_vipp.core.atomic_io import atomic_write_json
 from napari_vipp.core.pipeline import (
     GraphConnection,
     GraphNode,
@@ -295,10 +296,13 @@ def save_workflow(
     if not raw_path:
         raise ValueError("Workflow save path cannot be blank.")
     target = Path(raw_path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
     document = serialize_workflow(pipeline, positions, notes, metadata)
-    target.write_text(json.dumps(document, indent=2), encoding="utf-8")
-    return target
+    return atomic_write_json(
+        target,
+        document,
+        ensure_ascii=True,
+        trailing_newline=False,
+    )
 
 
 def load_workflow(path: str | Path) -> dict[str, Any]:

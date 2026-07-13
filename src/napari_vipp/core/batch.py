@@ -27,6 +27,15 @@ from pathlib import Path
 from typing import Any
 
 from napari_vipp import __version__ as VIPP_VERSION
+from napari_vipp.core.atomic_io import (
+    atomic_replace as _replace_with_retry,
+)
+from napari_vipp.core.atomic_io import (
+    atomic_write_json as _atomic_write_json,
+)
+from napari_vipp.core.atomic_io import (
+    atomic_write_text,
+)
 from napari_vipp.core.io import read_image
 from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
@@ -710,61 +719,8 @@ def _save_item_record(directory: Path, item: BatchItemRecord) -> Path:
 
 
 def atomic_write_json(path: str | Path, document: object) -> Path:
-    """Atomically replace a UTF-8 JSON document on the same filesystem."""
-    raw = str(path).strip()
-    if not raw:
-        raise ValueError("JSON output path cannot be blank.")
-    target = Path(raw).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            json.dump(
-                _json_safe(document),
-                stream,
-                indent=2,
-                ensure_ascii=False,
-                allow_nan=False,
-            )
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        _replace_with_retry(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return target
-
-
-def atomic_write_text(path: str | Path, content: str) -> Path:
-    """Atomically replace a UTF-8 text artifact."""
-    raw = str(path).strip()
-    if not raw:
-        raise ValueError("Text output path cannot be blank.")
-    target = Path(raw).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _replace_with_retry(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return target
-
-
-def _replace_with_retry(source: Path, target: Path) -> None:
-    for attempt in range(6):
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            if attempt == 5:
-                raise
-            # Virus scanners, file indexers, and network filesystems can hold
-            # a newly created or replaced file briefly.
-            time.sleep(0.01 * (2**attempt))
+    """Preserve the batch API's explicit JSON value normalization."""
+    return _atomic_write_json(path, document, normalizer=_json_safe)
 
 
 def _promote_no_replace(source: Path, target: Path) -> None:

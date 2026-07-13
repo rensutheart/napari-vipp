@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+import napari_vipp.core.atomic_io as atomic_io_module
 from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
@@ -22,6 +24,10 @@ def _build_pipeline() -> PrototypePipeline:
     median = pipeline.add_node("median_filter")
     pipeline.connect("gaussian", median.id)
     return pipeline
+
+
+def _workflow_temporary_files(target: Path) -> list[Path]:
+    return list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
 def test_serialize_roundtrip_preserves_graph(tmp_path):
@@ -54,6 +60,83 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
     }
     assert ("gaussian", "median_filter_1") in connection_pairs
     assert workflow["positions"]["gaussian"] == (330.0, 20.0)
+
+
+def test_save_workflow_atomically_replaces_existing_file_without_format_drift(
+    tmp_path,
+):
+    pipeline = _build_pipeline()
+    positions = {"input": (12.5, -3.0)}
+    document = serialize_workflow(pipeline, positions)
+    target = tmp_path / "workflow.json"
+    target.write_text("previous workflow bytes", encoding="utf-8")
+
+    saved = save_workflow(target, pipeline, positions)
+
+    assert saved == target
+    assert target.read_text(encoding="utf-8") == json.dumps(document, indent=2)
+    assert _workflow_temporary_files(target) == []
+
+
+def test_save_workflow_preserves_target_when_json_serialization_fails(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = _build_pipeline()
+    target = tmp_path / "workflow.json"
+    original = b"existing valid workflow\n"
+    target.write_bytes(original)
+
+    def fail_dump(_document, stream, **_kwargs):
+        stream.write('{"partially_written": ')
+        raise TypeError("simulated JSON serialization failure")
+
+    monkeypatch.setattr(atomic_io_module.json, "dump", fail_dump)
+
+    with pytest.raises(TypeError, match="simulated JSON serialization failure"):
+        save_workflow(target, pipeline)
+
+    assert target.read_bytes() == original
+    assert _workflow_temporary_files(target) == []
+
+
+def test_save_workflow_preserves_target_when_atomic_replace_fails(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = _build_pipeline()
+    target = tmp_path / "workflow.json"
+    original = b"existing valid workflow\n"
+    target.write_bytes(original)
+
+    def fail_replace(source, replacement_target):
+        assert source.parent == replacement_target.parent
+        raise OSError("simulated atomic replace failure")
+
+    monkeypatch.setattr(atomic_io_module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated atomic replace failure"):
+        save_workflow(target, pipeline)
+
+    assert target.read_bytes() == original
+    assert _workflow_temporary_files(target) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), -float("inf")],
+    ids=["nan", "positive-infinity", "negative-infinity"],
+)
+def test_save_workflow_rejects_non_standard_non_finite_json(tmp_path, value):
+    pipeline = _build_pipeline()
+    pipeline.set_param("gaussian", "_vipp_non_finite", value)
+    target = tmp_path / "workflow.json"
+
+    with pytest.raises(ValueError, match="Out of range float values"):
+        save_workflow(target, pipeline)
+
+    assert not target.exists()
+    assert _workflow_temporary_files(target) == []
 
 
 @pytest.mark.parametrize(
@@ -266,6 +349,8 @@ def test_workflow_rejects_blank_paths_and_unknown_positions(tmp_path):
 
     with pytest.raises(ValueError, match="save path.*blank"):
         save_workflow("", pipeline)
+    with pytest.raises(ValueError, match="save path.*blank"):
+        save_workflow(" \t\n", pipeline)
     with pytest.raises(ValueError, match="path.*blank"):
         load_workflow("")
     with pytest.raises(ValueError, match="positions reference unknown"):
