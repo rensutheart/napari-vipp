@@ -184,7 +184,6 @@ from napari_vipp.core.preview import (
     thumbnail_contrast_limits,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
-from napari_vipp.core.snapshots import WorkflowSnapshot
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
@@ -288,6 +287,7 @@ from napari_vipp.ui.examples import (
 from napari_vipp.ui.examples import (
     _example_workflow_dir as _example_workflow_dir,
 )
+from napari_vipp.ui.history import WorkflowHistory, WorkflowHistorySnapshot
 from napari_vipp.ui.lifecycle import WidgetLifecycle
 from napari_vipp.ui.palette import NodePalette
 from napari_vipp.ui.plots import (
@@ -409,14 +409,6 @@ class BatchPreviewResult:
 
     def __getitem__(self, index):
         return self.rows[index]
-
-
-@dataclass(frozen=True)
-class WorkflowHistorySnapshot:
-    workflow: WorkflowSnapshot
-    selected_node_id: str
-    preview_disabled_node_ids: tuple[str, ...] = ()
-    active_pinned_node_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2152,10 +2144,11 @@ class VippWidget(QWidget):
         self._dock_chrome_configured = False
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
-        self._undo_stack: list[WorkflowHistorySnapshot] = []
-        self._redo_stack: list[WorkflowHistorySnapshot] = []
-        self._restoring_history = False
-        self._pending_parameter_undo_key: tuple[str, str] | None = None
+        self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
+        # Kept as aliases while downstream tests and integrations transition to
+        # the explicit session-history component.
+        self._undo_stack = self._history.undo_stack
+        self._redo_stack = self._history.redo_stack
         self._rescale_auto_output_ranges: dict[str, tuple[float, float]] = {}
         self._code_dialogs: list[QDialog] = []
         self._pending_dirty_node_ids: set[str] = set()
@@ -3436,11 +3429,12 @@ class VippWidget(QWidget):
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
         self._finish_parameter_history_group()
-        if not self._undo_stack:
+        if not self._history.can_undo:
             return
         current = self._current_history_snapshot()
-        snapshot = self._undo_stack.pop()
-        self._redo_stack.append(current)
+        snapshot = self._history.undo(current)
+        if snapshot is None:
+            return
         self._restore_history_snapshot(snapshot)
         self._sync_history_actions()
         self.status_label.setText("Undid last workflow edit.")
@@ -3448,13 +3442,12 @@ class VippWidget(QWidget):
     def redo(self) -> None:
         """Reapply the most recently undone workflow graph snapshot."""
         self._finish_parameter_history_group()
-        if not self._redo_stack:
+        if not self._history.can_redo:
             return
         current = self._current_history_snapshot()
-        snapshot = self._redo_stack.pop()
-        self._undo_stack.append(current)
-        if len(self._undo_stack) > self.HISTORY_LIMIT:
-            del self._undo_stack[: len(self._undo_stack) - self.HISTORY_LIMIT]
+        snapshot = self._history.redo(current)
+        if snapshot is None:
+            return
         self._restore_history_snapshot(snapshot)
         self._sync_history_actions()
         self.status_label.setText("Redid workflow edit.")
@@ -3495,16 +3488,9 @@ class VippWidget(QWidget):
         self,
         snapshot: WorkflowHistorySnapshot | None = None,
     ) -> None:
-        if self._restoring_history:
-            return
         snapshot = snapshot or self._current_history_snapshot()
-        if self._undo_stack and self._undo_stack[-1] == snapshot:
-            return
-        self._undo_stack.append(snapshot)
-        if len(self._undo_stack) > self.HISTORY_LIMIT:
-            del self._undo_stack[: len(self._undo_stack) - self.HISTORY_LIMIT]
-        self._redo_stack.clear()
-        self._sync_history_actions()
+        if self._history.push(snapshot):
+            self._sync_history_actions()
 
     def _push_undo_if_changed(self, before: WorkflowHistorySnapshot) -> None:
         if before != self._current_history_snapshot():
@@ -3512,19 +3498,17 @@ class VippWidget(QWidget):
 
     def _record_parameter_undo(self, node_id: str, name: str) -> None:
         key = (node_id, name)
-        if self._pending_parameter_undo_key == key:
+        if not self._history.should_capture_group(key):
             return
         self._push_undo_snapshot()
-        self._pending_parameter_undo_key = key
 
     def _finish_parameter_history_group(self) -> None:
-        self._pending_parameter_undo_key = None
+        self._history.finish_group()
 
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
-        self._restoring_history = True
         self._debounce_timer.stop()
         self._interactive_collection_source_paths.clear()
-        try:
+        with self._history.suspend_recording():
             workflow = snapshot.workflow
             pinned_layer = self._active_pinned_layer()
             if pinned_layer is not None:
@@ -3566,12 +3550,10 @@ class VippWidget(QWidget):
                 self.graph_view.select_node(selected)
             else:
                 self._select_first_available_node()
-        finally:
-            self._restoring_history = False
 
     def _sync_history_actions(self) -> None:
-        undo_enabled = bool(self._undo_stack)
-        redo_enabled = bool(self._redo_stack)
+        undo_enabled = self._history.can_undo
+        redo_enabled = self._history.can_redo
         self.undo_action.setEnabled(undo_enabled)
         self.redo_action.setEnabled(redo_enabled)
         undo_shortcut = QKeySequence(QKeySequence.Undo).toString(
