@@ -117,6 +117,12 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_HEX,
     channel_color_labels_from_metadata,
 )
+from napari_vipp.core.execution import (
+    PipelineRunRequest as PipelineRunRequest,
+)
+from napari_vipp.core.execution import (
+    PipelineRunResult as PipelineRunResult,
+)
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -335,6 +341,7 @@ from napari_vipp.ui.source_adapter import (
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
+from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
 
 _RGB_VOLUME_CHANNELS = (
     (0, "Red", "red"),
@@ -407,39 +414,6 @@ class BatchPreviewResult:
 
     def __getitem__(self, index):
         return self.rows[index]
-
-
-@dataclass(frozen=True)
-class PipelineRunRequest:
-    run_id: int
-    workflow: dict
-    input_data: object
-    input_metadata: object
-    input_name: str
-    source_payloads: dict[str, SourcePayload]
-    dirty_node_ids: frozenset[str] | None = None
-    cached_outputs: dict[str, object] | None = None
-    cached_output_states: dict[str, object] | None = None
-    cached_node_outputs: dict[str, list[object]] | None = None
-    cached_node_output_states: dict[str, list[object]] | None = None
-    completed_node_ids: frozenset[str] = frozenset()
-    cached_execution_states: dict[str, str] | None = None
-    cached_execution_messages: dict[str, str] | None = None
-    manual_node_ids: frozenset[str] | None = None
-    retain_node_ids: frozenset[str] = frozenset()
-    prune_unretained: bool = False
-    cancel_event: threading.Event | None = None
-    source_revisions: tuple[SourceRevisionToken, ...] = ()
-
-
-@dataclass(frozen=True)
-class PipelineRunResult:
-    run_id: int
-    workflow: dict
-    pipeline: PrototypePipeline | None = None
-    error: str = ""
-    cancelled: bool = False
-    source_revisions: tuple[SourceRevisionToken, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1048,117 +1022,6 @@ class GeneratedLayerContrastWorker(QRunnable):
                 identity=request.identity,
             )
         )
-
-
-class PipelineRunSignals(QObject):
-    node_started = Signal(object)
-    progress = Signal(object)
-    finished = Signal(object)
-
-
-class PipelineRunWorker(QRunnable):
-    """Run the headless pipeline on a serialized graph snapshot."""
-
-    def __init__(self, request: PipelineRunRequest):
-        super().__init__()
-        self.request = request
-        self.signals = PipelineRunSignals()
-
-    def run(self) -> None:
-        try:
-            workflow = deserialize_workflow(deepcopy(self.request.workflow))
-            pipeline = PrototypePipeline()
-            pipeline.restore_graph(
-                workflow["nodes"],
-                workflow["connections"],
-                workflow.get("output_tunnels", ()),
-            )
-            self._hydrate_cached_pipeline_outputs(pipeline)
-            pipeline.run(
-                self.request.input_data,
-                input_metadata=self.request.input_metadata,
-                input_name=self.request.input_name,
-                source_payloads=self.request.source_payloads,
-                dirty_node_ids=self.request.dirty_node_ids,
-                node_started_callback=self._emit_node_started,
-                progress_callback=self._emit_progress,
-                cancel_callback=self._is_cancelled,
-                manual_mode=MANUAL_RUN_SKIP,
-                manual_node_ids=self.request.manual_node_ids,
-                retain_node_ids=self.request.retain_node_ids,
-                prune_unretained=self.request.prune_unretained,
-            )
-        except OperationCancelled as exc:
-            self.signals.finished.emit(
-                PipelineRunResult(
-                    self.request.run_id,
-                    self.request.workflow,
-                    error=str(exc),
-                    cancelled=True,
-                    source_revisions=self.request.source_revisions,
-                )
-            )
-            return
-        except Exception as exc:
-            self.signals.finished.emit(
-                PipelineRunResult(
-                    self.request.run_id,
-                    self.request.workflow,
-                    error=str(exc),
-                    source_revisions=self.request.source_revisions,
-                )
-            )
-            return
-        self.signals.finished.emit(
-            PipelineRunResult(
-                self.request.run_id,
-                self.request.workflow,
-                pipeline,
-                source_revisions=self.request.source_revisions,
-            )
-        )
-
-    def _emit_node_started(self, node_id: str) -> None:
-        self.signals.node_started.emit((self.request.run_id, node_id))
-
-    def _emit_progress(
-        self,
-        node_id: str,
-        current: int,
-        total: int,
-        message: str,
-    ) -> None:
-        self.signals.progress.emit(
-            (self.request.run_id, node_id, int(current), int(total), str(message))
-        )
-
-    def _is_cancelled(self) -> bool:
-        return bool(self.request.cancel_event and self.request.cancel_event.is_set())
-
-    def _hydrate_cached_pipeline_outputs(self, pipeline: PrototypePipeline) -> None:
-        if self.request.dirty_node_ids is None:
-            return
-        if self.request.cached_outputs is not None:
-            pipeline.outputs = dict(self.request.cached_outputs)
-        if self.request.cached_output_states is not None:
-            pipeline.output_states = dict(self.request.cached_output_states)
-        if self.request.cached_node_outputs is not None:
-            pipeline.node_outputs = {
-                node_id: list(outputs)
-                for node_id, outputs in self.request.cached_node_outputs.items()
-            }
-        if self.request.cached_node_output_states is not None:
-            pipeline.node_output_states = {
-                node_id: list(states)
-                for node_id, states in self.request.cached_node_output_states.items()
-            }
-        if self.request.cached_execution_states is not None:
-            pipeline.node_execution_states = dict(self.request.cached_execution_states)
-        if self.request.cached_execution_messages is not None:
-            pipeline.node_execution_messages = dict(
-                self.request.cached_execution_messages
-            )
-        pipeline.completed_node_ids = set(self.request.completed_node_ids)
 
 
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
