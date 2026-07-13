@@ -53,6 +53,7 @@ from napari_vipp._widget import (
     _exact_generated_layer_contrast_limits,
     _example_workflow_path,
     _histogram_summary,
+    _input_histogram_marker_key,
     _input_histogram_markers,
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
@@ -577,6 +578,20 @@ def test_node_code_text_includes_call_and_source(qtbot):
     assert editor is not None
     assert hasattr(editor, "_vipp_python_highlighter")
     dialog.close()
+
+
+def test_node_code_translates_scalar_channel_axis_sentinel(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("bilateral_filter")
+    widget._connect_nodes("input", node.id)
+
+    code = widget._node_code_text(node.id)
+    call_line = next(line for line in code.splitlines() if line.startswith("output ="))
+
+    assert "'channel_axis': None" in code
+    assert "channel_axis=None" in call_line
+    assert "channel_axis=-1" not in call_line
 
 
 def test_undo_redo_restores_deleted_node_and_connections(qtbot):
@@ -1888,6 +1903,35 @@ def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
     )
 
 
+@pytest.mark.parametrize("trailing_size", [3, 4])
+def test_inferred_yxc_auto_is_unavailable_but_explicit_spatial_modes_remain(
+    qtbot,
+    trailing_size,
+):
+    data = np.zeros((7, 9, trailing_size), dtype=np.float32)
+    viewer = _Viewer(data)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    filtered = widget.add_node_from_palette("remove_small_objects")
+    widget._connect_nodes("threshold", filtered.id)
+
+    control = widget._parameter_widgets["spatial_mode"]
+    choices = [
+        control.combo.itemText(index) for index in range(control.combo.count())
+    ]
+
+    assert choices == [
+        "Auto from axes - unavailable (axes are inferred or missing)",
+        "2D YX",
+        "3D ZYX",
+    ]
+    assert widget.pipeline.input_state_for_node(filtered.id).axis_order == "YXC"
+    assert (
+        widget.pipeline.input_state_for_node(filtered.id).axis_confidence
+        == "shape-inferred"
+    )
+
+
 def test_remove_small_objects_uses_observed_sizes_and_contextual_units(qtbot):
     data = np.zeros((3, 12, 12), dtype=np.float32)
     data[:, 1:5, 1:5] = 10
@@ -2103,7 +2147,7 @@ def test_nodes_without_parameters_hide_parameter_group(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    node = widget.add_node_from_palette("sobel_filter")
+    node = widget.add_node_from_palette("invert")
     widget._select_node(node.id)
 
     assert widget.parameter_group.isHidden()
@@ -2125,7 +2169,7 @@ def test_slice_wise_stack_node_shows_axis_notice(qtbot):
     assert "Reorder Axes" in notice.text()
 
 
-def test_slice_wise_stack_notice_can_be_only_parameter_content(qtbot):
+def test_slice_wise_stack_notice_shares_channel_axis_parameter(qtbot):
     viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -2135,7 +2179,8 @@ def test_slice_wise_stack_notice_can_be_only_parameter_content(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert not widget.parameter_group.isHidden()
-    assert set(widget._parameter_widgets) == {"operation_notice"}
+    assert set(widget._parameter_widgets) == {"channel_axis", "operation_notice"}
+    assert widget._parameter_widgets["channel_axis"].value() == -1
 
 
 def test_slice_wise_notice_hides_for_2d_input(qtbot):
@@ -2821,7 +2866,8 @@ def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert "threshold_scope" not in widget._parameter_widgets
-    assert widget.parameter_group.isHidden()
+    assert set(widget._parameter_widgets) == {"channel_axis"}
+    assert not widget.parameter_group.isHidden()
     assert not widget.rescale_input_histogram_group.isHidden()
     assert widget.rescale_input_histogram_scope_row.isHidden()
     assert widget.rescale_input_histogram_group.title() == "Input Histogram"
@@ -2982,6 +3028,7 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
         histogram_bins=256,
         max_iterations=10_000,
         progress=None,
+        channel_axis=None,
     ):
         calls["count"] += 1
         started.set()
@@ -2992,6 +3039,7 @@ def test_large_threshold_histogram_is_backgrounded_and_cached(qtbot, monkeypatch
             histogram_bins=histogram_bins,
             max_iterations=max_iterations,
             progress=progress,
+            channel_axis=channel_axis,
         )
 
     monkeypatch.setattr(
@@ -3191,6 +3239,7 @@ def test_otsu_histogram_bins_refresh_marker_but_reuse_distribution(
         histogram_bins=256,
         max_iterations=10_000,
         progress=None,
+        channel_axis=None,
     ):
         result = original_threshold(
             values,
@@ -3198,6 +3247,7 @@ def test_otsu_histogram_bins_refresh_marker_but_reuse_distribution(
             histogram_bins=histogram_bins,
             max_iterations=max_iterations,
             progress=progress,
+            channel_axis=channel_axis,
         )
         threshold_calls.append((int(histogram_bins), float(result)))
         return result
@@ -3660,6 +3710,178 @@ def test_histogram_does_not_infer_channels_from_trailing_axis_size():
     assert counts is not None and counts.ndim == 1
     assert int(counts.sum()) == data.size
     assert colors is not None and len(colors) == 1
+
+
+@pytest.mark.parametrize("x_size", [3, 4])
+def test_histogram_does_not_treat_explicit_zyx_x_as_channels(x_size):
+    data = np.arange(5 * 7 * x_size, dtype=np.float32).reshape(5, 7, x_size)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+
+    counts, _x_range, colors = _histogram_summary(
+        data,
+        state=state,
+        scope="Stack",
+    )
+
+    assert state is not None and state.axis_confidence == "explicit"
+    assert counts is not None and counts.ndim == 1
+    assert int(counts.sum()) == data.size
+    assert colors is not None and len(colors) == 1
+
+
+@pytest.mark.parametrize("channel_count", [3, 4])
+def test_histogram_uses_explicit_yxc_channel_axis(channel_count):
+    data = np.arange(7 * 9 * channel_count, dtype=np.float32).reshape(
+        7,
+        9,
+        channel_count,
+    )
+    state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+
+    counts, _x_range, colors = _histogram_summary(
+        data,
+        state=state,
+        scope="Stack",
+    )
+
+    assert state is not None and state.axis_confidence == "explicit"
+    assert counts is not None and counts.shape[0] == channel_count
+    assert counts.sum(axis=1).tolist() == [63] * channel_count
+    assert colors is not None and len(colors) == channel_count
+
+
+@pytest.mark.parametrize("metadata", [None, {"axes": "ZYX"}, {"axes": "YXC"}])
+def test_automatic_threshold_marker_defaults_to_scalar(
+    monkeypatch,
+    metadata,
+):
+    data = np.arange(7 * 9 * 3, dtype=np.float32).reshape(7, 9, 3)
+    state = image_state_from_array(data, layer_metadata=metadata)
+    observed = []
+
+    def recorded_threshold(
+        values,
+        operation_id,
+        histogram_bins=256,
+        max_iterations=10_000,
+        progress=None,
+        channel_axis=None,
+    ):
+        observed.append(channel_axis)
+        return 1.0
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.automatic_threshold_value",
+        recorded_threshold,
+    )
+
+    markers = _input_histogram_markers(
+        "otsu_threshold",
+        data,
+        state=state,
+        scope="Stack histogram",
+        params={"histogram_bins": 256},
+    )
+
+    assert observed == [None]
+    assert markers[0][1] == 1.0
+
+
+def test_automatic_threshold_scalar_slice_uses_operation_trailing_plane(
+    monkeypatch,
+):
+    data = np.arange(7 * 9 * 3, dtype=np.float32).reshape(7, 9, 3)
+    state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+    observed = []
+
+    def recorded_threshold(
+        values,
+        operation_id,
+        histogram_bins=256,
+        max_iterations=10_000,
+        progress=None,
+        channel_axis=None,
+    ):
+        observed.append((np.asarray(values).shape, channel_axis))
+        return 1.0
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.automatic_threshold_value",
+        recorded_threshold,
+    )
+
+    _input_histogram_markers(
+        "otsu_threshold",
+        data,
+        state=state,
+        scope="Slice histogram",
+        current_step=(4, 0, 0),
+        current_step_nsteps=data.shape,
+        params={"histogram_bins": 256, "channel_axis": -1},
+    )
+
+    assert observed == [((9, 3), None)]
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_shape", "expected_channel_axis"),
+    [
+        ("Stack histogram", (2, 7, 9, 3), 3),
+        ("Slice histogram", (7, 9, 3), 2),
+    ],
+)
+def test_automatic_threshold_marker_remaps_persisted_numeric_channel_axis(
+    monkeypatch,
+    scope,
+    expected_shape,
+    expected_channel_axis,
+):
+    data = np.arange(2 * 7 * 9 * 3, dtype=np.float32).reshape(2, 7, 9, 3)
+    state = image_state_from_array(data)
+    observed = []
+
+    def recorded_threshold(
+        values,
+        operation_id,
+        histogram_bins=256,
+        max_iterations=10_000,
+        progress=None,
+        channel_axis=None,
+    ):
+        observed.append((np.asarray(values).shape, channel_axis))
+        return 1.0
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.automatic_threshold_value",
+        recorded_threshold,
+    )
+
+    _input_histogram_markers(
+        "otsu_threshold",
+        data,
+        state=state,
+        scope=scope,
+        current_step=(1, 0, 0, 0),
+        current_step_nsteps=data.shape,
+        params={"histogram_bins": 256, "channel_axis": 3},
+    )
+
+    assert state.axis_order == "ZYXC"
+    assert state.axis_confidence == "shape-inferred"
+    assert observed == [(expected_shape, expected_channel_axis)]
+
+
+def test_global_threshold_marker_cache_key_includes_channel_axis():
+    scalar_key = _input_histogram_marker_key(
+        "otsu_threshold",
+        {"histogram_bins": 256, "channel_axis": -1},
+    )
+    channel_key = _input_histogram_marker_key(
+        "otsu_threshold",
+        {"histogram_bins": 256, "channel_axis": 2},
+    )
+
+    assert scalar_key != channel_key
 
 
 @pytest.mark.parametrize(
@@ -4541,6 +4763,48 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
     assert (
         "1. Composite \u2192 RGB: mapped channels to RGB" in widget.history_label.text()
     )
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_axis", "expected_rgb"),
+    [
+        (None, None, False),
+        ({"axes": "ZYX"}, None, False),
+        ({"axes": "YXC"}, 2, True),
+    ],
+)
+def test_channel_axis_and_rgb_presentation_require_explicit_semantics(
+    qtbot,
+    metadata,
+    expected_axis,
+    expected_rgb,
+):
+    data = np.zeros((7, 9, 3), dtype=np.uint16)
+    viewer = _Viewer(data, metadata=metadata)
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    extract = widget.add_node_from_palette("extract_channel")
+    widget._connect_nodes("input", extract.id)
+
+    assert widget._preferred_channel_axis(extract.id) == expected_axis
+    assert widget._selected_channel_axis(extract.id, data) == expected_axis
+    assert widget._display_rgb(data, "input") is expected_rgb
+
+
+def test_explicit_numeric_channel_axis_is_used_without_shape_fallback(qtbot):
+    data = np.zeros((7, 9, 3), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    composite = widget.add_node_from_palette("composite_to_rgb")
+
+    widget.pipeline.set_param(composite.id, "channel_axis", 0)
+    widget._connect_nodes("input", composite.id)
+
+    assert widget._selected_channel_axis(composite.id, data) == 0
+
+    widget.pipeline.set_param(composite.id, "channel_axis", 99)
+
+    assert widget._selected_channel_axis(composite.id, data) is None
 
 
 def test_skeleton_graph_overlay_inspects_as_rgb_layer(qtbot):
@@ -6290,7 +6554,10 @@ def test_rescale_axes_dirty_run_starts_at_rescale_and_reuses_upstream_cache(
         replace(original_rescale, function=fake_rescale_axes),
     )
 
-    viewer = _Viewer(np.ones((8, 8), dtype=np.uint8) * 20)
+    viewer = _Viewer(
+        np.ones((8, 8), dtype=np.uint8) * 20,
+        metadata={"axes": "YX"},
+    )
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
@@ -9977,6 +10244,50 @@ def test_crop_parameter_text_entry_stays_image_limited(qtbot):
     assert control.value() == 15
     assert control.slider.maximum() == 15
     assert widget.pipeline.nodes[node.id].params["top"] == 15
+
+
+@pytest.mark.parametrize(
+    ("shape", "metadata", "expected_height", "expected_width"),
+    [
+        ((5, 7, 3), {"axes": "ZYX"}, 7, 3),
+        ((5, 7, 4), {"axes": "ZYX"}, 7, 4),
+        ((7, 9, 3), {"axes": "YXC"}, 7, 9),
+        ((7, 9, 3), None, 9, 3),
+    ],
+)
+def test_crop_and_block_bounds_use_explicit_xy_or_conservative_fallback(
+    qtbot,
+    shape,
+    metadata,
+    expected_height,
+    expected_width,
+):
+    widget = VippWidget(_Viewer(np.zeros(shape), metadata=metadata))
+    qtbot.addWidget(widget)
+    crop = widget.add_node_from_palette("crop_stack")
+    adaptive = widget.add_node_from_palette("adaptive_mean_threshold")
+    widget._connect_nodes("input", crop.id)
+    widget._connect_nodes("input", adaptive.id)
+
+    crop_specs = {
+        spec.name: spec for spec in NODE_LIBRARY_BY_ID["crop_stack"].parameters
+    }
+    block_spec = next(
+        spec
+        for spec in NODE_LIBRARY_BY_ID["adaptive_mean_threshold"].parameters
+        if spec.name == "block_size"
+    )
+    block_maximum = max(min(expected_height, expected_width), 3)
+    if block_maximum % 2 == 0:
+        block_maximum -= 1
+
+    assert widget._crop_bounds(crop.id, crop_specs["top"]).maximum == (
+        expected_height - 1
+    )
+    assert widget._crop_bounds(crop.id, crop_specs["left"]).maximum == (
+        expected_width - 1
+    )
+    assert widget._block_size_bounds(adaptive.id, block_spec).maximum == block_maximum
 
 
 def test_auto_contrast_button_updates_scale_and_offset(qtbot):

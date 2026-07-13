@@ -189,6 +189,7 @@ from napari_vipp.core.pipeline import (
     PrototypePipeline,
     SourcePayload,
     grouped_palette_specs,
+    operation_call_parameter_value,
 )
 from napari_vipp.core.preview import (
     MONOCHROME_COLORMAPS,
@@ -3346,7 +3347,12 @@ class VippWidget(QWidget):
         if node.params:
             lines.append("params = {")
             for key, value in node.params.items():
-                lines.append(f"    {key!r}: {value!r},")
+                call_value = operation_call_parameter_value(
+                    node.operation_id,
+                    key,
+                    value,
+                )
+                lines.append(f"    {key!r}: {call_value!r},")
             lines.append("}")
             lines.append("")
         else:
@@ -3374,7 +3380,11 @@ class VippWidget(QWidget):
         accepted = list(signature.parameters)
         first_arg = self._node_code_first_arg(node, connections)
         kwargs = {
-            key: value
+            key: operation_call_parameter_value(
+                node.operation_id,
+                key,
+                value,
+            )
             for key, value in node.params.items()
             if key in accepted and (not accepted or key != accepted[0])
         }
@@ -6177,11 +6187,11 @@ class VippWidget(QWidget):
         shape = tuple(getattr(data, "shape", ()) or ())
         if state is not None:
             for index, axis in enumerate(state.axes):
-                if axis.type == "channel" or axis.name.lower() == "c":
+                if _axis_is_explicit(axis) and (
+                    axis.type == "channel" or axis.name.lower() == "c"
+                ):
                     if 0 <= index < len(shape):
                         return int(shape[index])
-        if len(shape) >= 3 and shape[-1] in {3, 4}:
-            return int(shape[-1])
         return 0
 
     def _born_wolf_psf_bounds(
@@ -6468,8 +6478,10 @@ class VippWidget(QWidget):
         state = self._channel_color_reference_state(node_id)
         if state is not None:
             for index, axis in enumerate(state.axes):
-                if (axis.type == "channel" or axis.name.lower() == "c") and (
-                    axis.name.lower() not in {"rgb", "rgba"}
+                if (
+                    _axis_is_explicit(axis)
+                    and (axis.type == "channel" or axis.name.lower() == "c")
+                    and axis.name.lower() not in {"rgb", "rgba"}
                 ):
                     count = int(state.shape[index])
                     return min(count, MAX_CHANNEL_COLOR_CONTROLS) if count > 1 else 0
@@ -7022,23 +7034,25 @@ class VippWidget(QWidget):
         if resolved:
             for index, choice in enumerate(choices):
                 if str(choice).startswith("Auto from axes"):
-                    labels[index] = f"Auto from axes - using {resolved}"
+                    if resolved.startswith("unavailable"):
+                        labels[index] = f"Auto from axes - {resolved}"
+                    else:
+                        labels[index] = f"Auto from axes - using {resolved}"
                     break
         return tuple(labels)
 
     def _resolved_auto_spatial_mode_label(self, node_id: str) -> str:
-        node = self.pipeline.nodes.get(node_id)
-        if node is None:
-            return ""
-        mode = str(node.params.get("spatial_mode", "Auto from axes")).strip().lower()
-        if not mode.startswith("auto"):
-            return ""
-        resolved = node.params.get("resolved_spatial_ndim")
-        if resolved == 3:
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is None or not bool(
+            getattr(state, "spatial_axes_explicit", False)
+        ):
+            return "unavailable (axes are inferred or missing)"
+        spatial_count = sum(axis.type == "space" for axis in state.axes)
+        if spatial_count >= 3:
             return "3D ZYX"
-        if resolved == 2:
+        if spatial_count >= 2:
             return "2D YX"
-        return "3D ZYX" if self._input_spatial_count(node_id) >= 3 else "2D YX"
+        return "unavailable (fewer than two explicit spatial axes)"
 
     def _available_project_axis_choices(
         self,
@@ -7196,7 +7210,9 @@ class VippWidget(QWidget):
 
     def _input_spatial_count(self, node_id: str) -> int:
         state = self.pipeline.input_state_for_node(node_id)
-        if state is not None:
+        if state is not None and bool(
+            getattr(state, "spatial_axes_explicit", False)
+        ):
             spatial_count = sum(axis.type == "space" for axis in state.axes)
             if spatial_count:
                 return spatial_count
@@ -8038,10 +8054,11 @@ class VippWidget(QWidget):
     ) -> int | None:
         if state is not None and len(state.axes) == arr.ndim:
             for index, axis in enumerate(state.axes):
-                if axis.type == "channel" or axis.name.lower() in {"c", "rgb", "rgba"}:
+                if _axis_is_explicit(axis) and (
+                    axis.type == "channel"
+                    or axis.name.lower() in {"c", "rgb", "rgba"}
+                ):
                     return index
-        if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-            return arr.ndim - 1
         return None
 
     def _thumbnail_preview_consumes_contrast(
@@ -8482,7 +8499,10 @@ class VippWidget(QWidget):
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
-        height, width = _xy_shape(np.asarray(data))
+        height, width = _xy_shape(
+            np.asarray(data),
+            self.pipeline.input_state_for_node(node_id),
+        )
         maximum = height - 1 if spec.name in {"top", "bottom"} else width - 1
         return ParameterBounds(0, max(maximum, 0), 1, 0)
 
@@ -8503,23 +8523,19 @@ class VippWidget(QWidget):
         return ParameterBounds(spec.minimum, max(maximum, spec.minimum), 1, 0)
 
     def _selected_channel_axis(self, node_id: str, arr: np.ndarray) -> int | None:
+        if arr.ndim <= 0:
+            return None
         node = self.pipeline.nodes.get(node_id)
         if node is not None and "channel_axis" in node.params:
             try:
                 stored = int(node.params.get("channel_axis", -1))
             except Exception:
                 stored = -1
-            if stored >= 0:
-                return int(np.clip(stored, 0, arr.ndim - 1))
+            if 0 <= stored < arr.ndim:
+                return stored
         preferred = self._preferred_channel_axis(node_id)
-        if preferred is not None:
+        if preferred is not None and 0 <= preferred < arr.ndim:
             return preferred
-        if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-            return arr.ndim - 1
-        if arr.ndim >= 4:
-            return 1 if arr.ndim >= 5 else 0
-        if arr.ndim == 3 and arr.shape[0] <= 16:
-            return 0
         return None
 
     def _preferred_channel_axis(self, node_id: str) -> int | None:
@@ -8527,7 +8543,9 @@ class VippWidget(QWidget):
         if state is None:
             return None
         for index, axis in enumerate(state.axes):
-            if axis.type == "channel" or axis.name.lower() == "c":
+            if _axis_is_explicit(axis) and (
+                axis.type == "channel" or axis.name.lower() == "c"
+            ):
                 return index
         return None
 
@@ -8535,7 +8553,10 @@ class VippWidget(QWidget):
         data = self.pipeline.input_data_for_node(node_id)
         if data is None:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
-        height, width = _xy_shape(np.asarray(data))
+        height, width = _xy_shape(
+            np.asarray(data),
+            self.pipeline.input_state_for_node(node_id),
+        )
         maximum = max(min(height, width), 3)
         if maximum % 2 == 0:
             maximum -= 1
@@ -8829,7 +8850,12 @@ class VippWidget(QWidget):
             or (
                 node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
                 and name
-                in {"threshold_scope", "histogram_bins", "max_iterations"}
+                in {
+                    "threshold_scope",
+                    "histogram_bins",
+                    "max_iterations",
+                    "channel_axis",
+                }
             )
         ):
             self._update_rescale_input_histogram(
@@ -8844,7 +8870,16 @@ class VippWidget(QWidget):
         if not isinstance(note, QLabel) or node is None:
             return
         mode = str(node.params.get("spatial_mode", "Auto from axes")).lower()
-        if self._input_spatial_count(node.id) < 3:
+        state = self.pipeline.input_state_for_node(node.id)
+        if mode.startswith("auto") and not bool(
+            getattr(state, "spatial_axes_explicit", False)
+        ):
+            text = (
+                "Auto from axes is unavailable because axis meaning is inferred. "
+                "Choose the explicit 2D or 3D mode before calculating."
+            )
+            color = "#f59e0b"
+        elif self._input_spatial_count(node.id) < 3:
             text = "Holes are evaluated in the connected YX image."
             color = "#94a3b8"
         elif mode.startswith("2d"):
@@ -11607,6 +11642,7 @@ class VippWidget(QWidget):
             spatial_count = (
                 sum(axis.type == "space" for axis in state.axes)
                 if state is not None
+                and bool(getattr(state, "spatial_axes_explicit", False))
                 else 0
             )
             if spatial_count >= 3:
@@ -12513,6 +12549,14 @@ class VippWidget(QWidget):
         if arr.ndim < 3 or arr.shape[-1] not in (3, 4):
             return False
         state = self._node_output_state(node_id, output_port) if node_id else None
+        if state is None or len(getattr(state, "axes", ())) != arr.ndim:
+            return False
+        channel_axis = state.axes[-1]
+        if not _axis_is_explicit(channel_axis) or not (
+            channel_axis.type == "channel"
+            or channel_axis.name.lower() in {"c", "rgb", "rgba"}
+        ):
+            return False
         kind = str(getattr(state, "kind", "")).lower()
         return kind in {"rgb image", "rgba image"}
 
@@ -12940,11 +12984,35 @@ def _expanded_bounds(value: float) -> tuple[float, float]:
     return value - padding, value + padding
 
 
-def _xy_shape(arr: np.ndarray) -> tuple[int, int]:
+def _axis_is_explicit(axis) -> bool:
+    """Return whether carried axis semantics came from an explicit source."""
+    return bool(getattr(axis, "is_explicit", False))
+
+
+def _xy_shape(arr: np.ndarray, state=None) -> tuple[int, int]:
+    """Resolve Y/X sizes without inferring RGB from an array dimension."""
     if arr.ndim < 2:
         return 1, 1
-    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-        return int(arr.shape[-3]), int(arr.shape[-2])
+    axes = tuple(getattr(state, "axes", ()))
+    if len(axes) == arr.ndim:
+        y_axis = next(
+            (
+                index
+                for index, axis in enumerate(axes)
+                if _axis_is_explicit(axis) and axis.name.lower() == "y"
+            ),
+            None,
+        )
+        x_axis = next(
+            (
+                index
+                for index, axis in enumerate(axes)
+                if _axis_is_explicit(axis) and axis.name.lower() == "x"
+            ),
+            None,
+        )
+        if y_axis is not None and x_axis is not None and y_axis != x_axis:
+            return int(arr.shape[y_axis]), int(arr.shape[x_axis])
     return int(arr.shape[-2]), int(arr.shape[-1])
 
 
@@ -13008,7 +13076,11 @@ def _histogram_has_stack_scope(data, state=None) -> bool:
             name = str(axis.name).lower()
             if int(size) <= 1:
                 continue
-            if name in {"x", "y", "rgb"} or axis.type == "channel":
+            if name in {"x", "y"}:
+                continue
+            if _axis_is_explicit(axis) and (
+                name in {"rgb", "rgba"} or axis.type == "channel"
+            ):
                 continue
             return True
         return False
@@ -13021,6 +13093,7 @@ def _histogram_state_signature(state) -> tuple:
         (
             str(getattr(axis, "name", "")).casefold(),
             str(getattr(axis, "type", "")).casefold(),
+            str(getattr(axis, "confidence", "")).casefold(),
             getattr(axis, "source_axis", None),
         )
         for axis in axes
@@ -13092,6 +13165,8 @@ def _input_histogram_marker_key(operation_id: str, params: dict | None) -> tuple
         names = ["histogram_bins"] if "histogram_bins" in values else []
         if operation_id == "minimum_threshold":
             names.append("max_iterations")
+        if "channel_axis" in values:
+            names.append("channel_axis")
         return selected(*names)
     return ()
 
@@ -13152,8 +13227,13 @@ def _input_histogram_markers(
             markers.append(("high", float(high), QColor("#38bdf8")))
         return markers
     if operation_id in GLOBAL_THRESHOLD_OPERATIONS:
-        source = _histogram_source(
+        channel_axis = _threshold_marker_channel_axis(
             data,
+            params=params,
+        )
+        source = _threshold_marker_source(
+            data,
+            channel_axis=channel_axis,
             state=state,
             scope=scope,
             current_step=current_step,
@@ -13170,6 +13250,7 @@ def _input_histogram_markers(
             ),
             max_iterations=(params or {}).get("max_iterations", 10_000),
             progress=progress,
+            channel_axis=source[1],
         )
         if value is None or not np.isfinite(value):
             return []
@@ -13178,6 +13259,79 @@ def _input_histogram_markers(
         )
         return [("threshold", marker_value, QColor("#f59e0b"))]
     return []
+
+
+def _threshold_marker_channel_axis(
+    data,
+    *,
+    params: dict | None,
+) -> int | None:
+    """Resolve only the numeric channel axis persisted by the threshold node."""
+    value = (params or {}).get("channel_axis", -1)
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value,
+        (int, np.integer),
+    ):
+        raise ValueError("Threshold channel_axis must be an integer or -1.")
+    axis = int(value)
+    if axis == -1:
+        return None
+    ndim = np.asarray(data).ndim
+    if not 0 <= axis < ndim:
+        raise ValueError(
+            f"Threshold channel_axis {axis} is outside an array with {ndim} axes."
+        )
+    return axis
+
+
+def _threshold_marker_source(
+    data,
+    *,
+    channel_axis: int | None,
+    state=None,
+    scope: str = "Slice",
+    current_step=None,
+    current_step_nsteps=None,
+) -> tuple[np.ndarray, int | None]:
+    """Return the exact positional plane used by a threshold operation marker."""
+    arr = np.asarray(data)
+    if str(scope).strip().lower().startswith("stack"):
+        return arr, channel_axis
+
+    scalar_axes = [
+        axis for axis in range(arr.ndim) if axis != channel_axis
+    ]
+    if len(scalar_axes) <= 2:
+        return arr, channel_axis
+
+    keep_axes = set(scalar_axes[-2:])
+    if channel_axis is not None:
+        keep_axes.add(channel_axis)
+    result = arr
+    remaining_axes = list(range(arr.ndim))
+    for original_axis in reversed(range(arr.ndim)):
+        if original_axis in keep_axes:
+            continue
+        local_axis = remaining_axes.index(original_axis)
+        step_axis = _metadata_current_step_axis(
+            state,
+            original_axis,
+            current_step,
+        )
+        index = _histogram_axis_index(
+            step_axis,
+            int(result.shape[local_axis]),
+            current_step,
+            current_step_nsteps=current_step_nsteps,
+        )
+        result = _axis_index_view(result, local_axis, index)
+        remaining_axes.pop(local_axis)
+
+    if channel_axis is None:
+        return result, None
+    return result, remaining_axes.index(channel_axis)
 
 
 def _input_histogram_draggable_markers(
@@ -13431,7 +13585,11 @@ def _state_histogram_slice(
 def _histogram_channel_axis(arr: np.ndarray, state) -> tuple[int | None, str]:
     if state is not None and len(getattr(state, "axes", ())) == arr.ndim:
         for index, axis in enumerate(state.axes):
-            if axis.type == "channel" and arr.shape[index] > 1:
+            if (
+                _axis_is_explicit(axis)
+                and axis.type == "channel"
+                and arr.shape[index] > 1
+            ):
                 return index, axis.name.lower()
     return None, ""
 
