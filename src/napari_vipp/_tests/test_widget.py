@@ -8063,11 +8063,12 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert values["save_python_script"] is True
     assert values["continue_on_error"] is True
     assert dialog.load_config_button.text() == "Load config..."
-    assert dialog.load_config_button.isEnabled()
+    assert not dialog.load_config_button.isEnabled()
     assert dialog.save_config_button.text() == "Save config..."
-    assert dialog.save_config_button.isEnabled()
+    assert not dialog.save_config_button.isEnabled()
     assert dialog.demo_config_button.text() == "Open batch demo..."
-    assert dialog.demo_config_button.isEnabled()
+    assert not dialog.demo_config_button.isEnabled()
+    assert not dialog.preview_button.isEnabled()
 
 
 def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
@@ -8144,7 +8145,11 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    dialog = CollectionBatchDialog(
+        widget,
+        source_nodes=widget._batch_source_rows(),
+        actions=widget._collection_batch_dialog_actions(),
+    )
     qtbot.addWidget(dialog)
     monkeypatch.setattr(
         "napari_vipp._widget.QFileDialog.getExistingDirectory",
@@ -8337,7 +8342,11 @@ def test_collection_batch_demo_confirmation_uses_active_dialog_parent(
 ):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    dialog = CollectionBatchDialog(
+        widget,
+        source_nodes=widget._batch_source_rows(),
+        actions=widget._collection_batch_dialog_actions(),
+    )
     qtbot.addWidget(dialog)
     captured = []
 
@@ -8697,7 +8706,11 @@ def test_collection_batch_preview_reports_new_collision_and_terminal_fallback(
     existing_path.parent.mkdir(parents=True)
     existing_path.write_bytes(b"already here")
 
-    dialog = CollectionBatchDialog(widget, source_nodes=widget._batch_source_rows())
+    dialog = CollectionBatchDialog(
+        widget,
+        source_nodes=widget._batch_source_rows(),
+        actions=widget._collection_batch_dialog_actions(),
+    )
     qtbot.addWidget(dialog)
     dialog.input_edit.setText(str(input_dir))
     dialog.pattern_edit.setText("*.npy")

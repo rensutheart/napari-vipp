@@ -272,6 +272,7 @@ from napari_vipp.ui.batch import (
 )
 from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
 from napari_vipp.ui.batch import BatchSourceBinding as BatchSourceBinding
+from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.controls import (
     BoolControl,
@@ -4070,7 +4071,11 @@ class VippWidget(QWidget):
         *,
         config_path: str | Path | None = None,
     ) -> None:
-        dialog = CollectionBatchDialog(self, source_nodes=self._batch_source_rows())
+        dialog = CollectionBatchDialog(
+            self,
+            source_nodes=self._batch_source_rows(),
+            actions=self._collection_batch_dialog_actions(),
+        )
         if config_path is not None:
             try:
                 config = self._load_collection_batch_config(config_path)
@@ -4109,6 +4114,24 @@ class VippWidget(QWidget):
             + (f" {validation_text}" if validation_text else "")
         )
         self._show_collection_batch_summary(result, validation_text)
+
+    def _collection_batch_dialog_actions(self) -> CollectionBatchActions:
+        return CollectionBatchActions(
+            preview_batch=lambda values, preview_limit: (
+                self._preview_collection_batch(
+                    **values,
+                    preview_limit=preview_limit,
+                )
+            ),
+            choose_demo=lambda dialog_parent: (
+                self._choose_collection_batch_demo(dialog_parent=dialog_parent)
+            ),
+            source_rows=self._batch_source_rows,
+            load_config=self._load_collection_batch_config,
+            save_config=lambda path, values: (
+                self._save_collection_batch_config(path, **values)
+            ),
+        )
 
     def _choose_collection_batch_demo(
         self,

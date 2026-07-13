@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -31,7 +32,6 @@ from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
     BatchConfig,
     ExistingFilePolicy,
-    load_batch_config,
 )
 from napari_vipp.core.batch_demo import SyntheticBatchDemo
 
@@ -71,13 +71,42 @@ class BatchPreviewResult:
         return self.rows[index]
 
 
+BatchDialogValues = dict[str, object]
+PreviewBatchAction = Callable[[BatchDialogValues, int], BatchPreviewResult]
+ChooseBatchDemoAction = Callable[[QWidget], SyntheticBatchDemo | None]
+BatchSourceRowsAction = Callable[[], list[dict[str, str]]]
+LoadBatchConfigAction = Callable[[str | Path], BatchConfig]
+SaveBatchConfigAction = Callable[
+    [str | Path, BatchDialogValues],
+    tuple[Path, ...],
+]
+
+
+@dataclass(frozen=True)
+class CollectionBatchActions:
+    """Application actions required by :class:`CollectionBatchDialog`."""
+
+    preview_batch: PreviewBatchAction
+    choose_demo: ChooseBatchDemoAction
+    source_rows: BatchSourceRowsAction
+    load_config: LoadBatchConfigAction
+    save_config: SaveBatchConfigAction
+
+
 class CollectionBatchDialog(QDialog):
     """Front door for running a workflow over one or more local collections."""
 
-    def __init__(self, parent=None, source_nodes: list[dict] | None = None):
+    def __init__(
+        self,
+        parent=None,
+        source_nodes: list[dict] | None = None,
+        *,
+        actions: CollectionBatchActions | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Run collection batch")
         self.setMinimumWidth(880)
+        self._actions = actions
         self._source_rows: list[dict[str, object]] = []
         self._loaded_config_path: Path | None = None
         self._demo: SyntheticBatchDemo | None = None
@@ -153,6 +182,11 @@ class CollectionBatchDialog(QDialog):
             "inputs, explicit outputs, provenance, and ground-truth validation."
         )
         self.demo_config_button.clicked.connect(self._create_demo)
+        actions_available = self._actions is not None
+        self.preview_button.setEnabled(actions_available)
+        self.load_config_button.setEnabled(actions_available)
+        self.save_config_button.setEnabled(actions_available)
+        self.demo_config_button.setEnabled(actions_available)
         config_row = QWidget()
         config_layout = QHBoxLayout(config_row)
         config_layout.setContentsMargins(0, 0, 0, 0)
@@ -327,15 +361,11 @@ class CollectionBatchDialog(QDialog):
         }
 
     def _preview_batch(self) -> bool:
-        parent = self.parent()
-        if parent is None or not hasattr(parent, "_preview_collection_batch"):
+        if self._actions is None:
             self.preview_status.setText("Preview is available from the VIPP widget.")
             return False
         try:
-            rows = parent._preview_collection_batch(
-                **self.values(),
-                preview_limit=25,
-            )
+            rows = self._actions.preview_batch(self.values(), 25)
         except Exception as exc:
             self.preview_table.setRowCount(0)
             self.preview_status.setText(f"Preview failed: {exc}")
@@ -402,18 +432,17 @@ class CollectionBatchDialog(QDialog):
         return True
 
     def _create_demo(self) -> None:
-        parent = self.parent()
-        if parent is None or not hasattr(parent, "_choose_collection_batch_demo"):
+        if self._actions is None:
             self.preview_status.setText(
                 "Opening the synthetic demo is available from the VIPP widget."
             )
             return
         try:
-            demo = parent._choose_collection_batch_demo(dialog_parent=self)
+            demo = self._actions.choose_demo(self)
             if demo is None:
                 return
-            self._set_source_nodes(parent._batch_source_rows())
-            config = parent._load_collection_batch_config(demo.config_path)
+            self._set_source_nodes(self._actions.source_rows())
+            config = self._actions.load_config(demo.config_path)
             self._apply_config(config)
             self._loaded_config_path = demo.config_path
             self.set_demo_context(demo)
@@ -424,6 +453,11 @@ class CollectionBatchDialog(QDialog):
             return
 
     def _load_config(self) -> None:
+        if self._actions is None:
+            self.preview_status.setText(
+                "Loading a batch config is available from the VIPP widget."
+            )
+            return
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Load batch configuration",
@@ -433,11 +467,7 @@ class CollectionBatchDialog(QDialog):
         if not path:
             return
         try:
-            parent = self.parent()
-            if parent is not None and hasattr(parent, "_load_collection_batch_config"):
-                config = parent._load_collection_batch_config(path)
-            else:
-                config = load_batch_config(path)
+            config = self._actions.load_config(path)
             self._apply_config(config)
         except Exception as exc:
             self.preview_status.setText(f"Could not load batch config: {exc}")
@@ -446,6 +476,11 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setText(f"Loaded {Path(path).name}.")
 
     def _save_config(self) -> None:
+        if self._actions is None:
+            self.preview_status.setText(
+                "Saving a batch config is available from the VIPP widget."
+            )
+            return
         default_dir = Path(self.output_edit.text()).expanduser()
         default_path = (
             default_dir / BATCH_CONFIG_FILENAME
@@ -462,14 +497,8 @@ class CollectionBatchDialog(QDialog):
             return
         if not path.lower().endswith(".json"):
             path += ".json"
-        parent = self.parent()
-        if parent is None or not hasattr(parent, "_save_collection_batch_config"):
-            self.preview_status.setText(
-                "Saving a batch config is available from the VIPP widget."
-            )
-            return
         try:
-            saved = parent._save_collection_batch_config(path, **self.values())
+            saved = self._actions.save_config(path, self.values())
         except Exception as exc:
             self.preview_status.setText(f"Could not save batch config: {exc}")
             return
@@ -555,9 +584,10 @@ class CollectionBatchDialog(QDialog):
             self.output_edit.setText(path)
 
 __all__ = [
+    "BatchDialogValues",
     "BatchPreviewResult",
     "BatchPreviewRow",
     "BatchSourceBinding",
+    "CollectionBatchActions",
     "CollectionBatchDialog",
 ]
-
