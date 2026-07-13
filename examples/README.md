@@ -27,7 +27,7 @@ custom or external workflow JSON files.
 
 | Workflow | Input sample | Purpose |
 | --- | --- | --- |
-| `synthetic-batch-provenance.json` | Generated paired NumPy collections | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Use `Create demo...` in the batch dialog or select this entry through `Open example...`. |
+| `synthetic-batch-provenance.json` | Ready-to-run paired NumPy demo | End-to-end batch validation with three deterministic sorted-position pairs, explicit NPY/TIFF/TSV outputs, known overlap labels and measurements, portable config/runner files, and full manifest provenance. Select it through `Open example...`, click `Open batch demo...`, choose a working-copy location, review the populated preview, and click `Run demo batch`. |
 | `otsu-red-channel-labels.json` | `VIPP synthetic multichannel volume` | Label-cleanup review path: split the red/TRITC-like channel, blur, Otsu threshold, fill holes, connected components, clear border objects, and volume filtering. |
 | `red-channel-object-intensity-measurements.json` | `VIPP synthetic multichannel volume` | Named multi-input table node review: filtered labels plus matching intensity image, carried through a `Red intensity` tunnel, into `Measure Objects + Intensity`. |
 | `red-channel-merged-measurement-table.json` | `VIPP synthetic multichannel volume` | PCA-oriented table assembly path: object morphology, object intensity via `Red intensity` tunnel, table merge, and metadata columns. |

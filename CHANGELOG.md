@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Changed the deterministic batch entry from an ambiguous `Create...` action
+  into `Open batch demo...`. The example now explains its working-copy step,
+  opens the collection dialog already configured and previewed, highlights the
+  three paired items and nine planned outputs, and gives a direct `Run demo
+  batch` next step with a summary of the functionality being demonstrated.
 - Added loadable, versioned `vipp_batch_config.json` files that preserve source
   bindings, resolved selected outputs, naming/format choices, the required
   workflow companion, the optional runner choice, the workflow hash, and the

@@ -34,6 +34,7 @@ Good first examples:
 | Try PSF-aware restoration | `3D Richardson-Lucy / TV Deconvolution` |
 | Review colocalization outputs | `RACC Colocalization` |
 | Audit skeleton/network measurements | `Skeleton QC` |
+| Explore collection batch processing and provenance | `Deterministic Batch & Provenance` |
 
 ## The Workspace
 
@@ -400,13 +401,21 @@ delegates to the shared batch core.
 
 ### Batch Output Basics
 
-For a deterministic end-to-end check, open `Run batch...` and choose `Create
-demo...`, or select `Deterministic Batch & Provenance` under `Open example...`.
-Choose a parent folder; VIPP creates a new uniquely named demo directory and
-never overwrites an earlier one. It loads the bundled two-source workflow,
-applies its portable config, and previews three paired 8 x 8 fields. Because
-loading the demo replaces the current graph, VIPP asks for confirmation first;
-save any graph changes you want to keep.
+For a deterministic end-to-end check, select `Deterministic Batch & Provenance`
+under `Open example...` and click `Open batch demo...`. VIPP explains that the
+demo needs a writable working copy, then asks where to save it; it creates a new
+uniquely named directory and never overwrites an earlier one. The collection
+window opens with the bundled two-source workflow and portable config already
+loaded and a collision-aware preview of three paired 8 x 8 fields already
+visible. A highlighted guide summarizes the demonstrated features and the next
+step is explicit: click `Run demo batch` to write nine outputs and validate the
+scientific results and provenance. The same example remains available through
+`Run batch...` -> `Open batch demo...`.
+
+Loading the demo replaces the current graph, so VIPP asks for confirmation
+first; save any graph changes you want to keep. The working copy is kept in the
+location you choose so its config, runner, results, manifests, and sidecars can
+be inspected after the run.
 
 The generated bundle includes the two NumPy input collections,
 `vipp_batch_workflow.json`, `vipp_batch_config.json`,

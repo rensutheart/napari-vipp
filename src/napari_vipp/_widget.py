@@ -239,10 +239,11 @@ EXAMPLE_WORKFLOWS: tuple[ExampleWorkflowSpec, ...] = (
         "Batch & Reproducibility",
         "Deterministic Batch & Provenance",
         "synthetic-batch-provenance.json",
-        ("Generated paired .npy collection",),
-        "Create three deterministic paired fields, preview collision-aware "
-        "planning, and write explicit image, label, table, config, runner, "
-        "manifest, archive, and per-item provenance artifacts.",
+        ("Ready-to-run paired .npy demo",),
+        "Open a ready-to-run three-item batch demo with paired sources, "
+        "collision-aware preview, explicit image/label/table outputs, saved "
+        "config and runner files, manifests, archives, per-item provenance, "
+        "and automatic ground-truth validation.",
         generated_batch_demo=True,
     ),
     ExampleWorkflowSpec(
@@ -2501,12 +2502,20 @@ class ExampleWorkflowDialog(QDialog):
             self.details_label.setText("Select an example workflow.")
             return
         samples = ", ".join(spec.samples)
-        self.open_button.setText("Create..." if spec.generated_batch_demo else "Open")
-        source_label = (
-            "Generated input" if spec.generated_batch_demo else "Source sample"
+        self.open_button.setText(
+            "Open batch demo..." if spec.generated_batch_demo else "Open"
+        )
+        source_label = "Demo data" if spec.generated_batch_demo else "Source sample"
+        next_step = (
+            "\n\nVIPP will ask where to save a small self-contained working "
+            "copy, then open the batch window already configured and "
+            "previewed. Click Run demo batch to process and validate it."
+            if spec.generated_batch_demo
+            else ""
         )
         self.details_label.setText(
             f"{spec.title}\n\n{spec.description}\n\n{source_label}: {samples}"
+            f"{next_step}"
         )
 
     def _on_item_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -2527,6 +2536,7 @@ class CollectionBatchDialog(QDialog):
         self.setMinimumWidth(880)
         self._source_rows: list[dict[str, object]] = []
         self._loaded_config_path: Path | None = None
+        self._demo: SyntheticBatchDemo | None = None
 
         source_nodes = source_nodes or [
             {
@@ -2593,10 +2603,10 @@ class CollectionBatchDialog(QDialog):
         self.load_config_button.clicked.connect(self._load_config)
         self.save_config_button = QPushButton("Save config...")
         self.save_config_button.clicked.connect(self._save_config)
-        self.demo_config_button = QPushButton("Create demo...")
+        self.demo_config_button = QPushButton("Open batch demo...")
         self.demo_config_button.setToolTip(
-            "Create a deterministic paired collection and replace the current "
-            "graph with its validation workflow."
+            "Open a ready-to-run deterministic batch workspace with paired "
+            "inputs, explicit outputs, provenance, and ground-truth validation."
         )
         self.demo_config_button.clicked.connect(self._create_demo)
         config_row = QWidget()
@@ -2617,6 +2627,15 @@ class CollectionBatchDialog(QDialog):
         help_label.setWordWrap(True)
         help_label.setStyleSheet("color: #94a3b8;")
 
+        self.demo_guide_label = QLabel("")
+        self.demo_guide_label.setWordWrap(True)
+        self.demo_guide_label.setTextFormat(Qt.RichText)
+        self.demo_guide_label.setStyleSheet(
+            "color: #dbeafe; padding: 9px; background: #172554; "
+            "border: 1px solid #3b82f6; border-radius: 4px;"
+        )
+        self.demo_guide_label.hide()
+
         preview_row = QWidget()
         preview_layout = QHBoxLayout(preview_row)
         preview_layout.setContentsMargins(0, 0, 0, 0)
@@ -2624,18 +2643,38 @@ class CollectionBatchDialog(QDialog):
         preview_layout.addWidget(self.preview_status, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Run batch")
+        self.run_button = buttons.button(QDialogButtonBox.Ok)
+        self.run_button.setText("Run batch")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.addWidget(config_row)
+        layout.addWidget(self.demo_guide_label)
         layout.addWidget(source_group)
         layout.addLayout(form)
         layout.addWidget(help_label)
         layout.addWidget(preview_row)
         layout.addWidget(self.preview_table)
         layout.addWidget(buttons)
+
+    def set_demo_context(self, demo: SyntheticBatchDemo) -> None:
+        """Present a generated bundle as a ready-to-run example workspace."""
+        self._demo = demo
+        self.run_button.setText("Run demo batch")
+        self.demo_guide_label.setText(
+            "<b>Ready-to-run batch demo</b><br>"
+            "Two collection sources are paired by sorted position. The preview "
+            "plans three items and three explicit outputs per item: an NPY "
+            "image, TIFF labels, and a TSV table. Explore source bindings, "
+            "preview planning, Error/Skip/Overwrite replay policies, failure "
+            "continuation, and portable config/runner controls below. Click "
+            "<b>Run demo batch</b> to execute the workflow and validate its "
+            "scientific outputs, manifests, archive, and per-item provenance "
+            "against exact ground truth.<br>"
+            f"Working copy: <code>{escape(str(demo.root))}</code>"
+        )
+        self.demo_guide_label.show()
 
     def _set_source_nodes(self, source_nodes: list[dict]) -> None:
         self.preview_table.setRowCount(0)
@@ -2807,6 +2846,13 @@ class CollectionBatchDialog(QDialog):
                 "Compatibility fallback: terminal graph outputs will be saved; "
                 "add Batch Output nodes to make the selection explicit."
             )
+        if self._demo is not None:
+            planned_outputs = sum(len(row.outputs) for row in rows)
+            messages.append(
+                "Demo ready - click Run demo batch to process "
+                f"{total_items} paired items, write {planned_outputs} outputs, "
+                "and validate the results and provenance."
+            )
         self.preview_status.setText(" ".join(messages))
         return True
 
@@ -2814,7 +2860,7 @@ class CollectionBatchDialog(QDialog):
         parent = self.parent()
         if parent is None or not hasattr(parent, "_choose_collection_batch_demo"):
             self.preview_status.setText(
-                "Creating the synthetic demo is available from the VIPP widget."
+                "Opening the synthetic demo is available from the VIPP widget."
             )
             return
         try:
@@ -2825,15 +2871,12 @@ class CollectionBatchDialog(QDialog):
             config = parent._load_collection_batch_config(demo.config_path)
             self._apply_config(config)
             self._loaded_config_path = demo.config_path
+            self.set_demo_context(demo)
             if not self._preview_batch():
                 return
         except Exception as exc:
-            self.preview_status.setText(f"Could not create batch demo: {exc}")
+            self.preview_status.setText(f"Could not open batch demo: {exc}")
             return
-        self.preview_status.setText(
-            f"Created {demo.root.name}. Previewed "
-            f"{self.preview_table.rowCount()} deterministic paired items."
-        )
 
     def _load_config(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
@@ -5055,6 +5098,7 @@ class VippWidget(QWidget):
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._source_inspection_cache: dict[str, tuple[int, SourceInspection]] = {}
         self._file_source_payload_cache: dict[tuple[object, ...], SourcePayload] = {}
+        self._interactive_collection_source_paths: dict[str, Path] = {}
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
         self._source_load_pending = False
@@ -6415,6 +6459,7 @@ class VippWidget(QWidget):
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
         self._restoring_history = True
         self._debounce_timer.stop()
+        self._interactive_collection_source_paths.clear()
         try:
             workflow = self._deserialize_history_workflow(snapshot.workflow)
             pinned_layer = self._active_pinned_layer()
@@ -7647,6 +7692,7 @@ class VippWidget(QWidget):
 
     def _new_workflow(self) -> None:
         self._finish_parameter_history_group()
+        self._interactive_collection_source_paths.clear()
         before = self._current_history_snapshot()
         self.pipeline.reset_empty_graph()
         self._preview_disabled_node_ids.clear()
@@ -7775,6 +7821,7 @@ class VippWidget(QWidget):
     def load_workflow_file(self, path: str | Path) -> Path:
         """Load a workflow file into the widget and recompute the graph."""
         self._finish_parameter_history_group()
+        self._interactive_collection_source_paths.clear()
         before = self._current_history_snapshot()
         source = Path(path).expanduser()
         workflow = load_workflow(source)
@@ -7856,6 +7903,13 @@ class VippWidget(QWidget):
                 config = self._load_collection_batch_config(config_path)
                 dialog._apply_config(config)
                 dialog._loaded_config_path = Path(config_path)
+                config_root = Path(config_path).expanduser().resolve().parent
+                if (
+                    config_root / SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME
+                ).is_file():
+                    dialog.set_demo_context(
+                        SyntheticBatchDemo.from_root(config_root)
+                    )
                 dialog._preview_batch()
             except Exception as exc:
                 self.status_label.setText(f"Could not open batch config: {exc}")
@@ -7891,10 +7945,12 @@ class VippWidget(QWidget):
         owner = dialog_parent or self
         answer = QMessageBox.question(
             owner,
-            "Load synthetic batch demo",
-            "Create and load the deterministic batch demo? This replaces the "
-            "current graph even if you later cancel the batch dialog. Save any "
-            "workflow changes you want to keep before continuing.",
+            "Open deterministic batch demo",
+            "Open a ready-to-run batch demo? VIPP will prepare a small "
+            "self-contained working copy, load its two-source workflow, and "
+            "open the batch window already configured and previewed. This "
+            "replaces the current graph even if you later cancel the batch "
+            "dialog, so save any workflow changes you want to keep first.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -7902,7 +7958,7 @@ class VippWidget(QWidget):
             return None
         parent_path = QFileDialog.getExistingDirectory(
             owner,
-            "Choose a parent folder for the synthetic batch demo",
+            "Choose where to save the batch demo working copy",
             "",
         )
         if not parent_path:
@@ -7916,10 +7972,44 @@ class VippWidget(QWidget):
     ) -> SyntheticBatchDemo:
         demo = create_synthetic_batch_demo(root)
         self.load_workflow_file(demo.workflow_path)
+        preview_paths = self._load_collection_batch_demo_preview(demo)
+        preview_names = ", ".join(path.name for path in preview_paths)
         self.status_label.setText(
-            f"Created deterministic batch demo at {demo.root}."
+            f"Opened deterministic batch demo at {demo.root}. "
+            f"The graph is previewing the first paired item ({preview_names})."
         )
         return demo
+
+    def _load_collection_batch_demo_preview(
+        self,
+        demo: SyntheticBatchDemo,
+    ) -> tuple[Path, ...]:
+        """Load the first planned pair without changing collection bindings."""
+        config = load_batch_config(demo.config_path)
+        workflow = self._batch_workflow_document()
+        plan = plan_batch(
+            workflow,
+            config,
+            workflow_path=demo.workflow_path,
+        )
+        if not plan.items:
+            raise ValueError("The batch demo does not contain any input items.")
+        first_item = plan.items[0]
+        self._interactive_collection_source_paths = {
+            node_id: Path(path)
+            for node_id, path in first_item.source_paths.items()
+            if node_id in self.pipeline.nodes
+        }
+        if not self._interactive_collection_source_paths:
+            raise ValueError(
+                "The batch demo did not resolve any interactive Image Sources."
+            )
+        self._invalidate_pipeline_cache()
+        self.run_pipeline(
+            force_sync=True,
+            manual_node_ids=self.pipeline.manual_node_ids(),
+        )
+        return tuple(self._interactive_collection_source_paths.values())
 
     def _validate_collection_batch_demo_result(
         self,
@@ -9046,7 +9136,12 @@ class VippWidget(QWidget):
         if mode == "file path":
             path = str(node.params.get("file_path", "")).strip()
             if not path:
-                return SourcePayload(None, {}, ""), None
+                representative = self._interactive_collection_source_paths.get(
+                    node.id
+                )
+                if representative is None:
+                    return SourcePayload(None, {}, ""), None
+                path = str(representative)
             cached = self._cached_file_source_payload(node)
             if cached is not None:
                 return cached, None
@@ -9093,6 +9188,24 @@ class VippWidget(QWidget):
             ),
             layer,
         )
+
+    @contextmanager
+    def _preserve_interactive_collection_workflow_params(self):
+        """Keep representative preview calculations out of workflow params."""
+        if not self._interactive_collection_source_paths:
+            yield
+            return
+        original_params = {
+            node_id: dict(node.params)
+            for node_id, node in self.pipeline.nodes.items()
+        }
+        try:
+            yield
+        finally:
+            for node_id, params in original_params.items():
+                node = self.pipeline.nodes.get(node_id)
+                if node is not None:
+                    node.params = params
 
     def _viewer_aligned_source_payload(
         self,
@@ -9701,6 +9814,7 @@ class VippWidget(QWidget):
         }
         if not self.pipeline.remove_node(node_id):
             return
+        self._interactive_collection_source_paths.pop(node_id, None)
         attached_note_ids = [
             note_id
             for note_id, note in self._graph_notes.items()
@@ -10793,6 +10907,15 @@ class VippWidget(QWidget):
         previous_path = str(node.params.get("file_path", ""))
         previous_binding = str(node.params.get("binding_mode", "single item"))
         self._apply_image_source_params(self._selected_node_id, value)
+        if not (
+            str(value.get("source_mode", "")) == "file path"
+            and str(value.get("binding_mode", "")) == "collection"
+            and not str(value.get("file_path", "")).strip()
+        ):
+            self._interactive_collection_source_paths.pop(
+                self._selected_node_id,
+                None,
+            )
         if (
             str(value.get("file_path", "")) != previous_path
             or str(value.get("binding_mode", "")) != previous_binding
@@ -13439,17 +13562,18 @@ class VippWidget(QWidget):
         self._set_pipeline_busy(False)
         self._begin_pipeline_dispatch(dirty_node_ids)
         try:
-            self.pipeline.run(
-                input_data,
-                input_metadata=input_metadata,
-                input_name=input_name,
-                source_payloads=source_payloads,
-                dirty_node_ids=dirty_node_ids,
-                manual_mode=MANUAL_RUN_SKIP,
-                manual_node_ids=manual_node_ids,
-                retain_node_ids=self._cache_retention_node_ids(),
-                prune_unretained=self._cache_pruning_enabled(),
-            )
+            with self._preserve_interactive_collection_workflow_params():
+                self.pipeline.run(
+                    input_data,
+                    input_metadata=input_metadata,
+                    input_name=input_name,
+                    source_payloads=source_payloads,
+                    dirty_node_ids=dirty_node_ids,
+                    manual_mode=MANUAL_RUN_SKIP,
+                    manual_node_ids=manual_node_ids,
+                    retain_node_ids=self._cache_retention_node_ids(),
+                    prune_unretained=self._cache_pruning_enabled(),
+                )
         except Exception as exc:
             for node_id in manual_node_ids or ():
                 self.pipeline.set_node_execution_error(node_id, str(exc))
@@ -13464,16 +13588,17 @@ class VippWidget(QWidget):
                 rerun_dirty.add(self._selected_node_id)
             rerun_dirty &= set(self.pipeline.nodes)
             if rerun_dirty:
-                self.pipeline.run(
-                    input_data,
-                    input_metadata=input_metadata,
-                    input_name=input_name,
-                    source_payloads=source_payloads,
-                    dirty_node_ids=rerun_dirty,
-                    manual_mode=MANUAL_RUN_SKIP,
-                    retain_node_ids=self._cache_retention_node_ids(),
-                    prune_unretained=self._cache_pruning_enabled(),
-                )
+                with self._preserve_interactive_collection_workflow_params():
+                    self.pipeline.run(
+                        input_data,
+                        input_metadata=input_metadata,
+                        input_name=input_name,
+                        source_payloads=source_payloads,
+                        dirty_node_ids=rerun_dirty,
+                        manual_mode=MANUAL_RUN_SKIP,
+                        retain_node_ids=self._cache_retention_node_ids(),
+                        prune_unretained=self._cache_pruning_enabled(),
+                    )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
 
@@ -13898,7 +14023,10 @@ class VippWidget(QWidget):
 
         self._apply_pipeline_run_result(
             result.pipeline,
-            update_params=not can_apply_before_pending,
+            update_params=(
+                not can_apply_before_pending
+                and not self._interactive_collection_source_paths
+            ),
         )
         if can_apply_before_pending:
             self._last_pipeline_source_signature = source_signature

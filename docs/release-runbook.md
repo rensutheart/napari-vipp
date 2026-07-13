@@ -44,7 +44,7 @@ Required checks:
 - `python -m ruff check .`
 - `python -m pytest`
 
-For a batch/provenance release, also use `Run batch...` -> `Create demo...` and
+For a batch/provenance release, also use `Run batch...` -> `Open batch demo...` and
 complete the generated three-item run. Confirm three completed items, nine
 outputs, and a finalized latest manifest, archive, and three item sidecars.
 

@@ -716,6 +716,10 @@ This portable bundle contains three paired 8 x 8 NumPy collections. Files are
 paired by sorted position, not by matching names. The workflow writes a combined
 image, overlap labels, and an object-measurement table for every field.
 
+When opened through VIPP's example chooser, the batch window loads this config
+and previews all three items automatically. Click "Run demo batch" to execute
+the nine planned outputs and validate the scientific results and provenance.
+
 Run headlessly from this folder:
 
     python {BATCH_SCRIPT_FILENAME}

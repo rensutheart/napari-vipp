@@ -79,16 +79,20 @@ row is reproducible only when that `Image Source` already uses a fixed local
 file path; napari-layer and bundled-sample sources must be bound to a collection
 before saving or running a batch config.
 
-Use `Create demo...` in this dialog when you need a deterministic validation
-collection. After you select a parent folder, VIPP creates a new portable demo
-directory, loads its two-source workflow and config, and previews three tiny
-paired NumPy fields. The bundle includes exact ground truth for its combined
-images, overlap labels, and TSV measurement rows, plus the same workflow,
-config, and Python runner artifacts used by ordinary batches. Existing demo
-directories are never replaced. Loading is confirmed because it replaces the
-current graph. After execution, the app validates the bundle inputs, scientific
-outputs, config/workflow hashes, manifest records, archive, and sidecars and
-shows the pass/fail result in the batch summary.
+The easiest way to explore batching is `Open example...` -> `Deterministic
+Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
+small working copy; VIPP then opens the collection window with its two-source
+workflow and config loaded and three tiny paired NumPy fields already previewed.
+The highlighted demo guide points to `Run demo batch` and describes the nine
+planned NPY/TIFF/TSV outputs, saved config and runner, manifests, archive,
+per-item provenance, and exact ground-truth validation. The same action is
+available as `Open batch demo...` inside this dialog.
+
+Existing demo directories are never replaced. Loading is confirmed because it
+replaces the current graph. After execution, the app validates the bundle
+inputs, scientific outputs, config/workflow hashes, manifest records, archive,
+and sidecars and shows the pass/fail result in the batch summary. The selected
+working-copy location remains available for inspecting those artifacts.
 
 When multiple source rows are bound, VIPP sorts the matched files for each row
 and pairs them by position. Each bound source must match the same number of

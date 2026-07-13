@@ -423,8 +423,11 @@ def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
 
     dialog.filter_edit.clear()
     dialog.select_example("batch-provenance")
-    assert dialog.open_button.text() == "Create..."
-    assert "Generated input" in dialog.details_label.text()
+    assert dialog.open_button.text() == "Open batch demo..."
+    assert "ready-to-run" in dialog.details_label.text().lower()
+    assert "Demo data" in dialog.details_label.text()
+    assert "working copy" in dialog.details_label.text()
+    assert "Run demo batch" in dialog.details_label.text()
 
 
 def test_example_workflow_files_are_packaged():
@@ -7524,7 +7527,7 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert dialog.load_config_button.isEnabled()
     assert dialog.save_config_button.text() == "Save config..."
     assert dialog.save_config_button.isEnabled()
-    assert dialog.demo_config_button.text() == "Create demo..."
+    assert dialog.demo_config_button.text() == "Open batch demo..."
     assert dialog.demo_config_button.isEnabled()
 
 
@@ -7575,7 +7578,13 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
         "new",
         "new",
     ]
-    assert "3 deterministic paired items" in dialog.preview_status.text()
+    assert not dialog.demo_guide_label.isHidden()
+    assert "Ready-to-run batch demo" in dialog.demo_guide_label.text()
+    assert str(demo_root) in dialog.demo_guide_label.text()
+    assert dialog.run_button.text() == "Run demo batch"
+    assert "Demo ready" in dialog.preview_status.text()
+    assert "3 paired items" in dialog.preview_status.text()
+    assert "9 outputs" in dialog.preview_status.text()
 
     result = widget._run_collection_batch(**dialog.values())
     validation = validate_synthetic_batch_demo(
@@ -7657,6 +7666,63 @@ def test_generated_batch_example_uses_demo_creation_branch(
     monkeypatch.setattr(widget, "_choose_collection_batch_demo", lambda: None)
     widget._open_example_workflow_dialog()
     assert opened == [{"config_path": demo.config_path}]
+
+
+def test_open_batch_example_builds_a_ready_to_run_workspace(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    spec = next(item for item in EXAMPLE_WORKFLOWS if item.id == "batch-provenance")
+
+    class AcceptedExampleDialog:
+        def __init__(self, _parent):
+            pass
+
+        def exec(self):
+            return 1
+
+        def selected_example(self):
+            return spec
+
+    opened_dialogs = []
+    monkeypatch.setattr(
+        "napari_vipp._widget.ExampleWorkflowDialog",
+        AcceptedExampleDialog,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: str(tmp_path),
+    )
+
+    def inspect_then_cancel(dialog):
+        opened_dialogs.append(dialog)
+        return 0
+
+    monkeypatch.setattr(CollectionBatchDialog, "exec", inspect_then_cancel)
+
+    widget._open_example_workflow_dialog()
+
+    demo_root = tmp_path / SYNTHETIC_BATCH_DEMO_DIRNAME
+    assert (demo_root / BATCH_CONFIG_FILENAME).is_file()
+    assert "batch_output_3" in widget.pipeline.nodes
+    assert len(opened_dialogs) == 1
+    dialog = opened_dialogs[0]
+    assert dialog._demo == SyntheticBatchDemo.from_root(demo_root)
+    assert dialog.preview_table.rowCount() == 3
+    assert dialog.preview_table.item(0, 3).text().splitlines() == [
+        "new",
+        "new",
+        "new",
+    ]
+    assert dialog.run_button.text() == "Run demo batch"
+    assert "Demo ready" in dialog.preview_status.text()
 
 
 def test_collection_batch_demo_confirmation_uses_active_dialog_parent(

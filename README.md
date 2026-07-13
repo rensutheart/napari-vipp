@@ -46,7 +46,9 @@ Plugins > VIPP Workflow (napari-vipp)
 
 Use `Open example...` for a runnable workflow with synthetic data. A good first
 choice is `Red-Channel Label Cleanup`; select nodes from left to right to review
-their parameters, thumbnails, metadata, and outputs.
+their parameters, thumbnails, metadata, and outputs. To explore collection
+processing, open `Deterministic Batch & Provenance`; VIPP prepares a small
+self-contained working copy and opens it already configured and previewed.
 
 ![VIPP example workflow chooser](docs/assets/user-guide/vipp-example-chooser.png)
 
@@ -94,10 +96,11 @@ still needs validation against a broader corpus of real acquisition files.
    matter.
 8. Preview collection runs, save `vipp_batch_config.json`, and review
    `vipp_batch_manifest.json` for item/output provenance.
-9. To validate the complete batch path without your own files, open
-   `Run batch...`, choose `Create demo...`, select a parent folder, and run the
-   generated three-item paired collection. VIPP checks the finished outputs and
-   provenance against its exact ground truth automatically.
+9. To validate the complete batch path without your own files, choose
+   `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
+   demo...`. Choose where to save its small working copy, review the populated
+   three-item/nine-output preview, and click `Run demo batch`. VIPP checks the
+   finished outputs and provenance against exact ground truth automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
 tables. `Export Python...` emits direct calls to the headless operation and I/O
