@@ -192,12 +192,14 @@ from napari_vipp.core.preview import (
     thumbnail_contrast_limits,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.snapshots import WorkflowSnapshot
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
     load_workflow,
     save_workflow,
     serialize_workflow,
+    workflow_snapshot_from_pipeline,
 )
 from napari_vipp.ui.controls import (
     BoolControl,
@@ -346,7 +348,7 @@ class BatchPreviewResult:
 
 @dataclass(frozen=True)
 class WorkflowHistorySnapshot:
-    workflow: dict
+    workflow: WorkflowSnapshot
     selected_node_id: str
     preview_disabled_node_ids: tuple[str, ...] = ()
     active_pinned_node_id: str | None = None
@@ -4913,14 +4915,12 @@ class VippWidget(QWidget):
             else None
         )
         return WorkflowHistorySnapshot(
-            workflow=deepcopy(
-                serialize_workflow(
-                    self.pipeline,
-                    positions,
-                    self._graph_note_documents()
-                    if notes_override is None
-                    else notes_override,
-                )
+            workflow=workflow_snapshot_from_pipeline(
+                self.pipeline,
+                positions,
+                self._graph_note_documents()
+                if notes_override is None
+                else notes_override,
             ),
             selected_node_id=(
                 self._selected_node_id
@@ -4967,16 +4967,14 @@ class VippWidget(QWidget):
         self._debounce_timer.stop()
         self._interactive_collection_source_paths.clear()
         try:
-            workflow = self._deserialize_history_workflow(snapshot.workflow)
+            workflow = snapshot.workflow
             pinned_layer = self._active_pinned_layer()
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
-            self.pipeline.restore_graph(
-                workflow["nodes"],
-                workflow["connections"],
-                workflow.get("output_tunnels", ()),
+            workflow.graph.restore_into(self.pipeline)
+            self._restore_graph_notes(
+                note.to_mapping() for note in workflow.notes
             )
-            self._restore_graph_notes(workflow.get("notes", ()))
             valid_node_ids = set(self.pipeline.nodes)
             self._preview_disabled_node_ids = (
                 set(snapshot.preview_disabled_node_ids) & valid_node_ids
@@ -4995,7 +4993,7 @@ class VippWidget(QWidget):
             self.graph_view.build_graph(
                 self.pipeline.nodes.values(),
                 self.pipeline.connections,
-                workflow["positions"],
+                workflow.positions_dict(),
                 output_tunnels=self.pipeline.output_tunnel_list(),
                 notes=self._graph_note_documents(use_view_positions=False),
                 preserve_view=True,
@@ -5012,14 +5010,6 @@ class VippWidget(QWidget):
                 self._select_first_available_node()
         finally:
             self._restoring_history = False
-
-    @staticmethod
-    def _deserialize_history_workflow(workflow: dict) -> dict[str, object]:
-        if workflow.get("type") == "napari-vipp-workflow" and not workflow.get(
-            "nodes",
-        ):
-            return {"nodes": [], "connections": [], "positions": {}}
-        return deserialize_workflow(deepcopy(workflow))
 
     def _sync_history_actions(self) -> None:
         undo_enabled = bool(self._undo_stack)
