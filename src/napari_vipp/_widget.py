@@ -1191,7 +1191,8 @@ class VippWidget(QWidget):
         self.auto_contrast_button = QPushButton("Auto")
         self.auto_contrast_button.setToolTip(
             "Set scale and offset from exact full-input finite percentiles. "
-            "RGB and RGBA inputs use weighted RGB luminance; alpha is ignored. "
+            "Explicit RGB and RGBA inputs use weighted RGB luminance; alpha is "
+            "ignored. Unlabelled arrays are treated as scalar data. "
             "Large inputs are calculated in the background."
         )
         self.metadata_group = QGroupBox("Output Metadata")
@@ -8433,6 +8434,11 @@ class VippWidget(QWidget):
         if data is None:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         arr = np.asarray(data)
+        node = self.pipeline.nodes.get(node_id)
+        channel_axis = _threshold_marker_channel_axis(
+            arr,
+            params=node.params if node is not None else None,
+        )
         if arr.dtype == bool:
             return ParameterBounds(0, 1, 1, 0)
         if _should_auto_background_data(arr):
@@ -8455,7 +8461,7 @@ class VippWidget(QWidget):
         if np.issubdtype(arr.dtype, np.integer):
             if arr.dtype == np.uint8:
                 return ParameterBounds(0, 255, 1, 0)
-            finite = _finite_values(arr)
+            finite = _finite_values(arr, channel_axis=channel_axis)
             if finite.size:
                 return ParameterBounds(
                     int(finite.min()),
@@ -8465,7 +8471,7 @@ class VippWidget(QWidget):
                 )
             return ParameterBounds(0, 255, 1, 0)
 
-        finite = _finite_values(arr)
+        finite = _finite_values(arr, channel_axis=channel_axis)
         if finite.size == 0:
             return ParameterBounds(spec.minimum, spec.maximum, spec.step, spec.decimals)
         minimum = float(finite.min())
@@ -8910,8 +8916,9 @@ class VippWidget(QWidget):
             return
 
         data = self.pipeline.input_data_for_node(node_id)
+        state = self.pipeline.input_state_for_node(node_id)
         saturation = float(self.auto_saturation_control.value())
-        key = self._auto_contrast_request_key(node_id, data, saturation)
+        key = self._auto_contrast_request_key(node_id, data, state, saturation)
         if _should_background_auto_contrast(data):
             self._auto_contrast_serial += 1
             request = AutoContrastRequest(
@@ -8930,13 +8937,17 @@ class VippWidget(QWidget):
             )
             worker = AutoContrastWorker(
                 request,
-                calculate=_auto_contrast_scale_offset,
+                calculate=lambda values, percent: _auto_contrast_scale_offset(
+                    values,
+                    percent,
+                    state=state,
+                ),
             )
             worker.signals.finished.connect(self._on_auto_contrast_finished)
             self._pipeline_thread_pool.start(worker, -1)
             return
 
-        result = _auto_contrast_scale_offset(data, saturation)
+        result = _auto_contrast_scale_offset(data, saturation, state=state)
         self._commit_auto_contrast_result(
             node_id,
             saturation,
@@ -8947,6 +8958,7 @@ class VippWidget(QWidget):
         self,
         node_id: str,
         data,
+        state,
         saturation: float,
     ) -> tuple:
         node = self.pipeline.nodes.get(node_id)
@@ -8955,6 +8967,7 @@ class VippWidget(QWidget):
             id(data),
             tuple(getattr(data, "shape", ())),
             str(getattr(data, "dtype", "")),
+            _histogram_state_signature(state),
             float(saturation),
             repr(node.params.get("alpha")) if node is not None else "",
             repr(node.params.get("beta")) if node is not None else "",
@@ -8999,9 +9012,11 @@ class VippWidget(QWidget):
             return
 
         current_data = self.pipeline.input_data_for_node(result.node_id)
+        current_state = self.pipeline.input_state_for_node(result.node_id)
         current_key = self._auto_contrast_request_key(
             result.node_id,
             current_data,
+            current_state,
             self.auto_saturation_control.value(),
         )
         if (
@@ -12860,14 +12875,17 @@ class VippWidget(QWidget):
             return False
 
 
-def _finite_values(arr: np.ndarray) -> np.ndarray:
-    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-        arr = (
-            arr[..., 0].astype(np.float32) * 0.299
-            + arr[..., 1].astype(np.float32) * 0.587
-            + arr[..., 2].astype(np.float32) * 0.114
-        )
-    return arr[np.isfinite(arr)]
+def _finite_values(
+    arr: np.ndarray,
+    *,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    reference = _explicit_luminance_reference(
+        np.asarray(arr),
+        channel_axis=channel_axis,
+        context="Threshold range",
+    )
+    return reference[np.isfinite(reference)]
 
 
 def _positive_scale_float(value, default: float) -> float:
@@ -12896,22 +12914,28 @@ def _normalized_progress_text(value: str) -> str:
 def _auto_contrast_scale_offset(
     data,
     saturation_percent: float,
+    *,
+    state=None,
 ) -> tuple[float, float, float, float] | None:
     if data is None:
         return None
 
-    saturation = min(max(float(saturation_percent), 0.0), 100.0)
+    try:
+        saturation = float(saturation_percent)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Auto-contrast saturation must be a finite number.") from exc
+    if not np.isfinite(saturation):
+        raise ValueError("Auto-contrast saturation must be a finite number.")
+    if not 0.0 <= saturation <= 100.0:
+        raise ValueError("Auto-contrast saturation must be between 0 and 100 percent.")
     tail_percent = saturation / 2.0
     reference = np.asarray(data)
-    if reference.ndim >= 3 and reference.shape[-1] in (3, 4):
-        # Auto contrast applies one scale/offset pair to an RGB image, so retain
-        # its established luminance reference and never let an RGBA alpha plane
-        # distort the intensity range.
-        reference = (
-            reference[..., 0].astype(np.float32) * 0.299
-            + reference[..., 1].astype(np.float32) * 0.587
-            + reference[..., 2].astype(np.float32) * 0.114
-        )
+    channel_axis = _explicit_encoded_color_axis(reference, state)
+    reference = _explicit_luminance_reference(
+        reference,
+        channel_axis=channel_axis,
+        context="Auto contrast",
+    )
     percentiles = _exact_finite_percentiles(
         reference,
         (tail_percent, 100.0 - tail_percent),
@@ -12929,6 +12953,72 @@ def _auto_contrast_scale_offset(
     if not np.isfinite(alpha) or not np.isfinite(beta):
         return None
     return float(alpha), float(beta), lower, upper
+
+
+def _explicit_encoded_color_axis(arr: np.ndarray, state) -> int | None:
+    """Resolve an encoded RGB(A) axis only from explicit image semantics."""
+    axes = tuple(getattr(state, "axes", ()))
+    if len(axes) != arr.ndim:
+        return None
+    matches = [
+        index
+        for index, axis in enumerate(axes)
+        if _axis_is_explicit(axis)
+        and str(getattr(axis, "type", "")).lower() == "channel"
+        and str(getattr(axis, "name", "")).lower() in {"rgb", "rgba"}
+    ]
+    if len(matches) > 1:
+        raise ValueError("Image metadata declares more than one encoded RGB(A) axis.")
+    if not matches:
+        return None
+    axis = matches[0]
+    name = str(getattr(axes[axis], "name", "")).lower()
+    expected = 3 if name == "rgb" else 4
+    if int(arr.shape[axis]) != expected:
+        raise ValueError(
+            f"Explicit {name.upper()} axis must contain exactly {expected} channels, "
+            f"not {int(arr.shape[axis])}."
+        )
+    return axis
+
+
+def _explicit_luminance_reference(
+    arr: np.ndarray,
+    *,
+    channel_axis: int | None,
+    context: str,
+) -> np.ndarray:
+    """Return scalar data or BT.601 luma for a caller-declared RGB(A) axis."""
+    if channel_axis is None:
+        return arr
+    if isinstance(channel_axis, (bool, np.bool_)) or not isinstance(
+        channel_axis,
+        (int, np.integer),
+    ):
+        raise ValueError(f"{context} channel axis must be an integer or None.")
+    axis = int(channel_axis)
+    if axis < -arr.ndim or axis >= arr.ndim:
+        raise ValueError(
+            f"{context} channel axis {axis} is outside an array with {arr.ndim} axes."
+        )
+    axis %= arr.ndim
+    channel_count = int(arr.shape[axis])
+    if channel_count not in {3, 4}:
+        raise ValueError(
+            f"{context} channel axis must contain exactly 3 RGB or 4 RGBA "
+            f"channels, not {channel_count}."
+        )
+    if not (
+        arr.dtype == bool
+        or np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
+        raise ValueError(f"{context} requires real-valued image data.")
+    moved = np.moveaxis(arr, axis, -1)
+    work_dtype = np.result_type(arr.dtype, np.float32)
+    rgb = moved[..., :3].astype(work_dtype, copy=False)
+    coefficients = np.asarray((0.299, 0.587, 0.114), dtype=work_dtype)
+    return np.sum(rgb * coefficients, axis=-1, dtype=work_dtype)
 
 
 def _should_background_auto_contrast(data) -> bool:
@@ -13215,13 +13305,24 @@ def _input_histogram_markers(
             markers.append(("max", high, QColor("#38bdf8")))
         return markers
     if operation_id == "binary_threshold":
-        threshold = _safe_float((params or {}).get("threshold"), 0.0)
+        threshold = _finite_marker_value(
+            (params or {}).get("threshold"),
+            "Binary threshold",
+        )
         return [("threshold", float(threshold), QColor("#f59e0b"))]
     if operation_id == "hysteresis_threshold":
-        low = _safe_float((params or {}).get("low_threshold"), 0.0)
-        high = _safe_float((params or {}).get("high_threshold"), low)
+        low = _finite_marker_value(
+            (params or {}).get("low_threshold"),
+            "Hysteresis low threshold",
+        )
+        high = _finite_marker_value(
+            (params or {}).get("high_threshold"),
+            "Hysteresis high threshold",
+        )
         if low > high:
-            low, high = high, low
+            raise ValueError(
+                "Hysteresis low threshold must not exceed the high threshold."
+            )
         markers = [("low", float(low), QColor("#f59e0b"))]
         if not np.isclose(low, high):
             markers.append(("high", float(high), QColor("#38bdf8")))

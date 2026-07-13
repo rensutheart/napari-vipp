@@ -190,7 +190,12 @@ class ThumbnailContrastLimitWorker(QRunnable):
         limits: dict[tuple, object] = {}
         total = len(self.requests)
         try:
-            self.signals.progress.emit((self.run_id, 0, total))
+            if not _emit_if_alive(
+                self.signals,
+                "progress",
+                (self.run_id, 0, total),
+            ):
+                return
             for index, request in enumerate(self.requests, start=1):
                 if request.channel_axis is None:
                     limits[request.key] = self._calculate_scalar(
@@ -205,9 +210,16 @@ class ThumbnailContrastLimitWorker(QRunnable):
                         contrast_mode=request.contrast_mode,
                         data_kind=request.data_kind,
                     )
-                self.signals.progress.emit((self.run_id, index, total))
+                if not _emit_if_alive(
+                    self.signals,
+                    "progress",
+                    (self.run_id, index, total),
+                ):
+                    return
         except Exception as exc:
-            self.signals.finished.emit(
+            _emit_if_alive(
+                self.signals,
+                "finished",
                 ThumbnailContrastLimitResult(
                     self.run_id,
                     keys,
@@ -216,9 +228,20 @@ class ThumbnailContrastLimitWorker(QRunnable):
                 )
             )
             return
-        self.signals.finished.emit(
-            ThumbnailContrastLimitResult(self.run_id, keys, limits)
+        _emit_if_alive(
+            self.signals,
+            "finished",
+            ThumbnailContrastLimitResult(self.run_id, keys, limits),
         )
+
+
+def _emit_if_alive(signals, name: str, payload: object) -> bool:
+    """Emit unless the receiving widget has already destroyed its QObject."""
+    try:
+        getattr(signals, name).emit(payload)
+    except RuntimeError:
+        return False
+    return True
 
 
 class _InputHistogramSignals(QObject):

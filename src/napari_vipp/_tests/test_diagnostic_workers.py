@@ -64,6 +64,38 @@ def test_thumbnail_worker_uses_injected_scientific_calculations():
     assert result.limits[("scalar",)] == (0.0, 1.0)
 
 
+def test_thumbnail_worker_stops_if_widget_signals_were_destroyed():
+    class DeletedSignal:
+        def emit(self, _payload):
+            raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    class DeletedSignals:
+        progress = DeletedSignal()
+        finished = DeletedSignal()
+
+    calculations: list[object] = []
+    worker = ThumbnailContrastLimitWorker(
+        7,
+        (
+            ThumbnailContrastLimitRequest(
+                ("scalar",),
+                "node-a",
+                np.zeros((2, 3), dtype=np.float32),
+                None,
+                "Full range",
+                "image",
+            ),
+        ),
+        calculate_scalar=lambda data, **_kwargs: calculations.append(data),
+        calculate_channel=lambda *_args, **_kwargs: None,
+    )
+    worker.signals = DeletedSignals()
+
+    worker.run()
+
+    assert calculations == []
+
+
 def test_histogram_worker_depends_on_narrow_injected_ports():
     data = np.arange(6, dtype=np.float32).reshape(2, 3)
     request = InputHistogramRequest(

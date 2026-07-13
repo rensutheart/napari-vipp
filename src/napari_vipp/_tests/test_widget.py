@@ -2479,9 +2479,9 @@ def test_rescale_axes_labels_follow_reordered_spatial_semantics(qtbot):
     )
 
     label = widget.parameter_form.labelForField(z_control)
-    assert label.text() == "Z scale factor (96 -> 192)"
-    assert widget.pipeline.outputs[rescale.id].shape == (3, 192, 12, 128)
-    assert _metadata_value(widget, "Dimensions") == "c=3, z=192, y=12, x=128"
+    assert label.text() == "Z scale factor (12 -> 24)"
+    assert widget.pipeline.outputs[rescale.id].shape == (3, 96, 24, 128)
+    assert _metadata_value(widget, "Dimensions") == "c=3, y=96, z=24, x=128"
 
 
 def test_rescale_axes_supports_output_size_mode_and_axis_reset(qtbot):
@@ -4534,6 +4534,11 @@ def test_rescale_cutoff_modes_keep_inactive_parameters_from_driving_output(qtbot
             {"cutoff_mode": "Values", "minimum": 90.0, "maximum": 10.0},
             "Clip minimum must not exceed",
         ),
+        (
+            "hysteresis_threshold",
+            {"low_threshold": 90.0, "high_threshold": 10.0},
+            "Hysteresis low threshold must not exceed",
+        ),
     ],
 )
 def test_crossed_cutoffs_show_marker_error_instead_of_silent_reordering(
@@ -4667,6 +4672,49 @@ def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
     ] == [("low", 96.0), ("high", 192.0)]
 
 
+@pytest.mark.parametrize(
+    ("operation_id", "params", "message"),
+    [
+        ("binary_threshold", {"threshold": np.nan}, "finite number"),
+        (
+            "hysteresis_threshold",
+            {"low_threshold": 10.0, "high_threshold": np.inf},
+            "finite number",
+        ),
+    ],
+)
+def test_threshold_markers_reject_nonfinite_values(operation_id, params, message):
+    with pytest.raises(ValueError, match=message):
+        _input_histogram_markers(
+            operation_id,
+            np.arange(16, dtype=np.float32).reshape(4, 4),
+            params=params,
+        )
+
+
+def test_threshold_bounds_do_not_infer_rgb_from_trailing_axis_size(qtbot):
+    data = np.array(
+        [[[0.0, 0.0, 100.0], [0.0, 100.0, 0.0]]],
+        dtype=np.float32,
+    )
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+    threshold_spec = next(
+        spec
+        for spec in widget.pipeline.node_parameter_specs(node.id)
+        if spec.name == "threshold"
+    )
+
+    scalar_bounds = widget._threshold_bounds(node.id, threshold_spec)
+    widget.pipeline.set_param(node.id, "channel_axis", 2)
+    color_bounds = widget._threshold_bounds(node.id, threshold_spec)
+
+    assert scalar_bounds.maximum == 100.0
+    np.testing.assert_allclose(color_bounds.maximum, 58.7, atol=1e-5)
+
+
 def test_selected_node_shows_output_metadata(qtbot):
     data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
     viewer = _Viewer(data)
@@ -4760,9 +4808,10 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
     assert _metadata_value(widget, "Kind") == "RGB image"
     assert _metadata_value(widget, "Dimensions") == "t=2, z=4, y=5, x=6, rgb=3"
     _assert_rgb_channel_layers(viewer, "VIPP Inspect", (2, 4, 5, 6))
-    assert (
-        "1. Composite \u2192 RGB: mapped channels to RGB" in widget.history_label.text()
-    )
+    history = widget.history_label.text()
+    assert "1. Composite \u2192 RGB: c axis (1)" in history
+    assert "native intensity scale retained" in history
+    assert "no normalization or clipping" in history
 
 
 @pytest.mark.parametrize(
@@ -4770,7 +4819,7 @@ def test_composite_to_rgb_maps_channel_axis(qtbot):
     [
         (None, None, False),
         ({"axes": "ZYX"}, None, False),
-        ({"axes": "YXC"}, 2, True),
+        ({"axes": "YXC"}, 2, False),
     ],
 )
 def test_channel_axis_and_rgb_presentation_require_explicit_semantics(
@@ -4867,7 +4916,7 @@ def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
     assert red_channel.value_box.minimum() == -1
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == -1
     assert widget.pipeline.outputs[node.id].shape == (12, 16, 18, 3)
-    assert widget.pipeline.outputs[node.id].max() == 1.0
+    assert widget.pipeline.outputs[node.id].max() == 3000.0
     assert _metadata_value(widget, "Dimensions") == "z=12, y=16, x=18, rgb=3"
     _assert_rgb_channel_layers(viewer, "VIPP Inspect", (12, 16, 18))
 
@@ -4878,7 +4927,7 @@ def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
 
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == 0
     assert widget.pipeline.nodes[node.id].params["red_channel"] == 0
-    assert widget.pipeline.outputs[node.id].max() == 1.0
+    assert widget.pipeline.outputs[node.id].max() == 2000.0
 
 
 def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
@@ -5505,10 +5554,10 @@ def test_reorder_axes_list_drag_changes_order(qtbot):
     assert widget.pipeline.nodes[node.id].params["order"] == "CZTYX"
 
 
-def test_reorder_axes_reinterprets_spatial_axes_downstream(qtbot):
+def test_reorder_axes_moves_spatial_semantics_with_pixels_downstream(qtbot):
     data = np.zeros((3, 12, 96, 128), dtype=np.uint16)
-    for y_index in range(data.shape[2]):
-        data[:, :, y_index, y_index % data.shape[3]] = 100
+    for z_index in range(data.shape[1]):
+        data[:, z_index, :, z_index] = 100
     viewer = _Viewer(data, metadata={"axes": "CZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -5528,11 +5577,12 @@ def test_reorder_axes_reinterprets_spatial_axes_downstream(qtbot):
     crop_state = widget.pipeline.output_states[crop.id]
 
     assert widget.pipeline.outputs[reorder.id].shape == (3, 96, 12, 128)
-    assert reorder_state.axis_order == "CZYX"
-    assert [axis.source_axis for axis in reorder_state.axes] == [0, 1, 2, 3]
-    assert "effective axes CZYX" in reorder_state.history[-1]
-    assert widget.pipeline.outputs[crop.id].shape == (3, 96, 9, 121)
-    assert crop_state.axis_order == "CZYX"
+    assert reorder_state.axis_order == "CYZX"
+    assert [axis.source_axis for axis in reorder_state.axes] == [0, 2, 1, 3]
+    assert "reordered axes to CYZX" in reorder_state.history[-1]
+    assert widget.pipeline.outputs[crop.id].shape == (3, 93, 12, 121)
+    assert crop_state.axis_order == "CYZX"
+    assert [axis.translation for axis in crop_state.axes] == [0.0, 1.0, 0.0, 3.0]
 
     first = make_preview(
         widget.pipeline.outputs[reorder.id],
@@ -5582,8 +5632,8 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
     reorder_shape = tuple(widget.pipeline.outputs[node.id].shape)
     reorder_calls = [call for call in calls if call[0] == reorder_shape]
     assert reorder_calls
-    assert reorder_calls[-1][1] == (0, 7, 4, 0)
-    assert reorder_calls[-1][2].axis_order == "CZYX"
+    assert reorder_calls[-1][1] == (0, 4, 7, 0)
+    assert reorder_calls[-1][2].axis_order == "CYZX"
 
 
 def test_graph_search_matches_title_operation_tunnel_and_output_tag():
@@ -10321,6 +10371,34 @@ def test_auto_contrast_button_updates_scale_and_offset(qtbot):
     assert output.max() == 255
 
 
+def test_auto_contrast_button_uses_connected_explicit_rgb_semantics(qtbot):
+    data = np.array(
+        [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
+        dtype=np.uint8,
+    )
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgb", "channel"),
+        ),
+    )
+    widget = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    )
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("linear_scale_offset")
+    widget._connect_nodes("input", node.id)
+
+    widget.auto_saturation_control.value_box.setValue(0.0)
+    widget.auto_contrast_button.click()
+
+    params = widget.pipeline.nodes[node.id].params
+    np.testing.assert_allclose(params["alpha"], 255.0 / 58.7, atol=0.0001)
+    np.testing.assert_allclose(params["beta"], 0.0, atol=0.0001)
+
+
 def test_auto_contrast_uses_rare_values_beyond_old_sampling_limit():
     values = np.zeros(1_000_003, dtype=np.float32)
     values[777_777] = -17.0
@@ -10352,8 +10430,16 @@ def test_auto_contrast_rgb_uses_weighted_luminance_reference():
         [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
         dtype=np.uint8,
     )
+    state = image_state_from_array(
+        rgb,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgb", "channel"),
+        ),
+    )
 
-    result = _auto_contrast_scale_offset(rgb, 0.0)
+    result = _auto_contrast_scale_offset(rgb, 0.0, state=state)
 
     assert result is not None
     _alpha, _beta, lower, upper = result
@@ -10368,13 +10454,70 @@ def test_auto_contrast_rgba_ignores_alpha_channel():
     )
     alpha = np.array([[[255], [0], [17], [240]]], dtype=np.uint8)
     rgba = np.concatenate((rgb, alpha), axis=-1)
+    rgb_state = image_state_from_array(
+        rgb,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgb", "channel"),
+        ),
+    )
+    rgba_state = image_state_from_array(
+        rgba,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgba", "channel"),
+        ),
+    )
 
-    rgb_result = _auto_contrast_scale_offset(rgb, 0.0)
-    rgba_result = _auto_contrast_scale_offset(rgba, 0.0)
+    rgb_result = _auto_contrast_scale_offset(rgb, 0.0, state=rgb_state)
+    rgba_result = _auto_contrast_scale_offset(rgba, 0.0, state=rgba_state)
 
     assert rgb_result is not None
     assert rgba_result is not None
     np.testing.assert_allclose(rgba_result, rgb_result, rtol=0.0, atol=1e-12)
+
+
+@pytest.mark.parametrize("x_size", [3, 4])
+def test_auto_contrast_does_not_infer_rgb_from_trailing_axis_size(x_size):
+    values = np.arange(2 * 5 * x_size, dtype=np.float32).reshape(2, 5, x_size)
+
+    result = _auto_contrast_scale_offset(values, 0.0)
+
+    assert result is not None
+    _alpha, _beta, lower, upper = result
+    assert lower == 0.0
+    assert upper == float(values.max())
+
+
+def test_auto_contrast_supports_explicit_nontrailing_rgb_axis():
+    trailing = np.array(
+        [[[0, 0, 0], [100, 0, 0], [0, 100, 0], [0, 0, 100]]],
+        dtype=np.uint8,
+    )
+    channel_first = np.moveaxis(trailing, -1, 0)
+    state = image_state_from_array(
+        channel_first,
+        axes=(
+            AxisMetadata("rgb", "channel"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+
+    result = _auto_contrast_scale_offset(channel_first, 0.0, state=state)
+
+    assert result is not None
+    _alpha, _beta, lower, upper = result
+    assert lower == 0.0
+    np.testing.assert_allclose(upper, 58.7, rtol=0.0, atol=1e-5)
+
+
+@pytest.mark.parametrize("saturation", [-0.1, 100.1, np.nan, np.inf, "bad"])
+def test_auto_contrast_rejects_invalid_saturation_instead_of_clamping(saturation):
+    with pytest.raises(ValueError, match="Auto-contrast saturation"):
+        _auto_contrast_scale_offset(np.arange(4), saturation)
 
 
 def test_large_auto_contrast_dispatches_exact_work_without_blocking(qtbot):
