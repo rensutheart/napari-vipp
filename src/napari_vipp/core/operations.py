@@ -853,23 +853,43 @@ def non_local_means_filter(
     )
 
 
-def sobel_filter(data) -> np.ndarray:
-    """Return the slice-wise Sobel edge magnitude of a grayscale image."""
+def sobel_filter(data, channel_axis: int | None = None) -> np.ndarray:
+    """Return the slice-wise Sobel edge magnitude of scalar image planes.
+
+    Data is scalar by default. An explicitly declared RGB/RGBA axis is reduced
+    to BT.601 luma before filtering; the channel axis is removed from the output.
+    """
     original = np.asarray(data)
-    arr = _to_grayscale(original)
-    result = _apply_plane_wise(
+    arr = _to_explicit_grayscale(
+        original,
+        channel_axis=channel_axis,
+        operation="Sobel filter",
+    )
+    result = _apply_scalar_plane_wise(
         arr,
         lambda plane: filters.sobel(plane.astype(np.float32, copy=False)),
     )
     return _restore_numeric_dtype(result, original)
 
 
-def laplace_filter(data, kernel_size: int = 3) -> np.ndarray:
-    """Return a slice-wise Laplace edge/detail response."""
+def laplace_filter(
+    data,
+    kernel_size: int = 3,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Return a slice-wise scalar Laplace edge/detail response.
+
+    Data is scalar by default. An explicitly declared RGB/RGBA axis is reduced
+    to BT.601 luma before filtering; the channel axis is removed from the output.
+    """
     original = np.asarray(data)
-    arr = _to_grayscale(original)
+    arr = _to_explicit_grayscale(
+        original,
+        channel_axis=channel_axis,
+        operation="Laplace filter",
+    )
     kernel_size = _odd_size(kernel_size, minimum=3)
-    result = _apply_plane_wise(
+    result = _apply_scalar_plane_wise(
         arr,
         lambda plane: filters.laplace(
             plane.astype(np.float32, copy=False),
@@ -886,9 +906,18 @@ def canny_edges(
     sigma: float = 1.0,
     low_quantile: float = 0.1,
     high_quantile: float = 0.2,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a Canny mask from ordered quantiles in the inclusive 0..1 range."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a scalar-plane Canny mask from ordered 0..1 quantiles.
+
+    Data is scalar by default. An explicitly declared RGB/RGBA axis is reduced
+    to BT.601 luma before filtering; the channel axis is removed from the mask.
+    """
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Canny",
+    )
     low, high = _validated_threshold_pair(
         low_quantile,
         high_quantile,
@@ -908,7 +937,7 @@ def canny_edges(
             use_quantiles=True,
         )
 
-    return _apply_plane_wise(arr, canny_plane)
+    return _apply_scalar_plane_wise(arr, canny_plane)
 
 
 def hysteresis_threshold(
@@ -917,9 +946,18 @@ def hysteresis_threshold(
     high_threshold: float = 0.7,
     spatial_mode: str = "Auto from axes",
     resolved_spatial_ndim: int | None = None,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from finite intensity thresholds with low <= high."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a mask from finite intensity thresholds with low <= high.
+
+    Data is scalar by default. An explicitly declared RGB/RGBA axis is reduced
+    to BT.601 luma first; the channel axis is removed from the output mask.
+    """
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Hysteresis",
+    )
     low, high = _validated_threshold_pair(
         low_threshold,
         high_threshold,
@@ -947,9 +985,14 @@ def otsu_threshold(
     data,
     threshold_scope: str = "Stack histogram",
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from an Otsu threshold."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return an Otsu mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Otsu threshold",
+    )
     return _global_threshold(
         arr,
         lambda values: _otsu_value(values, histogram_bins),
@@ -961,9 +1004,14 @@ def triangle_threshold(
     data,
     threshold_scope: str = "Stack histogram",
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from a triangle threshold."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a triangle mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Triangle threshold",
+    )
     return _global_threshold(
         arr,
         lambda values: _triangle_value(values, histogram_bins),
@@ -971,9 +1019,17 @@ def triangle_threshold(
     )
 
 
-def li_threshold(data, threshold_scope: str = "Stack histogram") -> np.ndarray:
-    """Return a binary mask from a Li threshold."""
-    arr = _to_grayscale(np.asarray(data))
+def li_threshold(
+    data,
+    threshold_scope: str = "Stack histogram",
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Return a Li mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Li threshold",
+    )
     return _global_threshold(
         arr,
         _li_value,
@@ -985,9 +1041,14 @@ def yen_threshold(
     data,
     threshold_scope: str = "Stack histogram",
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from a Yen threshold."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a Yen mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Yen threshold",
+    )
     return _global_threshold(
         arr,
         lambda values: _yen_value(values, histogram_bins),
@@ -999,9 +1060,14 @@ def isodata_threshold(
     data,
     threshold_scope: str = "Stack histogram",
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from an Isodata threshold."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return an Isodata mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Isodata threshold",
+    )
     return _global_threshold(
         arr,
         lambda values: _isodata_value(values, histogram_bins),
@@ -1015,9 +1081,14 @@ def minimum_threshold(
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
     max_iterations: int = 10_000,
     progress=None,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from a minimum threshold."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a minimum mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Minimum threshold",
+    )
     return _global_threshold(
         arr,
         lambda values: _minimum_value(
@@ -1036,12 +1107,17 @@ def automatic_threshold_value(
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
     max_iterations: int = 10_000,
     progress=None,
+    channel_axis: int | None = None,
 ) -> int | float | None:
-    """Return the scalar threshold value used by a global threshold operation."""
+    """Return a global threshold, optionally after declared RGB/RGBA reduction."""
     threshold_func = _automatic_threshold_function(operation_id)
     if threshold_func is None:
         return None
-    arr = _to_grayscale(np.asarray(data))
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Automatic threshold",
+    )
     if arr.dtype == bool:
         return 0.5
     if str(operation_id) == "minimum_threshold":
@@ -1054,9 +1130,17 @@ def automatic_threshold_value(
     return threshold_func(arr, histogram_bins)
 
 
-def binary_threshold(data, threshold: float = 0.5) -> np.ndarray:
-    """Return a binary mask using a fixed intensity threshold."""
-    arr = _to_grayscale(np.asarray(data))
+def binary_threshold(
+    data,
+    threshold: float = 0.5,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Return a fixed mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Binary threshold",
+    )
     return arr > float(threshold)
 
 
@@ -1064,18 +1148,32 @@ def adaptive_mean_threshold(
     data,
     block_size: int = 11,
     c: float = 2.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask using local mean thresholding."""
-    return _adaptive_threshold(data, block_size=block_size, c=c, method="mean")
+    """Return a local-mean mask, optionally reducing declared RGB/RGBA."""
+    return _adaptive_threshold(
+        data,
+        block_size=block_size,
+        c=c,
+        method="mean",
+        channel_axis=channel_axis,
+    )
 
 
 def adaptive_gaussian_threshold(
     data,
     block_size: int = 11,
     c: float = 2.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask using local Gaussian thresholding."""
-    return _adaptive_threshold(data, block_size=block_size, c=c, method="gaussian")
+    """Return a local-Gaussian mask, optionally reducing declared RGB/RGBA."""
+    return _adaptive_threshold(
+        data,
+        block_size=block_size,
+        c=c,
+        method="gaussian",
+        channel_axis=channel_axis,
+    )
 
 
 def sauvola_threshold(
@@ -1083,9 +1181,14 @@ def sauvola_threshold(
     window_size: int = 15,
     k: float = 0.2,
     dynamic_range: float = 0.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask using local Sauvola thresholding."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a Sauvola mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Sauvola threshold",
+    )
 
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         window = _odd_size(window_size, minimum=3, maximum=min(plane.shape[-2:]))
@@ -1104,16 +1207,21 @@ def sauvola_threshold(
         local = filters.threshold_sauvola(values, window_size=window, k=float(k), r=r)
         return values > local
 
-    return _apply_plane_wise(arr, threshold_plane)
+    return _apply_scalar_plane_wise(arr, threshold_plane)
 
 
 def niblack_threshold(
     data,
     window_size: int = 15,
     k: float = 0.2,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask using local Niblack thresholding."""
-    arr = _to_grayscale(np.asarray(data))
+    """Return a Niblack mask, optionally reducing declared RGB/RGBA to luma."""
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="Niblack threshold",
+    )
 
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         window = _odd_size(window_size, minimum=3, maximum=min(plane.shape[-2:]))
@@ -1123,7 +1231,7 @@ def niblack_threshold(
         local = filters.threshold_niblack(values, window_size=window, k=float(k))
         return values > local
 
-    return _apply_plane_wise(arr, threshold_plane)
+    return _apply_scalar_plane_wise(arr, threshold_plane)
 
 
 def dilate(data, size: int = 10, iterations: int = 1) -> np.ndarray:
@@ -5260,8 +5368,24 @@ def select_axis_slice(
     return result
 
 
-def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndarray:
-    arr = _to_grayscale(np.asarray(data))
+def _adaptive_threshold(
+    data,
+    block_size: int,
+    c: float,
+    method: str,
+    *,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    operation = (
+        "Adaptive mean threshold"
+        if method == "mean"
+        else "Adaptive Gaussian threshold"
+    )
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation=operation,
+    )
 
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         block = _odd_size(block_size, minimum=3, maximum=min(plane.shape[-2:]))
@@ -5275,7 +5399,7 @@ def _adaptive_threshold(data, block_size: int, c: float, method: str) -> np.ndar
         )
         return plane > local
 
-    return _apply_plane_wise(arr, threshold_plane)
+    return _apply_scalar_plane_wise(arr, threshold_plane)
 
 
 def _global_threshold(
@@ -5300,7 +5424,7 @@ def _global_threshold(
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         return _threshold_mask(plane, threshold_func(plane))
 
-    return _apply_plane_wise(arr, threshold_plane)
+    return _apply_scalar_plane_wise(arr, threshold_plane)
 
 
 def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
@@ -5317,6 +5441,38 @@ def _to_grayscale(arr: np.ndarray) -> np.ndarray:
         coefficients = np.asarray((0.299, 0.587, 0.114), dtype=work_dtype)
         return np.sum(rgb * coefficients, axis=-1, dtype=work_dtype)
     return arr
+
+
+def _to_explicit_grayscale(
+    arr: np.ndarray,
+    *,
+    channel_axis: int | None,
+    operation: str,
+) -> np.ndarray:
+    """Reduce only an explicitly declared RGB/RGBA axis to scalar luma.
+
+    The supported channel axis must contain exactly three RGB or four RGBA
+    channels in that order. Boolean, integer, and floating arrays are accepted;
+    complex and nonnumeric arrays are rejected. Luma uses the established
+    BT.601 weights ``0.299 R + 0.587 G + 0.114 B`` and ignores alpha. Removing
+    the channel axis preserves the relative order of every remaining axis.
+    """
+    arr = np.asarray(arr)
+    if arr.size == 0:
+        raise ValueError(f"{operation} requires non-empty image data.")
+    axis = _validated_luma_channel_axis(
+        arr,
+        channel_axis,
+        operation=operation,
+    )
+    if axis is None:
+        return arr
+
+    moved = np.moveaxis(arr, axis, -1)
+    work_dtype = np.result_type(arr.dtype, np.float32)
+    rgb = moved[..., :3].astype(work_dtype, copy=False)
+    coefficients = np.asarray((0.299, 0.587, 0.114), dtype=work_dtype)
+    return np.sum(rgb * coefficients, axis=-1, dtype=work_dtype)
 
 
 def _to_bool_mask(data) -> np.ndarray:
@@ -5922,6 +6078,26 @@ def _apply_plane_wise(arr: np.ndarray, func: Callable[[np.ndarray], np.ndarray])
     if not leading_shape:
         return func(arr)
 
+    sample = np.asarray(func(arr[(0,) * len(leading_shape)]))
+    out = np.empty(leading_shape + sample.shape, dtype=sample.dtype)
+    out[(0,) * len(leading_shape)] = sample
+    for index in np.ndindex(leading_shape):
+        if all(i == 0 for i in index):
+            continue
+        out[index] = func(arr[index])
+    return out
+
+
+def _apply_scalar_plane_wise(
+    arr: np.ndarray,
+    func: Callable[[np.ndarray], np.ndarray],
+) -> np.ndarray:
+    """Apply ``func`` over trailing YX planes without channel inference."""
+    arr = np.asarray(arr)
+    if arr.ndim <= 2:
+        return np.asarray(func(arr))
+
+    leading_shape = arr.shape[:-2]
     sample = np.asarray(func(arr[(0,) * len(leading_shape)]))
     out = np.empty(leading_shape + sample.shape, dtype=sample.dtype)
     out[(0,) * len(leading_shape)] = sample
@@ -10556,6 +10732,39 @@ def _validated_filter_channel_axis(
             f"{operation} channel_axis {axis} is out of range for {ndim}D input."
         )
     return axis % ndim
+
+
+def _validated_luma_channel_axis(
+    arr: np.ndarray,
+    value,
+    *,
+    operation: str,
+) -> int | None:
+    axis = _validated_filter_channel_axis(
+        value,
+        np.asarray(arr).ndim,
+        operation=operation,
+    )
+    if axis is None:
+        return None
+
+    arr = np.asarray(arr)
+    channel_count = int(arr.shape[axis])
+    if channel_count not in {3, 4}:
+        raise ValueError(
+            f"{operation} channel_axis must contain exactly 3 RGB or 4 RGBA "
+            f"channels, not {channel_count}."
+        )
+    if not (
+        arr.dtype == bool
+        or np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
+        raise ValueError(
+            f"{operation} RGB/RGBA conversion requires real-valued boolean, "
+            "integer, or floating image data."
+        )
+    return axis
 
 
 def _validated_filter_scale(

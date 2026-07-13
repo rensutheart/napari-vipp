@@ -2841,6 +2841,279 @@ def test_denoising_filters_require_two_spatial_axes_for_channel_data(operation):
         operation(data, channel_axis=1)
 
 
+def _edge_threshold_channel_cases(*, include_automatic=False):
+    cases = [
+        pytest.param(sobel_filter, {}, id="sobel"),
+        pytest.param(laplace_filter, {"kernel_size": 3}, id="laplace"),
+        pytest.param(
+            canny_edges,
+            {"sigma": 1.0, "low_quantile": 0.05, "high_quantile": 0.2},
+            id="canny",
+        ),
+        pytest.param(
+            hysteresis_threshold,
+            {
+                "low_threshold": 0.25,
+                "high_threshold": 0.7,
+                "spatial_mode": "2D YX",
+            },
+            id="hysteresis",
+        ),
+        pytest.param(otsu_threshold, {}, id="otsu"),
+        pytest.param(triangle_threshold, {}, id="triangle"),
+        pytest.param(li_threshold, {}, id="li"),
+        pytest.param(yen_threshold, {}, id="yen"),
+        pytest.param(isodata_threshold, {}, id="isodata"),
+        pytest.param(minimum_threshold, {}, id="minimum"),
+        pytest.param(binary_threshold, {"threshold": 0.5}, id="binary"),
+        pytest.param(
+            adaptive_mean_threshold,
+            {"block_size": 3, "c": 0.0},
+            id="adaptive-mean",
+        ),
+        pytest.param(
+            adaptive_gaussian_threshold,
+            {"block_size": 3, "c": 0.0},
+            id="adaptive-gaussian",
+        ),
+        pytest.param(
+            sauvola_threshold,
+            {"window_size": 3, "k": 0.2},
+            id="sauvola",
+        ),
+        pytest.param(
+            niblack_threshold,
+            {"window_size": 3, "k": 0.2},
+            id="niblack",
+        ),
+    ]
+    if include_automatic:
+        cases.append(
+            pytest.param(
+                operations.automatic_threshold_value,
+                {"operation_id": "otsu_threshold"},
+                id="automatic-threshold-value",
+            )
+        )
+    return cases
+
+
+def _edge_threshold_test_image(*, x_size=12):
+    image = np.zeros((15, x_size), dtype=np.float32)
+    image[:, x_size // 2 :] = 1.0
+    image[5:10] += 0.25
+    return image
+
+
+@pytest.mark.parametrize("x_size", (3, 4))
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(),
+)
+def test_edge_threshold_operations_treat_rgb_sized_x_as_scalar_by_default(
+    operation,
+    kwargs,
+    x_size,
+):
+    plane = _edge_threshold_test_image(x_size=x_size)
+    data = np.stack((plane, plane * 0.8 + 0.05)).astype(np.float32)
+    original = data.copy()
+
+    result = operation(data, **kwargs)
+
+    assert result.shape == data.shape
+    np.testing.assert_array_equal(data, original)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(),
+)
+def test_edge_threshold_operations_reduce_only_declared_rgb_axes(
+    operation,
+    kwargs,
+):
+    base = _edge_threshold_test_image()
+    yxc = np.stack((base, base * 0.8 + 0.05, base * 0.6 + 0.1), axis=-1)
+    yxc = yxc.astype(np.float32)
+    cyx = np.moveaxis(yxc, -1, 0).copy()
+    original_yxc = yxc.copy()
+    original_cyx = cyx.copy()
+    weights = np.asarray((0.299, 0.587, 0.114), dtype=np.float32)
+    luma = np.sum(yxc * weights, axis=-1, dtype=np.float32)
+
+    expected = operation(luma, **kwargs)
+    yxc_result = operation(yxc, channel_axis=2, **kwargs)
+    cyx_result = operation(cyx, channel_axis=0, **kwargs)
+
+    assert yxc_result.shape == base.shape
+    assert cyx_result.shape == base.shape
+    if np.issubdtype(np.asarray(expected).dtype, np.floating):
+        np.testing.assert_allclose(yxc_result, expected, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(cyx_result, expected, rtol=1e-6, atol=1e-6)
+    else:
+        np.testing.assert_array_equal(yxc_result, expected)
+        np.testing.assert_array_equal(cyx_result, expected)
+    np.testing.assert_array_equal(yxc, original_yxc)
+    np.testing.assert_array_equal(cyx, original_cyx)
+
+
+def test_declared_rgb_reduction_preserves_remaining_axis_order():
+    base = _edge_threshold_test_image()
+    first = np.stack((base, base * 0.8, base * 0.6), axis=-1)
+    second = np.stack((base * 0.4, base * 0.2, base), axis=-1)
+    zyxc = np.stack((first, second)).astype(np.float32)
+    zcyx = np.moveaxis(zyxc, -1, 1)
+
+    trailing = binary_threshold(zyxc, threshold=0.4, channel_axis=3)
+    nontrailing = binary_threshold(zcyx, threshold=0.4, channel_axis=1)
+
+    assert trailing.shape == (2, *base.shape)
+    np.testing.assert_array_equal(nontrailing, trailing)
+
+
+def test_declared_rgba_ignores_alpha_channel():
+    base = _edge_threshold_test_image()
+    rgb = np.stack((base, base * 0.8, base * 0.6), axis=-1).astype(np.float32)
+    low_alpha = np.concatenate(
+        (rgb, np.zeros((*base.shape, 1), dtype=np.float32)),
+        axis=-1,
+    )
+    high_alpha = low_alpha.copy()
+    high_alpha[..., 3] = 10_000.0
+
+    low_result = binary_threshold(low_alpha, threshold=0.4, channel_axis=2)
+    high_result = binary_threshold(high_alpha, threshold=0.4, channel_axis=2)
+
+    np.testing.assert_array_equal(high_result, low_result)
+
+
+def test_declared_boolean_rgb_is_supported_as_real_valued_luma():
+    rgb = np.zeros((5, 6, 3), dtype=bool)
+    rgb[..., 0] = True
+    rgb[2:, :, 1] = True
+    expected_luma = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1]
+
+    result = binary_threshold(rgb, threshold=0.5, channel_axis=2)
+
+    np.testing.assert_array_equal(result, expected_luma > 0.5)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(include_automatic=True),
+)
+@pytest.mark.parametrize("channel_axis", (3, -4))
+def test_edge_threshold_operations_reject_out_of_range_channel_axes(
+    operation,
+    kwargs,
+    channel_axis,
+):
+    data = np.zeros((2, 5, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="channel_axis .* is out of range"):
+        operation(data, channel_axis=channel_axis, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(include_automatic=True),
+)
+@pytest.mark.parametrize("channel_axis", (True, 1.5, "2"))
+def test_edge_threshold_operations_reject_noninteger_channel_axes(
+    operation,
+    kwargs,
+    channel_axis,
+):
+    data = np.zeros((2, 5, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="channel_axis must be an integer or None"):
+        operation(data, channel_axis=channel_axis, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(include_automatic=True),
+)
+def test_edge_threshold_operations_require_two_spatial_axes_for_channels(
+    operation,
+    kwargs,
+):
+    data = np.zeros((5, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="requires at least two spatial dimensions"):
+        operation(data, channel_axis=1, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    _edge_threshold_channel_cases(include_automatic=True),
+)
+def test_edge_threshold_operations_reject_empty_input(operation, kwargs):
+    data = np.empty((0, 5, 3), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="requires non-empty image data"):
+        operation(data, **kwargs)
+
+
+@pytest.mark.parametrize("channel_count", (1, 2, 5))
+def test_luma_reduction_rejects_non_rgb_channel_counts(channel_count):
+    data = np.zeros((5, 6, channel_count), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exactly 3 RGB or 4 RGBA"):
+        binary_threshold(data, channel_axis=2)
+
+
+@pytest.mark.parametrize(
+    "data",
+    (
+        np.zeros((5, 6, 3), dtype=np.complex64),
+        np.full((5, 6, 3), "red", dtype="U3"),
+        np.full((5, 6, 3), object(), dtype=object),
+    ),
+)
+def test_luma_reduction_rejects_non_real_image_data(data):
+    with pytest.raises(ValueError, match="requires real-valued boolean, integer"):
+        binary_threshold(data, channel_axis=2)
+
+
+@pytest.mark.parametrize("x_size", (3, 4))
+def test_automatic_threshold_value_treats_rgb_sized_x_as_scalar_by_default(x_size):
+    plane = _edge_threshold_test_image(x_size=x_size)
+    data = np.stack((plane, plane * 0.8 + 0.05)).astype(np.float32)
+    original = data.copy()
+
+    expected = operations._otsu_value(data)
+    result = operations.automatic_threshold_value(data, "otsu_threshold")
+
+    assert result == expected
+    np.testing.assert_array_equal(data, original)
+
+
+def test_automatic_threshold_value_reduces_declared_yxc_and_cyx_to_luma():
+    base = _edge_threshold_test_image()
+    yxc = np.stack((base, base * 0.8 + 0.05, base * 0.6 + 0.1), axis=-1)
+    yxc = yxc.astype(np.float32)
+    cyx = np.moveaxis(yxc, -1, 0).copy()
+    weights = np.asarray((0.299, 0.587, 0.114), dtype=np.float32)
+    luma = np.sum(yxc * weights, axis=-1, dtype=np.float32)
+    expected = operations.automatic_threshold_value(luma, "otsu_threshold")
+
+    yxc_result = operations.automatic_threshold_value(
+        yxc,
+        "otsu_threshold",
+        channel_axis=2,
+    )
+    cyx_result = operations.automatic_threshold_value(
+        cyx,
+        "otsu_threshold",
+        channel_axis=0,
+    )
+
+    assert yxc_result == expected
+    assert cyx_result == expected
+
+
 @pytest.mark.parametrize("dtype", (np.float32, np.float64))
 @pytest.mark.parametrize(
     ("operation", "kwargs"),
@@ -4479,17 +4752,24 @@ def test_otsu_value_handles_constant_data(data, expected):
     ],
 )
 @pytest.mark.parametrize(
-    "data",
+    ("data", "message"),
     [
-        np.array([], dtype=np.float32),
-        np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
+        (
+            np.array([], dtype=np.float32),
+            "requires non-empty image data",
+        ),
+        (
+            np.array([np.nan, np.inf, -np.inf], dtype=np.float32),
+            "at least one finite input value",
+        ),
     ],
 )
 def test_automatic_thresholds_reject_inputs_without_finite_values(
     threshold_func,
     data,
+    message,
 ):
-    with pytest.raises(ValueError, match="at least one finite input value"):
+    with pytest.raises(ValueError, match=message):
         threshold_func(data)
 
 
