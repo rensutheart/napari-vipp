@@ -27,7 +27,8 @@
       "id": "gaussian",
       "operation_id": "gaussian_blur",
       "params": {
-        "sigma": 1.2
+        "sigma": 1.2,
+        "channel_axis": -1
       }
     },
     {

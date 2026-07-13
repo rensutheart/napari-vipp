@@ -29,6 +29,7 @@ class GridAxis:
     scale: float
     translation: float
     unit: str | None
+    explicit: bool
 
     @classmethod
     def from_metadata(cls, axis: AxisMetadata, size: int) -> GridAxis:
@@ -39,6 +40,7 @@ class GridAxis:
             scale=float(axis.scale),
             translation=float(axis.translation),
             unit=str(axis.unit).strip() if axis.unit else None,
+            explicit=bool(axis.is_explicit),
         )
 
 
@@ -79,6 +81,18 @@ class GridIssue:
 class GridCompatibility:
     """Structured result of a grid comparison."""
 
+    issues: tuple[GridIssue, ...] = ()
+
+    @property
+    def compatible(self) -> bool:
+        return not self.issues
+
+
+@dataclass(frozen=True, slots=True)
+class MaskBroadcastCompatibility:
+    """Semantic mapping and issues for broadcasting a mask onto an image."""
+
+    mask_to_image_axes: tuple[int, ...] = ()
     issues: tuple[GridIssue, ...] = ()
 
     @property
@@ -131,6 +145,113 @@ def compare_aligned_grids(
             )
         )
     return GridCompatibility(tuple(issues))
+
+
+def compare_mask_broadcast_grids(
+    image: ImageGrid,
+    mask: ImageGrid,
+) -> MaskBroadcastCompatibility:
+    """Resolve a mask-to-image axis mapping without using coincident sizes.
+
+    Same-rank inputs retain the ordinary pointwise-grid contract. A lower-rank
+    mask may omit image axes only when all remaining semantics are explicit and
+    uniquely match image axes with equal sizes and physical calibration.
+    """
+    if len(image.axes) == len(mask.axes):
+        aligned = compare_aligned_grids(image, mask)
+        return MaskBroadcastCompatibility(
+            (tuple(range(len(mask.axes))) if aligned.compatible else ()),
+            aligned.issues,
+        )
+    if len(mask.axes) > len(image.axes):
+        return MaskBroadcastCompatibility(
+            issues=(
+                GridIssue(
+                    "rank",
+                    f"Mask rank {len(mask.axes)}D exceeds Image rank "
+                    f"{len(image.axes)}D",
+                ),
+            )
+        )
+
+    inferred_axes = [
+        f"Image axis {index} ({axis.name or 'unnamed'})"
+        for index, axis in enumerate(image.axes)
+        if not axis.explicit
+    ] + [
+        f"Mask axis {index} ({axis.name or 'unnamed'})"
+        for index, axis in enumerate(mask.axes)
+        if not axis.explicit
+    ]
+    if inferred_axes:
+        return MaskBroadcastCompatibility(
+            issues=(
+                GridIssue(
+                    "axis_confidence",
+                    "mismatched-rank mask broadcasting requires explicit axis "
+                    "semantics; inferred semantics remain on "
+                    + ", ".join(inferred_axes),
+                ),
+            )
+        )
+
+    issues: list[GridIssue] = []
+    mapping: list[int] = []
+    for mask_index, mask_axis in enumerate(mask.axes):
+        matches = [
+            image_index
+            for image_index, image_axis in enumerate(image.axes)
+            if (image_axis.name == mask_axis.name and image_axis.type == mask_axis.type)
+        ]
+        mask_label = _axis_label(mask_axis, mask_index)
+        if not matches:
+            issues.append(
+                GridIssue(
+                    "axis_semantics",
+                    f"Mask {mask_label} semantics {_semantics(mask_axis)!r} "
+                    "have no matching Image axis",
+                )
+            )
+            continue
+        if len(matches) > 1:
+            issues.append(
+                GridIssue(
+                    "ambiguous_axis",
+                    f"Mask {mask_label} semantics {_semantics(mask_axis)!r} "
+                    f"match multiple Image axes {matches}",
+                )
+            )
+            continue
+
+        image_index = matches[0]
+        image_axis = image.axes[image_index]
+        mapping.append(image_index)
+        image_label = _axis_label(image_axis, image_index)
+        if mask_axis.size != image_axis.size:
+            issues.append(
+                GridIssue(
+                    "axis_size",
+                    f"{image_label} sizes differ ({image_axis.size} versus "
+                    f"{mask_axis.size})",
+                )
+            )
+        issues.extend(
+            _axis_calibration_issues(
+                image_axis,
+                mask_axis,
+                axis_label=image_label,
+                compare_translation=True,
+            )
+        )
+
+    if len(mapping) == len(mask.axes) and len(set(mapping)) != len(mapping):
+        issues.append(
+            GridIssue(
+                "ambiguous_axis",
+                "multiple Mask axes resolve to the same Image axis",
+            )
+        )
+    return MaskBroadcastCompatibility(tuple(mapping), tuple(issues))
 
 
 def compare_psf_sampling(
@@ -238,6 +359,33 @@ def validate_aligned_image_states(
                     "grid before combining them."
                 ),
             )
+
+
+def validate_mask_broadcast_image_states(
+    image_state: ImageState,
+    mask_state: ImageState,
+    *,
+    operation_title: str = "Mask Image",
+) -> tuple[int, ...]:
+    """Return the only scientifically supported mask-to-image axis mapping."""
+    compatibility = compare_mask_broadcast_grids(
+        ImageGrid.from_image_state(image_state),
+        ImageGrid.from_image_state(mask_state),
+    )
+    if not compatibility.compatible:
+        _raise_grid_error(
+            operation_title,
+            "Image",
+            "Mask",
+            GridCompatibility(compatibility.issues),
+            remedy=(
+                "Supply explicit, unique axis metadata with matching sizes and "
+                "calibration. Reorder or explicitly resample the mask when its "
+                "sampled grid differs; VIPP does not align masks by dimension "
+                "size."
+            ),
+        )
+    return compatibility.mask_to_image_axes
 
 
 def validate_psf_image_states(

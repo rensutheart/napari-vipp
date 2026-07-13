@@ -7,6 +7,10 @@ import numpy as np
 import pytest
 
 import napari_vipp.core.atomic_io as atomic_io_module
+from napari_vipp.core.operations import (
+    COMPOSITE_RGB_PERCENTILE_1_99,
+    COMPOSITE_RGB_PRESERVE_VALUES,
+)
 from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
@@ -203,6 +207,44 @@ def test_clip_cutoff_mode_roundtrips():
     assert explicit_node.params["cutoff_mode"] == "Data range"
 
 
+def test_composite_intensity_mapping_roundtrips_as_a_required_choice():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("composite_to_rgb")
+    assert node.params["intensity_mapping"] == COMPOSITE_RGB_PRESERVE_VALUES
+    pipeline.set_param(
+        node.id,
+        "intensity_mapping",
+        COMPOSITE_RGB_PERCENTILE_1_99,
+    )
+
+    document = serialize_workflow(pipeline)
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert (
+        restored_node.params["intensity_mapping"]
+        == COMPOSITE_RGB_PERCENTILE_1_99
+    )
+
+
+def test_composite_workflow_requires_and_validates_intensity_mapping():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("composite_to_rgb")
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"].pop("intensity_mapping")
+
+    with pytest.raises(
+        ValueError,
+        match="missing required parameters: intensity_mapping",
+    ):
+        deserialize_workflow(document)
+
+    serialized["params"]["intensity_mapping"] = "Automatic"
+    with pytest.raises(ValueError, match="must be one of"):
+        deserialize_workflow(document)
+
+
 @pytest.mark.parametrize(
     ("operation_id", "parameter"),
     [
@@ -334,14 +376,81 @@ def test_workflow_preserves_supported_optional_ui_parameters():
     assert restored_node.params["x_size"] == 12
 
 
-def test_dynamic_choice_parameters_still_require_nonempty_text():
+@pytest.mark.parametrize(
+    ("operation_id", "parameter", "value", "message"),
+    (
+        ("split_axis", "axis", 1, "must use axis:N"),
+        ("split_axis", "axis", "", "must use axis:N"),
+        ("split_axis", "axis", "banana", "must use axis:N"),
+        ("split_axis", "axis", "axis:1.5", "must use axis:N"),
+        (
+            "project_image",
+            "axes",
+            "banana",
+            "must use auto, non_yx_spatial, axis:N, or name:axis",
+        ),
+        (
+            "project_image",
+            "axes",
+            "axis:one",
+            "must use auto, non_yx_spatial, axis:N, or name:axis",
+        ),
+        (
+            "project_image",
+            "axes",
+            "name:",
+            "must use auto, non_yx_spatial, axis:N, or name:axis",
+        ),
+        (
+            "fill_holes",
+            "spatial_mode",
+            "Whatever is convenient",
+            "must be one of",
+        ),
+    ),
+)
+def test_dynamic_choices_reject_values_outside_their_declared_grammar(
+    operation_id,
+    parameter,
+    value,
+    message,
+):
     pipeline = PrototypePipeline()
-    node = pipeline.add_node("split_axis")
+    node = pipeline.add_node(operation_id)
 
-    with pytest.raises(ValueError, match="non-empty choice value"):
-        pipeline.set_param(node.id, "axis", 1)
-    with pytest.raises(ValueError, match="non-empty choice value"):
-        pipeline.set_param(node.id, "axis", "")
+    with pytest.raises(ValueError, match=message):
+        pipeline.set_param(node.id, parameter, value)
+
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"][parameter] = value
+    with pytest.raises(ValueError, match=message):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "parameter", "value"),
+    (
+        ("split_axis", "axis", "axis:-1"),
+        ("project_image", "axes", "axis:-1"),
+        ("project_image", "axes", "name:z"),
+        ("project_image", "axes", "non_yx_spatial"),
+        ("fill_holes", "spatial_mode", "3D ZYX volume"),
+    ),
+)
+def test_dynamic_choices_accept_only_declared_values_and_grammar(
+    operation_id,
+    parameter,
+    value,
+):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+
+    pipeline.set_param(node.id, parameter, value)
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+    assert restored_node.params[parameter] == value
 
 
 def test_workflow_rejects_blank_paths_and_unknown_positions(tmp_path):

@@ -13,6 +13,7 @@ from typing import Any
 
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
+    validate_mask_broadcast_image_states,
     validate_psf_image_states,
 )
 from napari_vipp.core.metadata import (
@@ -27,6 +28,8 @@ from napari_vipp.core.metadata import (
 )
 from napari_vipp.core.operations import (
     BORN_WOLF_PSF_AUTO_PARAMETERS,
+    COMPOSITE_RGB_PERCENTILE_1_99,
+    COMPOSITE_RGB_PRESERVE_VALUES,
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
@@ -151,6 +154,7 @@ class ParameterSpec:
     choices: tuple[str, ...] = ()
     choice_labels: tuple[str, ...] = ()
     dynamic_choices: bool = False
+    dynamic_choice_kind: str = ""
 
 
 _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
@@ -259,8 +263,7 @@ def validate_parameter_value(
     label = f"{context} {spec.name!r}"
     if spec.kind == "choice":
         if spec.dynamic_choices:
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"{label} must be a non-empty choice value.")
+            _validate_dynamic_choice_value(spec, value, label=label)
             return
         if value not in spec.choices:
             choices = ", ".join(repr(choice) for choice in spec.choices)
@@ -289,6 +292,43 @@ def validate_parameter_value(
         return
     if spec.kind == "text" and not isinstance(value, str):
         raise ValueError(f"{label} must be text.")
+
+
+def _validate_dynamic_choice_value(
+    spec: ParameterSpec,
+    value: Any,
+    *,
+    label: str,
+) -> None:
+    """Validate the persisted grammar behind a context-populated choice."""
+    text = value.strip() if isinstance(value, str) else ""
+    if spec.dynamic_choice_kind == "spatial_mode":
+        contextual_choices = (
+            "2D per XY slice (advanced)",
+            "3D ZYX volume",
+        )
+        allowed = (*spec.choices, *contextual_choices)
+        if text not in allowed:
+            choices = ", ".join(repr(choice) for choice in allowed)
+            raise ValueError(f"{label} must be one of: {choices}.")
+        return
+    if spec.dynamic_choice_kind == "axis_index":
+        if re.fullmatch(r"axis:[+-]?\d+", text) is None:
+            raise ValueError(f"{label} must use axis:N with an integer N.")
+        return
+    if spec.dynamic_choice_kind == "projection_axes":
+        is_axis_index = re.fullmatch(r"axis:[+-]?\d+", text) is not None
+        is_axis_name = (
+            re.fullmatch(r"name:[A-Za-z][A-Za-z0-9_.-]*", text) is not None
+        )
+        if text not in spec.choices and not is_axis_index and not is_axis_name:
+            raise ValueError(
+                f"{label} must use auto, non_yx_spatial, axis:N, or name:axis."
+            )
+        return
+    raise ValueError(
+        f"{label} has no declared validator for its dynamic choices."
+    )
 
 
 @dataclass(frozen=True)
@@ -534,6 +574,7 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     1,
     choices=("Auto from axes", "2D YX", "3D ZYX"),
     dynamic_choices=True,
+    dynamic_choice_kind="spatial_mode",
 )
 
 BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
@@ -546,6 +587,7 @@ BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
     1,
     choices=("2D YX", "3D ZYX", "Auto from axes"),
     dynamic_choices=True,
+    dynamic_choice_kind="spatial_mode",
 )
 
 THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
@@ -571,6 +613,16 @@ HISTOGRAM_BINS_PARAMETER = ParameterSpec(
 SCALAR_LUMA_CHANNEL_AXIS_PARAMETER = ParameterSpec(
     "channel_axis",
     "RGB/RGBA channel axis (-1 = scalar)",
+    "int",
+    -1,
+    -1,
+    64,
+    1,
+)
+
+SCALAR_CHANNEL_AXIS_PARAMETER = ParameterSpec(
+    "channel_axis",
+    "Channel axis (-1 = scalar)",
     "int",
     -1,
     -1,
@@ -625,23 +677,92 @@ _EXPLICIT_CHANNEL_AXIS_OPERATIONS = {
     "extract_channel",
     "split_channels",
 }
+_POSITIONAL_YX_OPERATIONS = frozenset(
+    {
+        "average_blur",
+        "gaussian_blur",
+        "median_filter",
+        "difference_of_gaussians",
+        "bilateral_filter",
+        "unsharp_mask",
+        "non_local_means_filter",
+        "sobel_filter",
+        "laplace_filter",
+        "canny_edges",
+        "adaptive_mean_threshold",
+        "adaptive_gaussian_threshold",
+        "sauvola_threshold",
+        "niblack_threshold",
+        "dilate",
+        "erode",
+        "opening",
+        "closing",
+        "top_hat",
+        "black_hat",
+        "morphological_gradient",
+    }
+)
+_SLICE_HISTOGRAM_POSITIONAL_OPERATIONS = frozenset(
+    {
+        "otsu_threshold",
+        "triangle_threshold",
+        "li_threshold",
+        "yen_threshold",
+        "isodata_threshold",
+        "minimum_threshold",
+    }
+)
+_POSITIONAL_RESOLVED_SPATIAL_OPERATIONS = frozenset(
+    {
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+        "rolling_ball_background",
+        "subtract_background",
+        "hysteresis_threshold",
+        "fill_holes",
+        "clear_border_objects",
+        "remove_small_objects",
+        "label_connected_components",
+        "euclidean_distance_transform",
+        "h_maxima_markers",
+        "auto_watershed_from_mask",
+        "marker_controlled_watershed",
+        "expand_labels",
+        "filter_labels_by_volume",
+        "relabel_sequential",
+        "skeletonize",
+        "skeleton_keypoints",
+        "label_skeleton_components",
+        "label_skeleton_branches",
+        "skeleton_graph_overlay",
+        "prune_skeleton_branches",
+    }
+)
 SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
     {
         "adaptive_gaussian_threshold",
         "adaptive_mean_threshold",
+        "average_blur",
         "bilateral_filter",
         "binary_threshold",
         "canny_edges",
+        "crop_stack",
+        "difference_of_gaussians",
+        "gaussian_blur",
+        "gaussian_blur_3d",
         "hysteresis_threshold",
         "isodata_threshold",
         "laplace_filter",
         "li_threshold",
         "minimum_threshold",
+        "median_filter",
         "niblack_threshold",
         "non_local_means_filter",
         "otsu_threshold",
+        "rolling_ball_background",
         "sauvola_threshold",
         "sobel_filter",
+        "subtract_background",
         "triangle_threshold",
         "unsharp_mask",
         "yen_threshold",
@@ -721,6 +842,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("bottom", "Bottom", "int", 0, 0, 256, 1),
             ParameterSpec("left", "Left", "int", 0, 0, 256, 1),
             ParameterSpec("right", "Right", "int", 0, 0, 256, 1),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         crop_stack,
         subcategory=AXES_REGIONS_GROUP,
@@ -765,6 +887,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 1),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         average_blur,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -778,6 +901,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec("sigma", "Sigma", "float", 1.2, 0.0, 12.0, 0.1, 2),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         gaussian_blur,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -794,6 +918,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("sigma_y", "Sigma Y", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("sigma_x", "Sigma X", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("lock_xy", "Lock X/Y sigma", "bool", True, 0, 1, 1),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         gaussian_blur_3d,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1078,6 +1203,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec("size", "Kernel size", "int", 5, 1, 51, 2),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         median_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1177,6 +1303,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
             ),
             BACKGROUND_SPATIAL_MODE_PARAMETER,
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         rolling_ball_background,
         subcategory=BACKGROUND_CORRECTION_GROUP,
@@ -1221,6 +1348,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
             ),
             BACKGROUND_SPATIAL_MODE_PARAMETER,
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         subtract_background,
         subcategory=BACKGROUND_CORRECTION_GROUP,
@@ -1238,6 +1366,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("low_sigma", "Low sigma", "float", 1.0, 0.0, 50.0, 0.1, 2),
             ParameterSpec("high_sigma", "High sigma", "float", 3.0, 0.0, 50.0, 0.1, 2),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
         ),
         difference_of_gaussians_filter,
         subcategory=EDGE_DETAIL_GROUP,
@@ -1360,6 +1489,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "All non-YX spatial axes",
                 ),
                 dynamic_choices=True,
+                dynamic_choice_kind="projection_axes",
             ),
             ParameterSpec(
                 "method",
@@ -1448,6 +1578,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 choices=("axis:0",),
                 choice_labels=("Axis 0",),
                 dynamic_choices=True,
+                dynamic_choice_kind="axis_index",
             ),
         ),
         split_axis,
@@ -3503,7 +3634,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         (
             ParameterSpec(
-                "channel_axis", "Channel axis (-1 auto)", "int", -1, -1, 6, 1
+                "channel_axis",
+                "Channel axis (-1 from metadata)",
+                "int",
+                -1,
+                -1,
+                64,
+                1,
             ),
             ParameterSpec("red_channel", "Red channel (-1 auto)", "int", -1, -1, 15, 1),
             ParameterSpec(
@@ -3511,6 +3648,19 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "blue_channel", "Blue channel (-1 auto)", "int", -1, -1, 15, 1
+            ),
+            ParameterSpec(
+                "intensity_mapping",
+                "Intensity mapping",
+                "choice",
+                COMPOSITE_RGB_PRESERVE_VALUES,
+                0,
+                0,
+                1,
+                choices=(
+                    COMPOSITE_RGB_PRESERVE_VALUES,
+                    COMPOSITE_RGB_PERCENTILE_1_99,
+                ),
             ),
         ),
         composite_to_rgb,
@@ -3930,7 +4080,7 @@ PROTOTYPE_NODES = [
         "Filtering",
         "array",
         "image",
-        {"sigma": 1.2},
+        {"sigma": 1.2, "channel_axis": -1},
     ),
     GraphNode(
         "threshold",
@@ -5563,6 +5713,11 @@ class PrototypePipeline:
                 )
                 kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
                 node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+            _validate_positional_spatial_layout(
+                node,
+                input_states[0] if input_states else None,
+                kwargs,
+            )
             if node.operation_id == "combine_channels":
                 derived_axis = _default_combined_channel_axis(
                     input_states[0],
@@ -5667,6 +5822,7 @@ class PrototypePipeline:
             )
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+        _validate_positional_spatial_layout(node, input_state, kwargs)
         if node.operation_id in {
             "measure_objects",
             "analyze_skeleton",
@@ -5687,6 +5843,8 @@ class PrototypePipeline:
             kwargs["axis_scales"] = tuple(axis.scale for axis in input_state.axes)
             kwargs["axis_units"] = tuple(axis.unit for axis in input_state.axes)
         if node.operation_id == "reorder_axes" and isinstance(input_state, ImageState):
+            kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
+        if node.operation_id == "crop_stack" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if (
             node.operation_id
@@ -5753,7 +5911,12 @@ class PrototypePipeline:
                 kwargs["channel_axis_semantics"] = input_state.axes[
                     resolved_channel_axis
                 ].name
-            if input_state.channels:
+            declared_channel_axis = _image_state_channel_axis(input_state)
+            if (
+                input_state.channels
+                and declared_channel_axis is not None
+                and resolved_channel_axis == declared_channel_axis
+            ):
                 kwargs["channel_colors"] = tuple(
                     channel.color if channel.color is not None else ""
                     for channel in input_state.channels
@@ -5781,6 +5944,17 @@ class PrototypePipeline:
                 },
                 "channel": kwargs.get("channel", transform_params.get("channel")),
             }
+        if node.operation_id == "composite_to_rgb":
+            transform_params = {
+                **transform_params,
+                "resolved_channel_axis": kwargs.get("channel_axis"),
+                "channel_axis_semantics": kwargs.get(
+                    "channel_axis_semantics",
+                    "",
+                ),
+                "resolved_channel_colors": kwargs.get("channel_colors", ()),
+                "output_dtype": str(getattr(output, "dtype", "floating RGB")),
+            }
         state = transform_image_state(
             output,
             input_state,
@@ -5797,6 +5971,19 @@ class PrototypePipeline:
         kwargs: dict[str, Any],
     ) -> None:
         """Enforce explicit physical-grid contracts before array operations."""
+        if node.operation_id == "mask_image":
+            if (
+                len(input_states) >= 2
+                and isinstance(input_states[0], ImageState)
+                and isinstance(input_states[1], ImageState)
+            ):
+                kwargs["mask_axis_mapping"] = validate_mask_broadcast_image_states(
+                    input_states[0],
+                    input_states[1],
+                    operation_title=node.title,
+                )
+            return
+
         if node.operation_id in PSF_SAMPLING_GRID_OPERATIONS:
             if (
                 len(input_states) >= 2
@@ -6155,6 +6342,24 @@ def _validate_operation_axis_semantics(
                 image_state,
                 operation_title=node.title,
             )
+        elif (
+            image_state is not None
+            and requested_channel_axis < len(image_state.axes)
+            and image_state.axes[requested_channel_axis].is_explicit
+        ):
+            _require_explicit_channel_axis(
+                image_state,
+                operation_title=node.title,
+            )
+            declared_channel_axis = _image_state_channel_axis(image_state)
+            if requested_channel_axis != declared_channel_axis:
+                selected = image_state.axes[requested_channel_axis].name
+                declared = image_state.axes[declared_channel_axis].name
+                raise AmbiguousAxisError(
+                    f"{node.title} channel axis {requested_channel_axis} "
+                    f"({selected}) conflicts with the explicitly declared "
+                    f"channel axis {declared_channel_axis} ({declared})."
+                )
         return
     if node.operation_id == "project_image" and not (
         _projection_uses_only_axis_indices(kwargs.get("axes"))
@@ -6173,6 +6378,78 @@ def _validate_operation_axis_semantics(
             operation_title=node.title,
             purpose="derive PSF sampling and channel parameters",
         )
+
+
+def _validate_positional_spatial_layout(
+    node: GraphNode,
+    state: ImageState | TableState | None,
+    kwargs: dict[str, Any],
+) -> None:
+    """Reject explicit layouts that a positional kernel would misinterpret."""
+    if not isinstance(state, ImageState) or not state.spatial_axes_explicit:
+        return
+    required_rank = _positional_spatial_rank(node.operation_id, kwargs)
+    if required_rank is None:
+        return
+
+    effective_axes = list(state.axes)
+    channel_axis = kwargs.get("channel_axis")
+    if (
+        isinstance(channel_axis, Integral)
+        and not isinstance(channel_axis, bool)
+        and 0 <= int(channel_axis) < len(effective_axes)
+    ):
+        selected = effective_axes[int(channel_axis)]
+        if selected.is_explicit and not (
+            selected.type == "channel"
+            or selected.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+        ):
+            raise AmbiguousAxisError(
+                f"{node.title} channel axis {int(channel_axis)} "
+                f"({selected.name}) conflicts with its explicit "
+                f"{selected.type or 'unknown'} axis semantics."
+            )
+        effective_axes.pop(int(channel_axis))
+
+    required_names = ("z", "y", "x")[-required_rank:]
+    suffix = effective_axes[-required_rank:]
+    suffix_names = tuple(axis.name.strip().casefold() for axis in suffix)
+    suffix_is_spatial = all(axis.type == "space" for axis in suffix)
+    extra_leading_space = required_rank == 3 and any(
+        axis.type == "space" for axis in effective_axes[:-required_rank]
+    )
+    if (
+        len(suffix) == required_rank
+        and suffix_names == required_names
+        and suffix_is_spatial
+        and not extra_leading_space
+    ):
+        return
+
+    detected = "".join(axis.short_label for axis in effective_axes) or "scalar"
+    required = "".join(name.upper() for name in required_names)
+    raise AmbiguousAxisError(
+        f"{node.title} uses positional {required} processing, but the explicit "
+        f"effective axis order is {detected}. Reorder the data so its final "
+        f"{required_rank} axes are {required}; VIPP will not reinterpret "
+        "differently named axes by position."
+    )
+
+
+def _positional_spatial_rank(
+    operation_id: str,
+    kwargs: dict[str, Any],
+) -> int | None:
+    if operation_id in _POSITIONAL_YX_OPERATIONS:
+        return 2
+    if operation_id == "gaussian_blur_3d":
+        return 3
+    if operation_id in _SLICE_HISTOGRAM_POSITIONAL_OPERATIONS:
+        return 2 if kwargs.get("threshold_scope") == "Slice histogram" else None
+    if operation_id in _POSITIONAL_RESOLVED_SPATIAL_OPERATIONS:
+        value = kwargs.get("resolved_spatial_ndim")
+        return int(value) if value in {2, 3} else None
+    return None
 
 
 def _projection_uses_only_axis_indices(value) -> bool:
@@ -6252,11 +6529,10 @@ def _require_explicit_channel_axis(
     operation_title: str,
 ) -> None:
     if state is not None:
-        channel_axis = _image_state_channel_axis(state)
+        channel_axes = _image_state_channel_axes(state)
         if (
-            channel_axis is not None
-            and 0 <= channel_axis < len(state.axes)
-            and state.axes[channel_axis].is_explicit
+            len(channel_axes) == 1
+            and state.axes[channel_axes[0]].is_explicit
         ):
             return
     detail = (
@@ -6265,8 +6541,9 @@ def _require_explicit_channel_axis(
         else f"{state.axis_order} axes with {state.axis_confidence} confidence"
     )
     raise AmbiguousAxisError(
-        f"{operation_title} requires an explicit channel axis; {detail} does "
-        "not establish one. Supply explicit OME or layer axis metadata."
+        f"{operation_title} requires exactly one explicit channel axis; "
+        f"{detail} does not establish one unambiguously. Supply explicit OME "
+        "or layer axis metadata with one channel axis."
     )
 
 
@@ -6317,7 +6594,12 @@ def _resolved_spatial_ndim(
                 "metadata does not identify at least two spatial axes. Choose "
                 "2D YX or 3D ZYX explicitly."
             )
-    return min(requested, ndim)
+    if requested > ndim:
+        raise ValueError(
+            f"{operation_title} requested {requested}D spatial processing "
+            f"for a {ndim}D input."
+        )
+    return requested
 
 
 def _clone_node(node: GraphNode) -> GraphNode:
@@ -6415,19 +6697,24 @@ def _born_wolf_psf_channel_label(
 
 
 def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
-    value = params.get("axis", "axis:0")
-    text = str(value).strip().lower()
-    if text.startswith("axis:"):
-        text = text.split(":", 1)[1]
-    try:
-        axis = int(text)
-    except ValueError:
-        axis = 0
+    value = params.get("axis")
+    if not isinstance(value, str) or re.fullmatch(
+        r"axis:[+-]?\d+", value
+    ) is None:
+        raise ValueError(
+            "Split Axis axis parameter must use axis:N with an integer N."
+        )
+    axis = int(value.removeprefix("axis:"))
     if ndim <= 0:
-        return 0
+        raise ValueError("Split Axis cannot select an axis from 0D input.")
     if axis < 0:
         axis += ndim
-    return max(0, min(axis, ndim - 1))
+    if axis < 0 or axis >= ndim:
+        raise ValueError(
+            f"Split Axis axis {value.removeprefix('axis:')} is out of range "
+            f"for {ndim}D input."
+        )
+    return axis
 
 
 def _split_axis_label(
@@ -6442,10 +6729,17 @@ def _split_axis_label(
 
 
 def _image_state_channel_axis(input_state: ImageState) -> int | None:
-    for index, axis in enumerate(input_state.axes):
-        if axis.type == "channel" or axis.name.lower() == "c":
-            return index
-    return None
+    axes = _image_state_channel_axes(input_state)
+    return axes[0] if len(axes) == 1 else None
+
+
+def _image_state_channel_axes(input_state: ImageState) -> tuple[int, ...]:
+    return tuple(
+        index
+        for index, axis in enumerate(input_state.axes)
+        if axis.type == "channel"
+        or axis.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+    )
 
 
 def connection_pairs(connections: Iterable[GraphConnection]) -> set[tuple[str, str]]:

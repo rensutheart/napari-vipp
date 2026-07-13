@@ -8,11 +8,15 @@ from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_INFERRED,
     AXIS_CONFIDENCE_MIXED,
     DEFERRED_VALUE_RANGE,
+    AxisMetadata,
     ChannelMetadata,
     ImageState,
     image_state_from_array,
     infer_axis_metadata_from_shape,
     transform_image_state,
+    transform_multi_input_image_state,
+    transform_split_output_state,
+    with_channel_colors,
 )
 
 
@@ -24,9 +28,19 @@ def test_shape_only_channel_guess_is_marked_inferred_not_explicit():
         data,
         layer_metadata={"axes": "ZYX"},
     )
-    explicit_rgb = image_state_from_array(
+    explicit_channels = image_state_from_array(
         data,
         layer_metadata={"axes": "YXC"},
+    )
+    explicit_rgb = image_state_from_array(
+        data,
+        layer_metadata={
+            "axes": [
+                {"name": "y", "type": "space"},
+                {"name": "x", "type": "space"},
+                {"name": "rgb", "type": "channel"},
+            ]
+        },
     )
 
     assert inferred.axis_order == "YXC"
@@ -37,7 +51,8 @@ def test_shape_only_channel_guess_is_marked_inferred_not_explicit():
     assert explicit_volume.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
     assert explicit_volume.axes_explicit
     assert explicit_volume.kind == "intensity image"
-    assert explicit_rgb.axis_order == "YXC"
+    assert explicit_channels.kind == "multi-channel image"
+    assert explicit_rgb.axis_order == "Y,X,rgb"
     assert explicit_rgb.axes_explicit
     assert explicit_rgb.kind == "RGB image"
 
@@ -51,14 +66,14 @@ def test_inferred_axis_metadata_preserves_rank_and_unique_names(ndim):
     assert all(axis.confidence == AXIS_CONFIDENCE_INFERRED for axis in axes)
 
 
-def test_high_rank_shape_inferred_rgb_state_constructs_without_axis_overflow():
+def test_high_rank_shape_inferred_channel_state_constructs_without_axis_overflow():
     data = np.zeros((2, 5, 6, 7, 8, 9, 3), dtype=np.uint8)
 
     state = image_state_from_array(data)
 
     assert len(state.axes) == data.ndim
     assert state.axes[-1].name == "c"
-    assert state.kind == "RGB image"
+    assert state.kind == "multi-channel image"
 
 
 def test_explicit_ome_and_carried_axis_confidence_survive_roundtrip():
@@ -93,6 +108,170 @@ def test_explicit_ome_and_carried_axis_confidence_survive_roundtrip():
     assert carried_inferred.metadata_source == "VIPP carried state"
     assert carried_inferred.axis_confidence == AXIS_CONFIDENCE_INFERRED
     assert not carried_inferred.axes_explicit
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("scale", 0.0, "scale must be a finite positive number"),
+        ("scale", np.nan, "scale must be a finite positive number"),
+        ("scale", "not-a-number", "scale must be a finite positive number"),
+        ("translation", np.inf, "translation must be finite"),
+        ("translation", "not-a-number", "translation must be finite"),
+    ),
+)
+def test_axis_metadata_rejects_invalid_calibration(field, value, message):
+    document = {"name": "x", "type": "space", field: value}
+
+    with pytest.raises(ValueError, match=message):
+        AxisMetadata.from_dict(document)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("scale", -1.0, "scale must be a finite positive number"),
+        ("translation", np.nan, "translation must be finite"),
+    ),
+)
+def test_direct_axis_metadata_rejects_invalid_calibration(field, value, message):
+    kwargs = {field: value}
+
+    with pytest.raises(ValueError, match=message):
+        AxisMetadata("x", "space", **kwargs)
+
+
+def test_invalid_carried_calibration_is_not_silently_reinferred():
+    data = np.zeros((4, 5), dtype=np.uint16)
+    carried = image_state_from_array(
+        data,
+        layer_metadata={"axes": "YX"},
+    ).to_dict()
+    carried["axes"][0]["scale"] = np.nan
+
+    with pytest.raises(ValueError, match="invalid carried image state"):
+        image_state_from_array(
+            data,
+            layer_metadata={"vipp_image_state": carried},
+        )
+
+
+def test_stale_carried_shape_is_not_silently_reused_or_reinferred():
+    carried = image_state_from_array(
+        np.zeros((4, 5), dtype=np.uint16),
+        layer_metadata={"axes": "YX"},
+    ).to_dict()
+
+    with pytest.raises(ValueError, match="shape does not match the array"):
+        image_state_from_array(
+            np.zeros((5, 4), dtype=np.uint16),
+            layer_metadata={"vipp_image_state": carried},
+        )
+
+
+@pytest.mark.parametrize(
+    "layer_metadata",
+    (
+        {"axes": "ZYX"},
+        {"axis_order": ["y"]},
+        {"multiscales": []},
+        {"multiscales": [{"axes": ["y"], "datasets": []}]},
+    ),
+)
+def test_declared_axis_metadata_is_not_silently_replaced_when_malformed(
+    layer_metadata,
+):
+    with pytest.raises(ValueError):
+        image_state_from_array(
+            np.zeros((4, 5), dtype=np.uint16),
+            layer_metadata=layer_metadata,
+        )
+
+
+def test_explicit_axis_argument_rank_mismatch_is_rejected():
+    with pytest.raises(ValueError, match="Axis metadata rank does not match"):
+        image_state_from_array(
+            np.zeros((4, 5), dtype=np.uint16),
+            axes=(AxisMetadata("x", "space"),),
+        )
+
+
+def test_channel_colours_cannot_create_channels_absent_from_the_array():
+    scalar_state = image_state_from_array(
+        np.zeros((4, 5), dtype=np.uint16),
+        layer_metadata={"axes": "YX"},
+    )
+    channel_state = image_state_from_array(
+        np.zeros((2, 4, 5), dtype=np.uint16),
+        layer_metadata={"axes": "CYX"},
+    )
+
+    with pytest.raises(ValueError, match="require a declared channel axis"):
+        with_channel_colors(scalar_state, "red")
+    with pytest.raises(ValueError, match="array's channel axis contains 2"):
+        with_channel_colors(channel_state, "red,green,blue")
+
+
+def test_partial_channel_colours_match_the_array_channel_count_exactly():
+    state = image_state_from_array(
+        np.zeros((3, 4, 5), dtype=np.uint16),
+        layer_metadata={"axes": "CYX"},
+    )
+
+    colored = with_channel_colors(state, "yellow,cyan")
+
+    assert colored is not None
+    assert len(colored.channels) == 3
+    assert colored.channels[0].color == 0xFFFF00
+    assert colored.channels[1].color == 0x00FFFF
+    assert colored.channels[2].color is None
+
+
+@pytest.mark.parametrize(
+    ("transform", "message"),
+    (
+        (
+            {"type": "scale", "scale": [0.25]},
+            "scale transform must contain exactly 2 values",
+        ),
+        (
+            {"type": "scale", "scale": [0.25, 0.0]},
+            "scale must be a finite positive number",
+        ),
+        (
+            {"type": "scale", "scale": [0.25, np.nan]},
+            "scale must be a finite positive number",
+        ),
+        (
+            {"type": "translation", "translation": [1.0]},
+            "translation transform must contain exactly 2 values",
+        ),
+        (
+            {"type": "translation", "translation": [1.0, np.inf]},
+            "translation must be finite",
+        ),
+    ),
+)
+def test_ngff_calibration_rejects_invalid_transforms(transform, message):
+    metadata = {
+        "multiscales": [
+            {
+                "axes": [
+                    {"name": "y", "type": "space"},
+                    {"name": "x", "type": "space"},
+                ],
+                "datasets": [
+                    {"coordinateTransformations": [transform]},
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ValueError, match=message):
+        image_state_from_array(
+            np.zeros((4, 5), dtype=np.uint16),
+            layer_metadata=metadata,
+        )
 
 
 def test_legacy_carried_state_recovers_axis_confidence_conservatively():
@@ -247,6 +426,84 @@ def test_reorder_select_and_project_preserve_per_axis_confidence():
     assert projected.axis_confidence == AXIS_CONFIDENCE_INFERRED
 
 
+def test_reorder_axes_moves_semantics_and_source_mapping_with_pixels():
+    data = np.zeros((2, 3, 4), dtype=np.float32)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+
+    reordered = transform_image_state(
+        np.transpose(data, (2, 0, 1)),
+        state,
+        operation_id="reorder_axes",
+        operation_title="Reorder Axes",
+        params={"order": "XZY"},
+    )
+
+    assert reordered.shape == (4, 2, 3)
+    assert reordered.axis_order == "XZY"
+    assert [axis.source_axis for axis in reordered.axes] == [2, 0, 1]
+
+
+def test_split_axis_metadata_normalizes_a_valid_negative_axis_once():
+    input_state = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint16),
+        layer_metadata={"axes": "YX"},
+    )
+
+    output_state = transform_split_output_state(
+        np.zeros((3,), dtype=np.uint16),
+        input_state,
+        operation_id="split_axis",
+        operation_title="Split Axis",
+        port_name="x_1",
+        params={"axis": "axis:-1"},
+    )
+
+    assert output_state is not None
+    assert output_state.axis_order == "Y"
+    assert output_state.axes[0] == input_state.axes[0]
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    (
+        ({}, "must use axis:N"),
+        ({"axis": 0}, "must use axis:N"),
+        ({"axis": "axis: 0"}, "must use axis:N"),
+        ({"axis": "axis:2"}, "out of range for 2D input"),
+        ({"axis": "axis:-3"}, "out of range for 2D input"),
+    ),
+)
+def test_split_axis_metadata_rejects_invalid_persisted_axis(params, message):
+    input_state = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint16),
+        layer_metadata={"axes": "YX"},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        transform_split_output_state(
+            np.zeros((4,), dtype=np.uint16),
+            input_state,
+            operation_id="split_axis",
+            operation_title="Split Axis",
+            port_name="axis_1",
+            params=params,
+        )
+
+
+def test_split_axis_metadata_rejects_axis_selection_for_scalar_input():
+    input_state = image_state_from_array(np.asarray(1, dtype=np.uint16))
+
+    with pytest.raises(ValueError, match="cannot select an axis from 0D input"):
+        transform_split_output_state(
+            np.asarray(1, dtype=np.uint16),
+            input_state,
+            operation_id="split_axis",
+            operation_title="Split Axis",
+            port_name="axis_1",
+            params={"axis": "axis:0"},
+        )
+
+
 def test_composite_creates_explicit_rgb_axis_without_promoting_spatial_guesses():
     data = np.zeros((3, 5, 7), dtype=np.float32)
     inferred = image_state_from_array(data)
@@ -273,6 +530,21 @@ def test_composite_creates_explicit_rgb_axis_without_promoting_spatial_guesses()
         AXIS_CONFIDENCE_INFERRED,
         AXIS_CONFIDENCE_EXPLICIT,
     ]
+
+
+@pytest.mark.parametrize("channel_axis", [True, "0", 4, -5])
+def test_combine_channels_metadata_rejects_repaired_insertion_axis(channel_axis):
+    data = np.zeros((5, 7), dtype=np.float32)
+    state = image_state_from_array(data, layer_metadata={"axes": "YX"})
+
+    with pytest.raises(ValueError, match="insertion axis"):
+        transform_multi_input_image_state(
+            np.zeros((2, 5, 7), dtype=np.float32),
+            [state, state],
+            operation_id="combine_channels",
+            operation_title="Combine Channels",
+            params={"channel_axis": channel_axis},
+        )
 
 
 @pytest.mark.parametrize("operation_id", ["binary_threshold", "sobel_filter"])

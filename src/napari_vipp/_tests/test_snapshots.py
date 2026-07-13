@@ -319,7 +319,11 @@ def test_document_snapshot_matches_executable_graph_rejection(case):
 
 
 def test_graph_snapshot_rejects_duplicate_nodes_and_boolean_ports():
-    node = NodeSnapshot("node", "gaussian_blur", {"sigma": 1.0})
+    node = NodeSnapshot(
+        "node",
+        "gaussian_blur",
+        {"sigma": 1.0, "channel_axis": -1},
+    )
     duplicate_nodes = GraphSnapshot((node, node))
     boolean_port = GraphSnapshot(
         (

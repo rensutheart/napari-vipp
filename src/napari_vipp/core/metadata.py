@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
-from napari_vipp.core.channel_colors import channel_color_int, channel_color_names
+from napari_vipp.core.channel_colors import (
+    DEFAULT_CHANNEL_COLOR_NAMES,
+    channel_color_int,
+    channel_color_names,
+)
 from napari_vipp.core.tables import (
     TableState,
     is_table_data,
@@ -84,6 +89,20 @@ class AxisMetadata:
     source_axis: int | None = None
     confidence: str = AXIS_CONFIDENCE_EXPLICIT
 
+    def __post_init__(self) -> None:
+        """Reject calibration that would corrupt physical measurements."""
+        context = f"Axis {self.name!r}"
+        object.__setattr__(
+            self,
+            "scale",
+            _validated_axis_scale(self.scale, context=context),
+        )
+        object.__setattr__(
+            self,
+            "translation",
+            _validated_axis_translation(self.translation, context=context),
+        )
+
     @property
     def is_explicit(self) -> bool:
         """Whether this semantic axis came from metadata or an explicit action."""
@@ -119,8 +138,14 @@ class AxisMetadata:
             name=name,
             type=str(data.get("type", _axis_type_for_name(name))),
             unit=str(data["unit"]) if data.get("unit") else None,
-            scale=_safe_float(data.get("scale"), 1.0),
-            translation=_safe_float(data.get("translation"), 0.0),
+            scale=_validated_axis_scale(
+                data.get("scale", 1.0),
+                context=f"Axis {name!r}",
+            ),
+            translation=_validated_axis_translation(
+                data.get("translation", 0.0),
+                context=f"Axis {name!r}",
+            ),
             source_axis=_optional_int(data.get("source_axis")),
             confidence=_normalized_axis_confidence(
                 data.get("confidence"),
@@ -426,6 +451,11 @@ def image_state_from_array(
         shape = tuple(int(size) for size in arr.shape)
         dtype = arr.dtype
     carried_state = _carried_image_state(layer_metadata)
+    if carried_state is not None and carried_state.shape != shape:
+        raise ValueError(
+            "Live VIPP image metadata shape does not match the array: "
+            f"{carried_state.shape!r} versus {shape!r}."
+        )
     if axes is None:
         axes, parsed_source, parsed_history = _axes_from_layer_metadata(
             layer_metadata,
@@ -439,10 +469,11 @@ def image_state_from_array(
         metadata_source = metadata_source or "VIPP transformed metadata"
 
     if len(axes) != len(shape):
-        axes = infer_axis_metadata_from_shape(shape)
-        axes = _with_default_source_axes(axes)
-        metadata_source = "inferred from array shape"
-    elif assign_default_source_axes:
+        raise ValueError(
+            "Axis metadata rank does not match the array: "
+            f"{len(axes)} axes for {len(shape)} dimensions."
+        )
+    if assign_default_source_axes:
         axes = _with_default_source_axes(axes)
 
     if carried_state is not None:
@@ -502,8 +533,10 @@ def transform_image_state(
     )
     metadata_source = input_state.metadata_source
     if len(axes) != arr.ndim:
-        axes = infer_axis_metadata(arr)
-        metadata_source = f"inferred after {operation_title}"
+        raise ValueError(
+            f"{operation_title} produced {arr.ndim}D data but its metadata "
+            f"transform produced {len(axes)} axes."
+        )
 
     state = image_state_from_array(
         arr,
@@ -545,8 +578,10 @@ def transform_multi_input_image_state(
     axes = _multi_input_axes(first.axes, arr, operation_id=operation_id, params=params)
     metadata_source = first.metadata_source
     if len(axes) != arr.ndim:
-        axes = infer_axis_metadata(arr)
-        metadata_source = f"inferred after {operation_title}"
+        raise ValueError(
+            f"{operation_title} produced {arr.ndim}D data but its metadata "
+            f"transform produced {len(axes)} axes."
+        )
 
     state = image_state_from_array(
         arr,
@@ -591,8 +626,10 @@ def transform_split_output_state(
     )
     metadata_source = input_state.metadata_source
     if len(axes) != arr.ndim:
-        axes = infer_axis_metadata(arr)
-        metadata_source = f"inferred after {label}"
+        raise ValueError(
+            f"{label} produced {arr.ndim}D data but its metadata transform "
+            f"produced {len(axes)} axes."
+        )
 
     return image_state_from_array(
         arr,
@@ -868,26 +905,27 @@ def _axes_from_layer_metadata(
     carried = layer_metadata.get("vipp_image_state")
     if isinstance(carried, dict):
         state = ImageState.from_dict(carried)
-        if state is not None and len(state.axes) == len(shape):
+        if state is not None:
             return state.axes, "VIPP carried state", state.history
 
     ome = layer_metadata.get("ome")
-    if isinstance(ome, dict):
+    if isinstance(ome, dict) and "multiscales" in ome:
         axes = _axes_from_multiscales(ome.get("multiscales"), shape)
-        if axes is not None:
-            return axes, "OME-NGFF multiscales", ()
-
-    axes = _axes_from_multiscales(layer_metadata.get("multiscales"), shape)
-    if axes is not None:
         return axes, "OME-NGFF multiscales", ()
 
-    axes_value = (
-        layer_metadata.get("axes")
-        or layer_metadata.get("axis_order")
-        or layer_metadata.get("vipp_axis_order")
-    )
-    axes = _axes_from_value(axes_value, shape)
-    if axes is not None:
+    if "multiscales" in layer_metadata:
+        axes = _axes_from_multiscales(layer_metadata.get("multiscales"), shape)
+        return axes, "OME-NGFF multiscales", ()
+
+    for key in ("axes", "axis_order", "vipp_axis_order"):
+        if key not in layer_metadata:
+            continue
+        axes = _axes_from_value(layer_metadata.get(key), shape)
+        if axes is None:
+            raise ValueError(
+                f"Layer {key!r} metadata does not describe the array's "
+                f"{len(shape)} dimensions."
+            )
         return axes, "napari layer axes metadata", ()
 
     return infer_axis_metadata_from_shape(shape), "inferred from array shape", ()
@@ -899,39 +937,79 @@ def _carried_image_state(layer_metadata: dict | None) -> ImageState | None:
     carried = layer_metadata.get("vipp_image_state")
     if not isinstance(carried, dict):
         return None
-    return ImageState.from_dict(carried)
+    state = ImageState.from_dict(carried)
+    if state is None:
+        raise ValueError(
+            "Live VIPP image metadata contains an invalid carried image state."
+        )
+    return state
 
 
 def _axes_from_multiscales(value, shape: tuple[int, ...]):
     if not isinstance(value, list) or not value:
-        return None
+        raise ValueError("OME-NGFF multiscales metadata must be a non-empty list.")
     multiscale = value[0]
     if not isinstance(multiscale, dict):
-        return None
+        raise ValueError("OME-NGFF multiscales entries must be objects.")
     axes = _axes_from_value(multiscale.get("axes"), shape)
     if axes is None:
-        return None
+        raise ValueError(
+            "OME-NGFF axes metadata does not describe the array's "
+            f"{len(shape)} dimensions."
+        )
 
     datasets = multiscale.get("datasets")
-    if not isinstance(datasets, list) or not datasets:
+    if datasets is None:
         return axes
+    if not isinstance(datasets, list) or not datasets:
+        raise ValueError("OME-NGFF datasets metadata must be a non-empty list.")
     dataset = datasets[0]
     if not isinstance(dataset, dict):
-        return axes
+        raise ValueError("OME-NGFF dataset entries must be objects.")
 
     scales: list[float] | None = None
     translations: list[float] | None = None
     transforms = dataset.get("coordinateTransformations")
+    if transforms is not None and not isinstance(transforms, list):
+        raise ValueError(
+            "OME-NGFF coordinateTransformations must be a list."
+        )
     if isinstance(transforms, list):
         for transform in transforms:
             if not isinstance(transform, dict):
-                continue
+                raise ValueError(
+                    "OME-NGFF coordinate transformation entries must be objects."
+                )
+            transform_type = transform.get("type")
+            if transform_type not in {"scale", "translation"}:
+                raise ValueError(
+                    "OME-NGFF coordinate transformation type must be "
+                    "'scale' or 'translation'."
+                )
             values = transform.get("scale")
-            if transform.get("type") == "scale" and isinstance(values, list):
-                scales = [_safe_float(value, 1.0) for value in values]
+            if transform_type == "scale":
+                if scales is not None:
+                    raise ValueError(
+                        "OME-NGFF dataset metadata contains more than one "
+                        "scale transformation."
+                    )
+                scales = _validated_ngff_transform_values(
+                    values,
+                    len(axes),
+                    transform_type="scale",
+                )
             values = transform.get("translation")
-            if transform.get("type") == "translation" and isinstance(values, list):
-                translations = [_safe_float(value, 0.0) for value in values]
+            if transform_type == "translation":
+                if translations is not None:
+                    raise ValueError(
+                        "OME-NGFF dataset metadata contains more than one "
+                        "translation transformation."
+                    )
+                translations = _validated_ngff_transform_values(
+                    values,
+                    len(axes),
+                    transform_type="translation",
+                )
 
     if scales is None and translations is None:
         return axes
@@ -949,6 +1027,28 @@ def _axes_from_multiscales(value, shape: tuple[int, ...]):
     )
 
 
+def _validated_ngff_transform_values(
+    values,
+    ndim: int,
+    *,
+    transform_type: str,
+) -> list[float]:
+    if not isinstance(values, list) or len(values) != ndim:
+        raise ValueError(
+            f"OME-NGFF {transform_type} transform must contain exactly "
+            f"{ndim} values."
+        )
+    if transform_type == "scale":
+        return [
+            _validated_axis_scale(value, context="OME-NGFF axis")
+            for value in values
+        ]
+    return [
+        _validated_axis_translation(value, context="OME-NGFF axis")
+        for value in values
+    ]
+
+
 def _axes_from_value(value, shape: tuple[int, ...]):
     if isinstance(value, str):
         names = _split_axis_order(value)
@@ -962,7 +1062,7 @@ def _axes_from_value(value, shape: tuple[int, ...]):
         if len(value) != len(shape):
             return None
         axes: list[AxisMetadata] = []
-        for index, axis in enumerate(value):
+        for axis in value:
             if isinstance(axis, str):
                 axes.append(
                     AxisMetadata(
@@ -971,14 +1071,7 @@ def _axes_from_value(value, shape: tuple[int, ...]):
                     )
                 )
             elif isinstance(axis, dict):
-                axis_name = str(axis.get("name", f"d{index}"))
-                axes.append(
-                    AxisMetadata(
-                        name=axis_name,
-                        type=str(axis.get("type", _axis_type_for_name(axis_name))),
-                        unit=str(axis["unit"]) if axis.get("unit") else None,
-                    )
-                )
+                axes.append(AxisMetadata.from_dict(axis))
             else:
                 return None
         return tuple(axes)
@@ -1013,7 +1106,9 @@ def _transformed_axes(
         axes = _crop_shifted_axes(axes, params)
     if operation_id == "reorder_axes":
         return _reordered_axes(axes, params, arr.ndim)
-    if operation_id in {"composite_to_rgb", "skeleton_graph_overlay"}:
+    if operation_id == "composite_to_rgb":
+        return _composite_to_rgb_axes(axes, arr.ndim, params=params)
+    if operation_id == "skeleton_graph_overlay":
         return _composite_to_rgb_axes(axes, arr.ndim)
     if operation_id == "orthogonal_projection":
         return _orthogonal_projection_axes(axes, arr.ndim, params)
@@ -1078,11 +1173,12 @@ def _crop_shifted_axes(
     axes: tuple[AxisMetadata, ...],
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
-    spatial = [index for index, axis in enumerate(axes) if axis.type == "space"]
-    if len(spatial) < 2:
+    axis_map = _xyz_axis_map_for_metadata(axes)
+    y_index = axis_map.get("y")
+    x_index = axis_map.get("x")
+    if y_index is None or x_index is None:
         return axes
 
-    y_index, x_index = spatial[-2], spatial[-1]
     top = _safe_float(params.get("top"), 0.0)
     left = _safe_float(params.get("left"), 0.0)
     shifted = list(axes)
@@ -1136,30 +1232,10 @@ def _reordered_axes(
     )
     if indices is None:
         return axes
-    ordered = [axes[index] for index in indices]
-    spatial_output_positions = [
-        output_index
-        for output_index, input_index in enumerate(indices)
-        if axes[input_index].type == "space"
-    ]
-    spatial_semantics = [axis for axis in axes if axis.type == "space"]
-    if len(spatial_output_positions) == len(spatial_semantics):
-        for output_index, semantic_axis in zip(
-            spatial_output_positions,
-            spatial_semantics,
-            strict=False,
-        ):
-            moved_axis = ordered[output_index]
-            ordered[output_index] = replace(
-                moved_axis,
-                name=semantic_axis.name,
-                type=semantic_axis.type,
-                source_axis=output_index,
-            )
-    return tuple(
-        replace(axis, source_axis=output_index)
-        for output_index, axis in enumerate(ordered)
-    )
+    # Axis metadata belongs to the data dimension it describes. Transposition
+    # moves that complete record; it must not relabel the moved pixels into a
+    # canonical spatial order or overwrite their original viewer-axis mapping.
+    return tuple(axes[index] for index in indices)
 
 
 def _multi_input_axes(
@@ -1170,7 +1246,7 @@ def _multi_input_axes(
     params: dict[str, Any],
 ) -> tuple[AxisMetadata, ...]:
     if operation_id == "combine_channels":
-        channel_index = _clamped_insert_axis(
+        channel_index = _validated_insert_axis(
             params.get("channel_axis", 0),
             len(first_axes),
         )
@@ -1192,12 +1268,28 @@ def _multi_input_axes(
 def _composite_to_rgb_axes(
     axes: tuple[AxisMetadata, ...],
     output_ndim: int,
+    *,
+    params: dict[str, Any] | None = None,
 ) -> tuple[AxisMetadata, ...]:
     rgb_axis = AxisMetadata(
         name="rgb",
         type="channel",
         confidence=AXIS_CONFIDENCE_EXPLICIT,
     )
+    params = params or {}
+    selected_axis = params.get(
+        "resolved_channel_axis",
+        params.get("channel_axis"),
+    )
+    if selected_axis is not None:
+        try:
+            channel_index = _clamped_axis(selected_axis, len(axes))
+        except ValueError:
+            channel_index = None
+        if channel_index is not None:
+            transformed = _remove_axis(axes, channel_index) + (rgb_axis,)
+            if len(transformed) == output_ndim:
+                return transformed
     leading_count = max(output_ndim - 1, 0)
     spatial = [axis for axis in axes if axis.type == "space"]
     leading = spatial[-leading_count:] if leading_count else []
@@ -1242,16 +1334,27 @@ def _transformed_channels(
     params: dict[str, Any],
 ) -> tuple[ChannelMetadata, ...]:
     channels = input_state.channels
+    if operation_id == "composite_to_rgb":
+        return tuple(
+            ChannelMetadata(name=name, color=channel_color_int(name))
+            for name in ("Red", "Green", "Blue")
+        )
     if operation_id == "extract_channel" and channels:
-        index = int(np.clip(int(params.get("channel", 0)), 0, len(channels) - 1))
-        return (channels[index],)
+        index = int(params.get("channel", 0))
+        if index < 0:
+            index += len(channels)
+        return (channels[index],) if 0 <= index < len(channels) else ()
     if operation_id == "born_wolf_psf":
         if not channels:
             return ()
         index = int(np.clip(int(params.get("channel", -1)), 0, len(channels) - 1))
         return (channels[index],)
     if operation_id == "assign_channel_colors":
-        return _channels_with_colors(channels, params.get("channel_colors", ""))
+        return _channels_with_colors(
+            channels,
+            params.get("channel_colors", ""),
+            count=_state_channel_count(input_state),
+        )
     if operation_id == "project_image":
         channel_index = _channel_axis_index(input_state.axes)
         projected_axes = _projection_axis_indices_from_params(input_state.axes, params)
@@ -1290,13 +1393,19 @@ def _multi_input_channels(
         return ()
     if operation_id != "combine_channels":
         return states[0].channels
+    requested = max(int(params.get("input_count", len(states))), 1)
+    selected_states = states[:requested]
     channels: list[ChannelMetadata] = []
-    for index, state in enumerate(states):
+    for index, state in enumerate(selected_states):
         if state.channels:
             channels.append(state.channels[0])
         else:
             channels.append(ChannelMetadata(name=f"Channel {index + 1}"))
-    return _channels_with_colors(tuple(channels), params.get("channel_colors", ""))
+    return _channels_with_colors(
+        tuple(channels),
+        params.get("channel_colors", ""),
+        count=len(selected_states),
+    )
 
 
 def with_channel_colors(
@@ -1308,7 +1417,12 @@ def with_channel_colors(
     colors = channel_color_names(channel_colors)
     if not colors:
         return state
-    count = max(_state_channel_count(state), len(colors), len(state.channels))
+    channel_index = _channel_axis_index(state.axes)
+    if channel_index is None or channel_index >= len(state.shape):
+        raise ValueError(
+            "Channel colours require a declared channel axis in the image metadata."
+        )
+    count = int(state.shape[channel_index])
     channels = _channels_with_colors(state.channels, colors, count=count)
     return replace(state, channels=channels)
 
@@ -1322,7 +1436,12 @@ def _channels_with_colors(
     colors = channel_color_names(channel_colors)
     if not colors:
         return channels
-    target_count = max(count or 0, len(colors), len(channels))
+    if count is not None and (len(colors) > count or len(channels) > count):
+        raise ValueError(
+            f"Channel metadata describes {max(len(colors), len(channels))} "
+            f"channels, but the array's channel axis contains {count}."
+        )
+    target_count = count if count is not None else max(len(colors), len(channels))
     updated = list(channels[:target_count])
     while len(updated) < target_count:
         updated.append(ChannelMetadata(name=f"Channel {len(updated) + 1}"))
@@ -1363,19 +1482,24 @@ def _split_output_channels(
 
 
 def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
-    value = params.get("axis", "axis:0")
-    text = str(value).strip().lower()
-    if text.startswith("axis:"):
-        text = text.split(":", 1)[1]
-    try:
-        axis = int(text)
-    except ValueError:
-        axis = 0
+    value = params.get("axis")
+    if not isinstance(value, str) or re.fullmatch(
+        r"axis:[+-]?\d+", value
+    ) is None:
+        raise ValueError(
+            "Split Axis axis parameter must use axis:N with an integer N."
+        )
+    axis = int(value.removeprefix("axis:"))
     if ndim <= 0:
-        return 0
+        raise ValueError("Split Axis cannot select an axis from 0D input.")
     if axis < 0:
         axis += ndim
-    return max(0, min(axis, ndim - 1))
+    if axis < 0 or axis >= ndim:
+        raise ValueError(
+            f"Split Axis axis {value.removeprefix('axis:')} is out of range "
+            f"for {ndim}D input."
+        )
+    return axis
 
 
 def _translated_axis(axis: AxisMetadata, pixels: float) -> AxisMetadata:
@@ -1699,6 +1823,10 @@ def _projection_axis_indices_from_params(
         spatial_axes = [
             index for index, axis in enumerate(axes) if axis.type == "space"
         ]
+        names = [axis.name.strip().casefold() for axis in axes]
+        if "y" in names and "x" in names:
+            yx_axes = {names.index("y"), names.index("x")}
+            return {axis for axis in spatial_axes if axis not in yx_axes}
         return set(spatial_axes[:-2]) if len(spatial_axes) > 2 else set()
 
     aliases = {
@@ -1779,6 +1907,116 @@ def _auto_projection_axis_indices(
     if len(spatial_axes) >= 3:
         return (spatial_axes[-3],)
     return ()
+
+
+def _composite_to_rgb_history(
+    input_state: ImageState,
+    operation_title: str,
+    params: dict[str, Any],
+) -> str:
+    channel_axis = _composite_history_channel_axis(input_state, params)
+    axis_text = (
+        _axis_label(input_state.axes, channel_axis)
+        if channel_axis is not None
+        else "undeclared channel axis"
+    )
+    count = (
+        int(input_state.shape[channel_axis])
+        if channel_axis is not None
+        else 0
+    )
+    semantic = str(params.get("channel_axis_semantics", "")).strip().casefold()
+    selections = tuple(
+        int(params.get(name, -1))
+        for name in ("red_channel", "green_channel", "blue_channel")
+    )
+    manual_mapping = any(index >= 0 for index in selections)
+    if manual_mapping:
+        defaults = _composite_default_rgb_indices(count, semantic)
+        resolved = tuple(
+            defaults[position] if index < 0 else index
+            for position, index in enumerate(selections)
+        )
+        mapping_text = ", ".join(
+            f"{plane}={'blank' if index is None else f'channel {index}'}"
+            for plane, index in zip("RGB", resolved, strict=True)
+        )
+    elif semantic in {"rgb", "rgba"}:
+        mapping_text = "declared encoded RGB order"
+        if semantic == "rgba":
+            mapping_text += "; alpha ignored"
+    elif count == 1:
+        mapping_text = "single channel copied to R, G, and B"
+    else:
+        mapping_text = _composite_colour_table_history(params, count)
+
+    intensity_mapping = str(
+        params.get("intensity_mapping", "Preserve numeric values")
+    )
+    if intensity_mapping == "Preserve numeric values":
+        output_dtype = str(params.get("output_dtype", "floating RGB"))
+        intensity_text = (
+            f"native intensity scale retained in {output_dtype}; "
+            "no normalization or clipping"
+        )
+    else:
+        intensity_text = (
+            "per-channel 1st-99th percentile normalization; "
+            "additive mixtures clipped to [0, 1]"
+        )
+    return (
+        f"{operation_title}: {axis_text}; {mapping_text}; {intensity_text}"
+    )
+
+
+def _composite_history_channel_axis(
+    input_state: ImageState,
+    params: dict[str, Any],
+) -> int | None:
+    value = params.get("resolved_channel_axis", params.get("channel_axis"))
+    if value is not None:
+        try:
+            return _clamped_axis(value, len(input_state.axes))
+        except ValueError:
+            pass
+    return _channel_axis_index(input_state.axes)
+
+
+def _composite_default_rgb_indices(
+    count: int,
+    semantic: str,
+) -> tuple[int | None, int | None, int | None]:
+    if semantic in {"rgb", "rgba"}:
+        return 0, 1, 2
+    if count >= 3:
+        return 2, 1, 0
+    if count == 2:
+        return None, 1, 0
+    return 0, 0, 0
+
+
+def _composite_colour_table_history(
+    params: dict[str, Any],
+    count: int,
+) -> str:
+    values = params.get("resolved_channel_colors", ())
+    if isinstance(values, str):
+        colors = [part.strip() for part in values.split(",")]
+    elif isinstance(values, (list, tuple)):
+        colors = list(values)
+    else:
+        colors = []
+    entries = []
+    for index in range(count):
+        value = colors[index] if index < len(colors) else ""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            value = DEFAULT_CHANNEL_COLOR_NAMES[
+                index % len(DEFAULT_CHANNEL_COLOR_NAMES)
+            ]
+        encoded = channel_color_int(value)
+        color = f"#{encoded:06X}" if encoded is not None else repr(value)
+        entries.append(f"channel {index}={color}")
+    return "additive colour table " + ", ".join(entries)
 
 
 def _operation_history(
@@ -1955,7 +2193,7 @@ def _operation_history(
     if operation_id == "extract_channel":
         return f"{operation_title}: selected channel {int(params.get('channel', 0))}"
     if operation_id == "composite_to_rgb":
-        return f"{operation_title}: mapped channels to RGB"
+        return _composite_to_rgb_history(input_state, operation_title, params)
     if operation_id == "skeleton_graph_overlay":
         return f"{operation_title}: {params.get('display_mode', 'RGB graph overlay')}"
     if operation_id == "crop_stack":
@@ -2136,8 +2374,6 @@ def _parse_axis_ranges(value, ndim: int) -> dict[int, tuple[int, int]]:
             end = int(pieces[2])
         except ValueError:
             continue
-        if start > end:
-            start, end = end, start
         ranges[axis] = (start, end)
     return ranges
 
@@ -2258,20 +2494,40 @@ def _named_axis_order(
 
 def _clamped_axis(value, ndim: int) -> int:
     if ndim <= 0:
-        return 0
-    try:
+        raise ValueError("Axis selection requires array data with at least one axis.")
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("Axis selection must be an integer.")
+    if isinstance(value, (int, np.integer)):
         axis = int(value)
-    except Exception:
-        axis = 0
-    return min(max(axis, 0), ndim - 1)
+    elif isinstance(value, str):
+        try:
+            axis = int(value)
+        except ValueError as exc:
+            raise ValueError("Axis selection must be an integer.") from exc
+    else:
+        raise ValueError("Axis selection must be an integer.")
+    if axis < 0:
+        axis += ndim
+    if axis < 0 or axis >= ndim:
+        raise ValueError(f"Axis selection {value!r} is out of range for {ndim} axes.")
+    return axis
 
 
-def _clamped_insert_axis(value, ndim: int) -> int:
-    try:
-        axis = int(value)
-    except Exception:
-        axis = 0
-    return min(max(axis, 0), ndim)
+def _validated_insert_axis(value, ndim: int) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value,
+        (int, np.integer),
+    ):
+        raise ValueError("Channel insertion axis must be an integer.")
+    axis = int(value)
+    if axis < 0:
+        axis += ndim + 1
+    if axis < 0 or axis > ndim:
+        raise ValueError(
+            f"Channel insertion axis {value!r} is out of range for a "
+            f"{ndim}D input."
+        )
+    return axis
 
 
 def _channel_axis_index(axes: tuple[AxisMetadata, ...]) -> int | None:
@@ -2313,10 +2569,11 @@ def _kind_label(arr: np.ndarray, axes: tuple[AxisMetadata, ...]) -> str:
         return "binary mask"
     channel_axis = _channel_axis_index(axes)
     if channel_axis is not None:
+        channel_name = axes[channel_axis].name.strip().casefold()
         channel_count = arr.shape[channel_axis]
-        if channel_axis == arr.ndim - 1 and channel_count == 3:
+        if channel_name == "rgb" and channel_count == 3:
             return "RGB image"
-        if channel_axis == arr.ndim - 1 and channel_count == 4:
+        if channel_name == "rgba" and channel_count == 4:
             return "RGBA image"
         return "multi-channel image"
     if np.issubdtype(arr.dtype, np.number):
@@ -2525,7 +2782,7 @@ def _axis_type_for_name(name: str) -> str:
     normalized = name.lower()
     if normalized == "t":
         return "time"
-    if normalized == "c":
+    if normalized in {"c", "channel", "rgb", "rgba"}:
         return "channel"
     if normalized in {"x", "y", "z"}:
         return "space"
@@ -2577,8 +2834,11 @@ def _lazy_kind_label(
     ]
     if channel_axes:
         index, axis = channel_axes[-1]
-        if axis.name in {"rgb", "rgba"} or shape[index] in RGB_CHANNELS:
+        channel_name = axis.name.strip().casefold()
+        if channel_name == "rgb" and shape[index] == 3:
             return "RGB image"
+        if channel_name == "rgba" and shape[index] == 4:
+            return "RGBA image"
         return "multi-channel image"
     return "intensity image"
 
@@ -2591,6 +2851,26 @@ def _safe_float(value, default: float) -> float:
     if not np.isfinite(number):
         return default
     return number
+
+
+def _validated_axis_scale(value, *, context: str) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{context} scale must be a finite positive number.") from exc
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"{context} scale must be a finite positive number.")
+    return scale
+
+
+def _validated_axis_translation(value, *, context: str) -> float:
+    try:
+        translation = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{context} translation must be finite.") from exc
+    if not np.isfinite(translation):
+        raise ValueError(f"{context} translation must be finite.")
+    return translation
 
 
 def _optional_float(value) -> float | None:

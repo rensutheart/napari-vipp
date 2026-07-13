@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from napari_vipp._graph import PipelineGraphView
 from napari_vipp.core.export import export_pipeline_to_python
@@ -11,6 +12,16 @@ from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 def _rgb_image() -> np.ndarray:
     rng = np.random.default_rng(0)
     return (rng.random((8, 8, 3)) * 255).astype(np.uint8)
+
+
+def _rgb_metadata() -> dict[str, object]:
+    return {
+        "axes": [
+            {"name": "y", "type": "space"},
+            {"name": "x", "type": "space"},
+            {"name": "rgb", "type": "channel"},
+        ]
+    }
 
 
 def _two_channel_image() -> np.ndarray:
@@ -59,12 +70,12 @@ def test_split_channels_preserves_mask_output_type_for_downstream_labels():
 
 def test_split_channels_run_produces_lossless_outputs():
     pipeline = PrototypePipeline()
-    pipeline.reset_starter_graph()
+    pipeline.reset_empty_graph()
     node = pipeline.add_node("split_channels")
     pipeline.connect("input", node.id)
 
     image = _rgb_image()
-    pipeline.run(image)
+    pipeline.run(image, input_metadata=_rgb_metadata())
 
     outputs = pipeline.node_outputs[node.id]
     assert len(outputs) == 3
@@ -102,6 +113,60 @@ def test_split_axis_grayscale_yields_one_port_per_axis_index():
     assert len(pipeline.node_outputs[node.id]) == 3
 
 
+def test_split_axis_negative_axis_drives_count_labels_and_output_metadata():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    node = pipeline.add_node("split_axis")
+    pipeline.set_param(node.id, "axis", "axis:-1")
+    pipeline.connect("input", node.id)
+
+    image = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    pipeline.run(image, input_metadata={"axes": "YX"})
+
+    assert [port.name for port in pipeline.output_ports(node.id)] == [
+        "x_1",
+        "x_2",
+        "x_3",
+        "x_4",
+    ]
+    assert len(pipeline.node_outputs[node.id]) == 4
+    assert [state.axis_order for state in pipeline.node_output_states[node.id]] == [
+        "Y",
+    ] * 4
+    np.testing.assert_array_equal(pipeline.node_outputs[node.id][2], image[:, 2])
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    (
+        ({}, "must use axis:N"),
+        ({"axis": 0}, "must use axis:N"),
+        ({"axis": "0"}, "must use axis:N"),
+        ({"axis": " axis:0"}, "must use axis:N"),
+        ({"axis": "AXIS:0"}, "must use axis:N"),
+        ({"axis": "axis:2"}, "out of range for 2D input"),
+        ({"axis": "axis:-3"}, "out of range for 2D input"),
+    ),
+)
+def test_split_axis_dynamic_output_count_rejects_invalid_persisted_axis(
+    params,
+    message,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    pipeline.run(
+        np.zeros((3, 4), dtype=np.uint8),
+        input_metadata={"axes": "YX"},
+    )
+
+    with pytest.raises(ValueError, match=message):
+        pipeline.inferred_dynamic_output_count(
+            "split_axis",
+            "input",
+            params=params,
+        )
+
+
 def test_trim_invalid_output_connections_drops_stale_ports():
     pipeline = PrototypePipeline()
     pipeline.reset_starter_graph()
@@ -123,11 +188,11 @@ def test_trim_invalid_output_connections_drops_stale_ports():
 
 def test_split_output_metadata_drops_channel_axis():
     pipeline = PrototypePipeline()
-    pipeline.reset_starter_graph()
+    pipeline.reset_empty_graph()
     node = pipeline.add_node("split_channels")
     pipeline.connect("input", node.id)
 
-    pipeline.run(_rgb_image())
+    pipeline.run(_rgb_image(), input_metadata=_rgb_metadata())
 
     states = pipeline.node_output_states[node.id]
     assert [state.axis_order for state in states] == ["YX", "YX", "YX"]
@@ -143,7 +208,7 @@ def test_connect_routes_selected_source_port():
     assert result.connection.source_port == 1
 
     image = _rgb_image()
-    pipeline.run(image)
+    pipeline.run(image, input_metadata=_rgb_metadata())
 
     np.testing.assert_array_equal(
         pipeline.input_data_for_node("gaussian"), image[..., 1]
@@ -228,8 +293,13 @@ def test_export_indexes_multi_output_source():
 
     code = export_pipeline_to_python(pipeline)
 
-    assert f"v_{node.id} = split_channels(" in code
-    assert f"gaussian_blur(v_{node.id}[1]" in code
+    assert '"operation_id":"split_channels"' in code
+    assert '"operation_id":"gaussian_blur"' in code
+    expected_connection = (
+        f'"source":"{node.id}","source_port":1,'
+        f'"target":"gaussian"'
+    )
+    assert expected_connection in code
 
 
 def test_graph_view_renders_three_output_ports(qtbot):

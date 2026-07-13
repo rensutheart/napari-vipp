@@ -19,6 +19,8 @@ from napari_vipp.core.metadata import (
     transform_multi_input_image_state,
 )
 from napari_vipp.core.operations import (
+    COMPOSITE_RGB_PERCENTILE_1_99,
+    COMPOSITE_RGB_PRESERVE_VALUES,
     adaptive_gaussian_threshold,
     adaptive_mean_threshold,
     add_images,
@@ -551,6 +553,27 @@ def test_measure_objects_reports_3d_objects_with_physical_volume():
     assert records[0]["physical_unit"] == "micrometer^3"
     assert records[1]["t_index"] == 1
     assert records[1]["volume_voxels"] == 4
+
+
+def test_measure_objects_uses_named_yx_axes_after_reorder():
+    labels = np.zeros((2, 4, 3, 5), dtype=np.int32)
+    labels[1, 1:3, 2, 2:4] = 7
+
+    table = measure_objects(
+        labels,
+        resolved_spatial_ndim=2,
+        axis_names=("c", "y", "z", "x"),
+        axis_types=("channel", "space", "space", "space"),
+    )
+
+    assert table.row_count == 1
+    record = table.records()[0]
+    assert record["c_index"] == 1
+    assert record["z_index"] == 2
+    assert record["label_id"] == 7
+    assert "centroid_y" in record
+    assert "centroid_x" in record
+    assert "centroid_z" not in record
 
 
 def test_measure_objects_reports_selected_extended_2d_properties():
@@ -2248,6 +2271,30 @@ def test_born_wolf_psf_can_generate_2d_kernel():
     assert psf[7, 7] == psf.max()
 
 
+def test_born_wolf_psf_resolution_allows_disconnected_editor_context():
+    resolution = operations.resolve_born_wolf_psf_parameters(
+        (),
+        "Auto from axes",
+    )
+
+    assert resolution.spatial_ndim == 2
+    assert resolution.unresolved
+
+
+def test_born_wolf_psf_rejects_requested_rank_above_input_rank():
+    with pytest.raises(ValueError, match="3D PSF generation.*2D shape"):
+        born_wolf_psf(
+            np.zeros((16, 18), dtype=np.float32),
+            spatial_mode="3D ZYX",
+            auto_parameters=False,
+            wavelength_nm=520.0,
+            numerical_aperture=1.2,
+            refractive_index=1.33,
+            pixel_size_xy_um=0.08,
+            z_step_um=0.4,
+        )
+
+
 def test_born_wolf_psf_outputs_generates_one_kernel_per_auto_channel():
     reference = np.zeros((2, 3, 24, 24), dtype=np.float32)
 
@@ -3400,6 +3447,7 @@ def test_rolling_ball_background_defaults_to_slice_wise_processing():
         radius=5,
         disable_smoothing=True,
         spatial_mode="2D YX",
+        channel_axis=-1,
     )
 
     assert corrected.shape == data.shape
@@ -3664,8 +3712,20 @@ def test_linear_scale_gamma_crop_and_extract_channel():
 
     stretched = linear_scale_offset(data, alpha=2, beta=1)
     gamma = gamma_correction(data, gamma=0.5)
-    cropped = crop_stack(data, top=1, bottom=2, left=1, right=3)
-    channel = extract_channel(data, channel=2)
+    cropped = crop_stack(
+        data,
+        top=1,
+        bottom=2,
+        left=1,
+        right=3,
+        channel_axis=-1,
+    )
+    channel = extract_channel(
+        data,
+        channel=2,
+        axis_names=("z", "y", "x", "rgb"),
+        axis_types=("space", "space", "space", "channel"),
+    )
 
     assert stretched.dtype == np.uint8
     assert stretched[..., 1].max() == 129
@@ -3687,11 +3747,14 @@ def test_reorder_axes_accepts_named_and_numeric_orders():
 
     named = reorder_axes(data, order="TZYXC", axis_names=("t", "c", "z", "y", "x"))
     numeric = reorder_axes(data, order="0,2,3,4,1")
-    invalid = reorder_axes(data, order="ZYX")
 
     assert named.shape == (2, 4, 5, 6, 3)
     assert numeric.shape == (2, 4, 5, 6, 3)
-    assert invalid.shape == data.shape
+
+    with pytest.raises(ValueError, match="complete numeric permutation"):
+        reorder_axes(data, order="ZYX")
+    with pytest.raises(ValueError, match="complete numeric permutation"):
+        reorder_axes(data, order="0,1,1,3,4")
 
 
 def test_project_image_uses_canonical_axes_and_projection_methods():
@@ -3791,6 +3854,19 @@ def test_orthogonal_projection_keeps_xy_native_when_z_spacing_is_finer():
     )
 
     assert projected.shape == (108, 140)
+
+
+def test_negative_projection_axis_moves_matching_metadata_axis():
+    data = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    pipeline = PrototypePipeline()
+    projection = pipeline.add_node("project_image")
+    pipeline.connect("input", projection.id)
+    pipeline.set_param(projection.id, "axes", "axis:-1")
+
+    pipeline.run(data, input_metadata={"axes": "ZYX"})
+
+    np.testing.assert_array_equal(pipeline.outputs[projection.id], data.max(axis=-1))
+    assert pipeline.output_states[projection.id].axis_order == "ZY"
 
 
 @pytest.mark.parametrize("axis", [5, -1, 1.5, True, "1"])
@@ -4025,11 +4101,12 @@ def test_rescale_axes_uses_current_reordered_spatial_semantics():
 
     assert pipeline.outputs[reorder.id].shape == (3, 96, 12, 128)
     assert reorder_state is not None
-    assert reorder_state.axis_order == "CZYX"
-    assert [axis.name for axis in reorder_state.axes] == ["c", "z", "y", "x"]
-    assert pipeline.outputs[rescale.id].shape == (3, 192, 12, 128)
+    assert reorder_state.axis_order == "CYZX"
+    assert [axis.name for axis in reorder_state.axes] == ["c", "y", "z", "x"]
+    assert [axis.source_axis for axis in reorder_state.axes] == [0, 2, 1, 3]
+    assert pipeline.outputs[rescale.id].shape == (3, 96, 24, 128)
     assert rescale_state is not None
-    assert rescale_state.axis_order == "CZYX"
+    assert rescale_state.axis_order == "CYZX"
 
 
 def test_rescale_axes_auto_uses_nearest_for_masks_and_labels():
@@ -4054,7 +4131,12 @@ def test_extract_channel_supports_czyx_stacks():
     data = np.zeros((3, 2, 5, 6), dtype=np.uint16)
     data[2] = 42
 
-    channel = extract_channel(data, channel=2)
+    channel = extract_channel(
+        data,
+        channel=2,
+        axis_names=("c", "z", "y", "x"),
+        axis_types=("channel", "space", "space", "space"),
+    )
 
     assert channel.shape == (2, 5, 6)
     assert channel.max() == 42
@@ -4075,6 +4157,27 @@ def test_extract_channel_uses_semantic_channel_axis():
     assert np.all(channel == 42)
 
 
+def test_extract_channel_rejects_shape_guessing_and_out_of_range_indices():
+    data = np.zeros((3, 5, 6), dtype=np.uint16)
+
+    with pytest.raises(ValueError, match="explicitly declared channel axis"):
+        extract_channel(data, channel=0)
+    with pytest.raises(ValueError, match="out of range for 3 channels"):
+        extract_channel(
+            data,
+            channel=3,
+            axis_names=("c", "y", "x"),
+            axis_types=("channel", "space", "space"),
+        )
+    with pytest.raises(ValueError, match="channel index must be an integer"):
+        extract_channel(
+            data,
+            channel=True,
+            axis_names=("c", "y", "x"),
+            axis_types=("channel", "space", "space"),
+        )
+
+
 def test_combine_channels_stacks_multiple_inputs_as_channels():
     first = np.full((2, 5, 6), 10, dtype=np.uint16)
     second = np.full((2, 5, 6), 20, dtype=np.uint16)
@@ -4085,6 +4188,17 @@ def test_combine_channels_stacks_multiple_inputs_as_channels():
     assert composite.dtype == np.uint16
     np.testing.assert_array_equal(composite[:, 0], first)
     np.testing.assert_array_equal(composite[:, 1], second)
+
+
+def test_combine_channels_rejects_missing_inputs_and_ambiguous_axis():
+    first = np.ones((2, 3), dtype=np.uint16)
+
+    with pytest.raises(ValueError, match="needs 2 connected inputs; received 1"):
+        combine_channels([first], input_count=2, channel_axis=0)
+    with pytest.raises(ValueError, match="channel_axis must be an integer"):
+        combine_channels([first, first], input_count=2)
+    with pytest.raises(ValueError, match="out of range"):
+        combine_channels([first, first], input_count=2, channel_axis=4)
 
 
 def test_calculate_weighted_image_sums_inputs_with_offset():
@@ -4122,6 +4236,22 @@ def test_calculate_weighted_image_rejects_invalid_weights(weights, message):
             [first, second],
             input_count=2,
             weights=weights,
+        )
+
+
+def test_calculate_weighted_image_rejects_repaired_counts_and_offsets():
+    data = np.ones((2, 3), dtype=np.uint16)
+
+    with pytest.raises(ValueError, match="needs 2 connected inputs; received 1"):
+        calculate_weighted_image([data], input_count=2, weights="1,1")
+    with pytest.raises(ValueError, match="input_count must be at least 1"):
+        calculate_weighted_image([data], input_count=0, weights="")
+    with pytest.raises(ValueError, match="offset must be finite"):
+        calculate_weighted_image(
+            [data, data],
+            input_count=2,
+            weights="1,1",
+            offset=np.nan,
         )
 
 
@@ -4400,7 +4530,11 @@ def test_mask_image_broadcasts_spatial_mask_over_rgb_channels():
     image[:] = np.array([10, 20, 30], dtype=np.uint8)
     mask = np.array([[True, False, True], [False, True, False]])
 
-    masked = mask_image([image, mask], outside_value=0)
+    masked = mask_image(
+        [image, mask],
+        outside_value=0,
+        mask_axis_mapping=(0, 1),
+    )
 
     assert masked.dtype == image.dtype
     assert masked.shape == image.shape
@@ -4414,7 +4548,11 @@ def test_mask_image_broadcasts_stack_mask_over_channel_first_image():
     mask = np.zeros((2, 4, 5), dtype=bool)
     mask[:, 1:3, 2:4] = True
 
-    masked = mask_image([image, mask], outside_value=-5)
+    masked = mask_image(
+        [image, mask],
+        outside_value=-5,
+        mask_axis_mapping=(1, 2, 3),
+    )
 
     assert masked.shape == image.shape
     assert masked.dtype == image.dtype
@@ -4422,16 +4560,27 @@ def test_mask_image_broadcasts_stack_mask_over_channel_first_image():
     assert np.all(masked[:, :, 1, 2] == 1)
 
 
+def test_mask_image_does_not_treat_integer_tyx_x4_mask_as_rgb():
+    image = np.ones((2, 2, 3, 4), dtype=np.uint8)
+    mask = np.zeros((2, 3, 4), dtype=np.uint16)
+    mask[0, :, 0] = 7
+    mask[1, :, -1] = 9
+
+    masked = mask_image(
+        [image, mask],
+        mask_axis_mapping=(0, 2, 3),
+    )
+
+    expected = np.broadcast_to(mask[:, None, :, :] != 0, image.shape)
+    np.testing.assert_array_equal(masked, expected.astype(np.uint8))
+
+
 def test_mask_image_rejects_non_broadcastable_mask_shape():
     image = np.zeros((4, 5, 3), dtype=np.uint8)
     mask = np.ones((4, 4), dtype=bool)
 
-    try:
+    with pytest.raises(ValueError, match="explicit semantic mask axis mapping"):
         mask_image([image, mask])
-    except ValueError as exc:
-        assert "broadcastable" in str(exc)
-    else:
-        raise AssertionError("Mask Image should reject incompatible mask shapes.")
 
 
 def test_logical_nodes_combine_masks():
@@ -4452,46 +4601,49 @@ def test_logical_nodes_combine_masks():
     )
 
 
-def test_composite_to_rgb_maps_three_channels():
+def test_composite_to_rgb_preserves_three_channel_values_and_input():
     data = np.zeros((3, 8, 8), dtype=np.float32)
-    data[0, 0, 0] = 1.0
-    data[1, 1, 1] = 1.0
-    data[2, 2, 2] = 1.0
+    data[0, 0, 0] = 2.0
+    data[1, 1, 1] = 4.0
+    data[2, 2, 2] = 8.0
+    original = data.copy()
 
-    rgb = composite_to_rgb(data)
+    rgb = composite_to_rgb(data, channel_axis=0)
 
     assert rgb.shape == (8, 8, 3)
     assert rgb.dtype == np.float32
     # Fluorescence stacks match thumbnail order: channel 0 blue, 1 green, 2 red.
-    assert rgb[2, 2, 0] == 1.0
-    assert rgb[1, 1, 1] == 1.0
-    assert rgb[0, 0, 2] == 1.0
+    assert rgb[2, 2, 0] == 8.0
+    assert rgb[1, 1, 1] == 4.0
+    assert rgb[0, 0, 2] == 2.0
     assert rgb[0, 0, 0] == 0.0
+    np.testing.assert_array_equal(data, original)
 
 
-def test_composite_to_rgb_constant_nonzero_channels_are_visible():
-    data = np.zeros((3, 4, 5), dtype=np.uint16)
+def test_composite_to_rgb_preserves_constant_channel_ratios():
+    data = np.zeros((2, 4, 5), dtype=np.uint16)
     data[0] = 1000
-    data[1] = 2000
-    data[2] = 3000
+    data[1] = 3000
 
-    rgb = composite_to_rgb(data, channel_axis=0, red_channel=0, green_channel=1)
+    rgb = composite_to_rgb(data, channel_axis=0)
 
     assert rgb.shape == (4, 5, 3)
-    assert rgb[..., 0].max() == 1.0
-    assert rgb[..., 1].max() == 1.0
-    assert rgb[..., 2].max() == 1.0
+    assert np.all(rgb[..., 0] == 0.0)
+    assert np.all(rgb[..., 1] == 3000.0)
+    assert np.all(rgb[..., 2] == 1000.0)
+    np.testing.assert_allclose(rgb[..., 1] / rgb[..., 2], 3.0)
 
 
 def test_composite_to_rgb_single_channel_is_white():
-    data = np.zeros((8, 8), dtype=np.float32)
-    data[3, 3] = 1.0
+    data = np.zeros((1, 8, 8), dtype=np.float32)
+    data[0, 3, 3] = 7.0
 
-    rgb = composite_to_rgb(data)
+    rgb = composite_to_rgb(data, channel_axis=0)
 
     assert rgb.shape == (8, 8, 3)
     np.testing.assert_allclose(rgb[..., 0], rgb[..., 1])
     np.testing.assert_allclose(rgb[..., 1], rgb[..., 2])
+    assert rgb[3, 3, 0] == 7.0
 
 
 def test_composite_to_rgb_two_channels_uses_fluorescence_order():
@@ -4499,7 +4651,7 @@ def test_composite_to_rgb_two_channels_uses_fluorescence_order():
     data[0, 0, 0] = 1.0
     data[1, 1, 1] = 1.0
 
-    rgb = composite_to_rgb(data)
+    rgb = composite_to_rgb(data, channel_axis=0)
 
     assert rgb.shape == (8, 8, 3)
     assert rgb[0, 0, 2] == 1.0
@@ -4507,19 +4659,42 @@ def test_composite_to_rgb_two_channels_uses_fluorescence_order():
     assert rgb[..., 0].max() == 0.0
 
 
-def test_composite_to_rgb_accepts_channel_last_rgb():
+def test_composite_to_rgb_only_preserves_declared_encoded_rgb_order():
     data = np.zeros((8, 8, 3), dtype=np.uint8)
-    data[0, 0, 0] = 255
-    data[1, 1, 1] = 255
-    data[2, 2, 2] = 255
+    data[0, 0, 0] = 10
+    data[1, 1, 1] = 20
+    data[2, 2, 2] = 30
 
-    rgb = composite_to_rgb(data)
+    encoded = composite_to_rgb(
+        data,
+        channel_axis=2,
+        channel_axis_semantics="rgb",
+    )
+    fluorescence = composite_to_rgb(data, channel_axis=2)
 
-    assert rgb.shape == (8, 8, 3)
-    assert rgb.dtype == np.float32
-    assert rgb[0, 0, 0] == 1.0
-    assert rgb[1, 1, 1] == 1.0
-    assert rgb[2, 2, 2] == 1.0
+    assert encoded.shape == (8, 8, 3)
+    assert encoded.dtype == np.float32
+    assert encoded[0, 0, 0] == 10.0
+    assert encoded[1, 1, 1] == 20.0
+    assert encoded[2, 2, 2] == 30.0
+    assert fluorescence[0, 0, 2] == 10.0
+    assert fluorescence[2, 2, 0] == 30.0
+
+
+def test_composite_to_rgb_declared_rgba_preserves_rgb_and_ignores_alpha():
+    data = np.zeros((3, 4, 4), dtype=np.float32)
+    data[..., 0] = 2.0
+    data[..., 1] = 3.0
+    data[..., 2] = 5.0
+    data[..., 3] = 10_000.0
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=2,
+        channel_axis_semantics="rgba",
+    )
+
+    np.testing.assert_array_equal(rgb, data[..., :3])
 
 
 def test_composite_to_rgb_channel_last_c_axis_can_use_fluorescence_order():
@@ -4530,9 +4705,9 @@ def test_composite_to_rgb_channel_last_c_axis_can_use_fluorescence_order():
 
     rgb = composite_to_rgb(data, channel_axis=2, channel_axis_semantics="c")
 
-    assert rgb[2, 2, 0] == 1.0
-    assert rgb[1, 1, 1] == 1.0
-    assert rgb[0, 0, 2] == 1.0
+    assert rgb[2, 2, 0] == 255.0
+    assert rgb[1, 1, 1] == 255.0
+    assert rgb[0, 0, 2] == 255.0
 
 
 def test_composite_to_rgb_auto_blends_named_channel_colours():
@@ -4540,7 +4715,11 @@ def test_composite_to_rgb_auto_blends_named_channel_colours():
     data[0, 2, 2] = 1.0
     data[1, 5, 5] = 1.0
 
-    rgb = composite_to_rgb(data, channel_colors="Yellow,Cyan")
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        channel_colors="Yellow,Cyan",
+    )
 
     assert rgb[2, 2, 0] == 1.0
     assert rgb[2, 2, 1] == 1.0
@@ -4548,6 +4727,143 @@ def test_composite_to_rgb_auto_blends_named_channel_colours():
     assert rgb[5, 5, 0] == 0.0
     assert rgb[5, 5, 1] == 1.0
     assert rgb[5, 5, 2] == 1.0
+
+
+def test_composite_to_rgb_preserve_mode_does_not_clip_additive_mixtures():
+    data = np.stack(
+        [
+            np.full((3, 4), 2.0, dtype=np.float32),
+            np.full((3, 4), 3.0, dtype=np.float32),
+        ]
+    )
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        channel_colors="Red,Red",
+        intensity_mapping=COMPOSITE_RGB_PRESERVE_VALUES,
+    )
+
+    assert np.all(rgb[..., 0] == 5.0)
+    assert np.all(rgb[..., 1:] == 0.0)
+
+
+def test_composite_to_rgb_promotes_additive_float32_to_avoid_overflow():
+    maximum = np.finfo(np.float32).max
+    data = np.full((2, 2, 3), maximum, dtype=np.float32)
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        channel_colors="Red,Red",
+    )
+
+    assert rgb.dtype == np.float64
+    assert np.isfinite(rgb).all()
+    assert np.all(rgb[..., 0] == np.float64(maximum) * 2.0)
+
+
+def test_composite_to_rgb_rejects_unavoidable_float64_overflow():
+    data = np.full((2, 2, 3), np.finfo(np.float64).max, dtype=np.float64)
+
+    with pytest.raises(ValueError, match="overflowed"):
+        composite_to_rgb(
+            data,
+            channel_axis=0,
+            channel_colors="Red,Red",
+        )
+
+
+def test_composite_to_rgb_rejects_wide_integer_level_loss():
+    data = np.array([[[2**63 + 1]]], dtype=np.uint64)
+
+    with pytest.raises(ValueError, match="exact float64 range"):
+        composite_to_rgb(data, channel_axis=0)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        np.array([[[1.0 + 2.0j]]], dtype=np.complex64),
+        np.array([[[1]]], dtype=object),
+    ],
+)
+def test_composite_to_rgb_rejects_nonreal_or_object_data(data):
+    with pytest.raises(ValueError, match="boolean, integer, or real"):
+        composite_to_rgb(data, channel_axis=0)
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize(
+    "intensity_mapping",
+    [COMPOSITE_RGB_PRESERVE_VALUES, COMPOSITE_RGB_PERCENTILE_1_99],
+)
+def test_composite_to_rgb_rejects_nonfinite_values(value, intensity_mapping):
+    data = np.array([[[0.0, value]]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="finite input values"):
+        composite_to_rgb(
+            data,
+            channel_axis=0,
+            intensity_mapping=intensity_mapping,
+        )
+
+
+def test_composite_to_rgb_supports_a_nontrailing_channel_axis():
+    data = np.zeros((4, 3, 5), dtype=np.float64)
+    data[:, 0, :] = 2.0
+    data[:, 1, :] = 3.0
+    data[:, 2, :] = 5.0
+
+    rgb = composite_to_rgb(data, channel_axis=1)
+
+    assert rgb.shape == (4, 5, 3)
+    assert rgb.dtype == np.float64
+    assert np.all(rgb[..., 0] == 5.0)
+    assert np.all(rgb[..., 1] == 3.0)
+    assert np.all(rgb[..., 2] == 2.0)
+
+
+@pytest.mark.parametrize("width", [3, 4])
+def test_composite_to_rgb_does_not_guess_scalar_x_as_a_channel_axis(width):
+    scalar_yx = np.arange(5 * width, dtype=np.float32).reshape(5, width)
+
+    with pytest.raises(ValueError, match="explicit non-negative integer channel axis"):
+        composite_to_rgb(scalar_yx)
+
+
+def test_composite_to_rgb_explicit_lossy_mode_retains_legacy_mapping():
+    data = np.zeros((2, 4, 5), dtype=np.uint16)
+    data[0] = 1000
+    data[1] = 2000
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        channel_colors="Red,Red",
+        intensity_mapping=COMPOSITE_RGB_PERCENTILE_1_99,
+    )
+
+    assert rgb.dtype == np.float32
+    assert np.all(rgb[..., 0] == 1.0)
+    assert np.all(rgb[..., 1:] == 0.0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"channel_axis": -1}, "channel axis -1 is out of range"),
+        ({"channel_axis": 3}, "channel axis 3 is out of range"),
+        ({"channel_axis": 0, "red_channel": 3}, "R channel index 3"),
+        ({"channel_axis": 0, "blue_channel": -2}, "B channel index -2"),
+        ({"channel_axis": 0, "intensity_mapping": "Automatic"}, "intensity mapping"),
+    ],
+)
+def test_composite_to_rgb_rejects_invalid_axis_index_and_mode(kwargs, message):
+    data = np.zeros((3, 4, 5), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        composite_to_rgb(data, **kwargs)
 
 
 def test_assign_channel_colors_passes_data_through():
@@ -4597,7 +4913,11 @@ def test_combine_channels_colours_become_carried_metadata():
 def test_split_channels_returns_all_channels_losslessly():
     data = (np.random.rand(8, 8, 3) * 255).astype(np.uint8)
 
-    channels = split_channels(data)
+    channels = split_channels(
+        data,
+        axis_names=("y", "x", "rgb"),
+        axis_types=("space", "space", "channel"),
+    )
 
     assert len(channels) == 3
     for channel in channels:
@@ -4692,6 +5012,48 @@ def test_select_axis_slice_can_retain_axis_ranges():
     np.testing.assert_array_equal(selected, data[1:2, :, 1:4, :])
 
 
+@pytest.mark.parametrize(
+    "ranges",
+    ["0:-1:2", "0:0:4", "0:3:1", "5:0:1", "0:0", "axis:0:1"],
+)
+def test_select_axis_range_rejects_invalid_or_repaired_requests(ranges):
+    data = np.zeros((4, 5, 6), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="Select Axis Slice"):
+        select_axis_slice(data, ranges=ranges, range_mode=True)
+
+
+@pytest.mark.parametrize(
+    ("axes", "indices"),
+    [("3", "0"), ("0", "4"), ("0,1", "2"), ("0,0", "1,2")],
+)
+def test_select_axis_slice_rejects_invalid_axes_indices_and_duplicates(
+    axes,
+    indices,
+):
+    data = np.zeros((3, 4, 5), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="Select Axis Slice"):
+        select_axis_slice(data, axes=axes, indices=indices)
+
+
+def test_negative_selected_axis_moves_matching_metadata_axis():
+    data = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+    selected = select_axis_slice(data, axes="-1", indices="2")
+
+    selected_state = transform_image_state(
+        selected,
+        state,
+        operation_id="select_axis_slice",
+        operation_title="Select Axis Slice",
+        params={"axes": "-1", "indices": "2"},
+    )
+
+    np.testing.assert_array_equal(selected, data[..., 2])
+    assert selected_state.axis_order == "ZY"
+
+
 def test_select_axis_slice_can_retain_ranges_and_remove_axes():
     data = np.arange(2 * 3 * 4 * 5, dtype=np.uint16).reshape(2, 3, 4, 5)
 
@@ -4713,6 +5075,30 @@ def test_linear_scale_offset_uses_linear_offset_without_abs():
     stretched = linear_scale_offset(data, alpha=10, beta=-50)
 
     assert stretched.tolist() == [0, 50, 150]
+
+
+@pytest.mark.parametrize("parameter", (np.nan, np.inf, "bad"))
+def test_linear_scale_offset_rejects_nonfinite_parameters(parameter):
+    with pytest.raises(ValueError, match="must be a finite number"):
+        linear_scale_offset(np.arange(3), alpha=parameter)
+
+
+@pytest.mark.parametrize(
+    ("data", "gamma", "message"),
+    (
+        (np.arange(3, dtype=np.float32), 0.0, "greater than zero"),
+        (np.arange(3, dtype=np.float32), np.nan, "finite number"),
+        (np.array([-1.0, 0.0]), 0.5, "non-negative"),
+        (np.array([0.0, np.inf]), 0.5, "only finite"),
+    ),
+)
+def test_gamma_correction_rejects_repaired_or_undefined_inputs(
+    data,
+    gamma,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        gamma_correction(data, gamma=gamma)
 
 
 def test_convert_dtype_rescales_and_preserves_shape():
@@ -4737,6 +5123,36 @@ def test_convert_dtype_to_bool_and_float():
     assert floated.dtype == np.float32
     np.testing.assert_allclose(floated.min(), 0.0)
     np.testing.assert_allclose(floated.max(), 1.0)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        ({"output_dtype": "int8"}, "output_dtype must be"),
+        ({"scaling": "automatic"}, "scaling must be"),
+        (
+            {"output_dtype": "uint8", "scaling": "preserve"},
+            "exceed the output dtype range",
+        ),
+    ),
+)
+def test_convert_dtype_rejects_implicit_fallback_or_preserve_clipping(
+    kwargs,
+    message,
+):
+    data = np.array([0.0, 256.0], dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        convert_dtype(data, **kwargs)
+
+
+def test_convert_dtype_integer_preserve_rejects_nonfinite_values():
+    with pytest.raises(ValueError, match="cannot represent non-finite"):
+        convert_dtype(
+            np.array([0.0, np.nan], dtype=np.float32),
+            output_dtype="uint16",
+            scaling="preserve",
+        )
 
 
 def test_thresholding_operations_return_masks():
@@ -5213,32 +5629,27 @@ def test_li_threshold_keeps_its_raw_iterative_path(monkeypatch):
     assert threshold == expected
 
 
-def test_scalar_grayscale_and_boolean_masks_do_not_make_input_copies():
+def test_boolean_masks_do_not_make_input_copies():
     image = np.arange(12, dtype=np.uint16).reshape(3, 4)
     mask = image > 4
 
-    grayscale = operations._to_grayscale(image)
     converted_mask = operations._to_bool_mask(mask)
 
-    assert grayscale is image
-    assert grayscale.dtype == np.uint16
     assert converted_mask is mask
 
 
-def test_rgb_grayscale_conversion_does_not_downcast_float64_data():
-    rgb = np.array(
+def test_boolean_conversion_preserves_an_undeclared_trailing_axis():
+    values = np.array(
         [[[10_000_000_000.25, 10_000_000_001.5, 10_000_000_002.75]]],
         dtype=np.float64,
     )
 
-    grayscale = operations._to_grayscale(rgb)
-    expected = np.sum(
-        rgb[..., :3] * np.array([0.299, 0.587, 0.114], dtype=np.float64),
-        axis=-1,
-    )
+    mask = operations._to_bool_mask(values)
+    converted = convert_dtype(values, output_dtype="bool")
 
-    assert grayscale.dtype == np.float64
-    np.testing.assert_array_equal(grayscale, expected)
+    assert mask.shape == values.shape
+    np.testing.assert_array_equal(mask, values != 0)
+    np.testing.assert_array_equal(converted, values != 0)
 
 
 def test_morphology_and_small_object_operations_return_masks():
@@ -5250,7 +5661,7 @@ def test_morphology_and_small_object_operations_return_masks():
 
     closed_cavity = np.ones((3, 5, 5), dtype=bool)
     closed_cavity[1, 2, 2] = False
-    filled = fill_holes(closed_cavity)
+    filled = fill_holes(closed_cavity, spatial_mode="3D ZYX")
     filtered = remove_small_objects(
         mask,
         min_size=5,
@@ -5288,6 +5699,24 @@ def test_fill_holes_supports_size_limited_2d_filling():
     assert limited[2, 2]
     assert not limited[5:7, 5:7].any()
     assert filled_all.all()
+
+
+def test_spatial_operations_reject_unknown_or_ambiguous_direct_modes():
+    volume = np.zeros((3, 5, 5), dtype=bool)
+
+    with pytest.raises(ValueError, match="Spatial mode must be"):
+        fill_holes(volume, spatial_mode="do something sensible")
+    with pytest.raises(ValueError, match="Auto from axes requires explicit"):
+        fill_holes(volume)
+
+
+@pytest.mark.parametrize("resolved", (0, 4, 2.5, True))
+def test_spatial_operations_reject_invalid_resolved_rank(resolved):
+    with pytest.raises(ValueError, match="resolved_spatial_ndim"):
+        fill_holes(
+            np.zeros((3, 5, 5), dtype=bool),
+            resolved_spatial_ndim=resolved,
+        )
 
 
 def test_fill_holes_distinguishes_2d_slices_from_3d_volume():

@@ -13,13 +13,13 @@ from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     "otsu-red-channel-labels.json": (
-        "461280af600f9ec90397a92c4ced878e0a0086c4378c7624d2c54385cfbb6280"
+        "0f499b5176fd9c5bf4a3b7882ed5b4134c3b700073e0cdb543e4471cf43864a3"
     ),
     "red-channel-merged-measurement-table.json": (
-        "3c2515b64455b2280c96e61bc329211cb5b592403d00e54d37c6d00990c6f45a"
+        "e78a08ba6ca781bf4df0a3c61c276e4f16828acd1c37f1f091dcb9b63e386782"
     ),
     "red-channel-object-intensity-measurements.json": (
-        "33c91555828d492e383fed4e04764a3d636289eb964546a30a1d23f30e0a65cf"
+        "82949ed1457bc5e8a108ed8cdb704b88b1c7b85f060d4a27db512bc143d9e738"
     ),
     "synthetic-3d-deconvolution-rl-tv.json": (
         "b0488e929147080955832079ab262dd7f687544045fd26633cd4b47f7a27af4f"

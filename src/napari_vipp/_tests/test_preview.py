@@ -522,13 +522,17 @@ def test_composite_to_rgb_preview_uses_source_z_axis_when_rgb_axis_is_hidden():
     data[:, 0, 2, 3] = 2000
     data[:, 3, 5, 6] = 4000
     source_state = image_state_from_array(data, layer_metadata={"axes": "CZYX"})
-    rgb = composite_to_rgb(data)
+    rgb = composite_to_rgb(data, channel_axis=0)
     rgb_state = transform_image_state(
         rgb,
         source_state,
         operation_id="composite_to_rgb",
         operation_title="Composite to RGB",
-        params={},
+        params={
+            "channel_axis": 0,
+            "resolved_channel_axis": 0,
+            "intensity_mapping": "Preserve numeric values",
+        },
     )
 
     first = make_preview(

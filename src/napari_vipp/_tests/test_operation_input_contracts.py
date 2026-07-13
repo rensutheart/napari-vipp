@@ -138,7 +138,11 @@ InputFactory = Callable[[], tuple[np.ndarray, ...]]
         ),
         pytest.param(
             lambda: (_readonly(np.arange(24).reshape(2, 3, 4)),),
-            lambda arrays: project_image(arrays[0], axes="0", method="Maximum"),
+            lambda arrays: project_image(
+                arrays[0],
+                axes="axis:0",
+                method="Maximum",
+            ),
             id="project-image",
         ),
         pytest.param(

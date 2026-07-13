@@ -6,8 +6,10 @@ import pytest
 from napari_vipp.core.grid import (
     ImageGrid,
     compare_aligned_grids,
+    compare_mask_broadcast_grids,
     compare_psf_sampling,
     validate_aligned_image_states,
+    validate_mask_broadcast_image_states,
     validate_psf_image_states,
 )
 from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
@@ -171,6 +173,60 @@ def test_aligned_grid_validation_names_inputs_and_requires_explicit_resampling()
         )
 
 
+def _tzyx_image_state(shape=(2, 2, 3, 4)):
+    return _state(
+        shape,
+        (
+            AxisMetadata("t", "time", unit="second", scale=2),
+            AxisMetadata("z", "space", unit="micrometer", scale=0.5),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.2),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.2),
+        ),
+    )
+
+
+def _tyx_mask_state(shape=(2, 3, 4), *, time_scale=2):
+    return _state(
+        shape,
+        (
+            AxisMetadata("t", "time", unit="second", scale=time_scale),
+            AxisMetadata("y", "space", unit="micrometer", scale=0.2),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.2),
+        ),
+    )
+
+
+def test_mask_grid_maps_tyx_to_tzyx_by_explicit_semantics_not_equal_sizes():
+    compatibility = compare_mask_broadcast_grids(
+        ImageGrid.from_image_state(_tzyx_image_state()),
+        ImageGrid.from_image_state(_tyx_mask_state()),
+    )
+
+    assert compatibility.compatible
+    assert compatibility.mask_to_image_axes == (0, 2, 3)
+
+
+def test_mask_grid_rejects_inferred_mismatched_rank_semantics():
+    inferred_mask = image_state_from_array(np.zeros((2, 3, 4), dtype=bool))
+
+    with pytest.raises(
+        ValueError,
+        match="requires explicit axis semantics.*inferred semantics",
+    ):
+        validate_mask_broadcast_image_states(
+            _tzyx_image_state(),
+            inferred_mask,
+        )
+
+
+def test_mask_grid_rejects_calibration_mismatch_on_semantic_axis():
+    with pytest.raises(ValueError, match="sample spacing differs"):
+        validate_mask_broadcast_image_states(
+            _tzyx_image_state(),
+            _tyx_mask_state(time_scale=3),
+        )
+
+
 def test_psf_grid_allows_different_extent_and_origin_at_matching_sampling():
     image = _state(
         (3, 64, 64),
@@ -297,6 +353,92 @@ def test_pipeline_preserves_equal_shape_uncalibrated_image_math():
     )
 
     np.testing.assert_array_equal(outputs[add.id], np.full((8, 9), 3))
+
+
+def test_pipeline_broadcasts_tyx_mask_over_tzyx_by_axis_semantics():
+    image = np.empty((2, 2, 3, 4), dtype=np.int16)
+    for time_index in range(2):
+        for z_index in range(2):
+            image[time_index, z_index] = 10 * time_index + z_index + 1
+    mask = np.zeros((2, 3, 4), dtype=bool)
+    mask[0, :, 0] = True
+    mask[1, :, -1] = True
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    mask_source = pipeline.add_node("input")
+    threshold = pipeline.add_node("binary_threshold")
+    masked = pipeline.add_node("mask_image")
+    pipeline.set_param(masked.id, "outside_value", -5)
+    pipeline.connect(mask_source.id, threshold.id)
+    pipeline.connect("input", masked.id, target_port=0)
+    pipeline.connect(threshold.id, masked.id, target_port=1)
+
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "input": SourcePayload(image, image_state=_tzyx_image_state()),
+            mask_source.id: SourcePayload(mask, image_state=_tyx_mask_state()),
+        },
+    )
+
+    expected_mask = np.broadcast_to(mask[:, None, :, :], image.shape)
+    expected = np.where(expected_mask, image, -5)
+    np.testing.assert_array_equal(outputs[masked.id], expected)
+
+
+def test_pipeline_rejects_inferred_mismatched_rank_mask():
+    image = np.ones((2, 2, 3, 4), dtype=np.float32)
+    mask = np.ones((2, 3, 4), dtype=bool)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    mask_source = pipeline.add_node("input")
+    threshold = pipeline.add_node("binary_threshold")
+    masked = pipeline.add_node("mask_image")
+    pipeline.connect(mask_source.id, threshold.id)
+    pipeline.connect("input", masked.id, target_port=0)
+    pipeline.connect(threshold.id, masked.id, target_port=1)
+
+    with pytest.raises(
+        ValueError,
+        match="Mask Image cannot combine Image and Mask.*explicit axis semantics",
+    ):
+        pipeline.run(
+            image,
+            source_payloads={
+                "input": SourcePayload(image, image_state=_tzyx_image_state()),
+                mask_source.id: SourcePayload(mask),
+            },
+        )
+
+
+def test_pipeline_preserves_same_shape_mask_behavior_without_explicit_axes():
+    image = np.arange(12, dtype=np.float32).reshape(3, 4)
+    mask = np.array(
+        [
+            [True, False, True, False],
+            [False, True, False, True],
+            [True, True, False, False],
+        ]
+    )
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    mask_source = pipeline.add_node("input")
+    threshold = pipeline.add_node("binary_threshold")
+    masked = pipeline.add_node("mask_image")
+    pipeline.connect(mask_source.id, threshold.id)
+    pipeline.connect("input", masked.id, target_port=0)
+    pipeline.connect(threshold.id, masked.id, target_port=1)
+
+    outputs = pipeline.run(
+        image,
+        source_payloads={
+            "input": SourcePayload(image),
+            mask_source.id: SourcePayload(mask),
+        },
+    )
+
+    np.testing.assert_array_equal(outputs[masked.id], np.where(mask, image, 0))
 
 
 def test_pipeline_rejects_psf_sampling_mismatch_before_deconvolution():

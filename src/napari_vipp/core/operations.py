@@ -34,6 +34,9 @@ NO_TABLE_COLUMNS_VALUE = "__none__"
 
 RGB_CHANNELS = (3, 4)
 
+COMPOSITE_RGB_PRESERVE_VALUES = "Preserve numeric values"
+COMPOSITE_RGB_PERCENTILE_1_99 = "Per-channel 1st-99th percentile (lossy)"
+
 BORN_WOLF_PSF_AUTO_PARAMETERS = (
     "wavelength_nm",
     "numerical_aperture",
@@ -83,13 +86,30 @@ def crop_stack(
     bottom: int = 0,
     left: int = 0,
     right: int = 0,
+    channel_axis: int | None = None,
+    axis_names: Sequence[str] = (),
 ) -> np.ndarray:
-    """Crop the last two spatial axes of an image or stack."""
+    """Crop declared Y/X axes, or trailing scalar axes without metadata.
+
+    Arrays are scalar by default. In particular, a trailing dimension of
+    length 3 or 4 is treated as X unless ``channel_axis`` is supplied.
+    """
     arr = np.asarray(data)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Crop stack",
+    )
     if arr.ndim < 2:
+        if any(value != 0 for value in (top, bottom, left, right)):
+            raise ValueError("Crop stack requires at least two spatial axes.")
         return arr.copy()
 
-    y_axis, x_axis = _xy_axes(arr)
+    y_axis, x_axis = _xy_axes(
+        arr,
+        channel_axis=channel_axis,
+        axis_names=axis_names,
+    )
     slices = [slice(None)] * arr.ndim
     top, bottom = _crop_pair(top, bottom, arr.shape[y_axis])
     left, right = _crop_pair(left, right, arr.shape[x_axis])
@@ -107,16 +127,21 @@ def reorder_axes(
     arr = np.asarray(data)
     indices = _axis_order_indices(order, arr.ndim, axis_names)
     if indices is None:
-        return arr.copy()
+        raise ValueError(
+            "Reorder Axes order must be a complete numeric permutation or a "
+            "complete set of declared axis names."
+        )
     return np.ascontiguousarray(np.transpose(arr, indices))
 
 
 def linear_scale_offset(data, alpha: float = 3.0, beta: float = 1.0) -> np.ndarray:
     """Apply a linear scale-and-offset contrast operation."""
     arr = np.asarray(data)
+    alpha = _finite_float_parameter(alpha, "Linear Scale + Offset alpha")
+    beta = _finite_float_parameter(beta, "Linear Scale + Offset beta")
     if arr.dtype == bool:
         return arr.copy()
-    scaled = arr.astype(np.float32, copy=False) * float(alpha) + float(beta)
+    scaled = arr.astype(np.float32, copy=False) * alpha + beta
     return _restore_numeric_dtype(scaled, arr)
 
 
@@ -126,31 +151,79 @@ def gamma_correction(data, gamma: float = 0.5) -> np.ndarray:
     if arr.dtype == bool:
         return arr.copy()
 
-    gamma = max(float(gamma), 1e-6)
+    gamma = _finite_float_parameter(gamma, "Gamma Correction gamma")
+    if gamma <= 0.0:
+        raise ValueError("Gamma Correction gamma must be greater than zero.")
+    if not (
+        np.issubdtype(arr.dtype, np.integer)
+        or np.issubdtype(arr.dtype, np.floating)
+    ):
+        raise ValueError("Gamma Correction requires real-valued image data.")
+    finite = arr[np.isfinite(arr)]
+    if finite.size != arr.size:
+        raise ValueError("Gamma Correction input must contain only finite values.")
+    if finite.size and finite.min() < 0:
+        raise ValueError("Gamma Correction input values must be non-negative.")
     scale = _intensity_scale(arr)
     corrected = np.power(np.clip(arr.astype(np.float32) / scale, 0, 1), gamma) * scale
     return _restore_numeric_dtype(corrected, arr)
 
 
-def average_blur(data, size: int = 5) -> np.ndarray:
-    """Apply a slice-wise mean blur over the x/y plane."""
+def _finite_float_parameter(value, label: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{label} must be a finite number.") from exc
+    if not np.isfinite(parsed):
+        raise ValueError(f"{label} must be a finite number.")
+    return parsed
+
+
+def average_blur(
+    data,
+    size: int = 5,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Apply a slice-wise mean blur over explicitly resolved X/Y axes.
+
+    Arrays are scalar by default, including trailing dimensions of length 3
+    or 4. A declared channel axis is preserved and excluded from filtering.
+    """
     arr = _float_if_bool(np.asarray(data))
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Average blur",
+    )
     size = max(int(size), 1)
     filter_size = [1] * arr.ndim
-    for axis in _xy_axes(arr):
+    for axis in _xy_axes(arr, channel_axis=channel_axis):
         filter_size[axis] = size
     return ndi.uniform_filter(arr, size=filter_size)
 
 
-def gaussian_blur(data, sigma: float = 1.0) -> np.ndarray:
-    """Apply slice-wise Gaussian blur while preserving channel and z axes."""
+def gaussian_blur(
+    data,
+    sigma: float = 1.0,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Apply slice-wise Gaussian blur over explicitly resolved X/Y axes.
+
+    Arrays are scalar by default, including trailing dimensions of length 3
+    or 4. A declared channel axis is preserved and excluded from filtering.
+    """
     arr = _float_if_bool(np.asarray(data))
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Gaussian blur",
+    )
     sigma = max(float(sigma), 0.0)
     if sigma == 0:
         return arr.copy()
 
     sigma_by_axis = [0.0] * arr.ndim
-    for axis in _xy_axes(arr):
+    for axis in _xy_axes(arr, channel_axis=channel_axis):
         sigma_by_axis[axis] = sigma
     return ndi.gaussian_filter(arr, sigma=sigma_by_axis)
 
@@ -161,11 +234,21 @@ def gaussian_blur_3d(
     sigma_y: float = 2.0,
     sigma_x: float = 2.0,
     lock_xy: bool = True,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Apply Gaussian blur across the z/y/x volume axes."""
+    """Apply Gaussian blur across resolved Z/Y/X volume axes.
+
+    Arrays are scalar by default, including trailing dimensions of length 3
+    or 4. A declared channel axis is preserved and excluded from filtering.
+    """
     del lock_xy  # UI convenience flag; sigma_y/sigma_x carry the actual values.
     arr = _float_if_bool(np.asarray(data))
-    spatial_axes = _spatial_axes(arr)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Gaussian blur 3D",
+    )
+    spatial_axes = _spatial_axes(arr, channel_axis=channel_axis)
     if not spatial_axes:
         return arr.copy()
 
@@ -570,12 +653,25 @@ def richardson_lucy_tv_deconvolution(
     )
 
 
-def median_filter(data, size: int = 5) -> np.ndarray:
-    """Apply a slice-wise median filter over the x/y plane."""
+def median_filter(
+    data,
+    size: int = 5,
+    channel_axis: int | None = None,
+) -> np.ndarray:
+    """Apply a slice-wise median filter over explicitly resolved X/Y axes.
+
+    Arrays are scalar by default, including trailing dimensions of length 3
+    or 4. A declared channel axis is preserved and excluded from filtering.
+    """
     arr = np.asarray(data)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Median filter",
+    )
     size = _odd_size(size, minimum=1)
     filter_size = [1] * arr.ndim
-    for axis in _xy_axes(arr):
+    for axis in _xy_axes(arr, channel_axis=channel_axis):
         filter_size[axis] = size
     return ndi.median_filter(arr, size=filter_size)
 
@@ -657,14 +753,19 @@ def difference_of_gaussians_filter(
     data,
     low_sigma: float = 1.0,
     high_sigma: float = 3.0,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Enhance structures between finite, ordered Gaussian scales slice-wise."""
+    """Enhance structures between ordered Gaussian scales on resolved X/Y.
+
+    Arrays are scalar by default, including trailing dimensions of length 3
+    or 4. A declared channel axis is preserved and excluded from filtering.
+    """
     original = np.asarray(data)
     dtype = original.dtype if np.issubdtype(original.dtype, np.floating) else np.float32
     arr = _float_if_bool(original).astype(dtype, copy=False)
     low_sigma, high_sigma = _validated_sigma_pair(low_sigma, high_sigma)
-    low = gaussian_blur(arr, sigma=low_sigma)
-    high = gaussian_blur(arr, sigma=high_sigma)
+    low = gaussian_blur(arr, sigma=low_sigma, channel_axis=channel_axis)
+    high = gaussian_blur(arr, sigma=high_sigma, channel_axis=channel_axis)
     return low.astype(dtype, copy=False) - high.astype(dtype, copy=False)
 
 
@@ -734,9 +835,19 @@ def rolling_ball_background(
     spatial_mode: str = "2D YX",
     resolved_spatial_ndim: int | None = None,
     progress=None,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Estimate smooth background with a Fiji/ImageJ-style rolling ball."""
+    """Estimate smooth background with a Fiji/ImageJ-style rolling ball.
+
+    Arrays are scalar by default. Set ``channel_axis`` to process a declared
+    multichannel array independently without inferring color from its shape.
+    """
     arr = np.asarray(data)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Rolling-ball background",
+    )
     if arr.dtype == bool:
         return np.zeros_like(arr)
     background = _estimate_rolling_ball_background(
@@ -746,6 +857,7 @@ def rolling_ball_background(
         disable_smoothing=disable_smoothing,
         spatial_mode=spatial_mode,
         resolved_spatial_ndim=resolved_spatial_ndim,
+        channel_axis=channel_axis,
         progress=progress,
     )
     return _restore_numeric_dtype(background, arr)
@@ -760,9 +872,19 @@ def subtract_background(
     spatial_mode: str = "2D YX",
     resolved_spatial_ndim: int | None = None,
     progress=None,
+    channel_axis: int | None = None,
 ) -> np.ndarray:
-    """Subtract a rolling-ball background estimate while preserving dtype."""
+    """Subtract a rolling-ball background estimate while preserving dtype.
+
+    Arrays are scalar by default. Set ``channel_axis`` to process a declared
+    multichannel array independently without inferring color from its shape.
+    """
     arr = np.asarray(data)
+    channel_axis = _validated_filter_channel_axis(
+        channel_axis,
+        arr.ndim,
+        operation="Subtract background",
+    )
     if arr.dtype == bool:
         return arr.copy()
     background = _estimate_rolling_ball_background(
@@ -772,6 +894,7 @@ def subtract_background(
         disable_smoothing=disable_smoothing,
         spatial_mode=spatial_mode,
         resolved_spatial_ndim=resolved_spatial_ndim,
+        channel_axis=channel_axis,
         progress=progress,
     )
     values = arr.astype(background.dtype, copy=False)
@@ -1733,6 +1856,7 @@ def filter_labels_by_property(
     spatial_axes = _measurement_spatial_axes(
         labels.ndim,
         spatial_ndim,
+        axis_names,
         axis_types,
     )
     if len(spatial_axes) != spatial_ndim:
@@ -2002,6 +2126,7 @@ def measure_objects(
     spatial_axes = _measurement_spatial_axes(
         labels.ndim,
         spatial_ndim,
+        axis_names,
         axis_types,
     )
     if len(spatial_axes) != spatial_ndim:
@@ -2128,6 +2253,7 @@ def measure_objects_with_intensity(
     spatial_axes = _measurement_spatial_axes(
         labels.ndim,
         spatial_ndim,
+        axis_names,
         axis_types,
     )
     if len(spatial_axes) != spatial_ndim:
@@ -2255,7 +2381,12 @@ def measure_3d_mesh_morphology(
         raise ValueError("Measure 3D Mesh Morphology requires true 3D labels.")
     axis_names = _measurement_axis_names(labels.ndim, axis_names)
     axis_types = _measurement_axis_types(labels.ndim, axis_types)
-    spatial_axes = _measurement_spatial_axes(labels.ndim, spatial_ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        labels.ndim,
+        spatial_ndim,
+        axis_names,
+        axis_types,
+    )
     if len(spatial_axes) != spatial_ndim:
         spatial_axes = tuple(range(labels.ndim - spatial_ndim, labels.ndim))
     labels_for_measure = np.moveaxis(
@@ -2355,7 +2486,12 @@ def analyze_skeleton(
     )
     axis_names = _measurement_axis_names(mask.ndim, axis_names)
     axis_types = _measurement_axis_types(mask.ndim, axis_types)
-    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        mask.ndim,
+        spatial_ndim,
+        axis_names,
+        axis_types,
+    )
     if len(spatial_axes) != spatial_ndim:
         spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
     mask_for_analysis = np.moveaxis(
@@ -2436,7 +2572,12 @@ def measure_skeleton_branches(
     has_axis_names = axis_names is not None and len(axis_names) == mask.ndim
     axis_names = _measurement_axis_names(mask.ndim, axis_names)
     axis_types = _measurement_axis_types(mask.ndim, axis_types)
-    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        mask.ndim,
+        spatial_ndim,
+        axis_names,
+        axis_types,
+    )
     if len(spatial_axes) != spatial_ndim:
         spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
     mask_for_analysis = np.moveaxis(
@@ -3627,34 +3768,36 @@ def extract_channel(
         axis_names=axis_names,
         axis_types=axis_types,
     )
+    if axis is None:
+        raise ValueError(
+            "Extract Channel requires an explicitly declared channel axis."
+        )
     return _extract_channel(
         arr,
         channel=channel,
-        channel_axis=axis if axis is not None else _default_channel_axis(arr),
+        channel_axis=axis,
     )
 
 
 def combine_channels(
     inputs,
     input_count: int = 2,
-    channel_axis: int = -1,
+    channel_axis: int | None = None,
     channel_colors: str = "",
 ) -> np.ndarray:
     """Combine multiple same-shaped inputs into a multichannel image."""
     arrays = [np.asarray(item) for item in inputs if item is not None]
-    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
-    arrays = arrays[:input_count]
-    if not arrays:
-        raise ValueError("Combine Channels needs at least one connected input.")
+    arrays = _active_input_arrays(arrays, input_count, "Combine Channels")
 
     shape = arrays[0].shape
     if any(array.shape != shape for array in arrays):
         raise ValueError("Combine Channels inputs must have matching shapes.")
 
-    axis = int(channel_axis)
-    if axis < 0:
-        axis = 0
-    axis = int(np.clip(axis, 0, arrays[0].ndim))
+    axis = _validated_insert_axis(
+        channel_axis,
+        arrays[0].ndim,
+        operation="Combine Channels",
+    )
     return np.stack(arrays, axis=axis)
 
 
@@ -3671,10 +3814,7 @@ def calculate_weighted_image(
 ) -> np.ndarray:
     """Create a float image using one finite weight per active input."""
     arrays = [np.asarray(item) for item in inputs if item is not None]
-    input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
-    arrays = arrays[:input_count]
-    if not arrays:
-        raise ValueError("Image Calculator needs at least one connected input.")
+    arrays = _active_input_arrays(arrays, input_count, "Image Calculator")
 
     shape = arrays[0].shape
     if any(array.shape != shape for array in arrays):
@@ -3688,80 +3828,140 @@ def calculate_weighted_image(
             f"received {len(parsed_weights)}."
         )
 
+    try:
+        resolved_offset = float(offset)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Image Calculator offset must be finite.") from exc
+    if not np.isfinite(resolved_offset):
+        raise ValueError("Image Calculator offset must be finite.")
+
     result = np.zeros(shape, dtype=np.float32)
     for array, weight in zip(arrays, parsed_weights, strict=True):
         result += array.astype(np.float32, copy=False) * float(weight)
-    result += float(offset)
+    result += resolved_offset
     return result
+
+
+def _active_input_arrays(
+    arrays: list[np.ndarray],
+    input_count,
+    operation: str,
+) -> list[np.ndarray]:
+    if isinstance(input_count, (bool, np.bool_)) or not isinstance(
+        input_count,
+        Integral,
+    ):
+        raise ValueError(f"{operation} input_count must be an integer.")
+    requested = int(input_count)
+    if requested < 1:
+        raise ValueError(f"{operation} input_count must be at least 1.")
+    if len(arrays) < requested:
+        raise ValueError(
+            f"{operation} needs {requested} connected inputs; received "
+            f"{len(arrays)}."
+        )
+    return arrays[:requested]
+
+
+def _validated_insert_axis(value, ndim: int, *, operation: str) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{operation} channel_axis must be an integer.")
+    axis = int(value)
+    if axis < 0:
+        axis += ndim + 1
+    if axis < 0 or axis > ndim:
+        raise ValueError(
+            f"{operation} channel_axis {int(value)} is out of range for "
+            f"insertion into a {ndim}D input."
+        )
+    return axis
 
 
 def composite_to_rgb(
     data,
-    channel_axis: int = -1,
+    channel_axis: int | None = None,
     red_channel: int = -1,
     green_channel: int = -1,
     blue_channel: int = -1,
+    intensity_mapping: str = COMPOSITE_RGB_PRESERVE_VALUES,
     channel_axis_semantics: str = "",
     channel_colors: str | list[int | str] | tuple[int | str, ...] = "",
 ) -> np.ndarray:
-    """Convert a multichannel composite into a channel-last RGB image.
+    """Map an explicitly declared channel axis into channel-last RGB.
 
-    By default (all parameters ``-1``) the channel axis is detected automatically.
-    True channel-last RGB/RGBA inputs keep RGB order. Other multichannel inputs
-    use VIPP's fluorescence display order so channel 0 maps to blue, channel 1
-    maps to green, and channel 2 maps to red. A single channel is written to all
-    three (white/grayscale) and extra channels are ignored.
+    ``Preserve numeric values`` retains the native intensity scale: channel
+    values are copied or additively mixed without normalization or clipping.
+    Inputs that cannot be represented safely in the RGB arithmetic are rejected
+    instead of being rounded or overflowed silently.
+    The legacy 1st/99th-percentile display mapping remains available only via
+    ``Per-channel 1st-99th percentile (lossy)``. That mode normalizes every
+    selected channel independently and clips additive colour mixtures to [0, 1].
 
-    The mapping is configurable: set ``channel_axis`` to pick the channel axis
-    explicitly, and set ``red_channel``/``green_channel``/``blue_channel`` to
-    choose which channel index feeds each RGB plane. Any selection that is
-    ``-1`` falls back to the positional default, and selections outside the
-    available channel range leave that plane blank.
+    Only an axis explicitly declared as ``rgb`` or ``rgba`` preserves encoded
+    RGB order automatically. Other channel axes use the declared/default
+    fluorescence colour table unless explicit R/G/B channel indices are given.
+    ``-1`` channel selections mean "use the positional default"; every explicit
+    channel index must exist.
     """
     arr = np.asarray(data)
-    if int(channel_axis) < 0:
-        axis = _default_channel_axis(arr)
-    else:
-        axis = _normalize_axis(int(channel_axis), arr.ndim)
-    if axis is None:
-        gray = _composite_channel_to_float(arr)
-        return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
+    axis = _validated_composite_channel_axis(channel_axis, arr.ndim)
+    mapping = _validated_composite_intensity_mapping(intensity_mapping)
+    _validate_composite_input_values(arr, mapping)
 
     moved = np.moveaxis(arr, axis, -1)
-    count = moved.shape[-1]
-    if count == 1:
-        gray = _composite_channel_to_float(moved[..., 0])
-        return np.stack([gray, gray, gray], axis=-1).astype(np.float32)
+    count = int(moved.shape[-1])
+    if count < 1:
+        raise ValueError("Composite → RGB channel axis must not be empty.")
+    semantic = _validated_composite_axis_semantics(
+        channel_axis_semantics,
+        count=count,
+    )
+    selections = _validated_composite_channel_selections(
+        (red_channel, green_channel, blue_channel),
+        count=count,
+    )
+    output_dtype = _composite_output_dtype(arr, mapping)
 
-    manual_mapping = any(
-        int(selection) >= 0 for selection in (red_channel, green_channel, blue_channel)
-    )
+    manual_mapping = any(selection >= 0 for selection in selections)
     true_rgb = _is_true_rgb_channel_axis(
-        arr,
-        axis,
         count,
-        channel_axis_semantics=channel_axis_semantics,
+        channel_axis_semantics=semantic,
     )
+    if count == 1 and not manual_mapping:
+        gray = _composite_mapped_channel(
+            moved[..., 0],
+            intensity_mapping=mapping,
+            output_dtype=output_dtype,
+        )
+        return np.stack([gray, gray, gray], axis=-1)
     if not manual_mapping and not true_rgb:
-        color_table = channel_color_table(channel_colors, count)
-        return _composite_to_rgb_by_color_table(moved, color_table)
+        color_table = _validated_composite_color_table(channel_colors, count)
+        return _composite_to_rgb_by_color_table(
+            moved,
+            color_table,
+            intensity_mapping=mapping,
+            output_dtype=output_dtype,
+        )
 
     defaults = _default_rgb_channel_indices(
-        arr,
-        axis,
         count,
-        channel_axis_semantics=channel_axis_semantics,
+        channel_axis_semantics=semantic,
     )
-    selections = (red_channel, green_channel, blue_channel)
-    blank = np.zeros(moved.shape[:-1], dtype=np.float32)
+    blank = np.zeros(moved.shape[:-1], dtype=output_dtype)
     channels = []
     for position, selection in enumerate(selections):
-        index = defaults[position] if int(selection) < 0 else int(selection)
-        if 0 <= index < count:
-            channels.append(_composite_channel_to_float(moved[..., index]))
-        else:
+        index = defaults[position] if selection < 0 else selection
+        if index is None:
             channels.append(blank)
-    return np.stack(channels, axis=-1).astype(np.float32)
+            continue
+        channels.append(
+            _composite_mapped_channel(
+                moved[..., index],
+                intensity_mapping=mapping,
+                output_dtype=output_dtype,
+            )
+        )
+    return np.stack(channels, axis=-1)
 
 
 def split_channels(
@@ -4834,17 +5034,24 @@ def mask_image(
     inputs,
     outside_value: float = 0.0,
     invert_mask: str = "no",
+    mask_axis_mapping: Sequence[int] | None = None,
 ) -> np.ndarray:
-    """Apply a binary mask to an image, filling outside-mask pixels."""
+    """Apply a binary mask without guessing omitted axes from their sizes."""
     arrays = [np.asarray(item) for item in inputs if item is not None]
     if len(arrays) < 2:
         raise ValueError("Mask Image needs an image input and a mask input.")
 
     image = arrays[0]
-    mask = _to_bool_mask(arrays[1])
+    # This port accepts masks or labels, never color data. Treat every nonzero
+    # label as selected without interpreting a trailing length-3/4 axis as RGB.
+    mask = np.asarray(arrays[1]) != 0
     if str(invert_mask).lower() == "yes":
         mask = ~mask
-    mask = _broadcast_mask_to_image(mask, image.shape)
+    mask = _broadcast_mask_to_image(
+        mask,
+        image.shape,
+        mask_axis_mapping=mask_axis_mapping,
+    )
     output = np.asarray(image).copy()
     output[~mask] = np.asarray(outside_value, dtype=output.dtype)
     return output
@@ -4912,50 +5119,59 @@ def _matching_input_arrays(
 def _broadcast_mask_to_image(
     mask: np.ndarray,
     image_shape: tuple[int, ...],
+    *,
+    mask_axis_mapping: Sequence[int] | None = None,
 ) -> np.ndarray:
-    """Return a boolean mask broadcast to an image shape."""
+    """Broadcast a mask using an explicit source-to-target axis mapping."""
     mask = np.asarray(mask, dtype=bool)
     if mask.shape == image_shape:
         return mask
     if mask.ndim > len(image_shape):
         raise ValueError(
-            "Mask Image mask shape must match the image shape or be broadcastable "
-            "to it."
+            f"Mask Image mask rank {mask.ndim}D exceeds image rank "
+            f"{len(image_shape)}D."
+        )
+    if mask_axis_mapping is None:
+        raise ValueError(
+            "Mask Image inputs with different shapes or ranks require an "
+            "explicit semantic mask axis mapping; VIPP does not align axes by "
+            "coincident sizes."
         )
 
-    priority_shapes: list[tuple[int, ...]] = []
-    if len(image_shape) >= 3 and image_shape[-1] in RGB_CHANNELS:
-        priority_shapes.append(mask.shape + (1,))
-    priority_shapes.append((1,) * (len(image_shape) - mask.ndim) + mask.shape)
+    mapping = tuple(mask_axis_mapping)
+    if len(mapping) != mask.ndim:
+        raise ValueError(
+            "Mask Image mask axis mapping must contain one image-axis index "
+            f"for each of the mask's {mask.ndim} axes."
+        )
+    if any(
+        isinstance(axis, (bool, np.bool_)) or not isinstance(axis, Integral)
+        for axis in mapping
+    ):
+        raise ValueError("Mask Image mask axis mapping must contain integers.")
+    mapping = tuple(int(axis) for axis in mapping)
+    if len(set(mapping)) != len(mapping):
+        raise ValueError("Mask Image mask axis mapping must be one-to-one.")
+    if any(axis < 0 or axis >= len(image_shape) for axis in mapping):
+        raise ValueError(
+            f"Mask Image mask axis mapping {mapping} is outside the "
+            f"{len(image_shape)}D image."
+        )
 
-    for expanded_shape in priority_shapes:
-        if len(expanded_shape) != len(image_shape):
-            continue
-        try:
-            return np.broadcast_to(mask.reshape(expanded_shape), image_shape)
-        except ValueError:
-            continue
-
-    inserted_axes = len(image_shape) - mask.ndim
-    for singleton_axes in combinations(range(len(image_shape)), inserted_axes):
-        singleton_axes_set = set(singleton_axes)
-        expanded_shape: list[int] = []
-        mask_axis = 0
-        for axis in range(len(image_shape)):
-            if axis in singleton_axes_set:
-                expanded_shape.append(1)
-            else:
-                expanded_shape.append(mask.shape[mask_axis])
-                mask_axis += 1
-        try:
-            return np.broadcast_to(mask.reshape(expanded_shape), image_shape)
-        except ValueError:
-            continue
-
-    raise ValueError(
-        "Mask Image mask shape must match the image shape or be broadcastable "
-        "to it."
-    )
+    source_order = tuple(sorted(range(mask.ndim), key=mapping.__getitem__))
+    ordered_mask = np.transpose(mask, source_order)
+    expanded_shape = [1] * len(image_shape)
+    for source_axis in source_order:
+        image_axis = mapping[source_axis]
+        mask_size = int(mask.shape[source_axis])
+        image_size = int(image_shape[image_axis])
+        if mask_size != image_size:
+            raise ValueError(
+                f"Mask Image mapped axis sizes differ at image axis {image_axis} "
+                f"({image_size} versus {mask_size})."
+            )
+        expanded_shape[image_axis] = mask_size
+    return np.broadcast_to(ordered_mask.reshape(expanded_shape), image_shape)
 
 
 def _extract_channel(
@@ -4964,9 +5180,23 @@ def _extract_channel(
     channel_axis: int | None = None,
 ) -> np.ndarray:
     if channel_axis is None:
-        return arr.copy()
-    channel_axis = _normalize_axis(channel_axis, arr.ndim)
-    channel = int(np.clip(channel, 0, arr.shape[channel_axis] - 1))
+        raise ValueError("Extract Channel requires an explicit channel axis.")
+    channel_axis = _validated_axis_index(
+        channel_axis,
+        arr.ndim,
+        operation="Extract Channel",
+    )
+    if isinstance(channel, (bool, np.bool_)) or not isinstance(channel, Integral):
+        raise ValueError("Extract Channel channel index must be an integer.")
+    channel = int(channel)
+    channel_count = int(arr.shape[channel_axis])
+    if channel < 0:
+        channel += channel_count
+    if channel < 0 or channel >= channel_count:
+        raise ValueError(
+            f"Extract Channel channel index {channel!r} is out of range for "
+            f"{channel_count} channels."
+        )
     return np.take(arr, channel, axis=channel_axis)
 
 
@@ -4979,11 +5209,19 @@ def convert_dtype(
     arr = np.asarray(data)
     output_dtype = str(output_dtype).lower()
     scaling = str(scaling).lower()
+    if output_dtype not in {"bool", "uint8", "uint16", "float32"}:
+        raise ValueError(
+            "Convert Dtype output_dtype must be bool, uint8, uint16, or float32."
+        )
+    if scaling not in {"rescale", "clip", "preserve"}:
+        raise ValueError(
+            "Convert Dtype scaling must be rescale, clip, or preserve."
+        )
 
     if output_dtype == "bool":
         if arr.dtype == bool:
             return arr.copy()
-        return _to_grayscale(arr) > 0
+        return arr != 0
 
     dtype = _target_dtype(output_dtype)
     if np.issubdtype(dtype, np.floating):
@@ -5438,15 +5676,6 @@ def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
     return mask
 
 
-def _to_grayscale(arr: np.ndarray) -> np.ndarray:
-    if _has_channel_axis(arr):
-        work_dtype = np.result_type(arr.dtype, np.float32)
-        rgb = arr[..., :3].astype(work_dtype, copy=False)
-        coefficients = np.asarray((0.299, 0.587, 0.114), dtype=work_dtype)
-        return np.sum(rgb * coefficients, axis=-1, dtype=work_dtype)
-    return arr
-
-
 def _to_explicit_grayscale(
     arr: np.ndarray,
     *,
@@ -5483,7 +5712,7 @@ def _to_bool_mask(data) -> np.ndarray:
     arr = np.asarray(data)
     if arr.dtype == bool:
         return arr
-    return _to_grayscale(arr) > 0
+    return arr != 0
 
 
 def _target_dtype(name: str) -> np.dtype:
@@ -5492,7 +5721,7 @@ def _target_dtype(name: str) -> np.dtype:
         "uint16": np.dtype(np.uint16),
         "float32": np.dtype(np.float32),
     }
-    return choices.get(name, np.dtype(np.uint8))
+    return choices[name]
 
 
 def _convert_to_float(
@@ -5521,7 +5750,17 @@ def _convert_to_integer(
     info = np.iinfo(dtype)
     values = arr.astype(np.float64, copy=False)
     if scaling == "preserve":
-        scaled = values
+        if not np.all(np.isfinite(values)):
+            raise ValueError(
+                "Convert Dtype preserve cannot represent non-finite values "
+                "in an integer output."
+            )
+        if values.size and (values.min() < info.min or values.max() > info.max):
+            raise ValueError(
+                "Convert Dtype preserve input values exceed the output dtype range; "
+                "choose clip or rescale explicitly."
+            )
+        return values.astype(dtype)
     elif scaling == "clip":
         scaled = np.clip(values, info.min, info.max)
     else:
@@ -6251,16 +6490,51 @@ def _resolved_spatial_ndim(
     spatial_mode: str,
     resolved_spatial_ndim: int | None,
 ) -> int:
-    mode = str(spatial_mode).strip().lower()
-    if mode.startswith("2d"):
-        requested = 2
-    elif mode.startswith("3d"):
-        requested = 3
-    elif resolved_spatial_ndim is not None:
-        requested = int(resolved_spatial_ndim)
-    else:
-        requested = 3 if arr.ndim >= 3 else 2
-    return int(np.clip(requested, 1, max(arr.ndim, 1)))
+    requested = _spatial_mode_dimension(spatial_mode)
+    if requested is None and resolved_spatial_ndim is not None:
+        requested = _validated_resolved_spatial_ndim(resolved_spatial_ndim)
+    if requested is None:
+        if arr.ndim > 2:
+            raise ValueError(
+                "Auto from axes requires explicit axis semantics. Supply "
+                "resolved_spatial_ndim or select an explicit 2D/3D mode."
+            )
+        requested = max(arr.ndim, 1)
+    if requested > max(arr.ndim, 1):
+        raise ValueError(
+            f"{requested}D spatial processing cannot be applied to a "
+            f"{arr.ndim}D array."
+        )
+    return requested
+
+
+def _spatial_mode_dimension(spatial_mode: str) -> int | None:
+    mode = str(spatial_mode).strip().casefold()
+    dimensions = {
+        "auto from axes": None,
+        "2d yx": 2,
+        "2d per xy slice (advanced)": 2,
+        "3d zyx": 3,
+        "3d zyx volume": 3,
+    }
+    if mode not in dimensions:
+        raise ValueError(
+            "Spatial mode must be Auto from axes, 2D YX, "
+            "2D per XY slice (advanced), 3D ZYX, or 3D ZYX volume."
+        )
+    return dimensions[mode]
+
+
+def _validated_resolved_spatial_ndim(value) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value,
+        (int, np.integer),
+    ):
+        raise ValueError("resolved_spatial_ndim must be an integer from 1 to 3.")
+    resolved = int(value)
+    if resolved not in {1, 2, 3}:
+        raise ValueError("resolved_spatial_ndim must be an integer from 1 to 3.")
+    return resolved
 
 
 def _deconvolution_inputs(inputs) -> tuple[np.ndarray, np.ndarray]:
@@ -6595,6 +6869,7 @@ def _estimate_rolling_ball_background(
     disable_smoothing: bool,
     spatial_mode: str,
     resolved_spatial_ndim: int | None,
+    channel_axis: int | None,
     progress=None,
 ) -> np.ndarray:
     arr = np.asarray(arr)
@@ -6619,13 +6894,14 @@ def _estimate_rolling_ball_background(
             output_dtype=output_dtype,
         )
 
-    if _has_channel_axis(arr):
-        block_ndim = min(spatial_ndim, max(arr.ndim - 1, 1))
-        block_count = _spatial_block_count(arr[..., 0], block_ndim)
-        total = max(block_count * int(arr.shape[-1]), 1)
+    if channel_axis is not None:
+        channels_last = np.moveaxis(arr, channel_axis, -1)
+        block_ndim = min(spatial_ndim, max(channels_last.ndim - 1, 1))
+        block_count = _spatial_block_count(channels_last[..., 0], block_ndim)
+        total = max(block_count * int(channels_last.shape[-1]), 1)
         channels = [
             _apply_spatial_blocks(
-                arr[..., channel],
+                channels_last[..., channel],
                 block_ndim,
                 estimate,
                 dtype=output_dtype,
@@ -6634,9 +6910,10 @@ def _estimate_rolling_ball_background(
                 progress_total=total,
                 progress_message=f"Rolling-ball channel {channel + 1}",
             )
-            for channel in range(arr.shape[-1])
+            for channel in range(channels_last.shape[-1])
         ]
-        return np.stack(channels, axis=-1).astype(output_dtype, copy=False)
+        stacked = np.stack(channels, axis=-1).astype(output_dtype, copy=False)
+        return np.moveaxis(stacked, -1, channel_axis)
     return _apply_spatial_blocks(
         arr,
         spatial_ndim,
@@ -7084,7 +7361,12 @@ def _skeleton_table_context(
     has_axis_names = axis_names is not None and len(axis_names) == mask.ndim
     axis_names = _measurement_axis_names(mask.ndim, axis_names)
     axis_types = _measurement_axis_types(mask.ndim, axis_types)
-    spatial_axes = _measurement_spatial_axes(mask.ndim, spatial_ndim, axis_types)
+    spatial_axes = _measurement_spatial_axes(
+        mask.ndim,
+        spatial_ndim,
+        axis_names,
+        axis_types,
+    )
     if len(spatial_axes) != spatial_ndim:
         spatial_axes = tuple(range(mask.ndim - spatial_ndim, mask.ndim))
     mask_for_analysis = np.moveaxis(
@@ -9282,8 +9564,12 @@ def _measurement_axis_types(
 def _measurement_spatial_axes(
     ndim: int,
     spatial_ndim: int,
+    axis_names: tuple[str, ...],
     axis_types: tuple[str, ...],
 ) -> tuple[int, ...]:
+    desired_names = ("z", "y", "x")[-spatial_ndim:]
+    if all(axis_names.count(name) == 1 for name in desired_names):
+        return tuple(axis_names.index(name) for name in desired_names)
     spatial = tuple(
         index
         for index, axis_type in enumerate(axis_types)
@@ -9338,21 +9624,38 @@ def _resolved_psf_spatial_ndim(
     resolved_spatial_ndim: int | None,
     axis_types: Sequence[str],
 ) -> int:
-    ndim = max(len(tuple(shape)), 1)
-    mode = str(spatial_mode or "Auto from axes").strip().lower()
-    if mode.startswith("2d"):
-        requested = 2
-    elif mode.startswith("3d"):
-        requested = 3
-    elif resolved_spatial_ndim is not None:
-        requested = int(resolved_spatial_ndim)
-    else:
+    # ``resolve_born_wolf_psf_parameters`` is also used to render the editor
+    # before its image input has been connected.  An empty shape therefore
+    # means "no dimensional context yet", not a one-dimensional image.  Real
+    # operation calls always provide an array shape and remain subject to the
+    # dimensionality check below.
+    ndim = len(tuple(shape))
+    requested = _spatial_mode_dimension(spatial_mode)
+    if requested is None and resolved_spatial_ndim is not None:
+        requested = _validated_resolved_spatial_ndim(resolved_spatial_ndim)
+    if requested is None:
         spatial_count = sum(
             str(axis_type).strip().lower() == "space"
             for axis_type in axis_types
         )
-        requested = 3 if spatial_count >= 3 or ndim >= 3 else 2
-    return 3 if requested >= 3 else 2
+        if spatial_count:
+            requested = 3 if spatial_count >= 3 else 2
+        elif 0 < ndim <= 2:
+            requested = 2
+        elif ndim == 0:
+            requested = 2
+        else:
+            raise ValueError(
+                "Auto from axes requires explicit axis semantics. Supply "
+                "axis_types, resolved_spatial_ndim, or an explicit 2D/3D mode."
+            )
+    if requested not in {2, 3}:
+        raise ValueError("Born-Wolf PSF spatial dimensionality must be 2 or 3.")
+    if ndim and requested > ndim:
+        raise ValueError(
+            f"{requested}D PSF generation cannot be derived from a {ndim}D shape."
+        )
+    return requested
 
 
 def resolve_born_wolf_psf_parameters(
@@ -9802,8 +10105,31 @@ def _xy_structure(arr: np.ndarray, size: int) -> np.ndarray:
     return structure
 
 
-def _xy_axes(arr: np.ndarray) -> tuple[int, int]:
-    spatial_axes = _spatial_axes(arr)
+def _xy_axes(
+    arr: np.ndarray,
+    *,
+    channel_axis: int | None = None,
+    axis_names: Sequence[str] = (),
+) -> tuple[int, int]:
+    """Return declared Y/X axes or trailing axes without shape inference."""
+    if axis_names:
+        names = tuple(str(name).strip().casefold() for name in axis_names)
+        if len(names) != arr.ndim:
+            raise ValueError(
+                "Declared axis names must match the input array rank."
+            )
+        if names.count("y") != 1 or names.count("x") != 1:
+            raise ValueError(
+                "A Y/X operation requires exactly one declared y axis and "
+                "one declared x axis."
+            )
+        y_axis, x_axis = names.index("y"), names.index("x")
+        if channel_axis in {y_axis, x_axis}:
+            raise ValueError(
+                "The declared channel axis cannot also be a Y/X spatial axis."
+            )
+        return y_axis, x_axis
+    spatial_axes = _spatial_axes(arr, channel_axis=channel_axis)
     if len(spatial_axes) >= 2:
         return spatial_axes[-2], spatial_axes[-1]
     if len(spatial_axes) == 1:
@@ -9811,10 +10137,15 @@ def _xy_axes(arr: np.ndarray) -> tuple[int, int]:
     return 0, 0
 
 
-def _spatial_axes(arr: np.ndarray) -> list[int]:
+def _spatial_axes(
+    arr: np.ndarray,
+    *,
+    channel_axis: int | None = None,
+) -> list[int]:
+    """Return array axes excluding only an explicitly supplied channel axis."""
     axes = list(range(arr.ndim))
-    if _has_channel_axis(arr):
-        axes.pop()
+    if channel_axis is not None:
+        axes.remove(channel_axis)
     return axes
 
 
@@ -9848,20 +10179,23 @@ def _strict_channel_axis(
     for index, axis_name in enumerate(axis_names[: arr.ndim]):
         if str(axis_name).strip().lower() in {"c", "channel", "rgb", "rgba"}:
             return index
-    if _has_channel_axis(arr):
-        return arr.ndim - 1
     return None
 
 
 def _axis_index_from_token(value, ndim: int) -> int:
-    text = str(value).strip().lower()
-    if text.startswith("axis:"):
-        text = text.split(":", 1)[1]
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("Split Axis requires an axis:N integer selection.")
+    if isinstance(value, Integral):
+        axis = int(value)
+        return _validated_axis_index(axis, ndim, operation="Split Axis")
+    text = str(value).strip().casefold()
+    if not text.startswith("axis:"):
+        raise ValueError("Split Axis requires an axis:N integer selection.")
     try:
-        axis = int(text)
-    except ValueError:
-        axis = 0
-    return _normalize_axis(axis, ndim)
+        axis = int(text.removeprefix("axis:"))
+    except ValueError as exc:
+        raise ValueError("Split Axis requires an axis:N integer selection.") from exc
+    return _validated_axis_index(axis, ndim, operation="Split Axis")
 
 
 def _normalize_axis(axis: int, ndim: int) -> int:
@@ -9873,6 +10207,24 @@ def _normalize_axis(axis: int, ndim: int) -> int:
     return int(np.clip(axis, 0, ndim - 1))
 
 
+def _validated_axis_index(
+    value: int,
+    ndim: int,
+    *,
+    operation: str,
+) -> int:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"{operation} axis must be an integer.")
+    axis = int(value)
+    if axis < 0:
+        axis += ndim
+    if axis < 0 or axis >= ndim:
+        raise ValueError(
+            f"{operation} axis {int(value)} is out of range for {ndim}D input."
+        )
+    return axis
+
+
 def _slice_selections(
     arr: np.ndarray,
     axis: int,
@@ -9882,25 +10234,34 @@ def _slice_selections(
     *,
     use_default: bool = True,
 ) -> dict[int, int]:
-    selected_axes = _parse_int_list(axes)
-    selected_indices = _parse_int_list(indices)
+    selected_axes = _strict_int_list(axes, field="selected axes")
+    selected_indices = _strict_int_list(indices, field="selected indices")
     if not selected_axes:
         if not use_default:
             return {}
-        selected_axes = [axis]
-        selected_indices = [index]
+        selected_axes = _strict_int_list(axis, field="selected axis")
+        selected_indices = _strict_int_list(index, field="selected index")
+    if len(selected_axes) != len(selected_indices):
+        raise ValueError(
+            "Select Axis Slice requires exactly one index for every selected axis."
+        )
 
     selections: dict[int, int] = {}
     for position, axis_value in enumerate(selected_axes):
-        axis_index = _normalize_axis(axis_value, arr.ndim)
-        slice_index = (
-            selected_indices[position]
-            if position < len(selected_indices)
-            else 0
+        axis_index = _validated_axis_index(
+            axis_value,
+            arr.ndim,
+            operation="Select Axis Slice",
         )
-        selections[axis_index] = int(
-            np.clip(int(slice_index), 0, max(arr.shape[axis_index] - 1, 0))
-        )
+        if axis_index in selections:
+            raise ValueError("Select Axis Slice axes must not contain duplicates.")
+        slice_index = selected_indices[position]
+        if slice_index < 0 or slice_index >= arr.shape[axis_index]:
+            raise ValueError(
+                f"Select Axis Slice index {slice_index} is out of range for "
+                f"axis {axis_value} with size {arr.shape[axis_index]}."
+            )
+        selections[axis_index] = slice_index
     return selections
 
 
@@ -9910,13 +10271,7 @@ def _axis_range_selection(arr: np.ndarray, ranges) -> np.ndarray:
         return arr.copy()
     slices = [slice(None)] * arr.ndim
     for axis, (start, end) in parsed.items():
-        axis_index = _normalize_axis(axis, arr.ndim)
-        maximum = max(arr.shape[axis_index] - 1, 0)
-        start = int(np.clip(start, 0, maximum))
-        end = int(np.clip(end, 0, maximum))
-        if start > end:
-            start, end = end, start
-        slices[axis_index] = slice(start, end + 1)
+        slices[axis] = slice(start, end + 1)
     return np.ascontiguousarray(arr[tuple(slices)])
 
 
@@ -9927,15 +10282,63 @@ def _parse_axis_ranges(value, shape: tuple[int, ...]) -> dict[int, tuple[int, in
     for part in value.split(";"):
         pieces = [piece.strip() for piece in part.split(":")]
         if len(pieces) != 3:
-            continue
+            raise ValueError(
+                "Select Axis Slice ranges must use axis:start:end entries."
+            )
         try:
-            axis = _normalize_axis(int(pieces[0]), len(shape))
+            requested_axis = int(pieces[0])
             start = int(pieces[1])
             end = int(pieces[2])
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise ValueError(
+                "Select Axis Slice ranges must contain integers."
+            ) from exc
+        axis = _validated_axis_index(
+            requested_axis,
+            len(shape),
+            operation="Select Axis Slice",
+        )
+        if axis in ranges:
+            raise ValueError("Select Axis Slice ranges must not repeat an axis.")
+        if start < 0 or end < 0 or start >= shape[axis] or end >= shape[axis]:
+            raise ValueError(
+                f"Select Axis Slice range {start}:{end} is out of bounds for "
+                f"axis {requested_axis} with size {shape[axis]}."
+            )
+        if start > end:
+            raise ValueError(
+                "Select Axis Slice range start must not exceed its end."
+            )
         ranges[axis] = (start, end)
     return ranges
+
+
+def _strict_int_list(value, *, field: str) -> list[int]:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return []
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.split(",")]
+        if any(not part for part in parts):
+            raise ValueError(f"Select Axis Slice {field} contain an empty value.")
+    elif isinstance(value, (list, tuple)):
+        parts = list(value)
+    else:
+        parts = [value]
+    parsed: list[int] = []
+    for part in parts:
+        if isinstance(part, (bool, np.bool_)):
+            raise ValueError(f"Select Axis Slice {field} must be integers.")
+        if isinstance(part, Integral):
+            parsed.append(int(part))
+            continue
+        if isinstance(part, str):
+            try:
+                parsed.append(int(part))
+                continue
+            except ValueError:
+                pass
+        raise ValueError(f"Select Axis Slice {field} must be integers.")
+    return parsed
 
 
 def _parse_int_list(value) -> list[int]:
@@ -10012,9 +10415,14 @@ def _projection_axis_indices(
     axis_types: Sequence[str] = (),
     shape: Sequence[int] = (),
 ) -> tuple[int, ...]:
-    if ndim <= 2:
-        return ()
     tokens = _projection_axis_tokens(axes)
+    if ndim <= 2:
+        # Validate explicit requests even though image projection is a 3D+
+        # operation and therefore leaves 2D data unchanged.
+        for token in tokens:
+            if token.startswith("axis:"):
+                _projection_axis_index_from_token(token, ndim, (), ())
+        return ()
     if not tokens or _tokens_request_auto_projection(tokens):
         return _auto_projection_axis_indices(
             ndim,
@@ -10035,7 +10443,11 @@ def _projection_axis_indices(
     parsed: list[int] = []
     for token in tokens:
         index = _projection_axis_index_from_token(token, ndim, names, types)
-        if index is not None and index not in parsed:
+        if index is None:
+            raise ValueError(
+                f"Project Image axis selection {token!r} does not match an input axis."
+            )
+        if index not in parsed:
             parsed.append(index)
     return tuple(parsed)
 
@@ -10055,6 +10467,8 @@ def _projection_axis_tokens(axes) -> list[str]:
 
 
 def _projection_axis_token(value) -> str:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("Project Image axes must use auto, axis:N, or name:axis.")
     if isinstance(value, (int, np.integer)):
         return f"axis:{int(value)}"
     text = str(value).strip().lower()
@@ -10062,7 +10476,7 @@ def _projection_axis_token(value) -> str:
         return text
     if text.startswith(("axis:", "name:")):
         return text
-    return ""
+    raise ValueError("Project Image axes must use auto, axis:N, or name:axis.")
 
 
 def _tokens_request_auto_projection(tokens: Sequence[str]) -> bool:
@@ -10086,9 +10500,10 @@ def _projection_axis_index_from_token(
         return None
     if normalized.startswith("axis:"):
         try:
-            return _normalize_axis(int(normalized.removeprefix("axis:")), ndim)
-        except ValueError:
-            return None
+            axis = int(normalized.removeprefix("axis:"))
+        except ValueError as exc:
+            raise ValueError("Project Image axis:N must contain an integer.") from exc
+        return _validated_axis_index(axis, ndim, operation="Project Image")
     if not normalized.startswith("name:"):
         return None
     normalized = normalized.removeprefix("name:")
@@ -10156,6 +10571,9 @@ def _non_yx_spatial_axis_indices(
         spatial_axes = _fallback_projection_spatial_indices(ndim, shape)
     if len(spatial_axes) <= 2:
         return ()
+    if "y" in names and "x" in names:
+        yx_axes = {names.index("y"), names.index("x")}
+        return tuple(axis for axis in spatial_axes if axis not in yx_axes)
     return tuple(spatial_axes[:-2])
 
 
@@ -10602,14 +11020,23 @@ def _odd_size(value: int | float, minimum: int = 1, maximum: int | None = None) 
 
 
 def _crop_pair(first: int, second: int, axis_size: int) -> tuple[int, int]:
-    first = max(int(first), 0)
-    second = max(int(second), 0)
-    if axis_size <= 1:
-        return 0, 0
-    if first >= axis_size:
-        first = axis_size - 1
-    max_second = axis_size - first - 1
-    return first, min(second, max_second)
+    values = (first, second)
+    if any(
+        isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral)
+        for value in values
+    ):
+        raise ValueError("Crop margins must be integers.")
+    first, second = (int(value) for value in values)
+    if first < 0 or second < 0:
+        raise ValueError("Crop margins must be non-negative.")
+    if axis_size <= 0:
+        raise ValueError("Crop stack cannot crop an empty spatial axis.")
+    if first + second >= axis_size:
+        raise ValueError(
+            f"Crop margins {first} and {second} remove every sample from an "
+            f"axis of length {axis_size}."
+        )
+    return first, second
 
 
 def _float_if_bool(arr: np.ndarray) -> np.ndarray:
@@ -10828,6 +11255,7 @@ def _validated_odd_filter_size(
 
 
 def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:
+    """Apply the explicitly requested legacy lossy display normalization."""
     arr = np.asarray(arr)
     if arr.dtype == bool:
         return arr.astype(np.float32)
@@ -10846,6 +11274,166 @@ def _composite_channel_to_float(arr: np.ndarray) -> np.ndarray:
             return np.ones(values.shape, dtype=np.float32)
         return np.zeros(values.shape, dtype=np.float32)
     return np.clip((values - lo) / (hi - lo), 0, 1).astype(np.float32)
+
+
+def _validated_composite_channel_axis(value, ndim: int) -> int:
+    if ndim < 1:
+        raise ValueError(
+            "Composite → RGB requires array data with an explicit channel axis."
+        )
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(
+            "Composite → RGB requires an explicit non-negative integer "
+            "channel axis."
+        )
+    axis = int(value)
+    if axis < 0 or axis >= ndim:
+        raise ValueError(
+            f"Composite → RGB channel axis {axis} is out of range for "
+            f"{ndim}D input."
+        )
+    return axis
+
+
+def _validated_composite_intensity_mapping(value) -> str:
+    if value not in {
+        COMPOSITE_RGB_PRESERVE_VALUES,
+        COMPOSITE_RGB_PERCENTILE_1_99,
+    }:
+        raise ValueError(
+            "Composite → RGB intensity mapping must be "
+            f"{COMPOSITE_RGB_PRESERVE_VALUES!r} or "
+            f"{COMPOSITE_RGB_PERCENTILE_1_99!r}."
+        )
+    return str(value)
+
+
+def _validate_composite_input_values(
+    arr: np.ndarray,
+    intensity_mapping: str,
+) -> None:
+    if arr.dtype.kind not in {"b", "i", "u", "f"}:
+        raise ValueError(
+            "Composite → RGB requires boolean, integer, or real floating-point "
+            "image data."
+        )
+    if arr.dtype.kind == "f" and not np.isfinite(arr).all():
+        raise ValueError(
+            "Composite → RGB requires finite input values; NaN and infinity "
+            "have no defined RGB intensity mapping."
+        )
+    if intensity_mapping != COMPOSITE_RGB_PRESERVE_VALUES or arr.size == 0:
+        return
+    if arr.dtype.kind == "u":
+        outside_exact_float64 = int(arr.max()) > 2**53
+    elif arr.dtype.kind == "i":
+        minimum = int(arr.min())
+        maximum = int(arr.max())
+        outside_exact_float64 = minimum < -(2**53) or maximum > 2**53
+    else:
+        outside_exact_float64 = False
+    if outside_exact_float64:
+        raise ValueError(
+            "Composite → RGB preserve mode cannot represent integer levels "
+            "outside the exact float64 range [-2**53, 2**53]. Rescale or "
+            "convert the data explicitly before compositing, or select the "
+            "explicitly lossy percentile mapping."
+        )
+
+
+def _validated_composite_axis_semantics(value, *, count: int) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Composite → RGB channel-axis semantics must be text.")
+    semantic = value.strip().casefold()
+    if semantic == "rgb" and count != 3:
+        raise ValueError(
+            "Composite → RGB received rgb axis semantics for an axis that "
+            f"contains {count} channels instead of 3."
+        )
+    if semantic == "rgba" and count != 4:
+        raise ValueError(
+            "Composite → RGB received rgba axis semantics for an axis that "
+            f"contains {count} channels instead of 4."
+        )
+    return semantic
+
+
+def _validated_composite_channel_selections(
+    selections,
+    *,
+    count: int,
+) -> tuple[int, int, int]:
+    resolved: list[int] = []
+    for plane, selection in zip("RGB", selections, strict=True):
+        if isinstance(selection, (bool, np.bool_)) or not isinstance(
+            selection,
+            Integral,
+        ):
+            raise ValueError(
+                f"Composite → RGB {plane} channel selection must be an integer."
+            )
+        index = int(selection)
+        if index < -1 or index >= count:
+            raise ValueError(
+                f"Composite → RGB {plane} channel index {index} is out of "
+                f"range for {count} channels; use -1 for the positional default."
+            )
+        resolved.append(index)
+    return resolved[0], resolved[1], resolved[2]
+
+
+def _composite_output_dtype(arr: np.ndarray, intensity_mapping: str) -> np.dtype:
+    if intensity_mapping == COMPOSITE_RGB_PERCENTILE_1_99:
+        return np.dtype(np.float32)
+    return np.dtype(np.result_type(arr.dtype, np.float32))
+
+
+def _composite_mapped_channel(
+    channel: np.ndarray,
+    *,
+    intensity_mapping: str,
+    output_dtype: np.dtype,
+) -> np.ndarray:
+    if intensity_mapping == COMPOSITE_RGB_PERCENTILE_1_99:
+        return _composite_channel_to_float(channel)
+    return np.asarray(channel).astype(output_dtype, copy=True)
+
+
+def _validated_composite_color_table(
+    channel_colors: str | list[int | str] | tuple[int | str, ...],
+    count: int,
+) -> np.ndarray:
+    if isinstance(channel_colors, str):
+        values: list[int | str] = (
+            [part.strip() for part in channel_colors.split(",")]
+            if channel_colors.strip()
+            else []
+        )
+    elif isinstance(channel_colors, (list, tuple)):
+        values = list(channel_colors)
+    else:
+        raise ValueError(
+            "Composite → RGB channel colours must be comma-separated text "
+            "or a sequence."
+        )
+    if len(values) > count:
+        raise ValueError(
+            f"Composite → RGB received {len(values)} channel colours for "
+            f"an axis containing {count} channels."
+        )
+
+    table = channel_color_table("", count)
+    for index, value in enumerate(values):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        color = color_value_to_rgb(value)
+        if color is None:
+            raise ValueError(
+                "Composite → RGB channel colour "
+                f"{value!r} at index {index} is not recognized."
+            )
+        table[index] = color
+    return table
 
 
 def _coloc_normalized_inputs(
@@ -10988,6 +11576,7 @@ def _spatial_table_context(
     spatial_axes = _measurement_spatial_axes(
         reference.ndim,
         spatial_ndim,
+        axis_names,
         axis_types,
     )
     if len(spatial_axes) != spatial_ndim:
@@ -11911,15 +12500,11 @@ def _round_and_clamp(value: float, lower: float, upper: float) -> int:
 
 
 def _default_rgb_channel_indices(
-    arr: np.ndarray,
-    channel_axis: int,
     count: int,
     *,
     channel_axis_semantics: str = "",
-) -> tuple[int, int, int]:
+) -> tuple[int | None, int | None, int | None]:
     if _is_true_rgb_channel_axis(
-        arr,
-        channel_axis,
         count,
         channel_axis_semantics=channel_axis_semantics,
     ):
@@ -11927,33 +12512,95 @@ def _default_rgb_channel_indices(
     if count >= 3:
         return (2, 1, 0)
     if count == 2:
-        return (-1, 1, 0)
+        return (None, 1, 0)
     return (0, 0, 0)
 
 
 def _is_true_rgb_channel_axis(
-    arr: np.ndarray,
-    channel_axis: int,
     count: int,
     *,
     channel_axis_semantics: str = "",
 ) -> bool:
     semantic = str(channel_axis_semantics or "").lower()
-    is_declared_rgb = semantic in {"rgb", "rgba"}
-    is_unlabelled_channel_last_rgb = (
-        not semantic
-        and channel_axis == arr.ndim - 1
-        and count in RGB_CHANNELS
+    return bool(
+        (semantic == "rgb" and count == 3)
+        or (semantic == "rgba" and count == 4)
     )
-    return bool(is_declared_rgb or is_unlabelled_channel_last_rgb)
 
 
 def _composite_to_rgb_by_color_table(
     moved: np.ndarray,
     color_table: np.ndarray,
+    *,
+    intensity_mapping: str,
+    output_dtype: np.dtype,
 ) -> np.ndarray:
-    rgb = np.zeros(moved.shape[:-1] + (3,), dtype=np.float32)
+    _validate_composite_integer_blend_range(
+        moved,
+        color_table,
+        intensity_mapping=intensity_mapping,
+    )
+    additive_components = np.count_nonzero(color_table[:, :3], axis=0) > 1
+    accumulator_dtype = output_dtype
+    if (
+        intensity_mapping == COMPOSITE_RGB_PRESERVE_VALUES
+        and bool(np.any(additive_components))
+    ):
+        accumulator_dtype = np.dtype(np.result_type(output_dtype, np.float64))
+    rgb = np.zeros(moved.shape[:-1] + (3,), dtype=accumulator_dtype)
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            for channel in range(moved.shape[-1]):
+                values = _composite_mapped_channel(
+                    moved[..., channel],
+                    intensity_mapping=intensity_mapping,
+                    output_dtype=accumulator_dtype,
+                )
+                for component, weight in enumerate(color_table[channel, :3]):
+                    if float(weight) != 0.0:
+                        rgb[..., component] += values * float(weight)
+    except FloatingPointError as exc:
+        raise ValueError(
+            "Composite → RGB arithmetic overflowed the available finite "
+            "floating-point range. Rescale the input explicitly before "
+            "compositing."
+        ) from exc
+    if not np.isfinite(rgb).all():
+        raise ValueError(
+            "Composite → RGB produced a non-finite value. Rescale the input "
+            "explicitly before compositing."
+        )
+    if intensity_mapping == COMPOSITE_RGB_PERCENTILE_1_99:
+        return np.clip(rgb, 0, 1).astype(np.float32, copy=False)
+    return rgb
+
+
+def _validate_composite_integer_blend_range(
+    moved: np.ndarray,
+    color_table: np.ndarray,
+    *,
+    intensity_mapping: str,
+) -> None:
+    if (
+        intensity_mapping != COMPOSITE_RGB_PRESERVE_VALUES
+        or moved.dtype.kind not in {"i", "u"}
+        or moved.size == 0
+    ):
+        return
+    maxima: list[int] = []
     for channel in range(moved.shape[-1]):
-        normalized = _composite_channel_to_float(moved[..., channel])
-        rgb += normalized[..., None] * color_table[channel, :3]
-    return np.clip(rgb, 0, 1).astype(np.float32)
+        values = moved[..., channel]
+        minimum = int(values.min())
+        maximum = int(values.max())
+        maxima.append(max(abs(minimum), abs(maximum)))
+    for component in range(3):
+        bound = math.fsum(
+            maxima[channel] * abs(float(color_table[channel, component]))
+            for channel in range(moved.shape[-1])
+        )
+        if bound > 2**53:
+            raise ValueError(
+                "Composite → RGB preserve-mode additive mixing could exceed "
+                "the exact float64 integer range. Rescale or convert the data "
+                "explicitly before compositing."
+            )
