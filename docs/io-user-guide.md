@@ -82,11 +82,12 @@ before saving or running a batch config.
 The easiest way to explore batching is `Open example...` -> `Deterministic
 Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
 small working copy; VIPP then opens the collection window with its two-source
-workflow and config loaded and three tiny paired NumPy fields already previewed.
-The highlighted demo guide points to `Run demo batch` and describes the nine
-planned NPY/TIFF/TSV outputs, saved config and runner, manifests, archive,
-per-item provenance, and exact ground-truth validation. The same action is
-available as `Open batch demo...` inside this dialog.
+workflow and config loaded. The graph automatically displays the first paired
+NumPy field through every connected node, and the batch table previews all
+three pairs. The highlighted demo guide points to `Run demo batch` and describes
+the nine planned NPY/TIFF/TSV outputs, saved config and runner, manifests,
+archive, per-item provenance, and exact ground-truth validation. The same
+action is available as `Open batch demo...` inside this dialog.
 
 Existing demo directories are never replaced. Loading is confirmed because it
 replaces the current graph. After execution, the app validates the bundle

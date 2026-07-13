@@ -406,11 +406,12 @@ under `Open example...` and click `Open batch demo...`. VIPP explains that the
 demo needs a writable working copy, then asks where to save it; it creates a new
 uniquely named directory and never overwrites an earlier one. The collection
 window opens with the bundled two-source workflow and portable config already
-loaded and a collision-aware preview of three paired 8 x 8 fields already
-visible. A highlighted guide summarizes the demonstrated features and the next
-step is explicit: click `Run demo batch` to write nine outputs and validate the
-scientific results and provenance. The same example remains available through
-`Run batch...` -> `Open batch demo...`.
+loaded. The interactive graph automatically calculates and displays the first
+paired 8 x 8 field, while the collection window shows a collision-aware plan
+for all three pairs. A highlighted guide summarizes the demonstrated features
+and the next step is explicit: click `Run demo batch` to write nine outputs and
+validate the scientific results and provenance. The same example remains
+available through `Run batch...` -> `Open batch demo...`.
 
 Loading the demo replaces the current graph, so VIPP asks for confirmation
 first; save any graph changes you want to keep. The working copy is kept in the

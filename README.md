@@ -99,8 +99,10 @@ still needs validation against a broader corpus of real acquisition files.
 9. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
    demo...`. Choose where to save its small working copy, review the populated
-   three-item/nine-output preview, and click `Run demo batch`. VIPP checks the
-   finished outputs and provenance against exact ground truth automatically.
+   graph (which automatically displays the first paired field) and the
+   three-item/nine-output batch preview, then click `Run demo batch`. VIPP
+   checks the finished outputs and provenance against exact ground truth
+   automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
 tables. `Export Python...` emits direct calls to the headless operation and I/O

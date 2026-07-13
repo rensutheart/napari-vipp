@@ -65,6 +65,9 @@ from napari_vipp.core.batch import (
     BATCH_WORKFLOW_FILENAME,
     BatchStatus,
     ExistingFilePolicy,
+    load_batch_config,
+    plan_batch,
+    scientific_workflow_hash,
 )
 from napari_vipp.core.batch_demo import (
     SYNTHETIC_BATCH_DEMO_DIRNAME,
@@ -7529,6 +7532,67 @@ def test_collection_batch_dialog_defaults(qtbot):
     assert dialog.save_config_button.isEnabled()
     assert dialog.demo_config_button.text() == "Open batch demo..."
     assert dialog.demo_config_button.isEnabled()
+
+
+def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    primary_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
+    reference_path = demo.root / "inputs" / "reference" / "alpha_reference.npy"
+    primary = np.load(primary_path)
+    reference = np.load(reference_path)
+
+    assert np.array_equal(widget.pipeline.outputs["input"], primary)
+    assert np.array_equal(widget.pipeline.outputs["input_2"], reference)
+    assert np.array_equal(
+        widget.pipeline.outputs["batch_output_1"],
+        primary.astype(np.float32) + reference.astype(np.float32),
+    )
+    labels = widget.pipeline.outputs["batch_output_2"]
+    measurements = widget.pipeline.outputs["batch_output_3"]
+    assert np.count_nonzero(labels) == 4
+    assert set(np.unique(labels)) == {0, 1}
+    assert measurements.rows[0][measurements.columns.index("area_pixels")] == 4
+    for node_id in ("input", "input_2"):
+        node = widget.pipeline.nodes[node_id]
+        card = widget.graph_view._cards[node_id]
+        assert node.params["file_path"] == ""
+        assert node.params["binding_mode"] == "collection"
+        assert card.metadata_label.text() != "No output"
+        assert card.preview.pixmap() is not None
+        assert not card.preview.pixmap().isNull()
+
+    config = load_batch_config(demo.config_path)
+    workflow = widget._batch_workflow_document()
+    assert scientific_workflow_hash(workflow) == config.workflow_sha256
+    plan = plan_batch(workflow, config, workflow_path=demo.workflow_path)
+    assert len(plan.items) == 3
+    assert plan.output_count == 9
+    assert [
+        tuple(path.name for path in item.source_paths.values())
+        for item in plan.items
+    ] == [
+        ("01_shifted.npy", "alpha_reference.npy"),
+        ("02_two_objects.npy", "beta_reference.npy"),
+        ("03_disjoint.npy", "gamma_reference.npy"),
+    ]
+
+    widget._invalidate_pipeline_cache()
+    widget.run_pipeline(
+        force_sync=True,
+        manual_node_ids=widget.pipeline.manual_node_ids(),
+    )
+
+    assert np.array_equal(widget.pipeline.outputs["input"], primary)
+    assert np.array_equal(widget.pipeline.outputs["input_2"], reference)
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        config.workflow_sha256
+    )
 
 
 def test_collection_batch_demo_button_creates_loads_and_previews_bundle(

@@ -2664,8 +2664,9 @@ class CollectionBatchDialog(QDialog):
         self.run_button.setText("Run demo batch")
         self.demo_guide_label.setText(
             "<b>Ready-to-run batch demo</b><br>"
-            "Two collection sources are paired by sorted position. The preview "
-            "plans three items and three explicit outputs per item: an NPY "
+            "Two collection sources are paired by sorted position. The graph "
+            "automatically shows the first paired field while the batch preview "
+            "plans all three items and three explicit outputs per item: an NPY "
             "image, TIFF labels, and a TSV table. Explore source bindings, "
             "preview planning, Error/Skip/Overwrite replay policies, failure "
             "continuation, and portable config/runner controls below. Click "
