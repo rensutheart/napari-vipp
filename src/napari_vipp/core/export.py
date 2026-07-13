@@ -1,35 +1,49 @@
 """Generate a runnable, headless Python script from a pipeline graph.
 
-The exported script imports the pure functions from
-:mod:`napari_vipp.core.operations` (which have no Qt/napari dependency) and
-rebuilds the graph computation as a ``run_pipeline`` function plus a small batch
-harness so a tuned workflow can be run over a folder of images without napari.
+Exported scripts execute the serialized workflow through
+:class:`~napari_vipp.core.pipeline.PrototypePipeline`.  Keeping the shared
+executor in the generated program is important: operation calls alone cannot
+reproduce the axis validation, physical-grid checks, metadata-derived runtime
+arguments, or output :class:`~napari_vipp.core.metadata.ImageState` updates that
+are part of a scientific VIPP workflow.
 """
 
 from __future__ import annotations
 
-import inspect
+import json
 import keyword
 import re
 from datetime import UTC, datetime
 
+from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
-    operation_call_parameter_value,
 )
+from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 _INDENT = " " * 4
 _RESERVED_FUNCTION_NAMES = {
+    "EXPECTED_VIPP_VERSION",
+    "ImageDataset",
     "OUTPUT_NODES",
     "Path",
+    "PipelineResults",
     "SOURCE_NODES",
+    "SourcePayload",
+    "VIPP_VERSION",
+    "_WORKFLOW_JSON",
+    "_coerce_source_payload",
+    "_dataset_metadata",
+    "_new_pipeline",
+    "_source_override",
     "_table_output_path",
     "argparse",
     "batch_process",
     "is_table_data",
+    "json",
     "load_image",
-    "np",
+    "pipeline_from_workflow",
     "read_image",
     "save_image",
     "save_table_output",
@@ -46,7 +60,6 @@ def export_pipeline_to_python(
     if not function_name.isidentifier() or keyword.iskeyword(function_name):
         raise ValueError(f"Invalid exported function name: {function_name!r}.")
     order = pipeline.topological_order()
-    var_names = _unique_names(order, prefix="v")
 
     source_ids = [
         node_id
@@ -62,17 +75,25 @@ def export_pipeline_to_python(
     body_lines, missing = _build_function_body(
         pipeline,
         order,
-        var_names,
         source_param_names,
         function_name,
     )
     header = _build_header(pipeline)
-    imports = _build_imports(used_functions)
+    imports = _build_imports()
+    workflow = _build_workflow_constant(pipeline)
     helpers = _build_helpers()
     constants = _build_constants(source_ids, terminal_ids)
     main = _build_main(source_ids, function_name)
 
-    sections = [header, imports, constants, "\n".join(body_lines), helpers, main]
+    sections = [
+        header,
+        imports,
+        workflow,
+        constants,
+        helpers,
+        "\n".join(body_lines),
+        main,
+    ]
     document = "\n\n\n".join(section for section in sections if section)
     if missing:
         note = "\n".join(f"# NOTE: {line}" for line in missing)
@@ -148,25 +169,44 @@ def _build_header(pipeline: PrototypePipeline) -> str:
         "Batch process a folder:\n"
         "    python this_script.py input_dir/ output_dir/ --pattern '*.tif'\n"
         '"""\n'
-        "from __future__ import annotations\n\n"
-        "from pathlib import Path\n\n"
-        "import numpy as np"
+        "from __future__ import annotations"
     )
 
 
-def _build_imports(function_names: list[str]) -> str:
-    names = sorted(set(function_names))
-    imports: list[str] = []
-    if names:
-        inner = ",\n".join(f"{_INDENT}{name}" for name in names)
-        imports.append(f"from napari_vipp.core.operations import (\n{inner},\n)")
-    imports.extend(
+def _build_imports() -> str:
+    return "\n".join(
         (
-            "from napari_vipp.core.io import read_image, write_image",
+            "import json",
+            "from pathlib import Path",
+            "",
+            "from napari_vipp import __version__ as VIPP_VERSION",
+            "from napari_vipp.core.batch_setup import pipeline_from_workflow",
+            "from napari_vipp.core.io import ImageDataset, read_image, write_image",
+            "from napari_vipp.core.pipeline import SourcePayload",
             "from napari_vipp.core.tables import is_table_data, save_table_output",
         )
     )
-    return "\n".join(imports)
+
+
+def _build_workflow_constant(pipeline: PrototypePipeline) -> str:
+    """Embed one immutable, validated workflow snapshot.
+
+    A JSON string, rather than a live dict literal, prevents one run (or caller)
+    from mutating the graph used by later invocations.  ``pipeline_from_workflow``
+    deserializes and validates a fresh document on every call.
+    """
+    document = serialize_workflow(pipeline)
+    deserialize_workflow(document)
+    encoded = json.dumps(
+        document,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return (
+        f"EXPECTED_VIPP_VERSION = {VIPP_VERSION!r}\n"
+        f"_WORKFLOW_JSON = {encoded!r}"
+    )
 
 
 def _build_constants(source_ids: list[str], terminal_ids: list[str]) -> str:
@@ -181,7 +221,6 @@ def _build_constants(source_ids: list[str], terminal_ids: list[str]) -> str:
 def _build_function_body(
     pipeline: PrototypePipeline,
     order: list[str],
-    var_names: dict[str, str],
     source_param_names: dict[str, str],
     function_name: str,
 ) -> tuple[list[str], list[str]]:
@@ -191,125 +230,202 @@ def _build_function_body(
         if not NODE_LIBRARY_BY_ID[pipeline.nodes[node_id].operation_id].has_input
     ]
     params = []
-    for index, node_id in enumerate(source_ids):
+    for node_id in source_ids:
         param = source_param_names[node_id]
-        params.append(param if index == 0 else f"{param}=None")
-    signature = ", ".join(params) if params else ""
+        params.append(f"{param}=None")
+    params.extend(
+        (
+            "*",
+            "input_metadata=None",
+            "input_name=''",
+            "source_metadata=None",
+            "source_names=None",
+            "source_image_states=None",
+            "source_payloads=None",
+        )
+    )
+    signature = ", ".join(params)
 
     lines = [f"def {function_name}({signature}):"]
-    docstring = '"""Execute the exported VIPP graph and return node outputs."""'
-    lines.append(f"{_INDENT}{docstring}")
+    lines.extend(
+        (
+            f'{_INDENT}"""Execute the workflow through VIPP\'s shared executor.',
+            "",
+            f"{_INDENT}Raw arrays use only metadata supplied to this call.  Passing an",
+            f"{_INDENT}ImageDataset (as returned by load_image) or SourcePayload",
+            f"{_INDENT}carries the complete normalized ImageState into scientific",
+            f"{_INDENT}operations.",
+            f'{_INDENT}"""',
+            f"{_INDENT}pipeline = _new_pipeline()",
+            f"{_INDENT}provided = dict(source_payloads or {{}})",
+            f"{_INDENT}unknown_sources = set(provided) - set(SOURCE_NODES)",
+            f"{_INDENT}if unknown_sources:",
+            f"{_INDENT}{_INDENT}raise ValueError(",
+            f"{_INDENT}{_INDENT}{_INDENT}f'Unknown exported source nodes: '",
+            f"{_INDENT}{_INDENT}{_INDENT}f'{{sorted(unknown_sources)!r}}.'",
+            f"{_INDENT}{_INDENT})",
+        )
+    )
 
     missing: list[str] = []
+    source_ids = list(source_param_names)
+    for index, node_id in enumerate(source_ids):
+        positional = source_param_names[node_id]
+        metadata = "input_metadata" if index == 0 else "None"
+        name = "input_name" if index == 0 else "''"
+        lines.extend(
+            (
+                f"{_INDENT}if {positional} is not None and {node_id!r} in provided:",
+                f"{_INDENT}{_INDENT}raise ValueError(",
+                f"{_INDENT}{_INDENT}{_INDENT}"
+                f"'Source node {node_id} was supplied both positionally and '",
+                f"{_INDENT}{_INDENT}{_INDENT}'in source_payloads.'",
+                f"{_INDENT}{_INDENT})",
+                f"{_INDENT}value = provided.get({node_id!r}, {positional})",
+                f"{_INDENT}metadata = _source_override(",
+                f"{_INDENT}{_INDENT}source_metadata, {node_id!r}, {metadata}",
+                f"{_INDENT})",
+                f"{_INDENT}name = _source_override(",
+                f"{_INDENT}{_INDENT}source_names, {node_id!r}, {name}",
+                f"{_INDENT})",
+                f"{_INDENT}image_state = _source_override(",
+                f"{_INDENT}{_INDENT}source_image_states, {node_id!r}",
+                f"{_INDENT})",
+                f"{_INDENT}provided[{node_id!r}] = _coerce_source_payload(",
+                f"{_INDENT}{_INDENT}value,",
+                f"{_INDENT}{_INDENT}node_id={node_id!r},",
+                f"{_INDENT}{_INDENT}metadata=metadata,",
+                f"{_INDENT}{_INDENT}name=name,",
+                f"{_INDENT}{_INDENT}image_state=image_state,",
+                f"{_INDENT})",
+            )
+        )
+
     for node_id in order:
         node = pipeline.nodes[node_id]
         spec = NODE_LIBRARY_BY_ID[node.operation_id]
-        var = var_names[node_id]
-        if not spec.has_input:
-            lines.append(f"{_INDENT}{var} = {source_param_names[node_id]}")
-            continue
-
-        connections = _required_input_connections(pipeline, node)
-        if spec.function is None or connections is None:
-            lines.append(f"{_INDENT}{var} = None  # {node.title}: no connected input")
-            continue
-
-        call = _build_call(pipeline, node, spec, connections, var_names)
-        lines.append(f"{_INDENT}{var} = {call}")
-        if node.operation_id == "combine_channels":
-            if "channel_axis" not in node.params:
-                missing.append(
-                    "combine_channels was exported without a stored channel_axis; "
-                    "run the pipeline once in napari to store the metadata-derived "
-                    "axis before export."
-                )
         if spec.is_multi_output and node_id in _terminal_nodes(pipeline, order):
             missing.append(
                 f"{node.title} ({node_id}) produces multiple outputs but nothing "
                 "consumes them; connect its output ports so the script can route "
                 "each channel."
             )
-
-    returns = ", ".join(f"{node_id!r}: {var_names[node_id]}" for node_id in order)
-    lines.append(f"{_INDENT}return {{{returns}}}")
+    if source_ids:
+        primary = source_ids[0]
+        lines.extend(
+            (
+                f"{_INDENT}primary = provided[{primary!r}]",
+                f"{_INDENT}values = pipeline.run(",
+                f"{_INDENT}{_INDENT}primary.data,",
+                f"{_INDENT}{_INDENT}input_metadata=primary.metadata,",
+                f"{_INDENT}{_INDENT}input_name=primary.name,",
+                f"{_INDENT}{_INDENT}source_payloads=provided,",
+                f"{_INDENT})",
+            )
+        )
+    else:
+        lines.append(f"{_INDENT}values = pipeline.run(None)")
+    lines.append(
+        f"{_INDENT}return PipelineResults(values, pipeline.output_states)"
+    )
     return lines, _dedupe(missing)
 
 
-def _required_input_connections(pipeline, node):
-    connections = pipeline._input_connections(node.id)
-    if not connections:
-        return None
-    multi_input = node.max_inputs is None or node.max_inputs != 1
-    if not multi_input:
-        return connections[:1]
-    required = pipeline._required_inputs_for(node)
-    by_port = {connection.target_port: connection for connection in connections}
-    if any(port not in by_port for port in range(required)):
-        return None
-    return [by_port[port] for port in range(required)]
-
-
-def _build_call(pipeline, node, spec, connections, var_names) -> str:
-    fn_name = spec.function.__name__
-    accepted = list(inspect.signature(spec.function).parameters)
-    data_param = accepted[0] if accepted else ""
-    kwargs = {
-        key: operation_call_parameter_value(node.operation_id, key, value)
-        for key, value in node.params.items()
-        if key in accepted and key != data_param
-    }
-    kwargs_text = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
-
-    multi_input = node.max_inputs is None or node.max_inputs != 1
-    if multi_input:
-        inputs = ", ".join(
-            _source_ref(pipeline, conn, var_names) for conn in connections
-        )
-        first_arg = f"[{inputs}]"
-    else:
-        first_arg = _source_ref(pipeline, connections[0], var_names)
-
-    if kwargs_text:
-        return f"{fn_name}({first_arg}, {kwargs_text})"
-    return f"{fn_name}({first_arg})"
-
-
-def _source_ref(pipeline, connection, var_names) -> str:
-    """Return the variable expression for one input connection.
-
-    Multi-output source nodes assign a list to their variable, so an
-    expression like ``split_channels_1[1]`` selects the requested output port.
-    """
-    var = var_names[connection.source_id]
-    source_node = pipeline.nodes.get(connection.source_id)
-    if source_node is not None:
-        source_spec = NODE_LIBRARY_BY_ID[source_node.operation_id]
-        if source_spec.is_multi_output:
-            return f"{var}[{int(connection.source_port)}]"
-    return var
-
-
 def _build_helpers() -> str:
-    return (
-        "def load_image(path):\n"
-        f'{_INDENT}"""Load an array through the shared VIPP I/O registry."""\n'
-        f"{_INDENT}return read_image(path).data\n\n\n"
-        "def save_image(data, path):\n"
-        f'{_INDENT}"""Write an image or table node output."""\n'
-        f"{_INDENT}if is_table_data(data):\n"
-        f"{_INDENT}{_INDENT}save_table_output(\n"
-        f"{_INDENT}{_INDENT}{_INDENT}data,\n"
-        f"{_INDENT}{_INDENT}{_INDENT}_table_output_path(path),\n"
-        f"{_INDENT}{_INDENT}{_INDENT}overwrite=True,\n"
-        f"{_INDENT}{_INDENT})\n"
-        f"{_INDENT}{_INDENT}return\n"
-        f"{_INDENT}write_image(data, path, overwrite=True)\n\n\n"
-        "def _table_output_path(path):\n"
-        f"{_INDENT}path = Path(path)\n"
-        f"{_INDENT}if path.suffix.lower() in {{'.csv', '.tsv'}}:\n"
-        f"{_INDENT}{_INDENT}return path\n"
-        f"{_INDENT}return path.with_suffix('.csv')"
-    )
+    return '''class PipelineResults(dict):
+    """Node outputs with the corresponding scientific output states."""
+
+    def __init__(self, values, image_states):
+        super().__init__(values)
+        self.output_states = dict(image_states)
+        self.image_states = self.output_states
+
+
+def _new_pipeline():
+    """Build and validate a fresh executor from the immutable snapshot."""
+    if VIPP_VERSION != EXPECTED_VIPP_VERSION:
+        raise RuntimeError(
+            "This workflow was exported with napari-vipp "
+            f"{EXPECTED_VIPP_VERSION}, but the active runtime is {VIPP_VERSION}. "
+            "Use the recorded version or deliberately re-export and revalidate "
+            "the workflow before relying on its results."
+        )
+    return pipeline_from_workflow(json.loads(_WORKFLOW_JSON))
+
+
+def _source_override(mapping, node_id, default=None):
+    if mapping is None:
+        return default
+    if not isinstance(mapping, dict):
+        raise TypeError("Per-source overrides must be mappings keyed by node id.")
+    return mapping.get(node_id, default)
+
+
+def _dataset_metadata(dataset):
+    metadata = {}
+    uri = str(getattr(getattr(dataset, "inspection", None), "uri", "") or "")
+    if uri:
+        metadata["vipp_source_path"] = uri
+    provenance = getattr(dataset, "provenance", None)
+    if isinstance(provenance, dict) and provenance:
+        metadata["vipp_source_provenance"] = dict(provenance)
+    return metadata or None
+
+
+def _coerce_source_payload(
+    value,
+    *,
+    node_id,
+    metadata=None,
+    name="",
+    image_state=None,
+):
+    if value is None:
+        raise ValueError(
+            f"Source node {node_id!r} has no input. Pass an array, ImageDataset, "
+            "or SourcePayload for every exported source node."
+        )
+    if isinstance(value, SourcePayload):
+        return SourcePayload(
+            value.data,
+            value.metadata if metadata is None else metadata,
+            name or value.name,
+            value.image_state if image_state is None else image_state,
+            value.revision_token,
+        )
+    if isinstance(value, ImageDataset):
+        selected = getattr(value, "selected_series", None)
+        return SourcePayload(
+            value.data,
+            _dataset_metadata(value) if metadata is None else metadata,
+            name or str(getattr(selected, "name", "") or ""),
+            value.image_state if image_state is None else image_state,
+        )
+    return SourcePayload(value, metadata, name, image_state)
+
+
+def load_image(path):
+    """Load data and its complete normalized ImageState."""
+    return read_image(path)
+
+
+def save_image(data, path, *, image_state=None):
+    """Write an image with its state, or write a table node output."""
+    if is_table_data(data):
+        save_table_output(
+            data,
+            _table_output_path(path),
+            overwrite=True,
+        )
+        return
+    write_image(data, path, overwrite=True, image_state=image_state)
+
+
+def _table_output_path(path):
+    path = Path(path)
+    if path.suffix.lower() in {".csv", ".tsv"}:
+        return path
+    return path.with_suffix(".csv")'''
 
 
 def _build_main(source_ids: list[str], function_name: str) -> str:
@@ -332,6 +448,8 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f'output_dir / f"{{source_path.stem}}__{{name}}.ome.tif",\n'
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"image_state=results.image_states.get(name),\n"
         f"{_INDENT}{_INDENT}{_INDENT})\n\n\n"
         'if __name__ == "__main__":\n'
         f"{_INDENT}import argparse\n\n"
@@ -354,7 +472,12 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}results = {function_name}({feed})\n"
         f"{_INDENT}{_INDENT}out_path = Path(args.output)\n"
         f"{_INDENT}{_INDENT}if len(OUTPUT_NODES) == 1:\n"
-        f"{_INDENT}{_INDENT}{_INDENT}save_image(results[OUTPUT_NODES[0]], out_path)\n"
+        f"{_INDENT}{_INDENT}{_INDENT}save_image(\n"
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}results[OUTPUT_NODES[0]],\n"
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}out_path,\n"
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"image_state=results.image_states.get(OUTPUT_NODES[0]),\n"
+        f"{_INDENT}{_INDENT}{_INDENT})\n"
         f"{_INDENT}{_INDENT}else:\n"
         f"{_INDENT}{_INDENT}{_INDENT}out_path.mkdir(parents=True, exist_ok=True)\n"
         f"{_INDENT}{_INDENT}{_INDENT}for name in OUTPUT_NODES:\n"
@@ -364,6 +487,8 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f'out_path / f"{{in_path.stem}}__{{name}}.ome.tif",\n'
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"image_state=results.image_states.get(name),\n"
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})"
     )
 
