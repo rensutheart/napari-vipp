@@ -7594,6 +7594,12 @@ def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
         config.workflow_sha256
     )
 
+    widget.load_workflow_file(demo.workflow_path)
+
+    assert widget._interactive_collection_source_paths == {}
+    assert widget.pipeline.outputs["input"] is None
+    assert widget.pipeline.outputs["input_2"] is None
+
 
 def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
     qtbot,
