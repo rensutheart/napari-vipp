@@ -32,6 +32,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
 )
 from napari_vipp.core.export import export_batch_runner_to_python
+from napari_vipp.core.source_identity import capture_local_source_identity
 
 SYNTHETIC_BATCH_DEMO_DIRNAME = "vipp_synthetic_batch_demo"
 SYNTHETIC_BATCH_WORKFLOW_FILENAME = "synthetic-batch-provenance.json"
@@ -511,13 +512,16 @@ def validate_synthetic_batch_demo(
             strict=True,
         ):
             stat = path.stat()
+            expected_identity = {
+                "modified_ns": stat.st_mtime_ns,
+                **capture_local_source_identity(path).to_dict(),
+            }
             _require(
                 source.get("node_id") == node_id
                 and source.get("title") == source_titles[node_id]
                 and source.get("role") == "collection"
                 and source.get("path") == str(path)
-                and source.get("identity")
-                == {"size_bytes": stat.st_size, "modified_ns": stat.st_mtime_ns}
+                and source.get("identity") == expected_identity
                 and source.get("series", {}).get("shape") == [8, 8]
                 and source.get("series", {}).get("dtype") == "uint16"
                 and source.get("series", {}).get("axes") == "YX"

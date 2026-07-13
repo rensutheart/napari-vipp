@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +35,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
     validate_batch_config,
 )
+from napari_vipp.core.io import write_image
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -517,6 +519,9 @@ def test_run_batch_writes_output_and_complete_provenance_manifest(tmp_path):
     assert source_record["path"] == str(inputs / "sample.tif")
     assert source_record["identity"]["size_bytes"] > source.nbytes
     assert source_record["identity"]["modified_ns"] > 0
+    assert source_record["identity"]["kind"] == "file"
+    assert source_record["identity"]["regular_file_count"] == 1
+    assert len(source_record["identity"]["sha256"]) == 64
     assert source_record["series"]["shape"] == [4, 5]
     assert source_record["series"]["dtype"] == "uint16"
     assert [axis["name"] for axis in source_record["image_state"]["axes"]] == [
@@ -533,6 +538,130 @@ def test_run_batch_writes_output_and_complete_provenance_manifest(tmp_path):
     assert output["overwrote_existing"] is False
     item_records_dir = result.manifest_path.parent / document["item_records_dir"]
     assert len(list(item_records_dir.glob("*.json"))) == 1
+
+
+def test_zarr_chunk_change_fails_item_before_any_output_is_published(
+    tmp_path,
+    monkeypatch,
+):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source_store = inputs / "sample.ome.zarr"
+    source = np.arange(4 * 6, dtype=np.uint16).reshape(4, 6)
+    write_image(source, source_store, format="ome-zarr")
+    chunk_files = [
+        path
+        for path in source_store.rglob("*")
+        if path.is_file()
+        and not any(
+            part.startswith(".")
+            for part in path.relative_to(source_store).parts
+        )
+    ]
+    assert chunk_files
+    chunk = chunk_files[0]
+    root_stat = source_store.stat()
+
+    workflow, output_ids = _batch_workflow(
+        (
+            {
+                "tag": "first",
+                "format": "npy",
+                "subfolder": "",
+                "filename_template": "{source_stem}__{tag}",
+                "overwrite": "batch default",
+            },
+            {
+                "tag": "second",
+                "format": "npy",
+                "subfolder": "",
+                "filename_template": "{source_stem}__{tag}",
+                "overwrite": "batch default",
+            },
+        )
+    )
+    config = _batch_config(workflow, inputs, tmp_path / "outputs", output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.zarr"),),
+    )
+    planned_outputs = tuple(
+        output.path for output in build_batch_plan(config).items[0].outputs
+    )
+    original_save = batch_module.save_array_output
+    changed = False
+    save_calls = 0
+
+    def mutate_chunk_before_lazy_save(*args, **kwargs):
+        nonlocal changed, save_calls
+        save_calls += 1
+        if save_calls == 2:
+            assert not any(path.exists() for path in planned_outputs)
+            payload = bytearray(chunk.read_bytes())
+            payload[-1] ^= 0x01
+            chunk.write_bytes(payload)
+            os.utime(
+                source_store,
+                ns=(root_stat.st_atime_ns, root_stat.st_mtime_ns),
+            )
+            changed = True
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(
+        batch_module,
+        "save_array_output",
+        mutate_chunk_before_lazy_save,
+    )
+
+    result = run_batch(workflow, config)
+
+    assert changed
+    assert save_calls == 2
+    assert source_store.stat().st_mtime_ns == root_stat.st_mtime_ns
+    assert not any(path.exists() for path in planned_outputs)
+    assert result.saved_paths == ()
+    assert result.summary == {
+        "completed": 0,
+        "partial": 0,
+        "skipped": 0,
+        "failed": 1,
+    }
+    item = result.manifest.items[0]
+    assert item.status == BatchStatus.FAILED
+    assert item.error_type == "SourceChangedError"
+    assert "source changed" in item.error_message.lower()
+    assert [output.status for output in item.outputs] == [
+        BatchStatus.FAILED,
+        BatchStatus.FAILED,
+    ]
+    assert all(output.error_type == "SourceChangedError" for output in item.outputs)
+    assert item.sources[0]["identity"]["kind"] == "directory"
+    assert item.sources[0]["identity"]["regular_file_count"] > 1
+    assert not list((tmp_path / "outputs").glob(".*.tmp.npy"))
+
+
+def test_batch_rejects_output_nested_inside_zarr_source_store(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    source_store = inputs / "sample.ome.zarr"
+    write_image(
+        np.arange(12, dtype=np.uint16).reshape(3, 4),
+        source_store,
+        format="ome-zarr",
+    )
+    workflow, output_ids = _batch_workflow()
+    config = _batch_config(workflow, inputs, source_store, output_ids)
+    config = replace(
+        config,
+        sources=(replace(config.sources[0], pattern="*.zarr"),),
+    )
+
+    plan = build_batch_plan(config)
+
+    assert plan.has_collisions
+    assert plan.items[0].outputs[0].input_collision
+    with pytest.raises(FileExistsError, match="preflight found output collisions"):
+        run_batch(workflow, config)
 
 
 def test_run_batch_executes_and_saves_table_batch_output(tmp_path):

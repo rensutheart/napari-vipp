@@ -39,6 +39,12 @@ from napari_vipp.core.atomic_io import (
 from napari_vipp.core.io import read_image
 from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.source_identity import (
+    LocalSourceIdentity,
+    SourceChangedError,
+    capture_local_source_identity,
+    verify_local_source_identity,
+)
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import deserialize_workflow
 
@@ -416,6 +422,13 @@ class BatchOutputPlan:
         if self.existing_file_policy == ExistingFilePolicy.SKIP:
             return "exists; will skip"
         return "exists; collision"
+
+
+@dataclass(frozen=True)
+class _StagedBatchOutput:
+    plan: BatchOutputPlan
+    temporary_path: Path
+    saved_temporary_path: Path
 
 
 @dataclass(frozen=True)
@@ -883,11 +896,11 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
         for output in item.outputs:
             key = os.path.normcase(str(output.path.resolve(strict=False)))
             target_counts[key] = target_counts.get(key, 0) + 1
-    all_source_keys = {
-        os.path.normcase(str(path.resolve(strict=False)))
+    all_source_paths = tuple(
+        path
         for item in items
         for path in item.source_paths.values()
-    }
+    )
     resolved_items = []
     for item in items:
         resolved_outputs = []
@@ -897,7 +910,10 @@ def build_batch_plan(config: BatchConfig) -> BatchPlan:
                 replace(
                     output,
                     duplicate=target_counts.get(key, 0) > 1,
-                    input_collision=key in all_source_keys,
+                    input_collision=any(
+                        _output_overlaps_source(output.path, source_path)
+                        for source_path in all_source_paths
+                    ),
                 )
             )
         resolved_items.append(replace(item, outputs=tuple(resolved_outputs)))
@@ -908,11 +924,8 @@ def _with_fixed_source_collisions(
     plan: BatchPlan,
     fixed_source_paths,
 ) -> BatchPlan:
-    fixed_keys = {
-        os.path.normcase(str(Path(path).resolve(strict=False)))
-        for path in fixed_source_paths
-    }
-    if not fixed_keys:
+    fixed_paths = tuple(Path(path) for path in fixed_source_paths)
+    if not fixed_paths:
         return plan
     items = []
     for item in plan.items:
@@ -921,14 +934,29 @@ def _with_fixed_source_collisions(
                 output,
                 input_collision=(
                     output.input_collision
-                    or os.path.normcase(str(output.path.resolve(strict=False)))
-                    in fixed_keys
+                    or any(
+                        _output_overlaps_source(output.path, source_path)
+                        for source_path in fixed_paths
+                    )
                 ),
             )
             for output in item.outputs
         )
         items.append(replace(item, outputs=outputs))
     return replace(plan, items=tuple(items))
+
+
+def _output_overlaps_source(output_path: Path, source_path: Path) -> bool:
+    output_text = os.path.normcase(str(output_path.resolve(strict=False)))
+    source_text = os.path.normcase(str(source_path.resolve(strict=False)))
+    if output_text == source_text:
+        return True
+    if not source_path.is_dir():
+        return False
+    try:
+        return os.path.commonpath((output_text, source_text)) == source_text
+    except ValueError:
+        return False
 
 
 def _collision_paths(plan: BatchPlan) -> list[str]:
@@ -1048,12 +1076,21 @@ def run_batch(
 
         item_error: Exception | None = None
         sources = list(item_record.sources)
+        source_paths: dict[str, Path] = {}
+        source_identities: dict[str, LocalSourceIdentity] = {}
         try:
+            source_paths = _item_source_paths(
+                pipeline,
+                item_plan,
+                fixed_source_paths,
+            )
+            source_identities = _capture_item_source_identities(source_paths)
             payloads, sources = _source_payloads_for_item(
                 pipeline,
                 item_plan,
                 config,
-                fixed_source_paths,
+                source_paths,
+                source_identities,
             )
             pipeline.run(
                 None,
@@ -1067,9 +1104,10 @@ def run_batch(
             item_error = exc
             item_record = replace(item_record, sources=tuple(sources))
         finally:
-            # Save any selected branch that completed before another branch
-            # raised. Pruning happens only after these outputs are persisted.
+            # Fully stage every available branch first. This forces lazy arrays
+            # to finish reading their sources without publishing an output.
             output_records = list(item_record.outputs)
+            staged_outputs: dict[int, _StagedBatchOutput] = {}
             for output_index, output_plan in enumerate(item_plan.outputs):
                 output_record = output_records[output_index]
                 if (
@@ -1084,7 +1122,72 @@ def run_batch(
                     )
                 else:
                     try:
-                        saved = _save_planned_output(pipeline, output_plan)
+                        staged = _save_planned_output(pipeline, output_plan)
+                    except _SkippedOutput as exc:
+                        output_record = replace(
+                            output_record,
+                            status=BatchStatus.SKIPPED,
+                            error_type="",
+                            error_message=str(exc),
+                        )
+                    except Exception as exc:
+                        output_record = replace(
+                            output_record,
+                            status=BatchStatus.FAILED,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                        )
+                    else:
+                        staged_outputs[output_index] = staged
+                output_records[output_index] = output_record
+                running_record = replace(
+                    item_record,
+                    sources=tuple(sources),
+                    outputs=tuple(output_records),
+                )
+                manifest = manifest.replace_item(running_record)
+                _save_item_record(item_records_dir, running_record)
+
+            source_change_error: SourceChangedError | None = None
+            if source_identities:
+                try:
+                    _verify_item_source_identities(
+                        source_paths,
+                        source_identities,
+                    )
+                except SourceChangedError as exc:
+                    source_change_error = exc
+                    item_error = exc
+
+            if source_change_error is not None:
+                for staged in staged_outputs.values():
+                    _cleanup_staged_output(staged)
+                staged_outputs.clear()
+                output_records = [
+                    replace(
+                        output_record,
+                        status=BatchStatus.FAILED,
+                        size_bytes=None,
+                        overwrote_existing=False,
+                        error_type=type(source_change_error).__name__,
+                        error_message=str(source_change_error),
+                    )
+                    for output_record in output_records
+                ]
+                running_record = replace(
+                    item_record,
+                    sources=tuple(sources),
+                    outputs=tuple(output_records),
+                )
+                manifest = manifest.replace_item(running_record)
+                _save_item_record(item_records_dir, running_record)
+            else:
+                # All source-dependent bytes are now private and stable. Only
+                # atomic promotion remains; it cannot read a source again.
+                for output_index, staged in staged_outputs.items():
+                    output_record = output_records[output_index]
+                    try:
+                        saved = _promote_staged_output(staged)
                     except _SkippedOutput as exc:
                         output_record = replace(
                             output_record,
@@ -1115,14 +1218,14 @@ def run_batch(
                                 == ExistingFilePolicy.OVERWRITE
                             ),
                         )
-                output_records[output_index] = output_record
-                running_record = replace(
-                    item_record,
-                    sources=tuple(sources),
-                    outputs=tuple(output_records),
-                )
-                manifest = manifest.replace_item(running_record)
-                _save_item_record(item_records_dir, running_record)
+                    output_records[output_index] = output_record
+                    running_record = replace(
+                        item_record,
+                        sources=tuple(sources),
+                        outputs=tuple(output_records),
+                    )
+                    manifest = manifest.replace_item(running_record)
+                    _save_item_record(item_records_dir, running_record)
             item_record = replace(
                 item_record,
                 sources=tuple(sources),
@@ -1402,9 +1505,27 @@ def _validate_pipeline_config(
             path = (fixed_base / path).resolve()
         else:
             path = path.resolve()
-        if not path.is_file():
-            raise ValueError(f"Fixed Image Source {node_id!r} file does not exist.")
+        if not _is_supported_local_image_source(path):
+            raise ValueError(
+                f"Fixed Image Source {node_id!r} path does not exist or is not "
+                "a supported local image source."
+            )
         fixed_source_paths[node_id] = path
+
+    enabled_save_nodes = [
+        node_id
+        for node_id, node in pipeline.nodes.items()
+        if node.operation_id == "save_output"
+        and str(node.params.get("enabled", "off")).lower() == "on"
+    ]
+    if enabled_save_nodes:
+        raise ValueError(
+            "Batch workflows cannot run enabled Save Image nodes because they "
+            "publish before batch source verification. Disable them and use "
+            "Batch Output nodes instead: "
+            + ", ".join(enabled_save_nodes)
+            + "."
+        )
 
     explicit = [
         node_id
@@ -1504,20 +1625,20 @@ def _source_payloads_for_item(
     pipeline: PrototypePipeline,
     item: BatchItemPlan,
     config: BatchConfig,
-    fixed_source_paths: dict[str, Path],
+    source_paths: dict[str, Path],
+    source_identities: dict[str, LocalSourceIdentity],
 ) -> tuple[dict[str, SourcePayload], list[dict[str, object]]]:
     payloads: dict[str, SourcePayload] = {}
     records: list[dict[str, object]] = []
     for node_id, node in pipeline.nodes.items():
         if node.operation_id != "input":
             continue
-        path = item.source_paths.get(node_id)
+        path = source_paths[node_id]
         binding = next(
             (source for source in config.sources if source.node_id == node_id),
             None,
         )
-        if path is None:
-            path = fixed_source_paths[node_id]
+        if node_id not in item.source_paths:
             title = node.title
             role = "fixed"
         else:
@@ -1537,17 +1658,17 @@ def _source_payloads_for_item(
             dataset.selected_series.name or path.name,
             dataset.image_state,
         )
-        stat = path.stat()
+        identity = {
+            **_path_identity(path),
+            **source_identities[node_id].to_dict(),
+        }
         records.append(
             {
                 "node_id": node_id,
                 "title": title,
                 "role": role,
                 "path": str(path),
-                "identity": {
-                    "size_bytes": stat.st_size,
-                    "modified_ns": stat.st_mtime_ns,
-                },
+                "identity": identity,
                 "series": {
                     "index": dataset.selected_series.index,
                     "key": dataset.selected_series.key,
@@ -1564,10 +1685,44 @@ def _source_payloads_for_item(
     return payloads, records
 
 
+def _item_source_paths(
+    pipeline: PrototypePipeline,
+    item: BatchItemPlan,
+    fixed_source_paths: dict[str, Path],
+) -> dict[str, Path]:
+    return {
+        node_id: (
+            item.source_paths[node_id]
+            if node_id in item.source_paths
+            else fixed_source_paths[node_id]
+        )
+        for node_id, node in pipeline.nodes.items()
+        if node.operation_id == "input"
+    }
+
+
+def _capture_item_source_identities(
+    source_paths: dict[str, Path],
+) -> dict[str, LocalSourceIdentity]:
+    return {
+        node_id: capture_local_source_identity(path)
+        for node_id, path in source_paths.items()
+    }
+
+
+def _verify_item_source_identities(
+    source_paths: dict[str, Path],
+    source_identities: dict[str, LocalSourceIdentity],
+) -> None:
+    for node_id, path in source_paths.items():
+        verify_local_source_identity(path, source_identities[node_id])
+
+
 def _save_planned_output(
     pipeline: PrototypePipeline,
     output: BatchOutputPlan,
-) -> Path:
+) -> _StagedBatchOutput:
+    """Fully write an output privately without publishing its destination."""
     if output.duplicate:
         raise FileExistsError(
             f"Multiple planned outputs use destination {output.path}."
@@ -1618,6 +1773,17 @@ def _save_planned_output(
         saved_temporary = Path(saved_temporary)
         with saved_temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
+    except BaseException:
+        _best_effort_unlink(Path(saved_temporary))
+        _best_effort_unlink(temporary)
+        raise
+    return _StagedBatchOutput(output, temporary, saved_temporary)
+
+
+def _promote_staged_output(staged: _StagedBatchOutput) -> Path:
+    output = staged.plan
+    saved_temporary = staged.saved_temporary_path
+    try:
         if output.existing_file_policy == ExistingFilePolicy.OVERWRITE:
             _replace_with_retry(saved_temporary, output.path)
         else:
@@ -1634,8 +1800,12 @@ def _save_planned_output(
                 ) from exc
         return output.path
     finally:
-        _best_effort_unlink(Path(saved_temporary))
-        _best_effort_unlink(temporary)
+        _cleanup_staged_output(staged)
+
+
+def _cleanup_staged_output(staged: _StagedBatchOutput) -> None:
+    _best_effort_unlink(staged.saved_temporary_path)
+    _best_effort_unlink(staged.temporary_path)
 
 
 def _temporary_output_path(path: Path) -> Path:
@@ -1800,7 +1970,7 @@ def _iter_source_paths(input_dir: Path, pattern: str) -> list[Path]:
     seen: set[Path] = set()
     for item in patterns:
         for path in input_dir.glob(item):
-            if not path.is_file() or path in seen:
+            if not _is_supported_local_image_source(path) or path in seen:
                 continue
             seen.add(path)
             paths.append(path)
@@ -1829,10 +1999,23 @@ def format_batch_filename(template: str, values: dict[str, str]) -> str:
 def batch_source_stem(path: Path) -> str:
     name = path.name
     lower = name.lower()
-    for suffix in (".ome.tiff", ".ome.tif", ".tiff", ".tif"):
+    for suffix in (
+        ".ome.zarr",
+        ".zarr",
+        ".ome.tiff",
+        ".ome.tif",
+        ".tiff",
+        ".tif",
+    ):
         if lower.endswith(suffix):
             return safe_batch_filename(name[: -len(suffix)])
     return safe_batch_filename(path.stem)
+
+
+def _is_supported_local_image_source(path: Path) -> bool:
+    return path.is_file() or (
+        path.is_dir() and path.suffix.lower() == ".zarr"
+    )
 
 
 def safe_batch_filename(value: str) -> str:
