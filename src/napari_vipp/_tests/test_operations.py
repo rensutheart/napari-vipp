@@ -2640,6 +2640,32 @@ def test_additional_filter_nodes_preserve_shape():
     assert not np.allclose(laplace, 0)
 
 
+@pytest.mark.parametrize(
+    ("low_sigma", "high_sigma", "message"),
+    (
+        (np.nan, 3.0, "finite numbers"),
+        (1.0, np.inf, "finite numbers"),
+        (-1.0, 3.0, "non-negative"),
+        (1.0, -3.0, "non-negative"),
+        (1.0, 1.0, "greater than low sigma"),
+        (3.0, 1.0, "greater than low sigma"),
+    ),
+)
+def test_difference_of_gaussians_rejects_invalid_sigma_pairs(
+    low_sigma,
+    high_sigma,
+    message,
+):
+    data = np.zeros((8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        difference_of_gaussians_filter(
+            data,
+            low_sigma=low_sigma,
+            high_sigma=high_sigma,
+        )
+
+
 def test_rolling_ball_background_and_subtraction_preserve_dtype():
     yy, xx = np.mgrid[:31, :31]
     smooth_background = 30 + yy.astype(np.float32) * 1.2 + xx.astype(np.float32) * 0.5
@@ -2838,6 +2864,102 @@ def test_edge_segmentation_operations_return_masks():
 
     assert not canny[:, 16, 16].any()
     assert hysteresis[:, 16, 16].all()
+
+
+@pytest.mark.parametrize(
+    ("low_quantile", "high_quantile", "message"),
+    (
+        (np.nan, 0.2, "finite numbers"),
+        (0.1, np.inf, "finite numbers"),
+        (-0.1, 0.2, "at least 0"),
+        (0.1, 1.1, "at most 1"),
+        (0.8, 0.2, "must not exceed"),
+    ),
+)
+def test_canny_rejects_invalid_quantile_pairs(
+    low_quantile,
+    high_quantile,
+    message,
+):
+    data = np.zeros((8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        canny_edges(
+            data,
+            low_quantile=low_quantile,
+            high_quantile=high_quantile,
+        )
+
+
+@pytest.mark.parametrize(
+    ("low_threshold", "high_threshold", "message"),
+    (
+        (np.nan, 0.8, "finite numbers"),
+        (0.4, np.inf, "finite numbers"),
+        (0.8, 0.4, "must not exceed"),
+    ),
+)
+def test_hysteresis_rejects_invalid_threshold_pairs(
+    low_threshold,
+    high_threshold,
+    message,
+):
+    data = np.zeros((8, 8), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=message):
+        hysteresis_threshold(
+            data,
+            low_threshold=low_threshold,
+            high_threshold=high_threshold,
+        )
+
+
+def test_hysteresis_accepts_finite_native_intensity_thresholds():
+    data = np.array([[0, 128, 255]], dtype=np.uint8)
+
+    result = hysteresis_threshold(
+        data,
+        low_threshold=64,
+        high_threshold=192,
+        spatial_mode="2D YX",
+    )
+
+    np.testing.assert_array_equal(result, np.array([[False, True, True]]))
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "params", "message"),
+    (
+        (
+            "canny_edges",
+            {"low_quantile": 0.8, "high_quantile": 0.2},
+            "Canny low threshold .* must not exceed",
+        ),
+        (
+            "hysteresis_threshold",
+            {"low_threshold": 0.8, "high_threshold": 0.4},
+            "Hysteresis low threshold .* must not exceed",
+        ),
+        (
+            "difference_of_gaussians",
+            {"low_sigma": 3.0, "high_sigma": 1.0},
+            "high sigma must be greater than low sigma",
+        ),
+    ),
+)
+def test_pipeline_surfaces_invalid_ordered_operation_parameters(
+    operation_id,
+    params,
+    message,
+):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node(operation_id)
+    pipeline.connect("input", node.id)
+    for name, value in params.items():
+        pipeline.set_param(node.id, name, value)
+
+    with pytest.raises(ValueError, match=message):
+        pipeline.run(np.zeros((8, 8), dtype=np.float32))
 
 
 def test_linear_scale_gamma_crop_and_extract_channel():
@@ -3264,6 +3386,41 @@ def test_calculate_weighted_image_sums_inputs_with_offset():
 
     assert calculated.dtype == np.float32
     np.testing.assert_array_equal(calculated, np.full((2, 3), 4, dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("weights", "message"),
+    (
+        ("1", "requires exactly 2 weight"),
+        ("1,2,3", "requires exactly 2 weight"),
+        ("1,bad", "weight 2 must be a finite number"),
+        ("1,nan", "weight 2 must be a finite number"),
+        ("1,inf", "weight 2 must be a finite number"),
+        ("1,,2", "weight 2 is empty"),
+    ),
+)
+def test_calculate_weighted_image_rejects_invalid_weights(weights, message):
+    first = np.ones((2, 3), dtype=np.uint16)
+    second = np.ones((2, 3), dtype=np.uint16)
+
+    with pytest.raises(ValueError, match=message):
+        calculate_weighted_image(
+            [first, second],
+            input_count=2,
+            weights=weights,
+        )
+
+
+def test_pipeline_surfaces_invalid_image_calculator_weights():
+    data = np.ones((2, 3), dtype=np.uint16)
+    pipeline = PrototypePipeline()
+    calculator = pipeline.add_node("calculate_weighted_image")
+    pipeline.connect("input", calculator.id, target_port=0)
+    pipeline.connect("input", calculator.id, target_port=1)
+    pipeline.set_param(calculator.id, "weights", "1,bad")
+
+    with pytest.raises(ValueError, match="weight 2 must be a finite number"):
+        pipeline.run(data)
 
 
 def test_intensity_rescale_normalize_and_clip():

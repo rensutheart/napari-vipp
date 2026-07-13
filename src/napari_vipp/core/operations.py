@@ -612,12 +612,11 @@ def difference_of_gaussians_filter(
     low_sigma: float = 1.0,
     high_sigma: float = 3.0,
 ) -> np.ndarray:
-    """Enhance structures between two Gaussian blur scales slice-wise."""
+    """Enhance structures between finite, ordered Gaussian scales slice-wise."""
     original = np.asarray(data)
     dtype = original.dtype if np.issubdtype(original.dtype, np.floating) else np.float32
     arr = _float_if_bool(original).astype(dtype, copy=False)
-    low_sigma = max(float(low_sigma), 0.0)
-    high_sigma = max(float(high_sigma), low_sigma + 1e-6)
+    low_sigma, high_sigma = _validated_sigma_pair(low_sigma, high_sigma)
     low = gaussian_blur(arr, sigma=low_sigma)
     high = gaussian_blur(arr, sigma=high_sigma)
     return low.astype(dtype, copy=False) - high.astype(dtype, copy=False)
@@ -767,11 +766,15 @@ def canny_edges(
     low_quantile: float = 0.1,
     high_quantile: float = 0.2,
 ) -> np.ndarray:
-    """Return a slice-wise Canny edge mask."""
+    """Return a Canny mask from ordered quantiles in the inclusive 0..1 range."""
     arr = _to_grayscale(np.asarray(data))
-    low, high = _ordered_threshold_pair(low_quantile, high_quantile)
-    low = float(np.clip(low, 0.0, 1.0))
-    high = float(np.clip(high, 0.0, 1.0))
+    low, high = _validated_threshold_pair(
+        low_quantile,
+        high_quantile,
+        operation="Canny",
+        minimum=0.0,
+        maximum=1.0,
+    )
     sigma = max(float(sigma), 0.0)
 
     def canny_plane(plane: np.ndarray) -> np.ndarray:
@@ -794,9 +797,13 @@ def hysteresis_threshold(
     spatial_mode: str = "Auto from axes",
     resolved_spatial_ndim: int | None = None,
 ) -> np.ndarray:
-    """Return a binary mask from connected low/high intensity thresholds."""
+    """Return a binary mask from finite intensity thresholds with low <= high."""
     arr = _to_grayscale(np.asarray(data))
-    low, high = _ordered_threshold_pair(low_threshold, high_threshold)
+    low, high = _validated_threshold_pair(
+        low_threshold,
+        high_threshold,
+        operation="Hysteresis",
+    )
     spatial_ndim = _resolved_spatial_ndim(
         arr,
         spatial_mode,
@@ -3433,7 +3440,7 @@ def calculate_weighted_image(
     weights: str = "1,1",
     offset: float = 0.0,
 ) -> np.ndarray:
-    """Create a new float image from weighted same-shaped inputs."""
+    """Create a float image using one finite weight per active input."""
     arrays = [np.asarray(item) for item in inputs if item is not None]
     input_count = int(np.clip(int(input_count), 1, len(arrays))) if arrays else 0
     arrays = arrays[:input_count]
@@ -3444,12 +3451,16 @@ def calculate_weighted_image(
     if any(array.shape != shape for array in arrays):
         raise ValueError("Image Calculator inputs must have matching shapes.")
 
-    parsed_weights = _parse_float_list(weights)
-    if len(parsed_weights) < len(arrays):
-        parsed_weights.extend([1.0] * (len(arrays) - len(parsed_weights)))
+    parsed_weights = _parse_finite_weight_list(weights)
+    if len(parsed_weights) != len(arrays):
+        raise ValueError(
+            "Image Calculator requires exactly "
+            f"{len(arrays)} weight(s), one for each active input; "
+            f"received {len(parsed_weights)}."
+        )
 
     result = np.zeros(shape, dtype=np.float32)
-    for array, weight in zip(arrays, parsed_weights, strict=False):
+    for array, weight in zip(arrays, parsed_weights, strict=True):
         result += array.astype(np.float32, copy=False) * float(weight)
     result += float(offset)
     return result
@@ -5652,21 +5663,57 @@ def _minimum_histogram_maxima(histogram: np.ndarray) -> list[int]:
     return maxima
 
 
-def _ordered_threshold_pair(low, high) -> tuple[float, float]:
+def _validated_threshold_pair(
+    low,
+    high,
+    *,
+    operation: str,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> tuple[float, float]:
     try:
         low_value = float(low)
-    except Exception:
-        low_value = 0.0
-    try:
         high_value = float(high)
-    except Exception:
-        high_value = low_value
-    if not np.isfinite(low_value):
-        low_value = 0.0
-    if not np.isfinite(high_value):
-        high_value = low_value
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"{operation} low and high thresholds must be finite numbers."
+        ) from exc
+    if not np.isfinite(low_value) or not np.isfinite(high_value):
+        raise ValueError(
+            f"{operation} low and high thresholds must be finite numbers."
+        )
+    if minimum is not None and (low_value < minimum or high_value < minimum):
+        raise ValueError(
+            f"{operation} low and high thresholds must be at least {minimum:g}."
+        )
+    if maximum is not None and (low_value > maximum or high_value > maximum):
+        raise ValueError(
+            f"{operation} low and high thresholds must be at most {maximum:g}."
+        )
     if high_value < low_value:
-        low_value, high_value = high_value, low_value
+        raise ValueError(
+            f"{operation} low threshold ({low_value:g}) must not exceed "
+            f"the high threshold ({high_value:g})."
+        )
+    return low_value, high_value
+
+
+def _validated_sigma_pair(low_sigma, high_sigma) -> tuple[float, float]:
+    try:
+        low_value = float(low_sigma)
+        high_value = float(high_sigma)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "Difference of Gaussians sigmas must be finite numbers."
+        ) from exc
+    if not np.isfinite(low_value) or not np.isfinite(high_value):
+        raise ValueError("Difference of Gaussians sigmas must be finite numbers.")
+    if low_value < 0.0 or high_value < 0.0:
+        raise ValueError("Difference of Gaussians sigmas must be non-negative.")
+    if high_value <= low_value:
+        raise ValueError(
+            "Difference of Gaussians high sigma must be greater than low sigma."
+        )
     return low_value, high_value
 
 
@@ -10177,21 +10224,31 @@ def _named_axis_order(
     return tuple(indices)
 
 
-def _parse_float_list(value) -> list[float]:
-    if value is None:
-        return []
+def _parse_finite_weight_list(value) -> list[float]:
     if isinstance(value, str):
-        parts = [part.strip() for part in value.split(",") if part.strip()]
+        parts = [part.strip() for part in value.split(",")]
     elif isinstance(value, (list, tuple)):
         parts = list(value)
     else:
         parts = [value]
-    parsed = []
-    for part in parts:
+
+    parsed: list[float] = []
+    for index, part in enumerate(parts, start=1):
+        if isinstance(part, str) and not part:
+            raise ValueError(f"Image Calculator weight {index} is empty.")
         try:
-            parsed.append(float(part))
-        except (TypeError, ValueError):
-            continue
+            number = float(part)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Image Calculator weight {index} must be a finite number; "
+                f"got {part!r}."
+            ) from exc
+        if not np.isfinite(number):
+            raise ValueError(
+                f"Image Calculator weight {index} must be a finite number; "
+                f"got {part!r}."
+            )
+        parsed.append(number)
     return parsed
 
 
