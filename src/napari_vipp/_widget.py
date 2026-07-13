@@ -85,7 +85,6 @@ from napari_vipp._graph import PipelineGraphView
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
-    BATCH_MANIFEST_FILENAME,
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
     BatchConfig,
@@ -98,7 +97,6 @@ from napari_vipp.core.batch import (
     preflight_batch,
     run_batch,
     save_batch_config,
-    validate_batch_config,
 )
 from napari_vipp.core.batch_demo import (
     SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME,
@@ -106,11 +104,6 @@ from napari_vipp.core.batch_demo import (
     create_synthetic_batch_demo,
     next_synthetic_batch_demo_root,
     validate_synthetic_batch_demo,
-)
-from napari_vipp.core.batch_setup import (
-    batch_output_node_ids,
-    batch_source_rows,
-    build_collection_batch_config,
 )
 from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
@@ -273,6 +266,7 @@ from napari_vipp.ui.batch import (
 from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
 from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
+from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
@@ -1715,6 +1709,10 @@ class VippWidget(QWidget):
         self._sync_toolbar_responsive_mode()
         self._autobind_default_image_sources()
         self._build_graph_from_pipeline()
+        self._collection_batch_controller = CollectionBatchController(
+            workflow_document_provider=self._batch_workflow_document,
+            pipeline_provider=lambda: self.pipeline,
+        )
         self._select_node(self._selected_node_id)
         self.run_pipeline()
         self._sync_history_actions()
@@ -4375,19 +4373,17 @@ class VippWidget(QWidget):
         continue_on_error: bool = True,
         workflow: dict | None = None,
     ) -> BatchConfig:
-        del save_workflow_snapshot
-        if workflow is None:
-            workflow = self._batch_workflow_document()
-        return build_collection_batch_config(
-            workflow,
+        return self._collection_batch_controller.build_config(
             input_dir=input_dir,
             output_dir=output_dir,
             pattern=pattern,
             image_format=image_format,
+            save_workflow_snapshot=save_workflow_snapshot,
             save_python_script=save_python_script,
             source_bindings=source_bindings,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
+            workflow=workflow,
         )
 
     def _save_collection_batch_config(
@@ -4395,41 +4391,10 @@ class VippWidget(QWidget):
         path: str | Path,
         **values,
     ) -> tuple[Path, Path]:
-        target = Path(path).expanduser()
-        reserved = {
-            BATCH_WORKFLOW_FILENAME.casefold(),
-            BATCH_MANIFEST_FILENAME.casefold(),
-        }
-        if target.name.casefold() in reserved:
-            raise ValueError(
-                f"Choose a config filename other than {target.name!r}; that "
-                "name is reserved for a batch companion artifact."
-            )
-        workflow = self._batch_workflow_document()
-        config = self._collection_batch_config(**values, workflow=workflow)
-        workflow_path = target.parent / BATCH_WORKFLOW_FILENAME
-        validate_batch_config(workflow, config, workflow_path=workflow_path)
-        saved_workflow = atomic_write_json(workflow_path, workflow)
-        saved_config = save_batch_config(target, config)
-        return saved_config, saved_workflow
+        return self._collection_batch_controller.save_config(path, **values)
 
     def _load_collection_batch_config(self, path: str | Path) -> BatchConfig:
-        config = load_batch_config(path)
-        workflow = self._batch_workflow_document()
-        try:
-            validate_batch_config(
-                workflow,
-                config,
-                workflow_path=config.resolve_path(config.workflow_file),
-            )
-        except ValueError as exc:
-            if "workflow hash" in str(exc):
-                raise ValueError(
-                    "This config belongs to a different workflow. Load its saved "
-                    "workflow before applying the batch config."
-                ) from exc
-            raise
-        return config
+        return self._collection_batch_controller.load_config(path)
 
     def _preview_collection_batch(
         self,
@@ -4444,8 +4409,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
     ) -> BatchPreviewResult:
-        workflow = self._batch_workflow_document()
-        config = self._collection_batch_config(
+        return self._collection_batch_controller.preview(
             input_dir=input_dir,
             output_dir=output_dir,
             pattern=pattern,
@@ -4453,46 +4417,13 @@ class VippWidget(QWidget):
             save_workflow_snapshot=save_workflow_snapshot,
             save_python_script=save_python_script,
             source_bindings=source_bindings,
+            preview_limit=preview_limit,
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
-            workflow=workflow,
-        )
-        plan = plan_batch(
-            workflow,
-            config,
-            workflow_path=(config.output_dir / BATCH_WORKFLOW_FILENAME),
-        )
-        explicit = bool(batch_output_node_ids(self.pipeline))
-        rows = tuple(
-            BatchPreviewRow(
-                batch_index=item.index,
-                batch_id=item.batch_id,
-                sources=dict(item.source_paths),
-                outputs=[output.path for output in item.outputs],
-                output_statuses=tuple(output.status_text for output in item.outputs),
-                explicit_outputs=explicit,
-            )
-            for item in plan.items[: max(int(preview_limit), 0)]
-        )
-        collision_count = sum(
-            output.duplicate
-            or output.input_collision
-            or (
-                output.exists
-                and output.existing_file_policy == ExistingFilePolicy.ERROR
-            )
-            for item in plan.items
-            for output in item.outputs
-        )
-        return BatchPreviewResult(
-            rows=rows,
-            total_items=len(plan.items),
-            collision_count=collision_count,
-            explicit_outputs=explicit,
         )
 
     def _batch_source_rows(self) -> list[dict[str, str]]:
-        return batch_source_rows(self.pipeline)
+        return self._collection_batch_controller.source_rows()
 
     def _export_ome_dataset_dialog(self) -> None:
         reference_id = self._default_analysis_reference_node()
