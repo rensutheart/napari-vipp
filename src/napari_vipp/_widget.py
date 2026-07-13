@@ -224,6 +224,7 @@ from napari_vipp.ui.examples import (
 from napari_vipp.ui.examples import (
     _example_workflow_dir as _example_workflow_dir,
 )
+from napari_vipp.ui.lifecycle import WidgetLifecycle
 from napari_vipp.ui.palette import NodePalette
 from napari_vipp.ui.search import (
     _fuzzy_match as _fuzzy_match,
@@ -4239,6 +4240,8 @@ class VippWidget(QWidget):
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
+        self._closing = False
+        self._lifecycle = WidgetLifecycle(self)
         self.pipeline = PrototypePipeline()
         self._selected_node_id = "gaussian"
         self._active_pinned_node_id: str | None = None
@@ -4693,6 +4696,7 @@ class VippWidget(QWidget):
         self._sync_history_actions()
 
     def closeEvent(self, event):  # noqa: N802
+        self._lifecycle.shutdown()
         self._restore_hidden_input_layers()
         super().closeEvent(event)
 
@@ -4718,6 +4722,8 @@ class VippWidget(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        if self._closing:
+            return
         self._sync_toolbar_responsive_mode()
         if not self._dock_chrome_configured:
             QTimer.singleShot(0, self._ensure_dock_widget_chrome)
@@ -4731,14 +4737,22 @@ class VippWidget(QWidget):
         return QSize(1180, 560)
 
     def _ensure_dock_widget_chrome(self) -> None:
+        if self._closing:
+            return
         dock = self._dock_widget()
         if dock is None or self._dock_chrome_configured:
             return
         try:
             if not self._dock_window_behavior_configured:
-                dock.installEventFilter(self)
-                dock.topLevelChanged.connect(self._on_dock_top_level_changed)
-                dock.visibilityChanged.connect(self._on_dock_visibility_changed)
+                self._lifecycle.install_event_filter(dock, self)
+                self._lifecycle.connect(
+                    dock.topLevelChanged,
+                    self._on_dock_top_level_changed,
+                )
+                self._lifecycle.connect(
+                    dock.visibilityChanged,
+                    self._on_dock_visibility_changed,
+                )
                 self._dock_window_behavior_configured = True
             desired_features = (
                 QDockWidget.DockWidgetClosable
@@ -5382,17 +5396,25 @@ class VippWidget(QWidget):
         self.graph_view.zoom_changed.connect(self._sync_graph_zoom_controls)
 
         try:
-            self.viewer.layers.events.inserted.connect(
-                self._on_viewer_layers_changed
+            self._lifecycle.connect(
+                self.viewer.layers.events.inserted,
+                self._on_viewer_layers_changed,
             )
-            self.viewer.layers.events.removed.connect(
-                self._on_viewer_layers_changed
+            self._lifecycle.connect(
+                self.viewer.layers.events.removed,
+                self._on_viewer_layers_changed,
             )
         except Exception:
             pass
         try:
-            self.viewer.dims.events.current_step.connect(self._on_dims_changed)
-            self.viewer.dims.events.point.connect(self._on_dims_changed)
+            self._lifecycle.connect(
+                self.viewer.dims.events.current_step,
+                self._on_dims_changed,
+            )
+            self._lifecycle.connect(
+                self.viewer.dims.events.point,
+                self._on_dims_changed,
+            )
         except Exception:
             pass
         self._debounce_timer.timeout.connect(self._finish_parameter_history_group)
@@ -8085,6 +8107,8 @@ class VippWidget(QWidget):
             return False
 
     def _on_viewer_layers_changed(self, _event=None) -> None:
+        if self._closing:
+            return
         changed_node_ids = self._autobind_default_image_sources()
         self._refresh_image_source_controls()
         if changed_node_ids and self._mark_pipeline_branches_dirty(changed_node_ids):
@@ -12547,6 +12571,8 @@ class VippWidget(QWidget):
         force_sync: bool = False,
         manual_node_ids: set[str] | None = None,
     ) -> None:
+        if self._closing:
+            return
         manual_node_ids = {
             node_id
             for node_id in (manual_node_ids or set())
@@ -13557,6 +13583,8 @@ class VippWidget(QWidget):
         return int(step_axis)
 
     def _on_dims_changed(self, _event=None) -> None:
+        if self._closing:
+            return
         if not self._dims_linked():
             return
         self._capture_vipp_dims_from_viewer()
