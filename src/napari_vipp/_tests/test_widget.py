@@ -3627,14 +3627,36 @@ def test_multichannel_histogram_preserves_all_nonfinite_channel_position():
     data[..., 0] = np.nan
     data[..., 1] = np.arange(20, dtype=np.float32).reshape(4, 5)
     data[..., 2] = np.arange(20, 40, dtype=np.float32).reshape(4, 5)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgb", "channel"),
+        ),
+    )
 
-    counts, _x_range, colors = _histogram_summary(data, scope="Stack")
+    counts, _x_range, colors = _histogram_summary(
+        data,
+        state=state,
+        scope="Stack",
+    )
 
     assert counts is not None
     assert counts.shape[0] == 3
     np.testing.assert_array_equal(counts.sum(axis=1), [0, 20, 20])
     assert colors is not None
     assert [color.name() for color in colors] == ["#ef4444", "#22c55e", "#60a5fa"]
+
+
+def test_histogram_does_not_infer_channels_from_trailing_axis_size():
+    data = np.arange(60, dtype=np.float32).reshape(4, 5, 3)
+
+    counts, _x_range, colors = _histogram_summary(data, scope="Stack")
+
+    assert counts is not None and counts.ndim == 1
+    assert int(counts.sum()) == data.size
+    assert colors is not None and len(colors) == 1
 
 
 @pytest.mark.parametrize(

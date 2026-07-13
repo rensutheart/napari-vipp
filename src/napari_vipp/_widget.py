@@ -13,7 +13,6 @@ from collections.abc import Iterable
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from numbers import Rational
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,7 +77,6 @@ from qtpy.QtWidgets import (
     QWidget,
     QWidgetAction,
 )
-from scipy import ndimage as ndi
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import PipelineGraphView
@@ -109,6 +107,22 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
     CHANNEL_COLOR_HEX,
     channel_color_labels_from_metadata,
+)
+from napari_vipp.core.diagnostics import (
+    exact_finite_percentiles as _exact_finite_percentiles,
+)
+from napari_vipp.core.diagnostics import (
+    exact_finite_stats as _exact_finite_stats,
+)
+from napari_vipp.core.diagnostics import (
+    exact_generated_layer_contrast_limits as _exact_generated_layer_contrast_limits,
+)
+from napari_vipp.core.diagnostics import (
+    exact_histogram,
+    label_volumes,
+    largest_label_volume,
+    largest_object_size,
+    provisional_generated_layer_contrast_limits,
 )
 from napari_vipp.core.execution import (
     PipelineRunRequest as PipelineRunRequest,
@@ -160,7 +174,6 @@ from napari_vipp.core.operations import (
     automatic_threshold_value,
     colocalization_normalized_inputs,
     colocalization_threshold_values,
-    exact_integer_percentiles,
     resolve_born_wolf_psf_parameters,
     save_array_output,
 )
@@ -354,6 +367,10 @@ from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
 from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
 
+_provisional_generated_layer_contrast_limits = (
+    provisional_generated_layer_contrast_limits
+)
+
 _RGB_VOLUME_CHANNELS = (
     (0, "Red", "red"),
     (1, "Green", "green"),
@@ -365,7 +382,6 @@ AUTO_BACKGROUND_MIN_BYTES = 32 * 1024 * 1024
 AUTO_BACKGROUND_MIN_ELEMENTS = 4_000_000
 AUTO_CONTRAST_BACKGROUND_MIN_ELEMENTS = 1_000_000
 INSPECTOR_STATISTICS_CHUNK_ELEMENTS = 1_048_576
-INSPECTOR_DISPLAY_HISTOGRAM_BINS = 128
 
 
 if TYPE_CHECKING:
@@ -485,13 +501,6 @@ class ColocalizationScatterResult:
     colocalized_voxels: int = 0
     warnings: tuple[str, ...] = ()
     error: str = ""
-
-
-@dataclass(frozen=True)
-class ExactFiniteStats:
-    count: int
-    minimum: int | float
-    maximum: int | float
 
 
 @dataclass(frozen=True)
@@ -9071,35 +9080,11 @@ class VippWidget(QWidget):
         spatial_ndim: int,
         connectivity: str,
     ) -> int:
-        arr = np.asarray(objects)
-        if arr.size == 0:
-            return 0
-        if arr.dtype != bool:
-            return VippWidget._largest_label_volume(arr, spatial_ndim)
-
-        spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
-        rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
-        structure = ndi.generate_binary_structure(spatial_ndim, rank)
-        leading_shape = arr.shape[: arr.ndim - spatial_ndim]
-        blocks = (
-            (arr[index] for index in np.ndindex(leading_shape))
-            if leading_shape
-            else (arr,)
-        )
-        largest = 0
-        for block in blocks:
-            labels, count = ndi.label(block, structure=structure)
-            if count:
-                largest = max(
-                    largest,
-                    int(np.bincount(labels.ravel())[1:].max()),
-                )
-        return largest
+        return largest_object_size(objects, spatial_ndim, connectivity)
 
     @staticmethod
     def _largest_label_volume(labels: np.ndarray, spatial_ndim: int) -> int:
-        volumes = VippWidget._label_volumes(labels, spatial_ndim)
-        return int(volumes.max()) if volumes.size else 0
+        return largest_label_volume(labels, spatial_ndim)
 
     def _cached_label_volumes(
         self,
@@ -9130,27 +9115,7 @@ class VippWidget(QWidget):
 
     @staticmethod
     def _label_volumes(labels: np.ndarray, spatial_ndim: int) -> np.ndarray:
-        arr = np.asarray(labels)
-        if arr.size == 0:
-            return np.array([], dtype=np.int64)
-        spatial_ndim = int(np.clip(spatial_ndim, 1, max(arr.ndim, 1)))
-        leading_shape = arr.shape[: arr.ndim - spatial_ndim]
-        blocks = (
-            (arr[index] for index in np.ndindex(leading_shape))
-            if leading_shape
-            else (arr,)
-        )
-        volumes: list[np.ndarray] = []
-        for block in blocks:
-            foreground = np.asarray(block)
-            foreground = foreground[foreground > 0]
-            if foreground.size == 0:
-                continue
-            _labels, counts = np.unique(foreground, return_counts=True)
-            volumes.append(counts.astype(np.int64, copy=False))
-        if not volumes:
-            return np.array([], dtype=np.int64)
-        return np.concatenate(volumes)
+        return label_volumes(labels, spatial_ndim)
 
     def _clear_parameter_form(self) -> None:
         self._parameter_widgets.clear()
@@ -13436,14 +13401,12 @@ def _histogram_summary(
     arr, channel_axis, channel_axis_name = source
     if arr.size == 0:
         return None, None, None
-    if channel_axis is not None:
-        counts, x_range = _multichannel_histogram(arr, channel_axis)
-        if counts is None:
-            return None, None, None
-        colors = _histogram_series_colors(counts.shape[0], channel_axis_name)
-        return counts, x_range, colors
-    counts, x_range = _single_histogram(arr)
-    return counts, x_range, _histogram_series_colors(1)
+    counts, x_range = exact_histogram(arr, channel_axis=channel_axis)
+    if counts is None:
+        return None, None, None
+    series_count = counts.shape[0] if counts.ndim > 1 else 1
+    colors = _histogram_series_colors(series_count, channel_axis_name)
+    return counts, x_range, colors
 
 
 def _histogram_has_stack_scope(data, state=None) -> bool:
@@ -13461,8 +13424,6 @@ def _histogram_has_stack_scope(data, state=None) -> bool:
             if name in {"x", "y", "rgb"} or axis.type == "channel":
                 continue
             return True
-        return False
-    if arr.ndim == 3 and arr.shape[-1] in (3, 4):
         return False
     return True
 
@@ -13712,133 +13673,6 @@ def _rescale_percentile_markers(
     return markers
 
 
-def _iter_finite_numeric_chunks(data):
-    """Yield finite numeric values without a full-size temporary mask."""
-    if data is None:
-        return
-    try:
-        iterator = np.nditer(
-            np.asarray(data),
-            flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
-            op_flags=[["readonly"]],
-            order="K",
-            buffersize=INSPECTOR_STATISTICS_CHUNK_ELEMENTS,
-        )
-    except (TypeError, ValueError):
-        return
-    for chunk in iterator:
-        values = np.asarray(chunk)
-        try:
-            finite = np.isfinite(values)
-        except TypeError:
-            return
-        if not finite.all():
-            values = values[finite]
-        yield values
-
-
-def _exact_finite_stats(data) -> ExactFiniteStats:
-    """Return exact finite count and extrema using bounded temporaries."""
-    arr = np.asarray(data)
-    integer_data = np.issubdtype(arr.dtype, np.integer)
-    count = 0
-    minimum: int | float | None = None
-    maximum: int | float | None = None
-    for values in _iter_finite_numeric_chunks(arr):
-        if values.size == 0:
-            continue
-        count += int(values.size)
-        chunk_minimum = (
-            int(values.min()) if integer_data else float(values.min())
-        )
-        chunk_maximum = (
-            int(values.max()) if integer_data else float(values.max())
-        )
-        minimum = chunk_minimum if minimum is None else min(minimum, chunk_minimum)
-        maximum = chunk_maximum if maximum is None else max(maximum, chunk_maximum)
-    if count == 0:
-        return ExactFiniteStats(0, 0.0, 0.0)
-    assert minimum is not None and maximum is not None
-    return ExactFiniteStats(count, minimum, maximum)
-
-
-def _exact_generated_layer_contrast_limits(
-    data,
-) -> tuple[float, float] | None:
-    """Return display limits containing every finite value and zero.
-
-    Zero remains in the window because zero-valued background is common in
-    bioimages. Unlike the old signed-image path, negative results are not
-    clipped and no percentile approximation is used.
-    """
-    stats = _exact_finite_stats(data)
-    if stats.count == 0:
-        return None
-    low = min(float(stats.minimum), 0.0)
-    high = max(float(stats.maximum), 0.0)
-    if low == high:
-        if low == 0.0:
-            return (0.0, 1.0)
-        low, high = _expanded_bounds(low)
-    return (float(low), float(high))
-
-
-def _provisional_generated_layer_contrast_limits(
-    data,
-) -> tuple[float, float]:
-    """Return scan-free temporary limits while exact extrema are calculated."""
-    arr = np.asarray(data)
-    dtype = arr.dtype
-    if dtype == np.dtype(bool):
-        return (0.0, 1.0)
-    if np.issubdtype(dtype, np.integer):
-        info = np.iinfo(dtype)
-        low = min(float(info.min), 0.0)
-        high = max(float(info.max), 0.0)
-        if low < high:
-            return (low, high)
-    return (0.0, 1.0)
-
-
-def _exact_finite_percentiles(
-    data,
-    percentiles: tuple[float, ...],
-) -> tuple[int | float | Rational, ...] | None:
-    """Calculate exact NumPy percentiles over every finite input value.
-
-    Extrema avoid a full-data copy. Interior percentiles necessarily retain
-    the finite values because exact order statistics cannot be recovered from
-    fixed display bins.
-    """
-    requested = tuple(float(np.clip(value, 0.0, 100.0)) for value in percentiles)
-    stats = _exact_finite_stats(data)
-    if stats.count == 0:
-        return None
-    if stats.minimum == stats.maximum:
-        return tuple(stats.minimum for _value in requested)
-    if all(value in {0.0, 100.0} for value in requested):
-        return tuple(
-            stats.minimum if value == 0.0 else stats.maximum
-            for value in requested
-        )
-
-    arr = np.asarray(data)
-    if np.issubdtype(arr.dtype, np.integer):
-        return exact_integer_percentiles(arr, requested)
-    values = np.empty(stats.count, dtype=arr.dtype)
-    offset = 0
-    for chunk in _iter_finite_numeric_chunks(arr):
-        if chunk.size == 0:
-            continue
-        stop = offset + int(chunk.size)
-        values[offset:stop] = chunk
-        offset = stop
-    if offset != stats.count:
-        raise RuntimeError("Finite-value count changed during percentile calculation.")
-    result = np.percentile(values, requested, overwrite_input=True)
-    return tuple(float(value) for value in np.asarray(result).ravel())
-
-
 def _rescale_percentile_pair(params: dict) -> tuple[float, float]:
     low = _finite_marker_value(params.get("in_low_percentile"), "Low percentile")
     high = _finite_marker_value(
@@ -14012,8 +13846,6 @@ def _histogram_channel_axis(arr: np.ndarray, state) -> tuple[int | None, str]:
         for index, axis in enumerate(state.axes):
             if axis.type == "channel" and arr.shape[index] > 1:
                 return index, axis.name.lower()
-    if arr.ndim >= 3 and arr.shape[-1] in (3, 4):
-        return arr.ndim - 1, "rgb"
     return None, ""
 
 
@@ -14131,202 +13963,6 @@ def _axis_index_view(arr: np.ndarray, axis: int, index: int) -> np.ndarray:
     return arr[tuple(selection)]
 
 
-
-
-def _single_histogram(
-    arr: np.ndarray,
-) -> tuple[np.ndarray | None, tuple[int | float, int | float] | None]:
-    if arr.dtype == bool:
-        true_count = int(np.count_nonzero(arr))
-        return (
-            np.array([arr.size - true_count, true_count], dtype=np.int64),
-            (0.0, 1.0),
-        )
-
-    stats = _exact_finite_stats(arr)
-    if stats.count == 0:
-        return None, None
-    if stats.minimum == stats.maximum:
-        return np.array([stats.count], dtype=np.int64), (
-            stats.minimum,
-            stats.maximum,
-        )
-    if np.issubdtype(arr.dtype, np.integer):
-        return _exact_integer_display_histogram(arr, stats)
-    edges, x_range = _display_histogram_edges(stats)
-    return _exact_histogram_counts(arr, edges), x_range
-
-
-def _multichannel_histogram(
-    arr: np.ndarray,
-    channel_axis: int,
-) -> tuple[np.ndarray | None, tuple[int | float, int | float] | None]:
-    channel_axis = int(np.clip(channel_axis, 0, arr.ndim - 1))
-    channels = [
-        _axis_index_view(arr, channel_axis, channel)
-        for channel in range(arr.shape[channel_axis])
-    ]
-    channel_stats = [_exact_finite_stats(values) for values in channels]
-    valid_stats = [stats for stats in channel_stats if stats.count]
-    if not valid_stats:
-        return None, None
-
-    if arr.dtype == bool:
-        counts = []
-        for values in channels:
-            true_count = int(np.count_nonzero(values))
-            counts.append(
-                np.array(
-                    [values.size - true_count, true_count],
-                    dtype=np.int64,
-                )
-            )
-        return np.vstack(counts), (0.0, 1.0)
-
-    combined = ExactFiniteStats(
-        sum(stats.count for stats in valid_stats),
-        min(stats.minimum for stats in valid_stats),
-        max(stats.maximum for stats in valid_stats),
-    )
-    if combined.minimum == combined.maximum:
-        counts = np.array(
-            [[stats.count] for stats in channel_stats],
-            dtype=np.int64,
-        )
-        return counts, (combined.minimum, combined.maximum)
-    if np.issubdtype(arr.dtype, np.integer):
-        first_counts, x_range = _exact_integer_display_histogram(
-            channels[0],
-            combined,
-        )
-        histogram_minimum, histogram_maximum, bin_count = (
-            _integer_display_histogram_configuration(arr.dtype, combined)
-        )
-        counts = [first_counts]
-        counts.extend(
-            _exact_integer_display_histogram_counts(
-                values,
-                histogram_minimum=histogram_minimum,
-                histogram_maximum=histogram_maximum,
-                bin_count=bin_count,
-            )
-            for values in channels[1:]
-        )
-        return np.vstack(counts), x_range
-    edges, x_range = _display_histogram_edges(combined)
-    counts = [
-        (
-            _exact_histogram_counts(values, edges)
-            if stats.count
-            else np.zeros(edges.size - 1, dtype=np.int64)
-        )
-        for values, stats in zip(channels, channel_stats, strict=True)
-    ]
-    return np.vstack(counts), x_range
-
-
-def _exact_integer_display_histogram(
-    data,
-    stats: ExactFiniteStats,
-) -> tuple[np.ndarray, tuple[int, int]]:
-    histogram_minimum, histogram_maximum, bin_count = (
-        _integer_display_histogram_configuration(np.asarray(data).dtype, stats)
-    )
-    counts = _exact_integer_display_histogram_counts(
-        data,
-        histogram_minimum=histogram_minimum,
-        histogram_maximum=histogram_maximum,
-        bin_count=bin_count,
-    )
-    return counts, (histogram_minimum, histogram_maximum)
-
-
-def _integer_display_histogram_configuration(
-    dtype: np.dtype,
-    stats: ExactFiniteStats,
-) -> tuple[int, int, int]:
-    minimum = int(stats.minimum)
-    maximum = int(stats.maximum)
-    if 0 <= minimum and maximum <= 255:
-        return 0, 255, 256
-    level_span = maximum - minimum + 1
-    return minimum, maximum, min(INSPECTOR_DISPLAY_HISTOGRAM_BINS, level_span)
-
-
-def _exact_integer_display_histogram_counts(
-    data,
-    *,
-    histogram_minimum: int,
-    histogram_maximum: int,
-    bin_count: int,
-) -> np.ndarray:
-    """Count integer levels exactly after subtracting a Python-int offset."""
-    level_span = histogram_maximum - histogram_minimum + 1
-    counts = np.zeros(bin_count, dtype=np.int64)
-    if level_span <= 65_536:
-        native_counts = np.zeros(level_span, dtype=np.int64)
-        for values in _iter_finite_numeric_chunks(data):
-            if values.size == 0:
-                continue
-            levels, level_counts = np.unique(values, return_counts=True)
-            indices = np.fromiter(
-                (int(level) - histogram_minimum for level in levels),
-                dtype=np.intp,
-                count=levels.size,
-            )
-            native_counts[indices] += level_counts.astype(np.int64, copy=False)
-        if bin_count == level_span:
-            return native_counts
-        boundaries = (
-            np.arange(bin_count + 1, dtype=np.int64) * level_span // bin_count
-        )
-        return np.asarray(
-            [
-                native_counts[start:stop].sum(dtype=np.int64)
-                for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True)
-            ],
-            dtype=np.int64,
-        )
-
-    for values in _iter_finite_numeric_chunks(data):
-        if values.size == 0:
-            continue
-        levels, level_counts = np.unique(values, return_counts=True)
-        indices = np.fromiter(
-            (
-                min(
-                    ((int(level) - histogram_minimum) * bin_count) // level_span,
-                    bin_count - 1,
-                )
-                for level in levels
-            ),
-            dtype=np.intp,
-            count=levels.size,
-        )
-        np.add.at(counts, indices, level_counts.astype(np.int64, copy=False))
-    return counts
-
-
-def _display_histogram_edges(
-    stats: ExactFiniteStats,
-) -> tuple[np.ndarray, tuple[float, float]]:
-    """Return floating-point display edges after dtype-specific handling."""
-    return (
-        np.linspace(
-            stats.minimum,
-            stats.maximum,
-            INSPECTOR_DISPLAY_HISTOGRAM_BINS + 1,
-        ),
-        (stats.minimum, stats.maximum),
-    )
-
-
-def _exact_histogram_counts(data, edges: np.ndarray) -> np.ndarray:
-    counts = np.zeros(int(edges.size) - 1, dtype=np.int64)
-    for values in _iter_finite_numeric_chunks(data):
-        if values.size:
-            counts += np.histogram(values, bins=edges)[0]
-    return counts
 
 
 def _should_auto_background_data(data) -> bool:
