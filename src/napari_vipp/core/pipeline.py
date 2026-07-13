@@ -3694,6 +3694,80 @@ _RESOLVED_SPATIAL_PARAMETER_OPERATION_IDS = frozenset(
 )
 PALETTE_NODE_LIBRARY = NODE_LIBRARY
 
+
+def graph_node_from_persisted_params(
+    node_id: object,
+    operation_id: object,
+    saved_params: object,
+    *,
+    index: int,
+) -> GraphNode:
+    """Build one graph node using the schema-v2 parameter validation rules."""
+    context = f"Node {index}"
+    if not isinstance(operation_id, str) or not operation_id.strip():
+        raise ValueError(f"{context} requires non-empty 'operation_id'.")
+    spec = NODE_LIBRARY_BY_ID.get(operation_id)
+    if spec is None:
+        raise ValueError(
+            f"Node {index} uses unknown operation {operation_id!r}."
+        )
+    if not isinstance(node_id, str) or not node_id.strip():
+        raise ValueError(f"{context} requires non-empty 'id'.")
+    if not isinstance(saved_params, dict):
+        raise ValueError(f"Parameters for node {node_id!r} must be an object.")
+
+    required_params = {parameter.name for parameter in spec.parameters}
+    missing_params = required_params - saved_params.keys()
+    if missing_params:
+        missing = ", ".join(sorted(missing_params))
+        raise ValueError(
+            f"Node {node_id!r} is missing required parameters: {missing}."
+        )
+    unknown_params = [
+        name
+        for name in saved_params
+        if not isinstance(name, str)
+        or (
+            name not in required_params
+            and not name.startswith("_vipp_")
+            and optional_persisted_parameter_spec(spec, name) is None
+        )
+    ]
+    if unknown_params:
+        unknown = ", ".join(
+            repr(name) for name in sorted(unknown_params, key=str)
+        )
+        raise ValueError(f"Node {node_id!r} has unknown parameters: {unknown}.")
+
+    # Keep this shallow copy for the established deserializer contract. Runtime
+    # snapshots pass a defensive deep copy into this shared validator.
+    params = dict(saved_params)
+    for parameter in spec.parameters:
+        validate_parameter_value(
+            parameter,
+            params[parameter.name],
+            context=f"Node {node_id!r} parameter",
+        )
+    for name, value in params.items():
+        optional_spec = optional_persisted_parameter_spec(spec, name)
+        if optional_spec is not None:
+            validate_optional_persisted_parameter(
+                spec,
+                optional_spec,
+                value,
+                context=f"Node {node_id!r} parameter",
+            )
+    return GraphNode(
+        node_id,
+        spec.id,
+        spec.title,
+        spec.category,
+        spec.input_type,
+        spec.output_type,
+        params,
+        spec.max_inputs,
+    )
+
 PROTOTYPE_NODES = [
     GraphNode(
         "input",
@@ -3803,23 +3877,14 @@ class PrototypePipeline:
         tunnel_list = list(output_tunnels or ())
         restored = object.__new__(type(self))
         restored.nodes = {}
-        for node in node_list:
-            try:
-                spec = NODE_LIBRARY_BY_ID[node.operation_id]
-            except KeyError as exc:
-                raise ValueError(
-                    f"Cannot restore unknown operation {node.operation_id!r}."
-                ) from exc
-            restored.nodes[node.id] = GraphNode(
+        for index, node in enumerate(node_list):
+            validated = graph_node_from_persisted_params(
                 node.id,
-                spec.id,
-                spec.title,
-                spec.category,
-                spec.input_type,
-                spec.output_type,
-                dict(node.params),
-                spec.max_inputs,
+                node.operation_id,
+                node.params,
+                index=index,
             )
+            restored.nodes[validated.id] = validated
         if len(restored.nodes) != len(node_list):
             raise ValueError("Cannot restore a graph with duplicate node ids.")
         valid = set(restored.nodes)
@@ -3837,9 +3902,6 @@ class PrototypePipeline:
             node_id: "" for node_id in restored.nodes
         }
         restored._counters = Counter()
-        restored._ensure_dynamic_output_hints(connection_list, tunnel_list)
-        for tunnel in tunnel_list:
-            restored._restore_output_tunnel(tunnel)
 
         occupied_inputs: set[tuple[str, int]] = set()
         for connection in restored.connections:
@@ -3851,6 +3913,15 @@ class PrototypePipeline:
                     "Cannot restore a connection that references a missing node: "
                     f"{connection.source_id!r} -> {connection.target_id!r}."
                 )
+            if connection.source_id == connection.target_id:
+                raise ValueError("Cannot restore a connection from a node to itself.")
+            if any(
+                isinstance(port, bool) or not isinstance(port, int)
+                for port in (connection.target_port, connection.source_port)
+            ):
+                raise ValueError("Cannot restore a connection with a non-integer port.")
+            if connection.target_port < 0 or connection.source_port < 0:
+                raise ValueError("Cannot restore a connection with a negative port.")
             target_slot = (connection.target_id, connection.target_port)
             if target_slot in occupied_inputs:
                 raise ValueError(
@@ -3858,11 +3929,29 @@ class PrototypePipeline:
                     f"{connection.target_id!r} input {connection.target_port}."
                 )
             occupied_inputs.add(target_slot)
-            restored._validate_restored_connection(connection)
         cyclic_nodes = restored._cyclic_node_ids()
         if cyclic_nodes:
             names = ", ".join(repr(node_id) for node_id in cyclic_nodes)
             raise ValueError(f"Cannot restore a graph containing a cycle: {names}.")
+
+        for tunnel in tunnel_list:
+            if isinstance(tunnel.source_port, bool) or not isinstance(
+                tunnel.source_port,
+                int,
+            ):
+                raise ValueError(
+                    f"Tunnel '{tunnel.name}' references a non-integer output port."
+                )
+            if tunnel.source_port < 0:
+                raise ValueError(
+                    f"Tunnel '{tunnel.name}' references a negative output port."
+                )
+
+        restored._ensure_dynamic_output_hints(connection_list, tunnel_list)
+        for tunnel in tunnel_list:
+            restored._restore_output_tunnel(tunnel)
+        for connection in restored.connections:
+            restored._validate_restored_connection(connection)
 
         for node in restored.nodes.values():
             restored._counters[node.operation_id] += 1

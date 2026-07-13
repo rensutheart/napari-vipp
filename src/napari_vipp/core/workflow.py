@@ -14,14 +14,17 @@ from pathlib import Path
 from typing import Any
 
 from napari_vipp.core.pipeline import (
-    NODE_LIBRARY_BY_ID,
     GraphConnection,
     GraphNode,
     OutputTunnel,
     PrototypePipeline,
-    optional_persisted_parameter_spec,
-    validate_optional_persisted_parameter,
-    validate_parameter_value,
+    graph_node_from_persisted_params,
+)
+from napari_vipp.core.snapshots import (
+    GraphSnapshot,
+    NodeSnapshot,
+    WorkflowNoteSnapshot,
+    WorkflowSnapshot,
 )
 
 WORKFLOW_VERSION = 2
@@ -217,6 +220,69 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     }
 
 
+def workflow_snapshot_from_pipeline(
+    pipeline: PrototypePipeline,
+    positions: dict[str, Position] | None = None,
+    notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> WorkflowSnapshot:
+    """Capture a validated workflow snapshot without exposing live mappings."""
+    document = serialize_workflow(pipeline, positions, notes, metadata)
+    if document["nodes"]:
+        return workflow_snapshot_from_document(document)
+
+    # Empty graphs are a valid transient editor/history state even though the
+    # persisted schema-v2 document contract deliberately requires at least one
+    # node. Validate the remaining fields through the same helpers without
+    # weakening ``workflow_snapshot_from_document`` or workflow loading.
+    node_ids: set[str] = set()
+    validated_notes = _notes_from_data(document["notes"], node_ids)
+    validated_metadata = _workflow_metadata_to_dict(
+        document.get("metadata", {}),
+        node_ids,
+    )
+    return WorkflowSnapshot(
+        GraphSnapshot.from_pipeline(pipeline),
+        positions=document["positions"],
+        notes=(WorkflowNoteSnapshot.from_mapping(note) for note in validated_notes),
+        metadata=validated_metadata,
+    )
+
+
+def workflow_snapshot_from_document(data: Any) -> WorkflowSnapshot:
+    """Decode and structurally validate a schema-v2 workflow snapshot."""
+    restored = deserialize_workflow(data)
+    graph = GraphSnapshot(
+        (
+            NodeSnapshot(node.id, node.operation_id, node.params)
+            for node in restored["nodes"]
+        ),
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    # Deserialization validates the persisted records; materialization adds the
+    # graph-level port, type, duplicate-input, and cycle validation performed by
+    # the established pipeline restoration boundary.
+    graph.to_pipeline()
+    return WorkflowSnapshot(
+        graph,
+        positions=restored["positions"],
+        notes=(WorkflowNoteSnapshot.from_mapping(note) for note in restored["notes"]),
+        metadata=restored["metadata"],
+    )
+
+
+def workflow_document_from_snapshot(snapshot: WorkflowSnapshot) -> dict[str, Any]:
+    """Materialize a snapshot as the canonical schema-v2 workflow document."""
+    pipeline = snapshot.graph.to_pipeline()
+    return serialize_workflow(
+        pipeline,
+        positions=snapshot.positions_dict(),
+        notes=[note.to_mapping() for note in snapshot.notes],
+        metadata=snapshot.metadata,
+    )
+
+
 def save_workflow(
     path: str | Path,
     pipeline: PrototypePipeline,
@@ -256,59 +322,11 @@ def _node_to_dict(node: GraphNode) -> dict[str, Any]:
 def _node_from_dict(raw: Any, index: int) -> GraphNode:
     if not isinstance(raw, dict):
         raise ValueError(f"Node {index} must be an object.")
-    operation_id = _required_text(raw, "operation_id", f"node {index}")
-    spec = NODE_LIBRARY_BY_ID.get(operation_id)
-    if spec is None:
-        raise ValueError(f"Node {index} uses unknown operation {operation_id!r}.")
-    node_id = _required_text(raw, "id", f"node {index}")
-    saved = raw.get("params")
-    if not isinstance(saved, dict):
-        raise ValueError(f"Parameters for node {node_id!r} must be an object.")
-    required_params = {param.name for param in spec.parameters}
-    missing_params = required_params - saved.keys()
-    if missing_params:
-        missing = ", ".join(sorted(missing_params))
-        raise ValueError(f"Node {node_id!r} is missing required parameters: {missing}.")
-    unknown_params = [
-        name
-        for name in saved
-        if not isinstance(name, str)
-        or (
-            name not in required_params
-            and not name.startswith("_vipp_")
-            and optional_persisted_parameter_spec(spec, name) is None
-        )
-    ]
-    if unknown_params:
-        unknown = ", ".join(
-            repr(name) for name in sorted(unknown_params, key=str)
-        )
-        raise ValueError(f"Node {node_id!r} has unknown parameters: {unknown}.")
-    params = dict(saved)
-    for parameter in spec.parameters:
-        validate_parameter_value(
-            parameter,
-            params[parameter.name],
-            context=f"Node {node_id!r} parameter",
-        )
-    for name, value in params.items():
-        optional_spec = optional_persisted_parameter_spec(spec, name)
-        if optional_spec is not None:
-            validate_optional_persisted_parameter(
-                spec,
-                optional_spec,
-                value,
-                context=f"Node {node_id!r} parameter",
-            )
-    return GraphNode(
-        node_id,
-        spec.id,
-        spec.title,
-        spec.category,
-        spec.input_type,
-        spec.output_type,
-        params,
-        spec.max_inputs,
+    return graph_node_from_persisted_params(
+        raw.get("id"),
+        raw.get("operation_id"),
+        raw.get("params"),
+        index=index,
     )
 
 
