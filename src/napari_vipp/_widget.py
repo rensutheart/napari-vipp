@@ -126,6 +126,13 @@ from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
 )
+from napari_vipp.core.file_sources import (
+    SourceFileSnapshot as SourceFileSnapshot,
+)
+from napari_vipp.core.file_sources import (
+    VerifiedSourceInspection as VerifiedSourceInspection,
+)
+from napari_vipp.core.file_sources import load_frozen_file_source_snapshot
 from napari_vipp.core.graph_layout import (
     LayoutEdge,
     LayoutNode,
@@ -304,6 +311,11 @@ from napari_vipp.ui.examples import (
 from napari_vipp.ui.examples import (
     _example_workflow_dir as _example_workflow_dir,
 )
+from napari_vipp.ui.file_sources import (
+    SourceFileLoadResult as SourceFileLoadResult,
+)
+from napari_vipp.ui.file_sources import SourceFileLoadSpec as SourceFileLoadSpec
+from napari_vipp.ui.file_sources import SourceFileLoadWorker as SourceFileLoadWorker
 from napari_vipp.ui.history import WorkflowHistory, WorkflowHistorySnapshot
 from napari_vipp.ui.lifecycle import WidgetLifecycle
 from napari_vipp.ui.palette import NodePalette
@@ -384,38 +396,6 @@ class GraphNoteState:
         if self.attached_node:
             result["attached_node"] = self.attached_node
         return result
-
-
-
-@dataclass(frozen=True)
-class SourceFileLoadSpec:
-    node_id: str
-    path: str
-    series_index: int
-    cache_key: tuple[object, ...]
-    expected_identity: LocalSourceIdentity | None = None
-
-
-@dataclass(frozen=True)
-class SourceFileSnapshot:
-    payload: SourcePayload
-    inspection: SourceInspection
-    identity: LocalSourceIdentity
-
-
-@dataclass(frozen=True)
-class VerifiedSourceInspection:
-    inspection: SourceInspection
-    identity: LocalSourceIdentity
-
-
-@dataclass(frozen=True)
-class SourceFileLoadResult:
-    run_id: int
-    snapshots: dict[tuple[object, ...], SourceFileSnapshot]
-    error: str = ""
-    node_id: str = ""
-
 
 @dataclass(frozen=True)
 class ThumbnailContrastLimitRequest:
@@ -562,99 +542,6 @@ class GeneratedLayerContrastPlan:
     limits: tuple[float, float]
     pending: bool
     exact: bool
-
-
-def _load_frozen_file_source_snapshot(
-    path: str | Path,
-    series_index: int,
-    *,
-    expected_identity: LocalSourceIdentity | None = None,
-) -> SourceFileSnapshot:
-    """Read one exact local revision into an owned, immutable NumPy array."""
-    source = Path(path).expanduser().resolve(strict=False)
-    identity = capture_local_source_identity(source)
-    if expected_identity is not None and identity != expected_identity:
-        raise SourceChangedError(
-            "Local scientific source changed after its interactive snapshot "
-            f"was pinned: {source}. Press Refresh to load the new revision."
-        )
-    dataset = read_image(source, series_index=int(series_index))
-    data = np.array(
-        np.asarray(dataset.data),
-        copy=True,
-        order="K",
-        subok=False,
-    )
-    data.setflags(write=False)
-    verify_local_source_identity(source, identity)
-    source_state = dataset.image_state
-    snapshot_state = image_state_from_array(
-        data,
-        axes=source_state.axes,
-        metadata_source=source_state.metadata_source,
-        source_name=source_state.source_name,
-        history=source_state.history,
-        channels=source_state.channels,
-        acquisition=source_state.acquisition,
-        source=source_state.source,
-    )
-    if snapshot_state is not None:
-        snapshot_state = replace(snapshot_state, kind=source_state.kind)
-    payload = SourcePayload(
-        data,
-        {
-            "vipp_source_path": str(source),
-            "vipp_source_identity": identity.to_dict(),
-            "vipp_source_snapshot_policy": "pinned until Refresh",
-        },
-        dataset.selected_series.name,
-        snapshot_state,
-        identity,
-    )
-    return SourceFileSnapshot(payload, dataset.inspection, identity)
-
-
-class SourceFileLoadSignals(QObject):
-    finished = Signal(object)
-
-
-class SourceFileLoadWorker(QRunnable):
-    """Read selected file-path Image Source payloads off the GUI thread."""
-
-    def __init__(self, run_id: int, specs: tuple[SourceFileLoadSpec, ...]):
-        super().__init__()
-        self.run_id = int(run_id)
-        self.specs = tuple(specs)
-        self.signals = SourceFileLoadSignals()
-
-    def run(self) -> None:
-        snapshots: dict[tuple[object, ...], SourceFileSnapshot] = {}
-        loaded_identities: dict[str, LocalSourceIdentity] = {}
-        current_node_id = ""
-        try:
-            for spec in self.specs:
-                current_node_id = spec.node_id
-                expected_identity = spec.expected_identity or loaded_identities.get(
-                    spec.path
-                )
-                snapshot = _load_frozen_file_source_snapshot(
-                    spec.path,
-                    spec.series_index,
-                    expected_identity=expected_identity,
-                )
-                snapshots[spec.cache_key] = snapshot
-                loaded_identities[spec.path] = snapshot.identity
-        except Exception as exc:
-            self.signals.finished.emit(
-                SourceFileLoadResult(
-                    self.run_id,
-                    {},
-                    error=str(exc),
-                    node_id=current_node_id,
-                )
-            )
-            return
-        self.signals.finished.emit(SourceFileLoadResult(self.run_id, snapshots))
 
 
 class ThumbnailContrastLimitSignals(QObject):
@@ -5547,12 +5434,13 @@ class VippWidget(QWidget):
             if self._file_source_should_load_async(node):
                 return None, None
             resolved_path = str(source_path)
-            snapshot = _load_frozen_file_source_snapshot(
+            snapshot = load_frozen_file_source_snapshot(
                 source_path,
                 int(node.params.get("series_index", 0)),
                 expected_identity=self._file_source_path_identities.get(
                     resolved_path
                 ),
+                reader=read_image,
             )
             self._cache_file_source_snapshot(key, snapshot)
             self._prune_file_source_payload_cache()
@@ -10109,7 +9997,7 @@ class VippWidget(QWidget):
         path_name = Path(specs[0].path).name
         suffix = f" ({len(specs)} source(s))" if len(specs) > 1 else ""
         self.status_label.setText(f"Loading image source '{path_name}'{suffix}...")
-        worker = SourceFileLoadWorker(run_id, specs)
+        worker = SourceFileLoadWorker(run_id, specs, reader=read_image)
         worker.signals.finished.connect(self._on_source_file_load_finished)
         self._pipeline_thread_pool.start(worker)
 
