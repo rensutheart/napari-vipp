@@ -3440,7 +3440,6 @@ def test_dock_widget_chrome_is_restored_when_hosted(qtbot):
     window = QMainWindow()
     dock = QDockWidget()
     qtbot.addWidget(window)
-    qtbot.addWidget(dock)
     dock.setTitleBarWidget(QWidget())
     dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
     dock.setWidget(widget)
@@ -3541,7 +3540,6 @@ def test_dock_widget_chrome_is_not_rewritten_after_configured(qtbot):
     window = QMainWindow()
     dock = QDockWidget()
     qtbot.addWidget(window)
-    qtbot.addWidget(dock)
     dock.setWidget(widget)
     window.addDockWidget(Qt.BottomDockWidgetArea, dock)
 
@@ -3559,7 +3557,6 @@ def test_initial_bottom_dock_size_is_applied_once(qtbot):
     dock = QDockWidget()
     window.resize(1200, 900)
     qtbot.addWidget(window)
-    qtbot.addWidget(dock)
     dock.setWidget(widget)
     window.addDockWidget(Qt.BottomDockWidgetArea, dock)
 
