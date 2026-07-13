@@ -187,23 +187,23 @@ def _batch_source_configs(
     )
 
 
-def _collection_source_node_ids(pipeline: PrototypePipeline) -> set[str]:
+def _collection_source_node_ids(pipeline: PrototypePipeline) -> tuple[str, ...]:
     source_ids = [
         node_id
         for node_id in pipeline.topological_order()
         if pipeline.nodes[node_id].operation_id == "input"
     ]
-    collection_ids = {
+    collection_ids = tuple(
         node_id
         for node_id in source_ids
         if str(
             pipeline.nodes[node_id].params.get("binding_mode", "single item")
         )
         == "collection"
-    }
+    )
     if collection_ids:
         return collection_ids
-    return {source_ids[0]} if source_ids else set()
+    return tuple(source_ids[:1])
 
 
 def _terminal_node_ids(pipeline: PrototypePipeline) -> list[str]:

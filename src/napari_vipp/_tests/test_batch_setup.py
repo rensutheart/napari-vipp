@@ -134,6 +134,24 @@ def test_batch_source_rows_follow_topological_source_order():
     ]
 
 
+def test_default_collection_bindings_preserve_topological_source_order(tmp_path):
+    pipeline, _output_id = _explicit_batch_pipeline()
+    pipeline.nodes["input"].params["binding_mode"] = "collection"
+    second = pipeline.add_node("input")
+    second.params["binding_mode"] = "collection"
+    workflow = serialize_workflow(pipeline)
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+
+    config = build_collection_batch_config(
+        workflow,
+        input_dir=input_dir,
+        output_dir=tmp_path / "outputs",
+    )
+
+    assert [source.node_id for source in config.sources] == ["input", second.id]
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
