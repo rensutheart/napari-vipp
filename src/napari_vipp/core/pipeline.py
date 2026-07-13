@@ -17,6 +17,7 @@ from napari_vipp.core.grid import (
 )
 from napari_vipp.core.metadata import (
     DEFERRED_VALUE_RANGE,
+    AmbiguousAxisError,
     ImageState,
     image_state_from_array,
     transform_image_state,
@@ -602,6 +603,17 @@ SPATIAL_OPERATIONS = {
     "skeletonize",
     "skeleton_graph_overlay",
     "skeleton_keypoints",
+}
+
+_EXPLICIT_AXIS_METADATA_OPERATIONS = {
+    "orthogonal_projection",
+    "rescale_axes",
+    "set_pixel_size",
+}
+_EXPLICIT_CHANNEL_AXIS_OPERATIONS = {
+    "assign_channel_colors",
+    "extract_channel",
+    "split_channels",
 }
 
 
@@ -5417,6 +5429,11 @@ class PrototypePipeline:
                 for conn in ordered
             ]
             kwargs = self._operation_kwargs(node)
+            _validate_operation_axis_semantics(
+                node,
+                input_states[0] if input_states else None,
+                kwargs,
+            )
             self._inject_progress_context(
                 spec,
                 kwargs,
@@ -5430,6 +5447,7 @@ class PrototypePipeline:
                     input_states[0],
                     source_outputs[0],
                     spatial_mode,
+                    operation_title=node.title,
                 )
                 kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
                 node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
@@ -5446,6 +5464,7 @@ class PrototypePipeline:
                     labels_state,
                     source_outputs[0],
                     spatial_mode,
+                    operation_title=node.title,
                 )
                 kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
                 node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
@@ -5470,6 +5489,7 @@ class PrototypePipeline:
                     labels_state,
                     source_outputs[0],
                     spatial_mode,
+                    operation_title=node.title,
                 )
                 kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
                 node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
@@ -5513,6 +5533,7 @@ class PrototypePipeline:
             primary.source_id, primary.source_port
         )
         kwargs = self._operation_kwargs(node)
+        _validate_operation_axis_semantics(node, input_state, kwargs)
         self._inject_progress_context(
             spec,
             kwargs,
@@ -5530,6 +5551,7 @@ class PrototypePipeline:
                 input_state,
                 source_output,
                 spatial_mode,
+                operation_title=node.title,
             )
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
@@ -5991,6 +6013,151 @@ def grouped_palette_specs() -> dict[str, dict[str, list[OperationSpec]]]:
     return groups
 
 
+def _validate_operation_axis_semantics(
+    node: GraphNode,
+    state: ImageState | TableState | None,
+    kwargs: dict[str, Any],
+) -> None:
+    image_state = state if isinstance(state, ImageState) else None
+    if node.operation_id in _EXPLICIT_AXIS_METADATA_OPERATIONS:
+        _require_explicit_spatial_axes(
+            image_state,
+            operation_title=node.title,
+            purpose="interpret named spatial axes",
+            minimum_count=(3 if node.operation_id == "orthogonal_projection" else 1),
+        )
+        return
+    if node.operation_id in _EXPLICIT_CHANNEL_AXIS_OPERATIONS:
+        _require_explicit_channel_axis(
+            image_state,
+            operation_title=node.title,
+        )
+        return
+    if node.operation_id == "composite_to_rgb":
+        try:
+            requested_channel_axis = int(kwargs.get("channel_axis", -1))
+        except (TypeError, ValueError):
+            requested_channel_axis = -1
+        if requested_channel_axis < 0:
+            _require_explicit_channel_axis(
+                image_state,
+                operation_title=node.title,
+            )
+        return
+    if node.operation_id == "project_image" and not (
+        _projection_uses_only_axis_indices(kwargs.get("axes"))
+    ):
+        _require_explicit_axes(
+            image_state,
+            operation_title=node.title,
+            purpose="choose projection axes automatically or by name",
+        )
+        return
+    if node.operation_id == "born_wolf_psf" and bool(
+        kwargs.get("auto_parameters", True)
+    ):
+        _require_explicit_axes(
+            image_state,
+            operation_title=node.title,
+            purpose="derive PSF sampling and channel parameters",
+        )
+
+
+def _projection_uses_only_axis_indices(value) -> bool:
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = (value,)
+    if not values:
+        return False
+    for item in values:
+        if isinstance(item, Integral) and not isinstance(item, bool):
+            continue
+        text = str(item or "").strip().casefold()
+        if not text.startswith("axis:"):
+            return False
+        try:
+            int(text.removeprefix("axis:"))
+        except ValueError:
+            return False
+    return True
+
+
+def _require_explicit_axes(
+    state: ImageState | None,
+    *,
+    operation_title: str,
+    purpose: str,
+) -> None:
+    if state is not None and state.axes_explicit:
+        return
+    detail = (
+        "no axis metadata"
+        if state is None
+        else f"{state.axis_order} axes with {state.axis_confidence} confidence"
+    )
+    raise AmbiguousAxisError(
+        f"{operation_title} cannot {purpose} from {detail}. Supply explicit "
+        "OME or layer axis metadata, or choose explicit axis indices where "
+        "the operation supports them."
+    )
+
+
+def _require_explicit_spatial_axes(
+    state: ImageState | None,
+    *,
+    operation_title: str,
+    purpose: str,
+    minimum_count: int = 1,
+) -> None:
+    if state is not None:
+        spatial_axes = tuple(axis for axis in state.axes if axis.type == "space")
+        if (
+            len(spatial_axes) >= minimum_count
+            and all(axis.is_explicit for axis in spatial_axes)
+        ):
+            return
+    detail = (
+        "no axis metadata"
+        if state is None
+        else f"{state.axis_order} axes with {state.axis_confidence} confidence"
+    )
+    required = (
+        "an explicit spatial axis"
+        if minimum_count == 1
+        else f"at least {minimum_count} explicit spatial axes"
+    )
+    raise AmbiguousAxisError(
+        f"{operation_title} cannot {purpose} from {detail}; it requires "
+        f"{required}. Supply explicit OME or layer axis metadata, or choose "
+        "2D YX or 3D ZYX explicitly where the operation supports that choice."
+    )
+
+
+def _require_explicit_channel_axis(
+    state: ImageState | None,
+    *,
+    operation_title: str,
+) -> None:
+    if state is not None:
+        channel_axis = _image_state_channel_axis(state)
+        if (
+            channel_axis is not None
+            and 0 <= channel_axis < len(state.axes)
+            and state.axes[channel_axis].is_explicit
+        ):
+            return
+    detail = (
+        "no axis metadata"
+        if state is None
+        else f"{state.axis_order} axes with {state.axis_confidence} confidence"
+    )
+    raise AmbiguousAxisError(
+        f"{operation_title} requires an explicit channel axis; {detail} does "
+        "not establish one. Supply explicit OME or layer axis metadata."
+    )
+
+
 def _node_id(operation_id: str, index: int) -> str:
     if operation_id == "gaussian_blur" and index == 1:
         return "gaussian"
@@ -6003,6 +6170,8 @@ def _resolved_spatial_ndim(
     state: ImageState | None,
     data,
     spatial_mode,
+    *,
+    operation_title: str,
 ) -> int:
     try:
         ndim = max(int(getattr(data, "ndim", 0)), 1)
@@ -6013,16 +6182,29 @@ def _resolved_spatial_ndim(
         requested = 2
     elif mode.startswith("3d"):
         requested = 3
-    elif state is not None:
+    elif ndim <= 2:
+        # A scalar/line/plane has no competing channel, time, or volume axis
+        # interpretation for a trailing 2D spatial operation. Ambiguity begins
+        # at three dimensions, where shape alone cannot distinguish Z, C, or T.
+        requested = 2
+    else:
+        _require_explicit_spatial_axes(
+            state,
+            operation_title=operation_title,
+            purpose="resolve 'Auto from axes' spatial processing",
+        )
+        assert state is not None
         spatial_count = sum(axis.type == "space" for axis in state.axes)
         if spatial_count >= 3:
             requested = 3
         elif spatial_count >= 2:
             requested = 2
         else:
-            requested = 3 if ndim >= 3 else 2
-    else:
-        requested = 3 if ndim >= 3 else 2
+            raise AmbiguousAxisError(
+                f"{operation_title} cannot resolve 'Auto from axes': explicit "
+                "metadata does not identify at least two spatial axes. Choose "
+                "2D YX or 3D ZYX explicitly."
+            )
     return min(requested, ndim)
 
 
@@ -6073,10 +6255,12 @@ def _strict_channel_axis_for_shape(
 ) -> int | None:
     if isinstance(state, ImageState):
         axis = _image_state_channel_axis(state)
-        if axis is not None and 0 <= axis < len(shape):
+        if (
+            axis is not None
+            and 0 <= axis < len(shape)
+            and state.axes[axis].is_explicit
+        ):
             return axis
-    if len(shape) >= 3 and shape[-1] in (3, 4):
-        return len(shape) - 1
     return None
 
 

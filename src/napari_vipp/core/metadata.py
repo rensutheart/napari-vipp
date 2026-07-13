@@ -15,6 +15,14 @@ from napari_vipp.core.tables import (
 )
 
 RGB_CHANNELS = (3, 4)
+AXIS_CONFIDENCE_EXPLICIT = "explicit"
+AXIS_CONFIDENCE_INFERRED = "shape-inferred"
+AXIS_CONFIDENCE_MIXED = "mixed"
+_LEGACY_EXPLICIT_AXIS_SOURCES = {
+    "ome-ngff multiscales",
+    "ome-xml",
+    "napari layer axes metadata",
+}
 _METADATA_CHUNK_ELEMENTS = 1_048_576
 DEFERRED_VALUE_RANGE = "pending exact background calculation"
 CHANNEL_COLLAPSE_OPERATIONS = {
@@ -58,6 +66,10 @@ KIND_PRESERVING_OPERATIONS = {
 }
 
 
+class AmbiguousAxisError(ValueError):
+    """Raised when an operation needs semantics supplied only by a shape guess."""
+
+
 @dataclass(frozen=True)
 class AxisMetadata:
     """Single array axis with OME-NGFF-like semantics."""
@@ -68,6 +80,12 @@ class AxisMetadata:
     scale: float = 1.0
     translation: float = 0.0
     source_axis: int | None = None
+    confidence: str = AXIS_CONFIDENCE_EXPLICIT
+
+    @property
+    def is_explicit(self) -> bool:
+        """Whether this semantic axis came from metadata or an explicit action."""
+        return self.confidence == AXIS_CONFIDENCE_EXPLICIT
 
     @property
     def short_label(self) -> str:
@@ -79,6 +97,7 @@ class AxisMetadata:
             "type": self.type,
             "scale": self.scale,
             "translation": self.translation,
+            "confidence": self.confidence,
         }
         if self.unit:
             data["unit"] = self.unit
@@ -87,7 +106,12 @@ class AxisMetadata:
         return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> AxisMetadata:
+    def from_dict(
+        cls,
+        data: dict[str, object],
+        *,
+        default_confidence: str = AXIS_CONFIDENCE_EXPLICIT,
+    ) -> AxisMetadata:
         name = str(data.get("name", "d"))
         return cls(
             name=name,
@@ -96,6 +120,10 @@ class AxisMetadata:
             scale=_safe_float(data.get("scale"), 1.0),
             translation=_safe_float(data.get("translation"), 0.0),
             source_axis=_optional_int(data.get("source_axis")),
+            confidence=_normalized_axis_confidence(
+                data.get("confidence"),
+                default=default_confidence,
+            ),
         )
 
 
@@ -253,6 +281,27 @@ class ImageState:
     source: SourceMetadata = SourceMetadata()
 
     @property
+    def axis_confidence(self) -> str:
+        """Aggregate confidence while retaining per-axis provenance."""
+        confidences = {axis.confidence for axis in self.axes}
+        if not confidences or confidences == {AXIS_CONFIDENCE_EXPLICIT}:
+            return AXIS_CONFIDENCE_EXPLICIT
+        if confidences == {AXIS_CONFIDENCE_INFERRED}:
+            return AXIS_CONFIDENCE_INFERRED
+        return AXIS_CONFIDENCE_MIXED
+
+    @property
+    def axes_explicit(self) -> bool:
+        """Whether every carried axis has non-inferred semantics."""
+        return all(axis.is_explicit for axis in self.axes)
+
+    @property
+    def spatial_axes_explicit(self) -> bool:
+        """Whether every spatial axis is explicit and at least one exists."""
+        spatial = tuple(axis for axis in self.axes if axis.type == "space")
+        return bool(spatial) and all(axis.is_explicit for axis in spatial)
+
+    @property
     def axis_order(self) -> str:
         if not self.axes:
             return "scalar"
@@ -267,6 +316,7 @@ class ImageState:
             "dtype": self.dtype,
             "kind": self.kind,
             "axes": [axis.to_dict() for axis in self.axes],
+            "axis_confidence": self.axis_confidence,
             "bit_depth": self.bit_depth,
             "value_range": self.value_range,
             "value_pattern": self.value_pattern,
@@ -285,8 +335,18 @@ class ImageState:
         if not isinstance(axes_data, list):
             return None
         try:
+            metadata_source = str(
+                data.get("metadata_source", "VIPP carried state")
+            )
+            default_axis_confidence = _persisted_axis_confidence(
+                data.get("axis_confidence"),
+                metadata_source=metadata_source,
+            )
             axes = tuple(
-                AxisMetadata.from_dict(axis)
+                AxisMetadata.from_dict(
+                    axis,
+                    default_confidence=default_axis_confidence,
+                )
                 for axis in axes_data
                 if isinstance(axis, dict)
             )
@@ -317,7 +377,7 @@ class ImageState:
                 value_range=str(data.get("value_range", "")),
                 value_pattern=str(data.get("value_pattern", "")),
                 memory=str(data.get("memory", "")),
-                metadata_source=str(data.get("metadata_source", "VIPP carried state")),
+                metadata_source=metadata_source,
                 source_name=str(data.get("source_name", "")),
                 history=tuple(str(step) for step in data.get("history", ())),
                 channels=channels,
@@ -570,7 +630,7 @@ def format_compact_metadata(state_or_data) -> str:
 
     first = f"{state.axis_order}: {_dimensions_compact_label(state)} | {state.dtype}"
     second_parts = [state.kind, state.bit_depth]
-    if "inferred" in state.metadata_source:
+    if not state.axes_explicit:
         second_parts.append("axes inferred")
     return first + "\n" + " | ".join(second_parts)
 
@@ -604,6 +664,7 @@ def metadata_table_rows(state_or_data) -> list[MetadataRow]:
         MetadataRow("Kind", state.kind),
         MetadataRow("Shape", _shape_label(state.shape)),
         MetadataRow("Axes", _axes_detail_label(state)),
+        MetadataRow("Axis confidence", state.axis_confidence),
         MetadataRow("Dimensions", _dimensions_label(state)),
         MetadataRow("Physical scale", _scale_label(state)),
         MetadataRow("Origin", _origin_label(state)),
@@ -712,6 +773,7 @@ def format_detailed_metadata(state_or_data) -> str:
         f"Kind: {state.kind}",
         f"Shape: {_shape_label(state.shape)}",
         f"Axes: {_axes_detail_label(state)}",
+        f"Axis confidence: {state.axis_confidence}",
         f"Dimensions: {_dimensions_label(state)}",
         f"Physical scale: {_scale_label(state)}",
         f"Origin: {_origin_label(state)}",
@@ -753,7 +815,11 @@ def _axis_metadata_from_order(names: str) -> tuple[AxisMetadata, ...]:
     if names == "scalar":
         return ()
     return tuple(
-        AxisMetadata(name=name.lower(), type=_axis_type_for_name(name))
+        AxisMetadata(
+            name=name.lower(),
+            type=_axis_type_for_name(name),
+            confidence=AXIS_CONFIDENCE_INFERRED,
+        )
         for name in _split_axis_order(names)
     )
 
@@ -1102,7 +1168,14 @@ def _multi_input_axes(
             len(first_axes),
         )
         axes = list(first_axes)
-        axes.insert(channel_index, AxisMetadata(name="c", type="channel"))
+        axes.insert(
+            channel_index,
+            AxisMetadata(
+                name="c",
+                type="channel",
+                confidence=AXIS_CONFIDENCE_EXPLICIT,
+            ),
+        )
         return tuple(axes)
     if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
         return _composite_to_rgb_axes(first_axes, arr.ndim)
@@ -1113,7 +1186,11 @@ def _composite_to_rgb_axes(
     axes: tuple[AxisMetadata, ...],
     output_ndim: int,
 ) -> tuple[AxisMetadata, ...]:
-    rgb_axis = AxisMetadata(name="rgb", type="channel")
+    rgb_axis = AxisMetadata(
+        name="rgb",
+        type="channel",
+        confidence=AXIS_CONFIDENCE_EXPLICIT,
+    )
     leading_count = max(output_ndim - 1, 0)
     spatial = [axis for axis in axes if axis.type == "space"]
     leading = spatial[-leading_count:] if leading_count else []
@@ -1296,9 +1373,26 @@ def _orthogonal_projection_axes(
         return axes
 
     y_scale, x_scale, unit = _orthogonal_montage_axis_scales(axes, params)
+    montage_confidence = (
+        AXIS_CONFIDENCE_EXPLICIT
+        if all(axes[index].is_explicit for index in spatial_axes)
+        else AXIS_CONFIDENCE_INFERRED
+    )
     montage_axes = (
-        AxisMetadata(name="y", type="space", unit=unit, scale=y_scale),
-        AxisMetadata(name="x", type="space", unit=unit, scale=x_scale),
+        AxisMetadata(
+            name="y",
+            type="space",
+            unit=unit,
+            scale=y_scale,
+            confidence=montage_confidence,
+        ),
+        AxisMetadata(
+            name="x",
+            type="space",
+            unit=unit,
+            scale=x_scale,
+            confidence=montage_confidence,
+        ),
     )
     first_spatial_axis = min(spatial_axes)
     spatial_set = set(spatial_axes)
@@ -1416,6 +1510,7 @@ def _psf_axes(
         unit="micrometer",
         scale=xy_size,
         source_axis=source_axis_for("y"),
+        confidence=AXIS_CONFIDENCE_EXPLICIT,
     )
     x_axis = AxisMetadata(
         name="x",
@@ -1423,6 +1518,7 @@ def _psf_axes(
         unit="micrometer",
         scale=xy_size,
         source_axis=source_axis_for("x"),
+        confidence=AXIS_CONFIDENCE_EXPLICIT,
     )
     if output_ndim <= 2:
         return (y_axis, x_axis)
@@ -1432,6 +1528,7 @@ def _psf_axes(
         unit="micrometer",
         scale=z_size,
         source_axis=source_axis_for("z"),
+        confidence=AXIS_CONFIDENCE_EXPLICIT,
     )
     return (z_axis, y_axis, x_axis)
 
@@ -2474,3 +2571,34 @@ def _optional_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalized_axis_confidence(value, *, default: str) -> str:
+    text = str(value or "").strip().lower()
+    if text == AXIS_CONFIDENCE_EXPLICIT:
+        return AXIS_CONFIDENCE_EXPLICIT
+    if text == AXIS_CONFIDENCE_INFERRED:
+        return AXIS_CONFIDENCE_INFERRED
+    return default
+
+
+def _persisted_axis_confidence(value, *, metadata_source: str) -> str:
+    """Recover old carried states conservatively when confidence is absent."""
+    if str(value or "").strip().casefold() == AXIS_CONFIDENCE_MIXED:
+        return AXIS_CONFIDENCE_INFERRED
+    normalized = _normalized_axis_confidence(
+        value,
+        default="",
+    )
+    if normalized:
+        return normalized
+    # Old documents did not record axis provenance. Only sources whose format
+    # contract establishes semantic axes may be promoted. In particular,
+    # "VIPP transformed metadata" and "VIPP carried state" say how metadata
+    # moved, not whether its original axis labels were authoritative.
+    source = metadata_source.split(";", 1)[0].strip().casefold()
+    if source in _LEGACY_EXPLICIT_AXIS_SOURCES:
+        return AXIS_CONFIDENCE_EXPLICIT
+    if source.startswith("ome-zarr ") and source.endswith(" metadata"):
+        return AXIS_CONFIDENCE_EXPLICIT
+    return AXIS_CONFIDENCE_INFERRED

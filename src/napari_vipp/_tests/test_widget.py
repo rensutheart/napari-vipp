@@ -2260,7 +2260,10 @@ def test_set_pixel_size_uses_numeric_entries_without_sliders(qtbot):
 
 
 def test_set_pixel_size_inspection_applies_napari_layer_scale(qtbot):
-    viewer = _Viewer(np.zeros((3, 16, 18), dtype=np.float32))
+    viewer = _Viewer(
+        np.zeros((3, 16, 18), dtype=np.float32),
+        metadata={"axes": "ZYX"},
+    )
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 

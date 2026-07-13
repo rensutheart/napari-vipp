@@ -4,10 +4,254 @@ import numpy as np
 import pytest
 
 from napari_vipp.core.metadata import (
+    AXIS_CONFIDENCE_EXPLICIT,
+    AXIS_CONFIDENCE_INFERRED,
+    AXIS_CONFIDENCE_MIXED,
     DEFERRED_VALUE_RANGE,
+    ImageState,
     image_state_from_array,
     transform_image_state,
 )
+
+
+def test_shape_only_channel_guess_is_marked_inferred_not_explicit():
+    data = np.zeros((5, 7, 3), dtype=np.uint16)
+
+    inferred = image_state_from_array(data)
+    explicit_volume = image_state_from_array(
+        data,
+        layer_metadata={"axes": "ZYX"},
+    )
+    explicit_rgb = image_state_from_array(
+        data,
+        layer_metadata={"axes": "YXC"},
+    )
+
+    assert inferred.axis_order == "YXC"
+    assert inferred.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert not inferred.axes_explicit
+    assert not inferred.axes[-1].is_explicit
+    assert explicit_volume.axis_order == "ZYX"
+    assert explicit_volume.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
+    assert explicit_volume.axes_explicit
+    assert explicit_volume.kind == "intensity image"
+    assert explicit_rgb.axis_order == "YXC"
+    assert explicit_rgb.axes_explicit
+    assert explicit_rgb.kind == "RGB image"
+
+
+def test_explicit_ome_and_carried_axis_confidence_survive_roundtrip():
+    data = np.zeros((2, 5, 7), dtype=np.float32)
+    ome_metadata = {
+        "multiscales": [
+            {
+                "axes": [
+                    {"name": "z", "type": "space"},
+                    {"name": "y", "type": "space"},
+                    {"name": "x", "type": "space"},
+                ]
+            }
+        ]
+    }
+
+    explicit = image_state_from_array(data, layer_metadata=ome_metadata)
+    carried_explicit = image_state_from_array(
+        data,
+        layer_metadata={"vipp_image_state": explicit.to_dict()},
+    )
+    inferred = image_state_from_array(data)
+    carried_inferred = image_state_from_array(
+        data,
+        layer_metadata={"vipp_image_state": inferred.to_dict()},
+    )
+
+    assert explicit.metadata_source == "OME-NGFF multiscales"
+    assert explicit.axes_explicit
+    assert carried_explicit.metadata_source == "VIPP carried state"
+    assert carried_explicit.axes_explicit
+    assert carried_inferred.metadata_source == "VIPP carried state"
+    assert carried_inferred.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert not carried_inferred.axes_explicit
+
+
+def test_legacy_carried_state_recovers_axis_confidence_conservatively():
+    explicit = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint8),
+        layer_metadata={"axes": "YX"},
+    ).to_dict()
+    inferred = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint8),
+    ).to_dict()
+    for document in (explicit, inferred):
+        document.pop("axis_confidence")
+        for axis in document["axes"]:
+            axis.pop("confidence")
+
+    restored_explicit = ImageState.from_dict(explicit)
+    restored_inferred = ImageState.from_dict(inferred)
+
+    assert restored_explicit is not None and restored_explicit.axes_explicit
+    assert restored_inferred is not None
+    assert restored_inferred.axis_confidence == AXIS_CONFIDENCE_INFERRED
+
+
+@pytest.mark.parametrize(
+    "metadata_source",
+    (
+        "OME-NGFF multiscales",
+        "OME-NGFF multiscales; napari layer transform",
+        "OME-XML",
+        "OME-Zarr 0.5 metadata",
+        "napari layer axes metadata",
+    ),
+)
+def test_legacy_authoritative_axis_sources_remain_explicit(metadata_source):
+    document = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint8),
+        layer_metadata={"axes": "YX"},
+    ).to_dict()
+    document["metadata_source"] = metadata_source
+    document.pop("axis_confidence")
+    for axis in document["axes"]:
+        axis.pop("confidence")
+
+    restored = ImageState.from_dict(document)
+
+    assert restored is not None
+    assert restored.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
+
+
+@pytest.mark.parametrize(
+    "metadata_source",
+    (
+        "VIPP transformed metadata",
+        "VIPP carried state",
+        "inferred after Invert",
+        "unrecognized reader metadata",
+    ),
+)
+def test_legacy_non_authoritative_axis_sources_remain_inferred(metadata_source):
+    document = image_state_from_array(
+        np.zeros((3, 4), dtype=np.uint8),
+        layer_metadata={"axes": "YX"},
+    ).to_dict()
+    document["metadata_source"] = metadata_source
+    document.pop("axis_confidence")
+    for axis in document["axes"]:
+        axis.pop("confidence")
+
+    restored = ImageState.from_dict(document)
+
+    assert restored is not None
+    assert restored.axis_confidence == AXIS_CONFIDENCE_INFERRED
+
+
+def test_transforms_preserve_inferred_axis_confidence():
+    data = np.zeros((2, 5, 7), dtype=np.float32)
+    inferred = image_state_from_array(data)
+
+    transformed = transform_image_state(
+        data.copy(),
+        inferred,
+        operation_id="invert",
+        operation_title="Invert",
+        params={},
+    )
+
+    assert transformed.axis_order == "ZYX"
+    assert transformed.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert not transformed.axes_explicit
+
+
+def test_transform_created_projection_axes_derive_input_confidence():
+    data = np.zeros((2, 5, 7), dtype=np.float32)
+    montage = np.zeros((7, 12), dtype=np.float32)
+    inferred = image_state_from_array(data)
+    explicit = image_state_from_array(
+        data,
+        layer_metadata={"axes": "ZYX"},
+    )
+
+    inferred_output = transform_image_state(
+        montage,
+        inferred,
+        operation_id="orthogonal_projection",
+        operation_title="Orthogonal Projection",
+        params={},
+    )
+    explicit_output = transform_image_state(
+        montage,
+        explicit,
+        operation_id="orthogonal_projection",
+        operation_title="Orthogonal Projection",
+        params={},
+    )
+
+    assert inferred_output.axis_order == "YX"
+    assert inferred_output.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert explicit_output.axis_order == "YX"
+    assert explicit_output.axis_confidence == AXIS_CONFIDENCE_EXPLICIT
+
+
+def test_reorder_select_and_project_preserve_per_axis_confidence():
+    data = np.zeros((2, 5, 7), dtype=np.float32)
+    inferred = image_state_from_array(data)
+
+    reordered = transform_image_state(
+        np.transpose(data, (2, 1, 0)),
+        inferred,
+        operation_id="reorder_axes",
+        operation_title="Reorder Axes",
+        params={"order": "2,1,0"},
+    )
+    selected = transform_image_state(
+        data[:, 2, :],
+        inferred,
+        operation_id="select_axis_slice",
+        operation_title="Select Axis Slice",
+        params={"axes": "1", "indices": "2"},
+    )
+    projected = transform_image_state(
+        data.max(axis=0),
+        inferred,
+        operation_id="project_image",
+        operation_title="Project Image",
+        params={"axes": "axis:0", "method": "Maximum"},
+    )
+
+    assert reordered.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert selected.axis_order == "ZX"
+    assert selected.axis_confidence == AXIS_CONFIDENCE_INFERRED
+    assert projected.axis_order == "YX"
+    assert projected.axis_confidence == AXIS_CONFIDENCE_INFERRED
+
+
+def test_composite_creates_explicit_rgb_axis_without_promoting_spatial_guesses():
+    data = np.zeros((3, 5, 7), dtype=np.float32)
+    inferred = image_state_from_array(data)
+
+    composite = transform_image_state(
+        np.zeros((5, 7, 3), dtype=np.float32),
+        inferred,
+        operation_id="composite_to_rgb",
+        operation_title="Composite to RGB",
+        params={"channel_axis": 0},
+    )
+    restored = ImageState.from_dict(composite.to_dict())
+
+    assert composite.axis_order == "Y,X,rgb"
+    assert composite.axis_confidence == AXIS_CONFIDENCE_MIXED
+    assert [axis.confidence for axis in composite.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
+    assert restored is not None
+    assert [axis.confidence for axis in restored.axes] == [
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_INFERRED,
+        AXIS_CONFIDENCE_EXPLICIT,
+    ]
 
 
 def test_large_metadata_value_range_and_pattern_use_all_finite_values():
