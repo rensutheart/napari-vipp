@@ -221,8 +221,8 @@ def thumbnail_channel_contrast_limits(
 
 
 def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.ndarray:
-    arr = _strip_rgb_safe_singletons(arr)
-    while arr.ndim > 3 or (arr.ndim == 3 and arr.shape[-1] not in RGB_CHANNELS):
+    arr = _strip_scalar_singletons(arr)
+    while arr.ndim > 2:
         axis = 0
         index = _axis_index(
             axis,
@@ -231,15 +231,6 @@ def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.n
             current_step_nsteps=current_step_nsteps,
         )
         arr = np.take(arr, index, axis=axis)
-
-    if arr.ndim == 3 and arr.shape[-1] not in RGB_CHANNELS:
-        index = _axis_index(
-            0,
-            arr.shape[0],
-            current_step,
-            current_step_nsteps=current_step_nsteps,
-        )
-        arr = arr[index]
     return arr
 
 
@@ -258,7 +249,7 @@ def _state_aware_preview(
     if len(state.axes) != arr.ndim:
         return None
 
-    channel_axis = _axis_index_by_type(state, "channel")
+    channel_axis = _explicit_axis_index_by_type(state, "channel")
     y_axis = _axis_index_by_name(state, "y")
     x_axis = _axis_index_by_name(state, "x")
     if y_axis is None or x_axis is None:
@@ -283,8 +274,7 @@ def _state_aware_preview(
         local_y = remaining_axes.index(y_axis)
         local_x = remaining_axes.index(x_axis)
         reduced = np.moveaxis(reduced, [local_y, local_x, local_channel], [0, 1, 2])
-        axis_name = state.axes[channel_axis].name.lower()
-        if axis_name in {"rgb", "rgba"} and not channel_colors:
+        if _is_declared_rgb_axis(state, arr, channel_axis) and not channel_colors:
             return reduced
         metadata_colors = tuple(channel.color for channel in state.channels)
         reference = (
@@ -354,11 +344,29 @@ def _remaining_axis_indices(state: ImageState, *, keep_axes: set[int]) -> list[i
     return [index for index in range(len(state.axes)) if index in keep_axes]
 
 
-def _axis_index_by_type(state: ImageState, axis_type: str) -> int | None:
+def _explicit_axis_index_by_type(
+    state: ImageState,
+    axis_type: str,
+) -> int | None:
     for index, axis in enumerate(state.axes):
-        if axis.type == axis_type:
+        if axis.type == axis_type and axis.is_explicit:
             return index
     return None
+
+
+def _is_declared_rgb_axis(
+    state: ImageState,
+    arr: np.ndarray,
+    channel_axis: int,
+) -> bool:
+    """Return whether metadata explicitly declares encoded RGB(A) samples."""
+    axis = state.axes[channel_axis]
+    return (
+        axis.is_explicit
+        and axis.name.lower() in {"rgb", "rgba"}
+        and channel_axis == arr.ndim - 1
+        and arr.shape[channel_axis] in RGB_CHANNELS
+    )
 
 
 def _axis_index_by_name(state: ImageState, name: str) -> int | None:
@@ -427,19 +435,8 @@ def _fluorescence_composite(
 
 
 def _mip(arr: np.ndarray) -> np.ndarray:
-    arr = _strip_rgb_safe_singletons(arr)
+    arr = _strip_scalar_singletons(arr)
     if arr.ndim == 2:
-        return arr
-    if arr.ndim == 3 and arr.shape[-1] in RGB_CHANNELS:
-        return arr
-    if arr.ndim == 3:
-        return np.max(arr, axis=0)
-    if arr.ndim >= 4 and arr.shape[-1] in RGB_CHANNELS:
-        axes = tuple(range(arr.ndim - 3))
-        if axes:
-            arr = np.take(arr, 0, axis=0) if len(axes) > 1 else arr
-        while arr.ndim > 3:
-            arr = np.max(arr, axis=0)
         return arr
     while arr.ndim > 2:
         arr = np.max(arr, axis=0)
@@ -475,10 +472,8 @@ def _axis_index(
     return max(0, min(axis_size - 1, step))
 
 
-def _strip_rgb_safe_singletons(arr: np.ndarray) -> np.ndarray:
+def _strip_scalar_singletons(arr: np.ndarray) -> np.ndarray:
     while arr.ndim > 2:
-        if arr.ndim >= 3 and arr.shape[-1] in RGB_CHANNELS:
-            break
         singleton_axes = [i for i, size in enumerate(arr.shape) if size == 1]
         if not singleton_axes:
             break
@@ -543,28 +538,63 @@ def _normalize_rgb(
     reference=None,
     contrast_limits=None,
 ) -> np.ndarray:
-    values = arr.astype(np.float32, copy=False)
-    finite = values[np.isfinite(values)]
+    source = np.asarray(arr)[..., :3]
+    # Eight-bit encoded color is already in its display domain. Re-scaling it,
+    # especially one channel at a time, changes the encoded hue and turns a
+    # spatially constant color black under min-max/percentile normalization.
+    if source.dtype == np.uint8:
+        return source.copy()
+
+    values = source.astype(np.float32, copy=False)
+    reference_values = _rgb_reference_values(reference)
+    shared_limits = _shared_rgb_contrast_limits(contrast_limits)
+    finite_source = values[np.isfinite(values)]
     if (
-        contrast_limits is None
-        and finite.size
-        and float(finite.min()) >= 0.0
-        and float(finite.max()) <= 1.0
+        shared_limits is None
+        and finite_source.size
+        and float(finite_source.min()) >= 0.0
+        and float(finite_source.max()) <= 1.0
     ):
         return (np.clip(values, 0, 1)[..., :3] * 255).astype(np.uint8)
 
-    channels = [
-        _normalize_uint8(
-            arr[..., i],
-            contrast_mode=contrast_mode,
-            reference=_rgb_channel_reference(reference, i),
-            contrast_limits=_channel_contrast_limits(contrast_limits, i),
+    if _contrast_mode_key(contrast_mode) == "raw":
+        return _raw_uint8(
+            source,
+            reference=reference_values,
+            contrast_limits=shared_limits,
         )
-        for i in range(min(3, arr.shape[-1]))
-    ]
-    while len(channels) < 3:
-        channels.append(channels[-1] if channels else np.zeros(arr.shape[:2], np.uint8))
-    return np.stack(channels[:3], axis=-1)
+
+    reference_values = (
+        values
+        if reference_values is None
+        else np.asarray(reference_values).astype(np.float32, copy=False)
+    )
+    finite = reference_values[np.isfinite(reference_values)]
+    if finite.size == 0:
+        return np.zeros(values.shape, dtype=np.uint8)
+
+    if shared_limits is not None:
+        lo, hi = shared_limits
+    elif _contrast_mode_key(contrast_mode) == "minmax":
+        lo = float(finite.min())
+        hi = float(finite.max())
+    else:
+        lo, hi = (
+            float(value)
+            for value in np.percentile(finite, THUMBNAIL_PERCENTILE_RANGE)
+        )
+
+    # Encoded RGB intensities are non-negative. Anchoring the one common scale
+    # at zero preserves channel ratios; a positive percentile black point would
+    # alter the hue even though it was shared by all three channels.
+    if float(finite.min()) >= 0.0:
+        lo = 0.0
+    if hi <= lo:
+        hi = float(finite.max())
+    if hi <= lo:
+        return np.zeros(values.shape, dtype=np.uint8)
+    scaled = (values - lo) / (hi - lo)
+    return (np.clip(scaled, 0, 1) * 255).astype(np.uint8)
 
 
 def _contrast_mode_key(contrast_mode: str) -> str:
@@ -596,17 +626,36 @@ def _channel_reference(reference, channel: int):
     return None
 
 
-def _rgb_channel_reference(reference, channel: int):
+def _rgb_reference_values(reference):
     if reference is None:
         return None
     values = np.asarray(reference)
-    if (
-        values.ndim >= 3
-        and values.shape[-1] in RGB_CHANNELS
-        and values.shape[-1] > channel
-    ):
-        return values[..., channel]
+    if values.ndim >= 3 and values.shape[-1] in RGB_CHANNELS:
+        return values[..., :3]
     return None
+
+
+def _shared_rgb_contrast_limits(contrast_limits):
+    direct = _coerce_contrast_limits(contrast_limits)
+    if direct is not None:
+        return direct
+    if contrast_limits is None:
+        return None
+    per_channel = []
+    try:
+        candidates = tuple(contrast_limits)[:3]
+    except Exception:
+        return None
+    for candidate in candidates:
+        limits = _coerce_contrast_limits(candidate)
+        if limits is not None:
+            per_channel.append(limits)
+    if not per_channel:
+        return None
+    return (
+        min(limits[0] for limits in per_channel),
+        max(limits[1] for limits in per_channel),
+    )
 
 
 def _channel_contrast_limits(contrast_limits, channel: int):

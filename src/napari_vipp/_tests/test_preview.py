@@ -37,6 +37,102 @@ def test_mip_preview_reduces_3d_to_2d():
     assert preview[2, 3] == 10
 
 
+def test_shape_inferred_yxc_preview_is_reduced_as_scalar_data():
+    data = np.arange(5 * 7 * 3, dtype=np.uint16).reshape(5, 7, 3)
+    state = image_state_from_array(data)
+
+    without_state = make_preview(data, mode="slice")
+    with_inferred_state = make_preview(
+        data,
+        mode="slice",
+        current_step=(0, 0, 1),
+        current_step_nsteps=data.shape,
+        state=state,
+    )
+
+    assert state is not None
+    assert not state.axes[-1].is_explicit
+    assert without_state.shape == (7, 3)
+    assert np.array_equal(without_state, data[2])
+    assert with_inferred_state.shape == (5, 7)
+    assert np.array_equal(with_inferred_state, data[..., 1])
+
+
+def test_explicit_yxc_channel_axis_remains_a_fluorescence_composite():
+    data = np.zeros((5, 7, 3), dtype=np.uint16)
+    data[1:4, 2:5, 0] = 200
+    data[1:4, 2:5, 1] = 100
+    data[1:4, 2:5, 2] = 50
+    state = image_state_from_array(data, layer_metadata={"axes": "YXC"})
+
+    preview = make_preview(data, mode="slice", state=state)
+
+    assert state is not None
+    assert state.axes[-1].is_explicit
+    assert preview.shape == data.shape
+    # A plain C axis represents independently displayed fluorescence channels,
+    # even when it happens to contain three channel-last planes.
+    assert np.allclose(preview[2, 3], (1.0, 1.0, 1.0))
+
+
+def test_declared_rgb_and_rgba_previews_preserve_encoded_uint8_color():
+    for axis_name, encoded in (
+        ("rgb", (200, 100, 50)),
+        ("rgba", (200, 100, 50, 17)),
+    ):
+        data = np.empty((5, 7, len(encoded)), dtype=np.uint8)
+        data[...] = encoded
+        state = image_state_from_array(
+            data,
+            layer_metadata={
+                "axes": [
+                    {"name": "y", "type": "space"},
+                    {"name": "x", "type": "space"},
+                    {"name": axis_name, "type": "channel"},
+                ]
+            },
+        )
+
+        preview = make_preview(data, mode="slice", state=state)
+        thumbnail = normalize_thumbnail_with_colormap(
+            preview,
+            size=(7, 5),
+            contrast_mode="Percentile",
+        )
+
+        assert np.array_equal(preview, data)
+        assert thumbnail is not None
+        assert tuple(thumbnail[2, 3]) == (200, 100, 50)
+
+
+def test_declared_rgb_non_display_range_uses_one_ratio_preserving_scale():
+    data = np.empty((5, 7, 3), dtype=np.float32)
+    data[...] = (200.0, 100.0, 50.0)
+    state = image_state_from_array(
+        data,
+        layer_metadata={
+            "axes": [
+                {"name": "y", "type": "space"},
+                {"name": "x", "type": "space"},
+                {"name": "rgb", "type": "channel"},
+            ]
+        },
+    )
+
+    preview = make_preview(data, mode="slice", state=state)
+    thumbnail = normalize_thumbnail_with_colormap(
+        preview,
+        size=(7, 5),
+        contrast_mode="Min-max",
+    )
+
+    assert thumbnail is not None
+    pixel = thumbnail[2, 3].astype(np.float32)
+    assert pixel[0] > pixel[1] > pixel[2] > 0
+    assert np.isclose(pixel[0] / pixel[1], 2.0, atol=0.05)
+    assert np.isclose(pixel[1] / pixel[2], 2.0, atol=0.05)
+
+
 def test_thumbnail_is_rgb_uint8():
     data = np.arange(32 * 48, dtype=np.float32).reshape(32, 48)
 
