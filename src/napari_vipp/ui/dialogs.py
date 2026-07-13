@@ -26,7 +26,6 @@ from napari_vipp._theme import category_color
 from napari_vipp.ui.examples import (
     EXAMPLE_WORKFLOWS,
     ExampleWorkflowSpec,
-    _example_workflow_by_id,
 )
 from napari_vipp.ui.search import _fuzzy_match, _normalize_search_text
 
@@ -331,7 +330,13 @@ class ExampleWorkflowDialog(QDialog):
         self._populate_tree()
 
     def selected_example(self) -> ExampleWorkflowSpec | None:
-        return _example_workflow_by_id(self._selected_example_id)
+        return self._example_by_id(self._selected_example_id)
+
+    def _example_by_id(self, example_id: str) -> ExampleWorkflowSpec | None:
+        return next(
+            (spec for spec in self._examples if spec.id == example_id),
+            None,
+        )
 
     def select_example(self, example_id: str) -> None:
         target = str(example_id)
@@ -392,7 +397,7 @@ class ExampleWorkflowDialog(QDialog):
     def _on_selection_changed(self) -> None:
         item = self.tree.currentItem()
         example_id = str(item.data(0, Qt.UserRole) or "") if item is not None else ""
-        spec = _example_workflow_by_id(example_id)
+        spec = self._example_by_id(example_id)
         self._selected_example_id = spec.id if spec is not None else ""
         self.open_button.setEnabled(spec is not None)
         if spec is None:
