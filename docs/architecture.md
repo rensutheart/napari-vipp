@@ -77,7 +77,6 @@ src/napari_vipp/
     preview.py         slice/MIP/RGB thumbnail generation
     workflow.py        workflow JSON persistence
     export.py          headless Python export
-  nodes/               reserved placeholder package
   _tests/              pytest and pytest-qt tests
 
 scripts/launch_vipp_sample.py
