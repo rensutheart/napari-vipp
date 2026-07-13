@@ -23,6 +23,12 @@ hiding axis or physical-scale metadata.
 > outputs on representative data before scientific interpretation or
 > publication.
 
+VIPP's implemented safeguards include stable source revisions, physical-grid
+checks, exact unsampled diagnostics, detached viewer layers, atomic artifacts,
+and batch publication only after source reverification. See the
+[scientific integrity boundaries](docs/architecture.md#scientific-integrity-boundaries)
+and the contributor [scientific behavior requirements](CONTRIBUTING.md#scientific-behavior-requirements).
+
 ## Install And Open
 
 VIPP requires Python 3.12 or newer. If napari is not already installed, install

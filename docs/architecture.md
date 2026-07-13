@@ -3,7 +3,7 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-07-12
+Last reviewed: 2026-07-13
 
 It reflects the live codebase through current 0.12 development, including
 restoration, optional microscope-reader routing, reproducible collection batch
@@ -25,30 +25,39 @@ users add processing nodes, wire outputs to inputs, tune parameters in the
 inspector, view live thumbnails, inspect full-resolution outputs in napari, and
 pin image, mask, or label outputs as persistent napari preview layers.
 
-The implementation deliberately separates a headless core from the Qt/napari
-UI:
+The implementation separates a Qt-free scientific core from reusable UI
+components and one napari composition root:
 
 ```text
-napari host
-  VippWidget (_widget.py)
-    - NodePalette and parameter inspector
-    - PipelineGraphView (_graph.py)
-    - metadata, histogram, inspect, pin, save/export actions
+napari / npe2 host
+  _widget.py                   VippWidget composition root and compatibility facade
+    _graph.py                  node-canvas presentation and signals
+    ui/                        controls, dialogs, plots, adapters, controllers
+      source_adapter.py        revisioned live-layer snapshots
+      file_sources.py          Qt scheduling for verified file snapshots
+      workers.py               Qt adapter for headless execution
+      diagnostic_workers.py    typed Qt adapters for UI diagnostics
+      batch_controller.py      batch application/controller boundary
 
-headless core
-  core/pipeline.py    graph model, node library, executor
-  core/operations.py  pure NumPy/scikit-image/scipy node functions
-  core/metadata.py    OME-NGFF-inspired ImageState propagation
-  core/tables.py      TableData/TableState and CSV/TSV table saving
-  core/batch.py       batch config, deterministic planning, runner, provenance
-  core/io/            normalized OME/TIFF/Zarr/raster/NumPy readers and writers
-  core/preview.py     thumbnail and fluorescence composite reduction
-  core/workflow.py    JSON workflow save/load
-  core/export.py      runnable Python script export
+Qt-free scientific core
+  core/pipeline.py             graph model, node library, executor
+  core/operations.py           NumPy/scikit-image/scipy operation functions
+  core/metadata.py             ImageState/TableState propagation
+  core/grid.py                 physical-grid compatibility contracts
+  core/source_identity.py      exact local file/store identities
+  core/file_sources.py         verified, owned file-source snapshots
+  core/diagnostics.py          exact all-value diagnostic reductions
+  core/snapshots.py            typed graph/workflow runtime snapshots
+  core/execution.py            typed headless execution service
+  core/workflow.py             validated, atomic workflow persistence
+  core/batch*.py               setup, deterministic planning, execution, provenance
+  core/io/                     normalized image readers and writers
 ```
 
 Boundary rule: files under `core/` should stay free of `qtpy` and `napari`
-imports. They should remain usable from a headless exported/batch context.
+imports. Modules under `ui/` may depend on Qt, but must not import `_widget.py`.
+`_widget.py` may import both layers because it is the `npe2` composition root.
+These rules are enforced by `test_architecture.py`.
 
 ## Repository Map
 
@@ -56,7 +65,7 @@ imports. They should remain usable from a headless exported/batch context.
 src/napari_vipp/
   __init__.py          package version
   napari.yaml          npe2 widget and sample-data manifest
-  _widget.py           main dock widget and inspector orchestration
+  _widget.py           npe2 composition facade and remaining orchestration
   _graph.py            QGraphicsView node canvas, ports, wires, node cards
   _theme.py            category colour tokens
   _sample_data.py      synthetic ZYX, CZYX, TCZYX, TYX, and skeleton samples
@@ -64,6 +73,13 @@ src/napari_vipp/
     pipeline.py        graph model, NODE_LIBRARY, executor
     operations.py      pure processing kernels
     metadata.py        ImageState and AxisMetadata propagation
+    grid.py            aligned-image and image/PSF physical-grid validation
+    source_identity.py exact identities for local files and directory stores
+    file_sources.py    verified, owned, read-only file-source snapshots
+    diagnostics.py     exact statistics, percentiles, histograms, and label sizes
+    snapshots.py       defensively copied graph and workflow snapshots
+    execution.py       PipelineRunRequest/Result and headless execution service
+    atomic_io.py       atomic UTF-8 JSON/text artifact replacement
     io/
       model.py         ImageDataset, SourceInspection, and series records
       registry.py      format detection and shared read/write entry points
@@ -73,10 +89,27 @@ src/napari_vipp/
       numpy_io.py      NPY/NPZ support
     tables.py          TableData, TableState, CSV/TSV writer
     batch.py           collection config, planning, execution, and manifests
+    batch_setup.py     headless config construction from one workflow snapshot
     batch_demo.py      deterministic paired collection and ground-truth validator
     preview.py         slice/MIP/RGB thumbnail generation
-    workflow.py        workflow JSON persistence
+    workflow.py        schema validation and atomic workflow JSON persistence
     export.py          headless Python export
+  ui/
+    controls.py        reusable generic and image-source parameter controls
+    axis_controls.py   semantic slicing, reordering, and table-column controls
+    view_dims.py       VIPP-local semantic dimension navigation
+    palette.py         node palette widget
+    dialogs.py         connection, example, and tunnel dialogs
+    plots.py           histogram/scatter presentation widgets
+    diagnostic_workers.py typed requests/results and Qt diagnostic runnables
+    source_adapter.py  owned, revisioned live napari source boundary
+    file_sources.py    Qt worker for verified local file snapshots
+    workers.py         thin Qt adapter for core execution
+    batch.py           collection batch dialog and UI data contracts
+    batch_controller.py batch setup/save/load/preview coordination
+    history.py         Qt-free undo/redo session state
+    lifecycle.py       external signal and worker shutdown ownership
+    examples.py        example workflow registry and resource lookup
   _tests/              pytest and pytest-qt tests
 
 scripts/launch_vipp_sample.py
@@ -86,6 +119,31 @@ docs/planning.md
 docs/architecture.md
 docs/node-roadmap.md
 ```
+
+## Scientific Integrity Boundaries
+
+The following are architectural contracts, not optional implementation details.
+They prevent UI convenience, asynchronous timing, or storage behavior from
+quietly changing a scientific result.
+
+| Concern | Owning boundary | Implemented contract |
+| --- | --- | --- |
+| Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
+| Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
+| Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
+| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. The Qt worker only forwards progress and the typed result. Source ownership remains an explicit upstream responsibility. |
+| Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
+| Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
+| Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
+| Viewer presentation | `_widget.py`, `core/diagnostics.py` | Inspect and pin layers receive detached array copies, so napari edits cannot mutate pipeline caches. Large generated layers may start with provisional dtype-based contrast solely to keep Qt responsive, followed by exact finite extrema in a stale-safe worker. Viewer contrast, colormaps, and thumbnails never enter operation inputs. |
+| Workflow and provenance artifacts | `core/atomic_io.py`, `core/workflow.py`, `core/batch.py` | Each JSON/text artifact is written to a same-directory temporary file, flushed and fsynced, then atomically replaced. Non-finite JSON is rejected. Each file is atomic; a set of related workflow/config/manifest files is not a single filesystem transaction. |
+| Headless Python export | `core/export.py`, `core/pipeline.py` | Generated programs embed a validated immutable workflow and reconstruct the shared executor for every call. They carry `ImageState` from `ImageDataset`/`SourcePayload`, preserve output states when saving, reject missing or ambiguous source bindings, and refuse a different VIPP runtime version. Export never recreates metadata-dependent behavior with incomplete direct operation calls. |
+| Batch publication | `core/batch.py` | Each item captures every source identity before reading, fully writes available outputs to private staged files, reverifies every source, and only then promotes staged files to final paths. Promotions are atomic per output. A changed source fails the item and removes its staged files, so no apparently complete result is published from a mixed revision. Multi-output promotion can still end in an explicitly recorded partial item if a later promotion fails. |
+
+When a new feature crosses one of these boundaries, extend the focused contract
+tests before adding UI affordances. The scientific behavior checklist in
+[CONTRIBUTING.md](../CONTRIBUTING.md#scientific-behavior-requirements) is the
+review gate for changes to these rules.
 
 ## Core Model
 
@@ -145,38 +203,66 @@ Key behaviours:
   invalid or duplicate tunnel sources. Failed restoration is atomic: the
   previous graph remains unchanged.
 
+`core/snapshots.py` provides the typed, detached representation used when graph
+state must outlive the editor mutation that captured it. `NodeSnapshot`
+deep-copies parameters, `GraphSnapshot` owns ordered nodes/connections/tunnels,
+and `WorkflowSnapshot` adds ordered positions, notes, and UI metadata. Restoring
+a snapshot always passes through `PrototypePipeline.restore_graph()`; snapshot
+construction is not a bypass around graph validation. Interactive undo/redo in
+`ui/history.py` stores these workflow snapshots rather than references to live
+node dictionaries.
+
 Execution happens in `run(...)`. It repeatedly runs nodes whose upstream sources
 are complete. For each node it stores the primary port-0 output in
 `outputs[node_id]` and `output_states[node_id]` for convenient single-output
 access, plus the full per-port lists in `node_outputs[node_id]` and
 `node_output_states[node_id]`. Downstream inputs are resolved by
 `(source_id, source_port)` so a node can pull from any output port of its source.
-Source nodes use `SourcePayload`s or the toolbar-selected napari layer. File
-sources are loaded through `core.io.read_image()`. The interactive boundary
-captures and verifies an exact whole-file or directory-tree identity around
-inspection and materialization, copies the selected series into an owned
-read-only NumPy array, and pins that path-and-series snapshot until explicit
-Refresh. OME-Zarr, microscope, and large-file materialization uses the
-background queue. A refresh invalidates the file-load generation as well as the
-cache, so an older in-flight result cannot repopulate a stale snapshot. The
-normalized reader-built state is preserved and completed against the detached
-array rather than reparsed from lossy display metadata.
+Source nodes use `SourcePayload`s. File sources are loaded through
+`core.io.read_image()` inside the verified `core.file_sources` boundary. The
+interactive boundary captures and verifies an exact whole-file or
+directory-tree identity around inspection and materialization, copies the
+selected series into an owned read-only NumPy array, and pins that
+path-and-series snapshot until explicit Refresh. OME-Zarr, microscope, and
+large-file materialization uses the background queue. A refresh invalidates the
+file-load generation as well as the cache, so an older in-flight result cannot
+repopulate a stale snapshot. The normalized reader-built state is preserved and
+completed against the detached array rather than reparsed from lossy display
+metadata.
+
+Live napari sources enter through `LiveLayerSourceAdapter`. An in-memory NumPy
+layer is copied, marked read-only, paired with detached display metadata and a
+revision token, and checked again before a background result is accepted. VIPP
+does not pass a live lazy array through this route: if it cannot make an owned
+revision, calculation stops with an explicit error. Axis-aligned layer scale,
+translation, and units are carried into `ImageState`; rotation, shear, and
+additional affine transforms are rejected until the user explicitly resamples
+or registers the data.
 Single-input nodes call their pure operation function with one input. Multi-input
 nodes gather inputs in `target_port` order and require all ports from
 `0..input_count-1` to be connected before running.
 
 The widget can dispatch eligible graph runs to a single background worker
-thread. The active worker reports node-start events for the global busy
-indicator and per-node processing state. Operations that accept a
-`ProgressContext` can also report determinate progress and check a worker-owned
-cancel event between internal work units. This is currently wired for
+thread. It captures a workflow document, stable source payloads, cache state,
+dirty/manual-node policy, source revision tokens, and cancellation state in a
+`PipelineRunRequest`. `core.execution.execute_pipeline_request()` deep-copies
+and validates the workflow, materializes a detached `PrototypePipeline`, runs
+it, and returns a `PipelineRunResult`; `ui.workers.PipelineRunWorker` is only the
+Qt signal adapter. The widget accepts the result only if its run id, workflow,
+and live-source revisions still match. Small synchronous runs currently call
+`PrototypePipeline.run()` directly, which is a remaining unification seam.
+
+The active worker reports node-start events for the global busy indicator and
+per-node processing state. Operations that accept a `ProgressContext` can also
+report determinate progress and check a worker-owned cancel event between
+internal work units. This is currently wired for
 rolling-ball/subtract-background block processing, `rescale_axes`, 3D mesh
 morphology label loops, and Minimum Threshold's histogram-smoothing loop. Auto
-Watershed From Mask is also treated as known-slow
-even below the large-image cutoff. The toolbar `Cancel` control clears queued reruns,
-requeues in-flight dirty nodes, requests cooperative cancellation, and ignores
-stale worker results. It still cannot forcibly interrupt a NumPy/SciPy/
-scikit-image call already executing inside that worker.
+Watershed From Mask is also treated as known-slow even below the large-image
+cutoff. The toolbar `Cancel` control clears queued reruns, requeues in-flight
+dirty nodes, requests cooperative cancellation, and ignores stale worker
+results. It still cannot forcibly interrupt a NumPy/SciPy/scikit-image call
+already executing inside that worker.
 
 Dispatch is automatic for the known-slow operation allow-list and whenever an
 affected cached input, output, or source payload is at least 32 MiB or four
@@ -306,9 +392,11 @@ Any node that intentionally processes a stack slice-wise must set
 `OperationSpec.stack_processing_note`. The inspector shows that note only when
 the connected input has a stack-like spatial axis. This is the general UI rule
 for present and future XY-only filters, local thresholds, edge detectors, and
-morphology operations: users must be told that the node works in the current
-`YX` plane and that `Reorder Axes` should be used first when a different plane
-or slice axis is intended.
+morphology operations: users must be told that the node works on semantic `YX`
+planes. With explicit metadata, positional kernels require a canonical `YX`
+suffix (or `ZYX` suffix for 3D) and fail clearly otherwise. `Reorder Axes` can
+restore canonical storage order, but does not relabel `ZX` as `YX`; such a
+reinterpretation would need its own explicit, provenance-recorded operation.
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize,
   Skeleton Keypoints, Skeleton Graph Overlay, Prune Skeleton Branches
@@ -472,17 +560,30 @@ Operation dtype policy:
   weighted image calculation, z-score normalization, Difference of Gaussians, or
   Laplace signed responses.
 
+Normalization internal to a filter must not destroy comparability across planes
+or silently redefine input units. Bilateral, unsharp-mask, and non-local-means
+filtering use one affine intensity scale for the complete input and invert it on
+output, rather than normalizing each plane independently. Bilateral
+`sigma_color` is expressed in input intensity units; non-local-means `h` is
+explicitly a fraction of the shared normalized span. Invalid scales and
+non-finite intensities fail instead of being repaired or replaced. Float
+unsharp-mask overshoot is retained in the original intensity units.
+
 To add a node:
 
-1. Implement a pure function in `core/operations.py`.
-2. Import it in `core/pipeline.py`.
-3. Add an `OperationSpec` to `NODE_LIBRARY`.
+1. Define the scientific input/parameter/output contract and implement a pure
+   function in `core/operations.py`.
+2. Import it in `core/pipeline.py` and add an `OperationSpec` to `NODE_LIBRARY`.
+3. Register or implement its physical-grid validation when it combines images.
 4. Add or update metadata propagation rules in `core/metadata.py` if the node
    changes axes, dtype semantics, mask/intensity kind, or channel structure.
-5. Add dynamic bounds or custom inspector UI in `_widget.py` only if the generic
-   controls are insufficient.
-6. Add tests, usually in `test_operations.py`, `test_widget.py`, and possibly
-   `test_preview.py`, `test_workflow.py`, or `test_export.py`.
+5. Add numerical, invalid-input, dtype/range, read-only-buffer, metadata,
+   workflow, and export tests as applicable.
+6. Reuse or add controls under `ui/`. Add only the final composition/viewer
+   wiring to `_widget.py`, with a widget test for that boundary.
+
+The fuller recipe and test ladder are in
+[developer-notes.md](developer-notes.md#add-or-change-a-scientific-operation).
 
 ## Metadata
 
@@ -494,6 +595,8 @@ need to know which axes are time, channels, z, y, and x.
 
 - shape and dtype;
 - semantic axes as `AxisMetadata`;
+- per-axis semantic confidence (`explicit` or `shape-inferred`) and aggregate
+  image confidence (`explicit`, `shape-inferred`, or `mixed`);
 - axis type, scale, unit, and translation/origin where available;
 - optional source-axis indices that map source and derived axes back to the
   correct napari viewer sliders, including right-aligned layers with fewer axes
@@ -507,6 +610,16 @@ need to know which axes are time, channels, z, y, and x.
 - preserved acquisition description/date and instrument reference strings;
 - source URI, format, series index/name, and source UUID.
 
+For registered multi-input operations, `core/pipeline.py` passes these states to
+`core/grid.py` before calling the array kernel. Equal array shapes alone are not
+accepted as proof of alignment: semantic axis name/type, sample count, scale,
+compatible units, and origin must describe the same sampled coordinates.
+Image/PSF validation intentionally allows different kernel extents and origins
+but still requires matching spatial axis semantics and sample spacing. Shape
+broadcasting that an operation deliberately supports remains under that
+operation's explicit shape contract; VIPP never inserts a hidden resampling
+step.
+
 `TableState` records row and column counts, stable column names, column units
 where known, source name, table/measurement kind, metadata source, and operation
 history. Node cards use the table summary; the inspector shows table metadata
@@ -518,6 +631,15 @@ Source metadata comes from, in order of preference:
 2. OME or OME-NGFF-like `multiscales` metadata;
 3. explicit layer axis hints such as `axes`, `axis_order`, or `vipp_axis_order`;
 4. inferred axes from shape, explicitly labelled as inferred.
+
+Shape inference is descriptive fallback metadata, not authority to choose a
+scientific interpretation. Before operations use names/types to resolve an
+automatic spatial mode, channel axis, named projection, or automatic PSF
+parameters, `core/pipeline.py` requires the relevant axes to be explicit. A
+shape-inferred state raises `AmbiguousAxisError` with the explicit metadata,
+mode, or axis-index remedy. This prevents a three-plane volume or
+three-column image from silently becoming RGB, and prevents a leading axis from
+silently becoming Z.
 
 `Set Pixel Size / Units` is the explicit calibration repair node for files or
 napari layers that lack reliable physical metadata. It updates X/Y pixel size,
@@ -566,12 +688,13 @@ than the node output. This matters for workflows like `TCZYX -> Split Channels
 -> TZYX`: the derived local `z` axis is output axis 1, but it is still
 controlled by the original viewer Z slider at source axis 2.
 
-`Reorder Axes` transposes the array and then reinterprets spatial axis names by
-output position. This makes downstream nodes treat a Y/Z swap like a rotated
-volume: the moved original Z data can become the effective Y axis, and
-state-aware thumbnails keep following napari slice sliders. Channel and time
-axes still move with their data, and physical scale/unit metadata follows the
-moved data axis.
+`Reorder Axes` is a pure transpose: each complete axis record (name, type,
+scale, unit, origin, confidence, and source-axis mapping) moves with its pixels.
+It never reinterprets original Z samples as Y merely because Z was moved into a
+formerly Y-shaped position. State-aware thumbnails keep following the same
+napari source sliders. Operations that support arbitrary layouts resolve the
+moved names; positional kernels reject a noncanonical explicit suffix instead
+of silently processing the wrong plane or volume.
 
 Napari also right-aligns layers with fewer dimensions than the current viewer.
 For example, a `CZYX` layer displayed in a 5D viewer is controlled by global
@@ -597,14 +720,18 @@ Important nuance: channel pseudo-colour is carried metadata, not pixel data.
 OME source colours, Image Source overrides, Combine Channels choices, and the
 `Assign Channel Colors` node all write `ChannelMetadata.color`. The underlying
 output stays a multichannel array with a channel axis until `Composite → RGB`
-is used. In auto mode, `Composite → RGB` preserves declared or unlabelled
-channel-last RGB/RGBA images as true RGB, but ordinary fluorescence channel
-stacks are blended by carried pseudo-colours. A yellow channel therefore writes
-to red and green, while a cyan channel writes to green and blue. Manual
-red/green/blue selectors still force single-channel RGB plane mapping. Split
-Channels exposes a `Thumbnail channel` inspector parameter that chooses which
-output port is presented when the downstream graph does not identify one
-unambiguous channel.
+is used. Only axes explicitly declared `rgb` or `rgba` preserve encoded colour
+order; a generic `C` axis, including a channel-last axis of length three or
+four, remains fluorescence data and is blended by carried pseudo-colours. A
+yellow channel therefore writes to red and green, while a cyan channel writes
+to green and blue. The default mapping retains the native intensity scale
+without normalization or clipping, checks conversion and accumulation for
+precision/overflow hazards, and rejects unsafe inputs. The legacy per-channel
+1st/99th-percentile normalization is available only as an explicitly labelled
+lossy choice. Manual red/green/blue selectors still force single-channel RGB
+plane mapping. Split Channels exposes a `Thumbnail channel` inspector parameter
+that chooses which output port is presented when the downstream graph does not
+identify one unambiguous channel.
 
 The presentation-output resolver collects the distinct `source_port` values of
 connections leaving a `Split Channels` node. Exactly one distinct used port
@@ -641,13 +768,26 @@ appear dark by design. The toolbar `Mono` dropdown controls the colormap used
 for monochrome thumbnails only. These controls are display settings, not
 metadata, and do not alter graph outputs or histogram values.
 
-Histograms live mostly in `_widget.py` through `HistogramPlot` and helper
-functions near the bottom of the file. The general selected-output histogram
-supports slice-vs-stack and linear-vs-log display. Multichannel histograms are
-drawn as separate series using fluorescence-style colours. Inspector
-histograms count every finite pixel in the selected slice or stack; there is no
-hidden large-array sampling. Their display bins are separate from the
-dtype-aware operational bins used to calculate automatic thresholds.
+Scientific diagnostic reductions live in `core/diagnostics.py`; Qt plot widgets
+live in `ui/plots.py`. Typed request/result objects and Qt runnables for
+thumbnail contrast, input histograms, colocalization scatter, automatic
+scale/offset, and generated-layer contrast live in
+`ui/diagnostic_workers.py`. The runnables accept narrow calculation callables
+and do not import or reach back into `VippWidget`. `_widget.py` still owns
+slice/stack selection, cache and stale-result keys, marker policy, worker
+submission, and result application. The general selected-output histogram
+supports slice-vs-stack and linear-vs-log display.
+Multichannel histograms are drawn as separate series using fluorescence-style
+colours. The UI resolves a semantic channel axis and passes it explicitly to
+`exact_histogram()`; the core does not infer RGB merely because a trailing axis
+has length three or four.
+
+Inspector histograms count every finite pixel in the declared slice or stack;
+there is no hidden large-array sampling. Bounded chunks limit temporary memory
+without changing the population. Exact integer bin placement avoids converting
+wide integer offsets to float and collapsing distinct values. Display bins are
+separate from the dtype-aware operational bins used to calculate automatic
+thresholds.
 
 Cutoff-style nodes listed in `INPUT_HISTOGRAM_OPERATIONS` also show an
 `Input Histogram` above the general output histogram. It has its own
@@ -692,7 +832,9 @@ Colocalization threshold nodes build the inspector's 2-D scatter density by
 accumulating a 255 x 255 histogram over every ROI voxel in bounded chunks.
 ROI and colocalized counts are accumulated in the same exact pass. Large inputs
 run on a stale-safe background worker and cache only the compact density/result;
-there is no separate sampled display population.
+there is no separate sampled display population. This exact computational
+helper still resides in `ui/plots.py`, rather than the Qt-free diagnostics
+module, and is a known remaining boundary seam.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered
@@ -773,32 +915,43 @@ built or a node is added.
 
 ## Widget UI
 
-`_widget.py` owns the `VippWidget` dock widget and is the orchestration layer.
-It is currently large because it contains:
+`_widget.py` owns `VippWidget`, the object exposed by `napari.yaml`. Architecturally
+it is the `npe2` composition root and compatibility facade: it creates the
+pipeline and widgets, receives the napari viewer, injects providers/actions into
+controllers, and connects signals across the core, graph, and UI layers. It is
+not yet a small passive shell; substantial application orchestration remains
+there.
 
-- the 3-pane layout and side-panel toggles;
-- the node palette and fuzzy search;
-- generic parameter controls;
-- custom `ImageSourceControl`;
-- custom `AxisSliceControl` for keep/remove/range axis subsetting;
-- custom `ReorderAxesControl` for drag-reordering output axes while storing a
-  compact workflow order string;
-- custom Combine Channels controls for input count and channel colour identity;
-- source resolution from napari layers, files, or samples;
-- graph editing callbacks;
-- pipeline execution and debouncing;
-- thumbnails, metadata table, history, and histogram updates;
-- inspect and pin layer management;
-- quick save, Save Image node support, workflow save/load, and Python export.
+The implemented decomposition is:
 
-The main update loop is `run_pipeline()`:
+| Module | Responsibility moved out of `_widget.py` |
+| --- | --- |
+| `ui/controls.py`, `ui/axis_controls.py`, `ui/view_dims.py` | Generic parameters, semantic axis controls, and local dimension navigation. |
+| `ui/palette.py`, `ui/search.py`, `ui/dialogs.py`, `ui/examples.py` | Palette/search behavior, reusable dialogs, and example-resource catalog. |
+| `ui/plots.py` | Histogram and colocalization scatter presentation widgets. |
+| `ui/diagnostic_workers.py` | Typed diagnostic requests/results and Qt runnables with injected calculation ports. |
+| `ui/source_adapter.py`, `ui/file_sources.py` | Live-layer revision tracking and Qt scheduling for verified file snapshots. |
+| `core/execution.py`, `ui/workers.py` | Headless pipeline request/result service and its thin Qt runnable. |
+| `core/batch_setup.py`, `ui/batch.py`, `ui/batch_controller.py` | Headless batch configuration, collection dialog, and batch application controller. |
+| `ui/history.py`, `ui/lifecycle.py` | Undo/redo state and terminal shutdown of external callbacks/background work. |
 
-1. Resolve graph-level Image Source nodes.
-2. Run `PrototypePipeline.run(...)`.
-3. Refresh dynamic parameter bounds and re-run once if those bounds changed.
-4. Hide/restores managed input layers as needed for inspection.
-5. Refresh node thumbnails, inspect layer, pinned layer, metadata panel,
-   histogram, and status text.
+`_widget.py` still owns the three-pane/toolbar/inspector assembly, graph-editing
+callbacks, file inspection and source-cache orchestration, dirty-node and
+manual-node scheduling, diagnostic request construction/cache/submission/result
+coordination, generated napari layer presentation, and save/load/export command
+wiring. Those are candidates for later controller extraction when a cohesive
+boundary and a focused test can be named. Moving code solely to reduce line
+count is not an architectural goal.
+
+The main route through `run_pipeline()` is:
+
+1. Finish or schedule any missing verified file-source snapshots.
+2. Resolve graph-level sources into owned payloads and revision tokens.
+3. Calculate the dirty subgraph and manual-node execution policy.
+4. Run small work directly or submit a typed background execution request.
+5. Accept a result only when the run, graph, and source revisions are current.
+6. Refresh dynamic controls and presentation state from the accepted pipeline,
+   copying arrays before they enter napari layers.
 
 Most parameter changes go through a 150 ms single-shot debounce timer. Some UI
 changes, such as Combine Channels colour identity, also call
@@ -869,6 +1022,15 @@ Workflow persistence:
   stored source/output does not match the named source, and VIPP workflow
   metadata that references missing nodes.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
+- `workflow_snapshot_from_pipeline()` and
+  `workflow_snapshot_from_document()` produce defensively copied typed runtime
+  snapshots. Document decoding also materializes a temporary pipeline, so port,
+  type, cycle, and duplicate-input validation completes before a snapshot can
+  replace live editor state.
+- `save_workflow()` writes through `core.atomic_io.atomic_write_json()`: JSON is
+  encoded with non-finite values forbidden, flushed and fsynced to a
+  same-directory temporary file, then atomically replaced. A serialization or
+  replacement failure leaves the previous workflow intact.
 - `VippWidget.load_workflow_file()` provides the non-dialog load path used by
   the example launcher.
 
@@ -890,12 +1052,17 @@ Python export:
 
 Collection batch UI:
 
-- `VippWidget._run_collection_batch()` clones the current workflow model before
-  execution, so folder processing does not replace the live canvas outputs with
-  the last processed file.
-- `CollectionBatchDialog` lists every `Image Source` node as a possible batch
-  source binding. A blank row is accepted only for an existing fixed file-path
-  source; napari-layer and sample sources must be collection-bound.
+- `VippWidget._run_collection_batch()` captures one serialized workflow and
+  passes it to the headless setup/runner boundaries, which materialize their own
+  pipeline. Folder processing therefore does not replace the live canvas
+  outputs with the last processed file.
+- `ui.batch.CollectionBatchDialog` owns form presentation and delegates through
+  injected `CollectionBatchActions`. `ui.batch_controller.CollectionBatchController`
+  coordinates save/load/preview with stable workflow and pipeline providers;
+  `core.batch_setup` constructs and validates configuration without Qt.
+- The dialog lists every `Image Source` node as a possible batch source binding.
+  A blank row is accepted only for an existing fixed file-path source;
+  napari-layer and sample sources must be collection-bound.
 - `core.batch.BatchSourceConfig`, `BatchItemPlan`, and `BatchOutputPlan` are the
   Qt-free source, item, and output contracts. `BatchPreviewResult` exposes a
   limited row sample plus full-plan item and collision totals to the dialog.
@@ -930,7 +1097,9 @@ Collection batch UI:
   before execution.
 - Dialog-started runs write the resolved `vipp_batch_config.json` and required
   `vipp_batch_workflow.json`; headless replays use those files at their existing
-  locations. Every execution writes a `vipp_batch_manifest.json` latest-run view.
+  locations. Every individual artifact uses atomic replacement, but the
+  workflow/config pair is not one multi-file transaction. Every execution
+  writes a `vipp_batch_manifest.json` latest-run view.
   A run-id manifest archive embeds the canonical config and scientific graph,
   while a run-id sidecar directory atomically records each item as it runs and
   after every output. The final manifest contains hashes, software versions,
@@ -940,6 +1109,15 @@ Collection batch UI:
   `partial`. After an interrupted process, the sidecars are the recovery
   checkpoints; the canonical latest/archive manifests are finalized on normal
   runner exit rather than reconciled automatically.
+- For each item, the runner captures exact identities for all collection-bound
+  and fixed file sources before reading. It fully writes every available output
+  to a private same-directory staging path, including forcing lazy output bytes,
+  then reverifies every input identity. Only a verified item begins final
+  publication. If any source changed, all staged files are removed and every
+  output is marked failed. Otherwise outputs are promoted atomically one at a
+  time under their declared `Error`, `Skip`, or `Overwrite` policy. A later
+  promotion failure can therefore produce an explicitly recorded partial item,
+  but no output is published from mixed source revisions.
 - Batch failures are isolated at item/output boundaries. Successful writes and
   manifest records remain available; later items continue by default or are
   marked skipped when continuation is disabled. The returned summary
@@ -1013,6 +1191,28 @@ python scripts/launch_vipp_sample.py
 python scripts/launch_vipp_label_workflow.py
 ```
 
+Focused architecture and scientific-boundary checks:
+
+```bash
+python -m pytest -q \
+  src/napari_vipp/_tests/test_architecture.py \
+  src/napari_vipp/_tests/test_snapshots.py \
+  src/napari_vipp/_tests/test_execution.py \
+  src/napari_vipp/_tests/test_source_identity.py \
+  src/napari_vipp/_tests/test_file_sources.py \
+  src/napari_vipp/_tests/test_axis_semantics.py \
+  src/napari_vipp/_tests/test_grid.py \
+  src/napari_vipp/_tests/test_diagnostics.py \
+  src/napari_vipp/_tests/test_diagnostic_workers.py \
+  src/napari_vipp/_tests/test_batch.py
+```
+
+Add a Qt/widget test only for behavior that genuinely crosses the napari or Qt
+boundary. A pure operation change should normally cover numerical reference
+behavior, invalid inputs, dtype/range behavior, read-only input preservation,
+metadata propagation, and any affected workflow/export contract before a UI
+test is considered.
+
 ## Known Gaps And Design Notes
 
 Implemented now:
@@ -1067,6 +1267,34 @@ Implemented now:
 - first-pass 3D mesh morphology tables using marching cubes and convex hulls;
 - standard maximize behavior for detached VIPP windows.
 
+Architectural seams still present:
+
+- `_widget.py` remains a large composition facade, not a completed controller
+  decomposition. Inspector assembly, graph command handling, source inspection
+  and caching, dirty-run scheduling, diagnostic cache/submission/result
+  coordination, generated-layer presentation, and application command wiring
+  still live there. Worker adapters themselves now live in
+  `ui/diagnostic_workers.py`. Extract only cohesive responsibilities with
+  independent tests and explicit dependencies.
+- Small synchronous runs call `PrototypePipeline.run()` directly, while
+  background runs use `core.execution`. Converging on one application execution
+  service would reduce duplicated result/error policy, but must preserve the
+  current low-latency path and Qt tests.
+- The exact colocalization scatter-density calculation remains in
+  `ui/plots.py`; unlike the other exact reductions in `core/diagnostics.py`, it
+  is not yet reusable from a headless diagnostic caller.
+- `core/operations.py` and `core/pipeline.py` are still large operation and
+  registry modules. Splitting them by scientific domain could improve
+  discoverability, but only with registry parity, import compatibility,
+  metadata, export, workflow-golden, and numerical tests in place.
+- Some private names are re-exported through `_widget.py` for transitional test
+  and compatibility coverage. Remove those shims only after callers use the
+  owning `ui/` or `core/` module directly.
+- Atomic persistence is per artifact, not transactional across a workflow,
+  batch config, runner, manifests, and sidecars. Batch output promotion is also
+  atomic per output rather than as an all-output set; partial publication is
+  recorded explicitly when a later promotion fails.
+
 Still incomplete or deliberately future-facing:
 
 - calibrated extended-length variants outside the mesh-specific table;
@@ -1079,6 +1307,7 @@ Still incomplete or deliberately future-facing:
 - semantic-axis batch iteration and HCS traversal;
 - plugin/template generation for arbitrary new analysis nodes.
 
-When continuing work, prefer this order: implement data behaviour in `core/`,
-add metadata propagation, add tests, and only then expose controls in `_widget.py`
-or visual affordances in `_graph.py`.
+When continuing work, prefer this order: state the scientific contract,
+implement and test headless behavior in `core/`, add metadata/grid/provenance
+handling, put reusable Qt behavior in `ui/`, and use `_widget.py` only to compose
+those pieces with napari and `_graph.py`.

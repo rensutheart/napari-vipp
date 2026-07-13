@@ -70,6 +70,41 @@ For scientific operations, also document:
 Do not describe a method as validated, reproducible, or equivalent to another
 tool unless the repository contains evidence that supports that exact claim.
 
+### Scientific behavior requirements
+
+Scientific correctness takes precedence over convenience. A contribution must
+not silently make an invalid request look successful. In particular:
+
+- Treat axis names/types, physical scale, units, origin, and grid alignment as
+  part of an image input. Equal array shapes do not prove equal physical grids.
+- Never resample, reorder, project, normalize, clip, cast, repair a parameter,
+  or substitute a dimensional interpretation implicitly. Expose the policy,
+  record it in carried history/provenance where it affects results, and reject
+  ambiguous requests when no scientifically safe default exists.
+- State whether an algorithm is exact, sampled, approximate, iterative, or
+  truncated. Sampling and approximation controls must be visible to users and
+  covered by tests; a display optimization must not enter a scientific result.
+- Preserve input buffers. Tests for a new operation should include read-only
+  arrays and verify that cached upstream data is not changed. If returning an
+  alias or view is intentional, document and test that contract explicitly.
+- Test dtype and numeric-range behavior, including NaN/Inf, signed values,
+  boolean data, and wide integers when supported. Any lossy conversion needs an
+  explicit user-visible policy.
+- Presentation layers, thumbnails, histograms, and viewer settings must remain
+  detached from scientific cache arrays and cache keys unless they are an
+  explicit operation parameter.
+- File and live-layer inputs must enter background work as stable revisions.
+  Batch output publication must happen only after every source revision has
+  been reverified; failed or cancelled work must not leave apparently complete
+  outputs.
+- Workflow/schema, metadata history, batch manifests, atomic persistence, and
+  cancellation/stale-result behavior are part of reproducibility. Update their
+  tests whenever a change affects those contracts.
+
+For a bug fix that replaces a silent behavior, prefer a clear failure with an
+actionable message over preserving backward compatibility. Add a regression
+that demonstrates both the former hazard and the intended scientific contract.
+
 ## Required Checks
 
 Run the focused tests for the code you changed while developing, then run the
