@@ -152,8 +152,15 @@ access, plus the full per-port lists in `node_outputs[node_id]` and
 `node_output_states[node_id]`. Downstream inputs are resolved by
 `(source_id, source_port)` so a node can pull from any output port of its source.
 Source nodes use `SourcePayload`s or the toolbar-selected napari layer. File
-sources are loaded through `core.io.read_image()` and inject the normalized
-reader-built state directly, avoiding metadata reparsing.
+sources are loaded through `core.io.read_image()`. The interactive boundary
+captures and verifies an exact whole-file or directory-tree identity around
+inspection and materialization, copies the selected series into an owned
+read-only NumPy array, and pins that path-and-series snapshot until explicit
+Refresh. OME-Zarr, microscope, and large-file materialization uses the
+background queue. A refresh invalidates the file-load generation as well as the
+cache, so an older in-flight result cannot repopulate a stale snapshot. The
+normalized reader-built state is preserved and completed against the detached
+array rather than reparsed from lossy display metadata.
 Single-input nodes call their pure operation function with one input. Multi-input
 nodes gather inputs in `target_port` order and require all ports from
 `0..input_count-1` to be connected before running.

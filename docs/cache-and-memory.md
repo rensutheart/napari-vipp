@@ -72,7 +72,7 @@ not force a node to calculate if the node has no output yet.
 
 | Operation family | Current behavior | Memory notes |
 | --- | --- | --- |
-| Image source and OME-Zarr reads | Source metadata can be lazy-capable, and OME-Zarr level reads can remain Dask-backed at the I/O boundary. | Most processing nodes still materialize arrays when they calculate. |
+| Image source and OME-Zarr reads | Readers may expose lazy arrays internally, but an interactive file source is fully materialized into one verified, read-only snapshot before it enters the graph. | The complete selected source stays resident until Refresh; OME-Zarr, microscope, and large-file materialization runs on the background queue. |
 | Pointwise intensity, threshold, clipping, rescaling, and image math | Eager and usually cache-friendly. | Outputs are often the same shape as the input, so keep-all can multiply memory by pipeline length. |
 | Filtering, background correction, morphology, distance transform, watershed, and axis rescaling | Eager. | Often memory-heavy; 3D background correction, distance maps, label images, and interpolation can create large temporary arrays. |
 | Projection and orthogonal views | Eager. | Usually reduce dimensionality, but orthogonal view generation can increase canvas size depending on physical scaling. |

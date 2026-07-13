@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import replace
@@ -942,6 +943,317 @@ def test_image_source_node_loads_common_raster_file(qtbot, tmp_path):
     assert widget.pipeline.outputs["input"].shape == data.shape
     assert widget.pipeline.output_states["input"].kind == "RGB image"
     assert widget.pipeline.output_states["input"].source.format == "png"
+
+
+def test_file_source_is_one_owned_read_only_snapshot_until_refresh(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "source.npy"
+    path.write_bytes(b"stable source identity")
+    backing = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    read_calls = []
+
+    def fake_read_image(path_arg, *, series_index=0):
+        read_calls.append((Path(path_arg), series_index))
+        state = image_state_from_array(
+            backing,
+            layer_metadata={"axes": "YX"},
+            source_name="Frozen source",
+        )
+        series = ImageSeriesInfo(
+            0,
+            "0",
+            "Frozen source",
+            backing.shape,
+            "uint16",
+            "YX",
+        )
+        inspection = SourceInspection(str(path_arg), "numpy-npy", (series,))
+        return ImageDataset(backing, state, inspection, series)
+
+    monkeypatch.setattr("napari_vipp._widget.read_image", fake_read_image)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    widget._mark_pipeline_dirty("input")
+    widget.run_pipeline(force_sync=True)
+
+    frozen = widget.pipeline.outputs["input"]
+    expected = backing.copy()
+    snapshot = next(iter(widget._file_source_payload_cache.values()))
+    assert isinstance(frozen, np.ndarray)
+    assert frozen.flags.owndata
+    assert not frozen.flags.writeable
+    assert not np.shares_memory(frozen, backing)
+    assert snapshot.payload.metadata["vipp_source_snapshot_policy"] == (
+        "pinned until Refresh"
+    )
+    assert "pinned until Refresh" in widget.status_label.text()
+    with pytest.raises(ValueError, match="read-only"):
+        frozen[0, 0] = 99
+
+    backing[:] = 0
+    widget.run_pipeline(force_sync=True)
+
+    assert len(read_calls) == 1
+    assert widget.pipeline.outputs["input"] is frozen
+    np.testing.assert_array_equal(frozen, expected)
+
+
+def test_zarr_file_source_materializes_in_background(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "source.zarr"
+    path.mkdir()
+    (path / "chunk.bin").write_bytes(b"stable")
+    started = threading.Event()
+    release = threading.Event()
+    backing = np.arange(20, dtype=np.uint8).reshape(4, 5)
+
+    def fake_read_image(path_arg, *, series_index=0):
+        started.set()
+        assert release.wait(5)
+        state = image_state_from_array(
+            backing,
+            layer_metadata={"axes": "YX"},
+            source_name="Loaded Zarr",
+        )
+        series = ImageSeriesInfo(
+            0,
+            "0",
+            "Loaded Zarr",
+            backing.shape,
+            "uint8",
+            "YX",
+        )
+        inspection = SourceInspection(str(path_arg), "ome-zarr-0.4", (series,))
+        return ImageDataset(backing, state, inspection, series)
+
+    monkeypatch.setattr("napari_vipp._widget.read_image", fake_read_image)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    widget._mark_pipeline_dirty("input")
+
+    widget.run_pipeline()
+
+    assert widget._active_source_load_id is not None
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    assert "Loading image source" in widget.status_label.text()
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and np.array_equal(widget.pipeline.outputs.get("input"), backing)
+        ),
+        timeout=10_000,
+    )
+
+    frozen = widget.pipeline.outputs["input"]
+    assert frozen.flags.owndata
+    assert not frozen.flags.writeable
+    assert not np.shares_memory(frozen, backing)
+
+
+def test_changed_zarr_stays_pinned_until_explicit_refresh(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "changing.zarr"
+    path.mkdir()
+    chunk_path = path / "chunk.bin"
+    chunk_path.write_bytes(b"A")
+    root_stat = path.stat()
+    read_values = []
+
+    def fake_read_image(path_arg, *, series_index=0):
+        value = (Path(path_arg) / "chunk.bin").read_bytes()[0]
+        read_values.append(value)
+        data = np.full((3, 4), value, dtype=np.uint8)
+        state = image_state_from_array(
+            data,
+            layer_metadata={"axes": "YX"},
+            source_name="Changing Zarr",
+        )
+        series = ImageSeriesInfo(
+            0,
+            "0",
+            "Changing Zarr",
+            data.shape,
+            "uint8",
+            "YX",
+        )
+        inspection = SourceInspection(str(path_arg), "ome-zarr-0.4", (series,))
+        return ImageDataset(data, state, inspection, series)
+
+    monkeypatch.setattr("napari_vipp._widget.read_image", fake_read_image)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    widget._mark_pipeline_dirty("input")
+    widget.run_pipeline()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and np.all(widget.pipeline.outputs.get("input") == ord("A"))
+        ),
+        timeout=10_000,
+    )
+    first_snapshot = widget.pipeline.outputs["input"]
+
+    chunk_path.write_bytes(b"B")
+    os.utime(
+        path,
+        ns=(root_stat.st_atime_ns, root_stat.st_mtime_ns),
+    )
+    assert path.stat().st_mtime_ns == root_stat.st_mtime_ns
+    assert path.stat().st_size == root_stat.st_size
+
+    widget.run_pipeline(force_sync=True)
+
+    assert read_values == [ord("A")]
+    assert widget.pipeline.outputs["input"] is first_snapshot
+    assert np.all(first_snapshot == ord("A"))
+
+    widget._refresh_and_run()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and np.all(widget.pipeline.outputs.get("input") == ord("B"))
+        ),
+        timeout=10_000,
+    )
+
+    assert read_values == [ord("A"), ord("B")]
+    assert widget.pipeline.outputs["input"] is not first_snapshot
+
+
+def test_refresh_rejects_stale_inflight_file_load(
+    qtbot,
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "slow.zarr"
+    path.mkdir()
+    (path / "chunk.bin").write_bytes(b"stable")
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    calls = 0
+
+    def fake_read_image(path_arg, *, series_index=0):
+        nonlocal calls
+        calls += 1
+        call = calls
+        if call == 1:
+            first_started.set()
+            assert release_first.wait(5)
+        else:
+            second_started.set()
+        data = np.full((3, 4), call, dtype=np.uint8)
+        state = image_state_from_array(
+            data,
+            layer_metadata={"axes": "YX"},
+            source_name=f"Load {call}",
+        )
+        series = ImageSeriesInfo(
+            0,
+            "0",
+            f"Load {call}",
+            data.shape,
+            "uint8",
+            "YX",
+        )
+        inspection = SourceInspection(str(path_arg), "ome-zarr-0.4", (series,))
+        return ImageDataset(data, state, inspection, series)
+
+    monkeypatch.setattr("napari_vipp._widget.read_image", fake_read_image)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+    widget._mark_pipeline_dirty("input")
+    widget.run_pipeline()
+    qtbot.waitUntil(first_started.is_set, timeout=5_000)
+    first_run_id = widget._active_source_load_id
+
+    widget._refresh_and_run()
+
+    second_run_id = widget._active_source_load_id
+    assert second_run_id is not None
+    assert second_run_id != first_run_id
+    release_first.set()
+    qtbot.waitUntil(second_started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_source_load_id is None
+            and np.all(widget.pipeline.outputs.get("input") == 2)
+        ),
+        timeout=10_000,
+    )
+
+    assert calls == 2
+    assert np.all(widget.pipeline.outputs["input"] == 2)
+    snapshots = list(widget._file_source_payload_cache.values())
+    assert len(snapshots) == 1
+    assert np.all(snapshots[0].payload.data == 2)
+
+
+def test_verified_file_inspection_pins_revision_until_refresh(qtbot, tmp_path):
+    path = tmp_path / "inspected.npy"
+    first = np.full((3, 4), 7, dtype=np.uint8)
+    second = np.full((3, 4), 9, dtype=np.uint8)
+    np.save(path, first)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params.update(
+        source_mode="file path",
+        file_path=str(path),
+        series_index=0,
+    )
+
+    inspection = widget._inspect_source_file(str(path))
+    assert inspection is not None
+    np.save(path, second)
+    widget._mark_pipeline_dirty("input")
+    widget.run_pipeline(force_sync=True)
+
+    assert "Press Refresh" in widget.status_label.text()
+
+    widget._refresh_and_run()
+
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], second)
 
 
 def test_microscope_file_source_loads_in_background(qtbot, tmp_path, monkeypatch):

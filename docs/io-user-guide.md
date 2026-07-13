@@ -48,6 +48,15 @@ Ordinary raster formats are also available as export targets only for 2D
 intensity images and 2D RGB/RGBA images. Use OME-TIFF, ImageJ TIFF, TIFF,
 OME-Zarr, or NPY for stacks, metadata-rich outputs, and exact numeric exchange.
 
+Interactive file-path sources use a pinned scientific snapshot. VIPP verifies
+the exact file or directory-store contents before and after both inspection and
+loading, fully materializes the selected series into an owned read-only NumPy
+array, and reuses that array for the resolved path and series. An external file
+or store change is therefore not silently mixed into a running graph. Press
+`Refresh` to discard the pinned snapshot, inspect the new revision, and load it
+explicitly. OME-Zarr, microscope formats, and large files are materialized on
+the background queue; small files normally retain synchronous loading.
+
 `Binding: collection` marks an Image Source node as the per-item source for
 `Run batch...`. Interactively it still uses the selected file or series as the
 representative item; in the batch dialog VIPP binds each matched folder item to

@@ -184,6 +184,12 @@ from napari_vipp.core.preview import (
     thumbnail_contrast_limits,
 )
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.source_identity import (
+    LocalSourceIdentity,
+    SourceChangedError,
+    capture_local_source_identity,
+    verify_local_source_identity,
+)
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     deserialize_workflow,
@@ -442,12 +448,26 @@ class SourceFileLoadSpec:
     path: str
     series_index: int
     cache_key: tuple[object, ...]
+    expected_identity: LocalSourceIdentity | None = None
+
+
+@dataclass(frozen=True)
+class SourceFileSnapshot:
+    payload: SourcePayload
+    inspection: SourceInspection
+    identity: LocalSourceIdentity
+
+
+@dataclass(frozen=True)
+class VerifiedSourceInspection:
+    inspection: SourceInspection
+    identity: LocalSourceIdentity
 
 
 @dataclass(frozen=True)
 class SourceFileLoadResult:
     run_id: int
-    payloads: dict[tuple[object, ...], SourcePayload]
+    snapshots: dict[tuple[object, ...], SourceFileSnapshot]
     error: str = ""
     node_id: str = ""
 
@@ -599,6 +619,56 @@ class GeneratedLayerContrastPlan:
     exact: bool
 
 
+def _load_frozen_file_source_snapshot(
+    path: str | Path,
+    series_index: int,
+    *,
+    expected_identity: LocalSourceIdentity | None = None,
+) -> SourceFileSnapshot:
+    """Read one exact local revision into an owned, immutable NumPy array."""
+    source = Path(path).expanduser().resolve(strict=False)
+    identity = capture_local_source_identity(source)
+    if expected_identity is not None and identity != expected_identity:
+        raise SourceChangedError(
+            "Local scientific source changed after its interactive snapshot "
+            f"was pinned: {source}. Press Refresh to load the new revision."
+        )
+    dataset = read_image(source, series_index=int(series_index))
+    data = np.array(
+        np.asarray(dataset.data),
+        copy=True,
+        order="K",
+        subok=False,
+    )
+    data.setflags(write=False)
+    verify_local_source_identity(source, identity)
+    source_state = dataset.image_state
+    snapshot_state = image_state_from_array(
+        data,
+        axes=source_state.axes,
+        metadata_source=source_state.metadata_source,
+        source_name=source_state.source_name,
+        history=source_state.history,
+        channels=source_state.channels,
+        acquisition=source_state.acquisition,
+        source=source_state.source,
+    )
+    if snapshot_state is not None:
+        snapshot_state = replace(snapshot_state, kind=source_state.kind)
+    payload = SourcePayload(
+        data,
+        {
+            "vipp_source_path": str(source),
+            "vipp_source_identity": identity.to_dict(),
+            "vipp_source_snapshot_policy": "pinned until Refresh",
+        },
+        dataset.selected_series.name,
+        snapshot_state,
+        identity,
+    )
+    return SourceFileSnapshot(payload, dataset.inspection, identity)
+
+
 class SourceFileLoadSignals(QObject):
     finished = Signal(object)
 
@@ -613,18 +683,22 @@ class SourceFileLoadWorker(QRunnable):
         self.signals = SourceFileLoadSignals()
 
     def run(self) -> None:
-        payloads: dict[tuple[object, ...], SourcePayload] = {}
+        snapshots: dict[tuple[object, ...], SourceFileSnapshot] = {}
+        loaded_identities: dict[str, LocalSourceIdentity] = {}
         current_node_id = ""
         try:
             for spec in self.specs:
                 current_node_id = spec.node_id
-                dataset = read_image(spec.path, series_index=spec.series_index)
-                payloads[spec.cache_key] = SourcePayload(
-                    dataset.data,
-                    {"vipp_source_path": str(Path(spec.path).expanduser())},
-                    dataset.selected_series.name,
-                    dataset.image_state,
+                expected_identity = spec.expected_identity or loaded_identities.get(
+                    spec.path
                 )
+                snapshot = _load_frozen_file_source_snapshot(
+                    spec.path,
+                    spec.series_index,
+                    expected_identity=expected_identity,
+                )
+                snapshots[spec.cache_key] = snapshot
+                loaded_identities[spec.path] = snapshot.identity
         except Exception as exc:
             self.signals.finished.emit(
                 SourceFileLoadResult(
@@ -635,7 +709,7 @@ class SourceFileLoadWorker(QRunnable):
                 )
             )
             return
-        self.signals.finished.emit(SourceFileLoadResult(self.run_id, payloads))
+        self.signals.finished.emit(SourceFileLoadResult(self.run_id, snapshots))
 
 
 class ThumbnailContrastLimitSignals(QObject):
@@ -1951,8 +2025,12 @@ class VippWidget(QWidget):
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
-        self._source_inspection_cache: dict[str, tuple[int, SourceInspection]] = {}
-        self._file_source_payload_cache: dict[tuple[object, ...], SourcePayload] = {}
+        self._source_inspection_cache: dict[str, VerifiedSourceInspection] = {}
+        self._file_source_payload_cache: dict[
+            tuple[object, ...],
+            SourceFileSnapshot,
+        ] = {}
+        self._file_source_path_identities: dict[str, LocalSourceIdentity] = {}
         self._interactive_collection_source_paths: dict[str, Path] = {}
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
@@ -2099,6 +2177,10 @@ class VippWidget(QWidget):
             "One-shot source-to-sink layout cleanup. Undo restores old positions."
         )
         self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setToolTip(
+            "Reload file-path sources and recalculate the graph. File data is "
+            "held as a frozen scientific snapshot until Refresh is pressed."
+        )
         self.calculate_all_button = QPushButton("Calculate all")
         self.calculate_all_button.setToolTip(
             "Calculate every manual node that is not current."
@@ -5412,6 +5494,7 @@ class VippWidget(QWidget):
         return candidate
 
     def _refresh_and_run(self) -> None:
+        self._clear_file_source_snapshots(invalidate_inflight=True)
         refreshed_layer_ids: set[int] = set()
         for layer in self._live_source_node_layers.values():
             if id(layer) in refreshed_layer_ids:
@@ -5422,6 +5505,17 @@ class VippWidget(QWidget):
         self._autobind_default_image_sources()
         self._refresh_image_source_controls()
         self.run_pipeline()
+
+    def _clear_file_source_snapshots(self, *, invalidate_inflight: bool) -> None:
+        """Drop pinned file revisions; optionally make all older loads stale."""
+        self._file_source_payload_cache.clear()
+        self._file_source_path_identities.clear()
+        self._source_inspection_cache.clear()
+        if not invalidate_inflight:
+            return
+        self._source_load_serial += 1
+        self._active_source_load_id = None
+        self._source_load_pending = False
 
     def _mark_pipeline_dirty(self, node_id: str) -> bool:
         return self._mark_pipeline_branches_dirty({node_id})
@@ -5499,6 +5593,17 @@ class VippWidget(QWidget):
                             if isinstance(
                                 payload.revision_token,
                                 SourceRevisionToken,
+                            )
+                            else (
+                                "file-snapshot",
+                                payload.revision_token.kind,
+                                payload.revision_token.sha256,
+                                payload.revision_token.regular_file_count,
+                                payload.revision_token.size_bytes,
+                            )
+                            if isinstance(
+                                payload.revision_token,
+                                LocalSourceIdentity,
                             )
                             else (
                                 "object",
@@ -5734,7 +5839,6 @@ class VippWidget(QWidget):
 
     def _clear_optional_memory_caches(self) -> None:
         self._sample_payload_cache = None
-        self._source_inspection_cache.clear()
 
     def _refresh_cache_status(self) -> None:
         cache_bytes = _pipeline_cache_nbytes(self.pipeline)
@@ -5947,6 +6051,7 @@ class VippWidget(QWidget):
         return self._sample_payload_cache
 
     def _uncached_async_file_source_specs(self) -> tuple[SourceFileLoadSpec, ...]:
+        self._prune_file_source_payload_cache()
         specs: list[SourceFileLoadSpec] = []
         seen: set[tuple[object, ...]] = set()
         for node_id, node in self.pipeline.nodes.items():
@@ -5958,15 +6063,16 @@ class VippWidget(QWidget):
             if key is None or key in self._file_source_payload_cache or key in seen:
                 continue
             seen.add(key)
+            resolved_path = str(key[0])
             specs.append(
                 SourceFileLoadSpec(
                     node_id=node_id,
-                    path=str(
-                        Path(str(node.params.get("file_path", "")).strip())
-                        .expanduser()
-                    ),
+                    path=resolved_path,
                     series_index=int(node.params.get("series_index", 0) or 0),
                     cache_key=key,
+                    expected_identity=self._file_source_path_identities.get(
+                        resolved_path
+                    ),
                 )
             )
         return tuple(specs)
@@ -5974,12 +6080,11 @@ class VippWidget(QWidget):
     def _file_source_should_load_async(self, node) -> bool:
         if str(node.params.get("source_mode", "")) != "file path":
             return False
-        path_text = str(node.params.get("file_path", "")).strip()
-        if not path_text:
+        source_path = self._file_source_path_for_node(node)
+        if source_path is None:
             return False
-        source_path = Path(path_text).expanduser()
         suffix = source_path.suffix.lower()
-        if suffix in MICROSCOPE_SUFFIXES:
+        if suffix == ".zarr" or suffix in MICROSCOPE_SUFFIXES:
             return True
         try:
             return source_path.stat().st_size >= ASYNC_SOURCE_FILE_BYTES
@@ -5987,52 +6092,71 @@ class VippWidget(QWidget):
             return False
 
     def _file_source_cache_key(self, node) -> tuple[object, ...] | None:
+        source_path = self._file_source_path_for_node(node)
+        if source_path is None:
+            return None
+        return (
+            str(source_path),
+            int(node.params.get("series_index", 0) or 0),
+        )
+
+    def _file_source_path_for_node(self, node) -> Path | None:
         if str(node.params.get("source_mode", "")) != "file path":
             return None
         path_text = str(node.params.get("file_path", "")).strip()
         if not path_text:
-            return None
-        source_path = Path(path_text).expanduser()
-        try:
-            stat = source_path.stat()
-        except OSError:
-            return None
-        try:
-            identity = str(source_path.resolve())
-        except OSError:
-            identity = str(source_path)
-        return (
-            identity,
-            int(node.params.get("series_index", 0) or 0),
-            int(stat.st_mtime_ns),
-            int(stat.st_size),
-        )
+            representative = self._interactive_collection_source_paths.get(node.id)
+            if representative is None:
+                return None
+            path_text = str(representative)
+        return Path(path_text).expanduser().resolve(strict=False)
 
     def _cached_file_source_payload(self, node) -> SourcePayload | None:
         key = self._file_source_cache_key(node)
         if key is None:
             return None
-        payload = self._file_source_payload_cache.get(key)
-        if payload is None:
+        snapshot = self._file_source_payload_cache.get(key)
+        if snapshot is None:
             return None
-        return self._viewer_aligned_source_payload(payload)
+        return self._viewer_aligned_source_payload(snapshot.payload)
+
+    def _cache_file_source_snapshot(
+        self,
+        key: tuple[object, ...],
+        snapshot: SourceFileSnapshot,
+    ) -> None:
+        resolved_path = str(key[0])
+        pinned_identity = self._file_source_path_identities.get(resolved_path)
+        if pinned_identity is not None and pinned_identity != snapshot.identity:
+            raise SourceChangedError(
+                "Local scientific source changed after its interactive snapshot "
+                f"was pinned: {resolved_path}. Press Refresh to load the new "
+                "revision."
+            )
+        cached_inspection = self._source_inspection_cache.get(resolved_path)
+        if (
+            cached_inspection is not None
+            and cached_inspection.identity != snapshot.identity
+        ):
+            raise SourceChangedError(
+                "Local scientific source no longer matches the revision that "
+                f"was inspected: {resolved_path}. Press Refresh to inspect and "
+                "load the new revision."
+            )
+        self._file_source_payload_cache[key] = snapshot
+        self._file_source_path_identities[resolved_path] = snapshot.identity
+        self._source_inspection_cache[resolved_path] = VerifiedSourceInspection(
+            snapshot.inspection,
+            snapshot.identity,
+        )
 
     def _prune_file_source_payload_cache(self) -> None:
-        active_keys = {
-            key
-            for node in self.pipeline.nodes.values()
-            if node.operation_id == "input"
-            for key in (self._file_source_cache_key(node),)
-            if key is not None
-        }
-        if not active_keys:
-            self._file_source_payload_cache.clear()
-            return
-        self._file_source_payload_cache = {
-            key: payload
-            for key, payload in self._file_source_payload_cache.items()
-            if key in active_keys
-        }
+        """Retain every visited path revision until explicit Refresh.
+
+        The method remains as the call-site boundary for the former active-node
+        pruning policy. Automatic pruning here would allow a path removed and
+        later re-added to adopt a different on-disk revision without Refresh.
+        """
 
     def _source_payloads_for_pipeline(
         self,
@@ -6059,32 +6183,28 @@ class VippWidget(QWidget):
     ) -> tuple[SourcePayload | None, object | None]:
         mode = str(node.params.get("source_mode", "napari layer"))
         if mode == "file path":
-            path = str(node.params.get("file_path", "")).strip()
-            if not path:
-                representative = self._interactive_collection_source_paths.get(
-                    node.id
-                )
-                if representative is None:
-                    return SourcePayload(None, {}, ""), None
-                path = str(representative)
+            source_path = self._file_source_path_for_node(node)
+            if source_path is None:
+                return SourcePayload(None, {}, ""), None
+            key = self._file_source_cache_key(node)
+            if key is None:
+                return SourcePayload(None, {}, ""), None
             cached = self._cached_file_source_payload(node)
             if cached is not None:
                 return cached, None
             if self._file_source_should_load_async(node):
                 return None, None
-            dataset = read_image(
-                path,
-                series_index=int(node.params.get("series_index", 0)),
-            )
-            return (
-                SourcePayload(
-                    dataset.data,
-                    {"vipp_source_path": str(Path(path).expanduser())},
-                    dataset.selected_series.name,
-                    self._viewer_aligned_state(dataset.image_state),
+            resolved_path = str(source_path)
+            snapshot = _load_frozen_file_source_snapshot(
+                source_path,
+                int(node.params.get("series_index", 0)),
+                expected_identity=self._file_source_path_identities.get(
+                    resolved_path
                 ),
-                None,
             )
+            self._cache_file_source_snapshot(key, snapshot)
+            self._prune_file_source_payload_cache()
+            return self._viewer_aligned_source_payload(snapshot.payload), None
         if mode == "sample":
             sample_name = str(node.params.get("sample_name", "")).strip()
             payloads = self._sample_payloads()
@@ -6152,6 +6272,7 @@ class VippWidget(QWidget):
             payload.metadata,
             payload.name,
             self._viewer_aligned_state(state),
+            payload.revision_token,
         )
 
     def _viewer_aligned_image_state(
@@ -6195,16 +6316,27 @@ class VippWidget(QWidget):
         return replace(state, axes=axes)
 
     def _inspect_source_file(self, path: str) -> SourceInspection | None:
-        source_path = Path(path).expanduser()
+        source_path = Path(path).expanduser().resolve(strict=False)
+        cache_key = str(source_path)
+        cached = self._source_inspection_cache.get(cache_key)
+        if cached is not None:
+            return cached.inspection
         if not source_path.exists():
             return None
-        cache_key = str(source_path.resolve())
-        modified = source_path.stat().st_mtime_ns
-        cached = self._source_inspection_cache.get(cache_key)
-        if cached is not None and cached[0] == modified:
-            return cached[1]
+        identity = capture_local_source_identity(source_path)
         inspection = inspect_image_source(source_path)
-        self._source_inspection_cache[cache_key] = (modified, inspection)
+        verify_local_source_identity(source_path, identity)
+        pinned_identity = self._file_source_path_identities.get(cache_key)
+        if pinned_identity is not None and pinned_identity != identity:
+            raise SourceChangedError(
+                "Local scientific source no longer matches its pinned revision: "
+                f"{source_path}. Press Refresh to inspect the new revision."
+            )
+        self._file_source_path_identities[cache_key] = identity
+        self._source_inspection_cache[cache_key] = VerifiedSourceInspection(
+            inspection,
+            identity,
+        )
         return inspection
 
     def _graph_note_documents(self, *, use_view_positions: bool = True) -> list[dict]:
@@ -7921,6 +8053,10 @@ class VippWidget(QWidget):
         if deconvolved is True:
             detail = f" ({method})" if method else ""
             summary += f" Source metadata mentions deconvolution{detail}."
+        summary += (
+            " File data is loaded as a frozen snapshot and remains pinned "
+            "until Refresh."
+        )
         return summary
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
@@ -10561,16 +10697,30 @@ class VippWidget(QWidget):
         self._update_histogram()
         self._sync_execution_ui()
         memory_guard_message = self._enforce_memory_guard()
+        snapshot_note = (
+            " File source snapshots are pinned until Refresh."
+            if self._has_active_file_source_snapshot()
+            else ""
+        )
         if memory_guard_message:
-            self.status_label.setText(memory_guard_message)
+            self.status_label.setText(f"{memory_guard_message}{snapshot_note}")
         elif source_label:
             self.status_label.setText(
                 f"Graph updated from '{source_label}'. "
-                "Connect ports to build alternate paths."
+                f"Connect ports to build alternate paths.{snapshot_note}"
             )
         else:
             self.status_label.setText("No image source selected.")
         self._refresh_cache_status()
+
+    def _has_active_file_source_snapshot(self) -> bool:
+        return any(
+            key in self._file_source_payload_cache
+            for node in self.pipeline.nodes.values()
+            if node.operation_id == "input"
+            for key in (self._file_source_cache_key(node),)
+            if key is not None
+        )
 
     def _pipeline_source_label(
         self,
@@ -10625,7 +10775,17 @@ class VippWidget(QWidget):
                 self._source_load_pending = False
                 QTimer.singleShot(0, self.run_pipeline)
             return
-        self._file_source_payload_cache.update(result.payloads)
+        try:
+            for key, snapshot in result.snapshots.items():
+                self._cache_file_source_snapshot(key, snapshot)
+        except Exception as exc:
+            self._sync_execution_ui()
+            self._set_pipeline_busy(False)
+            self.status_label.setText(f"Image source error: {exc}")
+            if self._source_load_pending:
+                self._source_load_pending = False
+                QTimer.singleShot(0, self.run_pipeline)
+            return
         self._prune_file_source_payload_cache()
         self._set_pipeline_busy(False)
         self._source_load_pending = False
