@@ -5227,6 +5227,7 @@ def test_slow_pipeline_run_shows_busy_indicator(qtbot):
         lambda: (
             widget._active_pipeline_run_id is None
             and widget.pipeline.outputs.get(node.id) is not None
+            and widget.pipeline_busy_bar.isHidden()
         ),
         timeout=30_000,
     )
