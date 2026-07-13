@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
+from napari_vipp.core.pipeline import (
+    GraphConnection,
+    OutputTunnel,
+    PrototypePipeline,
+)
 
 
 def test_restore_graph_rejects_preserved_type_cycle_without_recursing():
@@ -23,3 +27,23 @@ def test_restore_graph_rejects_preserved_type_cycle_without_recursing():
 
     assert tuple(target.nodes) == original_node_ids
     assert tuple(target.connections) == original_connections
+
+
+def test_restore_graph_canonicalizes_tunnel_references_for_later_removal():
+    source = PrototypePipeline()
+    nodes = (source.nodes["input"], source.nodes["gaussian"])
+    target = PrototypePipeline()
+
+    target.restore_graph(
+        nodes,
+        (GraphConnection("input", "gaussian", tunnel_name=" RAW data "),),
+        (OutputTunnel("  Raw   Data  ", "input"),),
+    )
+
+    assert target.output_tunnel_list() == (OutputTunnel("Raw Data", "input"),)
+    assert target.connections[0].tunnel_name == "Raw Data"
+
+    removed = target.remove_output_tunnel("raw data")
+
+    assert removed == (GraphConnection("input", "gaussian", 0, 0, "Raw Data"),)
+    assert target.connections == []

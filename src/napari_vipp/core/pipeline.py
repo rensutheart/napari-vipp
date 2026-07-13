@@ -3950,8 +3950,17 @@ class PrototypePipeline:
         restored._ensure_dynamic_output_hints(connection_list, tunnel_list)
         for tunnel in tunnel_list:
             restored._restore_output_tunnel(tunnel)
+        canonical_connections: list[GraphConnection] = []
         for connection in restored.connections:
             restored._validate_restored_connection(connection)
+            if connection.tunnel_name:
+                declared_tunnel = restored.output_tunnel(connection.tunnel_name)
+                connection = replace(
+                    connection,
+                    tunnel_name=declared_tunnel.name,
+                )
+            canonical_connections.append(connection)
+        restored.connections = canonical_connections
 
         for node in restored.nodes.values():
             restored._counters[node.operation_id] += 1
@@ -4491,8 +4500,13 @@ class PrototypePipeline:
         return tuple(node_id for node_id in self.nodes if node_id not in visited)
 
     def _restore_output_tunnel(self, tunnel: OutputTunnel) -> None:
-        self._validate_new_output_tunnel(tunnel)
-        self.output_tunnels[_tunnel_key(tunnel.name)] = tunnel
+        restored = OutputTunnel(
+            _clean_tunnel_name(tunnel.name),
+            tunnel.source_id,
+            tunnel.source_port,
+        )
+        self._validate_new_output_tunnel(restored)
+        self.output_tunnels[_tunnel_key(restored.name)] = restored
 
     def _validate_new_output_tunnel(
         self,
