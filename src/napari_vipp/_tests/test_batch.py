@@ -664,6 +664,33 @@ def test_batch_rejects_output_nested_inside_zarr_source_store(tmp_path):
         run_batch(workflow, config)
 
 
+def test_batch_rejects_enabled_save_image_side_effect_before_execution(tmp_path):
+    inputs = tmp_path / "inputs"
+    _write_arrays(inputs, sample=np.arange(12, dtype=np.uint8).reshape(3, 4))
+    unverified_output = tmp_path / "unverified.npy"
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    save_node = pipeline.add_node("save_output")
+    assert pipeline.connect("input", save_node.id).success
+    pipeline.set_param(save_node.id, "enabled", "on")
+    pipeline.set_param(save_node.id, "path", str(unverified_output))
+    pipeline.set_param(save_node.id, "format", "npy")
+    output = pipeline.add_node("batch_output")
+    assert pipeline.connect(save_node.id, output.id).success
+    workflow = serialize_workflow(pipeline)
+    config = _batch_config(
+        workflow,
+        inputs,
+        tmp_path / "outputs",
+        (output.id,),
+    )
+
+    with pytest.raises(ValueError, match="enabled Save Image"):
+        run_batch(workflow, config)
+
+    assert not unverified_output.exists()
+
+
 def test_run_batch_executes_and_saves_table_batch_output(tmp_path):
     inputs = tmp_path / "inputs"
     labels_source = np.zeros((8, 9), dtype=np.uint8)
