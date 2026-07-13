@@ -6,6 +6,7 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CORE_ROOT = PACKAGE_ROOT / "core"
+UI_ROOT = PACKAGE_ROOT / "ui"
 
 FORBIDDEN_IMPORT_ROOTS = {
     "PyQt5",
@@ -81,5 +82,37 @@ def test_core_does_not_import_ui_frameworks_or_ui_modules():
 
     assert not violations, (
         "The headless core must not import napari, Qt, or VIPP UI modules:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_ui_components_do_not_import_the_widget_composition_root():
+    """Keep reusable UI components independent of the npe2 widget facade."""
+    violations: list[str] = []
+
+    for path in sorted(UI_ROOT.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        package = _package_name(path)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            imported_widget = next(
+                (
+                    candidate
+                    for candidate in _import_candidates(node, package)
+                    if candidate == "napari_vipp._widget"
+                    or candidate.startswith("napari_vipp._widget.")
+                ),
+                None,
+            )
+            if imported_widget is not None:
+                relative = path.relative_to(PACKAGE_ROOT.parent)
+                violations.append(
+                    f"{relative}:{node.lineno} -> {imported_widget}"
+                )
+
+    assert not violations, (
+        "Reusable UI modules must not import the widget composition root:\n"
         + "\n".join(violations)
     )
