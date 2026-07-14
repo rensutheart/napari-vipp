@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -17,6 +17,28 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class _WrappingLabel(QLabel):
+    """Word-wrapped label whose contents do not impose a dock width.
+
+    Qt's platform plugins disagree about the minimum width reported for a
+    word-wrapped ``QLabel``.  In particular, the Windows plugin can report the
+    full unwrapped line width even when the label has an ignored horizontal
+    size policy.  Returning a zero minimum width lets the layout negotiate the
+    available dock width; ``heightForWidth`` still supplies the corresponding
+    wrapped height.
+    """
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
 
 
 class BatchNavigator(QFrame):
@@ -51,21 +73,21 @@ class BatchNavigator(QFrame):
 
         self.title_label = QLabel("Batch representative")
         self.title_label.setStyleSheet("font-weight: 650;")
-        self.item_label = QLabel("Item 0 of 0")
-        self.batch_id_label = QLabel("Batch ID: -")
-        self.batch_id_label.setWordWrap(True)
-        self.batch_id_label.setMinimumWidth(0)
-        self.batch_id_label.setSizePolicy(
+        self.title_label.setMinimumWidth(0)
+        self.title_label.setSizePolicy(
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
-        self.batch_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.sources_label = QLabel("No representative sources selected.")
-        self.sources_label.setWordWrap(True)
-        self.sources_label.setMinimumWidth(0)
-        self.sources_label.setSizePolicy(
+        self.item_label = QLabel("Item 0 of 0")
+        self.item_label.setMinimumWidth(0)
+        self.item_label.setSizePolicy(
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
+        )
+        self.batch_id_label = _WrappingLabel("Batch ID: -")
+        self.batch_id_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.sources_label = _WrappingLabel(
+            "No representative sources selected."
         )
         self.sources_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
@@ -82,13 +104,7 @@ class BatchNavigator(QFrame):
             "Open the collection setup, preview, and execution workspace."
         )
 
-        self.representative_label = QLabel(self.REPRESENTATIVE_MESSAGE)
-        self.representative_label.setWordWrap(True)
-        self.representative_label.setMinimumWidth(0)
-        self.representative_label.setSizePolicy(
-            QSizePolicy.Ignored,
-            QSizePolicy.Preferred,
-        )
+        self.representative_label = _WrappingLabel(self.REPRESENTATIVE_MESSAGE)
         self.representative_label.setToolTip(
             "The graph calculates one selected batch item for inspection. "
             "Only Run batch executes and saves the complete plan."
@@ -98,13 +114,7 @@ class BatchNavigator(QFrame):
         self.progress_frame = QFrame()
         self._progress_layout = QGridLayout(self.progress_frame)
         self._progress_layout.setContentsMargins(0, 0, 0, 0)
-        self.progress_label = QLabel("")
-        self.progress_label.setWordWrap(True)
-        self.progress_label.setMinimumWidth(0)
-        self.progress_label.setSizePolicy(
-            QSizePolicy.Ignored,
-            QSizePolicy.Preferred,
-        )
+        self.progress_label = _WrappingLabel()
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
@@ -113,12 +123,8 @@ class BatchNavigator(QFrame):
         self.progress_bar.setMinimumWidth(110)
         self.progress_frame.hide()
 
-        header_layout = QHBoxLayout()
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.addWidget(self.title_label)
-        header_layout.addWidget(self.item_label)
-        header_layout.addStretch(1)
-        header_layout.addWidget(self.workspace_button)
+        self._header_layout = QGridLayout()
+        self._header_layout.setContentsMargins(0, 0, 0, 0)
 
         navigation_layout = QHBoxLayout()
         navigation_layout.setContentsMargins(0, 0, 0, 0)
@@ -132,7 +138,7 @@ class BatchNavigator(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(4)
-        layout.addLayout(header_layout)
+        layout.addLayout(self._header_layout)
         layout.addLayout(navigation_layout)
         layout.addLayout(self._details_layout)
         layout.addWidget(self.representative_label)
@@ -143,7 +149,9 @@ class BatchNavigator(QFrame):
         self.slider.valueChanged.connect(self._select_slider_value)
         self.workspace_button.clicked.connect(self.workspaceRequested.emit)
 
-        self._apply_responsive_layout(compact=False)
+        # Begin in the narrow form so a platform-specific wide size hint cannot
+        # prevent the first resize event that would otherwise make it compact.
+        self._apply_responsive_layout(compact=True)
         self._sync_navigation_controls()
         self.hide()
 
@@ -358,15 +366,32 @@ class BatchNavigator(QFrame):
             return
         self._compact_layout = compact
         if compact:
+            self._header_layout.addWidget(self.title_label, 0, 0)
+            self._header_layout.addWidget(self.item_label, 0, 1)
+            self._header_layout.addWidget(
+                self.workspace_button,
+                1,
+                0,
+                1,
+                2,
+                Qt.AlignLeft,
+            )
             self._details_layout.addWidget(self.batch_id_label, 0, 0, 1, 2)
             self._details_layout.addWidget(self.sources_label, 1, 0, 1, 2)
             self._progress_layout.addWidget(self.progress_label, 0, 0, 1, 2)
             self._progress_layout.addWidget(self.progress_bar, 1, 0, 1, 2)
         else:
+            self._header_layout.addWidget(self.title_label, 0, 0)
+            self._header_layout.addWidget(self.item_label, 0, 1)
+            self._header_layout.addWidget(self.workspace_button, 0, 3)
             self._details_layout.addWidget(self.batch_id_label, 0, 0)
             self._details_layout.addWidget(self.sources_label, 0, 1)
             self._progress_layout.addWidget(self.progress_label, 0, 0)
             self._progress_layout.addWidget(self.progress_bar, 0, 1)
+        self._header_layout.setColumnStretch(0, 2)
+        self._header_layout.setColumnStretch(1, 1)
+        self._header_layout.setColumnStretch(2, 0 if compact else 1)
+        self._header_layout.setColumnStretch(3, 0)
         self._details_layout.setColumnStretch(0, 1)
         self._details_layout.setColumnStretch(1, 2)
         self._progress_layout.setColumnStretch(0, 1)

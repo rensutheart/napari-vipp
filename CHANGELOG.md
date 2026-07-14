@@ -2,57 +2,17 @@
 
 ## Unreleased
 
-### Richardson-Lucy TV Controls
-
-- Added effect-oriented tooltips to every Richardson-Lucy TV parameter and its
-  label, slider, spinner, checkbox, or choice control.
-- Reduced the iteration slider to a practical 1-100 window and changed TV
-  regularization, TV epsilon, filter epsilon, and denominator floor to true
-  geometric sliders with parameter-specific ranges.
-- Decoupled these slider windows from spinner entry: valid zero/off and
-  out-of-window values remain directly enterable without expanding the slider.
-
-### Histogram Cutoff Interaction
-
-- Made both Rescale Intensity input guides draggable. Dragging a
-  percentile-derived guide switches the node to explicit values, preserves the
-  other exact cutoff, persists the edit, and queues interactive recalculation.
-- Prevented a click on an input-histogram marker from changing its parameter
-  unless the pointer actually moves through a drag.
-- Added real mouse-drag and re-selection regression coverage for Rescale
-  Intensity and Binary Threshold histogram guides.
-
-### Runtime Diagnostics
-
-- Added native macOS virtual-memory reporting for the cache status display,
-  avoiding a subprocess while retaining the existing cross-platform fallback.
-
-### Batch Representative Navigation And Workspace
-
-- Replaced the transient `Run batch...` dialog with a retained `Batch
-  workspace...` that keeps setup, representative selection, item-level run
-  progress, final statuses, validation, and the manifest path inspectable.
-- Added a persistent Previous/Next/slider navigator for the complete batch
-  plan. Selecting an item atomically swaps every paired collection Image Source
-  and recalculates that representative through the graph without saving batch
-  outputs or changing serialized source parameters and the workflow hash.
-- Connected preview-table selection and double-click activation to the same
-  representative session, while retaining limited table rendering for large
-  plans and full-plan navigation through the slider.
-- Made the deterministic paired demo auto-load its data into this session and
-  clarified throughout the UI that one graph representative is distinct from
-  running the complete collection.
-- Added requested-versus-committed representative tracking, bounded materialized
-  source caching, stale-workflow invalidation, and exact reviewed-plan checks so
-  failed or changed inputs cannot be presented or run as the prior preview.
-- Retained failed and completed run evidence with truthful progress, historical
-  preflight labelling, and a required fresh review before replay.
-- Made the retained workspace responsive on smaller displays: setup and results
-  scroll vertically beneath a fixed Run/Close footer, preview paths no longer
-  force oversized table columns, and long representative details stack in a
-  narrow main dock.
-
 ## 0.12.0a1 - 2026-07-14
+
+### Release Overview
+
+This alpha is a major reproducibility and architecture release. It replaces
+several implicit scientific assumptions with persisted, validated contracts;
+routes interactive, generated-Python, and batch work through shared headless
+services; turns collection processing into a reviewable, provenance-rich
+workspace; and decomposes the former widget-heavy implementation into focused
+core and UI modules. Existing workflow JSON from schema versions 1 and 2 is not
+silently upgraded because doing so would invent choices that can change output.
 
 ### Important Compatibility And Scientific Behavior
 
@@ -122,6 +82,31 @@
   outside this local-collection release instead of inferring them from array
   positions or directory names.
 
+### Batch Workspace And Representative Navigation
+
+- Replaced the transient `Run batch...` dialog with a retained `Batch
+  workspace...` that keeps setup, representative selection, item-level run
+  progress, final statuses, validation, and the manifest path inspectable.
+- Added a persistent Previous/Next/slider navigator for the complete batch
+  plan. Selecting an item atomically swaps every paired collection Image Source
+  and recalculates that representative through the graph without saving batch
+  outputs or changing serialized source parameters and the workflow hash.
+- Connected preview-table selection and double-click activation to the same
+  representative session, while retaining limited table rendering for large
+  plans and full-plan navigation through the slider.
+- Made the deterministic paired demo auto-load its data into this session and
+  clarified throughout the UI that one graph representative is distinct from
+  running the complete collection.
+- Added requested-versus-committed representative tracking, bounded materialized
+  source caching, stale-workflow invalidation, and exact reviewed-plan checks so
+  failed or changed inputs cannot be presented or run as the prior preview.
+- Retained failed and completed run evidence with truthful progress, historical
+  preflight labelling, and a required fresh review before replay.
+- Made the retained workspace responsive on smaller displays: setup and results
+  scroll vertically beneath a fixed Run/Close footer, preview paths no longer
+  force oversized table columns, and long representative details stack in a
+  narrow main dock across supported Qt platforms.
+
 ### Stable Scientific Sources And Physical Grids
 
 - Added exact file and directory identities based on path revision and bytes,
@@ -171,6 +156,23 @@
 - Fixed disconnected Born-Wolf PSF editor context and rejected invalid requested
   dimensionality instead of silently selecting another rank.
 
+### Interactive Parameter And Histogram Controls
+
+- Added effect-oriented tooltips to every Richardson-Lucy TV parameter and its
+  label, slider, spinner, checkbox, or choice control.
+- Reduced the iteration slider to a practical 1-100 window and changed TV
+  regularization, TV epsilon, filter epsilon, and denominator floor to true
+  geometric sliders with parameter-specific ranges.
+- Decoupled those slider windows from spinner entry: valid zero/off and
+  out-of-window values remain directly enterable without expanding the slider.
+- Made both Rescale Intensity input guides draggable. Dragging a
+  percentile-derived guide switches the node to explicit values, preserves the
+  other exact cutoff, persists the edit, and queues interactive recalculation.
+- Prevented a click on an input-histogram marker from changing its parameter
+  unless the pointer actually moves through a drag.
+- Added real mouse-drag and re-selection regression coverage for Rescale
+  Intensity and Binary Threshold histogram guides.
+
 ### Exact Diagnostics And Presentation Isolation
 
 - Added a Qt-free diagnostics core for exact finite statistics, extrema,
@@ -200,7 +202,7 @@
 - Preserved the simple generated CLI as a primary-source convenience while the
   saved-config batch runner remains the complete multi-source collection path.
 
-### UI, Launching, Architecture, And Contributor Experience
+### Runtime, UI, Launching, Architecture, And Contributor Experience
 
 - Bundled examples now select their first Image Source before computation;
   ordinary saved workflows still restore an explicitly saved inspector node.
@@ -210,6 +212,13 @@
   canvas without changing zoom, selection, layout, cache state, or undo history.
 - Added the installed `vipp` command, `python -m napari_vipp`, and repository
   `./vipp` development launcher.
+- Added explicit Windows, macOS, and POSIX memory-reporting branches for cache
+  status and the automatic memory guard. Windows uses its native memory API and
+  never assumes that POSIX `os.sysconf` exists; missing platform counters fall
+  back safely without interrupting graph execution.
+- Hardened the batch representative navigator's compact layout so long batch
+  identifiers, paired filenames, progress details, and buttons can shrink or
+  wrap inside a 420 px dock under platform-specific Qt font metrics.
 - Reduced `_widget.py` by roughly 4,500 net lines and made it the composition
   root. Extracted controls, axis editors, dialogs, plots, examples, sources,
   workers, history, lifecycle, view dimensions, and batch UI/services into
@@ -219,6 +228,34 @@
 - Added architecture tests enforcing dependency direction, expanded scientific
   contract/golden/example tests, and documented contributor boundaries and the
   proportional verification ladder.
+
+### Upgrade Checklist
+
+- Keep an environment containing the VIPP version that created a schema 1 or 2
+  workflow. Use it to inspect the old graph, then recreate and scientifically
+  verify the workflow under 0.12 schema 3; do not edit only the JSON version.
+- Re-export generated Python under 0.12. Exported programs deliberately require
+  the exact VIPP version that generated them.
+- Review every formerly inferred channel axis, spatial mode, cutoff mode, RGB
+  declaration, Composite-to-RGB intensity mapping, and physical grid before
+  accepting regenerated outputs.
+- Replace enabled `Save Image` side effects in collection workflows with
+  explicit `Batch Output` nodes, preview the complete plan, inspect
+  representatives, and retain the final manifest and item sidecars.
+
+### Deliberate Limits In This Alpha
+
+- Collection batching is local-folder and sorted-positional. Semantic-axis
+  iteration and plate/well/field HCS traversal are not inferred in this release.
+- Most processing remains eager. Large OME-Zarr data still needs deliberate
+  cache and materialization choices; pyramid-aware interactive previews and
+  broader lazy execution are later milestones.
+- Proprietary microscope-reader coverage depends on optional third-party
+  readers and remains experimental across real facility datasets.
+- Validation is strongest for deterministic operation tests and calibrated
+  morphology phantoms; broader real-data validation remains necessary for
+  restoration, colocalization, watershed, skeleton/network, vendor formats,
+  batch deployments, and OME-Zarr round-tripping.
 
 ## 0.11.0a3 - 2026-07-12
 

@@ -967,6 +967,23 @@ changes, such as Combine Channels colour identity, also call
 `_update_thumbnails()` immediately because they affect display but not numeric
 array values.
 
+### Platform Runtime And Responsive Layout Boundaries
+
+The cache-status RAM provider is selected explicitly before any
+platform-specific API is accessed. Windows uses `GlobalMemoryStatusEx`, macOS
+uses `host_statistics64` plus guarded page counters, and other POSIX systems use
+guarded `os.sysconf` counters. A provider returns unavailable values when its
+native facility is absent; it must not import or call an API from another
+platform merely to satisfy a diagnostic label. Tests mock every dispatch path,
+including Windows environments where `os.sysconf` does not exist.
+
+`ui.batch_navigator.BatchNavigator` treats 420 px as a supported narrow-dock
+width. Its compact layout stacks verbose batch identifiers, paired filenames,
+and progress details; text-bearing controls and labels must be horizontally
+shrinkable under platform-specific font metrics. Responsive tests verify both
+the actual layout state and the minimum-size contract rather than assuming the
+macOS size hint will match Windows or Linux.
+
 ### Dock Window Integration
 
 Napari hosts plugin widgets inside its `QtViewerDockWidget`, which is a

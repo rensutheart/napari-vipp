@@ -352,6 +352,11 @@ unchanged, then use its graph and JSON as references while recreating and
 verifying it in the current release. Do not change the JSON version number
 alone; version 3 requires the new scientific parameters.
 
+Read the categorized [0.12 release notes](../CHANGELOG.md#0120a1---2026-07-14)
+before recreating an older analysis. They identify the source-revision,
+physical-grid, channel/color, generated-export, and batch-output decisions that
+need deliberate review rather than mechanical JSON migration.
+
 VIPP stores optional UI state under `metadata.vipp`; this state affects how the
 workflow reopens, not how it calculates:
 

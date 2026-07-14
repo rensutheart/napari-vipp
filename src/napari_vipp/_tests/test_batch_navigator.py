@@ -207,9 +207,23 @@ def test_batch_navigator_stacks_long_details_in_a_narrow_dock(qtbot):
         "Processing an unusually long status message for item 13 of 30...",
     )
 
-    navigator.resize(420, 300)
+    # The compact form must be the intrinsic starting layout.  Otherwise a
+    # platform-specific wide size hint can stop Qt from ever delivering the
+    # narrow resize event that activates it.
+    assert navigator._compact_layout is True
+    assert navigator.minimumSizeHint().width() <= 420
+
+    navigator.resize(700, 300)
     navigator.show()
-    qtbot.waitUntil(navigator.isVisible)
+    qtbot.waitUntil(lambda: navigator._compact_layout is False)
+    assert navigator.minimumSizeHint().width() <= 420
+
+    navigator.resize(420, 300)
+    qtbot.waitUntil(lambda: navigator._compact_layout is True)
+    qtbot.waitUntil(
+        lambda: navigator.batch_id_label.geometry().bottom()
+        <= navigator.sources_label.geometry().top()
+    )
 
     assert navigator.minimumSizeHint().width() <= 420
     assert navigator.width() <= 420
@@ -220,5 +234,9 @@ def test_batch_navigator_stacks_long_details_in_a_narrow_dock(qtbot):
     assert navigator.progress_label.geometry().bottom() <= (
         navigator.progress_bar.geometry().top()
     )
+    assert navigator.title_label.width() > 0
+    assert navigator.item_label.width() > 0
+    assert navigator.batch_id_label.width() > 0
+    assert navigator.sources_label.width() > 0
     assert navigator.workspace_button.geometry().right() <= navigator.width()
     assert "extremely_long" in navigator.batch_id_label.toolTip()

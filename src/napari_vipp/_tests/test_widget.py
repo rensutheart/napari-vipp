@@ -58,6 +58,8 @@ from napari_vipp._widget import (
     _macos_memory_bytes,
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
+    _system_memory_bytes,
+    _windows_memory_bytes,
 )
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
@@ -7155,13 +7157,77 @@ def test_macos_memory_uses_native_vm_statistics(monkeypatch):
         host_statistics64 = _Function(_host_statistics)
 
     values = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 2000}
-    monkeypatch.setattr("napari_vipp._widget.os.sysconf", values.__getitem__)
+    monkeypatch.setattr(
+        "napari_vipp._widget.os.sysconf",
+        values.__getitem__,
+        raising=False,
+    )
     monkeypatch.setattr(
         "napari_vipp._widget.ctypes.CDLL",
         lambda _path: _LibSystem(),
     )
 
     assert _macos_memory_bytes() == (400 * 4096, 2000 * 4096)
+
+
+def test_system_memory_uses_windows_backend_without_sysconf(monkeypatch):
+    expected = (3_000_000, 8_000_000)
+
+    def unexpected_sysconf(_name):
+        raise AssertionError("Windows memory reporting must not use os.sysconf")
+
+    monkeypatch.setattr("napari_vipp._widget.sys.platform", "win32")
+    monkeypatch.setattr(
+        "napari_vipp._widget.os.sysconf",
+        unexpected_sysconf,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget._windows_memory_bytes", lambda: expected
+    )
+
+    assert _system_memory_bytes() == expected
+
+
+def test_system_memory_uses_macos_backend(monkeypatch):
+    expected = (5_000_000, 12_000_000)
+    monkeypatch.setattr("napari_vipp._widget.sys.platform", "darwin")
+    monkeypatch.setattr(
+        "napari_vipp._widget._macos_memory_bytes", lambda: expected
+    )
+
+    assert _system_memory_bytes() == expected
+
+
+def test_system_memory_handles_missing_posix_sysconf(monkeypatch):
+    monkeypatch.setattr("napari_vipp._widget.sys.platform", "linux")
+    monkeypatch.delattr("napari_vipp._widget.os.sysconf", raising=False)
+
+    assert _system_memory_bytes() == (None, None)
+
+
+def test_macos_memory_handles_missing_sysconf(monkeypatch):
+    monkeypatch.delattr("napari_vipp._widget.os.sysconf", raising=False)
+
+    assert _macos_memory_bytes() == (None, None)
+
+
+def test_windows_memory_uses_global_memory_status(monkeypatch):
+    class _Kernel32:
+        @staticmethod
+        def GlobalMemoryStatusEx(status):
+            status._obj.ullAvailPhys = 3_000_000
+            status._obj.ullTotalPhys = 8_000_000
+            return 1
+
+    class _Windll:
+        kernel32 = _Kernel32()
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.ctypes.windll", _Windll(), raising=False
+    )
+
+    assert _windows_memory_bytes() == (3_000_000, 8_000_000)
 
 
 def test_smart_cache_prunes_expendable_linear_outputs(qtbot):

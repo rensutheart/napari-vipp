@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-12
+Last reviewed: 2026-07-14
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -26,10 +26,11 @@ The core workflow families are:
 - reproducible batch execution with explicit outputs.
 
 PSF generation, deconvolution foundations, and optional microscope-reader
-routing are part of the 0.11 baseline. Near-term work is validation on real
-data, batch provenance, and scalable OME-Zarr previews. Registration,
-model-backed segmentation, stitching, and AI-assisted graph authoring remain
-later milestones.
+routing are part of the 0.11 baseline; explicit batch configuration and
+provenance are part of 0.12. Near-term work is validation on real data,
+scalable OME-Zarr previews, and safe graph/parameter copy and paste.
+Registration, model-backed segmentation, stitching, and AI-assisted graph
+authoring remain later milestones.
 
 ## Reference Documents
 
@@ -56,7 +57,7 @@ later milestones.
 
 ## Current Public Baseline
 
-Current release candidate: `0.12.0a1`.
+Current alpha release: `0.12.0a1`.
 
 The 0.12 alpha adds deterministic batch configuration/provenance, explicit
 scientific source/grid/axis contracts, shared-executor Python export, workflow
@@ -74,9 +75,9 @@ Implemented and documented work includes:
 - workflow JSON with canvas positions, named tunnels, graph notes, selected
   inspector state, optional per-node thumbnail visibility, strict loading, and
   compatibility when optional VIPP UI metadata is absent;
-- Python export, first-pass collection batch execution, explicit `Batch Output`
-  nodes, dry-run preview, multi-source bindings, and saved workflow/script
-  artifacts;
+- Python export, retained collection batch workspace, explicit `Batch Output`
+  nodes, deterministic plan review, representative navigation, multi-source
+  bindings, and saved workflow/config/manifest artifacts;
 - background execution, stale-result rejection, cooperative cancellation where
   supported, manual/cached measurement nodes, branch-local dirty reruns, cache
   modes, auto memory guard, and per-node `Keep output cached`;
@@ -104,7 +105,7 @@ Known constraints:
 - progress/cancellation coverage depends on third-party operations and remains
   uneven;
 - most processing remains eager, so very large OME-Zarr workflows still need a
-  more deliberate lazy/sampled preview strategy;
+  more deliberate lazy and pyramid-aware preview strategy;
 - broad proprietary microscope import is active development rather than a
   public baseline guarantee; reader support should be documented per format as
   supported, experimental, or metadata-incomplete;
@@ -112,7 +113,7 @@ Known constraints:
   colocalization, watershed, skeleton/network, batch/provenance, and OME-Zarr
   round-tripping.
 
-## Active TODOs After 0.11
+## Active TODOs After 0.12
 
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
@@ -171,8 +172,9 @@ Still needed:
 ### 3. Batch Configuration And Provenance
 
 Already implemented: local collection batch execution, explicit `Batch Output`
-nodes, sorted multi-source binding, shared-planner dry-run preview, low-memory
-batch retention, workflow/script reproducibility artifacts, versioned
+nodes, sorted multi-source binding, shared-planner plan review with one
+calculated graph representative, low-memory batch retention,
+workflow/config/manifest reproducibility artifacts, versioned
 `vipp_batch_config.json`, existing-file policies, latest/archive manifests with
 atomic per-item checkpoints, and default-on configurable continuation after
 item failures.
@@ -232,7 +234,71 @@ Still needed:
 - RACC numerical-core decision: keep VIPP-owned implementation, share a common
   core with the RACC plugin, or document the intentional separation.
 
-### 6. Graph Polish To Revisit Later
+### 6. Graph Copy, Paste, And Parameter Transfer
+
+Add copy/paste as a first-class graph-authoring operation in the next release.
+This should cover both copying graph structure and transferring settings between
+two instances of the same operation.
+
+Interaction contract:
+
+- Ctrl-click on Windows/Linux and Cmd-click on macOS toggles nodes into or out
+  of a multi-selection. Clicking a node without the platform modifier returns
+  to single selection; clicking empty canvas clears the selection. The
+  inspector continues to show the most recently focused node within the
+  selection rather than attempting to merge several parameter forms.
+- `Ctrl+C`/`Cmd+C` and a node context-menu `Copy` action copy every selected
+  node. Right-clicking an unselected node first makes that node the copy target;
+  right-clicking a node already in a multi-selection preserves the selection.
+- `Ctrl+V`/`Cmd+V` pastes onto the canvas near the mouse position, or near the
+  viewport centre when the pointer is outside the canvas. An empty-canvas
+  context menu exposes `Paste here` at the clicked graph position.
+- Pasting creates new node ids, preserves operation ids, current serialized
+  parameters, relative positions, and connections whose two endpoints are both
+  in the copied selection. Connections to nodes outside the selection, named
+  tunnel subscriptions/definitions, cached results, runtime/error state, pin
+  state, and transient inspector state are not copied in the first iteration.
+  This keeps the pasted group self-contained and prevents hidden dependencies
+  or large data copies.
+- Repeated paste offsets the group slightly so every result remains visible.
+  The newly pasted nodes become the active selection, retain their relative
+  layout, and the whole paste is one undo/redo action. If any node or internal
+  connection cannot be validated, the paste fails atomically with a clear
+  status message.
+- `Paste parameters` appears when the clipboard contains exactly one copied
+  node and the user right-clicks another node with the same operation id. It
+  replaces all serialized inspector parameters on the target, using the normal
+  parameter validation, dirty/stale propagation, dynamic-port refresh, and
+  recalculation rules. It does not change the target's id, position,
+  connections, tunnels, note, pin/cache state, or output data. The parameter
+  replacement is one undo/redo action.
+- `Paste parameters` is hidden or disabled with an explanatory reason for a
+  different operation type, malformed/outdated data, or a multi-node clipboard.
+  Compatibility is exact by operation id for this release; superficially
+  similar nodes must not receive best-effort parameter mappings.
+- Clipboard data should use a versioned VIPP MIME payload backed by the same
+  validated node/connection serialization concepts as workflow JSON. A private
+  in-process fallback may support environments where the system clipboard is
+  unavailable, but plain text or arbitrary clipboard content must never be
+  interpreted as a graph fragment.
+
+Release acceptance:
+
+- keyboard and context-menu paths behave consistently on macOS, Windows, and
+  Linux, including focus in parameter editors so ordinary text copy/paste is
+  not intercepted by the graph;
+- tests cover selection toggling, single- and multi-node copying, preservation
+  of internal wiring and relative layout, exclusion of external wiring and
+  runtime state, repeated paste placement, atomic validation failure, and
+  undo/redo;
+- parameter-paste tests cover exact-operation compatibility, dynamic parameters
+  and ports, invalid or older payloads, stale-result propagation, and rejection
+  across operation types;
+- the user guide and release notes document the shortcuts, both context menus,
+  what is and is not copied, and the distinction between `Paste here` and
+  `Paste parameters`.
+
+### 7. Graph Polish To Revisit Later
 
 The 0.10 graph-readability work is implemented enough for the current alpha.
 Do not treat search, tunnels, notes, insert-on-wire mapping, inspector state, or
@@ -245,7 +311,7 @@ Revisit only when very large workflows show the need:
 - additional layout polish beyond current auto-structure and connector
   rerouting.
 
-### 7. AI-Assisted Graph Authoring
+### 8. AI-Assisted Graph Authoring
 
 This remains later-platform work.
 
@@ -345,7 +411,7 @@ Delivered:
   with ROI percentages;
 - refreshed VIPP name, tagline, and reusable branding assets.
 
-### Release candidate: 0.12.0a1 - Batch Configuration, Provenance, And Explicit Semantics
+### Released: 0.12.0a1 - Batch Configuration, Provenance, And Explicit Semantics
 
 Goal: make batch execution explicit enough for real analysis runs.
 
@@ -361,13 +427,17 @@ Implementation for this gate includes the saved `vipp_batch_config.json`,
 shared deterministic preview/execution planning, `Error`/`Skip`/`Overwrite`
 collision policy, latest/archive `vipp_batch_manifest.json` files with atomic
 per-item checkpoints, per-item failure isolation with default continuation,
-and a final completed/partial/skipped/failed summary. Semantic-axis iteration and
+and a final completed/partial/skipped/failed summary. The retained batch
+workspace keeps reviewed plans and run evidence inspectable, while a persistent
+Previous/Next/slider navigator calculates any paired representative through the
+graph without saving the complete batch. Semantic-axis iteration and
 plate/well/field HCS traversal are intentionally outside the 0.12 release gate.
 
 ### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
-accidental.
+accidental, while making graph fragments and proven parameter settings easy to
+reuse.
 
 Release gate:
 
@@ -375,6 +445,13 @@ Release gate:
   reads for ordinary inspection;
 - exported OME-Zarr datasets include useful multiscale metadata;
 - docs distinguish analysis-resolution data from preview-resolution rendering.
+- users can multi-select nodes and copy/paste a self-contained graph fragment
+  with its internal wiring and relative layout through shortcuts or graph
+  context menus;
+- users can copy one node and paste its complete validated parameter set onto
+  another node with the exact same operation id;
+- graph paste and parameter paste are atomic, undoable, and do not copy cached
+  arrays, runtime state, or external graph dependencies.
 
 ### 0.14.0a1 - Scientific Validation Pack
 

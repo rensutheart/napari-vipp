@@ -54,6 +54,23 @@ The cache estimate counts in-memory node outputs and VIPP tables. It is not a
 complete Python heap profile, so it should be read as a practical warning
 signal rather than an exact peak-memory measurement.
 
+### Platform Memory Reporting
+
+The RAM value beside the cache estimate uses an explicit operating-system
+branch; VIPP does not assume that one memory API exists everywhere:
+
+| Platform | Provider |
+| --- | --- |
+| Windows | `GlobalMemoryStatusEx` through the native Windows API. |
+| macOS | `host_statistics64` for available pages plus POSIX page-size and physical-page counts. |
+| Other POSIX systems | `os.sysconf` page and physical-memory counters. |
+
+Each provider fails closed to an unavailable RAM reading if its native API or
+counter is absent. A missing platform counter must not prevent graph execution,
+and Windows never enters the POSIX/macOS `sysconf` path. The auto memory guard
+then uses the information that is available, including its existing total-RAM
+fallback, rather than inventing a cross-platform estimate.
+
 ## Per-Node Keep Cached
 
 Every selected node exposes `Keep output cached` in the inspector. Use it for

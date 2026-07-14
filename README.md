@@ -67,7 +67,7 @@ self-contained working copy and opens it already configured and previewed.
 | Image processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
 | Measurements | Object and intensity tables, calibrated morphology, 3D mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |
 | Restoration | Born-Wolf PSF generation, measured-PSF preparation, and manual/cached 2D or 3D Richardson-Lucy and RL-TV deconvolution. |
-| Reuse and automation | Workflow JSON, generated headless Python, explicit batch outputs, local collection batch runs, dry-run previews, and workflow/script artifacts. |
+| Reuse and automation | Workflow JSON, generated headless Python, explicit batch outputs, reviewed collection plans, representative navigation, retained batch results, and workflow/config/manifest artifacts. |
 | I/O | OME-TIFF, ImageJ TIFF, TIFF, local OME-Zarr 0.4/0.5, NPY/NPZ, common 2D raster formats, and optional microscope readers. |
 
 Most graph operations are still eager. Large z-stacks and OME-Zarr datasets
@@ -122,6 +122,8 @@ binding, runtime-version, and command-line details.
 
 ## Documentation
 
+- [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
+- [Categorized 0.12 release notes](CHANGELOG.md#0120a1---2026-07-14)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -163,17 +165,34 @@ guidance, and report suspected vulnerabilities privately through
 [SECURITY.md](SECURITY.md). All project interactions follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## Roadmap
+## 0.12 Alpha Highlights
 
-The current release candidate is `0.12.0a1`. It adds deterministic saved batch
-configuration and per-item/output provenance, strict source/grid/axis contracts,
-shared-executor Python export, workflow schema version 3, and a substantially
-more modular contributor-facing architecture. Breaking alpha changes are
-intentional where preserving an older implicit behavior would weaken scientific
-validity. Semantic-axis collection iteration and HCS traversal remain later
-work; scalable OME-Zarr previews and broader scientific validation follow. See
-[planning.md](docs/planning.md) for the maintained release order and evidence
-gates.
+`0.12.0a1` is a substantial architecture and reproducibility release:
+
+- workflow schema version 3 records explicit axis, channel, grid, and operation
+  choices instead of restoring ambiguous scientific defaults;
+- verified file and live-layer revisions, physical-grid checks, detached viewer
+  layers, and atomic artifacts reject stale or silently repaired inputs;
+- generated Python and collection batching now use the same validated headless
+  executor as the interactive graph;
+- the retained batch workspace adds reviewed plans, representative navigation,
+  explicit outputs, per-item provenance, collision policies, progress, final
+  statuses, manifests, and deterministic validation;
+- exact diagnostics, background workers, and platform-specific memory reporting
+  improve responsiveness without changing the population being measured;
+- Richardson-Lucy TV controls now explain parameter effects and provide
+  practical linear or geometric slider windows without limiting exact spinner
+  entry; and
+- the former monolithic widget has been decomposed into focused Qt-free core and
+  UI service modules with dependency-direction tests.
+
+Breaking alpha changes are intentional where preserving an older implicit
+behavior would weaken scientific validity. See the categorized
+[0.12 release notes](CHANGELOG.md#0120a1---2026-07-14), the
+[upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
+[planning.md](docs/planning.md) for later milestones. Semantic-axis collection
+iteration, HCS traversal, scalable OME-Zarr previews, and broader scientific
+validation remain future work.
 
 ## Citation, Acknowledgement, And License
 

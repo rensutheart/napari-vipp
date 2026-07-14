@@ -34,6 +34,8 @@ reviewing VIPP itself.
   checks.
 - [Architecture](architecture.md): runtime model, metadata, UI, persistence,
   export, and known gaps.
+- [Release notes](../CHANGELOG.md): categorized compatibility, architecture,
+  scientific-behavior, workflow, UI, and validation changes by version.
 - [Release runbook](release-runbook.md): alpha release verification and
   publication steps.
 - [Research and publication record](research-and-publication.md): evidence

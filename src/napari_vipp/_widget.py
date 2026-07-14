@@ -14936,15 +14936,20 @@ def _format_byte_count(size: int | float | None) -> str:
 
 
 def _system_memory_bytes() -> tuple[int | None, int | None]:
-    if os.name == "nt":
+    """Return available and total memory using the current platform API."""
+    if sys.platform == "win32":
         return _windows_memory_bytes()
-    if sys.platform == "darwin":
+    elif sys.platform == "darwin":
         return _macos_memory_bytes()
+
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None, None
     try:
-        page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
-        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
-    except (AttributeError, OSError, ValueError):
+        page_size = int(sysconf("SC_PAGE_SIZE"))
+        total_pages = int(sysconf("SC_PHYS_PAGES"))
+        available_pages = int(sysconf("SC_AVPHYS_PAGES"))
+    except (AttributeError, OSError, TypeError, ValueError):
         return None, None
     return available_pages * page_size, total_pages * page_size
 
@@ -14980,9 +14985,12 @@ class _MacOSVMStatistics64(ctypes.Structure):
 
 def _macos_memory_bytes() -> tuple[int | None, int | None]:
     """Return macOS available and total physical memory without subprocesses."""
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return None, None
     try:
-        page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        page_size = int(sysconf("SC_PAGE_SIZE"))
+        total_pages = int(sysconf("SC_PHYS_PAGES"))
         lib_system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
         lib_system.mach_host_self.restype = ctypes.c_uint32
         host = lib_system.mach_host_self()
@@ -15015,14 +15023,14 @@ def _windows_memory_bytes() -> tuple[int | None, int | None]:
             ("ullAvailPageFile", ctypes.c_ulonglong),
             ("ullTotalVirtual", ctypes.c_ulonglong),
             ("ullAvailVirtual", ctypes.c_ulonglong),
-            ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
         ]
 
     status = MEMORYSTATUSEX()
     status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
     try:
         ok = ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, TypeError, ValueError):
         return None, None
     if not ok:
         return None, None
