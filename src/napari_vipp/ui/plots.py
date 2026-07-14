@@ -46,6 +46,8 @@ class HistogramPlot(QWidget):
         self._markers: list[tuple[str, float, QColor]] = []
         self._draggable_markers: set[str] = set()
         self._drag_marker: str | None = None
+        self._drag_start_x: float | None = None
+        self._drag_moved = False
         self.setMinimumHeight(120)
         self.setMouseTracking(True)
 
@@ -83,6 +85,8 @@ class HistogramPlot(QWidget):
         self._draggable_markers = set(draggable_markers or set()) & marker_labels
         if self._drag_marker not in self._draggable_markers:
             self._drag_marker = None
+            self._drag_start_x = None
+            self._drag_moved = False
         if x_range is None or self._series_counts.size == 0:
             self._x_min_label = ""
             self._x_max_label = ""
@@ -136,16 +140,29 @@ class HistogramPlot(QWidget):
         painter.end()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        marker = self._marker_at_point(_event_position(event))
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+        point = _event_position(event)
+        marker = self._marker_at_point(point)
         if marker is None:
+            super().mousePressEvent(event)
             return
         self._drag_marker = marker
-        self._emit_marker_from_point(marker, _event_position(event))
+        self._drag_start_x = float(point.x())
+        self._drag_moved = False
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         point = _event_position(event)
         if self._drag_marker is not None:
-            self._emit_marker_from_point(self._drag_marker, point)
+            if self._drag_start_x is None or not np.isclose(
+                float(point.x()),
+                self._drag_start_x,
+            ):
+                self._drag_moved = True
+                self._emit_marker_from_point(self._drag_marker, point)
+            event.accept()
             return
         if self._marker_at_point(point) is None:
             self.unsetCursor()
@@ -153,9 +170,21 @@ class HistogramPlot(QWidget):
             self.setCursor(Qt.SizeHorCursor)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if self._drag_marker is not None:
+        if self._drag_marker is None or event.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(event)
+            return
+        if self._drag_moved:
             self._emit_marker_from_point(self._drag_marker, _event_position(event))
         self._drag_marker = None
+        self._drag_start_x = None
+        self._drag_moved = False
+        event.accept()
+
+    def marker_values(self) -> dict[str, Rational | float]:
+        """Return the currently displayed marker values by label."""
+        return {
+            str(label): value for label, value, _color in self._markers
+        }
 
     def _draw_axes(self, painter: QPainter, plot_rect: QRect) -> None:
         painter.setPen(QPen(QColor("#64748b"), 1.2))

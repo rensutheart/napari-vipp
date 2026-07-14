@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+### Richardson-Lucy TV Controls
+
+- Added effect-oriented tooltips to every Richardson-Lucy TV parameter and its
+  label, slider, spinner, checkbox, or choice control.
+- Reduced the iteration slider to a practical 1-100 window and changed TV
+  regularization, TV epsilon, filter epsilon, and denominator floor to true
+  geometric sliders with parameter-specific ranges.
+- Decoupled these slider windows from spinner entry: valid zero/off and
+  out-of-window values remain directly enterable without expanding the slider.
+
+### Histogram Cutoff Interaction
+
+- Made both Rescale Intensity input guides draggable. Dragging a
+  percentile-derived guide switches the node to explicit values, preserves the
+  other exact cutoff, persists the edit, and queues interactive recalculation.
+- Prevented a click on an input-histogram marker from changing its parameter
+  unless the pointer actually moves through a drag.
+- Added real mouse-drag and re-selection regression coverage for Rescale
+  Intensity and Binary Threshold histogram guides.
+
+### Runtime Diagnostics
+
+- Added native macOS virtual-memory reporting for the cache status display,
+  avoiding a subprocess while retaining the existing cross-platform fallback.
+
+### Batch Representative Navigation And Workspace
+
+- Replaced the transient `Run batch...` dialog with a retained `Batch
+  workspace...` that keeps setup, representative selection, item-level run
+  progress, final statuses, validation, and the manifest path inspectable.
+- Added a persistent Previous/Next/slider navigator for the complete batch
+  plan. Selecting an item atomically swaps every paired collection Image Source
+  and recalculates that representative through the graph without saving batch
+  outputs or changing serialized source parameters and the workflow hash.
+- Connected preview-table selection and double-click activation to the same
+  representative session, while retaining limited table rendering for large
+  plans and full-plan navigation through the slider.
+- Made the deterministic paired demo auto-load its data into this session and
+  clarified throughout the UI that one graph representative is distinct from
+  running the complete collection.
+- Added requested-versus-committed representative tracking, bounded materialized
+  source caching, stale-workflow invalidation, and exact reviewed-plan checks so
+  failed or changed inputs cannot be presented or run as the prior preview.
+- Retained failed and completed run evidence with truthful progress, historical
+  preflight labelling, and a required fresh review before replay.
+- Made the retained workspace responsive on smaller displays: setup and results
+  scroll vertically beneath a fixed Run/Close footer, preview paths no longer
+  force oversized table columns, and long representative details stack in a
+  narrow main dock.
+
 ## 0.12.0a1 - 2026-07-14
 
 ### Important Compatibility And Scientific Behavior

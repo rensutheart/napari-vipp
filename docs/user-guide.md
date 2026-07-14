@@ -120,16 +120,18 @@ chunks and background workers to control memory and keep the interface
 responsive; chunking does not change which pixels contribute. An empty input or
 an input with no finite pixels reports an error instead of inventing a cutoff.
 
-For manual guides, dragging a Binary Threshold, either Hysteresis guide, or an
-explicit Rescale/Clip cutoff reuses the already calculated input distribution.
-Only the guide moves immediately and the node output is queued for
-recalculation; VIPP does not rescan unchanged input pixels. The output
-histogram still refreshes after that output changes, as it should. Parameters
-that change a computed guide, such as floating-point histogram bins, refresh
-that guide independently while retaining the displayed counts. A replacement
-connected input array, a different slice, or a different histogram scope still
-calculates a new distribution because the inspected population has genuinely
-changed.
+For manual guides, dragging a Binary Threshold, either Hysteresis guide, either
+Rescale cutoff, or an explicit Clip cutoff reuses the already calculated input
+distribution. Dragging a percentile-derived Rescale guide switches `Input
+cutoffs` to `Explicit values`, preserving the untouched guide and making the
+dragged intensity an exact saved cutoff. Only the guide moves immediately and
+the node output is queued for recalculation; VIPP does not rescan unchanged
+input pixels. The output histogram still refreshes after that output changes,
+as it should. Parameters that change a computed guide, such as floating-point
+histogram bins, refresh that guide independently while retaining the displayed
+counts. A replacement connected input array, a different slice, or a different
+histogram scope still calculates a new distribution because the inspected
+population has genuinely changed.
 
 ### Rescale Intensity Cutoffs
 
@@ -142,7 +144,9 @@ changed.
 
 There is no size-dependent percentile sample. Large percentile calculations are
 backgrounded but still use all finite values. The selected mode is saved in
-workflow JSON.
+workflow JSON. Dragging either histogram cutoff is a manual intensity edit, so a
+node in percentile mode changes to `Explicit values` before the dragged cutoff
+is saved.
 
 `Clip Intensity` uses the same explicit-mode principle. New nodes default to
 `Data range`, which leaves the input range unchanged until explicit bounds are
@@ -408,14 +412,26 @@ delegates to the shared collection runner.
 For a deterministic end-to-end check, select `Deterministic Batch & Provenance`
 under `Open example...` and click `Open batch demo...`. VIPP explains that the
 demo needs a writable working copy, then asks where to save it; it creates a new
-uniquely named directory and never overwrites an earlier one. The collection
-window opens with the bundled two-source workflow and portable config already
-loaded. The interactive graph automatically calculates and displays the first
-paired 8 x 8 field, while the collection window shows a collision-aware plan
-for all three pairs. A highlighted guide summarizes the demonstrated features
-and the next step is explicit: click `Run demo batch` to write nine outputs and
-validate the scientific results and provenance. The same example remains
-available through `Run batch...` -> `Open batch demo...`.
+uniquely named directory and never overwrites an earlier one. The batch
+workspace opens with the bundled two-source workflow and portable config
+already loaded. The interactive graph automatically calculates and displays
+the first paired 8 x 8 field, while the workspace shows a collision-aware plan
+for all three pairs. Use the persistent `Batch representative` slider, its
+Previous/Next buttons, or `Preview selected in graph` on a table row to inspect
+each paired field through every node. This changes both collection Image Source
+paths together but does not run or save the full batch. A highlighted guide
+summarizes the demonstrated features and the next step is explicit: click `Run
+demo batch` to write nine outputs and validate the scientific results and
+provenance. The workspace retains item progress, final statuses, validation,
+and the manifest path and can be reopened with `Batch workspace...`. The same
+example remains available there through `Open batch demo...`.
+
+The graph commits a new representative label only after its matching source
+load and calculation succeed. If batch settings or scientific graph parameters
+change, the old pairing remains browsable but the runnable plan is marked stale.
+Run refreshes and stops for review whenever current files or destinations no
+longer match the displayed plan. Completed preflight rows remain visible as
+historical evidence until the next preview.
 
 Loading the demo replaces the current graph, so VIPP asks for confirmation
 first; save any graph changes you want to keep. The working copy is kept in the
@@ -436,7 +452,7 @@ in the batch summary.
 Add `Batch Output` nodes to mark exactly which image, labels, mask, RGB, or
 table outputs should be saved during batch execution. If no `Batch Output`
 nodes are present, VIPP still falls back to terminal graph outputs for
-compatibility, but the batch dialog warns that the saved-output intent is not
+compatibility, but the batch workspace warns that the saved-output intent is not
 explicit. A terminal with multiple output ports cannot use this fallback. Add
 `Batch Output` nodes before saving a reproducible batch configuration.
 
@@ -449,8 +465,10 @@ object_measurements
 colocalization_metrics
 ```
 
-The batch dialog supports local folder bindings, sorted positional pairing of
-multiple sources, and a non-executing preview. `Save config...` writes a
+The batch workspace supports local folder bindings and sorted positional pairing
+of multiple sources. `Preview batch` plans the collection without saving batch
+outputs, then calculates one selected item as the graph representative.
+`Save config...` writes a
 versioned `vipp_batch_config.json`; `Load config...` restores its source
 bindings, output folder, default format, existing-file policy, continuation
 behavior, required workflow companion, and optional runner choice, and validates
@@ -638,19 +656,25 @@ spatial mode.
 | Parameter | Guidance |
 | --- | --- |
 | `Spatial processing` | Use `3D ZYX` for true volumetric restoration. Use `2D YX` when each plane should be restored independently. |
-| `Iterations` | Start low. Increase only after checking noise and edges. |
+| `Iterations` | Start around 10-30. More iterations may recover detail but cost time and amplify noise, ringing, or PSF mismatch. The linear slider covers 1-100. |
 | `Normalize PSF` | Keep on unless you have a specific reason. |
 | `Clip negative input` | Usually on for microscopy intensity images. |
 | `Clip output negative` | Usually on. |
 | `Preserve input scale` | Keeps output intensities near the input scale after internal normalization. |
+| `Filter epsilon` | Suppresses ratio updates where the predicted blur is extremely small. Larger values are more stable but may lose dim structure; for RL-TV the log slider covers `1e-15` to `0.001`, and `0` disables it. |
 
 RL-TV adds:
 
 | Parameter | Guidance |
 | --- | --- |
-| `TV regularization` | Higher values suppress noise more strongly but can flatten fine structure. |
-| `TV epsilon` | Numerical stability term. Leave at default unless testing. |
-| `Denominator floor` | Stabilizes the TV denominator. Leave at default for first pass. |
+| `TV regularization` | Higher values suppress noise more strongly but can flatten fine structure. `0` gives ordinary RL; the log slider covers `1e-6` to `0.1`. |
+| `TV epsilon` | Smooths the TV gradient norm near zero. Leave at `1e-6` unless testing; the log slider covers `1e-12` to `0.01`. |
+| `Denominator floor` | Limits extreme TV amplification. Larger values are more stable but can weaken the TV correction; the log slider covers `0.001` to `1`. |
+
+These slider ranges are practical exploration windows, not parameter validity
+limits. The adjacent spinner accepts valid values outside its slider window and
+does not enlarge or rescale the slider. `TV regularization = 0` and `Filter
+epsilon = 0` remain available through the spinner as explicit off values.
 
 ### Restoration Caveats
 

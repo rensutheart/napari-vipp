@@ -6,6 +6,7 @@ import ctypes
 import inspect as py_inspect
 import os
 import re
+import sys
 import textwrap
 import threading
 import weakref
@@ -19,6 +20,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 from qtpy.QtCore import (
     QEvent,
+    QEventLoop,
     QPointF,
     QRect,
     QSignalBlocker,
@@ -83,6 +85,7 @@ from napari_vipp.core.batch import (
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
     BatchConfig,
+    BatchItemPlan,
     BatchRunResult,
     ExistingFilePolicy,
     atomic_write_json,
@@ -92,6 +95,7 @@ from napari_vipp.core.batch import (
     preflight_batch,
     run_batch,
     save_batch_config,
+    scientific_workflow_hash,
 )
 from napari_vipp.core.batch_demo import (
     SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME,
@@ -277,6 +281,7 @@ from napari_vipp.ui.batch import BatchPreviewRow as BatchPreviewRow
 from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
+from napari_vipp.ui.batch_navigator import BatchNavigator
 from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
@@ -837,6 +842,17 @@ class VippWidget(QWidget):
         ] = {}
         self._file_source_path_identities: dict[str, LocalSourceIdentity] = {}
         self._interactive_collection_source_paths: dict[str, Path] = {}
+        self._interactive_collection_batch_items: tuple[BatchItemPlan, ...] = ()
+        self._interactive_collection_batch_config: BatchConfig | None = None
+        self._interactive_collection_batch_config_path: Path | None = None
+        self._interactive_collection_batch_index = -1
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._interactive_collection_batch_plan_stale = False
+        self._interactive_collection_batch_workflow_stale = False
+        self._active_collection_batch_dialog: CollectionBatchDialog | None = None
+        self._collection_batch_running = False
+        self._collection_batch_graph_refresh_pending = False
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
         self._source_load_pending = False
@@ -1027,9 +1043,10 @@ class VippWidget(QWidget):
         )
         self.load_workflow_button = QPushButton("Load workflow...")
         self.export_button = QPushButton("Export Python...")
-        self.batch_button = QPushButton("Run batch...")
+        self.batch_button = QPushButton("Batch workspace...")
         self.batch_button.setToolTip(
-            "Run the current workflow over a folder of image files."
+            "Bind collections, preview paired representatives through the "
+            "graph, run the full batch, and inspect progress."
         )
         self.export_ome_button = QPushButton("Export OME dataset...")
         self.settings_menu_button = QToolButton()
@@ -1561,6 +1578,8 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.cache_status_label)
         workflow_row.addWidget(self.version_label)
         root.addLayout(workflow_row)
+        self.batch_navigator = BatchNavigator(self)
+        root.addWidget(self.batch_navigator)
         root.addWidget(self.view_dims_bar)
 
         self.splitter = QSplitter(Qt.Horizontal)
@@ -1900,7 +1919,15 @@ class VippWidget(QWidget):
         self.save_workflow_button.clicked.connect(self._save_workflow_dialog)
         self.load_workflow_button.clicked.connect(self._load_workflow_dialog)
         self.export_button.clicked.connect(self._export_python_dialog)
-        self.batch_button.clicked.connect(self._batch_collection_dialog)
+        self.batch_button.clicked.connect(
+            lambda _checked=False: self._batch_collection_dialog()
+        )
+        self.batch_navigator.itemSelected.connect(
+            self._preview_interactive_collection_batch_item
+        )
+        self.batch_navigator.workspaceRequested.connect(
+            self._open_active_collection_batch_workspace
+        )
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
@@ -2215,6 +2242,7 @@ class VippWidget(QWidget):
     def _push_undo_if_changed(self, before: WorkflowHistorySnapshot) -> None:
         if before != self._current_history_snapshot():
             self._push_undo_snapshot(before)
+            self._mark_collection_batch_workflow_stale_if_needed()
 
     def _record_parameter_undo(self, node_id: str, name: str) -> None:
         key = (node_id, name)
@@ -2227,7 +2255,7 @@ class VippWidget(QWidget):
 
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
         self._debounce_timer.stop()
-        self._interactive_collection_source_paths.clear()
+        self._clear_interactive_collection_batch_session()
         with self._history.suspend_recording():
             workflow = snapshot.workflow
             pinned_layer = self._active_pinned_layer()
@@ -2385,6 +2413,11 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._refresh_graph_search_matches(reset_index=True)
         self.graph_view.select_node(node.id)
+        if operation_id == "input" and (
+            self._interactive_collection_batch_items
+            or self._active_collection_batch_dialog is not None
+        ):
+            self._clear_interactive_collection_batch_session()
         if self._active_pipeline_run_id is not None:
             # A loose node does not need calculation yet, but it does change the
             # serialized workflow owned by the active worker. Register that
@@ -3314,6 +3347,11 @@ class VippWidget(QWidget):
         self._sync_node_output_ports(clone.id)
         self._sync_pin_ui()
         self.graph_view.select_node(clone.id)
+        if original.operation_id == "input" and (
+            self._interactive_collection_batch_items
+            or self._active_collection_batch_dialog is not None
+        ):
+            self._clear_interactive_collection_batch_session()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Duplicated '{original.title}' as '{clone.title}'.")
 
@@ -3457,7 +3495,7 @@ class VippWidget(QWidget):
 
     def _new_workflow(self) -> None:
         self._finish_parameter_history_group()
-        self._interactive_collection_source_paths.clear()
+        self._clear_interactive_collection_batch_session()
         before = self._current_history_snapshot()
         self.pipeline.reset_empty_graph()
         self._preview_disabled_node_ids.clear()
@@ -3592,6 +3630,7 @@ class VippWidget(QWidget):
         path: str | Path,
         *,
         prefer_image_source: bool = False,
+        preserve_batch_workspace: bool = False,
     ) -> Path:
         """Load a workflow file into the widget and recompute the graph.
 
@@ -3600,7 +3639,9 @@ class VippWidget(QWidget):
         start of the scientific data flow instead of a saved terminal node.
         """
         self._finish_parameter_history_group()
-        self._interactive_collection_source_paths.clear()
+        self._clear_interactive_collection_batch_session(
+            close_workspace=not preserve_batch_workspace,
+        )
         before = self._current_history_snapshot()
         source = Path(path).expanduser()
         workflow = load_workflow(source)
@@ -3692,67 +3733,325 @@ class VippWidget(QWidget):
         self,
         *,
         config_path: str | Path | None = None,
+        config: BatchConfig | None = None,
     ) -> None:
+        if self._collection_batch_running:
+            self.status_label.setText(
+                "A collection batch is already running. Its progress remains "
+                "visible in the batch workspace."
+            )
+            active_dialog = self._active_collection_batch_dialog
+            if active_dialog is not None:
+                active_dialog.show()
+                active_dialog.raise_()
+                active_dialog.activateWindow()
+            return
+        active_dialog = self._active_collection_batch_dialog
+        if active_dialog is not None and config_path is None and config is None:
+            active_dialog.show()
+            active_dialog.raise_()
+            active_dialog.activateWindow()
+            return
+        if active_dialog is not None:
+            self._discard_collection_batch_dialog(active_dialog)
         dialog = CollectionBatchDialog(
             self,
             source_nodes=self._batch_source_rows(),
             actions=self._collection_batch_dialog_actions(),
         )
+        self._active_collection_batch_dialog = dialog
+        dialog.runRequested.connect(
+            lambda values, active=dialog: self._run_collection_batch_from_workspace(
+                active, values
+            )
+        )
+        dialog.previewInvalidated.connect(
+            lambda active=dialog: self._mark_interactive_collection_batch_stale(active)
+        )
         if config_path is not None:
             try:
-                config = self._load_collection_batch_config(config_path)
-                dialog._apply_config(config)
+                loaded_config = self._load_collection_batch_config(config_path)
+                dialog._apply_config(loaded_config)
                 dialog._loaded_config_path = Path(config_path)
                 config_root = Path(config_path).expanduser().resolve().parent
-                if (
-                    config_root / SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME
-                ).is_file():
-                    dialog.set_demo_context(
-                        SyntheticBatchDemo.from_root(config_root)
-                    )
+                if (config_root / SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME).is_file():
+                    dialog.set_demo_context(SyntheticBatchDemo.from_root(config_root))
                 dialog._preview_batch()
             except Exception as exc:
+                self._discard_collection_batch_dialog(dialog)
                 self.status_label.setText(f"Could not open batch config: {exc}")
                 return
-        if dialog.exec() != QDialog.Accepted:
+        elif config is not None:
+            try:
+                dialog._apply_config(config)
+                dialog._preview_batch()
+            except Exception as exc:
+                self._discard_collection_batch_dialog(dialog)
+                self.status_label.setText(f"Could not open batch workspace: {exc}")
+                return
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _discard_collection_batch_dialog(
+        self,
+        dialog: CollectionBatchDialog,
+    ) -> None:
+        """Permanently discard a replaced workspace instead of hiding it."""
+        if dialog is self._active_collection_batch_dialog:
+            self._active_collection_batch_dialog = None
+        dialog.close()
+        dialog.deleteLater()
+
+    def _run_collection_batch_from_workspace(
+        self,
+        dialog: CollectionBatchDialog,
+        values: object,
+    ) -> None:
+        """Execute a full batch while retaining its workspace and progress."""
+        if dialog is not self._active_collection_batch_dialog:
             return
-        values = dialog.values()
+        if self._collection_batch_running:
+            self.status_label.setText("A collection batch is already running.")
+            return
+        if not isinstance(values, dict):
+            dialog.show_run_error("The batch workspace returned invalid settings.")
+            return
+        if self._interactive_collection_batch_items and (
+            self._active_source_load_id is not None
+            or self._active_pipeline_run_id is not None
+            or self._source_load_pending
+            or self._pipeline_run_pending
+        ):
+            dialog.show_plan_refresh_required(
+                "Wait for the active source load or graph calculation to finish "
+                "before running the full batch."
+            )
+            return
+        if (
+            self._interactive_collection_batch_items
+            and self._interactive_collection_batch_requested_index >= 0
+        ):
+            dialog.show_plan_refresh_required(
+                "Wait for the representative calculation to finish before "
+                "running the full batch."
+            )
+            return
+        if self._interactive_collection_batch_items and (
+            self._interactive_collection_batch_index < 0
+            or self._interactive_collection_batch_failed_index >= 0
+        ):
+            dialog.show_plan_refresh_required(
+                "The representative graph preview is unavailable or failed. "
+                "Retry it or select another sample and wait for a successful "
+                "calculation before running the full batch."
+            )
+            return
+        preview = dialog._preview_result
+        if preview is None:
+            if dialog._preview_batch():
+                dialog.show_plan_refresh_required(
+                    "The runnable plan was refreshed. Review its items, "
+                    "destinations, and preflight statuses, then click Run batch "
+                    "again."
+                )
+            return
+
+        current_hash = scientific_workflow_hash(self._batch_workflow_document())
+        if current_hash != preview.config.workflow_sha256:
+            dialog.invalidate_for_workflow_change()
+            self._mark_collection_batch_workflow_stale_if_needed()
+            if dialog._preview_batch():
+                dialog.show_plan_refresh_required(
+                    "The workflow changed, so VIPP rebuilt the runnable plan. "
+                    "Review it, then click Run batch again."
+                )
+            return
+
+        source_change = self._reviewed_batch_source_change(preview.items)
+        if source_change:
+            dialog.invalidate_for_source_change(source_change)
+            self._interactive_collection_batch_plan_stale = True
+            self.batch_navigator.set_session_stale(
+                True,
+                message=(
+                    "A reviewed source changed on disk. The graph keeps its "
+                    "pinned earlier revision; press Refresh, then Preview batch "
+                    "again before running."
+                ),
+            )
+            self.status_label.setText(
+                "Batch stopped because a reviewed source changed. Press "
+                "Refresh, then preview the batch again."
+            )
+            return
+
         try:
-            result = self._run_collection_batch(**values)
+            fresh_preview = self._collection_batch_controller.preview(
+                **values,
+                preview_limit=25,
+            )
+        except Exception:
+            dialog._preview_batch()
+            return
+        if (
+            fresh_preview.config != preview.config
+            or fresh_preview.items != preview.items
+        ):
+            if dialog._preview_batch():
+                dialog.show_plan_refresh_required(
+                    "Batch inputs, destinations, or preflight statuses changed "
+                    "since the displayed plan. VIPP refreshed the table; review "
+                    "it, then click Run batch again."
+                )
+            return
+
+        total = preview.total_items
+        if total <= 0:
+            dialog.show_run_error("The batch plan contains no items to run.")
+            return
+
+        # Batch execution owns the GUI-thread progress surface. Supersede any
+        # representative calculation so late interactive results cannot update
+        # the graph or toolbar while the detached headless batch is running.
+        self._debounce_timer.stop()
+        if self._interactive_collection_batch_requested_index >= 0:
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                "the representative calculation was superseded by the full "
+                "batch run",
+            )
+        self._abandon_background_pipeline_run()
+        if self._active_source_load_id is not None:
+            self._source_load_serial += 1
+            self._active_source_load_id = None
+            self._source_load_pending = False
+            self._set_pipeline_busy(False)
+        self._collection_batch_running = True
+        dialog.begin_run(total)
+        self.batch_navigator.set_navigation_enabled(False)
+        self.batch_navigator.begin_batch_progress(
+            total,
+            "Preparing full batch run...",
+        )
+        try:
+            result = self._run_collection_batch(
+                **values,
+                expected_items=preview.items,
+            )
         except Exception as exc:
             self._set_pipeline_busy(False)
+            if dialog is self._active_collection_batch_dialog:
+                dialog.show_run_error(
+                    str(exc),
+                    defer_control_restore=True,
+                )
+            self.batch_navigator.fail_batch_progress(
+                f"Batch failed: {exc}",
+            )
             self.status_label.setText(f"Batch failed: {exc}")
+            return
+        finally:
+            self._collection_batch_running = False
+            self.batch_navigator.set_navigation_enabled(True)
+            if self._collection_batch_graph_refresh_pending:
+                self._collection_batch_graph_refresh_pending = False
+                QTimer.singleShot(0, self.run_pipeline)
+        if dialog is not self._active_collection_batch_dialog:
+            self.status_label.setText(
+                "Batch finished, but its workspace was replaced before the "
+                "result could be displayed."
+            )
             return
         validation_text = self._validate_collection_batch_demo_result(
             dialog._loaded_config_path,
             result,
         )
         summary = result.summary
-        self.status_label.setText(
+        summary_text = (
             f"Batch finished: {summary['completed']} completed, "
             f"{summary['partial']} partial, {summary['skipped']} skipped, "
             f"{summary['failed']} failed; {len(result.saved_paths)} output(s) "
             f"saved. Manifest: {result.manifest_path}."
-            + (f" {validation_text}" if validation_text else "")
         )
-        self._show_collection_batch_summary(result, validation_text)
+        self.status_label.setText(
+            summary_text + (f" {validation_text}" if validation_text else "")
+        )
+        dialog.finish_run(
+            result,
+            validation_text,
+            defer_control_restore=True,
+        )
+        self.batch_navigator.finish_batch_progress(
+            f"Batch finished: {summary['completed']} completed, "
+            f"{summary['partial']} partial, {summary['skipped']} skipped, "
+            f"{summary['failed']} failed.",
+        )
+        dialog.mark_plan_historical_after_run()
+        if (
+            self._interactive_collection_batch_items
+            and self._interactive_collection_batch_index >= 0
+        ):
+            self._interactive_collection_batch_plan_stale = True
+            self.batch_navigator.set_session_stale(
+                True,
+                message=(
+                    "The displayed representative belongs to the completed "
+                    "run. Preview batch again before replaying so current "
+                    "inputs and destinations are rechecked."
+                ),
+            )
+
+    def _reviewed_batch_source_change(
+        self,
+        items: Iterable[BatchItemPlan],
+    ) -> str:
+        """Return a message when any pinned batch source changed in place."""
+        planned_items = tuple(items)
+        reviewed_paths = {
+            Path(raw_path).expanduser().resolve()
+            for item in planned_items
+            for raw_path in item.source_paths.values()
+        }
+        collection_node_ids = {
+            node_id for item in planned_items for node_id in item.source_paths
+        }
+        for node_id, node in self.pipeline.nodes.items():
+            if node.operation_id != "input" or node_id in collection_node_ids:
+                continue
+            fixed_path = self._file_source_path_for_node(node)
+            if fixed_path is not None:
+                reviewed_paths.add(fixed_path)
+        checked: set[str] = set()
+        for path in reviewed_paths:
+            path_text = str(path)
+            if path_text in checked:
+                continue
+            checked.add(path_text)
+            expected = self._file_source_path_identities.get(path_text)
+            if expected is None:
+                continue
+            try:
+                verify_local_source_identity(path, expected)
+            except SourceChangedError as exc:
+                return str(exc)
+        return ""
 
     def _collection_batch_dialog_actions(self) -> CollectionBatchActions:
         return CollectionBatchActions(
-            preview_batch=lambda values, preview_limit: (
-                self._preview_collection_batch(
-                    **values,
-                    preview_limit=preview_limit,
-                )
+            preview_batch=lambda values, preview_limit: self._preview_collection_batch(
+                **values,
+                preview_limit=preview_limit,
             ),
-            choose_demo=lambda dialog_parent: (
-                self._choose_collection_batch_demo(dialog_parent=dialog_parent)
+            choose_demo=lambda dialog_parent: self._choose_collection_batch_demo(
+                dialog_parent=dialog_parent
             ),
             source_rows=self._batch_source_rows,
             load_config=self._load_collection_batch_config,
-            save_config=lambda path, values: (
-                self._save_collection_batch_config(path, **values)
+            save_config=lambda path, values: self._save_collection_batch_config(
+                path, **values
             ),
+            preview_item=self._preview_interactive_collection_batch_item,
         )
 
     def _choose_collection_batch_demo(
@@ -3789,7 +4088,10 @@ class VippWidget(QWidget):
         root: str | Path,
     ) -> SyntheticBatchDemo:
         demo = create_synthetic_batch_demo(root)
-        self.load_workflow_file(demo.workflow_path)
+        self.load_workflow_file(
+            demo.workflow_path,
+            preserve_batch_workspace=True,
+        )
         preview_paths = self._load_collection_batch_demo_preview(demo)
         preview_names = ", ".join(path.name for path in preview_paths)
         self.status_label.setText(
@@ -3798,11 +4100,373 @@ class VippWidget(QWidget):
         )
         return demo
 
+    def _activate_interactive_collection_batch(
+        self,
+        items: Iterable[BatchItemPlan],
+        config: BatchConfig,
+        *,
+        config_path: str | Path | None = None,
+        initial_index: int = 0,
+        force_sync: bool = False,
+    ) -> None:
+        """Activate a UI-only batch session and preview one paired item."""
+        planned_items = tuple(items)
+        if not planned_items:
+            raise ValueError("The batch does not contain any input items.")
+        index = int(initial_index)
+        if not 0 <= index < len(planned_items):
+            raise ValueError("The representative batch index is out of range.")
+        representative_paths = {
+            node_id: Path(path).expanduser().resolve()
+            for node_id, path in planned_items[index].source_paths.items()
+        }
+        reuse_representative = bool(
+            self._interactive_collection_batch_items
+            and self._interactive_collection_batch_requested_index < 0
+            and self._interactive_collection_batch_failed_index < 0
+            and self._active_pipeline_run_id is None
+            and self._active_source_load_id is None
+            and not self._pipeline_run_pending
+            and representative_paths == self._interactive_collection_source_paths
+            and scientific_workflow_hash(self._batch_workflow_document())
+            == config.workflow_sha256
+        )
+        if self._interactive_collection_batch_items and not reuse_representative:
+            self._interactive_collection_source_paths.clear()
+            self._prune_file_source_payload_cache()
+        self._interactive_collection_batch_items = planned_items
+        self._interactive_collection_batch_config = config
+        self._interactive_collection_batch_config_path = (
+            Path(config_path).expanduser().resolve()
+            if config_path is not None
+            else None
+        )
+        if not reuse_representative:
+            self._interactive_collection_source_paths.clear()
+        self._interactive_collection_batch_index = index if reuse_representative else -1
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._interactive_collection_batch_plan_stale = False
+        self._interactive_collection_batch_workflow_stale = False
+        self.batch_navigator.set_session_stale(False)
+        self.batch_navigator.reset_batch_progress()
+        if reuse_representative:
+            self._sync_interactive_collection_batch_navigator()
+            return
+        self._preview_interactive_collection_batch_item(
+            index,
+            force_sync=force_sync,
+        )
+
+    def _preview_interactive_collection_batch_item(
+        self,
+        index: int,
+        *,
+        force_sync: bool = False,
+    ) -> bool:
+        """Calculate one representative item through the complete live graph."""
+        if self._collection_batch_running:
+            self.status_label.setText(
+                "The batch is running; representative navigation is temporarily "
+                "disabled."
+            )
+            self._sync_interactive_collection_batch_navigator()
+            return False
+        items = self._interactive_collection_batch_items
+        index = int(index)
+        if not items or not 0 <= index < len(items):
+            return False
+        item = items[index]
+        missing = sorted(set(item.source_paths) - set(self.pipeline.nodes))
+        if missing:
+            message = (
+                "The active batch references Image Source nodes that are no "
+                "longer present: " + ", ".join(missing) + "."
+            )
+            self._clear_interactive_collection_batch_session(
+                close_workspace=False,
+            )
+            self.status_label.setText(message)
+            active_dialog = self._active_collection_batch_dialog
+            if active_dialog is not None:
+                active_dialog.show_graph_preview_error(index, message)
+            return False
+        representative_paths = {
+            node_id: Path(path).expanduser().resolve()
+            for node_id, path in item.source_paths.items()
+        }
+        if not representative_paths:
+            message = "The batch item did not resolve any collection Image Sources."
+            self.status_label.setText(message)
+            return False
+        unavailable = [
+            path for path in representative_paths.values() if not path.exists()
+        ]
+        if unavailable:
+            message = "Representative source is no longer available: " + ", ".join(
+                str(path) for path in unavailable
+            )
+            self._show_interactive_collection_batch_preview_error(index, message)
+            return False
+
+        if (
+            index == self._interactive_collection_batch_index
+            and self._interactive_collection_batch_requested_index < 0
+            and self._interactive_collection_batch_failed_index != index
+            and representative_paths == self._interactive_collection_source_paths
+        ):
+            self._sync_interactive_collection_batch_navigator()
+            active_dialog = self._active_collection_batch_dialog
+            if active_dialog is not None:
+                active_dialog.select_preview_item(index)
+                active_dialog.set_graph_preview_ready(index)
+                active_dialog.set_representative_pending(False)
+            return True
+        if (
+            index == self._interactive_collection_batch_requested_index
+            and representative_paths == self._interactive_collection_source_paths
+        ):
+            active_dialog = self._active_collection_batch_dialog
+            if active_dialog is not None:
+                active_dialog.select_preview_item(index)
+                active_dialog.set_graph_preview_loading(index)
+                active_dialog.set_representative_pending(True)
+            return True
+
+        # Replace the complete paired mapping in one assignment. Downstream
+        # execution can therefore never observe a half-switched source pair.
+        self._interactive_collection_source_paths = representative_paths
+        self._interactive_collection_batch_requested_index = index
+        self._interactive_collection_batch_failed_index = -1
+        self._sync_interactive_collection_batch_navigator(index=index)
+        self.batch_navigator.show_representative_loading(
+            f"Loading and calculating representative item {index + 1} of "
+            f"{len(items)} ({item.batch_id}) through the graph..."
+        )
+        active_dialog = self._active_collection_batch_dialog
+        if active_dialog is not None:
+            active_dialog.select_preview_item(index)
+            active_dialog.set_graph_preview_loading(index)
+            active_dialog.set_representative_pending(True)
+        self._invalidate_pipeline_cache()
+        if self._selected_node_id in representative_paths:
+            with self._preserve_interactive_collection_workflow_params():
+                self._refresh_image_source_options()
+        self.run_pipeline(
+            force_sync=force_sync,
+            manual_node_ids=self.pipeline.manual_node_ids(),
+        )
+        return True
+
+    def _sync_interactive_collection_batch_navigator(
+        self,
+        *,
+        index: int | None = None,
+    ) -> None:
+        items = self._interactive_collection_batch_items
+        if index is None:
+            index = self._interactive_collection_batch_index
+        if not items or not 0 <= index < len(items):
+            self.batch_navigator.clear_session()
+            return
+        item = items[index]
+        config = self._interactive_collection_batch_config
+        configured_titles = (
+            {source.node_id: source.title for source in config.sources}
+            if config is not None
+            else {}
+        )
+        source_names: dict[str, str] = {}
+        for node_id, path in item.source_paths.items():
+            node = self.pipeline.nodes.get(node_id)
+            if node is None:
+                continue
+            title = configured_titles.get(node_id, node.title)
+            if title in source_names:
+                title = f"{title} ({node_id})"
+            source_names[title] = Path(path).name
+        self.batch_navigator.set_session(
+            len(items),
+            index,
+            item.batch_id,
+            source_names,
+        )
+
+    def _complete_interactive_collection_batch_preview(self) -> None:
+        """Commit only the latest representative whose calculation succeeded."""
+        index = self._interactive_collection_batch_requested_index
+        items = self._interactive_collection_batch_items
+        if not items or not 0 <= index < len(items):
+            return
+        expected_paths = {
+            node_id: Path(path).expanduser().resolve()
+            for node_id, path in items[index].source_paths.items()
+        }
+        if expected_paths != self._interactive_collection_source_paths:
+            return
+        self._interactive_collection_batch_index = index
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._sync_interactive_collection_batch_navigator()
+        # The ordinary completion refresh ran while the prior representative
+        # was still the committed one. Refresh card captions now that this
+        # matching generation is accepted.
+        self._update_thumbnails()
+        if self._selected_node_id in expected_paths:
+            with self._preserve_interactive_collection_workflow_params():
+                self._refresh_image_source_options()
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.select_preview_item(index)
+            dialog.set_graph_preview_ready(index)
+            dialog.set_representative_pending(False)
+        if self._interactive_collection_batch_plan_stale:
+            message = (
+                "The scientific workflow changed - this representative uses "
+                "the previous source pairing through the edited graph. Preview "
+                "batch again before running."
+                if self._interactive_collection_batch_workflow_stale
+                else None
+            )
+            self.batch_navigator.set_session_stale(True, message=message)
+        else:
+            self.batch_navigator.set_session_stale(False)
+        item = items[index]
+        self.status_label.setText(
+            f"Representative batch item {index + 1}/{len(items)} "
+            f"({item.batch_id}) is shown in the graph; the full batch has not "
+            "been run or saved."
+        )
+
+    def _show_interactive_collection_batch_preview_error(
+        self,
+        index: int,
+        message: str,
+        *,
+        graph_may_be_partial: bool = False,
+    ) -> None:
+        """Reject a requested representative without claiming it is displayed."""
+        requested = self._interactive_collection_batch_requested_index
+        if requested < 0 and int(index) < 0:
+            return
+        failed_index = int(index if requested < 0 else requested)
+        self._interactive_collection_batch_requested_index = -1
+        committed = self._interactive_collection_batch_index
+        items = self._interactive_collection_batch_items
+        if graph_may_be_partial and items and 0 <= failed_index < len(items):
+            self._interactive_collection_batch_index = failed_index
+            self._interactive_collection_batch_failed_index = failed_index
+            self._sync_interactive_collection_batch_navigator()
+        elif items and 0 <= committed < len(items):
+            self._interactive_collection_source_paths = {
+                node_id: Path(path).expanduser().resolve()
+                for node_id, path in items[committed].source_paths.items()
+            }
+            self._interactive_collection_batch_failed_index = -1
+            self._sync_interactive_collection_batch_navigator()
+        elif items and 0 <= failed_index < len(items):
+            self._interactive_collection_source_paths.clear()
+            self._interactive_collection_batch_failed_index = -1
+            self._sync_interactive_collection_batch_navigator(index=failed_index)
+        self.batch_navigator.show_representative_error(message)
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.show_graph_preview_error(failed_index, message)
+            representative_ready = bool(
+                items
+                and 0 <= self._interactive_collection_batch_index < len(items)
+                and self._interactive_collection_batch_failed_index < 0
+            )
+            dialog.set_representative_pending(not representative_ready)
+        self.status_label.setText(f"Representative preview failed: {message}")
+
+    def _mark_interactive_collection_batch_stale(
+        self,
+        dialog: CollectionBatchDialog,
+    ) -> None:
+        """Require a fresh plan while retaining the last representative view."""
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        self._interactive_collection_batch_config_path = None
+        self._interactive_collection_batch_plan_stale = True
+        if self._interactive_collection_batch_items:
+            self.batch_navigator.set_session_stale(True)
+
+    def _mark_collection_batch_workflow_stale_if_needed(self) -> None:
+        """Invalidate a retained runnable plan after a scientific graph edit."""
+        config = self._interactive_collection_batch_config
+        if (
+            config is None
+            or not self._interactive_collection_batch_items
+            or self._interactive_collection_batch_workflow_stale
+        ):
+            return
+        if scientific_workflow_hash(self._batch_workflow_document()) == (
+            config.workflow_sha256
+        ):
+            return
+        self._interactive_collection_batch_config_path = None
+        self._interactive_collection_batch_plan_stale = True
+        self._interactive_collection_batch_workflow_stale = True
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.invalidate_for_workflow_change()
+        self.batch_navigator.set_session_stale(
+            True,
+            message=(
+                "The scientific workflow changed - representative navigation "
+                "still uses the previous source pairing through the edited "
+                "graph. Preview batch again before running."
+            ),
+        )
+
+    def _clear_interactive_collection_batch_session(
+        self,
+        *,
+        close_workspace: bool = True,
+    ) -> None:
+        """Clear representative paths and all UI-only batch session state."""
+        if self._collection_batch_running:
+            close_workspace = False
+        self._interactive_collection_source_paths.clear()
+        self._prune_file_source_payload_cache()
+        self._interactive_collection_batch_items = ()
+        self._interactive_collection_batch_config = None
+        self._interactive_collection_batch_config_path = None
+        self._interactive_collection_batch_index = -1
+        self._interactive_collection_batch_requested_index = -1
+        self._interactive_collection_batch_failed_index = -1
+        self._interactive_collection_batch_plan_stale = False
+        self._interactive_collection_batch_workflow_stale = False
+        self.batch_navigator.clear_session()
+        if self._active_source_load_id is not None:
+            self._source_load_serial += 1
+            self._active_source_load_id = None
+            self._source_load_pending = False
+            self._set_pipeline_busy(False)
+        if close_workspace and self._active_collection_batch_dialog is not None:
+            self._discard_collection_batch_dialog(
+                self._active_collection_batch_dialog,
+            )
+
+    def _open_active_collection_batch_workspace(self) -> None:
+        """Open or focus the workspace associated with the current session."""
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+            return
+        self._batch_collection_dialog(
+            config_path=self._interactive_collection_batch_config_path,
+            config=self._interactive_collection_batch_config,
+        )
+
     def _load_collection_batch_demo_preview(
         self,
         demo: SyntheticBatchDemo,
     ) -> tuple[Path, ...]:
-        """Load the first planned pair without changing collection bindings."""
+        """Activate the demo plan and calculate its first representative pair."""
         config = load_batch_config(demo.config_path)
         workflow = self._batch_workflow_document()
         plan = plan_batch(
@@ -3812,20 +4476,12 @@ class VippWidget(QWidget):
         )
         if not plan.items:
             raise ValueError("The batch demo does not contain any input items.")
-        first_item = plan.items[0]
-        self._interactive_collection_source_paths = {
-            node_id: Path(path)
-            for node_id, path in first_item.source_paths.items()
-            if node_id in self.pipeline.nodes
-        }
-        if not self._interactive_collection_source_paths:
-            raise ValueError(
-                "The batch demo did not resolve any interactive Image Sources."
-            )
-        self._invalidate_pipeline_cache()
-        self.run_pipeline(
+        self._activate_interactive_collection_batch(
+            plan.items,
+            config,
+            config_path=demo.config_path,
+            initial_index=0,
             force_sync=True,
-            manual_node_ids=self.pipeline.manual_node_ids(),
         )
         return tuple(self._interactive_collection_source_paths.values())
 
@@ -3904,6 +4560,7 @@ class VippWidget(QWidget):
         source_bindings: list[dict] | None = None,
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
+        expected_items: tuple[BatchItemPlan, ...] | None = None,
     ) -> BatchRunResult:
         del save_workflow_snapshot
         positions = self.graph_view.node_positions()
@@ -3925,6 +4582,11 @@ class VippWidget(QWidget):
         workflow_path = output_path / BATCH_WORKFLOW_FILENAME
         script_path = output_path / BATCH_SCRIPT_FILENAME
         plan = preflight_batch(workflow, config, workflow_path=workflow_path)
+        if expected_items is not None and plan.items != tuple(expected_items):
+            raise RuntimeError(
+                "The batch plan changed after it was reviewed. No batch item "
+                "was run; preview the batch again before retrying."
+            )
         output_path.mkdir(parents=True, exist_ok=True)
         artifact_paths: list[Path] = [
             atomic_write_json(workflow_path, workflow)
@@ -3961,8 +4623,27 @@ class VippWidget(QWidget):
         batch_id: str,
         status: str,
     ) -> None:
+        normalized_status = str(status).strip().casefold()
+        completed = index - 1 if normalized_status == "running" else index
+        self.pipeline_busy_bar.setRange(0, max(int(total), 1))
+        self.pipeline_busy_bar.setValue(max(0, min(int(completed), int(total))))
+        self.pipeline_busy_bar.setTextVisible(True)
+        self.pipeline_busy_bar.setFormat("%v/%m")
+        self.pipeline_busy_label.setText(
+            f"Batch {index}/{total}: {batch_id} ({status})"
+        )
+        if self._interactive_collection_batch_items:
+            self.batch_navigator.update_batch_progress(
+                index,
+                total,
+                batch_id,
+                status,
+            )
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            dialog.update_run_progress(index, total, batch_id, status)
         self.status_label.setText(f"Batch {index}/{total}: {batch_id} ({status}).")
-        QApplication.processEvents()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
     def _batch_workflow_document(
         self,
@@ -4034,7 +4715,7 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
     ) -> BatchPreviewResult:
-        return self._collection_batch_controller.preview(
+        result = self._collection_batch_controller.preview(
             input_dir=input_dir,
             output_dir=output_dir,
             pattern=pattern,
@@ -4046,6 +4727,16 @@ class VippWidget(QWidget):
             existing_file_policy=existing_file_policy,
             continue_on_error=continue_on_error,
         )
+        config_path = None
+        if self._active_collection_batch_dialog is not None:
+            config_path = self._active_collection_batch_dialog._loaded_config_path
+        if result.items and result.config is not None:
+            self._activate_interactive_collection_batch(
+                result.items,
+                result.config,
+                config_path=config_path,
+            )
+        return result
 
     def _batch_source_rows(self) -> list[dict[str, str]]:
         return self._collection_batch_controller.source_rows()
@@ -4136,6 +4827,31 @@ class VippWidget(QWidget):
         return candidate
 
     def _refresh_and_run(self) -> None:
+        items = self._interactive_collection_batch_items
+        representative_index = self._interactive_collection_batch_requested_index
+        if not 0 <= representative_index < len(items):
+            representative_index = self._interactive_collection_batch_index
+        if items and 0 <= representative_index < len(items):
+            item = items[representative_index]
+            self._interactive_collection_batch_index = -1
+            self._interactive_collection_batch_requested_index = representative_index
+            self._interactive_collection_batch_failed_index = -1
+            self._interactive_collection_batch_plan_stale = True
+            self._sync_interactive_collection_batch_navigator(
+                index=representative_index,
+            )
+            self.batch_navigator.show_representative_loading(
+                f"Refreshing and calculating representative item "
+                f"{representative_index + 1} of {len(items)} ({item.batch_id}) "
+                "through the graph..."
+            )
+            dialog = self._active_collection_batch_dialog
+            if dialog is not None:
+                dialog.begin_representative_source_refresh(
+                    representative_index,
+                    len(items),
+                    item.batch_id,
+                )
         self._clear_file_source_snapshots(invalidate_inflight=True)
         refreshed_layer_ids: set[int] = set()
         for layer in self._live_source_node_layers.values():
@@ -4172,6 +4888,7 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids.update(valid_node_ids)
         self.pipeline.mark_manual_descendants_stale(valid_node_ids)
         self._sync_execution_ui()
+        self._mark_collection_batch_workflow_stale_if_needed()
         return True
 
     def _invalidate_pipeline_cache(self) -> None:
@@ -4720,8 +5437,6 @@ class VippWidget(QWidget):
         return tuple(specs)
 
     def _file_source_should_load_async(self, node) -> bool:
-        if str(node.params.get("source_mode", "")) != "file path":
-            return False
         source_path = self._file_source_path_for_node(node)
         if source_path is None:
             return False
@@ -4743,14 +5458,15 @@ class VippWidget(QWidget):
         )
 
     def _file_source_path_for_node(self, node) -> Path | None:
-        if str(node.params.get("source_mode", "")) != "file path":
-            return None
-        path_text = str(node.params.get("file_path", "")).strip()
-        if not path_text:
-            representative = self._interactive_collection_source_paths.get(node.id)
-            if representative is None:
-                return None
+        representative = self._interactive_collection_source_paths.get(node.id)
+        if representative is not None:
             path_text = str(representative)
+        elif str(node.params.get("source_mode", "")) == "file path":
+            path_text = str(node.params.get("file_path", "")).strip()
+        else:
+            return None
+        if not path_text:
+            return None
         return Path(path_text).expanduser().resolve(strict=False)
 
     def _cached_file_source_payload(self, node) -> SourcePayload | None:
@@ -4793,12 +5509,36 @@ class VippWidget(QWidget):
         )
 
     def _prune_file_source_payload_cache(self) -> None:
-        """Retain every visited path revision until explicit Refresh.
+        """Bound representative arrays while retaining pinned path identities.
 
-        The method remains as the call-site boundary for the former active-node
-        pruning policy. Automatic pruning here would allow a path removed and
-        later re-added to adopt a different on-disk revision without Refresh.
+        Outside a collection session, materialized snapshots remain pinned until
+        Refresh. During slider browsing, only the active paired arrays (plus
+        fixed non-batch sources) stay materialized; identity records for every
+        visited path remain pinned so a changed file is still rejected later.
         """
+        items = self._interactive_collection_batch_items
+        if not items:
+            return
+        batch_paths = {
+            str(Path(path).expanduser().resolve())
+            for item in items
+            for path in item.source_paths.values()
+        }
+        retained_keys: set[tuple[object, ...]] = set()
+        for node in self.pipeline.nodes.values():
+            if node.operation_id != "input":
+                continue
+            key = self._file_source_cache_key(node)
+            if key is None:
+                continue
+            if (
+                node.id in self._interactive_collection_source_paths
+                or str(key[0]) not in batch_paths
+            ):
+                retained_keys.add(key)
+        for key in tuple(self._file_source_payload_cache):
+            if str(key[0]) in batch_paths and key not in retained_keys:
+                self._file_source_payload_cache.pop(key, None)
 
     def _source_payloads_for_pipeline(
         self,
@@ -4824,7 +5564,10 @@ class VippWidget(QWidget):
         node,
     ) -> tuple[SourcePayload | None, object | None]:
         mode = str(node.params.get("source_mode", "napari layer"))
-        if mode == "file path":
+        if (
+            mode == "file path"
+            or node.id in self._interactive_collection_source_paths
+        ):
             source_path = self._file_source_path_for_node(node)
             if source_path is None:
                 return SourcePayload(None, {}, ""), None
@@ -4893,6 +5636,7 @@ class VippWidget(QWidget):
             node_id: dict(node.params)
             for node_id, node in self.pipeline.nodes.items()
         }
+        original_rescale_auto_ranges = dict(self._rescale_auto_output_ranges)
         try:
             yield
         finally:
@@ -4900,6 +5644,7 @@ class VippWidget(QWidget):
                 node = self.pipeline.nodes.get(node_id)
                 if node is not None:
                     node.params = params
+            self._rescale_auto_output_ranges = original_rescale_auto_ranges
 
     def _viewer_aligned_source_payload(
         self,
@@ -5530,7 +6275,11 @@ class VippWidget(QWidget):
         }
         if not self.pipeline.remove_node(node_id):
             return
-        self._interactive_collection_source_paths.pop(node_id, None)
+        if node.operation_id == "input" and (
+            self._interactive_collection_batch_items
+            or self._active_collection_batch_dialog is not None
+        ):
+            self._clear_interactive_collection_batch_session()
         attached_note_ids = [
             note_id
             for note_id, note in self._graph_notes.items()
@@ -5933,6 +6682,7 @@ class VippWidget(QWidget):
                 lambda value, name=spec.name: self._on_param_changed(name, value)
             )
             self.parameter_form.addRow(spec.label, widget)
+            self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
             rendered = True
         if node.operation_id == "fill_holes":
@@ -5949,6 +6699,18 @@ class VippWidget(QWidget):
             self._add_operation_note(help_note)
             rendered = True
         self.parameter_group.setHidden(not rendered)
+
+    def _apply_parameter_tooltip(self, spec, widget: QWidget) -> None:
+        tooltip = str(getattr(spec, "tooltip", "")).strip()
+        if not tooltip:
+            return
+        display_tooltip = f"<qt>{tooltip}</qt>"
+        widget.setToolTip(display_tooltip)
+        for child in widget.findChildren(QWidget):
+            child.setToolTip(display_tooltip)
+        label = self.parameter_form.labelForField(widget)
+        if isinstance(label, QWidget):
+            label.setToolTip(display_tooltip)
 
     def _render_rescale_axes_parameters(self, node_id: str) -> None:
         self._sync_rescale_axes_representations(node_id)
@@ -6632,10 +7394,8 @@ class VippWidget(QWidget):
             and str(value.get("binding_mode", "")) == "collection"
             and not str(value.get("file_path", "")).strip()
         ):
-            self._interactive_collection_source_paths.pop(
-                self._selected_node_id,
-                None,
-            )
+            if self._selected_node_id in self._interactive_collection_source_paths:
+                self._clear_interactive_collection_batch_session()
         if (
             str(value.get("file_path", "")) != previous_path
             or str(value.get("binding_mode", "")) != previous_binding
@@ -6661,10 +7421,13 @@ class VippWidget(QWidget):
         self._apply_image_source_params(self._selected_node_id, control.value())
 
     def _source_inspection_for_node(self, node) -> SourceInspection | None:
-        if str(node.params.get("source_mode", "")) != "file path":
+        if (
+            node.id not in self._interactive_collection_source_paths
+            and str(node.params.get("source_mode", "")) != "file path"
+        ):
             return None
-        path = str(node.params.get("file_path", "")).strip()
-        if not path:
+        path = self._file_source_path_for_node(node)
+        if path is None:
             return None
         try:
             return self._inspect_source_file(path)
@@ -6679,10 +7442,10 @@ class VippWidget(QWidget):
             return []
         return [(series.index, series.label) for series in inspection.series]
 
-    @staticmethod
-    def _source_summary(inspection: SourceInspection | None, node) -> str:
+    def _source_summary(self, inspection: SourceInspection | None, node) -> str:
+        batch_prefix = self._interactive_collection_source_summary(node.id)
         if inspection is None:
-            return ""
+            return batch_prefix
         mode = str(node.params.get("binding_mode", "single item"))
         prefix = (
             "Collection binding; the selected series is the interactive "
@@ -6704,7 +7467,20 @@ class VippWidget(QWidget):
             " File data is loaded as a frozen snapshot and remains pinned "
             "until Refresh."
         )
-        return summary
+        return f"{batch_prefix} {summary}".strip()
+
+    def _interactive_collection_source_summary(self, node_id: str) -> str:
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_index
+        if not items or not 0 <= index < len(items):
+            return ""
+        path = items[index].source_paths.get(node_id)
+        if path is None:
+            return ""
+        return (
+            f"Representative batch item {index + 1}/{len(items)}: "
+            f"{Path(path).name}. The full batch has not been run."
+        )
 
     def _render_select_axis_slice_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -7346,6 +8122,19 @@ class VippWidget(QWidget):
                 entry_minimum=spec.minimum,
                 entry_maximum=1_000_000.0,
             )
+        if (
+            node is not None
+            and node.operation_id == "richardson_lucy_tv_deconvolution"
+            and spec.name
+            in {
+                "iterations",
+                "tv_regularization",
+                "tv_epsilon",
+                "filter_epsilon",
+                "denominator_floor",
+            }
+        ):
+            return self._richardson_lucy_tv_parameter_bounds(spec)
         if spec.name in {"threshold", "low_threshold", "high_threshold"}:
             return self._threshold_bounds(node_id, spec)
         if spec.name == "axis":
@@ -7384,6 +8173,71 @@ class VippWidget(QWidget):
             and spec.name == "min_size"
         ):
             return self._remove_small_object_bounds(node_id, spec)
+        return ParameterBounds(
+            spec.minimum,
+            spec.maximum,
+            spec.step,
+            spec.decimals,
+            expandable=True,
+        )
+
+    @staticmethod
+    def _richardson_lucy_tv_parameter_bounds(spec) -> ParameterBounds:
+        entry_maximum = 1_000_000.0
+        if spec.name == "iterations":
+            return ParameterBounds(
+                1,
+                100,
+                1,
+                0,
+                expandable=False,
+                entry_minimum=1,
+                entry_maximum=2_147_483_647,
+            )
+        if spec.name == "tv_regularization":
+            return ParameterBounds(
+                1e-6,
+                1e-1,
+                1e-4,
+                6,
+                expandable=False,
+                logarithmic=True,
+                entry_minimum=0.0,
+                entry_maximum=entry_maximum,
+            )
+        if spec.name == "tv_epsilon":
+            return ParameterBounds(
+                1e-12,
+                1e-2,
+                1e-7,
+                12,
+                expandable=False,
+                logarithmic=True,
+                entry_minimum=1e-12,
+                entry_maximum=entry_maximum,
+            )
+        if spec.name == "filter_epsilon":
+            return ParameterBounds(
+                1e-15,
+                1e-3,
+                1e-12,
+                15,
+                expandable=False,
+                logarithmic=True,
+                entry_minimum=0.0,
+                entry_maximum=entry_maximum,
+            )
+        if spec.name == "denominator_floor":
+            return ParameterBounds(
+                1e-3,
+                1.0,
+                1e-2,
+                6,
+                expandable=False,
+                logarithmic=True,
+                entry_minimum=1e-6,
+                entry_maximum=entry_maximum,
+            )
         return ParameterBounds(
             spec.minimum,
             spec.maximum,
@@ -9124,6 +9978,9 @@ class VippWidget(QWidget):
     ) -> None:
         if self._closing:
             return
+        if self._collection_batch_running:
+            self._collection_batch_graph_refresh_pending = True
+            return
         manual_node_ids = {
             node_id
             for node_id in (manual_node_ids or set())
@@ -9147,11 +10004,19 @@ class VippWidget(QWidget):
             self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
             self._show_optional_reader_error(exc)
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                str(exc),
+            )
             return
         except Exception as exc:
             self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
             self.status_label.setText(f"Image source error: {exc}")
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                str(exc),
+            )
             return
 
         if not source_payloads:
@@ -9167,6 +10032,10 @@ class VippWidget(QWidget):
             self._sync_execution_ui()
             self._refresh_cache_status()
             self.status_label.setText("No Image Source node has a selected source.")
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                "no Image Source payload could be loaded",
+            )
             return
 
         primary_layer = source_layers[0] if source_layers else None
@@ -9306,9 +10175,23 @@ class VippWidget(QWidget):
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
             self.status_label.setText(f"Pipeline error: {exc}")
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                str(exc),
+                graph_may_be_partial=True,
+            )
             return
-        autodefault_changed = self._resync_autodefault_nodes()
-        refreshed_selected = self._refresh_selected_parameter_controls()
+        if self._interactive_collection_source_paths:
+            # Representative browsing is a transient source override. Keep
+            # dtype/series-driven UI normalization from rewriting the exact
+            # scientific workflow that the batch config hashes and executes.
+            with self._preserve_interactive_collection_workflow_params():
+                self._refresh_selected_parameter_controls()
+            autodefault_changed: set[str] = set()
+            refreshed_selected = False
+        else:
+            autodefault_changed = self._resync_autodefault_nodes()
+            refreshed_selected = self._refresh_selected_parameter_controls()
         if autodefault_changed or refreshed_selected:
             rerun_dirty = set(autodefault_changed)
             if refreshed_selected and self._selected_node_id in self.pipeline.nodes:
@@ -9360,6 +10243,7 @@ class VippWidget(QWidget):
         else:
             self.status_label.setText("No image source selected.")
         self._refresh_cache_status()
+        self._complete_interactive_collection_batch_preview()
 
     def _has_active_file_source_snapshot(self) -> bool:
         return any(
@@ -9422,6 +10306,11 @@ class VippWidget(QWidget):
             if self._source_load_pending:
                 self._source_load_pending = False
                 QTimer.singleShot(0, self.run_pipeline)
+            else:
+                self._show_interactive_collection_batch_preview_error(
+                    self._interactive_collection_batch_requested_index,
+                    result.error,
+                )
             return
         try:
             for key, snapshot in result.snapshots.items():
@@ -9433,6 +10322,11 @@ class VippWidget(QWidget):
             if self._source_load_pending:
                 self._source_load_pending = False
                 QTimer.singleShot(0, self.run_pipeline)
+            else:
+                self._show_interactive_collection_batch_preview_error(
+                    self._interactive_collection_batch_requested_index,
+                    str(exc),
+                )
             return
         self._prune_file_source_payload_cache()
         self._set_pipeline_busy(False)
@@ -9764,6 +10658,10 @@ class VippWidget(QWidget):
                 return
             self._set_pipeline_busy(False)
             self.status_label.setText("Background processing canceled.")
+            self._show_interactive_collection_batch_preview_error(
+                self._interactive_collection_batch_requested_index,
+                "background processing was canceled",
+            )
             return
         if result.error:
             self.pipeline.set_node_execution_error(processing_node_id, result.error)
@@ -9775,6 +10673,11 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Pipeline error: {result.error}{suffix}")
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
+            else:
+                self._show_interactive_collection_batch_preview_error(
+                    self._interactive_collection_batch_requested_index,
+                    result.error,
+                )
             return
         if result.pipeline is None:
             self.pipeline.set_node_execution_error(
@@ -9789,6 +10692,11 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Pipeline error: no result returned{suffix}.")
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
+            else:
+                self._show_interactive_collection_batch_preview_error(
+                    self._interactive_collection_batch_requested_index,
+                    "no pipeline result was returned",
+                )
             return
         if not self._workflow_matches_current_pipeline(result.workflow):
             if not can_apply_before_pending:
@@ -9817,8 +10725,14 @@ class VippWidget(QWidget):
             self._pipeline_run_pending = False
         else:
             self._complete_pipeline_run(source_signature, dirty_node_ids)
-        autodefault_changed = self._resync_autodefault_nodes()
-        refreshed_selected = self._refresh_selected_parameter_controls()
+        if self._interactive_collection_source_paths:
+            with self._preserve_interactive_collection_workflow_params():
+                self._refresh_selected_parameter_controls()
+            autodefault_changed: set[str] = set()
+            refreshed_selected = False
+        else:
+            autodefault_changed = self._resync_autodefault_nodes()
+            refreshed_selected = self._refresh_selected_parameter_controls()
         if autodefault_changed or refreshed_selected:
             # An auto-tracking node (Clip/Rescale range) or the selected node's
             # controls shifted because a descendant of the just-run dirty set
@@ -9941,6 +10855,10 @@ class VippWidget(QWidget):
         self.status_label.setText(
             "Canceled background processing. The current worker may finish in "
             "the background, but its result will be ignored."
+        )
+        self._show_interactive_collection_batch_preview_error(
+            self._interactive_collection_batch_requested_index,
+            "background processing was canceled",
         )
 
     def _set_pipeline_busy(
@@ -10213,8 +11131,17 @@ class VippWidget(QWidget):
                 data,
             )
             node_output_type = self._node_output_type(node_id)
+            metadata_text = format_compact_metadata(preview_state)
+            batch_text = self._interactive_collection_card_metadata(node_id)
+            if batch_text:
+                metadata_text = (
+                    f"{batch_text}\n{metadata_text}"
+                    if metadata_text and metadata_text != "No output"
+                    else batch_text
+                )
             self.graph_view.set_node_metadata(
-                node_id, format_compact_metadata(preview_state)
+                node_id,
+                metadata_text,
             )
             self.graph_view.set_node_output_type(node_id, node_output_type)
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
@@ -10275,6 +11202,16 @@ class VippWidget(QWidget):
             self._clear_active_pin(status=False)
         else:
             self._sync_pin_ui()
+
+    def _interactive_collection_card_metadata(self, node_id: str) -> str:
+        items = self._interactive_collection_batch_items
+        index = self._interactive_collection_batch_index
+        if not items or not 0 <= index < len(items):
+            return ""
+        path = items[index].source_paths.get(node_id)
+        if path is None:
+            return ""
+        return f"Batch {index + 1}/{len(items)} · {Path(path).name}"
 
     def _on_selected_preview_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id
@@ -10860,13 +11797,6 @@ class VippWidget(QWidget):
         if node is None:
             return
         if (
-            node.operation_id == "rescale_intensity"
-            and not str(
-                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-            ).lower().startswith("value")
-        ):
-            return
-        if (
             node.operation_id == "clip_intensity"
             and not str(node.params.get("cutoff_mode", "Data range"))
             .lower()
@@ -10876,16 +11806,73 @@ class VippWidget(QWidget):
         name = _input_histogram_marker_parameter(node.operation_id, label)
         if name is None:
             return
+        switched_rescale_mode = False
+        if (
+            node.operation_id == "rescale_intensity"
+            and not str(
+                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
+            ).lower().startswith("value")
+        ):
+            switched_rescale_mode = (
+                self._switch_rescale_histogram_to_value_cutoffs(
+                    node_id,
+                    history_name=name,
+                )
+            )
+            if not switched_rescale_mode:
+                return
         value = self._paired_histogram_marker_value(node_id, name, value)
         value = self._coerce_histogram_parameter_value(node_id, name, value)
-        if not self._set_histogram_parameter_value(node_id, name, value):
+        parameter_changed = self._set_histogram_parameter_value(
+            node_id,
+            name,
+            value,
+        )
+        if not switched_rescale_mode and not parameter_changed:
             return
+        if switched_rescale_mode:
+            self._render_parameters(node_id)
+            self.status_label.setText(
+                "Rescale input cutoffs switched to explicit values for "
+                "histogram dragging."
+            )
         self._mark_pipeline_dirty(node_id)
         self._update_rescale_input_histogram(
             node_id,
             self._current_step(),
         )
         self._debounce_timer.start()
+
+    def _switch_rescale_histogram_to_value_cutoffs(
+        self,
+        node_id: str,
+        *,
+        history_name: str,
+    ) -> bool:
+        """Make a percentile marker drag an exact explicit-value edit."""
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "rescale_intensity":
+            return False
+        marker_values = self.rescale_input_histogram_plot.marker_values()
+        low = marker_values.get("low")
+        if low is None:
+            return False
+        high = marker_values.get("high", low)
+        try:
+            low_value = float(_finite_marker_value(low, "Low input value"))
+            high_value = float(_finite_marker_value(high, "High input value"))
+        except ValueError:
+            return False
+
+        self._record_parameter_undo(node_id, history_name)
+        self.pipeline.set_param(
+            node_id,
+            RESCALE_CUTOFF_MODE_PARAMETER,
+            "Values",
+        )
+        self.pipeline.set_param(node_id, "in_low_value", low_value)
+        self.pipeline.set_param(node_id, "in_high_value", high_value)
+        return True
 
     def _on_label_volume_marker_changed(self, label: str, value: float) -> None:
         node_id = self._selected_node_id
@@ -13486,11 +14473,7 @@ def _input_histogram_draggable_markers(
     params: dict | None = None,
 ) -> set[str]:
     if operation_id == "rescale_intensity":
-        if str(
-            (params or {}).get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-        ).lower().startswith("value"):
-            return {"low", "high"}
-        return set()
+        return {"low", "high"}
     if operation_id == "clip_intensity":
         if str((params or {}).get("cutoff_mode", "Data range")).lower().startswith(
             "value"
@@ -13955,12 +14938,69 @@ def _format_byte_count(size: int | float | None) -> str:
 def _system_memory_bytes() -> tuple[int | None, int | None]:
     if os.name == "nt":
         return _windows_memory_bytes()
+    if sys.platform == "darwin":
+        return _macos_memory_bytes()
     try:
         page_size = int(os.sysconf("SC_PAGE_SIZE"))
         total_pages = int(os.sysconf("SC_PHYS_PAGES"))
         available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
     except (AttributeError, OSError, ValueError):
         return None, None
+    return available_pages * page_size, total_pages * page_size
+
+
+class _MacOSVMStatistics64(ctypes.Structure):
+    _fields_ = [
+        ("free_count", ctypes.c_uint32),
+        ("active_count", ctypes.c_uint32),
+        ("inactive_count", ctypes.c_uint32),
+        ("wire_count", ctypes.c_uint32),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", ctypes.c_uint32),
+        ("speculative_count", ctypes.c_uint32),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", ctypes.c_uint32),
+        ("throttled_count", ctypes.c_uint32),
+        ("external_page_count", ctypes.c_uint32),
+        ("internal_page_count", ctypes.c_uint32),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
+def _macos_memory_bytes() -> tuple[int | None, int | None]:
+    """Return macOS available and total physical memory without subprocesses."""
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
+        lib_system = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        lib_system.mach_host_self.restype = ctypes.c_uint32
+        host = lib_system.mach_host_self()
+        statistics = _MacOSVMStatistics64()
+        count = ctypes.c_uint32(
+            ctypes.sizeof(statistics) // ctypes.sizeof(ctypes.c_int)
+        )
+        result = lib_system.host_statistics64(
+            host,
+            4,  # HOST_VM_INFO64
+            ctypes.byref(statistics),
+            ctypes.byref(count),
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None, None
+    if result != 0:
+        return None, None
+    available_pages = int(statistics.free_count) + int(statistics.inactive_count)
     return available_pages * page_size, total_pages * page_size
 
 

@@ -105,8 +105,9 @@ src/napari_vipp/
     source_adapter.py  owned, revisioned live napari source boundary
     file_sources.py    Qt worker for verified local file snapshots
     workers.py         thin Qt adapter for core execution
-    batch.py           collection batch dialog and UI data contracts
+    batch.py           retained collection batch workspace and UI data contracts
     batch_controller.py batch setup/save/load/preview coordination
+    batch_navigator.py persistent representative navigation and run progress
     history.py         Qt-free undo/redo session state
     lifecycle.py       external signal and worker shutdown ownership
     examples.py        example workflow registry and resource lookup
@@ -153,7 +154,7 @@ Important dataclasses:
 
 | Type | Purpose |
 | --- | --- |
-| `ParameterSpec` | Declares one parameter: name, label, kind, default, range, step, decimals, and optional choices. |
+| `ParameterSpec` | Declares one parameter: name, label, kind, default, range, step, decimals, optional choices, and optional effect-oriented tooltip guidance. |
 | `InputSpec` | Declares one named input port of a heterogeneous node: `name`, `input_type`, and optional display `title`. |
 | `OutputSpec` | Declares one output port of a node: `name`, `output_type`, and optional display `title`. |
 | `OperationSpec` | Declares a node type in `NODE_LIBRARY`: id, title, category, subcategory, input/output types, parameters, function, `max_inputs`, optional named `inputs`, optional static `outputs`, optional dynamic `output_factory`, and whether outputs preserve the connected input type. |
@@ -280,6 +281,11 @@ Special execution cases:
 
 - `save_output` receives the upstream `image_state` so TIFF/ImageJ metadata can
   be written where possible.
+- `richardson_lucy_tv_deconvolution` uses fixed, practical slider windows while
+  retaining wider valid spinner-entry ranges. Its positive logarithmic bounds
+  use geometric interpolation; zero/off values remain spinner-only and do not
+  expand the slider. Tooltips from its `ParameterSpec` values are applied to the
+  form label and every interactive child of the parameter control.
 - `filter_labels_by_volume` parameter controls derive their slider extent from
   the largest incoming object under the resolved 2D/3D spatial mode. The
   logarithmic slider remains practical for wide volume ranges while the spin
@@ -811,7 +817,10 @@ finite input value. `Values` uses the stored low/high values directly. The
 inactive pair is informative only and cannot silently override the active
 mode. Both the mode and cutoff fields are ordinary serialized node parameters.
 The percentile markers always describe the full connected input, matching the
-operation, even when the inspector is drawing only a slice histogram.
+operation, even when the inspector is drawing only a slice histogram. Starting
+a drag from either percentile marker atomically seeds the explicit-value pair
+from the displayed exact cutoffs and changes `cutoff_mode` to `Values`; later
+drag events reuse the cached distribution and update the active value parameter.
 
 `Clip Intensity` similarly stores `cutoff_mode = Data range | Values`. New nodes
 default to `Data range`. Its data-range markers likewise describe the complete
@@ -932,7 +941,7 @@ The implemented decomposition is:
 | `ui/diagnostic_workers.py` | Typed diagnostic requests/results and Qt runnables with injected calculation ports. |
 | `ui/source_adapter.py`, `ui/file_sources.py` | Live-layer revision tracking and Qt scheduling for verified file snapshots. |
 | `core/execution.py`, `ui/workers.py` | Headless pipeline request/result service and its thin Qt runnable. |
-| `core/batch_setup.py`, `ui/batch.py`, `ui/batch_controller.py` | Headless batch configuration, collection dialog, and batch application controller. |
+| `core/batch_setup.py`, `ui/batch.py`, `ui/batch_controller.py`, `ui/batch_navigator.py` | Headless batch configuration, retained collection workspace, application controller, and representative/progress navigator. |
 | `ui/history.py`, `ui/lifecycle.py` | Undo/redo state and terminal shutdown of external callbacks/background work. |
 
 `_widget.py` still owns the three-pane/toolbar/inspector assembly, graph-editing
@@ -1063,6 +1072,26 @@ Collection batch UI:
   injected `CollectionBatchActions`. `ui.batch_controller.CollectionBatchController`
   coordinates save/load/preview with stable workflow and pipeline providers;
   `core.batch_setup` constructs and validates configuration without Qt.
+- A successful preview exposes the complete tuple of `BatchItemPlan` values to
+  a UI-only session while keeping the table sample limited. `ui.batch_navigator`
+  selects a zero-based representative position and reports one-based runner
+  progress. It never becomes part of serialized scientific workflow state.
+- Representative selection atomically replaces the transient path mapping for
+  every collection-bound Image Source, then uses normal verified source loading
+  and graph execution. Fixed Image Sources remain fixed. No list-producing Batch
+  Input node is required, and preview paths do not change workflow parameters or
+  the scientific workflow hash.
+- Requested and committed representative indexes are separate: asynchronous
+  source or graph work updates the committed item only after the matching
+  generation succeeds. Materialized arrays from older slider positions are
+  evicted, while their verified file identities remain pinned to reject changed
+  revisions on revisit.
+- The batch workspace is retained and modeless so the graph remains visible.
+  Preview-table selection and the full-plan navigator stay synchronized;
+  execution compares fresh preflight with the reviewed full plan and revalidates
+  pinned representative source identities, stopping for review when either
+  changes. It reports accurate item-level progress, final manifest statuses,
+  validation, and the manifest path in the workspace.
 - The dialog lists every `Image Source` node as a possible batch source binding.
   A blank row is accepted only for an existing fixed file-path source;
   napari-layer and sample sources must be collection-bound.
@@ -1137,7 +1166,7 @@ Collection batch UI:
   without Qt or napari state. Its bundled graph writes explicit NPY, TIFF, and
   TSV outputs; the validator compares decoded results with exact ground truth
   and checks config/workflow hashes, source identities, final/archive
-  manifests, and item sidecars. The batch dialog and flagged example entry use
+  manifests, and item sidecars. The batch workspace and flagged example entry use
   this same generator and always choose a new directory.
 
 ## Sample Data

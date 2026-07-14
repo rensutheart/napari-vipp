@@ -46,6 +46,18 @@ def test_controller_previews_one_workflow_snapshot_and_current_pipeline(
     assert snapshots == [workflow]
     assert preview.total_items == 2
     assert len(preview) == 1
+    assert len(preview.items) == 2
+    assert [item.index for item in preview.items] == [1, 2]
+    assert preview.rows[0].batch_id == preview.items[0].batch_id
+    assert [item.source_paths["input"].name for item in preview.items] == [
+        "field_a.npy",
+        "field_b.npy",
+    ]
+    assert preview.config.sources[0].node_id == "input"
+    assert preview.config.resolve_path(preview.config.sources[0].input_dir) == input_dir
+    assert preview.config.resolve_path(preview.config.output_dir) == (
+        tmp_path / "outputs"
+    )
     assert preview.explicit_outputs
     assert preview.collision_count == 0
     assert preview[0].output_statuses == ("new",)

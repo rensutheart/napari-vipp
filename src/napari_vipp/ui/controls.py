@@ -49,11 +49,12 @@ def _slider_safe_bounds(
     maximum_slider_units = 1_000_000_000
     decimals = int(decimals)
     extent = max(abs(float(minimum)), abs(float(maximum)), 1.0)
-    while decimals > 0 and extent * (10**decimals) > maximum_slider_units:
-        decimals -= 1
-    if extent > maximum_slider_units:
-        minimum = max(float(minimum), -maximum_slider_units)
-        maximum = min(float(maximum), maximum_slider_units)
+    if not logarithmic:
+        while decimals > 0 and extent * (10**decimals) > maximum_slider_units:
+            decimals -= 1
+        if extent > maximum_slider_units:
+            minimum = max(float(minimum), -maximum_slider_units)
+            maximum = min(float(maximum), maximum_slider_units)
 
     smallest_step = 1.0 if decimals == 0 else 10 ** (-decimals)
     return ParameterBounds(
@@ -222,9 +223,14 @@ class ParameterControl(QWidget):
     def _to_slider(self, value) -> int:
         if self._bounds.logarithmic:
             minimum = float(self._bounds.minimum)
-            span = float(self._bounds.maximum) - minimum
+            maximum = float(self._bounds.maximum)
+            span = maximum - minimum
             if span <= 0:
                 return 0
+            if minimum > 0.0:
+                clipped = float(np.clip(float(value), minimum, maximum))
+                fraction = np.log(clipped / minimum) / np.log(maximum / minimum)
+                return int(round(fraction * 1000))
             offset = float(np.clip(float(value) - minimum, 0.0, span))
             fraction = np.log1p(offset) / np.log1p(span)
             return int(round(fraction * 1000))
@@ -235,9 +241,17 @@ class ParameterControl(QWidget):
     def _from_slider(self, value: int):
         if self._bounds.logarithmic:
             minimum = float(self._bounds.minimum)
-            span = float(self._bounds.maximum) - minimum
+            maximum = float(self._bounds.maximum)
+            span = maximum - minimum
             fraction = float(np.clip(value, 0, 1000)) / 1000.0
-            mapped = minimum + np.expm1(fraction * np.log1p(max(span, 0.0)))
+            if minimum > 0.0 and span > 0.0:
+                mapped = minimum * np.exp(
+                    fraction * np.log(maximum / minimum)
+                )
+            else:
+                mapped = minimum + np.expm1(
+                    fraction * np.log1p(max(span, 0.0))
+                )
             return int(round(mapped)) if self._is_integer else mapped
         return int(value) if self._is_integer else value / self._scale
 

@@ -12,7 +12,7 @@ import imageio.v3 as iio
 import numpy as np
 import pytest
 import tifffile
-from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt
+from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
@@ -55,6 +55,7 @@ from napari_vipp._widget import (
     _histogram_summary,
     _input_histogram_marker_key,
     _input_histogram_markers,
+    _macos_memory_bytes,
     _prepare_colocalization_scatter_density,
     _rescale_dtype_output_range,
 )
@@ -417,6 +418,34 @@ def test_histogram_plot_dragging_marker_emits_histogram_value(qtbot):
     assert captured
     assert captured[-1][0] == "threshold"
     assert np.isclose(captured[-1][1], 75.0, atol=1.0)
+
+
+def test_histogram_plot_clicking_marker_does_not_change_it(qtbot):
+    plot = HistogramPlot()
+    qtbot.addWidget(plot)
+    plot.resize(240, 160)
+    plot.set_histogram(
+        np.ones(32, dtype=np.float32),
+        log_scale=False,
+        x_range=(0.0, 100.0),
+        markers=[("threshold", 50.0, QColor("#f59e0b"))],
+        draggable_markers={"threshold"},
+    )
+    plot.show()
+    captured = []
+    plot.markerChanged.connect(
+        lambda label, value: captured.append((str(label), float(value)))
+    )
+
+    rect = plot._plot_rect()
+    marker = QPoint(
+        rect.left() + int(round(plot._x_fraction(50.0) * rect.width())),
+        rect.center().y(),
+    )
+    qtbot.mouseClick(plot, Qt.LeftButton, pos=marker)
+
+    assert captured == []
+    assert plot.marker_values()["threshold"] == 50.0
 
 
 def test_widget_builds_graph_and_inspects_node(qtbot):
@@ -4458,6 +4487,10 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ] == [("low", 0.0), ("high", 255.0)]
+    assert widget.rescale_input_histogram_plot._draggable_markers == {
+        "low",
+        "high",
+    }
 
     widget.rescale_input_histogram_log_checkbox.setChecked(True)
 
@@ -4467,6 +4500,44 @@ def test_rescale_intensity_shows_input_and_output_histograms(qtbot):
 
     assert widget.rescale_input_histogram_group.isHidden()
     assert widget.histogram_group.title() == "Output Histogram"
+
+
+def test_rescale_percentile_histogram_drag_switches_to_persisted_values(qtbot):
+    data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    plot = widget.rescale_input_histogram_plot
+    plot.resize(320, 160)
+    plot.show()
+
+    rect = plot._plot_rect()
+    start = QPoint(rect.left(), rect.center().y())
+    end = QPoint(rect.left() + int(round(0.25 * rect.width())), rect.center().y())
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=end)
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=end)
+
+    assert node.params["cutoff_mode"] == "Values"
+    assert node.params["in_low_value"] == pytest.approx(64.0, abs=1.0)
+    assert node.params["in_high_value"] == 255.0
+    assert "in_low_value" in widget._parameter_widgets
+    assert "in_low_percentile" not in widget._parameter_widgets
+    qtbot.waitUntil(
+        lambda: widget.pipeline.outputs[node.id] is not None
+        and int(np.asarray(widget.pipeline.outputs[node.id]).reshape(-1)[32]) == 0,
+        timeout=5_000,
+    )
+    widget.graph_view.select_node("input")
+    widget.graph_view.select_node(node.id)
+    assert node.params["cutoff_mode"] == "Values"
+    assert widget._parameter_widgets["in_low_value"].value() == pytest.approx(
+        64.0,
+        abs=1.0,
+    )
 
 
 def test_input_histogram_scope_switches_between_slice_and_stack(qtbot):
@@ -4671,6 +4742,39 @@ def test_binary_threshold_shows_input_histogram_marker(qtbot):
         (label, value)
         for label, value, _color in widget.rescale_input_histogram_plot._markers
     ] == [("threshold", 64.0)]
+
+
+def test_binary_threshold_histogram_drag_persists_parameter(qtbot):
+    data = np.arange(256, dtype=np.uint8).reshape(1, 16, 16)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("binary_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    plot = widget.rescale_input_histogram_plot
+    plot.resize(320, 160)
+    plot.show()
+
+    rect = plot._plot_rect()
+    start = QPoint(
+        rect.left()
+        + int(round(plot._x_fraction(node.params["threshold"]) * rect.width())),
+        rect.center().y(),
+    )
+    end = QPoint(rect.left() + int(round(0.75 * rect.width())), rect.center().y())
+    qtbot.mousePress(plot, Qt.LeftButton, pos=start)
+    qtbot.mouseMove(plot, pos=end)
+    qtbot.mouseRelease(plot, Qt.LeftButton, pos=end)
+
+    assert node.params["threshold"] == pytest.approx(191.0, abs=1.0)
+    widget.graph_view.select_node("input")
+    widget.graph_view.select_node(node.id)
+    assert node.params["threshold"] == pytest.approx(191.0, abs=1.0)
+    assert widget._parameter_widgets["threshold"].value() == pytest.approx(
+        191.0,
+        abs=1.0,
+    )
 
 
 def test_hysteresis_threshold_shows_input_histogram_markers(qtbot):
@@ -6161,6 +6265,78 @@ def test_slow_pipeline_run_shows_busy_indicator(qtbot):
     assert widget.pipeline.outputs[node.id].shape == (3, 12, 12)
 
 
+def test_richardson_lucy_tv_controls_explain_effects_and_separate_ranges(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.graph_view.select_node(node.id)
+
+    parameter_names = {
+        "spatial_mode",
+        "iterations",
+        "tv_regularization",
+        "tv_epsilon",
+        "normalize_psf",
+        "clip_negative_input",
+        "clip_output_negative",
+        "preserve_input_scale",
+        "filter_epsilon",
+        "denominator_floor",
+    }
+    for name in parameter_names:
+        control = widget._parameter_widgets[name]
+        label = widget.parameter_form.labelForField(control)
+        assert control.toolTip()
+        assert label.toolTip() == control.toolTip()
+        for child in control.findChildren(QWidget):
+            assert child.toolTip() == control.toolTip()
+
+    iterations = widget._parameter_widgets["iterations"]
+    assert (iterations._bounds.minimum, iterations._bounds.maximum) == (1, 100)
+    assert not iterations._bounds.logarithmic
+    assert iterations.value_box.maximum() == 2_147_483_647
+    iterations.value_box.setValue(250)
+    assert iterations.value() == 250
+    assert iterations.slider.maximum() == 100
+    assert iterations.slider.value() == 100
+    assert node.params["iterations"] == 250
+
+    expected_log_bounds = {
+        "tv_regularization": (1e-6, 1e-1),
+        "tv_epsilon": (1e-12, 1e-2),
+        "filter_epsilon": (1e-15, 1e-3),
+        "denominator_floor": (1e-3, 1.0),
+    }
+    for name, expected in expected_log_bounds.items():
+        control = widget._parameter_widgets[name]
+        assert control._bounds.logarithmic
+        assert (control._bounds.minimum, control._bounds.maximum) == expected
+        assert (control.slider.minimum(), control.slider.maximum()) == (0, 1000)
+        assert control.value_box.maximum() == 1_000_000.0
+
+    filter_epsilon = widget._parameter_widgets["filter_epsilon"]
+    assert filter_epsilon.value_box.decimals() == 15
+    assert filter_epsilon.value() == pytest.approx(1e-12)
+    assert filter_epsilon.value_box.text() == "0.000000000001"
+    filter_epsilon.value_box.setValue(0.0)
+    assert filter_epsilon.value() == 0.0
+    assert filter_epsilon.slider.value() == 0
+    assert filter_epsilon._bounds.minimum == 1e-15
+    assert node.params["filter_epsilon"] == 0.0
+
+    tv_epsilon = widget._parameter_widgets["tv_epsilon"]
+    tv_epsilon.slider.setValue(500)
+    assert tv_epsilon.value() == pytest.approx(1e-7, rel=1e-5)
+
+    tv_regularization = widget._parameter_widgets["tv_regularization"]
+    tv_regularization.value_box.setValue(0.25)
+    assert tv_regularization.value() == 0.25
+    assert tv_regularization._bounds.maximum == 0.1
+    assert tv_regularization.slider.value() == 1000
+    assert node.params["tv_regularization"] == 0.25
+
+
 def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
     viewer = _Viewer(np.ones((8, 8), dtype=np.float32))
     widget = VippWidget(viewer)
@@ -6955,6 +7131,37 @@ def test_cache_mode_defaults_to_keep_all_and_reports_memory(qtbot):
     assert widget.cache_status_label.text().startswith("Cache ")
     assert "(Keep all)" in widget.cache_status_label.text()
     assert CACHE_MODE_KEEP_ALL in widget.cache_status_label.toolTip()
+
+
+def test_macos_memory_uses_native_vm_statistics(monkeypatch):
+    class _Function:
+        def __init__(self, callback):
+            self.callback = callback
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class _LibSystem:
+        mach_host_self = _Function(lambda: 7)
+
+        @staticmethod
+        def _host_statistics(_host, _flavor, statistics, count):
+            statistics._obj.free_count = 100
+            statistics._obj.inactive_count = 300
+            assert count._obj.value == 38
+            return 0
+
+        host_statistics64 = _Function(_host_statistics)
+
+    values = {"SC_PAGE_SIZE": 4096, "SC_PHYS_PAGES": 2000}
+    monkeypatch.setattr("napari_vipp._widget.os.sysconf", values.__getitem__)
+    monkeypatch.setattr(
+        "napari_vipp._widget.ctypes.CDLL",
+        lambda _path: _LibSystem(),
+    )
+
+    assert _macos_memory_bytes() == (400 * 4096, 2000 * 4096)
 
 
 def test_smart_cache_prunes_expendable_linear_outputs(qtbot):
@@ -8526,8 +8733,590 @@ def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
     widget.load_workflow_file(demo.workflow_path)
 
     assert widget._interactive_collection_source_paths == {}
+    assert widget._interactive_collection_batch_items == ()
+    assert widget.batch_navigator.isHidden()
     assert widget.pipeline.outputs["input"] is None
     assert widget.pipeline.outputs["input_2"] is None
+
+
+def test_collection_batch_navigator_switches_the_complete_representative_pair(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    config = load_batch_config(demo.config_path)
+
+    assert widget.batch_navigator.item_count == 3
+    assert widget.batch_navigator.current_index == 0
+    assert widget.batch_navigator.item_label.text() == "Item 1 of 3"
+    assert "01_shifted.npy" in widget.batch_navigator.sources_label.text()
+    assert "alpha_reference.npy" in widget.batch_navigator.sources_label.text()
+
+    qtbot.mouseClick(widget.batch_navigator.next_button, Qt.LeftButton)
+    primary = np.load(demo.root / "inputs" / "primary" / "02_two_objects.npy")
+    reference = np.load(demo.root / "inputs" / "reference" / "beta_reference.npy")
+    qtbot.waitUntil(
+        lambda: (
+            np.array_equal(widget.pipeline.outputs.get("input"), primary)
+            and np.array_equal(widget.pipeline.outputs.get("input_2"), reference)
+        ),
+        timeout=5000,
+    )
+
+    assert widget.batch_navigator.current_index == 1
+    assert widget.batch_navigator.item_label.text() == "Item 2 of 3"
+    assert {
+        node_id: path.name
+        for node_id, path in widget._interactive_collection_source_paths.items()
+    } == {
+        "input": "02_two_objects.npy",
+        "input_2": "beta_reference.npy",
+    }
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs["batch_output_1"],
+        primary.astype(np.float32) + reference.astype(np.float32),
+    )
+    for node_id in ("input", "input_2"):
+        assert widget.pipeline.nodes[node_id].params["file_path"] == ""
+        card_text = widget.graph_view._cards[node_id].metadata_label.text()
+        assert "Batch 2/3" in card_text
+    assert "02_two_objects.npy" in (
+        widget._source_summary(
+            widget._source_inspection_for_node(widget.pipeline.nodes["input"]),
+            widget.pipeline.nodes["input"],
+        )
+    )
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        config.workflow_sha256
+    )
+
+
+@pytest.mark.parametrize("source_mode", ["napari layer", "file path"])
+def test_batch_representative_overrides_the_interactive_source_selection(
+    qtbot,
+    tmp_path,
+    source_mode,
+):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    first = np.full((4, 16, 18), 11, dtype=np.uint8)
+    second = np.full((4, 16, 18), 22, dtype=np.uint8)
+    fixed = np.full((4, 16, 18), 99, dtype=np.uint8)
+    np.save(input_dir / "field_a.npy", first)
+    np.save(input_dir / "field_b.npy", second)
+    fixed_path = tmp_path / "fixed.npy"
+    np.save(fixed_path, fixed)
+
+    widget = VippWidget(_Viewer(fixed))
+    qtbot.addWidget(widget)
+    node = widget.pipeline.nodes["input"]
+    node.params["source_mode"] = source_mode
+    node.params["layer_name"] = "input volume"
+    node.params["file_path"] = str(fixed_path) if source_mode == "file path" else ""
+    original_source_params = dict(node.params)
+
+    preview = widget._preview_collection_batch(
+        input_dir="",
+        output_dir=tmp_path / "outputs",
+        pattern="*.npy",
+        image_format="npy",
+        source_bindings=[
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npy",
+            }
+        ],
+    )
+
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], first)
+    widget._preview_interactive_collection_batch_item(1, force_sync=True)
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], second)
+    assert node.params == original_source_params
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        preview.config.workflow_sha256
+    )
+
+
+def test_batch_representative_does_not_commit_dtype_autodefaults(qtbot, tmp_path):
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    np.save(input_dir / "field.npy", np.full((4, 16, 18), 4096, dtype=np.uint16))
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", rescale.id)
+    widget.pipeline.set_param(rescale.id, "out_min", 0.0)
+    widget.pipeline.set_param(rescale.id, "out_max", 1.0)
+    widget._rescale_auto_output_ranges[rescale.id] = (0.0, 1.0)
+    widget.graph_view.select_node(rescale.id)
+    original_params = dict(widget.pipeline.nodes[rescale.id].params)
+    original_auto_ranges = dict(widget._rescale_auto_output_ranges)
+
+    preview = widget._preview_collection_batch(
+        input_dir="",
+        output_dir=tmp_path / "outputs",
+        pattern="*.npy",
+        image_format="npy",
+        source_bindings=[
+            {
+                "node_id": "input",
+                "title": "Batch input",
+                "input_dir": str(input_dir),
+                "pattern": "*.npy",
+            }
+        ],
+    )
+
+    assert widget.pipeline.nodes[rescale.id].params == original_params
+    assert widget._rescale_auto_output_ranges == original_auto_ranges
+    assert scientific_workflow_hash(widget._batch_workflow_document()) == (
+        preview.config.workflow_sha256
+    )
+
+
+def test_batch_slider_bounds_materialized_source_cache_but_pins_identities(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+
+    for index in (1, 2):
+        assert widget._preview_interactive_collection_batch_item(
+            index,
+            force_sync=True,
+        )
+        active_paths = {
+            str(path)
+            for path in widget._interactive_collection_source_paths.values()
+        }
+        assert {str(key[0]) for key in widget._file_source_payload_cache} == (
+            active_paths
+        )
+
+    visited_paths = {
+        str(path.resolve())
+        for folder in (
+            demo.root / "inputs" / "primary",
+            demo.root / "inputs" / "reference",
+        )
+        for path in folder.glob("*.npy")
+    }
+    assert visited_paths <= set(widget._file_source_path_identities)
+    assert len(widget._file_source_payload_cache) == 2
+
+
+def test_missing_batch_representative_is_not_committed_as_displayed(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    first_output = np.array(widget.pipeline.outputs["batch_output_1"], copy=True)
+    (demo.root / "inputs" / "primary" / "02_two_objects.npy").unlink()
+
+    widget.batch_navigator.slider.setValue(1)
+
+    assert widget._interactive_collection_batch_index == 0
+    assert widget.batch_navigator.current_index == 0
+    assert "preview failed" in widget.batch_navigator.representative_label.text()
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs["batch_output_1"],
+        first_output,
+    )
+
+
+def test_async_batch_navigation_commits_only_the_latest_requested_item(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    monkeypatch.setattr(
+        widget,
+        "_file_source_should_load_async",
+        lambda node: widget._file_source_path_for_node(node) is not None,
+    )
+
+    widget.batch_navigator.slider.setValue(1)
+    widget.batch_navigator.slider.setValue(2)
+
+    assert widget._interactive_collection_batch_index == 0
+    assert widget._interactive_collection_batch_requested_index == 2
+    assert not dialog.run_button.isEnabled()
+    assert "Loading and calculating" in (
+        widget.batch_navigator.representative_label.text()
+    )
+    qtbot.waitUntil(
+        lambda: widget._interactive_collection_batch_index == 2,
+        timeout=5_000,
+    )
+
+    primary = np.load(demo.root / "inputs" / "primary" / "03_disjoint.npy")
+    reference = np.load(
+        demo.root / "inputs" / "reference" / "gamma_reference.npy"
+    )
+    assert widget._interactive_collection_batch_requested_index == -1
+    assert widget.batch_navigator.current_index == 2
+    assert dialog.run_button.isEnabled()
+    np.testing.assert_array_equal(
+        widget.pipeline.outputs["batch_output_1"],
+        primary.astype(np.float32) + reference.astype(np.float32),
+    )
+
+
+def test_partial_representative_failure_keeps_failed_item_selected(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    failed_primary = np.load(
+        demo.root / "inputs" / "primary" / "02_two_objects.npy"
+    )
+    calls = 0
+
+    def fail_after_source(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        widget.pipeline.outputs["input"] = failed_primary
+        widget.pipeline.outputs["batch_output_1"] = None
+        raise RuntimeError("downstream representative failure")
+
+    monkeypatch.setattr(widget.pipeline, "run", fail_after_source)
+
+    assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+
+    assert widget._interactive_collection_batch_index == 1
+    assert widget._interactive_collection_batch_failed_index == 1
+    assert widget.batch_navigator.current_index == 1
+    assert "02_two_objects.npy" in widget.batch_navigator.sources_label.text()
+    assert "preview failed" in widget.batch_navigator.representative_label.text()
+    assert not dialog.run_button.isEnabled()
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], failed_primary)
+    assert widget.pipeline.outputs["batch_output_1"] is None
+
+    assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+    assert calls == 2
+
+
+def test_run_stops_when_reviewed_source_changes_in_place(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    reviewed = np.array(widget.pipeline.outputs["input"], copy=True)
+    source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
+    np.save(source_path, np.full(reviewed.shape, 65535, dtype=np.uint16))
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert dialog._preview_result is None
+    assert "Press Refresh" in dialog.preview_status.text()
+    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+    np.testing.assert_array_equal(widget.pipeline.outputs["input"], reviewed)
+    assert "pinned earlier revision" in (
+        widget.batch_navigator.representative_label.text()
+    )
+
+
+def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
+    collection_dir = tmp_path / "collection"
+    collection_dir.mkdir()
+    collection = np.arange(20, dtype=np.uint16).reshape(4, 5)
+    fixed = np.full((4, 5), 3, dtype=np.uint16)
+    np.save(collection_dir / "field.npy", collection)
+    fixed_path = tmp_path / "fixed.npy"
+    np.save(fixed_path, fixed)
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    fixed_source = widget.add_node_from_palette("input")
+    add = widget.add_node_from_palette("add_images")
+    output = widget.add_node_from_palette("batch_output")
+    widget.pipeline.set_param(fixed_source.id, "source_mode", "file path")
+    widget.pipeline.set_param(fixed_source.id, "file_path", str(fixed_path))
+    widget.pipeline.set_param(output.id, "format", "npy")
+    widget._connect_nodes("input", add.id)
+    widget._connect_nodes(fixed_source.id, add.id)
+    widget._connect_nodes(add.id, output.id)
+
+    widget._batch_collection_dialog()
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    source_rows = {str(row["node_id"]): row for row in dialog._source_rows}
+    source_rows["input"]["folder"].setText(str(collection_dir))
+    source_rows["input"]["pattern"].setText("*.npy")
+    dialog.output_edit.setText(str(tmp_path / "outputs"))
+    dialog.format_combo.setCurrentText("npy")
+    assert dialog._preview_batch()
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    reviewed = np.array(widget.pipeline.outputs[output.id], copy=True)
+
+    np.save(fixed_path, np.full((4, 5), 99, dtype=np.uint16))
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert dialog._preview_result is None
+    assert "Press Refresh" in dialog.preview_status.text()
+    assert not (tmp_path / "outputs" / BATCH_MANIFEST_FILENAME).exists()
+    np.testing.assert_array_equal(widget.pipeline.outputs[output.id], reviewed)
+
+
+def test_source_refresh_blocks_batch_until_representative_is_recalculated(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    previous = np.array(widget.pipeline.outputs["batch_output_1"], copy=True)
+    source_path = demo.root / "inputs" / "primary" / "01_shifted.npy"
+    np.save(source_path, np.full(previous.shape, 41, dtype=np.uint16))
+    monkeypatch.setattr(
+        widget,
+        "_file_source_should_load_async",
+        lambda node: widget._file_source_path_for_node(node) is not None,
+    )
+
+    qtbot.mouseClick(widget.refresh_button, Qt.LeftButton)
+
+    assert widget._interactive_collection_batch_requested_index == 0
+    assert widget._active_source_load_id is not None
+    assert not dialog.run_button.isEnabled()
+    widget._run_collection_batch_from_workspace(dialog, dialog.values())
+    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_requested_index == -1
+            and dialog.run_button.isEnabled()
+        ),
+        timeout=5_000,
+    )
+
+    assert dialog._preview_result is None
+    assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+    assert "review" in dialog.preview_status.text().lower()
+
+
+def test_batch_progress_survives_non_user_workflow_reset_event(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    QTimer.singleShot(0, widget._new_workflow)
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert widget._active_collection_batch_dialog is dialog
+    assert dialog.run_progress_bar.value() == 3
+    assert "3 completed" in dialog.run_progress_label.text()
+    assert widget._interactive_collection_batch_items == ()
+    assert set(widget.pipeline.nodes) == {"input"}
+    assert widget.pipeline.nodes["input"].operation_id == "input"
+
+
+def test_scientific_graph_edit_invalidates_plan_but_keeps_slider_useful(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+
+    output = widget.pipeline.nodes["batch_output_1"]
+    widget.pipeline.set_param(output.id, "tag", "edited-result")
+    widget._mark_pipeline_dirty(output.id)
+
+    assert dialog._preview_result is None
+    assert widget._interactive_collection_batch_workflow_stale
+    assert widget.batch_navigator.slider.isEnabled()
+    assert "scientific workflow changed" in (
+        widget.batch_navigator.representative_label.text().lower()
+    )
+    assert dialog.run_button.text() == "Run batch"
+
+    assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+    assert widget.batch_navigator.current_index == 1
+    assert dialog._preview_batch()
+    assert dialog._preview_result is not None
+    assert not widget._interactive_collection_batch_plan_stale
+    assert dialog._preview_result.config.workflow_sha256 == (
+        scientific_workflow_hash(widget._batch_workflow_document())
+    )
+
+
+@pytest.mark.parametrize("change", ["add", "duplicate"])
+def test_image_source_topology_change_rebuilds_batch_workspace(
+    qtbot,
+    tmp_path,
+    change,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    assert widget._active_collection_batch_dialog is not None
+
+    if change == "add":
+        widget.add_node_from_palette("input")
+    else:
+        widget._duplicate_node("input")
+
+    assert widget._active_collection_batch_dialog is None
+    assert widget._interactive_collection_batch_items == ()
+    qtbot.mouseClick(widget.batch_button, Qt.LeftButton)
+    rebuilt = widget._active_collection_batch_dialog
+    assert rebuilt is not None
+    graph_source_ids = {
+        node_id
+        for node_id, node in widget.pipeline.nodes.items()
+        if node.operation_id == "input"
+    }
+    assert {str(row["node_id"]) for row in rebuilt._source_rows} == graph_source_ids
+
+
+def test_run_refreshes_changed_filesystem_plan_and_requires_review(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    assert dialog.preview_table.rowCount() == 3
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+
+    np.save(
+        demo.root / "inputs" / "primary" / "04_added.npy",
+        np.zeros((8, 8), dtype=np.uint16),
+    )
+    np.save(
+        demo.root / "inputs" / "reference" / "delta_reference.npy",
+        np.zeros((8, 8), dtype=np.uint16),
+    )
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert dialog.preview_table.rowCount() == 4
+    assert dialog._preview_result is not None
+    assert "review it" in dialog.preview_status.text().lower()
+    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+
+
+def test_preflight_failure_does_not_fill_batch_progress(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    collision_path = Path(
+        dialog.preview_table.item(0, 2).toolTip().splitlines()[0]
+    )
+    collision_path.parent.mkdir(parents=True, exist_ok=True)
+    collision_path.write_bytes(b"collision")
+
+    # First click refreshes the changed preflight for review; the second tries
+    # the reviewed Error-policy plan and fails before item one.
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert widget.batch_navigator.progress_bar.value() == 0
+    assert widget.batch_navigator.progress_bar.format().startswith("Failed")
+    assert dialog.run_progress_bar.value() == 0
+    assert dialog.run_progress_bar.format() == "Failed"
+
+
+def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
+    assert dialog.preview_table.rowCount() == 3
+
+    assert dialog.select_preview_item(1)
+    qtbot.mouseClick(dialog.preview_item_button, Qt.LeftButton)
+    assert widget.batch_navigator.current_index == 1
+    widget.batch_navigator.slider.setValue(2)
+    assert widget.batch_navigator.current_index == 2
+    assert dialog.preview_table.currentRow() == 2
+    qtbot.waitUntil(
+        lambda: (
+            widget._interactive_collection_batch_requested_index == -1
+            and dialog.run_button.isEnabled()
+        ),
+        timeout=5_000,
+    )
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert dialog.isVisible()
+    assert dialog.run_progress_bar.value() == 3
+    assert [dialog.preview_table.item(row, 4).text() for row in range(3)] == [
+        "Completed",
+        "Completed",
+        "Completed",
+    ]
+    assert "3 completed" in dialog.run_progress_label.text()
+    assert "Synthetic ground truth passed" in dialog.run_result_label.text()
+    assert widget.batch_navigator.progress_bar.value() == 3
+    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert dialog._preview_result is None
+    assert "Historical preflight" in dialog.preview_status.text()
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=1_000)
+
+    qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
+    assert dialog.isHidden()
+    qtbot.mouseClick(widget.batch_button, Qt.LeftButton)
+    assert widget._active_collection_batch_dialog is dialog
+    assert dialog.isVisible()
+    assert "3 completed" in dialog.run_progress_label.text()
+
+    dialog.pattern_edit.setText("*.changed")
+    assert dialog._preview_result is None
+    assert len(widget._interactive_collection_batch_items) == 3
+    assert not widget.batch_navigator.isHidden()
+    assert widget.batch_navigator.slider.isEnabled()
+    assert "previous plan" in widget.batch_navigator.representative_label.text()
+    assert dialog.run_button.text() == "Run batch"
+    assert dialog.demo_guide_label.isHidden()
+    assert widget._active_collection_batch_dialog is dialog
 
 
 def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
@@ -8583,7 +9372,7 @@ def test_collection_batch_demo_button_creates_loads_and_previews_bundle(
     ]
     assert not dialog.demo_guide_label.isHidden()
     assert "Ready-to-run batch demo" in dialog.demo_guide_label.text()
-    assert str(demo_root) in dialog.demo_guide_label.text()
+    assert dialog.demo_path_edit.text() == str(demo_root)
     assert dialog.run_button.text() == "Run demo batch"
     assert "Demo ready" in dialog.preview_status.text()
     assert "3 paired items" in dialog.preview_status.text()
@@ -8690,7 +9479,6 @@ def test_open_batch_example_builds_a_ready_to_run_workspace(
         def selected_example(self):
             return spec
 
-    opened_dialogs = []
     monkeypatch.setattr(
         "napari_vipp._widget.ExampleWorkflowDialog",
         AcceptedExampleDialog,
@@ -8704,19 +9492,14 @@ def test_open_batch_example_builds_a_ready_to_run_workspace(
         lambda *_args, **_kwargs: str(tmp_path),
     )
 
-    def inspect_then_cancel(dialog):
-        opened_dialogs.append(dialog)
-        return 0
-
-    monkeypatch.setattr(CollectionBatchDialog, "exec", inspect_then_cancel)
-
     widget._open_example_workflow_dialog()
 
     demo_root = tmp_path / SYNTHETIC_BATCH_DEMO_DIRNAME
     assert (demo_root / BATCH_CONFIG_FILENAME).is_file()
     assert "batch_output_3" in widget.pipeline.nodes
-    assert len(opened_dialogs) == 1
-    dialog = opened_dialogs[0]
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
     assert dialog._demo == SyntheticBatchDemo.from_root(demo_root)
     assert dialog.preview_table.rowCount() == 3
     assert dialog.preview_table.item(0, 3).text().splitlines() == [

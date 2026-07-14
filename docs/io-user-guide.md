@@ -57,12 +57,14 @@ or store change is therefore not silently mixed into a running graph. Press
 explicitly. OME-Zarr, microscope formats, and large files are materialized on
 the background queue; small files normally retain synchronous loading.
 
-`Binding: collection` marks an Image Source node as the per-item source for
-`Run batch...`. Interactively it still uses the selected file or series as the
-representative item; in the batch dialog VIPP binds each matched folder item to
-that source node and runs the same graph once per item. If no Image Source node
-is marked as a collection, the first Image Source node is used as the folder
-input for convenience.
+`Binding: collection` marks an Image Source node as a per-item source for
+`Batch workspace...`. The graph still represents one scientific item at a
+time. After planning, VIPP swaps the complete set of paired collection paths
+into those Image Source nodes as a transient representative and runs the same
+graph once per batch item during full execution. The transient paths are not
+written into the workflow or its scientific hash. A separate Batch Input node
+is therefore unnecessary. If no Image Source node is marked as a collection,
+the first Image Source node is used as the folder input for convenience.
 
 ## Export Choices
 
@@ -80,8 +82,9 @@ TIFF, OME-TIFF, or Export OME Analysis Dataset for those labels.
 
 ## Collection Batch Runs
 
-`Run batch...` executes the current graph over local image collections. The
-dialog shows one source row for each `Image Source` node in the workflow. Bind a
+`Batch workspace...` configures and executes the current graph over local image
+collections. The retained workspace shows one source row for each `Image
+Source` node in the workflow. Bind a
 source row to a folder and one or more glob patterns, separated by semicolons,
 when that node should receive a different file for every batch item. A blank
 row is reproducible only when that `Image Source` already uses a fixed local
@@ -90,10 +93,13 @@ before saving or running a batch config.
 
 The easiest way to explore batching is `Open example...` -> `Deterministic
 Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
-small working copy; VIPP then opens the collection window with its two-source
+small working copy; VIPP then opens the batch workspace with its two-source
 workflow and config loaded. The graph automatically displays the first paired
-NumPy field through every connected node, and the batch table previews all
-three pairs. The highlighted demo guide points to `Run demo batch` and describes
+NumPy field through every connected node. Use `Previous`, `Next`, or the
+representative slider to move through all three pairs; both source paths change
+together. Selecting a table row and clicking `Preview selected in graph` (or
+double-clicking the row) performs the same representative calculation. The
+highlighted demo guide points to `Run demo batch` and describes
 the nine planned NPY/TIFF/TSV outputs, saved config and runner, manifests,
 archive, per-item provenance, and exact ground-truth validation. The same
 action is available as `Open batch demo...` inside this dialog.
@@ -112,10 +118,34 @@ primary source used for default naming. Each item gets a stable batch index
 (`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
 
 Use `Preview batch` before running to check the item ids, bound source files,
-planned output filenames, and existing-path collision state. The preview does
-not execute the image-processing graph; it uses the same deterministic pairing
-and output-planning rules as execution. `Run` performs a fresh preflight so
-filesystem changes since the preview are detected.
+planned output filenames, and existing-path collision state. Planning itself
+does not process or save the collection; it also activates the first item as a
+representative graph calculation. The persistent strip above the graph says
+`Representative only - this does not run or save the batch.`, shows `Item N of
+M`, the batch ID, and every paired filename. Moving its slider calculates only
+the selected representative
+through the live graph. It does not create batch outputs. The workspace table
+shows up to the first 25 plan rows, while the slider covers the complete plan.
+`Run batch` compares a fresh plan with the plan you reviewed. If files,
+destinations, collision states, or the scientific graph changed, VIPP refreshes
+the table and stops so you can review it before clicking Run again. Editing
+batch settings or the graph marks the runnable plan stale, but the slider stays
+available as an explicitly labelled view of the previous source pairing.
+Files opened as representatives are pinned to their verified revision. If one
+is overwritten in place after review, Run stops and asks you to refresh while
+the graph keeps showing the earlier verified bytes rather than silently mixing
+revisions.
+
+The workspace remains available during and after execution. Its determinate
+progress bar reports completed items, the `Run status` column tracks each
+displayed row, and the final summary retains completed/partial/skipped/failed
+counts, validation text, and the manifest path. Progress is item-level; a long
+single item can therefore remain on `running` until that graph invocation
+finishes. On smaller displays, the workspace body scrolls vertically while
+`Run batch` and `Close` remain fixed at the bottom. Reopen the same workspace
+from either `Batch workspace...` button.
+After a run, its preflight and row statuses remain visible as historical run
+evidence; preview again before replaying so current paths are checked.
 
 Add `Batch Output` nodes to mark the exact images, masks, labels, RGB outputs,
 or tables that should be saved. Each `Batch Output` marker is pass-through

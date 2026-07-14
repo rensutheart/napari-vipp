@@ -54,7 +54,7 @@ napari / npe2
 | How is graph/workflow state detached for history or execution? | `core/snapshots.py`, `core/workflow.py` |
 | How are workflow and text artifacts replaced safely? | `core/atomic_io.py` |
 | How are batch configs built and batches planned/run? | `core/batch_setup.py`, `core/batch.py` |
-| How is collection batch UI coordinated? | `ui/batch.py`, `ui/batch_controller.py` |
+| How is collection batch UI coordinated? | `ui/batch.py`, `ui/batch_controller.py`, `ui/batch_navigator.py` |
 | Where are reusable controls and dialogs? | `ui/controls.py`, `ui/axis_controls.py`, `ui/view_dims.py`, `ui/dialogs.py`, `ui/palette.py` |
 | Where are plots and their Qt rendering? | `ui/plots.py` |
 | Where are undo/redo and shutdown semantics? | `ui/history.py`, `ui/lifecycle.py` |

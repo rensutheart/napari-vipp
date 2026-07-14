@@ -155,6 +155,7 @@ class ParameterSpec:
     choice_labels: tuple[str, ...] = ()
     dynamic_choices: bool = False
     dynamic_choice_kind: str = ""
+    tooltip: str = ""
 
 
 _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
@@ -1115,17 +1116,44 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         "image",
         (
-            SPATIAL_MODE_PARAMETER,
-            ParameterSpec("iterations", "Iterations", "int", 25, 1, 500, 1),
+            replace(
+                SPATIAL_MODE_PARAMETER,
+                tooltip=(
+                    "Choose whether each YX plane is restored independently or "
+                    "a ZYX volume is restored in 3D. The connected PSF must have "
+                    "the same spatial dimensionality. Auto uses axis metadata."
+                ),
+            ),
+            ParameterSpec(
+                "iterations",
+                "Iterations",
+                "int",
+                25,
+                1,
+                100,
+                1,
+                tooltip=(
+                    "More iterations can recover finer detail, but increase "
+                    "runtime and can amplify noise, ringing, and PSF mismatch. "
+                    "Start around 10-30; the slider covers 1-100 and the spinner "
+                    "accepts larger values."
+                ),
+            ),
             ParameterSpec(
                 "tv_regularization",
                 "TV regularization",
                 "float",
                 0.002,
                 0.0,
-                1.0,
+                0.1,
                 0.0001,
                 6,
+                tooltip=(
+                    "Strength of total-variation denoising (lambda). Increasing it "
+                    "suppresses noise and favors piecewise-smooth regions; too much "
+                    "flattens dim or fine structure. The log slider covers 1e-6 to "
+                    "0.1; enter 0 in the spinner for ordinary RL."
+                ),
             ),
             ParameterSpec(
                 "tv_epsilon",
@@ -1133,11 +1161,30 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 "float",
                 1e-6,
                 1e-12,
-                1.0,
-                1e-6,
-                8,
+                1e-2,
+                1e-7,
+                12,
+                tooltip=(
+                    "Smooths the TV gradient norm near zero. Larger values soften "
+                    "regularization of very weak gradients; extremely small values "
+                    "make flat-region updates more sensitive. The log slider covers "
+                    "1e-12 to 0.01; usually leave it at 1e-6."
+                ),
             ),
-            ParameterSpec("normalize_psf", "Normalize PSF", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "normalize_psf",
+                "Normalize PSF",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+                tooltip=(
+                    "Scale the PSF so its sum is one before deconvolution. Keep this "
+                    "enabled for normal microscopy PSFs; disabling it trusts the PSF "
+                    "amplitude and can bias intensity or convergence."
+                ),
+            ),
             ParameterSpec(
                 "clip_negative_input",
                 "Clip negative input",
@@ -1146,6 +1193,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Replace negative observed intensities with zero before the RL "
+                    "updates. This is normally appropriate because RL assumes "
+                    "non-negative photon intensities; disabling it can destabilize "
+                    "background-subtracted data."
+                ),
             ),
             ParameterSpec(
                 "clip_output_negative",
@@ -1155,6 +1208,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Apply a final zero clamp after restoring the input scale. The "
+                    "RL-TV iterations already keep their estimate non-negative, so "
+                    "this is normally a safety setting with no visible effect."
+                ),
             ),
             ParameterSpec(
                 "preserve_input_scale",
@@ -1164,6 +1222,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Normalize each processed block by its positive maximum "
+                    "internally, then restore that scale in the output. This makes "
+                    "numerical guards more comparable across different intensity "
+                    "ranges."
+                ),
             ),
             ParameterSpec(
                 "filter_epsilon",
@@ -1171,9 +1235,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 "float",
                 1e-12,
                 0.0,
-                1.0,
+                1e-3,
                 1e-12,
-                12,
+                15,
+                tooltip=(
+                    "Ignore RL ratio corrections where the predicted blurred intensity "
+                    "is below this guard. Larger values improve stability but can lose "
+                    "very dim structure. The log slider covers 1e-15 to 0.001; enter "
+                    "0 in the spinner to disable the guard."
+                ),
             ),
             ParameterSpec(
                 "denominator_floor",
@@ -1183,7 +1253,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1e-6,
                 1.0,
                 0.01,
-                4,
+                6,
+                tooltip=(
+                    "Lower bound for the TV update denominator. Increasing it limits "
+                    "extreme amplification and improves stability; making it too large "
+                    "weakens the intended TV correction. The log slider covers 0.001 "
+                    "to 1; start with 0.05."
+                ),
             ),
         ),
         richardson_lucy_tv_deconvolution,

@@ -44,9 +44,12 @@ Required checks:
 - `python -m ruff check .`
 - `python -m pytest`
 
-For a batch/provenance release, also use `Run batch...` -> `Open batch demo...` and
-complete the generated three-item run. Confirm three completed items, nine
-outputs, and a finalized latest manifest, archive, and three item sidecars.
+For a batch/provenance release, also use `Batch workspace...` -> `Open batch
+demo...`. Move through all three representatives with the slider and confirm
+that both paired sources and downstream previews change together without
+changing the workflow hash. Complete the generated run and confirm three
+completed items, nine outputs, retained workspace statuses, and a finalized
+latest manifest, archive, and three item sidecars.
 
 ## 3. Build Artifacts
 

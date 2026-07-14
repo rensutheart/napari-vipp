@@ -151,9 +151,7 @@ class CollectionBatchController:
                 batch_id=item.batch_id,
                 sources=dict(item.source_paths),
                 outputs=[output.path for output in item.outputs],
-                output_statuses=tuple(
-                    output.status_text for output in item.outputs
-                ),
+                output_statuses=tuple(output.status_text for output in item.outputs),
                 explicit_outputs=explicit,
             )
             for item in plan.items[: max(int(preview_limit), 0)]
@@ -170,6 +168,8 @@ class CollectionBatchController:
         )
         return BatchPreviewResult(
             rows=rows,
+            items=plan.items,
+            config=config,
             total_items=len(plan.items),
             collision_count=collision_count,
             explicit_outputs=explicit,

@@ -98,15 +98,19 @@ still needs validation against a broader corpus of real acquisition files.
    deconvolution.
 5. Pin important image outputs into napari for full-resolution comparison.
 6. Save the graph with `Save workflow...`.
-7. Add `Batch Output` nodes before `Run batch...` when exact saved outputs
+7. Add `Batch Output` nodes before `Batch workspace...` when exact saved outputs
    matter.
-8. Preview collection runs, save `vipp_batch_config.json`, and review
-   `vipp_batch_manifest.json` for item/output provenance.
-9. To validate the complete batch path without your own files, choose
+8. Click `Preview batch` to plan the complete collection. Use the persistent
+   representative slider or a preview-table row to inspect any paired item
+   through the graph without running or saving the full batch.
+9. Run the collection from the retained workspace, where item-level progress,
+   final statuses, validation, and the `vipp_batch_manifest.json` path remain
+   available for inspection.
+10. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
    demo...`. Choose where to save its small working copy, review the populated
-   graph (which automatically displays the first paired field) and the
-   three-item/nine-output batch preview, then click `Run demo batch`. VIPP
+   graph, move through all three paired fields with the representative slider,
+   review the three-item/nine-output batch preview, then click `Run demo batch`. VIPP
    checks the finished outputs and provenance against exact ground truth
    automatically.
 
