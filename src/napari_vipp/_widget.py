@@ -108,6 +108,7 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_CHOICES,
     CHANNEL_COLOR_HEX,
     channel_color_labels_from_metadata,
+    color_value_to_rgb,
 )
 from napari_vipp.core.diagnostics import (
     exact_finite_percentiles as _exact_finite_percentiles,
@@ -420,6 +421,11 @@ _RGB_VOLUME_CHANNELS = (
     (0, "Red", "red"),
     (1, "Green", "green"),
     (2, "Blue", "blue"),
+)
+
+COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES = (
+    "Unassigned",
+    *CHANNEL_COLOR_CHOICES,
 )
 
 ASYNC_SOURCE_FILE_BYTES = 32 * 1024 * 1024
@@ -5052,6 +5058,11 @@ class VippWidget(QWidget):
             | self._direct_input_cache_nodes(working_nodes)
             | self._explicit_output_nodes()
             | self._keep_cached_node_ids()
+            # Manual results are explicitly requested and often expensive.
+            # A downstream display edit must not silently discard them merely
+            # because an intermediate node makes them more than one edge away
+            # from the currently selected node.
+            | self.pipeline.manual_node_ids()
         )
         if mode == CACHE_MODE_SMART:
             retained.update(self._source_cache_nodes())
@@ -6641,6 +6652,9 @@ class VippWidget(QWidget):
         if node.operation_id == "combine_channels":
             self._render_combine_channels_parameters(node_id)
             return
+        if node.operation_id == "composite_to_rgb":
+            self._render_composite_to_rgb_parameters(node_id)
+            return
         if node.operation_id == "assign_channel_colors":
             self._render_assign_channel_colors_parameters(node_id)
             return
@@ -7194,6 +7208,230 @@ class VippWidget(QWidget):
             self._parameter_widgets[spec.name] = widget
         self._sync_combine_channels_graph_ports(node_id)
 
+    def _render_composite_to_rgb_parameters(self, node_id: str) -> None:
+        """Render metadata-aware axis and per-source RGB assignment controls."""
+        node = self.pipeline.nodes[node_id]
+        base_specs = {
+            spec.name: spec for spec in self.pipeline.node_parameter_specs(node_id)
+        }
+        axis_mode = self._composite_channel_axis_mode(node)
+        mapping_mode = self._composite_mapping_mode(node)
+        axis = self._composite_resolved_channel_axis(node_id, axis_mode)
+        count = self._composite_channel_count(node_id, axis)
+        assignments = self._composite_channel_assignments(
+            node_id,
+            mapping_mode,
+            axis,
+            count,
+        )
+        mapping_warning = (
+            self._composite_manual_mapping_warning(node_id, count)
+            if mapping_mode == "Manual"
+            else ""
+        )
+
+        axis_mode_spec = ParameterSpec(
+            "channel_axis_mode",
+            "Channel axis mode",
+            "choice",
+            "Auto",
+            0,
+            0,
+            1,
+            choices=("Auto", "Manual"),
+            tooltip=(
+                "Auto selects the one explicit metadata channel axis, normally "
+                "C. If axes are unnamed or no unique C/channel axis exists, "
+                "switch to Manual. Manual may deliberately use any dimension, "
+                "for example Z as colour when no C axis exists; VIPP never "
+                "guesses from a length of three or four alone."
+            ),
+        )
+        axis_mode_widget = ChoiceControl(
+            axis_mode_spec,
+            axis_mode,
+            ParameterBounds(0, 1, 1, 0),
+        )
+        axis_mode_widget.valueChanged.connect(
+            self._on_composite_channel_axis_mode_changed
+        )
+        self.parameter_form.addRow(axis_mode_spec.label, axis_mode_widget)
+        self._apply_parameter_tooltip(axis_mode_spec, axis_mode_widget)
+        self._parameter_widgets[axis_mode_spec.name] = axis_mode_widget
+
+        axis_options = self._axis_slice_options_for(node_id)
+        axis_choices = tuple(str(option.index) for option in axis_options)
+        axis_labels = tuple(
+            self._composite_axis_choice_label(option) for option in axis_options
+        )
+        if axis is None:
+            if axis_mode == "Manual":
+                axis_choices = ("-1", *axis_choices)
+                axis_labels = (
+                    "Choose an axis (saved selection is invalid)",
+                    *axis_labels,
+                )
+            else:
+                axis_choices = ("-1",)
+                axis_labels = ("No channel axis resolved",)
+        axis_spec = ParameterSpec(
+            "channel_axis",
+            "Channel axis",
+            "choice",
+            str(axis if axis is not None else -1),
+            0,
+            max(len(axis_choices) - 1, 0),
+            1,
+            choices=axis_choices,
+            choice_labels=axis_labels,
+            tooltip=(
+                "The array dimension containing the source channels. In Auto "
+                "mode this shows the metadata-resolved axis and is read-only; "
+                "switch to Manual to choose any array dimension deliberately."
+            ),
+        )
+        axis_widget = ChoiceControl(
+            axis_spec,
+            str(axis if axis is not None else -1),
+            ParameterBounds(0, max(len(axis_choices) - 1, 0), 1, 0),
+        )
+        axis_widget.setEnabled(axis_mode == "Manual" and bool(axis_options))
+        axis_widget.valueChanged.connect(self._on_composite_channel_axis_changed)
+        self.parameter_form.addRow(axis_spec.label, axis_widget)
+        self._apply_parameter_tooltip(axis_spec, axis_widget)
+        self._parameter_widgets[axis_spec.name] = axis_widget
+
+        axis_status = QLabel(self._composite_axis_status(node_id, axis_mode, axis))
+        axis_status.setWordWrap(True)
+        axis_status.setStyleSheet(
+            "color: #94a3b8;" if axis is not None else "color: #f59e0b;"
+        )
+        axis_status.setToolTip(axis_mode_spec.tooltip)
+        self.parameter_form.addRow(axis_status)
+        self._parameter_widgets["channel_axis_status"] = axis_status
+
+        mapping_mode_spec = ParameterSpec(
+            "mapping_mode",
+            "RGB mapping mode",
+            "choice",
+            "Auto",
+            0,
+            0,
+            1,
+            choices=("Auto", "Manual"),
+            tooltip=(
+                "Auto carries exact channel colours from metadata, or uses "
+                "VIPP's fluorescence palette when colours are absent. Manual "
+                "lets you assign every source channel explicitly."
+            ),
+        )
+        mapping_mode_widget = ChoiceControl(
+            mapping_mode_spec,
+            mapping_mode,
+            ParameterBounds(0, 1, 1, 0),
+        )
+        mapping_mode_widget.valueChanged.connect(
+            self._on_composite_mapping_mode_changed
+        )
+        self.parameter_form.addRow(mapping_mode_spec.label, mapping_mode_widget)
+        self._apply_parameter_tooltip(mapping_mode_spec, mapping_mode_widget)
+        self._parameter_widgets[mapping_mode_spec.name] = mapping_mode_widget
+
+        channel_labels = self._composite_channel_labels(node_id, axis, count)
+        assignment_tooltip = (
+            "Assign this source channel to an additive RGB colour. Channels "
+            "that share an RGB component are added. Unassigned excludes the "
+            "source channel from the RGB output."
+        )
+        for index, assignment in enumerate(assignments):
+            choices = list(COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES)
+            if assignment not in choices:
+                # Preserve and truthfully display a nonstandard metadata colour
+                # as exact #RRGGBB while Auto is active (and if Manual inherits
+                # that resolved value).
+                choices.append(assignment)
+            spec = ParameterSpec(
+                f"channel_color_{index}",
+                f"{channel_labels[index]} assignment",
+                "choice",
+                assignment,
+                0,
+                0,
+                1,
+                choices=tuple(choices),
+                tooltip=assignment_tooltip,
+            )
+            widget = ChoiceControl(
+                spec,
+                assignment,
+                ParameterBounds(0, len(choices) - 1, 1, 0),
+            )
+            widget.setEnabled(mapping_mode == "Manual")
+            widget.valueChanged.connect(
+                lambda value, slot=index: self._on_composite_channel_color_changed(
+                    slot,
+                    value,
+                )
+            )
+            self.parameter_form.addRow(spec.label, widget)
+            self._apply_parameter_tooltip(spec, widget)
+            self._parameter_widgets[spec.name] = widget
+
+        mapping_status = QLabel(
+            self._composite_mapping_status(
+                mapping_mode,
+                channel_labels,
+                assignments,
+                mapping_warning,
+            )
+        )
+        mapping_status.setWordWrap(True)
+        mapping_status.setStyleSheet(
+            "color: #f59e0b;" if mapping_warning else "color: #94a3b8;"
+        )
+        mapping_status.setToolTip(mapping_mode_spec.tooltip)
+        self.parameter_form.addRow(mapping_status)
+        self._parameter_widgets["mapping_status"] = mapping_status
+
+        intensity_spec = base_specs["intensity_mapping"]
+        if not intensity_spec.tooltip:
+            intensity_spec = replace(
+                intensity_spec,
+                tooltip=(
+                    "Preserve numeric values keeps the native intensity scale "
+                    "and does not normalize or clip additive mixtures. The "
+                    "1st-99th percentile option independently rescales each "
+                    "source channel and is intentionally lossy."
+                ),
+            )
+        intensity_widget = ChoiceControl(
+            intensity_spec,
+            node.params.get(intensity_spec.name),
+            self._parameter_bounds_for(node_id, intensity_spec),
+        )
+        intensity_widget.valueChanged.connect(
+            lambda value: self._on_param_changed("intensity_mapping", value)
+        )
+        self.parameter_form.addRow(intensity_spec.label, intensity_widget)
+        self._apply_parameter_tooltip(intensity_spec, intensity_widget)
+        self._parameter_widgets[intensity_spec.name] = intensity_widget
+
+        note = QLabel(
+            "The legacy Red/Green/Blue index fields remain load-compatible but "
+            "are represented here as one assignment per source channel."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #94a3b8;")
+        self.parameter_form.addRow(note)
+        self._parameter_widgets["composite_mapping_note"] = note
+        self.parameter_group.setHidden(False)
+
+    @staticmethod
+    def _composite_axis_choice_label(option: AxisSliceOption) -> str:
+        axis_type = str(option.axis_type).strip()
+        detail = f", {axis_type}" if axis_type and axis_type != "unknown" else ""
+        return f"{option.index}: {option.name} ({option.size}{detail})"
+
     def _render_image_source_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
         inspection = self._source_inspection_for_node(node)
@@ -7613,6 +7851,11 @@ class VippWidget(QWidget):
             return changed
         if node.operation_id == "rescale_axes":
             return self._refresh_rescale_axes_controls(self._selected_node_id)
+        if node.operation_id == "composite_to_rgb":
+            # Its controls depend on the resolved input axis, channel count,
+            # names, and exact carried metadata colours.
+            self._render_parameters(self._selected_node_id)
+            return False
         if node.operation_id == "born_wolf_psf":
             self._render_parameters(self._selected_node_id)
             self._sync_node_output_ports(self._selected_node_id)
@@ -8429,6 +8672,466 @@ class VippWidget(QWidget):
         self._record_parameter_undo(self._selected_node_id, "columns")
         self._apply_select_table_columns_params(self._selected_node_id, value)
         self._mark_pipeline_dirty(self._selected_node_id)
+        self._debounce_timer.start()
+
+    @staticmethod
+    def _composite_channel_axis_mode(node) -> str:
+        stored = str(node.params.get("channel_axis_mode", "")).strip().title()
+        if stored in {"Auto", "Manual"}:
+            return stored
+        try:
+            channel_axis = int(node.params.get("channel_axis", -1))
+        except (TypeError, ValueError):
+            channel_axis = -1
+        return "Manual" if channel_axis >= 0 else "Auto"
+
+    @staticmethod
+    def _composite_mapping_mode(node) -> str:
+        stored = str(node.params.get("mapping_mode", "")).strip().title()
+        if stored in {"Auto", "Manual"}:
+            return stored
+        selections = []
+        for name in ("red_channel", "green_channel", "blue_channel"):
+            try:
+                selections.append(int(node.params.get(name, -1)))
+            except (TypeError, ValueError):
+                selections.append(-1)
+        return "Manual" if any(value >= 0 for value in selections) else "Auto"
+
+    def _composite_declared_channel_axes(self, node_id: str) -> tuple[int, ...]:
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is None:
+            return ()
+        return tuple(
+            index
+            for index, axis in enumerate(state.axes)
+            if _axis_is_explicit(axis)
+            and (
+                str(axis.type).strip().lower() == "channel"
+                or str(axis.name).strip().lower() in {"c", "channel", "rgb", "rgba"}
+            )
+        )
+
+    def _composite_resolved_channel_axis(
+        self,
+        node_id: str,
+        mode: str,
+    ) -> int | None:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None:
+            return None
+        ndim = np.asarray(data).ndim
+        if ndim <= 0:
+            return None
+        declared = self._composite_declared_channel_axes(node_id)
+        if mode == "Auto":
+            return declared[0] if len(declared) == 1 else None
+        node = self.pipeline.nodes[node_id]
+        try:
+            stored = int(node.params.get("channel_axis", -1))
+        except (TypeError, ValueError):
+            stored = -1
+        if 0 <= stored < ndim:
+            return stored
+        # A saved Manual selection must be shown as unresolved when it is
+        # absent or invalid. Falling back here would make the inspector look
+        # runnable while the operation itself correctly rejects the params.
+        return None
+
+    def _composite_channel_count(self, node_id: str, axis: int | None) -> int:
+        data = self.pipeline.input_data_for_node(node_id)
+        if data is None or axis is None:
+            return 0
+        shape = np.asarray(data).shape
+        if not 0 <= int(axis) < len(shape):
+            return 0
+        return max(int(shape[int(axis)]), 0)
+
+    @staticmethod
+    def _composite_exact_metadata_color(color) -> str | None:
+        if color is None:
+            return None
+        try:
+            value = int(color) & 0xFFFFFF
+        except (TypeError, ValueError):
+            return None
+        standard = {
+            0xFF0000: "Red",
+            0x00FF00: "Green",
+            0x0000FF: "Blue",
+            0xFF00FF: "Magenta",
+            0x00FFFF: "Cyan",
+            0xFFFF00: "Yellow",
+        }
+        return standard.get(value, f"#{value:06X}")
+
+    def _composite_auto_assignments(
+        self,
+        node_id: str,
+        axis: int | None,
+        count: int,
+    ) -> list[str]:
+        if axis is None or count <= 0:
+            return []
+        state = self.pipeline.input_state_for_node(node_id)
+        declared = self._composite_declared_channel_axes(node_id)
+        uses_declared_channels = len(declared) == 1 and axis == declared[0]
+        axis_name = ""
+        if state is not None and 0 <= axis < len(state.axes):
+            axis_name = str(state.axes[axis].name).strip().lower()
+        if uses_declared_channels and axis_name in {"rgb", "rgba"}:
+            encoded = ["Red", "Green", "Blue"]
+            if count > 3:
+                encoded.extend(["Unassigned"] * (count - 3))
+            return encoded[:count]
+
+        metadata_colors = ()
+        if uses_declared_channels and state is not None:
+            metadata_colors = tuple(channel.color for channel in state.channels)
+        defaults = channel_color_labels_from_metadata((), count)
+        assignments: list[str] = []
+        for index in range(count):
+            exact = (
+                self._composite_exact_metadata_color(metadata_colors[index])
+                if index < len(metadata_colors)
+                else None
+            )
+            assignments.append(exact or defaults[index])
+        return assignments
+
+    @staticmethod
+    def _merge_composite_assignments(current: str, added: str) -> str:
+        components = {
+            "Unassigned": frozenset(),
+            "Red": frozenset({"r"}),
+            "Green": frozenset({"g"}),
+            "Blue": frozenset({"b"}),
+            "Yellow": frozenset({"r", "g"}),
+            "Magenta": frozenset({"r", "b"}),
+            "Cyan": frozenset({"g", "b"}),
+        }
+        names = {value: key for key, value in components.items()}
+        merged = components.get(current, frozenset()) | components.get(
+            added,
+            frozenset(),
+        )
+        return names.get(merged, "#FFFFFF")
+
+    def _composite_legacy_assignments(self, node, count: int) -> list[str]:
+        assignments = ["Unassigned"] * count
+        for name, color in (
+            ("red_channel", "Red"),
+            ("green_channel", "Green"),
+            ("blue_channel", "Blue"),
+        ):
+            try:
+                selection = int(node.params.get(name, -1))
+            except (TypeError, ValueError):
+                selection = -1
+            # In a mixed legacy/manual mapping, -1 is intentionally presented
+            # as Unassigned rather than silently filling a positional default.
+            if 0 <= selection < count:
+                assignments[selection] = self._merge_composite_assignments(
+                    assignments[selection],
+                    color,
+                )
+        return assignments
+
+    @staticmethod
+    def _normalized_composite_assignment(value: object) -> str:
+        text = str(value).strip()
+        choices = {
+            choice.lower(): choice for choice in COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES
+        }
+        if text.lower() in choices:
+            return choices[text.lower()]
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+            return text.upper()
+        rgb = color_value_to_rgb(text)
+        if rgb is not None:
+            values = np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+            return "#" + "".join(f"{int(component):02X}" for component in values)
+        return "Unassigned"
+
+    @staticmethod
+    def _presented_composite_assignment(value: object) -> str:
+        """Return a truthful, non-mutating presentation of one saved value."""
+        text = str(value).strip()
+        if not text or text.casefold() == "unassigned":
+            return "Unassigned"
+        choices = {choice.casefold(): choice for choice in CHANNEL_COLOR_CHOICES}
+        if text.casefold() in choices:
+            return choices[text.casefold()]
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", text):
+            return text.upper()
+        rgb = color_value_to_rgb(text)
+        if rgb is not None:
+            values = np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+            return "#" + "".join(f"{int(component):02X}" for component in values)
+        # Keep malformed text visible in the combo box. Rendering the form is
+        # deliberately read-only; a user edit is what repairs persistence.
+        return text
+
+    def _composite_channel_assignments(
+        self,
+        node_id: str,
+        mode: str,
+        axis: int | None,
+        count: int,
+    ) -> list[str]:
+        node = self.pipeline.nodes[node_id]
+        automatic = self._composite_auto_assignments(node_id, axis, count)
+        if mode == "Auto":
+            return automatic
+        raw = str(node.params.get("channel_colors", "")).strip()
+        if raw:
+            assignments = [
+                self._presented_composite_assignment(part) for part in raw.split(",")
+            ]
+            assignments = assignments[:count]
+            assignments.extend(["Unassigned"] * (count - len(assignments)))
+            return assignments
+        legacy_explicit = False
+        for name in ("red_channel", "green_channel", "blue_channel"):
+            try:
+                legacy_explicit = legacy_explicit or int(node.params.get(name, -1)) >= 0
+            except (TypeError, ValueError):
+                continue
+        if legacy_explicit:
+            return self._composite_legacy_assignments(node, count)
+        # Explicit/derived Manual mode with no assignments and all legacy
+        # selectors at -1 is an intentionally black composite, not Auto.
+        return ["Unassigned"] * count
+
+    def _composite_manual_mapping_warning(self, node_id: str, count: int) -> str:
+        """Describe malformed saved Manual mapping text without repairing it."""
+        node = self.pipeline.nodes[node_id]
+        raw = str(node.params.get("channel_colors", ""))
+        if not raw.strip():
+            return ""
+        parts = [part.strip() for part in raw.split(",")]
+        problems: list[str] = []
+        if len(parts) != count:
+            problems.append(
+                f"it has {len(parts)} entries but the selected axis has {count}"
+            )
+        invalid = [
+            part
+            for part in parts
+            if part
+            and part.casefold() != "unassigned"
+            and color_value_to_rgb(part) is None
+        ]
+        if invalid:
+            quoted = ", ".join(repr(part) for part in invalid)
+            problems.append(f"unrecognized assignment(s): {quoted}")
+        if not problems:
+            return ""
+        return (
+            f"Saved Manual mapping {raw!r} is invalid: "
+            + "; ".join(problems)
+            + ". It has not been changed; choose an assignment to replace it "
+            "with a canonical full mapping."
+        )
+
+    def _composite_channel_labels(
+        self,
+        node_id: str,
+        axis: int | None,
+        count: int,
+    ) -> list[str]:
+        if axis is None:
+            return []
+        state = self.pipeline.input_state_for_node(node_id)
+        declared = self._composite_declared_channel_axes(node_id)
+        if len(declared) == 1 and axis == declared[0] and state is not None:
+            return self._channel_color_control_labels(count, state)
+        axis_name = "Axis"
+        if state is not None and 0 <= axis < len(state.axes):
+            axis_name = str(state.axes[axis].name).strip().upper() or "Axis"
+        return [f"{axis_name} {index + 1}" for index in range(count)]
+
+    def _composite_axis_status(
+        self,
+        node_id: str,
+        mode: str,
+        axis: int | None,
+    ) -> str:
+        declared = self._composite_declared_channel_axes(node_id)
+        if axis is None:
+            if mode == "Auto" and len(declared) > 1:
+                return (
+                    "Auto is ambiguous because more than one explicit channel-like "
+                    "axis is declared. Switch to Manual and choose the intended axis."
+                )
+            if mode == "Manual":
+                return (
+                    "The saved Manual channel axis is missing or invalid. Choose an "
+                    "axis to repair it."
+                )
+            return (
+                "Auto could not find one explicit C/channel axis. Switch to Manual "
+                "to choose any dimension, such as Z for a colour projection."
+            )
+        option = next(
+            (
+                item
+                for item in self._axis_slice_options_for(node_id)
+                if item.index == axis
+            ),
+            None,
+        )
+        detail = self._composite_axis_choice_label(option) if option else str(axis)
+        prefix = "Auto resolved" if mode == "Auto" else "Manual selection"
+        return f"{prefix}: {detail}."
+
+    @staticmethod
+    def _composite_mapping_status(
+        mode: str,
+        labels: list[str],
+        assignments: list[str],
+        warning: str = "",
+    ) -> str:
+        if not assignments:
+            mapping = (
+                "No source channels are available until a channel axis is resolved."
+            )
+            return f"{warning} {mapping}".strip()
+        mapping = "; ".join(
+            f"{label} → {assignment}"
+            for label, assignment in zip(labels, assignments, strict=True)
+        )
+        status = f"{mode} mapping: {mapping}."
+        return f"{warning} Displayed mapping: {mapping}." if warning else status
+
+    def _on_composite_channel_axis_mode_changed(self, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "composite_to_rgb":
+            return
+        mode = str(value).title()
+        if mode not in {"Auto", "Manual"} or (
+            self._composite_channel_axis_mode(node) == mode
+        ):
+            return
+        self._record_parameter_undo(node_id, "channel_axis_mode")
+        if mode == "Manual":
+            resolved = self._composite_resolved_channel_axis(node_id, "Auto")
+            if resolved is None:
+                options = self._axis_slice_options_for(node_id)
+                resolved = options[0].index if options else None
+            if resolved is not None:
+                self.pipeline.set_param(node_id, "channel_axis", int(resolved))
+        node.params["channel_axis_mode"] = mode
+        self._mark_pipeline_dirty(node_id)
+        self._render_parameters(node_id)
+        self._debounce_timer.start()
+
+    def _on_composite_channel_axis_changed(self, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "composite_to_rgb":
+            return
+        try:
+            axis = int(value)
+        except (TypeError, ValueError):
+            return
+        try:
+            saved_axis = int(node.params.get("channel_axis", -1))
+        except (TypeError, ValueError):
+            saved_axis = -1
+        if saved_axis == axis:
+            return
+        self._record_parameter_undo(node_id, "channel_axis")
+        self.pipeline.set_param(node_id, "channel_axis", axis)
+        node.params["channel_axis_mode"] = "Manual"
+        count = self._composite_channel_count(node_id, axis)
+        if self._composite_mapping_mode(node) == "Manual":
+            assignments = self._composite_channel_assignments(
+                node_id,
+                "Manual",
+                axis,
+                count,
+            )
+            node.params["channel_colors"] = ",".join(
+                self._normalized_composite_assignment(assignment)
+                for assignment in assignments
+            )
+        self._mark_pipeline_dirty(node_id)
+        self._render_parameters(node_id)
+        self._debounce_timer.start()
+
+    def _on_composite_mapping_mode_changed(self, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "composite_to_rgb":
+            return
+        mode = str(value).title()
+        if mode not in {"Auto", "Manual"} or self._composite_mapping_mode(node) == mode:
+            return
+        self._record_parameter_undo(node_id, "mapping_mode")
+        axis_mode = self._composite_channel_axis_mode(node)
+        axis = self._composite_resolved_channel_axis(node_id, axis_mode)
+        count = self._composite_channel_count(node_id, axis)
+        if mode == "Manual":
+            if str(node.params.get("channel_colors", "")).strip():
+                assignments = self._composite_channel_assignments(
+                    node_id,
+                    "Manual",
+                    axis,
+                    count,
+                )
+            else:
+                assignments = self._composite_auto_assignments(
+                    node_id,
+                    axis,
+                    count,
+                )
+            node.params["channel_colors"] = ",".join(
+                self._normalized_composite_assignment(assignment)
+                for assignment in assignments
+            )
+        node.params["mapping_mode"] = mode
+        self._mark_pipeline_dirty(node_id)
+        self._render_parameters(node_id)
+        self._debounce_timer.start()
+
+    def _on_composite_channel_color_changed(self, slot: int, value) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "composite_to_rgb":
+            return
+        axis = self._composite_resolved_channel_axis(
+            node_id,
+            self._composite_channel_axis_mode(node),
+        )
+        count = self._composite_channel_count(node_id, axis)
+        assignments = self._composite_channel_assignments(
+            node_id,
+            "Manual",
+            axis,
+            count,
+        )
+        if not 0 <= slot < len(assignments):
+            return
+        normalized = self._normalized_composite_assignment(value)
+        canonical = [
+            self._normalized_composite_assignment(assignment)
+            for assignment in assignments
+        ]
+        canonical[slot] = normalized
+        serialized = ",".join(canonical)
+        if (
+            self._composite_mapping_mode(node) == "Manual"
+            and str(node.params.get("channel_colors", "")) == serialized
+        ):
+            return
+        self._record_parameter_undo(node_id, "channel_colors")
+        node.params["mapping_mode"] = "Manual"
+        node.params["channel_colors"] = serialized
+        self._mark_pipeline_dirty(node_id)
+        self._render_parameters(node_id)
+        self._update_thumbnails()
         self._debounce_timer.start()
 
     def _on_combine_channels_input_count_changed(self, value) -> None:
@@ -9432,13 +10135,21 @@ class VippWidget(QWidget):
         if arr.ndim <= 0:
             return None
         node = self.pipeline.nodes.get(node_id)
-        if node is not None and "channel_axis" in node.params:
+        use_stored_axis = not (
+            node is not None
+            and node.operation_id == "composite_to_rgb"
+            and self._composite_channel_axis_mode(node) == "Auto"
+        )
+        if node is not None and use_stored_axis and "channel_axis" in node.params:
             try:
                 stored = int(node.params.get("channel_axis", -1))
             except Exception:
                 stored = -1
             if 0 <= stored < arr.ndim:
                 return stored
+        if node is not None and node.operation_id == "composite_to_rgb":
+            declared = self._composite_declared_channel_axes(node_id)
+            return declared[0] if len(declared) == 1 else None
         preferred = self._preferred_channel_axis(node_id)
         if preferred is not None and 0 <= preferred < arr.ndim:
             return preferred

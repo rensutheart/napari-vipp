@@ -28,6 +28,8 @@ from napari_vipp.core.metadata import (
 )
 from napari_vipp.core.operations import (
     BORN_WOLF_PSF_AUTO_PARAMETERS,
+    COMPOSITE_RGB_AUTO,
+    COMPOSITE_RGB_MANUAL,
     COMPOSITE_RGB_PERCENTILE_1_99,
     COMPOSITE_RGB_PRESERVE_VALUES,
     adaptive_gaussian_threshold,
@@ -204,6 +206,48 @@ _OPTIONAL_PERSISTED_PARAMETER_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
         ParameterSpec("channel_axis", "Channel axis", "int", -1, -1, 64, 1),
         ParameterSpec("channel_colors", "Channel colours", "text", "", 0, 0, 1),
     ),
+    "composite_to_rgb": (
+        ParameterSpec(
+            "channel_axis_mode",
+            "Channel axis mode",
+            "choice",
+            COMPOSITE_RGB_AUTO,
+            0,
+            0,
+            1,
+            choices=(COMPOSITE_RGB_AUTO, COMPOSITE_RGB_MANUAL),
+        ),
+        ParameterSpec(
+            "mapping_mode",
+            "Channel mapping",
+            "choice",
+            COMPOSITE_RGB_AUTO,
+            0,
+            0,
+            1,
+            choices=(COMPOSITE_RGB_AUTO, COMPOSITE_RGB_MANUAL),
+        ),
+        ParameterSpec(
+            "channel_colors",
+            "Channel assignments",
+            "text",
+            "",
+            0,
+            0,
+            1,
+        ),
+    ),
+}
+
+# Optional persisted parameters remain optional when loading older workflows,
+# but newly created nodes can opt into explicit defaults so their saved intent
+# is self-describing.  Keep this allowlisted: many optional parameters encode
+# derived or legacy UI state and must not be initialized generically.
+_NEW_NODE_OPTIONAL_DEFAULTS: dict[str, dict[str, Any]] = {
+    "composite_to_rgb": {
+        "channel_axis_mode": COMPOSITE_RGB_AUTO,
+        "mapping_mode": COMPOSITE_RGB_AUTO,
+    },
 }
 
 
@@ -4382,6 +4426,8 @@ class PrototypePipeline:
             self._counters[operation_id] += 1
             node_id = _node_id(operation_id, self._counters[operation_id])
 
+        params = {param.name: param.default for param in spec.parameters}
+        params.update(_NEW_NODE_OPTIONAL_DEFAULTS.get(spec.id, {}))
         node = GraphNode(
             node_id,
             spec.id,
@@ -4389,7 +4435,7 @@ class PrototypePipeline:
             spec.category,
             spec.input_type,
             spec.output_type,
-            {param.name: param.default for param in spec.parameters},
+            params,
             spec.max_inputs,
         )
         self.nodes[node.id] = node
@@ -5971,11 +6017,9 @@ class PrototypePipeline:
             input_state,
             ImageState,
         ):
-            try:
-                requested_channel_axis = int(kwargs.get("channel_axis", -1))
-            except Exception:
-                requested_channel_axis = -1
-            if requested_channel_axis < 0:
+            channel_axis_mode = _resolved_composite_channel_axis_mode(kwargs)
+            kwargs["channel_axis_mode"] = channel_axis_mode
+            if channel_axis_mode == COMPOSITE_RGB_AUTO:
                 channel_axis = _image_state_channel_axis(input_state)
                 if channel_axis is not None:
                     kwargs["channel_axis"] = channel_axis
@@ -5987,9 +6031,12 @@ class PrototypePipeline:
                 kwargs["channel_axis_semantics"] = input_state.axes[
                     resolved_channel_axis
                 ].name
+            mapping_mode = _resolved_composite_mapping_mode(kwargs)
+            kwargs["mapping_mode"] = mapping_mode
             declared_channel_axis = _image_state_channel_axis(input_state)
             if (
-                input_state.channels
+                mapping_mode == COMPOSITE_RGB_AUTO
+                and input_state.channels
                 and declared_channel_axis is not None
                 and resolved_channel_axis == declared_channel_axis
             ):
@@ -5997,6 +6044,8 @@ class PrototypePipeline:
                     channel.color if channel.color is not None else ""
                     for channel in input_state.channels
                 )
+            elif mapping_mode == COMPOSITE_RGB_AUTO:
+                kwargs["channel_colors"] = ()
         output = spec.function(source_output, **kwargs)
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
@@ -6028,6 +6077,8 @@ class PrototypePipeline:
                     "channel_axis_semantics",
                     "",
                 ),
+                "resolved_channel_axis_mode": kwargs.get("channel_axis_mode"),
+                "resolved_mapping_mode": kwargs.get("mapping_mode"),
                 "resolved_channel_colors": kwargs.get("channel_colors", ()),
                 "output_dtype": str(getattr(output, "dtype", "floating RGB")),
             }
@@ -6388,6 +6439,47 @@ def grouped_palette_specs() -> dict[str, dict[str, list[OperationSpec]]]:
     return groups
 
 
+def _validated_composite_mode(value: Any, *, label: str) -> str:
+    if value not in {COMPOSITE_RGB_AUTO, COMPOSITE_RGB_MANUAL}:
+        raise ValueError(
+            f"Composite → RGB {label} must be {COMPOSITE_RGB_AUTO!r} or "
+            f"{COMPOSITE_RGB_MANUAL!r}."
+        )
+    return str(value)
+
+
+def _resolved_composite_channel_axis_mode(params: dict[str, Any]) -> str:
+    value = params.get("channel_axis_mode")
+    if value is not None:
+        return _validated_composite_mode(value, label="channel-axis mode")
+    channel_axis = params.get("channel_axis", -1)
+    if (
+        isinstance(channel_axis, Integral)
+        and not isinstance(channel_axis, bool)
+        and int(channel_axis) >= 0
+    ):
+        return COMPOSITE_RGB_MANUAL
+    return COMPOSITE_RGB_AUTO
+
+
+def _resolved_composite_mapping_mode(params: dict[str, Any]) -> str:
+    value = params.get("mapping_mode")
+    if value is not None:
+        return _validated_composite_mode(value, label="mapping mode")
+    selections = tuple(
+        params.get(name, -1)
+        for name in ("red_channel", "green_channel", "blue_channel")
+    )
+    if all(
+        isinstance(selection, Integral)
+        and not isinstance(selection, bool)
+        and int(selection) == -1
+        for selection in selections
+    ):
+        return COMPOSITE_RGB_AUTO
+    return COMPOSITE_RGB_MANUAL
+
+
 def _validate_operation_axis_semantics(
     node: GraphNode,
     state: ImageState | TableState | None,
@@ -6409,33 +6501,13 @@ def _validate_operation_axis_semantics(
         )
         return
     if node.operation_id == "composite_to_rgb":
-        try:
-            requested_channel_axis = int(kwargs.get("channel_axis", -1))
-        except (TypeError, ValueError):
-            requested_channel_axis = -1
-        if requested_channel_axis < 0:
-            _require_explicit_channel_axis(
-                image_state,
-                operation_title=node.title,
-            )
-        elif (
-            image_state is not None
-            and requested_channel_axis < len(image_state.axes)
-            and image_state.axes[requested_channel_axis].is_explicit
-        ):
-            _require_explicit_channel_axis(
-                image_state,
-                operation_title=node.title,
-            )
-            declared_channel_axis = _image_state_channel_axis(image_state)
-            if requested_channel_axis != declared_channel_axis:
-                selected = image_state.axes[requested_channel_axis].name
-                declared = image_state.axes[declared_channel_axis].name
-                raise AmbiguousAxisError(
-                    f"{node.title} channel axis {requested_channel_axis} "
-                    f"({selected}) conflicts with the explicitly declared "
-                    f"channel axis {declared_channel_axis} ({declared})."
-                )
+        channel_axis_mode = _resolved_composite_channel_axis_mode(kwargs)
+        if channel_axis_mode == COMPOSITE_RGB_MANUAL:
+            return
+        _require_explicit_channel_axis(
+            image_state,
+            operation_title=node.title,
+        )
         return
     if node.operation_id == "project_image" and not (
         _projection_uses_only_axis_indices(kwargs.get("axes"))

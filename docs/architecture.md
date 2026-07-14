@@ -734,10 +734,35 @@ to green and blue. The default mapping retains the native intensity scale
 without normalization or clipping, checks conversion and accumulation for
 precision/overflow hazards, and rejects unsafe inputs. The legacy per-channel
 1st/99th-percentile normalization is available only as an explicitly labelled
-lossy choice. Manual red/green/blue selectors still force single-channel RGB
-plane mapping. Split Channels exposes a `Thumbnail channel` inspector parameter
-that chooses which output port is presented when the downstream graph does not
-identify one unambiguous channel.
+lossy choice.
+
+Composite authoring separates `channel_axis_mode` and `mapping_mode`; both are
+persisted `Auto`/`Manual` choices. Auto axis mode resolves only an explicit
+carried channel axis and presents the resolved axis read-only. Manual axis mode
+enables the saved selector and intentionally accepts any valid axis, including
+a spatial axis such as Z even when metadata declares a different C axis. Auto
+mapping resolves a read-only assignment for every detected source channel:
+declared RGB/RGBA uses encoded order (with alpha ignored), while fluorescence
+data uses carried colours and then the repeating
+Blue/Green/Red/Magenta/Yellow/Cyan defaults. All source channels participate,
+including counts above three.
+
+Manual mapping renders one selector per source channel and persists the ordered
+comma-separated `channel_colors` assignments. Choices are `Unassigned`, Red,
+Green, Blue, Magenta, Cyan, and Yellow. An unassigned channel has a zero colour
+vector and contributes nothing; composite colours and repeated assignments mix
+additively into the relevant RGB planes. Compatibility-only `channel_axis` and
+red/green/blue integer parameters remain loadable but are hidden from normal
+authoring. Parameter changes invalidate only the composite node and its
+descendants. Cache retention independently guarantees that every calculated
+manual result upstream—including deconvolutions several hops away—survives in
+Keep-all, Smart, and Low-memory modes. Automatic upstream nodes are not dirtied
+by the composite edit, but their cached arrays remain eligible for normal
+Smart/Low-memory pruning and may be recomputed if needed.
+
+Split Channels exposes a `Thumbnail channel` inspector parameter that chooses
+which output port is presented when the downstream graph does not identify one
+unambiguous channel.
 
 The presentation-output resolver collects the distinct `source_port` values of
 connections leaving a `Split Channels` node. Exactly one distinct used port

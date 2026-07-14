@@ -19,6 +19,8 @@ from napari_vipp.core.metadata import (
     transform_multi_input_image_state,
 )
 from napari_vipp.core.operations import (
+    COMPOSITE_RGB_AUTO,
+    COMPOSITE_RGB_MANUAL,
     COMPOSITE_RGB_PERCENTILE_1_99,
     COMPOSITE_RGB_PRESERVE_VALUES,
     adaptive_gaussian_threshold,
@@ -4729,6 +4731,77 @@ def test_composite_to_rgb_auto_blends_named_channel_colours():
     assert rgb[5, 5, 2] == 1.0
 
 
+def test_composite_to_rgb_manual_maps_every_source_channel_or_unassigns_it():
+    data = np.zeros((4, 3, 5), dtype=np.float32)
+    data[0, 0, 0] = 2.0
+    data[1, 0, 1] = 100.0
+    data[2, 0, 2] = 3.0
+    data[3, 0, 3] = 5.0
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        channel_axis_mode=COMPOSITE_RGB_MANUAL,
+        mapping_mode=COMPOSITE_RGB_MANUAL,
+        channel_colors="Red,Unassigned,Blue,Yellow",
+    )
+
+    assert rgb[0, 0].tolist() == [2.0, 0.0, 0.0]
+    assert rgb[0, 1].tolist() == [0.0, 0.0, 0.0]
+    assert rgb[0, 2].tolist() == [0.0, 0.0, 3.0]
+    assert rgb[0, 3].tolist() == [5.0, 5.0, 0.0]
+
+
+def test_composite_to_rgb_legacy_mixed_selectors_treat_minus_one_as_blank():
+    data = np.zeros((2, 3, 5), dtype=np.float32)
+    data[0, 0, 0] = 2.0
+    data[1, 0, 1] = 3.0
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        red_channel=0,
+        green_channel=1,
+        blue_channel=-1,
+    )
+
+    assert rgb[0, 0].tolist() == [2.0, 0.0, 0.0]
+    assert rgb[0, 1].tolist() == [0.0, 3.0, 0.0]
+    assert np.all(rgb[..., 2] == 0.0)
+
+
+def test_composite_to_rgb_explicit_auto_ignores_legacy_plane_selectors():
+    data = np.zeros((3, 3, 5), dtype=np.float32)
+    data[0, 0, 0] = 2.0
+    data[1, 0, 1] = 3.0
+    data[2, 0, 2] = 5.0
+
+    rgb = composite_to_rgb(
+        data,
+        channel_axis=0,
+        mapping_mode=COMPOSITE_RGB_AUTO,
+        red_channel=0,
+        green_channel=-1,
+        blue_channel=-1,
+    )
+
+    assert rgb[0, 0].tolist() == [0.0, 0.0, 2.0]
+    assert rgb[0, 1].tolist() == [0.0, 3.0, 0.0]
+    assert rgb[0, 2].tolist() == [5.0, 0.0, 0.0]
+
+
+def test_composite_to_rgb_manual_requires_one_assignment_per_source_channel():
+    data = np.zeros((4, 3, 5), dtype=np.float32)
+
+    with pytest.raises(ValueError, match="exactly one colour or Unassigned"):
+        composite_to_rgb(
+            data,
+            channel_axis=0,
+            mapping_mode=COMPOSITE_RGB_MANUAL,
+            channel_colors="Red,Green,Blue",
+        )
+
+
 def test_composite_to_rgb_preserve_mode_does_not_clip_additive_mixtures():
     data = np.stack(
         [
@@ -4857,6 +4930,8 @@ def test_composite_to_rgb_explicit_lossy_mode_retains_legacy_mapping():
         ({"channel_axis": 0, "red_channel": 3}, "R channel index 3"),
         ({"channel_axis": 0, "blue_channel": -2}, "B channel index -2"),
         ({"channel_axis": 0, "intensity_mapping": "Automatic"}, "intensity mapping"),
+        ({"channel_axis": 0, "mapping_mode": "Default"}, "mapping mode"),
+        ({"channel_axis": 0, "channel_axis_mode": "Metadata"}, "channel-axis mode"),
     ],
 )
 def test_composite_to_rgb_rejects_invalid_axis_index_and_mode(kwargs, message):

@@ -36,6 +36,9 @@ RGB_CHANNELS = (3, 4)
 
 COMPOSITE_RGB_PRESERVE_VALUES = "Preserve numeric values"
 COMPOSITE_RGB_PERCENTILE_1_99 = "Per-channel 1st-99th percentile (lossy)"
+COMPOSITE_RGB_AUTO = "Auto"
+COMPOSITE_RGB_MANUAL = "Manual"
+COMPOSITE_RGB_UNASSIGNED = "Unassigned"
 
 BORN_WOLF_PSF_AUTO_PARAMETERS = (
     "wavelength_nm",
@@ -3886,6 +3889,8 @@ def composite_to_rgb(
     intensity_mapping: str = COMPOSITE_RGB_PRESERVE_VALUES,
     channel_axis_semantics: str = "",
     channel_colors: str | list[int | str] | tuple[int | str, ...] = "",
+    channel_axis_mode: str | None = None,
+    mapping_mode: str | None = None,
 ) -> np.ndarray:
     """Map an explicitly declared channel axis into channel-last RGB.
 
@@ -3899,11 +3904,20 @@ def composite_to_rgb(
 
     Only an axis explicitly declared as ``rgb`` or ``rgba`` preserves encoded
     RGB order automatically. Other channel axes use the declared/default
-    fluorescence colour table unless explicit R/G/B channel indices are given.
-    ``-1`` channel selections mean "use the positional default"; every explicit
-    channel index must exist.
+    fluorescence colour table in ``Auto`` mapping mode. ``Manual`` mapping uses
+    one colour assignment per source channel and supports ``Unassigned``.
+
+    The legacy R/G/B selectors remain accepted for saved workflows that do not
+    carry per-source assignments. If no mapping mode is supplied, all three
+    selectors at ``-1`` mean ``Auto``; otherwise the mapping is ``Manual`` and
+    each ``-1`` plane is deliberately blank.
     """
     arr = np.asarray(data)
+    _validated_composite_mode(
+        channel_axis_mode,
+        label="channel-axis mode",
+        allow_legacy=True,
+    )
     axis = _validated_composite_channel_axis(channel_axis, arr.ndim)
     mapping = _validated_composite_intensity_mapping(intensity_mapping)
     _validate_composite_input_values(arr, mapping)
@@ -3916,26 +3930,28 @@ def composite_to_rgb(
         channel_axis_semantics,
         count=count,
     )
-    selections = _validated_composite_channel_selections(
+    legacy_selections = _validated_composite_legacy_selections(
         (red_channel, green_channel, blue_channel),
-        count=count,
+    )
+    resolved_mapping_mode = _resolved_composite_mapping_mode(
+        mapping_mode,
+        legacy_selections,
     )
     output_dtype = _composite_output_dtype(arr, mapping)
 
-    manual_mapping = any(selection >= 0 for selection in selections)
     true_rgb = _is_true_rgb_channel_axis(
         count,
         channel_axis_semantics=semantic,
     )
-    if count == 1 and not manual_mapping:
+    if resolved_mapping_mode == COMPOSITE_RGB_AUTO and count == 1:
         gray = _composite_mapped_channel(
             moved[..., 0],
             intensity_mapping=mapping,
             output_dtype=output_dtype,
         )
         return np.stack([gray, gray, gray], axis=-1)
-    if not manual_mapping and not true_rgb:
-        color_table = _validated_composite_color_table(channel_colors, count)
+    if resolved_mapping_mode == COMPOSITE_RGB_AUTO and not true_rgb:
+        color_table = _validated_composite_auto_color_table(channel_colors, count)
         return _composite_to_rgb_by_color_table(
             moved,
             color_table,
@@ -3943,25 +3959,36 @@ def composite_to_rgb(
             output_dtype=output_dtype,
         )
 
-    defaults = _default_rgb_channel_indices(
-        count,
-        channel_axis_semantics=semantic,
-    )
-    blank = np.zeros(moved.shape[:-1], dtype=output_dtype)
-    channels = []
-    for position, selection in enumerate(selections):
-        index = defaults[position] if selection < 0 else selection
-        if index is None:
-            channels.append(blank)
-            continue
-        channels.append(
-            _composite_mapped_channel(
-                moved[..., index],
-                intensity_mapping=mapping,
-                output_dtype=output_dtype,
-            )
+    if resolved_mapping_mode == COMPOSITE_RGB_AUTO:
+        return np.stack(
+            [
+                _composite_mapped_channel(
+                    moved[..., index],
+                    intensity_mapping=mapping,
+                    output_dtype=output_dtype,
+                )
+                for index in (0, 1, 2)
+            ],
+            axis=-1,
         )
-    return np.stack(channels, axis=-1)
+
+    if _composite_has_serialized_channel_assignments(channel_colors):
+        color_table = _validated_composite_manual_color_table(
+            channel_colors,
+            count,
+        )
+    else:
+        selections = _validated_composite_channel_selections(
+            legacy_selections,
+            count=count,
+        )
+        color_table = _legacy_composite_selection_color_table(selections, count)
+    return _composite_to_rgb_by_color_table(
+        moved,
+        color_table,
+        intensity_mapping=mapping,
+        output_dtype=output_dtype,
+    )
 
 
 def split_channels(
@@ -11358,6 +11385,62 @@ def _validated_composite_axis_semantics(value, *, count: int) -> str:
     return semantic
 
 
+def _validated_composite_mode(
+    value,
+    *,
+    label: str,
+    allow_legacy: bool = False,
+) -> str | None:
+    if value is None and allow_legacy:
+        return None
+    if value not in {COMPOSITE_RGB_AUTO, COMPOSITE_RGB_MANUAL}:
+        raise ValueError(
+            f"Composite → RGB {label} must be {COMPOSITE_RGB_AUTO!r} or "
+            f"{COMPOSITE_RGB_MANUAL!r}."
+        )
+    return str(value)
+
+
+def _validated_composite_legacy_selections(
+    selections,
+) -> tuple[int, int, int]:
+    resolved: list[int] = []
+    for plane, selection in zip("RGB", selections, strict=True):
+        if isinstance(selection, (bool, np.bool_)) or not isinstance(
+            selection,
+            Integral,
+        ):
+            raise ValueError(
+                f"Composite → RGB {plane} channel selection must be an integer."
+            )
+        index = int(selection)
+        if index < -1:
+            raise ValueError(
+                f"Composite → RGB {plane} channel index {index} is invalid; "
+                "use -1 for Unassigned."
+            )
+        resolved.append(index)
+    return resolved[0], resolved[1], resolved[2]
+
+
+def _resolved_composite_mapping_mode(
+    value,
+    legacy_selections: tuple[int, int, int],
+) -> str:
+    mode = _validated_composite_mode(
+        value,
+        label="mapping mode",
+        allow_legacy=True,
+    )
+    if mode is not None:
+        return mode
+    return (
+        COMPOSITE_RGB_AUTO
+        if all(index == -1 for index in legacy_selections)
+        else COMPOSITE_RGB_MANUAL
+    )
+
+
 def _validated_composite_channel_selections(
     selections,
     *,
@@ -11376,7 +11459,7 @@ def _validated_composite_channel_selections(
         if index < -1 or index >= count:
             raise ValueError(
                 f"Composite → RGB {plane} channel index {index} is out of "
-                f"range for {count} channels; use -1 for the positional default."
+                f"range for {count} channels; use -1 for Unassigned."
             )
         resolved.append(index)
     return resolved[0], resolved[1], resolved[2]
@@ -11399,23 +11482,41 @@ def _composite_mapped_channel(
     return np.asarray(channel).astype(output_dtype, copy=True)
 
 
-def _validated_composite_color_table(
+def _composite_has_serialized_channel_assignments(
     channel_colors: str | list[int | str] | tuple[int | str, ...],
-    count: int,
-) -> np.ndarray:
+) -> bool:
     if isinstance(channel_colors, str):
-        values: list[int | str] = (
+        return bool(channel_colors.strip())
+    if isinstance(channel_colors, (list, tuple)):
+        return bool(channel_colors)
+    raise ValueError(
+        "Composite → RGB channel colours must be comma-separated text "
+        "or a sequence."
+    )
+
+
+def _composite_channel_assignment_values(
+    channel_colors: str | list[int | str] | tuple[int | str, ...],
+) -> list[int | str | None]:
+    if isinstance(channel_colors, str):
+        return (
             [part.strip() for part in channel_colors.split(",")]
             if channel_colors.strip()
             else []
         )
-    elif isinstance(channel_colors, (list, tuple)):
-        values = list(channel_colors)
-    else:
-        raise ValueError(
-            "Composite → RGB channel colours must be comma-separated text "
-            "or a sequence."
-        )
+    if isinstance(channel_colors, (list, tuple)):
+        return list(channel_colors)
+    raise ValueError(
+        "Composite → RGB channel colours must be comma-separated text "
+        "or a sequence."
+    )
+
+
+def _validated_composite_auto_color_table(
+    channel_colors: str | list[int | str] | tuple[int | str, ...],
+    count: int,
+) -> np.ndarray:
+    values = _composite_channel_assignment_values(channel_colors)
     if len(values) > count:
         raise ValueError(
             f"Composite → RGB received {len(values)} channel colours for "
@@ -11433,6 +11534,44 @@ def _validated_composite_color_table(
                 f"{value!r} at index {index} is not recognized."
             )
         table[index] = color
+    return table
+
+
+def _validated_composite_manual_color_table(
+    channel_colors: str | list[int | str] | tuple[int | str, ...],
+    count: int,
+) -> np.ndarray:
+    values = _composite_channel_assignment_values(channel_colors)
+    if len(values) != count:
+        raise ValueError(
+            "Composite → RGB Manual mapping requires exactly one colour or "
+            f"Unassigned entry for each of {count} source channels; received "
+            f"{len(values)}."
+        )
+    table = np.zeros((count, 3), dtype=np.float32)
+    for index, value in enumerate(values):
+        text = str(value).strip() if value is not None else ""
+        if not text or text.casefold() == COMPOSITE_RGB_UNASSIGNED.casefold():
+            continue
+        color = color_value_to_rgb(value)
+        if color is None:
+            raise ValueError(
+                "Composite → RGB channel assignment "
+                f"{value!r} at index {index} is not recognized; use a colour "
+                f"or {COMPOSITE_RGB_UNASSIGNED!r}."
+            )
+        table[index] = color
+    return table
+
+
+def _legacy_composite_selection_color_table(
+    selections: tuple[int, int, int],
+    count: int,
+) -> np.ndarray:
+    table = np.zeros((count, 3), dtype=np.float32)
+    for component, source_index in enumerate(selections):
+        if source_index >= 0:
+            table[source_index, component] = 1.0
     return table
 
 
@@ -12497,23 +12636,6 @@ def _clamp(value: float, lower: float, upper: float) -> float:
 
 def _round_and_clamp(value: float, lower: float, upper: float) -> int:
     return int(_clamp(np.floor(value + 0.5), lower, upper))
-
-
-def _default_rgb_channel_indices(
-    count: int,
-    *,
-    channel_axis_semantics: str = "",
-) -> tuple[int | None, int | None, int | None]:
-    if _is_true_rgb_channel_axis(
-        count,
-        channel_axis_semantics=channel_axis_semantics,
-    ):
-        return (0, 1, 2)
-    if count >= 3:
-        return (2, 1, 0)
-    if count == 2:
-        return (None, 1, 0)
-    return (0, 0, 0)
 
 
 def _is_true_rgb_channel_axis(

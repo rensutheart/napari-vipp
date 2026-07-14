@@ -4981,6 +4981,7 @@ def test_explicit_numeric_channel_axis_is_used_without_shape_fallback(qtbot):
     qtbot.addWidget(widget)
     composite = widget.add_node_from_palette("composite_to_rgb")
 
+    widget.pipeline.set_param(composite.id, "channel_axis_mode", "Manual")
     widget.pipeline.set_param(composite.id, "channel_axis", 0)
     widget._connect_nodes("input", composite.id)
 
@@ -5030,7 +5031,7 @@ def test_skeleton_graph_overlay_2d_inspects_as_single_rgb_layer(qtbot):
     assert inspect.data.shape == (16, 18, 3)
 
 
-def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
+def test_composite_to_rgb_inspector_exposes_auto_manual_channel_mapping(qtbot):
     data = np.zeros((3, 12, 16, 18), dtype=np.uint16)
     data[0] = 1000
     data[1] = 2000
@@ -5040,29 +5041,341 @@ def test_composite_to_rgb_auto_channel_axis_remains_selectable(qtbot):
     qtbot.addWidget(widget)
 
     node = widget.add_node_from_palette("composite_to_rgb")
+    saved_auto_params = dict(node.params)
     widget._connect_nodes("input", node.id)
     widget.graph_view.select_node(node.id)
 
+    axis_mode = widget._parameter_widgets["channel_axis_mode"]
     channel_axis = widget._parameter_widgets["channel_axis"]
-    red_channel = widget._parameter_widgets["red_channel"]
-    assert channel_axis.slider.minimum() == -1
-    assert channel_axis.value_box.minimum() == -1
-    assert red_channel.slider.minimum() == -1
-    assert red_channel.value_box.minimum() == -1
+    mapping_mode = widget._parameter_widgets["mapping_mode"]
+    assignments = [
+        widget._parameter_widgets[f"channel_color_{index}"] for index in range(3)
+    ]
+
+    assert axis_mode.value() == "Auto"
+    assert mapping_mode.value() == "Auto"
+    assert channel_axis.value() == "0"
+    assert not channel_axis.isEnabled()
+    assert [control.value() for control in assignments] == [
+        "Blue",
+        "Green",
+        "Red",
+    ]
+    assert all(not control.isEnabled() for control in assignments)
+    assert (
+        "Auto resolved: 0: c (3, channel)."
+        in widget._parameter_widgets["channel_axis_status"].text()
+    )
+    assert "Channel 1 → Blue" in widget._parameter_widgets["mapping_status"].text()
+    assert "red_channel" not in widget._parameter_widgets
+    assert "green_channel" not in widget._parameter_widgets
+    assert "blue_channel" not in widget._parameter_widgets
+
+    for name in (
+        "channel_axis_mode",
+        "channel_axis",
+        "mapping_mode",
+        "channel_color_0",
+        "channel_color_1",
+        "channel_color_2",
+        "intensity_mapping",
+    ):
+        control = widget._parameter_widgets[name]
+        label = widget.parameter_form.labelForField(control)
+        assert control.toolTip()
+        assert label.toolTip() == control.toolTip()
+
+    assert widget.pipeline.nodes[node.id].params == saved_auto_params
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == -1
+    assert widget.pipeline.nodes[node.id].params["channel_axis_mode"] == "Auto"
+    assert widget.pipeline.nodes[node.id].params["mapping_mode"] == "Auto"
+    # Auto remains metadata-driven; explicit assignments are persisted only
+    # when Manual mapping is chosen.
+    assert widget.pipeline.nodes[node.id].params.get("channel_colors", "") == ""
     assert widget.pipeline.outputs[node.id].shape == (12, 16, 18, 3)
     assert widget.pipeline.outputs[node.id].max() == 3000.0
     assert _metadata_value(widget, "Dimensions") == "z=12, y=16, x=18, rgb=3"
     _assert_rgb_channel_layers(viewer, "VIPP Inspect", (12, 16, 18))
 
-    channel_axis.value_box.setValue(0)
-    red_channel.value_box.setValue(0)
+    axis_mode.combo.setCurrentText("Manual")
+    mapping_mode = widget._parameter_widgets["mapping_mode"]
+    mapping_mode.combo.setCurrentText("Manual")
+    assert widget._parameter_widgets["channel_axis"].isEnabled()
+    assert all(
+        widget._parameter_widgets[f"channel_color_{index}"].isEnabled()
+        for index in range(3)
+    )
+
+    widget._parameter_widgets["channel_color_2"].combo.setCurrentText("Unassigned")
     widget._debounce_timer.stop()
-    widget.run_pipeline()
+    widget.run_pipeline(force_sync=True)
 
     assert widget.pipeline.nodes[node.id].params["channel_axis"] == 0
-    assert widget.pipeline.nodes[node.id].params["red_channel"] == 0
+    assert widget.pipeline.nodes[node.id].params["channel_axis_mode"] == "Manual"
+    assert widget.pipeline.nodes[node.id].params["mapping_mode"] == "Manual"
+    assert widget.pipeline.nodes[node.id].params["channel_colors"] == (
+        "Blue,Green,Unassigned"
+    )
     assert widget.pipeline.outputs[node.id].max() == 2000.0
+
+
+def test_composite_to_rgb_auto_mapping_shows_exact_metadata_colour(qtbot):
+    data = np.zeros((2, 8, 9), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+        channels=(
+            ChannelMetadata(name="DNA", color=0x123456),
+            ChannelMetadata(name="Actin", color=0x00FF00),
+        ),
+    )
+    widget = VippWidget(_Viewer(data, metadata={"vipp_image_state": state.to_dict()}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget._parameter_widgets["channel_color_0"].value() == "#123456"
+    assert widget._parameter_widgets["channel_color_1"].value() == "Green"
+    status = widget._parameter_widgets["mapping_status"].text()
+    assert "DNA → #123456" in status
+    assert "Actin → Green" in status
+
+
+def test_composite_to_rgb_auto_mapping_excludes_encoded_rgba_alpha(qtbot):
+    data = np.zeros((8, 9, 4), dtype=np.uint8)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+            AxisMetadata("rgba", "channel"),
+        ),
+    )
+    widget = VippWidget(_Viewer(data, metadata={"vipp_image_state": state.to_dict()}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert [
+        widget._parameter_widgets[f"channel_color_{index}"].value()
+        for index in range(4)
+    ] == ["Red", "Green", "Blue", "Unassigned"]
+    assert (
+        "Channel 4 → Unassigned" in widget._parameter_widgets["mapping_status"].text()
+    )
+
+
+def test_composite_to_rgb_auto_axis_reports_ambiguous_metadata(qtbot):
+    data = np.zeros((2, 3, 8, 9), dtype=np.uint16)
+    state = image_state_from_array(
+        data,
+        axes=(
+            AxisMetadata("c", "channel"),
+            AxisMetadata("channel", "channel"),
+            AxisMetadata("y", "space"),
+            AxisMetadata("x", "space"),
+        ),
+    )
+    widget = VippWidget(_Viewer(data, metadata={"vipp_image_state": state.to_dict()}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget._parameter_widgets["channel_axis_mode"].value() == "Auto"
+    assert widget._parameter_widgets["channel_axis"].value() == "-1"
+    assert not widget._parameter_widgets["channel_axis"].isEnabled()
+    assert (
+        "more than one explicit channel-like axis"
+        in widget._parameter_widgets["channel_axis_status"].text()
+    )
+    assert not any(
+        name.startswith("channel_color_") for name in widget._parameter_widgets
+    )
+
+
+def test_composite_to_rgb_manual_axis_uses_selected_dimension_labels(qtbot):
+    data = np.zeros((3, 4, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CZYX"}))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    widget._parameter_widgets["channel_axis_mode"].combo.setCurrentText("Manual")
+    axis = widget._parameter_widgets["channel_axis"]
+    assert [axis.combo.itemData(index) for index in range(axis.combo.count())] == [
+        "0",
+        "1",
+        "2",
+        "3",
+    ]
+    axis.combo.setCurrentIndex(axis.combo.findData("1"))
+    widget._debounce_timer.stop()
+
+    assert widget.pipeline.nodes[node.id].params["channel_axis"] == 1
+    assert "channel_color_3" in widget._parameter_widgets
+    label = widget.parameter_form.labelForField(
+        widget._parameter_widgets["channel_color_0"]
+    )
+    assert label.text() == "Z 1 assignment"
+    assert "Channel 1 assignment" not in label.text()
+
+
+def test_composite_to_rgb_legacy_manual_mapping_renders_unassigned_slots(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    node.params.update(
+        {
+            "channel_axis": 0,
+            "red_channel": 0,
+            "green_channel": 1,
+            "blue_channel": -1,
+        }
+    )
+    for name in ("channel_axis_mode", "mapping_mode", "channel_colors"):
+        node.params.pop(name, None)
+    saved_params = dict(node.params)
+
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget._parameter_widgets["channel_axis_mode"].value() == "Manual"
+    assert widget._parameter_widgets["mapping_mode"].value() == "Manual"
+    assert [
+        widget._parameter_widgets[f"channel_color_{index}"].value()
+        for index in range(3)
+    ] == ["Red", "Green", "Unassigned"]
+    assert node.params == saved_params
+
+
+def test_composite_to_rgb_manual_empty_render_and_rerun_remain_black(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    data[0] = 100
+    data[1] = 200
+    data[2] = 300
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    node.params.update(
+        {
+            "channel_axis_mode": "Auto",
+            "mapping_mode": "Manual",
+            "channel_colors": "",
+            "red_channel": -1,
+            "green_channel": -1,
+            "blue_channel": -1,
+        }
+    )
+    widget._connect_nodes("input", node.id)
+    widget.run_pipeline(force_sync=True)
+
+    assert not np.any(widget.pipeline.outputs[node.id])
+    saved_params = dict(node.params)
+
+    widget.inspect_node(node.id)
+    widget._render_parameters(node.id)
+
+    assert node.params == saved_params
+    assert [
+        widget._parameter_widgets[f"channel_color_{index}"].value()
+        for index in range(3)
+    ] == ["Unassigned", "Unassigned", "Unassigned"]
+    assert "Manual mapping" in widget._parameter_widgets["mapping_status"].text()
+
+    widget.run_pipeline(force_sync=True)
+
+    assert node.params == saved_params
+    assert not np.any(widget.pipeline.outputs[node.id])
+
+
+def test_composite_to_rgb_invalid_manual_mapping_is_preserved_and_warned(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    node.params.update(
+        {
+            "channel_axis_mode": "Auto",
+            "mapping_mode": "Manual",
+            "channel_colors": "Red,not-a-colour",
+        }
+    )
+    saved_params = dict(node.params)
+
+    widget._render_parameters(node.id)
+
+    assert node.params == saved_params
+    assert [
+        widget._parameter_widgets[f"channel_color_{index}"].value()
+        for index in range(3)
+    ] == ["Red", "not-a-colour", "Unassigned"]
+    status = widget._parameter_widgets["mapping_status"]
+    assert "Saved Manual mapping 'Red,not-a-colour' is invalid" in status.text()
+    assert "2 entries" in status.text()
+    assert "selected axis has 3" in status.text()
+    assert "'not-a-colour'" in status.text()
+    assert "#f59e0b" in status.styleSheet()
+
+
+def test_composite_to_rgb_assignment_edit_updates_status_immediately(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    widget._parameter_widgets["mapping_mode"].combo.setCurrentText("Manual")
+    assert node.params["channel_colors"] == "Blue,Green,Red"
+
+    widget._parameter_widgets["channel_color_0"].combo.setCurrentText("Unassigned")
+
+    assert node.params["mapping_mode"] == "Manual"
+    assert node.params["channel_colors"] == "Unassigned,Green,Red"
+    assert (
+        "Channel 1 → Unassigned" in widget._parameter_widgets["mapping_status"].text()
+    )
+    widget._debounce_timer.stop()
+
+
+def test_composite_to_rgb_invalid_manual_axis_stays_unresolved_until_edited(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    node.params.update({"channel_axis_mode": "Manual", "channel_axis": 99})
+    widget._connect_nodes("input", node.id)
+    saved_params = dict(node.params)
+
+    widget._render_parameters(node.id)
+
+    axis = widget._parameter_widgets["channel_axis"]
+    assert axis.value() == "-1"
+    assert axis.isEnabled()
+    assert [axis.combo.itemData(index) for index in range(axis.combo.count())] == [
+        "-1",
+        "0",
+        "1",
+        "2",
+    ]
+    assert (
+        "missing or invalid" in widget._parameter_widgets["channel_axis_status"].text()
+    )
+    assert node.params == saved_params
 
 
 def test_composite_to_rgb_and_input_share_z_slider_mapping(qtbot):
@@ -7330,6 +7643,52 @@ def test_low_memory_dirty_run_reuses_retained_working_input(qtbot, monkeypatch):
     assert widget.pipeline.outputs["threshold"] is not None
 
 
+def test_composite_edit_preserves_upstream_manual_deconvolution_cache(qtbot):
+    data = np.arange(8 * 9, dtype=np.float32).reshape(8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    deconvolution = widget.add_node_from_palette("richardson_lucy_deconvolution")
+    combined = widget.add_node_from_palette("combine_channels")
+    composite = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes("input", deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, combined.id, target_port=0)
+    widget._connect_nodes(deconvolution.id, combined.id, target_port=1)
+    widget._connect_nodes(combined.id, composite.id)
+
+    # Seed the explicitly calculated/manual result so this regression exercises
+    # downstream invalidation and retention without running deconvolution in the
+    # test itself.
+    manual_output = np.asarray(data).copy()
+    manual_state = widget.pipeline.output_states["input"]
+    widget.pipeline.outputs[deconvolution.id] = manual_output
+    widget.pipeline.output_states[deconvolution.id] = manual_state
+    widget.pipeline.node_outputs[deconvolution.id] = [manual_output]
+    widget.pipeline.node_output_states[deconvolution.id] = [manual_state]
+    widget.pipeline.completed_node_ids.add(deconvolution.id)
+    widget.pipeline.node_execution_states[deconvolution.id] = EXECUTION_READY
+    widget.pipeline.node_execution_messages[deconvolution.id] = ""
+
+    widget._mark_pipeline_dirty(combined.id)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(composite.id)
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+
+    assert widget.pipeline.outputs[deconvolution.id] is manual_output
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
+
+    widget._parameter_widgets["mapping_mode"].combo.setCurrentText("Manual")
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    assert widget.pipeline.outputs[deconvolution.id] is manual_output
+    assert widget.pipeline.node_outputs[deconvolution.id][0] is manual_output
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
+    assert widget.pipeline.outputs[composite.id] is not None
+
+
 def test_keep_cached_node_survives_low_memory_pruning(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -8395,7 +8754,15 @@ def test_palette_registry_nodes_are_constructible():
     for spec in PALETTE_NODE_LIBRARY:
         node = pipeline.add_node(spec.id)
         assert node.operation_id == spec.id
-        assert node.params == {param.name: param.default for param in spec.parameters}
+        expected_params = {param.name: param.default for param in spec.parameters}
+        if spec.id == "composite_to_rgb":
+            expected_params.update(
+                {
+                    "channel_axis_mode": "Auto",
+                    "mapping_mode": "Auto",
+                }
+            )
+        assert node.params == expected_params
         assert pipeline.node_parameter_specs(node.id) == spec.parameters
         assert pipeline.remove_node(node.id)
 

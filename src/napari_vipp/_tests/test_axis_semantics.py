@@ -6,8 +6,14 @@ import pytest
 from napari_vipp.core.metadata import (
     AXIS_CONFIDENCE_MIXED,
     AmbiguousAxisError,
+    ChannelMetadata,
+    image_state_from_array,
 )
-from napari_vipp.core.operations import COMPOSITE_RGB_PERCENTILE_1_99
+from napari_vipp.core.operations import (
+    COMPOSITE_RGB_AUTO,
+    COMPOSITE_RGB_MANUAL,
+    COMPOSITE_RGB_PERCENTILE_1_99,
+)
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 
 
@@ -158,6 +164,7 @@ def test_explicit_numeric_channel_axis_bypasses_shape_axis_guess():
     data = np.zeros((3, 8, 9), dtype=np.uint16)
     data[0, 2:4, 2:4] = 100
     pipeline, composite_id = _pipeline_with("composite_to_rgb")
+    pipeline.set_param(composite_id, "channel_axis_mode", "Manual")
     pipeline.set_param(composite_id, "channel_axis", 0)
 
     pipeline.run(data)
@@ -210,13 +217,94 @@ def test_composite_rejects_multiple_declared_channel_axes():
         pipeline.run(data, input_metadata={"axes": "CCYX"})
 
 
-def test_composite_rejects_numeric_axis_that_conflicts_with_metadata():
+def test_composite_auto_ignores_saved_numeric_axis_and_uses_metadata():
     data = np.zeros((3, 4, 5), dtype=np.float32)
+    data[2, 1, 1] = 7.0
     pipeline, composite_id = _pipeline_with("composite_to_rgb")
     pipeline.set_param(composite_id, "channel_axis", 1)
+    pipeline.set_param(composite_id, "channel_axis_mode", COMPOSITE_RGB_AUTO)
 
-    with pytest.raises(AmbiguousAxisError, match="conflicts.*declared channel axis"):
-        pipeline.run(data, input_metadata={"axes": "CYX"})
+    pipeline.run(data, input_metadata={"axes": "CYX"})
+
+    assert pipeline.outputs[composite_id].shape == (4, 5, 3)
+    assert pipeline.outputs[composite_id][1, 1, 0] == 7.0
+
+
+def test_composite_manual_accepts_a_deliberate_nonchannel_axis():
+    data = np.zeros((4, 5, 6), dtype=np.float32)
+    data[0, 1, 1] = 2.0
+    data[1, 1, 2] = 3.0
+    data[2, 1, 3] = 5.0
+    data[3, 1, 4] = 7.0
+    pipeline, composite_id = _pipeline_with("composite_to_rgb")
+    pipeline.set_param(composite_id, "channel_axis_mode", COMPOSITE_RGB_MANUAL)
+    pipeline.set_param(composite_id, "channel_axis", 0)
+    pipeline.set_param(composite_id, "mapping_mode", COMPOSITE_RGB_MANUAL)
+    pipeline.set_param(
+        composite_id,
+        "channel_colors",
+        "Red,Green,Unassigned,Blue",
+    )
+
+    pipeline.run(data, input_metadata={"axes": "ZYX"})
+
+    output = pipeline.outputs[composite_id]
+    assert output.shape == (5, 6, 3)
+    assert output[1, 1].tolist() == [2.0, 0.0, 0.0]
+    assert output[1, 2].tolist() == [0.0, 3.0, 0.0]
+    assert output[1, 3].tolist() == [0.0, 0.0, 0.0]
+    assert output[1, 4].tolist() == [0.0, 0.0, 7.0]
+    assert "z axis (0)" in pipeline.output_states[composite_id].history[-1]
+
+
+def test_composite_auto_ignores_stale_manual_assignments_without_metadata_colors():
+    data = np.zeros((2, 4, 5), dtype=np.float32)
+    data[0, 1, 1] = 2.0
+    data[1, 1, 2] = 3.0
+    pipeline, composite_id = _pipeline_with("composite_to_rgb")
+    pipeline.set_param(composite_id, "channel_axis_mode", COMPOSITE_RGB_AUTO)
+    pipeline.set_param(composite_id, "mapping_mode", COMPOSITE_RGB_AUTO)
+    pipeline.set_param(
+        composite_id,
+        "channel_colors",
+        "Unassigned,Unassigned",
+    )
+
+    pipeline.run(data, input_metadata={"axes": "CYX"})
+
+    output = pipeline.outputs[composite_id]
+    assert output[1, 1].tolist() == [0.0, 0.0, 2.0]
+    assert output[1, 2].tolist() == [0.0, 3.0, 0.0]
+
+
+def test_composite_manual_assignments_are_not_replaced_by_metadata_colors():
+    data = np.zeros((2, 4, 5), dtype=np.float32)
+    data[0, 1, 1] = 2.0
+    data[1, 1, 2] = 30.0
+    state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "CYX"},
+        channels=(
+            ChannelMetadata(name="first", color=0xFF0000),
+            ChannelMetadata(name="second", color=0x00FF00),
+        ),
+    )
+    pipeline, composite_id = _pipeline_with("composite_to_rgb")
+    pipeline.set_param(composite_id, "channel_axis_mode", COMPOSITE_RGB_AUTO)
+    pipeline.set_param(composite_id, "mapping_mode", COMPOSITE_RGB_MANUAL)
+    pipeline.set_param(composite_id, "channel_colors", "Blue,Unassigned")
+
+    pipeline.run(
+        data,
+        source_payloads={"input": SourcePayload(data, image_state=state)},
+    )
+
+    output = pipeline.outputs[composite_id]
+    assert output[1, 1].tolist() == [0.0, 0.0, 2.0]
+    assert output[1, 2].tolist() == [0.0, 0.0, 0.0]
+    history = pipeline.output_states[composite_id].history[-1]
+    assert "manual additive colour table" in history
+    assert "channel 1=Unassigned" in history
 
 
 def test_composite_auto_preserves_order_only_for_declared_rgb_semantics():

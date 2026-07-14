@@ -19,12 +19,24 @@ RAM free 11.4 GB / 31.7 GB`.
 | Mode | Intended use | Retained outputs |
 | --- | --- | --- |
 | Keep all node outputs cached | Default interactive graph design. Best for rapid inspection and branching. | Every calculated node output until the graph/source changes or memory guard intervenes. |
-| Smart interactive cache | Large graphs where repeated inspection still matters. Selecting a pruned node restores that node output and thumbnail for inspection. | Selected and pinned nodes, direct working inputs, source nodes, branch points, explicit output nodes, recently inspected nodes, and nodes marked `Keep output cached`. |
-| Low-memory mode | Memory-constrained interactive work and batch-like runs. | The selected/pinned working input and result, explicit output nodes, and nodes marked `Keep output cached`. |
+| Smart interactive cache | Large graphs where repeated inspection still matters. Selecting a pruned node restores that node output and thumbnail for inspection. | All calculated manual nodes; selected and pinned nodes; direct working inputs; source nodes; branch points; explicit output nodes; recently inspected nodes; and nodes marked `Keep output cached`. |
+| Low-memory mode | Memory-constrained interactive work and batch-like runs. | All calculated manual nodes; the selected/pinned working input and result; explicit output nodes; and nodes marked `Keep output cached`. |
 
 Batch collection runs use low-memory retention internally. They keep only the
 outputs that must be saved, then clear item-level caches before moving to the
 next input.
+
+Calculated **manual-node** results are a retention invariant in the interactive
+graph: Keep-all, Smart, and Low-memory modes all preserve them, including an
+expensive deconvolution several hops upstream from the node currently being
+edited. This prevents a downstream display/mapping change from silently
+discarding work that required an explicit Calculate action.
+
+Automatic nodes follow the table's ordinary retention sets. A downstream edit
+does not invalidate an unchanged automatic upstream node, but Smart/Low-memory
+pruning may remove its cached array; VIPP then recomputes that automatic result
+when it is required again. Use `Keep output cached` when a particular automatic
+intermediate must survive that intentional pruning.
 
 ## Memory Guard
 

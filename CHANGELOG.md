@@ -27,9 +27,25 @@ silently upgraded because doing so would invent choices that can change output.
   Laplace operations; and every automatic/manual/adaptive threshold family.
   `-1` now explicitly means scalar/no-channel data instead of shape-based RGB
   detection.
-- Made Composite to RGB intensity mapping explicit. New nodes preserve native
+- Made Composite to RGB configuration explicit. `Channel axis mode` and `RGB
+  mapping mode` each persist `Auto` or `Manual`; auto mode shows its resolved
+  axis/mapping in disabled controls, while manual mode enables the relevant
+  selectors. Legacy numeric axis and per-plane selectors remain hidden only
+  for compatibility with existing schema-3 files.
+- Replaced three fixed RGB-plane selectors with one dynamic colour assignment
+  per detected source channel. Manual mapping supports arbitrary channel counts
+  and `Unassigned`, Red, Green, Blue, Magenta, Cyan, or Yellow; unassigned
+  channels contribute nothing and several channels can contribute additively
+  to one or more RGB planes.
+- Kept Composite to RGB intensity mapping explicit. New nodes preserve native
   numeric values by default; independent per-channel 1st-to-99th-percentile
   normalization remains available only as an explicitly selected lossy mode.
+- Limited Composite to RGB mapping edits to invalidating/recalculating that
+  node and its downstream dependants. Every already calculated upstream manual
+  result—including a deconvolution several hops away—is retained in Keep-all,
+  Smart, and Low-memory modes. Automatic upstream intermediates are not
+  invalidated by the edit but remain subject to the selected cache mode's
+  intentional pruning policy.
 - Stopped treating a trailing length-three or length-four axis as implicit
   RGB/RGBA. Generic `C` axes remain scientific fluorescence channels unless
   the axis is explicitly declared `rgb` or `rgba`.
@@ -144,9 +160,17 @@ silently upgraded because doing so would invent choices that can change output.
 - Denoisers use one reversible whole-input intensity transform, preserve native
   floating scale and constants, retain valid unsharp-mask overshoot, support
   declared non-trailing channel axes, and reject invalid/non-finite ranges.
-- Composite to RGB now validates wide-integer precision, floating overflow,
-  non-finite/complex/object data, duplicate channel axes, and conflicting axis
-  selections; provenance records dtype and intensity mapping.
+- Composite to RGB auto axis resolution requires explicit carried channel
+  semantics. Auto RGB mapping exposes its resolved mapping: declared RGB/RGBA
+  preserves encoded RGB order (alpha ignored), while fluorescence stacks blend
+  every channel by carried pseudo-colour or the documented repeating default
+  colour order, including stacks with more than three channels.
+- Composite to RGB validates wide-integer precision, floating overflow,
+  non-finite/complex/object data, duplicate axes, invalid manual indices, and
+  ambiguous automatic axis resolution; provenance records resolved
+  axis/mapping, dtype, and intensity mapping. Manual axis mode deliberately
+  permits any selected axis, including a spatial axis such as Z, even when
+  metadata declares a separate C axis.
 - Tightened crop margins, projection/split/range grammar, ordered Canny,
   hysteresis and difference-of-Gaussians parameters, exact Image Calculator
   operand counts/weights, finite gamma/linear parameters, and dtype conversion.

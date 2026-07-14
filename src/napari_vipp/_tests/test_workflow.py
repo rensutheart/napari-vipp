@@ -7,11 +7,18 @@ import numpy as np
 import pytest
 
 import napari_vipp.core.atomic_io as atomic_io_module
+from napari_vipp.core.metadata import ChannelMetadata, image_state_from_array
 from napari_vipp.core.operations import (
+    COMPOSITE_RGB_AUTO,
+    COMPOSITE_RGB_MANUAL,
     COMPOSITE_RGB_PERCENTILE_1_99,
     COMPOSITE_RGB_PRESERVE_VALUES,
 )
-from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
+from napari_vipp.core.pipeline import (
+    GraphConnection,
+    PrototypePipeline,
+    SourcePayload,
+)
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
     WORKFLOW_VERSION,
@@ -226,6 +233,96 @@ def test_composite_intensity_mapping_roundtrips_as_a_required_choice():
         restored_node.params["intensity_mapping"]
         == COMPOSITE_RGB_PERCENTILE_1_99
     )
+
+
+def test_composite_explicit_axis_and_mapping_modes_roundtrip_when_present():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("composite_to_rgb")
+    pipeline.set_param(node.id, "channel_axis_mode", COMPOSITE_RGB_MANUAL)
+    pipeline.set_param(node.id, "mapping_mode", COMPOSITE_RGB_MANUAL)
+    pipeline.set_param(node.id, "channel_colors", "Red,Unassigned,Blue")
+
+    document = serialize_workflow(pipeline)
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params["channel_axis_mode"] == COMPOSITE_RGB_MANUAL
+    assert restored_node.params["mapping_mode"] == COMPOSITE_RGB_MANUAL
+    assert restored_node.params["channel_colors"] == "Red,Unassigned,Blue"
+
+
+def test_composite_legacy_schema_v3_params_load_and_leave_minus_one_unassigned():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node("composite_to_rgb")
+    node.params.pop("channel_axis_mode")
+    node.params.pop("mapping_mode")
+    assert pipeline.connect("input", node.id).success
+    pipeline.set_param(node.id, "channel_axis", -1)
+    pipeline.set_param(node.id, "red_channel", 0)
+    pipeline.set_param(node.id, "green_channel", 1)
+    pipeline.set_param(node.id, "blue_channel", -1)
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    assert "channel_axis_mode" not in serialized["params"]
+    assert "mapping_mode" not in serialized["params"]
+    assert "channel_colors" not in serialized["params"]
+
+    restored = deserialize_workflow(document)
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+    assert "channel_axis_mode" not in restored_node.params
+    assert "mapping_mode" not in restored_node.params
+    restored_pipeline = PrototypePipeline()
+    restored_pipeline.restore_graph(
+        restored["nodes"],
+        restored["connections"],
+        restored["output_tunnels"],
+    )
+    data = np.zeros((2, 4, 5), dtype=np.float32)
+    data[0, 1, 1] = 2.0
+    data[1, 1, 2] = 3.0
+    state = image_state_from_array(
+        data,
+        layer_metadata={"axes": "CYX"},
+        channels=(
+            ChannelMetadata(name="red", color=0xFF0000),
+            ChannelMetadata(name="green", color=0x00FF00),
+        ),
+    )
+    output = restored_pipeline.run(
+        data,
+        source_payloads={"input": SourcePayload(data, image_state=state)},
+    )[node.id]
+
+    assert output[1, 1].tolist() == [2.0, 0.0, 0.0]
+    assert output[1, 2].tolist() == [0.0, 3.0, 0.0]
+    assert np.all(output[..., 2] == 0.0)
+
+
+@pytest.mark.parametrize("name", ["channel_axis_mode", "mapping_mode"])
+def test_composite_optional_modes_validate_when_present(name):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("composite_to_rgb")
+    document = serialize_workflow(pipeline)
+    serialized = next(item for item in document["nodes"] if item["id"] == node.id)
+    serialized["params"][name] = "Default"
+
+    with pytest.raises(ValueError, match="must be one of"):
+        deserialize_workflow(document)
+
+
+def test_composite_auto_modes_are_valid_optional_values():
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("composite_to_rgb")
+    assert node.params["channel_axis_mode"] == COMPOSITE_RGB_AUTO
+    assert node.params["mapping_mode"] == COMPOSITE_RGB_AUTO
+    assert "channel_colors" not in node.params
+
+    restored = deserialize_workflow(serialize_workflow(pipeline))
+    restored_node = next(item for item in restored["nodes"] if item.id == node.id)
+
+    assert restored_node.params["channel_axis_mode"] == COMPOSITE_RGB_AUTO
+    assert restored_node.params["mapping_mode"] == COMPOSITE_RGB_AUTO
 
 
 def test_composite_workflow_requires_and_validates_intensity_mapping():

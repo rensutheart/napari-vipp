@@ -696,6 +696,53 @@ epsilon = 0` remain available through the spinner as explicit off values.
 
 ## Axis And Channel Workflows
 
+### Composite → RGB
+
+`Composite → RGB` converts one explicitly identified source-channel axis into a
+channel-last RGB image. Its axis and colour behavior are separate choices:
+
+| Control | `Auto` | `Manual` |
+| --- | --- | --- |
+| `Channel axis mode` | Resolves the explicit carried channel axis, shows the resolved axis, and disables the axis selector. Missing or ambiguous channel semantics fail instead of using a trailing length-three/four guess. | Enables the channel-axis selector. Any valid axis can be chosen deliberately—including Z even when metadata declares a separate C axis—and the choice is recorded explicitly. |
+| `RGB mapping mode` | Resolves and shows a disabled per-source-channel colour mapping from encoded RGB/RGBA semantics or carried/default fluorescence pseudo-colours. | Enables one colour selector for every source channel. The saved `channel_colors` value records those assignments. |
+
+Manual source-channel choices are `Unassigned`, `Red`, `Green`, `Blue`,
+`Magenta`, `Cyan`, and `Yellow`. `Unassigned` contributes nothing. Composite
+colours contribute to both relevant output planes (for example, Yellow adds to
+red and green), and several source channels can contribute additively to the
+same plane. The form expands to the detected channel count; it is not limited
+to three or four source channels.
+
+Auto mapping behaves as follows:
+
+- an axis explicitly declared `rgb` or `rgba` preserves encoded RGB order and
+  ignores alpha;
+- a generic fluorescence `C` axis blends **every** source channel by its carried
+  pseudo-colour;
+- a missing channel pseudo-colour uses the repeating default sequence Blue,
+  Green, Red, Magenta, Yellow, Cyan;
+- one scalar channel is copied to R, G, and B.
+
+The resolved auto mapping is visible but read-only. Switch `RGB mapping mode`
+to `Manual` before changing an assignment; the interface never disguises a
+manual edit as an automatically derived choice. The older numeric
+`channel_axis` and red/green/blue selector fields remain hidden for workflow
+compatibility and are not the authoring interface.
+
+`Intensity mapping` is independent of colour assignment. `Preserve numeric
+values` keeps the native intensity scale without normalization or clipping and
+rejects unsafe precision/overflow cases. `Per-channel 1st-99th percentile
+(lossy)` normalizes selected channels independently and clips additive mixtures
+to `[0, 1]`.
+
+Changing an axis or mapping control invalidates `Composite → RGB` and its
+downstream dependants only. Every already calculated upstream manual result is
+retained in every cache mode, including Richardson-Lucy deconvolutions several
+hops before the composite. Automatic upstream intermediates are not invalidated
+by the edit, but Smart/Low-memory mode may still prune them according to its
+normal retention policy; a pruned automatic intermediate is recomputed when
+needed.
+
 ### Split Channels
 
 Use `Split Channels` when the input has a semantic channel axis, such as OME

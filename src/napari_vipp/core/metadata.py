@@ -1930,16 +1930,37 @@ def _composite_to_rgb_history(
         int(params.get(name, -1))
         for name in ("red_channel", "green_channel", "blue_channel")
     )
-    manual_mapping = any(index >= 0 for index in selections)
-    if manual_mapping:
-        defaults = _composite_default_rgb_indices(count, semantic)
-        resolved = tuple(
-            defaults[position] if index < 0 else index
-            for position, index in enumerate(selections)
+    mapping_mode = params.get(
+        "resolved_mapping_mode",
+        params.get("mapping_mode"),
+    )
+    if mapping_mode is None:
+        mapping_mode = (
+            "Auto" if all(index == -1 for index in selections) else "Manual"
         )
+    manual_mapping = str(mapping_mode).strip().casefold() == "manual"
+    resolved_colors = params.get(
+        "resolved_channel_colors",
+        params.get("channel_colors", ""),
+    )
+    has_color_assignments = bool(
+        resolved_colors.strip()
+        if isinstance(resolved_colors, str)
+        else resolved_colors
+    )
+    if manual_mapping and has_color_assignments:
+        mapping_text = _composite_manual_colour_table_history(
+            resolved_colors,
+            count,
+        )
+    elif manual_mapping:
         mapping_text = ", ".join(
             f"{plane}={'blank' if index is None else f'channel {index}'}"
-            for plane, index in zip("RGB", resolved, strict=True)
+            for plane, index in zip(
+                "RGB",
+                (None if index < 0 else index for index in selections),
+                strict=True,
+            )
         )
     elif semantic in {"rgb", "rgba"}:
         mapping_text = "declared encoded RGB order"
@@ -1982,19 +2003,6 @@ def _composite_history_channel_axis(
     return _channel_axis_index(input_state.axes)
 
 
-def _composite_default_rgb_indices(
-    count: int,
-    semantic: str,
-) -> tuple[int | None, int | None, int | None]:
-    if semantic in {"rgb", "rgba"}:
-        return 0, 1, 2
-    if count >= 3:
-        return 2, 1, 0
-    if count == 2:
-        return None, 1, 0
-    return 0, 0, 0
-
-
 def _composite_colour_table_history(
     params: dict[str, Any],
     count: int,
@@ -2017,6 +2025,30 @@ def _composite_colour_table_history(
         color = f"#{encoded:06X}" if encoded is not None else repr(value)
         entries.append(f"channel {index}={color}")
     return "additive colour table " + ", ".join(entries)
+
+
+def _composite_manual_colour_table_history(
+    values: Any,
+    count: int,
+) -> str:
+    if isinstance(values, str):
+        colors = [part.strip() for part in values.split(",")]
+    elif isinstance(values, (list, tuple)):
+        colors = list(values)
+    else:
+        colors = []
+    entries = []
+    for index in range(count):
+        value = colors[index] if index < len(colors) else "Unassigned"
+        if value is None or not str(value).strip() or (
+            str(value).strip().casefold() == "unassigned"
+        ):
+            color = "Unassigned"
+        else:
+            encoded = channel_color_int(value)
+            color = f"#{encoded:06X}" if encoded is not None else repr(value)
+        entries.append(f"channel {index}={color}")
+    return "manual additive colour table " + ", ".join(entries)
 
 
 def _operation_history(
