@@ -17,12 +17,14 @@ from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
+    QFormLayout,
     QGraphicsItem,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QWidget,
 )
@@ -6650,6 +6652,52 @@ def test_richardson_lucy_tv_controls_explain_effects_and_separate_ranges(qtbot):
     assert tv_regularization._bounds.maximum == 0.1
     assert tv_regularization.slider.value() == 1000
     assert node.params["tv_regularization"] == 0.25
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    [
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+    ],
+)
+def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette(operation_id)
+    widget.graph_view.select_node(node.id)
+
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.WrapLongRows
+    assert widget.selected_title.wordWrap()
+    assert (
+        widget.selected_title.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Ignored
+    )
+    assert (
+        widget.auto_recalculate_notice.sizePolicy().horizontalPolicy()
+        == QSizePolicy.Ignored
+    )
+
+    spatial_mode = widget._parameter_widgets["spatial_mode"]
+    assert spatial_mode.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+    assert spatial_mode.combo.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+
+    slider_controls = [
+        control
+        for control in widget._parameter_widgets.values()
+        if hasattr(control, "slider")
+    ]
+    assert slider_controls
+    assert all(
+        control.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+        for control in slider_controls
+    )
+    assert all(control.slider.minimumWidth() == 72 for control in slider_controls)
+
+    gaussian = widget.add_node_from_palette("gaussian_blur")
+    widget.graph_view.select_node(gaussian.id)
+    assert widget.parameter_form.rowWrapPolicy() == QFormLayout.DontWrapRows
 
 
 def test_parallel_branch_queues_behind_active_deconvolution(qtbot):

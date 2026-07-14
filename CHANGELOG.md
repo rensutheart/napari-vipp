@@ -189,6 +189,9 @@ silently upgraded because doing so would invent choices that can change output.
   geometric sliders with parameter-specific ranges.
 - Decoupled those slider windows from spinner entry: valid zero/off and
   out-of-window values remain directly enterable without expanding the slider.
+- Made both Richardson-Lucy parameter forms responsive: long spatial-mode
+  choices and numeric controls can shrink or wrap instead of forcing the
+  inspector panel wide, while spinner entry remains fully available.
 - Made both Rescale Intensity input guides draggable. Dragging a
   percentile-derived guide switches the node to explicit values, preserves the
   other exact cutoff, persists the edit, and queues interactive recalculation.

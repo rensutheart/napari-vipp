@@ -513,6 +513,10 @@ DEFAULT_CACHE_MEMORY_LIMIT_PERCENT = 90
 MEMORY_GUARD_MIN_FREE_BYTES = 512 * 1024 * 1024
 EXPLICIT_OUTPUT_OPERATIONS = {"batch_output", "save_output"}
 SMART_CACHE_RECENT_LIMIT = 6
+COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS = {
+    "richardson_lucy_deconvolution",
+    "richardson_lucy_tv_deconvolution",
+}
 
 
 
@@ -1183,6 +1187,11 @@ class VippWidget(QWidget):
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
+        self.selected_title.setWordWrap(True)
+        self.selected_title.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
         self.thumbnail_checkbox.setChecked(True)
         self.keep_cached_checkbox = QCheckBox("Keep output cached")
@@ -1194,12 +1203,20 @@ class VippWidget(QWidget):
         self.execution_status_label = QLabel("Automatic")
         self.execution_status_label.setWordWrap(True)
         self.execution_status_label.setMinimumHeight(34)
+        self.execution_status_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.auto_recalculate_checkbox = QCheckBox("Auto Recalculate")
         self.auto_recalculate_notice = QLabel(
             "Auto Recalculate runs this node after upstream or parameter changes. "
             "This can be slow on large images."
         )
         self.auto_recalculate_notice.setWordWrap(True)
+        self.auto_recalculate_notice.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
         self.calculate_button = QPushButton("Calculate")
         self.parameter_group = QGroupBox("Parameters")
@@ -6621,6 +6638,14 @@ class VippWidget(QWidget):
     def _render_parameters(self, node_id: str) -> None:
         self._clear_parameter_form()
         node = self.pipeline.nodes[node_id]
+        compact_deconvolution_form = (
+            node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
+        )
+        self.parameter_form.setRowWrapPolicy(
+            QFormLayout.WrapLongRows
+            if compact_deconvolution_form
+            else QFormLayout.DontWrapRows
+        )
         if node.operation_id == "input":
             self.parameter_group.setHidden(False)
             self._render_image_source_parameters(node_id)
@@ -6690,6 +6715,21 @@ class VippWidget(QWidget):
             else:
                 control_class = ParameterControl
             widget = control_class(spec, presented_value, bounds)
+            if compact_deconvolution_form and isinstance(
+                widget,
+                (ChoiceControl, ParameterControl),
+            ):
+                widget.setSizePolicy(
+                    QSizePolicy.Ignored,
+                    widget.sizePolicy().verticalPolicy(),
+                )
+                if isinstance(widget, ChoiceControl):
+                    widget.combo.setSizePolicy(
+                        QSizePolicy.Ignored,
+                        widget.combo.sizePolicy().verticalPolicy(),
+                    )
+                else:
+                    widget.slider.setMinimumWidth(72)
             if not locked_split_channel:
                 node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
