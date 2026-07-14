@@ -34,4 +34,3 @@ __all__ = [
     "_fuzzy_token_match",
     "_normalize_search_text",
 ]
-
