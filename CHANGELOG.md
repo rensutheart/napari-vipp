@@ -2,40 +2,173 @@
 
 ## Unreleased
 
-- Changed the deterministic batch entry from an ambiguous `Create...` action
-  into `Open batch demo...`. The example now explains its working-copy step,
-  auto-loads the first paired field throughout the interactive graph, opens the
-  collection dialog already configured and previewed, highlights all three
-  paired items and nine planned outputs, and gives a direct `Run demo batch`
-  next step with a summary of the functionality being demonstrated.
-- Added loadable, versioned `vipp_batch_config.json` files that preserve source
+## 0.12.0a1 - 2026-07-14
+
+### Important Compatibility And Scientific Behavior
+
+- Advanced workflow JSON to schema version 3. Versions 1 and 2 are
+  intentionally rejected rather than receiving inferred scientific defaults.
+  Keep the VIPP release that created an older workflow to inspect it, then
+  recreate and verify it in 0.12; changing only the JSON version number is not
+  a valid migration.
+- Made `channel_axis` a required persisted choice for Crop Stack; average,
+  Gaussian 2D/3D, median, bilateral, non-local-means, rolling-ball,
+  background-subtraction, difference-of-Gaussians, unsharp, Sobel, Canny, and
+  Laplace operations; and every automatic/manual/adaptive threshold family.
+  `-1` now explicitly means scalar/no-channel data instead of shape-based RGB
+  detection.
+- Made Composite to RGB intensity mapping explicit. New nodes preserve native
+  numeric values by default; independent per-channel 1st-to-99th-percentile
+  normalization remains available only as an explicitly selected lossy mode.
+- Stopped treating a trailing length-three or length-four axis as implicit
+  RGB/RGBA. Generic `C` axes remain scientific fluorescence channels unless
+  the axis is explicitly declared `rgb` or `rgba`.
+- Generated Python exports record the exact VIPP version that created them and
+  refuse a different runtime version. Regenerate and revalidate an export under
+  the release that will execute it.
+- File sources are frozen to one verified path/series revision until Refresh.
+  Live lazy arrays, rotation, shear, unsupported affine transforms, and source
+  revisions that change during calculation now fail explicitly.
+- Same array shape no longer implies physical-grid compatibility. Multi-image,
+  image/mask, and image/PSF operations validate axis meaning, size, scale,
+  compatible units, and origin instead of silently resampling or registering.
+- Batch workflows reject enabled `Save Image` side effects; use explicit
+  `Batch Output` nodes so every planned write is collision-checked and recorded.
+
+### Deterministic Batch Configuration And Provenance
+
+- Added loadable, versioned `vipp_batch_config.json` files preserving source
   bindings, resolved selected outputs, naming/format choices, the required
-  workflow companion, the optional runner choice, the workflow hash, and the
+  workflow companion, optional runner choice, scientific workflow hash, and
   `Error`/`Skip`/`Overwrite` existing-file policy.
-- Changed batch-created `vipp_batch_pipeline.py` into a thin command-line
-  launcher that defaults to its sibling config, resolves the workflow recorded
-  there, and uses the shared headless batch core; `Export Python...` remains the
-  direct-operation code export.
-- Unified batch preview and execution around deterministic sorted positional
-  source pairing and output planning, including collision state before graph
-  execution. Explicit `Batch Output` nodes remain authoritative; terminal
-  outputs retain a warned compatibility fallback when each terminal has one
-  output port.
+- Unified preview and execution around one deterministic sorted positional
+  source-pairing and output-planning service, including duplicate, existing,
+  input-overlap, and within-plan collision state before graph execution.
+- Kept explicit `Batch Output` nodes authoritative. Terminal outputs retain a
+  warned compatibility fallback only when every terminal has one output port.
 - Added latest-run and archived `vipp_batch_manifest.json` provenance plus
-  atomic per-item checkpoints, with workflow/config hashes, software versions,
-  input identity and source metadata, and
-  `pending`/`completed`/`skipped`/`failed` output records.
-- Isolated batch failures by item and output so successful files remain visible
-  and later items continue by default, with completed/partial/skipped/failed
-  item totals in the final summary.
-- Added an app-generated deterministic batch validation bundle with three
-  sorted-position source pairs, explicit NPY/TIFF/TSV outputs, exact scientific
-  ground truth, a bundled demonstration workflow, and portable config/runner
-  artifacts. Demo runs automatically reconcile the decoded outputs, saved
-  configuration, workflow hash, manifest/archive, and sidecars against that
-  ground truth.
-- Kept semantic-axis iteration and plate/well/field HCS traversal outside the
-  0.12 local-collection release scope.
+  atomic per-item sidecars/checkpoints containing workflow/config hashes,
+  software versions, input identities, source metadata, planned outputs,
+  errors, and `pending`/`completed`/`skipped`/`failed` records.
+- Isolated failures by item and output. Successful writes and provenance remain
+  available, later items continue by default, and the final summary distinguishes
+  completed, partial, skipped, and failed items.
+- Stage each item's outputs privately, reverify every bound source identity,
+  and only then promote outputs atomically. A source revision that changes
+  during execution publishes no outputs; later promotion failures are recorded
+  as partial rather than being hidden.
+- Changed batch-created `vipp_batch_pipeline.py` into a thin command-line
+  launcher that defaults to its sibling config, resolves the recorded workflow,
+  and delegates to the shared headless batch core.
+- Added a deterministic generated validation bundle with three paired items,
+  two sources, nine explicit NPY/TIFF/TSV outputs, exact scientific ground
+  truth, portable workflow/config/runner artifacts, manifests, archives, and
+  per-item sidecars.
+- Renamed the ambiguous demo entry to `Open batch demo...`. It creates a safe
+  working copy, loads the first paired field through the interactive graph,
+  opens an already configured collision-aware preview, explains the three-item/
+  nine-output plan, and provides a direct `Run demo batch` next step.
+- Kept semantic-axis iteration and plate/well/field HCS traversal explicitly
+  outside this local-collection release instead of inferring them from array
+  positions or directory names.
+
+### Stable Scientific Sources And Physical Grids
+
+- Added exact file and directory identities based on path revision and bytes,
+  checked before and after source inspection/materialization. Interactive file
+  arrays are owned, read-only snapshots pinned until Refresh.
+- Moved OME-Zarr, microscope, and large local-file materialization into typed
+  background workers, rejecting stale worker results and changed on-disk
+  revisions.
+- Snapshot live NumPy-backed napari layers with revision tokens. Data,
+  metadata, RGB, axis, scale, translation, unit, rotation, shear, and affine
+  events invalidate the source; stale background results are discarded.
+- Preserve supported napari axis labels, scale, translation, and units at the
+  source boundary while rejecting transforms that cannot be represented
+  without changing pixels.
+- Give inspect and pinned napari layers detached data so display edits cannot
+  mutate graph caches or later scientific results.
+- Added reusable grid validation and semantic mask broadcasting. Broadcasting
+  is based on unique axis/calibration correspondence, never coincident sizes.
+- Require image and PSF sampling compatibility before deconvolution and reject
+  hidden resampling, origin repair, or dimension guessing.
+
+### Explicit Axes, Channels, And Operation Contracts
+
+- Added per-axis semantic confidence distinguishing explicit metadata from
+  shape inference. Automatic spatial, channel, projection, and PSF decisions
+  reject inferred-only ambiguity when scientific meaning matters.
+- Reject malformed or duplicated axes, stale shapes, non-finite scale/origin,
+  and non-positive calibration instead of silently rebuilding metadata.
+- Reorder Axes now moves each complete axis record with its pixels. Named crop,
+  projection, rescale, and measurement operations follow semantic axes;
+  positional kernels reject explicit non-canonical layouts they cannot support.
+- Projection's non-YX mode uses the named non-YX spatial axes, and measurement
+  operations select named YX/ZYX axes after reordering rather than assuming
+  trailing dimensions.
+- Denoisers use one reversible whole-input intensity transform, preserve native
+  floating scale and constants, retain valid unsharp-mask overshoot, support
+  declared non-trailing channel axes, and reject invalid/non-finite ranges.
+- Composite to RGB now validates wide-integer precision, floating overflow,
+  non-finite/complex/object data, duplicate channel axes, and conflicting axis
+  selections; provenance records dtype and intensity mapping.
+- Tightened crop margins, projection/split/range grammar, ordered Canny,
+  hysteresis and difference-of-Gaussians parameters, exact Image Calculator
+  operand counts/weights, finite gamma/linear parameters, and dtype conversion.
+  Invalid values fail instead of being clamped, swapped, rounded, or repaired.
+- Kept mask conversion elementwise and shape-preserving, and ensured scientific
+  kernels accept read-only inputs without mutating source data.
+- Fixed disconnected Born-Wolf PSF editor context and rejected invalid requested
+  dimensionality instead of silently selecting another rank.
+
+### Exact Diagnostics And Presentation Isolation
+
+- Added a Qt-free diagnostics core for exact finite statistics, extrema,
+  percentiles, histograms, contrast limits, and label-volume summaries.
+- Use bounded chunks only for memory control, never hidden sampling; preserve
+  wide-integer levels and require explicit channel behavior.
+- Added typed, stale-safe diagnostic workers. Provisional contrast is display
+  only, and generated viewer-layer presentation cannot feed back into scientific
+  source selection or graph caches.
+
+### Workflow Execution, Export, And Persistence
+
+- Added detached validated `GraphSnapshot` and `WorkflowSnapshot` values for
+  history and background execution, including full graph/port/type/cycle
+  validation when materialized and canonical tunnel references.
+- Added atomic, fsynced JSON/text replacement and rejected non-finite JSON so a
+  failed workflow/config write leaves the prior file intact.
+- Extracted typed headless execution requests/results; Qt workers are signal
+  adapters, and widget shutdown now rejects late callbacks safely.
+- Rebuilt `Export Python...` around the same shared executor used by VIPP.
+  Generated scripts embed immutable validated workflow JSON, reconstruct a
+  fresh pipeline per call, preserve `ImageState` through load/save, and support
+  explicit multiple-source bindings.
+- Generated exports fail on missing, duplicate, or unknown source bindings and
+  on VIPP runtime-version mismatch instead of approximating metadata-dependent
+  behavior with incomplete direct operation calls.
+- Preserved the simple generated CLI as a primary-source convenience while the
+  saved-config batch runner remains the complete multi-source collection path.
+
+### UI, Launching, Architecture, And Contributor Experience
+
+- Bundled examples now select their first Image Source before computation;
+  ordinary saved workflows still restore an explicitly saved inspector node.
+  Keep-all thumbnails populate after background completion without another
+  selection, and the processing status is no longer overwritten prematurely.
+- Added `Focus` beside Refresh to recover the center of an infinite graph
+  canvas without changing zoom, selection, layout, cache state, or undo history.
+- Added the installed `vipp` command, `python -m napari_vipp`, and repository
+  `./vipp` development launcher.
+- Reduced `_widget.py` by roughly 4,500 net lines and made it the composition
+  root. Extracted controls, axis editors, dialogs, plots, examples, sources,
+  workers, history, lifecycle, view dimensions, and batch UI/services into
+  focused `ui/` modules.
+- Added Qt-free core boundaries for grids, diagnostics, snapshots, execution,
+  atomic I/O, source identity, file snapshots, and batch setup.
+- Added architecture tests enforcing dependency direction, expanded scientific
+  contract/golden/example tests, and documented contributor boundaries and the
+  proportional verification ladder.
 
 ## 0.11.0a3 - 2026-07-12
 

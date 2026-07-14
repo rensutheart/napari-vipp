@@ -14,6 +14,7 @@ from napari_vipp.core.operations import (
 from napari_vipp.core.pipeline import GraphConnection, PrototypePipeline
 from napari_vipp.core.workflow import (
     WORKFLOW_TYPE,
+    WORKFLOW_VERSION,
     deserialize_workflow,
     load_workflow,
     save_workflow,
@@ -44,7 +45,7 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
 
     document = serialize_workflow(pipeline, positions)
     assert document["type"] == WORKFLOW_TYPE
-    assert document["version"] == 2
+    assert document["version"] == WORKFLOW_VERSION
 
     path = tmp_path / "workflow.json"
     saved = save_workflow(path, pipeline, positions)
@@ -631,6 +632,26 @@ def test_unknown_operation_is_rejected():
 def test_wrong_workflow_version_is_rejected():
     document = serialize_workflow(_build_pipeline())
     document["version"] = 1
+
+    with pytest.raises(ValueError, match="Unsupported workflow version"):
+        deserialize_workflow(document)
+
+
+def test_schema_v2_is_rejected_with_scientific_migration_guidance():
+    document = serialize_workflow(_build_pipeline())
+    document["version"] = 2
+
+    with pytest.raises(
+        ValueError,
+        match="not auto-migrated.*explicit scientific axis, color, and intensity",
+    ):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize("invalid_version", [3.0, True, None, [], {}])
+def test_workflow_version_must_be_an_integer(invalid_version):
+    document = serialize_workflow(_build_pipeline())
+    document["version"] = invalid_version
 
     with pytest.raises(ValueError, match="Unsupported workflow version"):
         deserialize_workflow(document)

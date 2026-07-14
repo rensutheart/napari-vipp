@@ -1003,10 +1003,11 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 2 stores graph notes, VIPP UI metadata, and the required
-  scientific controls introduced for exact threshold/rescale/clip behavior.
-  Version 1 documents are intentionally rejected instead of receiving implicit
-  parameter migrations.
+- Workflow version 3 stores graph notes, VIPP UI metadata, and the required
+  scientific controls for threshold/cutoff behavior, explicit channel
+  semantics, and composite intensity mapping. Versions 1 and 2 are
+  intentionally rejected instead of receiving inferred scientific parameter
+  migrations; changing only the JSON version number is not a valid migration.
 - Inspector metadata is always written when saving through the widget and
   records the selected node plus right-panel visibility. Per-node thumbnail
   visibility is written only when `Save thumbnail visibility in workflows` is
@@ -1038,17 +1039,19 @@ Python export:
 
 - `core/export.py` emits a runnable script with `run_pipeline()`,
   `batch_process()`, image load/save helpers, and an argparse entry point.
-- The generated folder batch helper supplies one primary image source; workflows
-  with additional independent sources require manual binding in the script.
-- Multi-input calls use input sources ordered by `target_port`.
-- Multi-output sources are assigned a list; downstream calls index the right
-  port (for example `split_channels_1[1]` for the second channel) using
-  `source_port`.
-- `combine_channels` exports using stored `channel_axis`; if a composite node
-  has not run yet and lacks that derived axis, export emits a NOTE comment.
-- Export calls pure operation functions with stored resolved parameters. It
-  does not reproduce interactive caches or the complete runtime `ImageState`
-  propagation used by the widget.
+- The generated program embeds validated canonical workflow JSON and creates a
+  fresh shared headless executor for every call, so it uses the same graph,
+  port, parameter, semantic-axis, and scientific-operation contracts as VIPP.
+- `ImageDataset` and `SourcePayload` bindings carry explicit source data,
+  metadata, names, and `ImageState`; returned `PipelineResults` preserve output
+  states for metadata-aware saving.
+- Workflows with several independent sources require an unambiguous binding for
+  every source. Missing, duplicate, and unknown bindings fail before execution.
+- Generated programs are locked to the VIPP version that created them and fail
+  on a different runtime version instead of silently changing behavior.
+- The command-line folder helper supplies one primary image source as a simple
+  convenience. Saved batch configuration remains the complete multi-source
+  collection interface.
 
 Collection batch UI:
 
@@ -1086,7 +1089,7 @@ Collection batch UI:
   declarations. A terminal with multiple output ports is rejected because the
   fallback cannot represent a port selection.
 - `vipp_batch_config.json` is a versioned schema independent of workflow schema
-  version 2. It persists source bindings and patterns, output location and
+  version 3. It persists source bindings and patterns, output location and
   default format, existing-file policy, the required workflow companion, the
   optional runner choice, the workflow hash, and resolved output declarations.
   Load validates the workflow hash so a configuration cannot silently select
@@ -1125,8 +1128,8 @@ Collection batch UI:
 - The dialog can additionally write a thin `vipp_batch_pipeline.py` launcher
   beside the required workflow/config artifacts. The launcher resolves the
   workflow recorded by its config unless an override is supplied and delegates
-  to the shared headless batch core; it is distinct from the direct-operation
-  code emitted by `Export Python...`.
+  to the shared headless batch core; it is distinct from the immutable
+  shared-executor workflow program emitted by `Export Python...`.
 - Collection execution remains local-folder oriented. Semantic-axis iteration
   and plate/well/field HCS traversal are deliberately deferred rather than
   inferred from array axes or directory names.

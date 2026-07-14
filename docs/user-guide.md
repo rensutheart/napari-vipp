@@ -340,12 +340,13 @@ tunnels, graph notes, and selected inspector state.
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-VIPP `0.11.0a3` writes workflow schema version 2. Version 1 workflows are
-intentionally rejected because silently inventing the newly explicit threshold,
-rescale, and clip settings could change scientific results. Keep a `0.11.0a2`
-environment to run an older workflow unchanged, or use its JSON as a reference
-while recreating and saving the graph in the current release. Do not change the
-JSON version number alone; version 2 requires the new scientific parameters.
+VIPP `0.12.0a1` writes workflow schema version 3. Versions 1 and 2 are
+intentionally rejected because silently inventing threshold, cutoff, channel
+axis, color, or intensity-mapping choices could change scientific results. Keep
+the VIPP environment that created an older workflow to inspect and run it
+unchanged, then use its graph and JSON as references while recreating and
+verifying it in the current release. Do not change the JSON version number
+alone; version 3 requires the new scientific parameters.
 
 VIPP stores optional UI state under `metadata.vipp`; this state affects how the
 workflow reopens, not how it calculates:
@@ -368,36 +369,39 @@ workflow reopens, not how it calculates:
 
 ### Export Python
 
-`Export Python...` writes a headless script that imports the same pure operation
-functions used by the graph. Use it when a workflow should be reviewed,
-versioned, or run outside the GUI.
+`Export Python...` writes a headless script containing an immutable validated
+workflow document. Each call reconstructs a fresh pipeline and executes it
+through the same shared engine as the GUI. Use it when a workflow should be
+reviewed, versioned, or run outside napari without replacing scientific graph
+semantics with hand-written operation calls.
 
 Typical exported scripts follow this shape:
 
 ```python
-from napari_vipp.core.operations import gaussian_blur, otsu_threshold
-
-def run_pipeline(src_input):
-    v_input = src_input
-    v_gaussian = gaussian_blur(v_input, sigma=1.2)
-    v_threshold = otsu_threshold(v_gaussian)
-    return {
-        "input": v_input,
-        "gaussian": v_gaussian,
-        "threshold": v_threshold,
-    }
+dataset = load_image("input.ome.tif")
+results = run_pipeline(src_input=dataset)
+save_image(
+    results["threshold"],
+    "threshold.ome.tif",
+    image_state=results.image_states["threshold"],
+)
 ```
 
-The full export also includes shared VIPP image I/O, a simple single-source
-folder helper, and a command-line entry point. It is a standalone code export,
-not the saved-configuration batch runner. Manual nodes calculate normally in
-exported runs. The script contains the resolved parameters stored on the graph,
-but it does not reproduce interactive caches or the full runtime `ImageState`
-metadata propagation. Its folder helper binds the first image source;
-workflows with additional independent sources need manual source binding in
-the script. A batch-created `vipp_batch_pipeline.py` instead defaults to its
-sibling batch config, resolves the workflow recorded by that config, and
-delegates to the shared batch core.
+The export includes shared VIPP image I/O, a simple primary-source folder
+helper, and a command-line entry point. `ImageDataset` and `SourcePayload`
+inputs carry the complete normalized `ImageState`; raw arrays use only metadata
+explicitly supplied to the call. Multi-source workflows can bind every source
+through the generated function or its `source_payloads` mapping. Missing,
+unknown, and duplicate bindings fail. The simple command-line folder helper
+binds only the primary source; use the callable API or saved-config batch runner
+for multiple varying sources.
+
+An export records the exact VIPP version that created it and refuses a different
+runtime. Deliberately regenerate and revalidate the export when upgrading. The
+script does not reproduce interactive caches because those caches are not part
+of the scientific workflow. A batch-created `vipp_batch_pipeline.py` instead
+defaults to its sibling batch config, resolves the workflow recorded there, and
+delegates to the shared collection runner.
 
 ### Batch Output Basics
 

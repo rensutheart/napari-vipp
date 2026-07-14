@@ -56,11 +56,12 @@ later milestones.
 
 ## Current Public Baseline
 
-Current public release: `0.11.0a3`.
+Current release candidate: `0.12.0a1`.
 
-The 0.11 alpha is now the hardened PSF/restoration and
-microscope-import-foundation baseline on top of the 0.10 graph-readability and
-interactive-memory work.
+The 0.12 alpha adds deterministic batch configuration/provenance, explicit
+scientific source/grid/axis contracts, shared-executor Python export, workflow
+schema version 3, and modular core/UI boundaries on top of the 0.11 exact
+large-image, PSF/restoration, and microscope-import foundation.
 Implemented and documented work includes:
 
 - searchable categorized palette and searchable graph canvas;
@@ -344,7 +345,7 @@ Delivered:
   with ROI percentages;
 - refreshed VIPP name, tagline, and reusable branding assets.
 
-### Next: 0.12.0a1 - Batch Configuration And Provenance
+### Release candidate: 0.12.0a1 - Batch Configuration, Provenance, And Explicit Semantics
 
 Goal: make batch execution explicit enough for real analysis runs.
 

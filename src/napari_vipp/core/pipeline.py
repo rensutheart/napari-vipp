@@ -3997,7 +3997,7 @@ def graph_node_from_persisted_params(
     *,
     index: int,
 ) -> GraphNode:
-    """Build one graph node using the schema-v2 parameter validation rules."""
+    """Build one graph node using current-schema parameter validation rules."""
     context = f"Node {index}"
     if not isinstance(operation_id, str) or not operation_id.strip():
         raise ValueError(f"{context} requires non-empty 'operation_id'.")

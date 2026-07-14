@@ -28,7 +28,7 @@ from napari_vipp.core.snapshots import (
     WorkflowSnapshot,
 )
 
-WORKFLOW_VERSION = 2
+WORKFLOW_VERSION = 3
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
@@ -96,10 +96,23 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         raise ValueError("Workflow file is not a valid object.")
     if data.get("type") != WORKFLOW_TYPE:
         raise ValueError("File is not a napari-vipp workflow.")
-    if data.get("version") != WORKFLOW_VERSION:
+    document_version = data.get("version")
+    if (
+        type(document_version) is not int
+        or document_version != WORKFLOW_VERSION
+    ):
+        migration_guidance = ""
+        if type(document_version) is int and document_version in {1, 2}:
+            migration_guidance = (
+                " Earlier schemas are not auto-migrated because the current "
+                "schema requires explicit scientific axis, color, and intensity "
+                "semantics. Use the VIPP release that created the workflow to "
+                "inspect it, then recreate and verify it in the current release; "
+                "do not edit the JSON version number alone."
+            )
         raise ValueError(
-            f"Unsupported workflow version: {data.get('version')!r}. "
-            f"Expected version {WORKFLOW_VERSION}."
+            f"Unsupported workflow version: {document_version!r}. "
+            f"Expected version {WORKFLOW_VERSION}.{migration_guidance}"
         )
 
     raw_nodes = data.get("nodes")
@@ -233,7 +246,7 @@ def workflow_snapshot_from_pipeline(
         return workflow_snapshot_from_document(document)
 
     # Empty graphs are a valid transient editor/history state even though the
-    # persisted schema-v2 document contract deliberately requires at least one
+    # persisted workflow document contract deliberately requires at least one
     # node. Validate the remaining fields through the same helpers without
     # weakening ``workflow_snapshot_from_document`` or workflow loading.
     node_ids: set[str] = set()
@@ -251,7 +264,7 @@ def workflow_snapshot_from_pipeline(
 
 
 def workflow_snapshot_from_document(data: Any) -> WorkflowSnapshot:
-    """Decode and structurally validate a schema-v2 workflow snapshot."""
+    """Decode and structurally validate a current-schema workflow snapshot."""
     restored = deserialize_workflow(data)
     graph = GraphSnapshot(
         (
@@ -274,7 +287,7 @@ def workflow_snapshot_from_document(data: Any) -> WorkflowSnapshot:
 
 
 def workflow_document_from_snapshot(snapshot: WorkflowSnapshot) -> dict[str, Any]:
-    """Materialize a snapshot as the canonical schema-v2 workflow document."""
+    """Materialize a snapshot as the canonical current workflow document."""
     pipeline = snapshot.graph.to_pipeline()
     return serialize_workflow(
         pipeline,

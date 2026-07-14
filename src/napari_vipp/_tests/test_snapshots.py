@@ -340,7 +340,7 @@ def test_graph_snapshot_rejects_duplicate_nodes_and_boolean_ports():
 
 
 @pytest.mark.parametrize("filename", _EXAMPLE_FILENAMES)
-def test_schema_v2_example_snapshot_adapters_match_existing_boundary(filename):
+def test_schema_v3_example_snapshot_adapters_match_existing_boundary(filename):
     document = json.loads((_EXAMPLE_DIR / filename).read_text(encoding="utf-8"))
     expected = _established_document_round_trip(document)
 

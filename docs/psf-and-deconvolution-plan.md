@@ -366,7 +366,8 @@ Add deterministic tests for:
 - mismatched PSF dimensionality raises a clear `ValueError`.
 - progress reports per iteration and cancellation stops between iterations.
 - pipeline output metadata follows the image input axes/channels.
-- generated Python export includes the deconvolution operation call.
+- generated Python export embeds the deconvolution workflow node and produces
+  matching output through the shared executor.
 
 ### Example Workflow
 

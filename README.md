@@ -111,9 +111,10 @@ still needs validation against a broader corpus of real acquisition files.
    automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
-tables. `Export Python...` emits direct calls to the headless operation and I/O
-functions; it does not reproduce interactive caches or full runtime metadata
-propagation. See the [user guide](docs/user-guide.md) for details and caveats.
+tables. `Export Python...` embeds a validated immutable workflow and executes it
+through the same headless pipeline engine as VIPP, including normalized
+`ImageState` propagation. See the [user guide](docs/user-guide.md) for source
+binding, runtime-version, and command-line details.
 
 ## Documentation
 
@@ -160,14 +161,13 @@ guidance, and report suspected vulnerabilities privately through
 
 ## Roadmap
 
-The current public alpha is `0.11.0a3`. This patch alpha makes large-image
-analysis exact and responsive, preserves native threshold and cutoff semantics,
-introduces explicit workflow schema version 2 parameters, and improves
-histogram and colocalization inspection. Current 0.12 development adds saved
-batch configuration, deterministic collision-aware planning, per-item/output
-provenance, and resilient continuation after item failures; semantic-axis and
-HCS iteration remain later work. Scalable OME-Zarr previews and broader
-scientific validation follow. See
+The current release candidate is `0.12.0a1`. It adds deterministic saved batch
+configuration and per-item/output provenance, strict source/grid/axis contracts,
+shared-executor Python export, workflow schema version 3, and a substantially
+more modular contributor-facing architecture. Breaking alpha changes are
+intentional where preserving an older implicit behavior would weaken scientific
+validity. Semantic-axis collection iteration and HCS traversal remain later
+work; scalable OME-Zarr previews and broader scientific validation follow. See
 [planning.md](docs/planning.md) for the maintained release order and evidence
 gates.
 

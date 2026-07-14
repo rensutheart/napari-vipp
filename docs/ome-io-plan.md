@@ -2,7 +2,7 @@
 
 Status: accepted architecture; phases 1-3 foundations implemented
 
-Last reviewed: 2026-07-10
+Last reviewed: 2026-07-14
 
 This document defines how VIPP should treat OME-TIFF, OME-Zarr, and conventional
 TIFF/ImageJ files as first-class image sources and outputs.
@@ -52,7 +52,11 @@ Implemented:
 - OME-Zarr label-group import/export through image-plus-label analysis
   packages;
 - a stored single-item/collection binding mode, with the selected item serving
-  as the interactive representative.
+  as the interactive representative;
+- deterministic local-folder batch execution with explicit multi-source
+  positional pairing, fixed reference sources, output planning, and provenance;
+- generated Python programs that use the shared executor and I/O registry while
+  preserving normalized `ImageState` metadata.
 
 Still incomplete:
 
@@ -60,11 +64,8 @@ Still incomplete:
 - plate/well/field selectors;
 - anonymous HTTP reads and other URI transports;
 - operation-level lazy execution and memory-aware materialization;
-- batch collection execution and multi-source pairing;
 - full instrument/objective/detector reconstruction and per-plane metadata;
-- metadata editing UI;
-- metadata propagation through generated scripts remains less complete than
-  interactive graph execution.
+- metadata editing UI.
 
 ## Architecture
 
@@ -416,9 +417,10 @@ arrays from the beginning to avoid another redesign.
 
 ## Python Export
 
-Generated scripts should import the same I/O registry and pass `ImageDataset`
-metadata through execution. The current generated `load_image()` and
-`save_image()` helpers should be removed once the shared I/O layer exists.
+Generated scripts use the same I/O registry and pass `ImageDataset` metadata
+through the shared executor. Their `load_image()` and `save_image()` helpers are
+thin generated interfaces over that shared implementation rather than separate
+format logic.
 
 Batch export should preserve source metadata independently for every input file
 and add the exported workflow identifier to every output.
@@ -492,7 +494,8 @@ Accepted on 2026-06-15:
    will be delivered incrementally.
 3. **Multiple images and HCS stores**
    Use the adaptive Image Source model above. Interactive execution binds one
-   selected item; collection mode defines future batch iteration.
+   selected item; deterministic local-folder collection batching is available.
+   Plate/well/field browsing and semantic-axis iteration remain future work.
 4. **Labels export**
    Use a separate Export OME Analysis Dataset surface for source image plus
    labels. Do not silently treat a label array as an intensity image.

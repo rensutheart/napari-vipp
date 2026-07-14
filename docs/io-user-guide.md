@@ -202,8 +202,11 @@ It can additionally write:
   workflow recorded by the config and delegates to the same headless batch core
   as the dialog. `--workflow` can override that recorded path.
 
-This batch runner is intentionally different from `Export Python...`, which
-emits direct operation calls and a simpler single-source folder harness.
+This batch runner is intentionally different from `Export Python...`. The
+export embeds a validated immutable workflow and executes it through the same
+headless pipeline service as VIPP, while its command-line folder harness is a
+primary-source convenience rather than the complete multi-source collection
+configuration used by batch runs.
 
 Current batch execution remains local-file oriented. Time, channel, and Z stay
 inside each paired source item; VIPP does not yet iterate selected semantic-axis
