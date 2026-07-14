@@ -37,7 +37,7 @@ it with a Qt backend at the same time:
 ```bash
 python -m pip install "napari[pyqt6]"
 python -m pip install --pre napari-vipp
-napari
+vipp
 ```
 
 The `--pre` flag is required while VIPP is published as an alpha release. It is
@@ -144,7 +144,11 @@ python -m ruff check .
 python -m pytest
 ```
 
-Launch a development instance with `python scripts/launch_vipp_sample.py`. The
+Launch a development instance from the repository with `./vipp`; it uses the
+project's `.venv-macos` environment directly, so shell activation is not
+required. The installed `vipp` command and `python -m napari_vipp` are also
+supported. To open the synthetic sample with a pipeline run already completed, use
+`python scripts/launch_vipp_sample.py`. The
 [architecture reference](docs/architecture.md) explains the graph, metadata,
 execution, persistence, and UI boundaries.
 

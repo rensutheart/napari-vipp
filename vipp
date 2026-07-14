@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python="$project_dir/.venv-macos/bin/python"
+
+if [ ! -x "$python" ]; then
+    echo "VIPP environment not found. Run: python3.12 -m venv .venv-macos && .venv-macos/bin/python -m pip install -e '.[dev]'" >&2
+    exit 1
+fi
+
+exec "$python" -m napari_vipp "$@"

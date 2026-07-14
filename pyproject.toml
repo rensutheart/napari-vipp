@@ -47,6 +47,9 @@ dependencies = [
     "zarr>=3.0",
 ]
 
+[project.scripts]
+vipp = "napari_vipp.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/rensutheart/napari-vipp"
 Documentation = "https://rensutheart.github.io/vipp-mkdocs/"
