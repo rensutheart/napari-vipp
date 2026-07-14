@@ -503,7 +503,36 @@ def test_open_example_workflow_loads_bundled_template(qtbot):
         == "VIPP synthetic multichannel volume"
     )
     assert "filter_labels_by_volume_1" in widget.pipeline.nodes
+    assert widget._selected_node_id == "input"
+    assert widget.graph_view._cards["input"]._selected
     assert widget.status_label.text().startswith("Opened example workflow")
+
+
+def test_example_workflow_selects_source_before_background_thumbnail_run(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_KEEP_ALL)
+    widget.background_all_checkbox.setChecked(True)
+
+    widget.load_example_workflow("label-cleanup")
+
+    assert widget.cache_mode_combo.currentText() == CACHE_MODE_KEEP_ALL
+    assert widget._selected_node_id == "input"
+    assert widget.graph_view._cards["input"]._selected
+    assert widget._active_pipeline_run_id is not None
+    assert "Processing" in widget.status_label.text()
+    assert all(output is None for output in widget.pipeline.outputs.values())
+
+    pool.workers[0].run()
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None)
+
+    for node_id, output in widget.pipeline.outputs.items():
+        assert output is not None, node_id
+        pixmap = widget.graph_view._cards[node_id].preview.pixmap()
+        assert pixmap is not None, node_id
+        assert not pixmap.isNull(), node_id
 
 
 def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
@@ -5942,6 +5971,27 @@ def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
     assert widget.graph_zoom_label.text() == "100%"
     assert np.isclose(widget.graph_view.transform().m11(), 1.0)
     assert widget.graph_zoom_reset_button.isEnabled()
+
+
+def test_graph_focus_button_recenters_canvas_and_preserves_zoom(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.resize(800, 420)
+    widget.graph_view.set_zoom_percent(150)
+    transform_before = widget.graph_view.transform()
+    graph_center = widget.graph_view._graph_content_rect().center()
+
+    widget.graph_view.centerOn(widget.graph_view.sceneRect().bottomRight())
+    qtbot.mouseClick(widget.graph_focus_button, Qt.LeftButton)
+
+    focused_center = _graph_view_center(widget.graph_view)
+    assert widget.graph_focus_button.text() == "Focus"
+    assert "without changing zoom" in widget.graph_focus_button.toolTip()
+    assert abs(focused_center.x() - graph_center.x()) <= 1.0
+    assert abs(focused_center.y() - graph_center.y()) <= 1.0
+    assert widget.graph_view.zoom_percent == 150
+    assert widget.graph_view.transform() == transform_before
+    assert widget.status_label.text() == "Centered workflow graph."
 
 
 def test_graph_wheel_zoom_can_report_beyond_slider_range(qtbot):

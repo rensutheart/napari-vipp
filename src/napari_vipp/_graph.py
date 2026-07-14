@@ -1555,6 +1555,33 @@ class PipelineGraphView(QGraphicsView):
     def reset_zoom(self) -> None:
         self.set_zoom_percent(float(self.DEFAULT_ZOOM))
 
+    def center_graph(self) -> bool:
+        """Center on stable workflow content without changing the zoom."""
+        graph_rect = self._graph_content_rect()
+        target = graph_rect.center() if graph_rect is not None else QPointF()
+        visible_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        target_viewport_rect = QRectF(
+            target.x() - visible_rect.width() / 2.0,
+            target.y() - visible_rect.height() / 2.0,
+            visible_rect.width(),
+            visible_rect.height(),
+        )
+        self._ensure_scene_space_for_rect(target_viewport_rect)
+        self.centerOn(target)
+        return graph_rect is not None
+
+    def _graph_content_rect(self) -> QRectF | None:
+        """Return node bounds, falling back to notes on a node-free canvas."""
+        items = list(self._proxies.values())
+        if not items:
+            items = list(self._notes.values())
+        if not items:
+            return None
+        rect = QRectF(items[0].sceneBoundingRect())
+        for item in items[1:]:
+            rect = rect.united(item.sceneBoundingRect())
+        return rect
+
     def _apply_zoom_from_base(self, center: QPointF | None = None) -> None:
         if center is None:
             center = self.mapToScene(self.viewport().rect().center())

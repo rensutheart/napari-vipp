@@ -16,6 +16,28 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     return view, pipeline
 
 
+def test_center_graph_recovers_far_canvas_position_without_changing_zoom(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    view.set_zoom_percent(175)
+    transform_before = view.transform()
+    graph_center = view._graph_content_rect().center()
+
+    view.centerOn(view.sceneRect().bottomRight())
+    far_center = view.mapToScene(view.viewport().rect().center())
+    assert abs(far_center.x() - graph_center.x()) > 100
+
+    assert view.center_graph()
+
+    focused_center = view.mapToScene(view.viewport().rect().center())
+    assert abs(focused_center.x() - graph_center.x()) <= 1.0
+    assert abs(focused_center.y() - graph_center.y()) <= 1.0
+    assert view.zoom_percent == 175
+    assert view.transform() == transform_before
+
+
 def test_graph_node_can_be_dragged_with_mouse(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)

@@ -824,6 +824,7 @@ class VippWidget(QWidget):
         self._live_source_node_layers: dict[str, object] = {}
         self.pipeline = PrototypePipeline()
         self._selected_node_id = "gaussian"
+        self._workflow_load_selection_in_progress = False
         self._active_pinned_node_id: str | None = None
         self._inspect_layer_name = "VIPP Inspect"
         self._preview_disabled_node_ids: set[str] = set()
@@ -984,6 +985,10 @@ class VippWidget(QWidget):
         self.refresh_button.setToolTip(
             "Reload file-path sources and recalculate the graph. File data is "
             "held as a frozen scientific snapshot until Refresh is pressed."
+        )
+        self.graph_focus_button = QPushButton("Focus")
+        self.graph_focus_button.setToolTip(
+            "Center the workflow graph in the canvas without changing zoom."
         )
         self.calculate_all_button = QPushButton("Calculate all")
         self.calculate_all_button.setToolTip(
@@ -1497,6 +1502,7 @@ class VippWidget(QWidget):
         action_separator = _toolbar_separator()
         input_row.addWidget(action_separator)
         input_row.addWidget(self.refresh_button)
+        input_row.addWidget(self.graph_focus_button)
         input_row.addWidget(self.calculate_all_button)
         input_row.addWidget(self.auto_structure_button)
         input_row.addWidget(self.tunnel_manager_button)
@@ -1887,6 +1893,7 @@ class VippWidget(QWidget):
         self.open_example_button.clicked.connect(self._open_example_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
+        self.graph_focus_button.clicked.connect(self._focus_graph)
         self.calculate_all_button.clicked.connect(self._calculate_all_nodes)
         self.undo_action.triggered.connect(self.undo)
         self.redo_action.triggered.connect(self.redo)
@@ -2024,6 +2031,12 @@ class VippWidget(QWidget):
 
     def _reset_graph_zoom(self) -> None:
         self.graph_view.reset_zoom()
+
+    def _focus_graph(self) -> None:
+        if self.graph_view.center_graph():
+            self.status_label.setText("Centered workflow graph.")
+        else:
+            self.status_label.setText("Workflow graph is empty; returned to origin.")
 
     def _sync_graph_zoom_controls(self, value: float) -> None:
         percent = int(round(float(value)))
@@ -3566,12 +3579,26 @@ class VippWidget(QWidget):
             raise FileNotFoundError(
                 f"Example workflow file is not available: {path}"
             )
-        loaded = self.load_workflow_file(path)
-        self.status_label.setText(f"Opened example workflow: {example.title}.")
+        loaded = self.load_workflow_file(path, prefer_image_source=True)
+        if (
+            self._active_pipeline_run_id is None
+            and self._active_source_load_id is None
+        ):
+            self.status_label.setText(f"Opened example workflow: {example.title}.")
         return loaded
 
-    def load_workflow_file(self, path: str | Path) -> Path:
-        """Load a workflow file into the widget and recompute the graph."""
+    def load_workflow_file(
+        self,
+        path: str | Path,
+        *,
+        prefer_image_source: bool = False,
+    ) -> Path:
+        """Load a workflow file into the widget and recompute the graph.
+
+        Ordinary workflows restore an explicitly saved inspector selection.
+        Bundled examples request ``prefer_image_source`` so they open at the
+        start of the scientific data flow instead of a saved terminal node.
+        """
         self._finish_parameter_history_group()
         self._interactive_collection_source_paths.clear()
         before = self._current_history_snapshot()
@@ -3597,6 +3624,11 @@ class VippWidget(QWidget):
         selected_node_id = str(inspector_metadata.get("selected_node_id", "") or "")
         if selected_node_id not in valid_node_ids:
             selected_node_id = ""
+        image_source_node_id = self._first_image_source_node_id()
+        if prefer_image_source and image_source_node_id:
+            selected_node_id = image_source_node_id
+        elif not selected_node_id and image_source_node_id:
+            selected_node_id = image_source_node_id
         right_panel_visible = inspector_metadata.get("right_panel_visible", None)
         self._rescale_auto_output_ranges.clear()
         self._restore_graph_notes(workflow.get("notes", ()))
@@ -3612,16 +3644,28 @@ class VippWidget(QWidget):
         self._sync_all_input_ports()
         self._sync_all_output_ports()
         self._refresh_graph_search_matches(reset_index=True)
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
-        if selected_node_id:
-            self.graph_view.select_node(selected_node_id)
-        else:
-            self._select_first_available_node()
+        self._workflow_load_selection_in_progress = True
+        try:
+            if selected_node_id:
+                self.graph_view.select_node(selected_node_id)
+            else:
+                self._select_first_available_node()
+        finally:
+            self._workflow_load_selection_in_progress = False
         if isinstance(right_panel_visible, bool):
             self._set_right_panel_visible(right_panel_visible)
+        self._invalidate_pipeline_cache()
+        self.run_pipeline()
         self._push_undo_if_changed(before)
         return source
+
+    def _first_image_source_node_id(self) -> str:
+        """Return the first Image Source in stable graph order, if present."""
+        for node_id in self.pipeline.topological_order():
+            node = self.pipeline.nodes.get(node_id)
+            if node is not None and node.operation_id == "input":
+                return node_id
+        return ""
 
     def _export_python_dialog(self) -> None:
         path, _filter = QFileDialog.getSaveFileName(
@@ -5588,6 +5632,8 @@ class VippWidget(QWidget):
         self._sync_execution_ui()
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
+        if self._workflow_load_selection_in_progress:
+            return
         if self._cache_mode() != CACHE_MODE_SMART:
             return
         if node_id not in self.pipeline.nodes:
