@@ -1,0 +1,352 @@
+{
+  "created_at": "2026-07-15T09:57:13.141642+00:00",
+  "environment": {
+    "capabilities": {
+      "cpu": {
+        "available": true,
+        "backend": "cpu",
+        "device_name": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+        "provider": "NumPy/SciPy/scikit-image",
+        "reason": "",
+        "supported_operation_ids": [],
+        "version": "runtime"
+      },
+      "gpu": {
+        "available": true,
+        "backend": "gpu",
+        "device_name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+        "provider": "CuPy",
+        "reason": "No VIPP GPU operations have passed promotion gates yet.",
+        "supported_operation_ids": [],
+        "version": "14.1.1"
+      }
+    },
+    "cupy_runtime": {
+      "driver_version": 13020,
+      "runtime_version": 13020,
+      "version": "14.1.1"
+    },
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.7"
+  },
+  "methodology": {
+    "gpu_memory": "CuPy memory-pool total bytes after one clean execution; a conservative allocation high-water proxy, not device-wide peak",
+    "gpu_synchronization": "current CuPy stream synchronized",
+    "promotion_speedup_threshold": 1.5,
+    "time_statistic": "median wall-clock seconds after warm-up"
+  },
+  "profile": "smoke",
+  "profile_definition": {
+    "batch_items": 3,
+    "image_2d": [
+      256,
+      256
+    ],
+    "image_3d": [
+      16,
+      96,
+      96
+    ],
+    "repeats": 2,
+    "rl_2d": [
+      128,
+      128
+    ],
+    "rl_3d": [
+      8,
+      48,
+      48
+    ],
+    "rl_iterations": 5,
+    "warmups": 1
+  },
+  "results": [
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 1.7881393432617188e-07,
+        "mean_abs_error": 3.091508915531449e-08,
+        "normalized_rmse": 8.748450515660186e-08
+      },
+      "cpu_seconds": 0.0007662500138394535,
+      "dtype": "float32",
+      "end_to_end_speedup": 0.6234997389429423,
+      "gpu_compute_seconds": 0.0007309000066015869,
+      "gpu_end_to_end_seconds": 0.0012289500155020505,
+      "gpu_memory_pool_bytes": 1574400,
+      "gpu_transfer_in_seconds": 0.00026465000701136887,
+      "gpu_transfer_out_seconds": 0.00024530000519007444,
+      "resident_compute_speedup": 1.0483650388816261,
+      "shape": [
+        256,
+        256
+      ],
+      "status": "completed",
+      "workload": "gaussian_blur_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 1.7881393432617188e-07,
+        "mean_abs_error": 3.269714296847168e-08,
+        "normalized_rmse": 9.077421042752982e-08
+      },
+      "cpu_seconds": 0.003465700021479279,
+      "dtype": "float32",
+      "end_to_end_speedup": 1.3702481099684196,
+      "gpu_compute_seconds": 0.0024297499912790954,
+      "gpu_end_to_end_seconds": 0.002529249992221594,
+      "gpu_memory_pool_bytes": 3540992,
+      "gpu_transfer_in_seconds": 0.0007838999736122787,
+      "gpu_transfer_out_seconds": 0.0005751999851781875,
+      "resident_compute_speedup": 1.4263607506609466,
+      "shape": [
+        16,
+        96,
+        96
+      ],
+      "status": "completed",
+      "workload": "gaussian_blur_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "normalized_rmse": 0.0
+      },
+      "cpu_seconds": 0.026532150019193068,
+      "dtype": "float32",
+      "end_to_end_speedup": 17.965365702339966,
+      "gpu_compute_seconds": 0.00042619998566806316,
+      "gpu_end_to_end_seconds": 0.0014768499822821468,
+      "gpu_memory_pool_bytes": 1441792,
+      "gpu_transfer_in_seconds": 0.0002497000095900148,
+      "gpu_transfer_out_seconds": 0.00023224999313242733,
+      "resident_compute_speedup": 62.25281771796462,
+      "shape": [
+        256,
+        256
+      ],
+      "status": "completed",
+      "workload": "median_filter_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "normalized_rmse": 0.0
+      },
+      "cpu_seconds": 0.062295349984196946,
+      "dtype": "float32",
+      "end_to_end_speedup": 23.666647752088437,
+      "gpu_compute_seconds": 0.000926399981835857,
+      "gpu_end_to_end_seconds": 0.002632199990330264,
+      "gpu_memory_pool_bytes": 2949632,
+      "gpu_transfer_in_seconds": 0.0005504500295501202,
+      "gpu_transfer_out_seconds": 0.0004657499957829714,
+      "resident_compute_speedup": 67.24455009244016,
+      "shape": [
+        16,
+        96,
+        96
+      ],
+      "status": "completed",
+      "workload": "median_filter_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 3.2782554626464844e-07,
+        "mean_abs_error": 4.698875955000403e-09,
+        "normalized_rmse": 3.817995292745025e-07
+      },
+      "cpu_seconds": 0.008571599988499656,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 1.9150347938684202,
+      "gpu_compute_seconds": 0.0037358000117819756,
+      "gpu_end_to_end_seconds": 0.004475950001506135,
+      "gpu_memory_pool_bytes": 721408,
+      "gpu_transfer_in_seconds": 0.00012535002315416932,
+      "gpu_transfer_out_seconds": 9.429999045096338e-05,
+      "resident_compute_speedup": 2.294448300622764,
+      "shape": [
+        [
+          128,
+          128
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "workload": "richardson_lucy_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 2.980232238769531e-07,
+        "mean_abs_error": 4.70540229002836e-09,
+        "normalized_rmse": 3.845577563074512e-07
+      },
+      "cpu_seconds": 0.009555299999192357,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 0.2844088987095683,
+      "gpu_compute_seconds": 0.022987050004303455,
+      "gpu_end_to_end_seconds": 0.033597050030948594,
+      "gpu_memory_pool_bytes": 1373696,
+      "gpu_transfer_in_seconds": 0.0002902999985963106,
+      "gpu_transfer_out_seconds": 0.00010325000039301813,
+      "resident_compute_speedup": 0.41568187294165576,
+      "shape": [
+        [
+          128,
+          128
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "workload": "richardson_lucy_tv_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 9.238719940185547e-07,
+        "mean_abs_error": 1.0096142785995552e-08,
+        "normalized_rmse": 9.29563887816138e-07
+      },
+      "cpu_seconds": 0.014355600025737658,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 1.6667363293356334,
+      "gpu_compute_seconds": 0.007520949991885573,
+      "gpu_end_to_end_seconds": 0.008613000012701377,
+      "gpu_memory_pool_bytes": 720896,
+      "gpu_transfer_in_seconds": 0.00026050000451505184,
+      "gpu_transfer_out_seconds": 0.00025454998831264675,
+      "resident_compute_speedup": 1.9087482354258514,
+      "shape": [
+        [
+          8,
+          48,
+          48
+        ],
+        [
+          9,
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "workload": "richardson_lucy_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 5.960464477539062e-07,
+        "mean_abs_error": 9.648384017661252e-09,
+        "normalized_rmse": 7.837358260088573e-07
+      },
+      "cpu_seconds": 0.028232599986949936,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 0.7462288911120427,
+      "gpu_compute_seconds": 0.03569664998212829,
+      "gpu_end_to_end_seconds": 0.037833699985640123,
+      "gpu_memory_pool_bytes": 1818624,
+      "gpu_transfer_in_seconds": 0.0005411000165622681,
+      "gpu_transfer_out_seconds": 0.00014604997704736888,
+      "resident_compute_speedup": 0.790903348103666,
+      "shape": [
+        [
+          8,
+          48,
+          48
+        ],
+        [
+          9,
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "workload": "richardson_lucy_tv_3d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "rolling_ball_background_2d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "subtract_background_2d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "rolling_ball_background_3d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "subtract_background_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 1.7881393432617188e-07,
+        "mean_abs_error": 3.0834598874207586e-08,
+        "normalized_rmse": 8.706737298885122e-08
+      },
+      "cpu_seconds": 0.13848769999458455,
+      "end_to_end_speedup": 10.088451146336135,
+      "gpu_end_to_end_seconds": 0.013727350014960393,
+      "host_device_boundaries_per_item": 4,
+      "items": 3,
+      "shape": [
+        256,
+        256
+      ],
+      "status": "completed",
+      "workload": "batch_gaussian_median_roundtrip_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 1.7881393432617188e-07,
+        "mean_abs_error": 3.0834598874207586e-08,
+        "normalized_rmse": 8.706737298885122e-08
+      },
+      "cpu_seconds": 0.13848769999458455,
+      "end_to_end_speedup": 17.302851848130057,
+      "gpu_end_to_end_seconds": 0.008003749971976504,
+      "host_device_boundaries_per_item": 2,
+      "items": 3,
+      "residency_speedup_vs_roundtrip": 1.7151147978165118,
+      "shape": [
+        256,
+        256
+      ],
+      "status": "completed",
+      "workload": "batch_gaussian_median_resident_2d"
+    }
+  ],
+  "schema_version": 1,
+  "status": "completed"
+}

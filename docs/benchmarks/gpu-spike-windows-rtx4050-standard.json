@@ -1,0 +1,609 @@
+{
+  "created_at": "2026-07-15T10:03:39.917680+00:00",
+  "environment": {
+    "capabilities": {
+      "cpu": {
+        "available": true,
+        "backend": "cpu",
+        "device_name": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+        "provider": "NumPy/SciPy/scikit-image",
+        "reason": "",
+        "supported_operation_ids": [],
+        "version": "numpy 2.4.6; scipy 1.17.1; scikit-image 0.26.0"
+      },
+      "gpu": {
+        "available": true,
+        "backend": "gpu",
+        "device_name": "NVIDIA GeForce RTX 4050 Laptop GPU",
+        "provider": "CuPy",
+        "reason": "No VIPP GPU operations have passed promotion gates yet.",
+        "supported_operation_ids": [],
+        "version": "14.1.1"
+      }
+    },
+    "cupy_runtime": {
+      "driver_version": 13020,
+      "runtime_version": 13020,
+      "version": "14.1.1"
+    },
+    "optional_providers": {
+      "cucim": {
+        "distribution": "",
+        "installed": false,
+        "version": ""
+      },
+      "cupy": {
+        "distribution": "cupy-cuda13x",
+        "installed": true,
+        "version": "14.1.1"
+      },
+      "torch": {
+        "distribution": "",
+        "installed": false,
+        "version": ""
+      }
+    },
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.7"
+  },
+  "methodology": {
+    "gpu_memory": "CuPy memory-pool total bytes after one clean execution; a conservative allocation high-water proxy, not device-wide peak",
+    "gpu_synchronization": "current CuPy stream synchronized",
+    "promotion_speedup_threshold": 1.5,
+    "time_statistic": "median wall-clock seconds after warm-up"
+  },
+  "profile": "standard",
+  "profile_definition": {
+    "batch_items": 6,
+    "image_2d": [
+      1024,
+      1024
+    ],
+    "image_3d": [
+      32,
+      192,
+      192
+    ],
+    "repeats": 3,
+    "rl_2d": [
+      512,
+      512
+    ],
+    "rl_3d": [
+      24,
+      128,
+      128
+    ],
+    "rl_iterations": 15,
+    "warmups": 1
+  },
+  "results": [
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 3.0998450029073865e-08,
+        "normalized_rmse": 8.746516933523857e-08
+      },
+      "cpu_seconds": 0.0236791999777779,
+      "dtype": "float32",
+      "end_to_end_speedup": 2.118091152973362,
+      "gpu_compute_seconds": 0.005063700024038553,
+      "gpu_end_to_end_seconds": 0.011179499968420714,
+      "gpu_memory_pool_bytes": 20973056,
+      "gpu_transfer_in_seconds": 0.0034573000157251954,
+      "gpu_transfer_out_seconds": 0.0031919999746605754,
+      "resident_compute_speedup": 4.676264365062557,
+      "shape": [
+        1024,
+        1024
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.03039530001115054,
+          "median": 0.0236791999777779,
+          "minimum": 0.023013299971353263
+        },
+        "gpu_compute": {
+          "maximum": 0.009830899944063276,
+          "median": 0.005063700024038553,
+          "minimum": 0.004543500021100044
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.011243199987802655,
+          "median": 0.011179499968420714,
+          "minimum": 0.011105499987024814
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.00370110000949353,
+          "median": 0.0034573000157251954,
+          "minimum": 0.0033744999673217535
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0033650999539531767,
+          "median": 0.0031919999746605754,
+          "minimum": 0.0031251999898813665
+        }
+      },
+      "workload": "gaussian_blur_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 3.25860582961468e-08,
+        "normalized_rmse": 9.051797983538734e-08
+      },
+      "cpu_seconds": 0.027574900013860315,
+      "dtype": "float32",
+      "end_to_end_speedup": 1.9544053082535027,
+      "gpu_compute_seconds": 0.0074065999942831695,
+      "gpu_end_to_end_seconds": 0.014109100040514022,
+      "gpu_memory_pool_bytes": 23595008,
+      "gpu_transfer_in_seconds": 0.0036847000010311604,
+      "gpu_transfer_out_seconds": 0.003275899973232299,
+      "resident_compute_speedup": 3.723017313631649,
+      "shape": [
+        32,
+        192,
+        192
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.027799799980130047,
+          "median": 0.027574900013860315,
+          "minimum": 0.024289899971336126
+        },
+        "gpu_compute": {
+          "maximum": 0.011951899970881641,
+          "median": 0.0074065999942831695,
+          "minimum": 0.007124299998395145
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.01432249997742474,
+          "median": 0.014109100040514022,
+          "minimum": 0.014002799987792969
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.003692600002977997,
+          "median": 0.0036847000010311604,
+          "minimum": 0.0034131999709643424
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0034272000193595886,
+          "median": 0.003275899973232299,
+          "minimum": 0.0032581000123173
+        }
+      },
+      "workload": "gaussian_blur_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "normalized_rmse": 0.0
+      },
+      "cpu_seconds": 0.41447650000918657,
+      "dtype": "float32",
+      "end_to_end_speedup": 33.372773730728305,
+      "gpu_compute_seconds": 0.005391000013332814,
+      "gpu_end_to_end_seconds": 0.012419599981512874,
+      "gpu_memory_pool_bytes": 17825792,
+      "gpu_transfer_in_seconds": 0.003437899984419346,
+      "gpu_transfer_out_seconds": 0.002969199966173619,
+      "resident_compute_speedup": 76.88304562866244,
+      "shape": [
+        1024,
+        1024
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.4983522000256926,
+          "median": 0.41447650000918657,
+          "minimum": 0.3631914000143297
+        },
+        "gpu_compute": {
+          "maximum": 0.005444899958092719,
+          "median": 0.005391000013332814,
+          "minimum": 0.0053857999737374485
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.012526399979833513,
+          "median": 0.012419599981512874,
+          "minimum": 0.011920499964617193
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.003542000020388514,
+          "median": 0.003437899984419346,
+          "minimum": 0.003250100009609014
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0030311000300571322,
+          "median": 0.002969199966173619,
+          "minimum": 0.0028310000197961926
+        }
+      },
+      "workload": "median_filter_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 0.0,
+        "mean_abs_error": 0.0,
+        "normalized_rmse": 0.0
+      },
+      "cpu_seconds": 0.49130649998551235,
+      "dtype": "float32",
+      "end_to_end_speedup": 35.55888881307166,
+      "gpu_compute_seconds": 0.006567500007804483,
+      "gpu_end_to_end_seconds": 0.013816700025927275,
+      "gpu_memory_pool_bytes": 18874880,
+      "gpu_transfer_in_seconds": 0.0037253000191412866,
+      "gpu_transfer_out_seconds": 0.0032050000154413283,
+      "resident_compute_speedup": 74.80875514300246,
+      "shape": [
+        32,
+        192,
+        192
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.5486725000082515,
+          "median": 0.49130649998551235,
+          "minimum": 0.48016889998689294
+        },
+        "gpu_compute": {
+          "maximum": 0.008676099998410791,
+          "median": 0.006567500007804483,
+          "minimum": 0.006372100033331662
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.015514699975028634,
+          "median": 0.013816700025927275,
+          "minimum": 0.013584200001787394
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.0065808999934233725,
+          "median": 0.0037253000191412866,
+          "minimum": 0.0035096000065095723
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.00334840000141412,
+          "median": 0.0032050000154413283,
+          "minimum": 0.0031755000236444175
+        }
+      },
+      "workload": "median_filter_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 1.3113021850585938e-06,
+        "mean_abs_error": 8.44701751601118e-09,
+        "normalized_rmse": 7.112086929672683e-07
+      },
+      "cpu_seconds": 0.24611349997576326,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 7.79365521620958,
+      "gpu_compute_seconds": 0.032938099990133196,
+      "gpu_end_to_end_seconds": 0.03157869999995455,
+      "gpu_memory_pool_bytes": 9437184,
+      "gpu_transfer_in_seconds": 0.0008394999895244837,
+      "gpu_transfer_out_seconds": 0.0014194999821484089,
+      "resident_compute_speedup": 7.47200051155009,
+      "shape": [
+        [
+          512,
+          512
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.264157300000079,
+          "median": 0.24611349997576326,
+          "minimum": 0.22705659997882321
+        },
+        "gpu_compute": {
+          "maximum": 0.03333329997258261,
+          "median": 0.032938099990133196,
+          "minimum": 0.03011039999546483
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.03240399999776855,
+          "median": 0.03157869999995455,
+          "minimum": 0.0305921999970451
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.0008620999869890511,
+          "median": 0.0008394999895244837,
+          "minimum": 0.0008308000396937132
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0015782000264152884,
+          "median": 0.0014194999821484089,
+          "minimum": 0.001266100036446005
+        }
+      },
+      "workload": "richardson_lucy_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 9.5367431640625e-07,
+        "mean_abs_error": 8.243626675383253e-09,
+        "normalized_rmse": 6.89574095323616e-07
+      },
+      "cpu_seconds": 0.5226218000170775,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 9.65716820501212,
+      "gpu_compute_seconds": 0.059789200022351,
+      "gpu_end_to_end_seconds": 0.05411749996710569,
+      "gpu_memory_pool_bytes": 20959232,
+      "gpu_transfer_in_seconds": 0.000997499970253557,
+      "gpu_transfer_out_seconds": 0.0013235000078566372,
+      "resident_compute_speedup": 8.741073635735313,
+      "shape": [
+        [
+          512,
+          512
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.5347515000030398,
+          "median": 0.5226218000170775,
+          "minimum": 0.5073648999677971
+        },
+        "gpu_compute": {
+          "maximum": 0.07178069994552061,
+          "median": 0.059789200022351,
+          "minimum": 0.0499400999979116
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.056239400000777096,
+          "median": 0.05411749996710569,
+          "minimum": 0.05252450000261888
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.0013435999862849712,
+          "median": 0.000997499970253557,
+          "minimum": 0.000992199988104403
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0015252000303007662,
+          "median": 0.0013235000078566372,
+          "minimum": 0.0011514000361785293
+        }
+      },
+      "workload": "richardson_lucy_tv_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 5.0067901611328125e-06,
+        "mean_abs_error": 2.005173802057762e-08,
+        "normalized_rmse": 1.7442129778040828e-06
+      },
+      "cpu_seconds": 0.5971174000296742,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 2.0478154927514893,
+      "gpu_compute_seconds": 0.28930929995840415,
+      "gpu_end_to_end_seconds": 0.29158750001806766,
+      "gpu_memory_pool_bytes": 13107200,
+      "gpu_transfer_in_seconds": 0.00118530000327155,
+      "gpu_transfer_out_seconds": 0.0012568000238388777,
+      "resident_compute_speedup": 2.063941256349262,
+      "shape": [
+        [
+          24,
+          128,
+          128
+        ],
+        [
+          9,
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 0.7549975999863818,
+          "median": 0.5971174000296742,
+          "minimum": 0.5703412999864668
+        },
+        "gpu_compute": {
+          "maximum": 0.2909629000350833,
+          "median": 0.28930929995840415,
+          "minimum": 0.2891599999857135
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.2916155999992043,
+          "median": 0.29158750001806766,
+          "minimum": 0.29154260002542287
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.0012464000028558075,
+          "median": 0.00118530000327155,
+          "minimum": 0.0011842999956570566
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0013309000059962273,
+          "median": 0.0012568000238388777,
+          "minimum": 0.0012215999886393547
+        }
+      },
+      "workload": "richardson_lucy_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 6.67572021484375e-06,
+        "mean_abs_error": 1.8750759108593362e-08,
+        "normalized_rmse": 1.7352055096516814e-06
+      },
+      "cpu_seconds": 1.2115557999932207,
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_speedup": 3.3151112312029793,
+      "gpu_compute_seconds": 0.36630560003686696,
+      "gpu_end_to_end_seconds": 0.3654645999777131,
+      "gpu_memory_pool_bytes": 37543936,
+      "gpu_transfer_in_seconds": 0.0012323000119067729,
+      "gpu_transfer_out_seconds": 0.0013114999746903777,
+      "resident_compute_speedup": 3.307500076087516,
+      "shape": [
+        [
+          24,
+          128,
+          128
+        ],
+        [
+          9,
+          9,
+          9
+        ]
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 1.2834943999769166,
+          "median": 1.2115557999932207,
+          "minimum": 0.8952229000278749
+        },
+        "gpu_compute": {
+          "maximum": 0.36661770002683625,
+          "median": 0.36630560003686696,
+          "minimum": 0.3660509000183083
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.36713379999855533,
+          "median": 0.3654645999777131,
+          "minimum": 0.36483179999049753
+        },
+        "gpu_transfer_in": {
+          "maximum": 0.0012998000020161271,
+          "median": 0.0012323000119067729,
+          "minimum": 0.0012304999982006848
+        },
+        "gpu_transfer_out": {
+          "maximum": 0.0013227000017650425,
+          "median": 0.0013114999746903777,
+          "minimum": 0.0012897999840788543
+        }
+      },
+      "workload": "richardson_lucy_tv_3d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "rolling_ball_background_2d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "subtract_background_2d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "rolling_ball_background_3d"
+    },
+    {
+      "reason": "cuCIM unavailable: ModuleNotFoundError: No module named 'cucim'",
+      "status": "unavailable",
+      "workload": "subtract_background_3d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 3.083227303098587e-08,
+        "normalized_rmse": 8.705872632273787e-08
+      },
+      "cpu_seconds": 3.1528679999755695,
+      "end_to_end_speedup": 22.103348171011024,
+      "gpu_end_to_end_seconds": 0.1426420999923721,
+      "host_device_boundaries_per_item": 4,
+      "items": 6,
+      "shape": [
+        1024,
+        1024
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 3.1988859999692068,
+          "median": 3.1528679999755695,
+          "minimum": 2.60589110001456
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.1431393999955617,
+          "median": 0.1426420999923721,
+          "minimum": 0.14137560001108795
+        }
+      },
+      "workload": "batch_gaussian_median_roundtrip_2d"
+    },
+    {
+      "comparison": {
+        "comparable": true,
+        "max_abs_error": 2.384185791015625e-07,
+        "mean_abs_error": 3.083227303098587e-08,
+        "normalized_rmse": 8.705872632273787e-08
+      },
+      "cpu_seconds": 3.1528679999755695,
+      "end_to_end_speedup": 31.55531269176528,
+      "gpu_end_to_end_seconds": 0.09991559997433797,
+      "host_device_boundaries_per_item": 2,
+      "items": 6,
+      "residency_speedup_vs_roundtrip": 1.4276259165636584,
+      "shape": [
+        1024,
+        1024
+      ],
+      "status": "completed",
+      "timing_ranges_seconds": {
+        "cpu": {
+          "maximum": 3.1988859999692068,
+          "median": 3.1528679999755695,
+          "minimum": 2.60589110001456
+        },
+        "gpu_end_to_end": {
+          "maximum": 0.10075420001521707,
+          "median": 0.09991559997433797,
+          "minimum": 0.09831339999800548
+        }
+      },
+      "workload": "batch_gaussian_median_resident_2d"
+    }
+  ],
+  "schema_version": 1,
+  "status": "completed"
+}
