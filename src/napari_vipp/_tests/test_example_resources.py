@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -42,3 +43,26 @@ def test_packaged_and_repository_example_workflows_are_byte_identical():
         repository = REPOSITORY_EXAMPLES_DIR / spec.filename
 
         assert packaged.read_bytes() == repository.read_bytes(), spec.filename
+
+
+def test_deconvolution_examples_use_conservative_production_like_settings():
+    filenames = (
+        "synthetic-deconvolution-rl-tv.json",
+        "synthetic-3d-deconvolution-rl-tv.json",
+    )
+    for filename in filenames:
+        document = json.loads((REPOSITORY_EXAMPLES_DIR / filename).read_text())
+        nodes = {node["operation_id"]: node for node in document["nodes"]}
+        ordinary = nodes["richardson_lucy_deconvolution"]["params"]
+        regularized = nodes["richardson_lucy_tv_deconvolution"]["params"]
+
+        assert ordinary["iterations"] == 25
+        assert regularized["iterations"] == 25
+        assert regularized["tv_regularization"] == 0.002
+        assert regularized["denominator_floor"] == 0.05
+        assert all(
+            node.get("params", {}).get("tv_regularization", 0.0) < 0.008
+            for node in document["nodes"]
+        )
+        notes = " ".join(note["text"] for note in document["notes"])
+        assert "production-like" in notes

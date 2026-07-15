@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from copy import deepcopy
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
@@ -30,6 +31,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__ as VIPP_VERSION
+from napari_vipp._graph import PortLabelMode
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
     CACHE_MODE_KEEP_ALL,
@@ -47,6 +49,7 @@ from napari_vipp._widget import (
     GeneratedLayerContrastResult,
     HistogramPlot,
     InputHistogramResult,
+    PipelineNodeResult,
     PipelineRunResult,
     SelectTableColumnsControl,
     VippWidget,
@@ -81,6 +84,7 @@ from napari_vipp.core.batch_demo import (
     SyntheticBatchDemo,
     validate_synthetic_batch_demo,
 )
+from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_search import find_graph_matches
 from napari_vipp.core.io import (
     ImageDataset,
@@ -113,7 +117,11 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.preview import make_preview
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
-from napari_vipp.core.workflow import save_workflow
+from napari_vipp.core.workflow import (
+    deserialize_workflow,
+    save_workflow,
+    serialize_workflow,
+)
 
 
 class _Event:
@@ -1694,6 +1702,7 @@ def test_dims_point_event_refreshes_thumbnails(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         calls.append(tuple(current_step))
         return np.zeros((16, 18), dtype=np.uint8)
@@ -1764,12 +1773,16 @@ def test_selecting_node_updates_inspection_layer(qtbot):
     inspect_layer = viewer.layers["VIPP Inspect"]
     assert inspect_layer.metadata["node_id"] == "input"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
+    scientific_output = widget.pipeline.outputs["input"]
+    assert np.shares_memory(inspect_layer.data, scientific_output)
     assert not np.shares_memory(
         inspect_layer.data,
         viewer.layers["input volume"].data,
     )
     expected_source = viewer.layers["input volume"].data.copy()
-    inspect_layer.data.flat[0] = 1
+    assert not inspect_layer.data.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        inspect_layer.data.flat[0] = 1
     np.testing.assert_array_equal(
         viewer.layers["input volume"].data,
         expected_source,
@@ -1790,6 +1803,7 @@ def test_widget_pins_threshold_as_labels(qtbot):
     assert pinned.data.dtype == np.uint8
     assert pinned.editable is False
     assert not np.shares_memory(pinned.data, widget.pipeline.outputs["threshold"])
+    assert not pinned.data.flags.writeable
     assert widget.graph_view._cards["threshold"]._pinned
     assert (
         "border: 4px solid #facc15"
@@ -1823,7 +1837,8 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert widget.pipeline.output_states[filtered.id].kind == "label image"
     labels_output = widget.pipeline.outputs[filtered.id]
     expected_labels = labels_output.copy()
-    assert not np.shares_memory(inspect.data, labels_output)
+    assert np.shares_memory(inspect.data, labels_output)
+    assert not inspect.data.flags.writeable
 
     widget.pin_node(filtered.id)
 
@@ -1832,10 +1847,13 @@ def test_label_pipeline_inspects_and_pins_integer_labels(qtbot):
     assert pinned.data.dtype == np.int32
     assert pinned.editable is False
     assert pinned.metadata["data_kind"] == "labels"
-    assert not np.shares_memory(pinned.data, labels_output)
-    assert not np.shares_memory(pinned.data, inspect.data)
-    inspect.data.flat[0] = 101
-    pinned.data.flat[-1] = 202
+    assert np.shares_memory(pinned.data, labels_output)
+    assert np.shares_memory(pinned.data, inspect.data)
+    assert not pinned.data.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        inspect.data.flat[0] = 101
+    with pytest.raises(ValueError, match="read-only"):
+        pinned.data.flat[-1] = 202
     np.testing.assert_array_equal(labels_output, expected_labels)
 
 
@@ -1860,7 +1878,7 @@ def test_clear_border_node_preserves_label_display_type(qtbot):
     assert inspect.metadata["data_kind"] == "labels"
 
 
-def test_clear_border_hides_lateral_choice_for_true_2d_input(qtbot):
+def test_clear_border_hides_equivalent_boundary_control_for_true_2d_input(qtbot):
     data = np.zeros((12, 12), dtype=np.float32)
     data[0:4, 0:4] = 10
     data[6:10, 6:10] = 10
@@ -1870,11 +1888,10 @@ def test_clear_border_hides_lateral_choice_for_true_2d_input(qtbot):
     cleared = widget.add_node_from_palette("clear_border_objects")
     widget._connect_nodes("threshold", cleared.id)
 
-    control = widget._parameter_widgets["boundary_mode"]
-    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
-
-    assert choices == ["All spatial borders"]
-    assert widget.pipeline.nodes[cleared.id].params["boundary_mode"] in choices
+    assert "boundary_mode" not in widget._parameter_widgets
+    assert widget.pipeline.nodes[cleared.id].params["boundary_mode"] == (
+        "All spatial borders"
+    )
     assert widget._parameter_widgets["border_buffer"]._bounds.maximum == 11
 
 
@@ -1952,13 +1969,7 @@ def test_fill_holes_hides_3d_mode_for_true_2d_input(qtbot):
     filled = widget.add_node_from_palette("fill_holes")
     widget._connect_nodes("threshold", filled.id)
 
-    control = widget._parameter_widgets["spatial_mode"]
-    choices = [control.combo.itemText(index) for index in range(control.combo.count())]
-
-    assert choices == [
-        "Auto from axes - using 2D YX",
-        "2D per XY slice (advanced)",
-    ]
+    assert "spatial_mode" not in widget._parameter_widgets
     assert (
         "connected YX image"
         in widget._parameter_widgets["fill_holes_scope_note"].text()
@@ -2231,7 +2242,7 @@ def test_slice_wise_stack_node_shows_axis_notice(qtbot):
     assert "Reorder Axes" in notice.text()
 
 
-def test_slice_wise_stack_notice_shares_channel_axis_parameter(qtbot):
+def test_slice_wise_stack_notice_hides_irrelevant_rgb_axis_parameter(qtbot):
     viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32), metadata={"axes": "ZYX"})
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -2241,8 +2252,7 @@ def test_slice_wise_stack_notice_shares_channel_axis_parameter(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert not widget.parameter_group.isHidden()
-    assert set(widget._parameter_widgets) == {"channel_axis", "operation_notice"}
-    assert widget._parameter_widgets["channel_axis"].value() == -1
+    assert set(widget._parameter_widgets) == {"operation_notice"}
 
 
 def test_slice_wise_notice_hides_for_2d_input(qtbot):
@@ -2629,6 +2639,12 @@ def test_born_wolf_psf_auto_shows_resolved_values_without_sliders(qtbot):
     assert not wavelength.isEnabled()
     assert wavelength.value() == 520.0
     assert "metadata" in status.text()
+    guidance = widget._parameter_widgets["operation_notice"]
+    assert guidance.property("preflightStatus") == "warning"
+    assert "WIDEFIELD NYQUIST ESTIMATE NOT MET" in guidance.text()
+    assert "Requested PSF: 33 x 65 x 65 samples" in guidance.text()
+    assert "not copied from the input image" in guidance.text()
+    assert "Z: PSF 33, image 3" in guidance.text()
 
 
 def test_born_wolf_psf_auto_marks_unresolved_metadata_red(qtbot):
@@ -2919,7 +2935,10 @@ def test_filtering_and_segmentation_categories_are_grouped(qtbot):
 
 
 def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
-    viewer = _Viewer(np.zeros((16, 18), dtype=np.float32))
+    viewer = _Viewer(
+        np.zeros((16, 18), dtype=np.float32),
+        metadata={"axes": "YX"},
+    )
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
@@ -2928,11 +2947,30 @@ def test_global_threshold_scope_control_hides_for_2d_input(qtbot):
     widget.graph_view.select_node(node.id)
 
     assert "threshold_scope" not in widget._parameter_widgets
-    assert set(widget._parameter_widgets) == {"channel_axis"}
+    assert not widget._parameter_widgets
     assert not widget.parameter_group.isHidden()
     assert not widget.rescale_input_histogram_group.isHidden()
     assert widget.rescale_input_histogram_scope_row.isHidden()
     assert widget.rescale_input_histogram_group.title() == "Input Histogram"
+
+
+def test_global_threshold_scope_remains_visible_for_shape_only_2d_input(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((16, 18), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("li_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "threshold_scope" in widget._parameter_widgets
+    notes = []
+    for row in range(widget.parameter_form.rowCount()):
+        item = widget.parameter_form.itemAt(row, QFormLayout.SpanningRole)
+        if item is not None:
+            notes.append(item.widget())
+    assert any(
+        isinstance(note, QLabel) and "unresolved" in note.text().casefold()
+        for note in notes
+    )
 
 
 def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
@@ -2954,6 +2992,334 @@ def test_global_threshold_scope_control_shows_for_stack_input(qtbot):
     assert widget.pipeline.nodes[node.id].params["threshold_scope"] == (
         "Stack histogram"
     )
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    (
+        "otsu_threshold",
+        "triangle_threshold",
+        "yen_threshold",
+        "isodata_threshold",
+        "minimum_threshold",
+    ),
+)
+@pytest.mark.parametrize(
+    ("dtype", "expected_visible"),
+    ((np.float32, True), (np.uint16, False)),
+)
+def test_global_threshold_float_bins_follow_input_dtype(
+    qtbot,
+    operation_id,
+    dtype,
+    expected_visible,
+):
+    widget = VippWidget(
+        _Viewer(np.zeros((3, 16, 18), dtype=dtype), metadata={"axes": "ZYX"})
+    )
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette(operation_id)
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert ("histogram_bins" in widget._parameter_widgets) is expected_visible
+
+
+def test_input_aware_controls_refresh_after_upstream_dtype_change(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.float32)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    assert "histogram_bins" in widget._parameter_widgets
+
+    integer = np.zeros_like(data, dtype=np.int16)
+    widget.pipeline.outputs["input"] = integer
+    widget.pipeline.node_outputs["input"] = [integer]
+    widget.pipeline.output_states["input"] = image_state_from_array(
+        integer,
+        layer_metadata={"axes": "ZYX"},
+    )
+    widget.pipeline.node_output_states["input"] = [
+        widget.pipeline.output_states["input"]
+    ]
+    widget._refresh_selected_parameter_controls()
+    assert "histogram_bins" not in widget._parameter_widgets
+
+    floating = np.zeros_like(data, dtype=np.float64)
+    widget.pipeline.outputs["input"] = floating
+    widget.pipeline.node_outputs["input"] = [floating]
+    widget.pipeline.output_states["input"] = image_state_from_array(
+        floating,
+        layer_metadata={"axes": "ZYX"},
+    )
+    widget.pipeline.node_output_states["input"] = [
+        widget.pipeline.output_states["input"]
+    ]
+    widget._refresh_selected_parameter_controls()
+    assert "histogram_bins" in widget._parameter_widgets
+
+
+def test_visibility_refreshes_after_actual_upstream_dtype_conversion(qtbot):
+    data = np.linspace(0, 1, 3 * 8 * 9, dtype=np.float32).reshape(3, 8, 9)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    convert = widget.add_node_from_palette("convert_dtype")
+    threshold = widget.add_node_from_palette("otsu_threshold")
+    widget._connect_nodes("input", convert.id)
+    widget._connect_nodes(convert.id, threshold.id)
+
+    widget.pipeline.run(data, input_metadata={"axes": "ZYX"})
+    widget.graph_view.select_node(threshold.id)
+    assert widget.pipeline.outputs[convert.id].dtype == np.uint8
+    assert "histogram_bins" not in widget._parameter_widgets
+
+    widget.pipeline.set_param(convert.id, "output_dtype", "float32")
+    widget.pipeline.run(
+        data,
+        input_metadata={"axes": "ZYX"},
+        dirty_node_ids={convert.id},
+    )
+    widget._refresh_selected_parameter_controls()
+
+    assert widget.pipeline.outputs[convert.id].dtype == np.float32
+    assert "histogram_bins" in widget._parameter_widgets
+
+
+def test_unresolved_controls_refresh_when_connection_changes(qtbot, monkeypatch):
+    data = np.zeros((3, 8, 9), dtype=np.uint8)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "run_pipeline", lambda: None)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget.graph_view.select_node(node.id)
+
+    assert "histogram_bins" in widget._parameter_widgets
+    assert "channel_axis" in widget._parameter_widgets
+
+    widget._connect_nodes("input", node.id)
+    assert "histogram_bins" not in widget._parameter_widgets
+    assert "channel_axis" not in widget._parameter_widgets
+
+    widget._disconnect_nodes("input", node.id)
+    assert "histogram_bins" in widget._parameter_widgets
+    assert "channel_axis" in widget._parameter_widgets
+
+
+def test_hidden_histogram_bins_preserve_value_and_generated_code(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget.pipeline.set_param(node.id, "histogram_bins", 4_096)
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "histogram_bins" not in widget._parameter_widgets
+    assert node.params["histogram_bins"] == 4_096
+    assert "histogram_bins=4096" in widget._node_code_text(node.id)
+
+
+@pytest.mark.parametrize(
+    ("axes", "expected_visible"),
+    (("Y,X,rgb", True), ("Y,X,rgba", True), ("ZYX", False)),
+)
+def test_rgb_axis_control_follows_explicit_input_semantics(
+    qtbot,
+    axes,
+    expected_visible,
+):
+    shape = (
+        (8, 9, 3)
+        if axes == "Y,X,rgb"
+        else (8, 9, 4)
+        if axes == "Y,X,rgba"
+        else (3, 8, 9)
+    )
+    widget = VippWidget(
+        _Viewer(np.zeros(shape, dtype=np.float32), metadata={"axes": axes})
+    )
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("sobel_filter")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert ("channel_axis" in widget._parameter_widgets) is expected_visible
+    if expected_visible:
+        tooltip = widget._parameter_widgets["channel_axis"].toolTip().lower()
+        assert "rgb or rgba" in tooltip
+        assert "-1 for scalar" in tooltip
+
+
+def test_rgb_axis_control_does_not_treat_shape_as_explicit_semantics(qtbot):
+    data = np.zeros((8, 9, 3), dtype=np.float32)
+    widget = VippWidget(_Viewer(data))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("sobel_filter")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+
+    assert "channel_axis" in widget._parameter_widgets
+
+
+def test_parameter_dependent_visibility_refreshes_and_preserves_values(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.pipeline.set_param(node.id, "tv_epsilon", 2.5e-6)
+    widget.pipeline.set_param(node.id, "denominator_floor", 0.125)
+    widget.graph_view.select_node(node.id)
+
+    assert "tv_epsilon" in widget._parameter_widgets
+    assert "denominator_floor" in widget._parameter_widgets
+    widget._on_param_changed("tv_regularization", 0.0)
+
+    assert "tv_epsilon" not in widget._parameter_widgets
+    assert "denominator_floor" not in widget._parameter_widgets
+    assert node.params["tv_epsilon"] == 2.5e-6
+    assert node.params["denominator_floor"] == 0.125
+    code = widget._node_code_text(node.id)
+    assert "tv_epsilon=2.5e-06" in code
+    assert "denominator_floor=0.125" in code
+
+    widget._on_param_changed("tv_regularization", 0.002)
+    assert "tv_epsilon" in widget._parameter_widgets
+    assert "denominator_floor" in widget._parameter_widgets
+
+
+def test_costes_auto_hides_manual_threshold_rows_without_resetting_them(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("object_colocalization_metrics")
+    widget.pipeline.set_param(node.id, "channel_1_threshold", 41.0)
+    widget.pipeline.set_param(node.id, "channel_2_threshold", 87.0)
+    widget.graph_view.select_node(node.id)
+
+    widget._on_param_changed("threshold_mode", "Costes auto")
+
+    assert "channel_1_threshold" not in widget._parameter_widgets
+    assert "channel_2_threshold" not in widget._parameter_widgets
+    assert node.params["channel_1_threshold"] == 41.0
+    assert node.params["channel_2_threshold"] == 87.0
+
+
+def test_stored_3d_mode_remains_visible_and_truthful_after_yx_replacement(qtbot):
+    data = np.zeros((3, 8, 9), dtype=bool)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("auto_watershed_from_mask")
+    widget._connect_nodes("input", node.id)
+    widget.pipeline.set_param(node.id, "spatial_mode", "3D ZYX")
+    widget.graph_view.select_node(node.id)
+
+    replacement = np.zeros((8, 9), dtype=bool)
+    replacement_state = image_state_from_array(
+        replacement,
+        layer_metadata={"axes": "YX"},
+    )
+    widget.pipeline.outputs["input"] = replacement
+    widget.pipeline.node_outputs["input"] = [replacement]
+    widget.pipeline.output_states["input"] = replacement_state
+    widget.pipeline.node_output_states["input"] = [replacement_state]
+    widget._refresh_selected_parameter_controls()
+
+    control = widget._parameter_widgets["spatial_mode"]
+    assert control.value() == "3D ZYX"
+    assert node.params["spatial_mode"] == "3D ZYX"
+    assert "unavailable" in control.combo.currentText().casefold()
+
+
+def test_visibility_only_refresh_preserves_workflow_history_and_cache(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.float32)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget.pipeline.set_param(node.id, "histogram_bins", 4_096)
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    assert "histogram_bins" in widget._parameter_widgets
+
+    params_before = dict(node.params)
+    workflow_before = serialize_workflow(widget.pipeline)
+    hash_before = scientific_workflow_hash(workflow_before)
+    history_before = (len(widget._undo_stack), len(widget._redo_stack))
+    dirty_before = set(widget._pending_dirty_node_ids)
+    completed_before = set(widget.pipeline.completed_node_ids)
+    cached_output = widget.pipeline.outputs.get(node.id)
+
+    integer = np.zeros_like(data, dtype=np.uint16)
+    integer_state = image_state_from_array(
+        integer,
+        layer_metadata={"axes": "ZYX"},
+    )
+    widget.pipeline.outputs["input"] = integer
+    widget.pipeline.node_outputs["input"] = [integer]
+    widget.pipeline.output_states["input"] = integer_state
+    widget.pipeline.node_output_states["input"] = [integer_state]
+    assert widget._refresh_selected_parameter_controls() is False
+
+    assert "histogram_bins" not in widget._parameter_widgets
+    assert node.params == params_before
+    assert serialize_workflow(widget.pipeline) == workflow_before
+    assert scientific_workflow_hash(serialize_workflow(widget.pipeline)) == hash_before
+    assert (len(widget._undo_stack), len(widget._redo_stack)) == history_before
+    assert widget._pending_dirty_node_ids == dirty_before
+    assert widget.pipeline.completed_node_ids == completed_before
+    assert widget.pipeline.outputs.get(node.id) is cached_output
+
+
+def test_rescale_z_visibility_refresh_preserves_specialized_params(qtbot):
+    data = np.zeros((3, 8, 9), dtype=np.float32)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "ZYX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("rescale_axes")
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    widget._on_param_changed("resize_mode", "Output size")
+    widget._on_param_changed("z_size", 5)
+    assert "z_size" in widget._parameter_widgets
+    params_before = deepcopy(node.params)
+
+    replacement = np.zeros((8, 9), dtype=np.float32)
+    replacement_state = image_state_from_array(
+        replacement,
+        layer_metadata={"axes": "YX"},
+    )
+    widget.pipeline.outputs["input"] = replacement
+    widget.pipeline.node_outputs["input"] = [replacement]
+    widget.pipeline.output_states["input"] = replacement_state
+    widget.pipeline.node_output_states["input"] = [replacement_state]
+    assert widget._refresh_selected_parameter_controls() is False
+
+    assert "z_size" not in widget._parameter_widgets
+    assert node.params == params_before
+
+
+def test_hidden_parameter_round_trips_through_workflow_version_three(qtbot):
+    data = np.zeros((8, 9), dtype=np.uint16)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("otsu_threshold")
+    widget.pipeline.set_param(node.id, "histogram_bins", 8_192)
+    widget._connect_nodes("input", node.id)
+    widget.graph_view.select_node(node.id)
+    assert "histogram_bins" not in widget._parameter_widgets
+
+    document = serialize_workflow(widget.pipeline)
+    restored_graph = deserialize_workflow(document)
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        restored_graph["nodes"],
+        restored_graph["connections"],
+        restored_graph.get("output_tunnels", ()),
+    )
+
+    assert document["version"] == 3
+    assert restored.nodes[node.id].params["histogram_bins"] == 8_192
+    assert "histogram_bins=8192" in widget._node_code_text(node.id)
+    exported = export_pipeline_to_python(widget.pipeline)
+    assert '"histogram_bins":8192' in exported
 
 
 def test_auto_watershed_hides_spatial_mode_for_2d_input(qtbot):
@@ -3355,6 +3721,38 @@ def test_histogram_cache_invalidation_rejects_an_inflight_result(qtbot):
     assert widget._active_input_histogram_run_id is None
     assert widget._current_input_histogram_key is None
     assert widget._input_histogram_cache == {}
+
+
+def test_node_selection_rejects_a_stale_output_histogram_result(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    old_key = ("gaussian-stack",)
+    new_key = ("threshold-stack",)
+    widget._active_output_histogram_run_id = 7
+    widget._active_output_histogram_key = old_key
+    widget._current_output_histogram_key = new_key
+    widget._selected_node_id = "threshold"
+    applied = []
+    monkeypatch.setattr(
+        widget,
+        "_apply_output_histogram_result",
+        lambda result: applied.append(result.key),
+    )
+
+    widget._on_output_histogram_finished(
+        InputHistogramResult(
+            7,
+            old_key,
+            "gaussian",
+            counts=np.array([1]),
+        )
+    )
+
+    assert applied == []
+    assert widget._current_output_histogram_key == new_key
 
 
 def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
@@ -5519,6 +5917,7 @@ def test_split_channels_thumbnail_channel_selector(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         arr = np.asarray(data)
         calls.append((tuple(arr.shape), int(arr.max())))
@@ -5840,6 +6239,7 @@ def test_combine_channels_colour_change_refreshes_thumbnail_palette(
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         if channel_colors is not None:
             calls.append(list(channel_colors))
@@ -6072,6 +6472,7 @@ def test_reorder_axes_thumbnail_uses_reoriented_state(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         calls.append((tuple(data.shape), current_step, state))
         return np.zeros((5, 6), dtype=np.uint8)
@@ -6245,6 +6646,7 @@ def test_selected_node_preview_can_be_disabled(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         calls.append(data)
         return None
@@ -6652,6 +7054,212 @@ def test_richardson_lucy_tv_controls_explain_effects_and_separate_ranges(qtbot):
     assert tv_regularization._bounds.maximum == 0.1
     assert tv_regularization.slider.value() == 1000
     assert node.params["tv_regularization"] == 0.25
+
+    assert "under-converged" in widget._parameter_widgets["iterations"].toolTip()
+    assert "0.002" in widget._parameter_widgets["tv_regularization"].toolTip()
+    assert "0.008-0.012" in widget._parameter_widgets["tv_regularization"].toolTip()
+    assert "first response" in widget._parameter_widgets["filter_epsilon"].toolTip()
+    assert "first response" in widget._parameter_widgets[
+        "denominator_floor"
+    ].toolTip()
+
+
+def test_deconvolution_psf_status_renders_once_without_mutating_parameters(
+    qtbot,
+    monkeypatch,
+):
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+
+    psf_source = widget.pipeline.add_node("input")
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.pipeline.set_param(node.id, "spatial_mode", "2D YX")
+    assert widget.pipeline.connect("input", node.id, target_port=0).success
+    assert widget.pipeline.connect(psf_source.id, node.id, target_port=1).success
+    axes = (
+        AxisMetadata("y", "space", unit="micrometer", scale=0.1),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.1),
+    )
+    image_state = image_state_from_array(image, axes=axes)
+    psf_state = image_state_from_array(
+        psf,
+        axes=axes,
+    )
+    widget.pipeline.outputs["input"] = image
+    widget.pipeline.output_states["input"] = image_state
+    widget.pipeline.node_outputs["input"] = [image]
+    widget.pipeline.node_output_states["input"] = [image_state]
+    widget.pipeline.outputs[psf_source.id] = psf
+    widget.pipeline.output_states[psf_source.id] = psf_state
+    widget.pipeline.node_outputs[psf_source.id] = [psf]
+    widget.pipeline.node_output_states[psf_source.id] = [psf_state]
+
+    import napari_vipp._widget as widget_module
+
+    calls = []
+    original = widget_module.psf_preflight
+
+    def counted_preflight(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(widget_module, "psf_preflight", counted_preflight)
+    widget._selected_node_id = node.id
+    widget._psf_preflight_cache.clear()
+    params_before = dict(node.params)
+    execution_before = (
+        widget.pipeline.node_execution_states[node.id],
+        widget.pipeline.node_execution_messages[node.id],
+    )
+
+    widget._render_parameters(node.id)
+    widget._render_parameters(node.id)
+
+    note = widget._parameter_widgets["operation_notice"]
+    assert note.property("preflightStatus") == "ready"
+    assert "PSF preflight: Ready" in note.text()
+    assert "Excessive TV regularization" in note.text()
+    assert "under-converged" in note.text()
+    assert "Validate PSF sampling and centering" in note.text()
+    assert calls == [1]
+    assert node.params == params_before
+    assert (
+        widget.pipeline.node_execution_states[node.id],
+        widget.pipeline.node_execution_messages[node.id],
+    ) == execution_before
+
+    shifted_psf = np.zeros_like(psf)
+    shifted_psf[2, 1] = 1.0
+    shifted_state = image_state_from_array(shifted_psf, axes=axes)
+    widget.pipeline.outputs[psf_source.id] = shifted_psf
+    widget.pipeline.output_states[psf_source.id] = shifted_state
+    widget.pipeline.node_outputs[psf_source.id] = [shifted_psf]
+    widget.pipeline.node_output_states[psf_source.id] = [shifted_state]
+
+    widget._refresh_selected_parameter_controls()
+
+    note = widget._parameter_widgets["operation_notice"]
+    assert note.property("preflightStatus") == "warning"
+    assert "PSF preflight: Warning" in note.text()
+    assert "peak is 1 voxels" in note.text()
+    assert calls == [1, 1]
+    assert node.params == params_before
+    assert (
+        widget.pipeline.node_execution_states[node.id],
+        widget.pipeline.node_execution_messages[node.id],
+    ) == execution_before
+
+
+def test_deconvolution_psf_status_warns_when_calibration_is_missing(qtbot):
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+    widget = VippWidget(_Viewer(image))
+    qtbot.addWidget(widget)
+
+    psf_source = widget.pipeline.add_node("input")
+    node = widget.add_node_from_palette("richardson_lucy_deconvolution")
+    widget.pipeline.set_param(node.id, "spatial_mode", "2D YX")
+    assert widget.pipeline.connect("input", node.id, target_port=0).success
+    assert widget.pipeline.connect(psf_source.id, node.id, target_port=1).success
+    widget.pipeline.outputs["input"] = image
+    widget.pipeline.output_states["input"] = image_state_from_array(image)
+    widget.pipeline.outputs[psf_source.id] = psf
+    widget.pipeline.output_states[psf_source.id] = image_state_from_array(psf)
+    widget._selected_node_id = node.id
+    widget._psf_preflight_cache.clear()
+
+    widget._render_parameters(node.id)
+
+    note = widget._parameter_widgets["operation_notice"]
+    assert note.property("preflightStatus") == "warning"
+    assert "PSF preflight: Warning" in note.text()
+    assert "calibration is missing" in note.text()
+
+
+def test_deconvolution_psf_note_separates_passes_and_actionable_size_warning(qtbot):
+    image = np.zeros((11, 64, 64), dtype=np.float32)
+    psf = np.zeros((33, 5, 5), dtype=np.float32)
+    psf[16, 2, 2] = 0.96
+    psf[0, 2, 2] = 0.02
+    psf[-1, 2, 2] = 0.02
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.101),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    widget = VippWidget(_Viewer(image))
+    qtbot.addWidget(widget)
+
+    born_wolf = widget.pipeline.add_node("born_wolf_psf")
+    prepared = widget.pipeline.add_node("prepare_validate_psf")
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    for name, value in {
+        "auto_parameters": False,
+        "wavelength_nm": 561.0,
+        "numerical_aperture": 1.46,
+        "refractive_index": 1.518,
+        "pixel_size_xy_um": 0.025,
+        "z_step_um": 0.101,
+    }.items():
+        widget.pipeline.set_param(born_wolf.id, name, value)
+    widget.pipeline.set_param(node.id, "spatial_mode", "3D ZYX")
+    assert widget.pipeline.connect("input", node.id, target_port=0).success
+    assert widget.pipeline.connect("input", born_wolf.id).success
+    assert widget.pipeline.connect(born_wolf.id, prepared.id).success
+    assert widget.pipeline.connect(prepared.id, node.id, target_port=1).success
+    image_state = image_state_from_array(image, axes=axes)
+    psf_state = image_state_from_array(psf, axes=axes)
+    widget.pipeline.outputs["input"] = image
+    widget.pipeline.output_states["input"] = image_state
+    widget.pipeline.outputs[prepared.id] = psf
+    widget.pipeline.output_states[prepared.id] = psf_state
+    widget._selected_node_id = node.id
+    widget._psf_preflight_cache.clear()
+
+    widget._render_parameters(node.id)
+
+    note = widget._parameter_widgets["operation_notice"]
+    text = note.text()
+    assert note.property("preflightStatus") == "warning"
+    assert "#cbd5e1" in note.styleSheet()
+    assert "PSF preflight: Warning" in text
+    assert "CHECKS PASSED" in text
+    assert "conventional-widefield Nyquist estimate is met" in text
+    assert "XY 0.025 um &lt;= 0.09606 um" in text
+    assert "Z 0.101 um &lt;= 0.2544 um" in text
+    assert "normalized (sum = 1)" in text
+    assert "centered (peak offset 0; centroid offset 0 voxel)" in text
+    assert "NEEDS ATTENTION" in text
+    assert "PSF support exceeds the image extent" in text
+    assert "Z support is larger than the image" in text
+    assert "33 PSF samples versus 11 image samples" in text
+    assert "Cropping Z from 33 to 11 centered samples" in text
+    assert "retain 96.0% and discard 4.0%" in text
+    assert "not intensity outside the array" in text
+    assert "WHAT TO DO NEXT" in text
+    assert "set Spatial processing to 2D YX on both Born-Wolf PSF" in text
+    assert "Prepare / Validate PSF is working as intended" in text
+    assert "support/image" not in text
+
+
+def test_richardson_lucy_baseline_controls_include_safety_guidance(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_deconvolution")
+    widget.graph_view.select_node(node.id)
+
+    for name in ("spatial_mode", "iterations", "normalize_psf", "filter_epsilon"):
+        control = widget._parameter_widgets[name]
+        label = widget.parameter_form.labelForField(control)
+        assert control.toolTip()
+        assert label.toolTip() == control.toolTip()
+    assert "under-converged" in widget._parameter_widgets["iterations"].toolTip()
+    assert "first response" in widget._parameter_widgets["filter_epsilon"].toolTip()
 
 
 @pytest.mark.parametrize(
@@ -7065,6 +7673,52 @@ def test_background_progress_updates_busy_bar(qtbot):
     widget._set_pipeline_busy(False)
 
 
+def test_completed_background_node_publishes_thumbnail_without_live_cache_mutation(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.zeros((5, 18, 20), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    widget.thumbnail_scope_combo.setCurrentText("Stack")
+    old_output = widget.pipeline.outputs["gaussian"]
+    state = widget.pipeline.output_states["gaussian"]
+    completed_output = np.arange(5 * 18 * 20, dtype=np.float32).reshape(5, 18, 20)
+    thumbnails = []
+    monkeypatch.setattr(
+        widget.graph_view,
+        "set_thumbnail",
+        lambda node_id, thumbnail: thumbnails.append((node_id, thumbnail)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_thumbnail_contrast_limits_for_node",
+        lambda *_args, **_kwargs: pytest.fail(
+            "incremental publication must not queue a full-stack contrast scan"
+        ),
+    )
+    widget._active_pipeline_run_id = 412
+    widget.graph_view.set_node_processing("gaussian", True)
+
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=412,
+            node_id="gaussian",
+            operation_id=widget.pipeline.nodes["gaussian"].operation_id,
+            output=completed_output,
+            output_state=state,
+            node_outputs=(completed_output,),
+            node_output_states=(state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    assert widget.pipeline.outputs["gaussian"] is old_output
+    assert thumbnails and thumbnails[-1][0] == "gaussian"
+    assert thumbnails[-1][1] is not None
+    assert not widget.graph_view._cards["gaussian"].is_processing()
+
+
 def test_autodefault_rerun_starts_at_changed_node_not_original_dirty(
     qtbot, monkeypatch
 ):
@@ -7248,6 +7902,7 @@ def test_global_preview_off_skips_thumbnail_generation(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         calls.append(data)
         return None
@@ -7278,6 +7933,7 @@ def test_thumbnail_contrast_mode_is_passed_to_preview(qtbot, monkeypatch):
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         calls.append((contrast_mode, contrast_scope))
         return None
@@ -7345,6 +8001,88 @@ def test_stack_thumbnail_contrast_limits_are_cached(qtbot, monkeypatch):
     assert len(calls) == first_count
 
 
+def test_pending_stack_thumbnail_uses_scan_free_provisional_limits(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer(np.zeros((5, 16, 18), dtype=np.float32))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    started = threading.Event()
+    release = threading.Event()
+    preview_calls = []
+
+    def blocking_thumbnail_contrast(
+        data,
+        *,
+        contrast_mode="Percentile",
+        data_kind="image",
+    ):
+        started.set()
+        assert release.wait(5)
+        return (0.0, 10.0)
+
+    def fake_make_preview(
+        data,
+        mode,
+        current_step,
+        current_step_nsteps=None,
+        state=None,
+        channel_colors=None,
+        contrast_mode="Percentile",
+        contrast_scope="Slice",
+        contrast_limits=None,
+        preview_size=None,
+    ):
+        preview_calls.append((contrast_scope, contrast_limits, preview_size))
+        return np.zeros((4, 4), dtype=np.uint8)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.thumbnail_contrast_limits",
+        blocking_thumbnail_contrast,
+    )
+    monkeypatch.setattr("napari_vipp._widget.make_preview", fake_make_preview)
+    widget._clear_thumbnail_contrast_limit_state()
+    widget.thumbnail_scope_combo.setCurrentText("Stack")
+    preview_calls.clear()
+    widget._finish_pipeline_update(None, "input volume")
+
+    assert not widget.pipeline_busy_bar.isHidden()
+    assert "thumbnail contrast" in widget.pipeline_busy_label.text().lower()
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    assert preview_calls
+    assert all(scope == "Stack" for scope, _limits, _size in preview_calls)
+    assert all(limits is not None for _scope, limits, _size in preview_calls)
+    assert all(size == (180, 110) for _scope, _limits, size in preview_calls)
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: widget._active_thumbnail_contrast_run_id is None,
+        timeout=5_000,
+    )
+
+
+def test_finish_refreshes_selected_inspection_layer_only_once(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.preview_mode_combo.setCurrentText("Off")
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "_refresh_inspection_layer_if_active",
+        lambda: calls.append("refresh-active"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_inspect_selected_node",
+        lambda: calls.append("inspect-selected"),
+    )
+
+    widget._finish_pipeline_update(None, "input volume")
+
+    assert calls == ["inspect-selected"]
+
+
 def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -7365,6 +8103,7 @@ def test_label_thumbnail_output_type_is_passed_to_normalizer(qtbot, monkeypatch)
         contrast_mode="Percentile",
         contrast_scope="Slice",
         contrast_limits=None,
+        preview_size=None,
     ):
         return np.zeros((4, 4), dtype=np.uint8)
 
@@ -8666,7 +9405,8 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.resize(1600, 600)
+    expanded_width = widget._expanded_toolbar_required_width()
+    widget.resize(expanded_width + 100, 600)
     widget._sync_toolbar_responsive_mode()
 
     assert widget.settings_menu_button.isHidden() is False
@@ -8674,6 +9414,7 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.settings_menu_button.minimumWidth() >= 96
     assert widget.background_all_checkbox.isHidden()
     assert widget.follow_dims_checkbox.isHidden()
+    assert widget.thumbnail_toolbar_group.isHidden() is False
     assert widget.preview_mode_combo.isHidden() is False
     assert widget.thumbnail_contrast_combo.isHidden() is False
     assert widget.thumbnail_scope_combo.isHidden() is False
@@ -8685,10 +9426,12 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget.resize(1400, 600)
     widget._sync_toolbar_responsive_mode()
 
-    assert widget.preview_mode_combo.isHidden()
-    assert widget.thumbnail_contrast_combo.isHidden()
-    assert widget.thumbnail_scope_combo.isHidden()
-    assert widget.thumbnail_colormap_combo.isHidden()
+    assert widget.thumbnail_toolbar_group.isHidden()
+    assert widget.preview_mode_combo.isHidden() is False
+    assert widget.thumbnail_contrast_combo.isHidden() is False
+    assert widget.thumbnail_scope_combo.isHidden() is False
+    assert widget.thumbnail_colormap_combo.isHidden() is False
+    assert widget.zoom_toolbar_field.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False
 
     widget.resize(1200, 600)
@@ -8701,16 +9444,18 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     widget.resize(1000, 600)
     widget._sync_toolbar_responsive_mode()
 
-    assert widget.graph_zoom_slider.isHidden()
-    assert widget.graph_zoom_reset_button.isHidden()
-    assert widget.graph_zoom_label.isHidden()
+    assert widget.zoom_toolbar_field.isHidden()
+    assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.graph_zoom_reset_button.isHidden() is False
+    assert widget.graph_zoom_label.isHidden() is False
 
-    widget.resize(widget.TOOLBAR_HIDE_CHECKBOXES_WIDTH + 100, 600)
+    widget.resize(expanded_width + 100, 600)
     widget._sync_toolbar_responsive_mode()
 
     assert widget.settings_menu_button.isHidden() is False
     assert widget.background_all_checkbox.isHidden()
     assert widget.follow_dims_checkbox.isHidden()
+    assert widget.thumbnail_toolbar_group.isHidden() is False
     assert widget.preview_mode_combo.isHidden() is False
     assert widget.thumbnail_contrast_combo.isHidden() is False
     assert widget.thumbnail_scope_combo.isHidden() is False
@@ -8718,6 +9463,118 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
     assert widget.auto_structure_button.text() == "Auto structure graph"
+
+
+def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
+    widget.show()
+    qtbot.waitExposed(widget)
+    widget._sync_toolbar_responsive_mode()
+    QApplication.processEvents()
+
+    fields = (
+        (
+            widget.preview_toolbar_label,
+            widget.preview_mode_combo,
+        ),
+        (
+            widget.contrast_toolbar_label,
+            widget.thumbnail_contrast_combo,
+        ),
+        (
+            widget.contrast_range_toolbar_label,
+            widget.thumbnail_scope_combo,
+        ),
+        (
+            widget.mono_toolbar_label,
+            widget.thumbnail_colormap_combo,
+        ),
+        (
+            widget.zoom_toolbar_label,
+            widget.zoom_toolbar_controls,
+        ),
+    )
+    controls = [control for _label, control in fields]
+
+    def rect_in_toolbar(child):
+        return child.rect().translated(child.mapTo(widget, QPoint(0, 0)))
+
+    def horizontal_gap(first, second):
+        if first.right() < second.left():
+            return second.left() - first.right()
+        if second.right() < first.left():
+            return first.left() - second.right()
+        return 0
+
+    label_left_edges = []
+    for label, control in fields:
+        assert label.alignment() & Qt.AlignRight
+        label_rect = rect_in_toolbar(label)
+        control_rect = rect_in_toolbar(control)
+        label_left_edges.append(label_rect.left())
+        own_gap = horizontal_gap(label_rect, control_rect)
+        assert 0 < own_gap <= 6
+        other_gaps = [
+            horizontal_gap(label_rect, rect_in_toolbar(other))
+            for other in controls
+            if other is not control
+        ]
+        assert own_gap < min(other_gaps)
+
+    assert label_left_edges[0] == min(label_left_edges)
+
+    widget.hide()
+    widget.setFixedWidth(1400)
+    widget._sync_toolbar_responsive_mode()
+    assert widget.thumbnail_toolbar_group.isHidden()
+    assert widget.zoom_toolbar_field.isHidden() is False
+    assert widget._toolbar_zoom_separator.isHidden()
+    assert widget._toolbar_action_separator.isHidden() is False
+
+    widget.setFixedWidth(1000)
+    widget._sync_toolbar_responsive_mode()
+    assert widget.thumbnail_toolbar_group.isHidden()
+    assert widget.zoom_toolbar_field.isHidden()
+    assert widget._toolbar_zoom_separator.isHidden()
+    assert widget._toolbar_action_separator.isHidden()
+
+
+def test_toolbar_fields_do_not_clip_with_larger_font(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    font = widget.font()
+    font.setPointSizeF(max(font.pointSizeF() * 1.5, 13.0))
+    widget.setFont(font)
+    expanded_width = widget._expanded_toolbar_required_width()
+    widget.setFixedWidth(expanded_width + 100)
+    widget.resize(expanded_width + 100, 700)
+    widget.show()
+    qtbot.waitExposed(widget)
+    widget._sync_toolbar_responsive_mode()
+    QApplication.processEvents()
+
+    labels = (
+        widget.preview_toolbar_label,
+        widget.contrast_toolbar_label,
+        widget.contrast_range_toolbar_label,
+        widget.mono_toolbar_label,
+        widget.zoom_toolbar_label,
+    )
+    combos = (
+        widget.preview_mode_combo,
+        widget.thumbnail_contrast_combo,
+        widget.thumbnail_scope_combo,
+        widget.thumbnail_colormap_combo,
+    )
+    for label in labels:
+        assert label.width() >= label.sizeHint().width()
+        assert label.height() >= label.sizeHint().height()
+    for combo in combos:
+        assert combo.width() >= combo.minimumSizeHint().width()
+        assert combo.height() >= combo.minimumSizeHint().height()
+    assert widget.settings_menu_button.geometry().right() < widget.width()
 
 
 def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
@@ -8738,6 +9595,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Save thumbnail visibility in workflows" in labels
     assert "Run all in background" in labels
     assert "Link napari/VIPP sliders" in labels
+    assert "Port labels" in labels
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
     assert "Preview mode" not in labels
@@ -8792,6 +9650,38 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert not widget.save_thumbnail_visibility_checkbox.isChecked()
     save_thumbnail_action.trigger()
     assert widget.save_thumbnail_visibility_checkbox.isChecked()
+
+
+def test_settings_menu_controls_port_label_mode(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    assert widget.port_label_mode_combo.currentText() == "Ambiguous only"
+    assert widget.graph_view.port_label_mode == PortLabelMode.AMBIGUOUS_ONLY
+    widget._populate_settings_toolbar_menu()
+    submenu = next(
+        action.menu()
+        for action in widget.settings_menu.actions()
+        if action.text() == "Port labels"
+    )
+    actions = {action.text(): action for action in submenu.actions()}
+    assert list(actions) == ["Ambiguous only", "Show all", "Hide all"]
+
+    actions["Show all"].trigger()
+
+    assert widget.port_label_mode_combo.currentText() == "Show all"
+    assert widget.graph_view.port_label_mode == PortLabelMode.SHOW_ALL
+    assert widget.status_label.text().startswith("Port labels set to Show all")
+
+    widget._populate_settings_toolbar_menu()
+    submenu = next(
+        action.menu()
+        for action in widget.settings_menu.actions()
+        if action.text() == "Port labels"
+    )
+    checked = [action.text() for action in submenu.actions() if action.isChecked()]
+    assert checked == ["Show all"]
 
 
 def test_palette_registry_nodes_are_constructible():
@@ -10992,14 +11882,13 @@ def test_rgb_volume_pin_uses_additive_channel_layers(qtbot):
     green = viewer.layers[f"{base_name} Green"]
     blue = viewer.layers[f"{base_name} Blue"]
     for layer in (red, green, blue):
-        assert not np.may_share_memory(layer.data, rgb_output)
-        assert layer.data.flags.owndata
-    assert not np.may_share_memory(red.data, green.data)
-    assert not np.may_share_memory(red.data, blue.data)
-    assert not np.may_share_memory(green.data, blue.data)
+        assert np.shares_memory(layer.data, rgb_output)
+        assert not layer.data.flags.writeable
+        assert layer.editable is False
     expected_green = green.data.copy()
     expected_blue = blue.data.copy()
-    red.data.flat[0] = 0 if red.data.flat[0] != 0 else 1
+    with pytest.raises(ValueError, match="read-only"):
+        red.data.flat[0] = 0 if red.data.flat[0] != 0 else 1
     np.testing.assert_array_equal(rgb_output, expected_rgb)
     np.testing.assert_array_equal(green.data, expected_green)
     np.testing.assert_array_equal(blue.data, expected_blue)
@@ -11156,7 +12045,7 @@ def test_inspect_shows_mask_as_standalone_image(qtbot):
     widget.inspect_node("threshold")
     second_inspect = viewer.layers["VIPP Inspect"]
 
-    assert second_inspect is not first_inspect
+    assert second_inspect is first_inspect
     assert second_inspect.layer_type == "image"
     assert second_inspect.metadata["display_kind"] == "image"
     assert second_inspect.metadata["data_kind"] == "mask"
@@ -11166,12 +12055,36 @@ def test_inspect_shows_mask_as_standalone_image(qtbot):
     assert second_inspect.data.dtype == bool
     cached_mask = widget.pipeline.outputs["threshold"]
     expected_mask = cached_mask.copy()
-    assert not np.shares_memory(
+    assert np.shares_memory(
         second_inspect.data,
         cached_mask,
     )
-    second_inspect.data.flat[0] = not second_inspect.data.flat[0]
+    assert not second_inspect.data.flags.writeable
+    with pytest.raises(ValueError, match="read-only"):
+        second_inspect.data.flat[0] = not second_inspect.data.flat[0]
     np.testing.assert_array_equal(cached_mask, expected_mask)
+
+
+def test_otsu_and_rescale_reuse_zero_copy_image_layer(qtbot):
+    data = np.arange(4 * 16 * 18, dtype=np.uint16).reshape(4, 16, 18)
+    viewer = _Viewer(data, metadata={"axes": "ZYX"})
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    widget._connect_nodes("input", rescale.id)
+
+    widget.inspect_node("threshold")
+    inspect = viewer.layers["VIPP Inspect"]
+    widget.inspect_node(rescale.id)
+
+    rescaled_output = widget.pipeline.outputs[rescale.id]
+    assert viewer.layers["VIPP Inspect"] is inspect
+    assert inspect.metadata["node_id"] == rescale.id
+    assert inspect.metadata["data_kind"] == "image"
+    assert np.shares_memory(inspect.data, rescaled_output)
+    assert not inspect.data.flags.writeable
+    assert inspect.blending == "translucent"
+    assert inspect.colormap == "gray"
 
 
 def test_inspecting_active_mask_pin_keeps_pin_overlay_on_mask_image(qtbot):
@@ -11275,6 +12188,48 @@ def test_large_float_inspect_contrast_is_calculated_in_background(
     assert inspect.metadata["vipp_display_contrast_basis"] == (
         "Exact full finite data range (display only)"
     )
+
+
+def test_reused_mask_layer_ignores_stale_float_contrast(qtbot, monkeypatch):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    data = np.linspace(-7.0, 42.0, 200, dtype=np.float32).reshape(2, 10, 10)
+    widget.pipeline.outputs["gaussian"] = data
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_exact_limits(values):
+        assert values is data
+        started.set()
+        assert release.wait(5)
+        return (-7.0, 42.0)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget._exact_generated_layer_contrast_limits",
+        blocking_exact_limits,
+    )
+
+    widget.inspect_node("gaussian")
+    inspect = viewer.layers["VIPP Inspect"]
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    widget.inspect_node("threshold")
+
+    assert viewer.layers["VIPP Inspect"] is inspect
+    assert inspect.metadata["data_kind"] == "mask"
+    assert inspect.contrast_limits == (0, 1)
+    assert "_vipp_display_contrast_key" not in inspect.metadata
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: not widget._generated_layer_contrast_pending,
+        timeout=5_000,
+    )
+
+    assert inspect.contrast_limits == (0, 1)
+    assert "vipp_exact_finite_data_range" not in inspect.metadata
 
 
 def test_generated_layer_contrast_rejects_stale_worker_result(qtbot):
@@ -11429,7 +12384,7 @@ def test_inspecting_input_after_mask_resets_inspect_display(qtbot):
     input_inspect = viewer.layers["VIPP Inspect"]
     pinned = viewer.layers["VIPP Pinned: Otsu Threshold"]
 
-    assert input_inspect is not mask_inspect
+    assert input_inspect is mask_inspect
     assert input_inspect.layer_type == "image"
     assert input_inspect.metadata["data_kind"] == "image"
     assert input_inspect.metadata["node_id"] == "input"
@@ -11437,7 +12392,8 @@ def test_inspecting_input_after_mask_resets_inspect_display(qtbot):
     assert input_inspect.metadata["vipp_display_contrast_basis"] == (
         "Exact full finite data range (display only)"
     )
-    assert input_inspect.blending is None
+    assert input_inspect.blending == "translucent"
+    assert input_inspect.colormap == "gray"
     assert viewer.layers[-2] is input_inspect
     assert viewer.layers[-1] is pinned
 
@@ -11460,7 +12416,7 @@ def test_inspection_layer_is_replaced_when_dimensionality_changes(qtbot):
     assert stack_inspect.metadata["display_ndim"] == 3
 
 
-def test_inspection_layer_is_replaced_when_shape_changes(qtbot):
+def test_inspection_layer_is_reused_when_shape_changes_with_same_rank(qtbot):
     viewer = _Viewer(np.zeros((4, 16, 18), dtype=np.float32))
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
@@ -11481,7 +12437,7 @@ def test_inspection_layer_is_replaced_when_shape_changes(qtbot):
     )
     second_inspect = viewer.layers["VIPP Inspect"]
 
-    assert second_inspect is not first_inspect
+    assert second_inspect is first_inspect
     assert second_inspect.data.shape == (8, 16, 18)
     assert second_inspect.metadata["display_shape"] == (8, 16, 18)
 
@@ -11869,9 +12825,19 @@ def test_large_auto_contrast_dispatches_exact_work_without_blocking(qtbot):
     np.testing.assert_allclose(params["beta"], 0.0, atol=0.0001)
     assert len(widget._undo_stack) == undo_count + 1
     assert widget.auto_contrast_button.isEnabled()
-    assert widget.pipeline_busy_label.isHidden()
     assert widget.pipeline.outputs[node.id].min() == 0
     assert widget.pipeline.outputs[node.id].max() == 255
+
+    # Publishing the new output intentionally keeps the shared progress area
+    # active until its exact thumbnail contrast worker also completes.
+    qtbot.waitUntil(lambda: len(pool.workers) > 1)
+    pool.workers[1].run()
+    qtbot.waitUntil(
+        lambda: (
+            widget._active_thumbnail_contrast_run_id is None
+            and widget.pipeline_busy_label.isHidden()
+        )
+    )
 
 
 def test_large_auto_contrast_ignores_stale_setting_result(qtbot):

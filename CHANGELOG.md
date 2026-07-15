@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+### Responsive Result Presentation
+
+- Generated inspector, pinned-label, and RGB-channel layers now use exact
+  non-writeable views of cached scientific arrays instead of copying complete
+  volumes for display. Boolean masks are converted only when a Labels layer
+  requires an integer representation.
+- Compatible napari Image layers are reused across image/mask dtype and
+  same-rank shape changes. Mask blending, colormap, and contrast are reset
+  explicitly when returning to a normal image, while Image/Labels, rank, RGB,
+  and channel-layout changes still replace the layer.
+- Reused layers invalidate old contrast tokens, and node selection rejects
+  stale contrast or histogram results from previously selected outputs.
+- Thumbnail sources are reduced to display resolution before rendering, exact
+  stack contrast remains background-calculated, and the shared progress area
+  stays visible through post-pipeline presentation work.
+- Background runs now publish each completed node to its card immediately. The
+  first thumbnail uses the exact completed pixels with scan-free presentation
+  limits; partial worker results never enter the live scientific cache, and
+  stale run/source revisions are ignored.
+- Rescale Intensity now exposes cutoff and voxel-processing phases through the
+  pipeline progress UI. Floating-point rescaling uses bounded float64 work
+  chunks with unchanged output arithmetic, and exact 0/100-percentile cutoffs
+  use a direct finite-extrema path instead of an unnecessary order statistic.
+
+### Graph Port Labels
+
+- Added a Settings > Port labels preference with `Ambiguous only` (default),
+  `Show all`, and `Hide all` modes. Visible labels reserve horizontal gutters,
+  multi-port rows reserve vertical space, and overlong names are elided with
+  the complete name in a tooltip.
+- Label-mode changes resize cards without moving manually arranged nodes. VIPP
+  reports any resulting overlap and points to `Auto structure graph`, whose
+  layout now consumes the expanded card dimensions.
+
+### Deconvolution Safety And Guidance
+
+- Added a cached, read-only PSF preflight to both Richardson-Lucy inspectors.
+  It reports rank, metadata-known physical sampling, finite/non-negative values,
+  positive sum, approximate normalization, odd/even shape, peak and centroid
+  offsets, and support relative to the image as `Ready`, `Warning`, `Invalid`,
+  or `Unknown`. Missing calibration is explicit; no PSF is silently recentered,
+  cropped, padded, normalized, or resampled by the diagnostic.
+- Reworked PSF preflight presentation into separately colored passed checks,
+  attention items, and next actions. Support warnings now name the affected
+  axis and exact PSF/image sample counts, boundary intensity is explicitly
+  distinguished from out-of-array intensity, and generated-PSF workflows
+  explain why Prepare / Validate does not resize support.
+- Added a conventional-widefield Nyquist estimate to Born-Wolf and downstream
+  RL/RL-TV inspectors, kept it separate from image-extent/support checks, and
+  made the fixed PSF support-window controls explicit. The inspector now states
+  that a kernel spanning an image axis can still calculate under the current
+  zero-outside-image boundary assumption but has no fully supported interior
+  sample on that axis. Boundary-tail mass is broken down by Z, Y, and X.
+- Kept wrong-rank and metadata-known sampling mismatch as hard failures while
+  treating absent physical calibration as unknown instead of inventing unit
+  pixel spacing.
+- Expanded RL/RL-TV parameter guidance and added one concise RL-TV scientific
+  note covering under-convergence, feature loss from excessive TV, and PSF
+  validation order. Reconstruction math, constant initialization, boundary
+  handling, numerical-guard defaults, and the `0.002` TV default are unchanged.
+- Changed the bundled 2D and 3D RL-TV comparisons to 25 iterations, TV
+  regularization `0.002`, and denominator floor `0.05`. Their annotations now
+  identify `0.008-0.012` as comparatively strong rather than a recommended
+  default.
+
 ## 0.12.0a1 - 2026-07-14
 
 ### Release Overview

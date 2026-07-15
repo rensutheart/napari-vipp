@@ -4625,6 +4625,7 @@ def rescale_intensity(
     in_high_value: float | None = None,
     *,
     cutoff_mode: str = "Percentiles",
+    progress=None,
 ) -> np.ndarray:
     """Rescale intensity from input cutoffs to a requested output range."""
     arr = np.asarray(data)
@@ -4654,9 +4655,15 @@ def rescale_intensity(
                 "Rescale low percentile must not exceed the high percentile."
             )
         if arr.dtype == bool:
+            if progress is not None:
+                progress.report(100, 100, "Rescale complete")
             return arr.copy()
+        if progress is not None:
+            progress.report(0, 100, "Calculating exact intensity cutoffs")
         if integer_data:
             low, high = exact_integer_percentiles(arr, (low_p, high_p))
+            if progress is not None:
+                progress.report(30, 100, "Exact intensity cutoffs ready")
             return _rescale_integer_intensity(
                 arr,
                 low=low,
@@ -4665,17 +4672,16 @@ def rescale_intensity(
                 output_maximum=output_maximum,
                 output_minimum_source=out_min,
                 output_maximum_source=out_max,
+                progress=progress,
             )
-        values = arr[np.isfinite(arr)]
-        if values.size == 0:
-            raise ValueError(
-                "Rescale percentile cutoffs require at least one finite input value."
-            )
-        low, high = np.percentile(
-            values,
-            [low_p, high_p],
-            overwrite_input=True,
+        low, high = _exact_float_percentile_cutoffs(
+            arr,
+            low_p,
+            high_p,
+            progress=progress,
         )
+        if progress is not None:
+            progress.report(30, 100, "Exact intensity cutoffs ready")
     else:
         low = (
             _required_finite_fraction(in_low_value, "Low input value")
@@ -4692,6 +4698,8 @@ def rescale_intensity(
                 "Rescale low input value must not exceed the high input value."
             )
         if arr.dtype == bool:
+            if progress is not None:
+                progress.report(100, 100, "Rescale complete")
             return arr.copy()
         if integer_data:
             _reject_rounded_wide_integer_control(
@@ -4712,16 +4720,132 @@ def rescale_intensity(
                 output_maximum=output_maximum,
                 output_minimum_source=out_min,
                 output_maximum_source=out_max,
+                progress=progress,
             )
+        if progress is not None:
+            progress.report(30, 100, "Using explicit intensity cutoffs")
     if high == low:
-        return _cast_rescaled_intensity(
-            np.full(arr.shape, output_minimum, dtype=np.float64),
-            arr.dtype,
+        result = _cast_rescaled_intensity(
+            np.full(arr.shape, output_minimum, dtype=np.float64), arr.dtype
         )
-    scaled = (arr.astype(np.float64, copy=False) - float(low)) / float(high - low)
-    scaled = np.clip(scaled, 0.0, 1.0)
-    output = scaled * (output_maximum - output_minimum) + output_minimum
-    return _cast_rescaled_intensity(output, arr.dtype)
+        if progress is not None:
+            progress.report(100, 100, "Rescale complete")
+        return result
+    return _rescale_floating_intensity(
+        arr,
+        low=float(low),
+        high=float(high),
+        output_minimum=float(output_minimum),
+        output_maximum=float(output_maximum),
+        progress=progress,
+    )
+
+
+def _exact_float_percentile_cutoffs(
+    arr: np.ndarray,
+    low_percentile: float,
+    high_percentile: float,
+    *,
+    progress=None,
+) -> tuple[float, float]:
+    """Return exact finite float cutoffs with an extrema-only fast path."""
+    requested = (float(low_percentile), float(high_percentile))
+    if all(value in {0.0, 100.0} for value in requested):
+        minimum: float | None = None
+        maximum: float | None = None
+        iterator = np.nditer(
+            arr,
+            flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+            op_flags=[["readonly"]],
+            order="K",
+            buffersize=_THRESHOLD_CHUNK_SIZE,
+        )
+        scanned = 0
+        total = max(int(arr.size), 1)
+        for chunk in iterator:
+            if progress is not None:
+                progress.check_cancelled()
+            values = np.asarray(chunk)
+            finite = np.isfinite(values)
+            if not finite.all():
+                values = values[finite]
+            if values.size:
+                chunk_minimum = float(values.min())
+                chunk_maximum = float(values.max())
+                minimum = (
+                    chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+                )
+                maximum = (
+                    chunk_maximum if maximum is None else max(maximum, chunk_maximum)
+                )
+            scanned += int(np.asarray(chunk).size)
+            if progress is not None:
+                progress.report(
+                    min(int(round(30 * scanned / total)), 29),
+                    100,
+                    "Scanning exact input range",
+                )
+        if minimum is None or maximum is None:
+            raise ValueError(
+                "Rescale percentile cutoffs require at least one finite input value."
+            )
+        return tuple(
+            minimum if value == 0.0 else maximum for value in requested
+        )
+
+    if progress is not None:
+        progress.check_cancelled()
+    values = arr[np.isfinite(arr)]
+    if values.size == 0:
+        raise ValueError(
+            "Rescale percentile cutoffs require at least one finite input value."
+        )
+    low, high = np.percentile(values, requested, overwrite_input=True)
+    if progress is not None:
+        progress.check_cancelled()
+    return float(low), float(high)
+
+
+def _rescale_floating_intensity(
+    arr: np.ndarray,
+    *,
+    low: float,
+    high: float,
+    output_minimum: float,
+    output_maximum: float,
+    progress=None,
+) -> np.ndarray:
+    """Rescale floats in bounded chunks while retaining float64 arithmetic."""
+    output = np.empty_like(arr)
+    iterator = np.nditer(
+        [arr, output],
+        flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+        op_flags=[["readonly"], ["writeonly"]],
+        order="K",
+        buffersize=_THRESHOLD_CHUNK_SIZE,
+    )
+    total = max(int(arr.size), 1)
+    completed = 0
+    for source_chunk, output_chunk in iterator:
+        if progress is not None:
+            progress.check_cancelled()
+        scaled = np.asarray(source_chunk).astype(np.float64, copy=True)
+        scaled -= low
+        scaled /= high - low
+        np.clip(scaled, 0.0, 1.0, out=scaled)
+        scaled *= output_maximum - output_minimum
+        scaled += output_minimum
+        np.asarray(output_chunk)[...] = scaled
+        completed += int(np.asarray(source_chunk).size)
+        if progress is not None:
+            progress.report(
+                30 + int(round(70 * completed / total)),
+                100,
+                "Rescaling voxels",
+            )
+    if progress is not None:
+        progress.report(100, 100, "Rescale complete")
+    return output
 
 
 def _required_finite_float(value, label: str) -> float:
@@ -4807,11 +4931,14 @@ def _rescale_integer_intensity(
     output_maximum: Fraction,
     output_minimum_source,
     output_maximum_source,
+    progress=None,
 ) -> np.ndarray:
     """Rescale integer levels in translated coordinates and restore them exactly."""
     low = Fraction(low)
     high = Fraction(high)
     if arr.size == 0:
+        if progress is not None:
+            progress.report(100, 100, "Rescale complete")
         return arr.copy()
     if output_minimum.denominator != 1 or output_maximum.denominator != 1:
         raise ValueError(
@@ -4846,6 +4973,8 @@ def _rescale_integer_intensity(
             "narrower range or convert dtype explicitly."
         )
     if high == low:
+        if progress is not None:
+            progress.report(100, 100, "Rescale complete")
         return np.full(arr.shape, output_low, dtype=arr.dtype)
     input_span = high - low
     if input_span > _FLOAT64_EXACT_INTEGER_LIMIT:
@@ -4867,7 +4996,11 @@ def _rescale_integer_intensity(
     )
     output_low_native = np.asarray(output_low, dtype=arr.dtype)
     output_high_native = np.asarray(output_high, dtype=arr.dtype)
+    completed = 0
+    total = max(int(arr.size), 1)
     for source_chunk, output_chunk in iterator:
+        if progress is not None:
+            progress.check_cancelled()
         source_values = np.asarray(source_chunk)
         output_values = np.asarray(output_chunk)
         low_mask = _integer_at_most(source_values, low_floor)
@@ -4876,6 +5009,13 @@ def _rescale_integer_intensity(
         output_values[low_mask] = output_low_native
         output_values[high_mask] = output_high_native
         if not np.any(interior):
+            completed += int(source_values.size)
+            if progress is not None:
+                progress.report(
+                    30 + int(round(70 * completed / total)),
+                    100,
+                    "Rescaling voxels",
+                )
             continue
 
         relative = source_values[interior].astype(np.uint64, copy=True)
@@ -4892,6 +5032,15 @@ def _rescale_integer_intensity(
             output_values[interior] = restored.view(np.int64)
         else:
             output_values[interior] = restored.astype(arr.dtype)
+        completed += int(source_values.size)
+        if progress is not None:
+            progress.report(
+                30 + int(round(70 * completed / total)),
+                100,
+                "Rescaling voxels",
+            )
+    if progress is not None:
+        progress.report(100, 100, "Rescale complete")
     return output
 
 

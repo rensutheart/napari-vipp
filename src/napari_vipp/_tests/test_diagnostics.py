@@ -7,6 +7,10 @@ import pytest
 
 from napari_vipp.core.diagnostics import (
     DISPLAY_HISTOGRAM_BINS,
+    PSF_PREFLIGHT_INVALID,
+    PSF_PREFLIGHT_READY,
+    PSF_PREFLIGHT_UNKNOWN,
+    PSF_PREFLIGHT_WARNING,
     exact_finite_percentiles,
     exact_finite_stats,
     exact_generated_layer_contrast_limits,
@@ -15,7 +19,10 @@ from napari_vipp.core.diagnostics import (
     largest_label_volume,
     largest_object_size,
     provisional_generated_layer_contrast_limits,
+    psf_preflight,
+    widefield_nyquist_sampling,
 )
+from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
 
 
 def test_exact_finite_stats_scans_every_value_and_excludes_only_nonfinite():
@@ -270,3 +277,297 @@ def test_label_diagnostics_reject_invalid_dimensionality_and_connectivity():
         label_volumes(np.asarray(1), spatial_ndim=1)
     with pytest.raises(ValueError, match="Connectivity"):
         largest_object_size(labels.astype(bool), 2, "diagonal-ish")
+
+
+def _psf_states(
+    image_shape=(32, 32),
+    psf_shape=(5, 5),
+    *,
+    image_spacing=0.1,
+    psf_spacing=0.1,
+):
+    image_state = image_state_from_array(
+        np.zeros(image_shape, dtype=np.float32),
+        axes=(
+            AxisMetadata("y", "space", unit="micrometer", scale=image_spacing),
+            AxisMetadata("x", "space", unit="micrometer", scale=image_spacing),
+        ),
+    )
+    psf_state = image_state_from_array(
+        np.zeros(psf_shape, dtype=np.float32),
+        axes=(
+            AxisMetadata("y", "space", unit="micrometer", scale=psf_spacing),
+            AxisMetadata("x", "space", unit="micrometer", scale=psf_spacing),
+        ),
+    )
+    return image_state, psf_state
+
+
+def _issue_codes(result) -> set[str]:
+    return {issue.code for issue in result.issues}
+
+
+def test_psf_preflight_accepts_centered_odd_normalized_calibrated_psf():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+    image_state, psf_state = _psf_states()
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_READY
+    assert result.values_scanned
+    assert result.approximately_normalized is True
+    assert result.odd_shape is True
+    assert result.peak_index == (2, 2)
+    assert result.peak_offset_voxels == 0
+    assert result.centroid_offset_voxels == 0
+    assert result.physical_sampling_known
+    assert result.support_fraction_of_image == pytest.approx((5 / 32, 5 / 32))
+
+
+def test_psf_preflight_warns_for_nonnormalized_otherwise_valid_psf():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 2.0
+    image_state, psf_state = _psf_states()
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_WARNING
+    assert result.psf_sum == 2.0
+    assert result.approximately_normalized is False
+    assert _issue_codes(result) == {"not_normalized"}
+
+
+@pytest.mark.parametrize(
+    ("bad_value", "expected_code"),
+    [(-0.1, "negative"), (np.nan, "nonfinite"), (np.inf, "nonfinite")],
+)
+def test_psf_preflight_marks_negative_or_nonfinite_psf_invalid(
+    bad_value,
+    expected_code,
+):
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+    psf[1, 1] = bad_value
+    image_state, psf_state = _psf_states()
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_INVALID
+    assert expected_code in _issue_codes(result)
+
+
+def test_psf_preflight_marks_zero_sum_invalid():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    image_state, psf_state = _psf_states()
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_INVALID
+    assert "nonpositive_sum" in _issue_codes(result)
+
+
+def test_psf_preflight_warns_for_even_shape_and_off_center_peak():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((4, 5), dtype=np.float32)
+    psf[1, 1] = 1.0
+    image_state, psf_state = _psf_states(psf_shape=psf.shape)
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_WARNING
+    assert {"even_shape", "off_center_peak"} <= _issue_codes(result)
+
+
+def test_psf_preflight_warns_for_centroid_offset_with_centered_peak():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 0.6
+    psf[2, 3] = 0.4
+    image_state, psf_state = _psf_states()
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.peak_offset_voxels == 0
+    assert result.centroid_offset_voxels == pytest.approx(0.4)
+    assert "centroid_offset" in _issue_codes(result)
+
+
+def test_psf_preflight_explains_axis_support_and_boundary_intensity():
+    image = np.zeros((11, 64, 64), dtype=np.float32)
+    psf = np.zeros((33, 5, 5), dtype=np.float32)
+    psf[16, 2, 2] = 0.96
+    psf[0, 2, 2] = 0.02
+    psf[-1, 2, 2] = 0.02
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.1),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    image_state = image_state_from_array(image, axes=axes)
+    psf_state = image_state_from_array(psf, axes=axes)
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=3,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert result.status == PSF_PREFLIGHT_WARNING
+    assert result.spatial_axis_labels == ("Z", "Y", "X")
+    support_issue = next(
+        issue for issue in result.issues if issue.code == "support_vs_image"
+    )
+    assert "Z support is larger than the image" in support_issue.detail
+    assert "33 PSF samples versus 11 image samples" in support_issue.detail
+    edge_issue = next(issue for issue in result.issues if issue.code == "edge_mass")
+    assert "4.0%" in edge_issue.detail
+    assert "Z 4.0%, Y 0.0%, X 0.0%" in edge_issue.detail
+    assert "not intensity outside the array" in edge_issue.detail
+    assert result.edge_mass_fraction_by_axis == pytest.approx((0.04, 0.0, 0.0))
+    assert result.centered_mass_within_image_support_by_axis == pytest.approx(
+        (0.96, 1.0, 1.0)
+    )
+
+
+def test_widefield_nyquist_sampling_passes_attached_workflow_metadata():
+    result = widefield_nyquist_sampling(
+        wavelength_nm=561.0,
+        numerical_aperture=1.46,
+        refractive_index=1.518,
+        xy_step_um=0.025,
+        z_step_um=0.101,
+        spatial_ndim=3,
+    )
+
+    assert result.met
+    assert result.xy_met
+    assert result.z_met
+    assert result.xy_limit_um == pytest.approx(0.0960616)
+    assert result.z_limit_um == pytest.approx(0.2543, rel=1e-3)
+
+
+def test_widefield_nyquist_sampling_reports_each_undersampled_axis():
+    result = widefield_nyquist_sampling(
+        wavelength_nm=561.0,
+        numerical_aperture=1.46,
+        refractive_index=1.518,
+        xy_step_um=0.12,
+        z_step_um=0.3,
+        spatial_ndim=3,
+    )
+
+    assert not result.met
+    assert not result.xy_met
+    assert result.z_met is False
+
+
+def test_psf_preflight_marks_wrong_rank_and_known_spacing_mismatch_invalid():
+    image = np.zeros((32, 32), dtype=np.float32)
+    wrong_rank_psf = np.ones((3, 5, 5), dtype=np.float32)
+
+    wrong_rank = psf_preflight(image, wrong_rank_psf, spatial_ndim=2)
+
+    assert wrong_rank.status == PSF_PREFLIGHT_INVALID
+    assert "psf_rank" in _issue_codes(wrong_rank)
+
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+    image_state, psf_state = _psf_states(psf_spacing=0.05)
+    mismatch = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert mismatch.status == PSF_PREFLIGHT_INVALID
+    assert "sampling_mismatch" in _issue_codes(mismatch)
+
+
+def test_psf_preflight_warns_for_missing_calibration_without_assuming_spacing():
+    image = np.zeros((32, 32), dtype=np.float32)
+    psf = np.zeros((5, 5), dtype=np.float32)
+    psf[2, 2] = 1.0
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state_from_array(image),
+        psf_state=image_state_from_array(psf),
+    )
+
+    assert result.status == PSF_PREFLIGHT_WARNING
+    assert not result.physical_sampling_known
+    assert "missing_calibration" in _issue_codes(result)
+
+
+def test_psf_preflight_reports_unresolved_and_lazy_values_without_materializing():
+    unresolved = psf_preflight(None, None, spatial_ndim=2)
+
+    assert unresolved.status == PSF_PREFLIGHT_UNKNOWN
+    assert "unresolved_inputs" in _issue_codes(unresolved)
+
+    class LazyPsf:
+        shape = (5, 5)
+
+        def __array__(self):
+            raise AssertionError("preflight must not materialize lazy PSF data")
+
+    image = np.zeros((32, 32), dtype=np.float32)
+    image_state, psf_state = _psf_states()
+    lazy = psf_preflight(
+        image,
+        LazyPsf(),
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    assert lazy.status == PSF_PREFLIGHT_UNKNOWN
+    assert not lazy.values_scanned
+    assert "values_not_scanned" in _issue_codes(lazy)

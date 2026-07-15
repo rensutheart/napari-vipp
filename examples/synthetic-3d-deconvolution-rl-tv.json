@@ -53,7 +53,7 @@
       "operation_id": "richardson_lucy_deconvolution",
       "params": {
         "spatial_mode": "3D ZYX",
-        "iterations": 8,
+        "iterations": 25,
         "normalize_psf": true,
         "clip_negative_input": true,
         "clip_output_negative": true,
@@ -66,15 +66,15 @@
       "operation_id": "richardson_lucy_tv_deconvolution",
       "params": {
         "spatial_mode": "3D ZYX",
-        "iterations": 8,
-        "tv_regularization": 0.008,
+        "iterations": 25,
+        "tv_regularization": 0.002,
         "tv_epsilon": 1e-06,
         "normalize_psf": true,
         "clip_negative_input": true,
         "clip_output_negative": true,
         "preserve_input_scale": true,
         "filter_epsilon": 1e-12,
-        "denominator_floor": 0.15
+        "denominator_floor": 0.05
       }
     }
   ],
@@ -136,7 +136,7 @@
     },
     {
       "id": "note_2",
-      "text": "The iteration count is intentionally conservative for a small review volume. Increase slowly on real data because volumetric RL can sharpen noise and edge artifacts.",
+      "text": "Both branches use 25 iterations, and RL-TV uses the conservative production-like regularization 0.002. Low-iteration outputs may be under-converged, while more iterations can amplify noise and PSF mismatch. Validate PSF sampling and centering before tuning regularization.",
       "position": [1150.0, 610.0],
       "width": 340.0,
       "attached_node": "richardson_lucy_tv_deconvolution_1"

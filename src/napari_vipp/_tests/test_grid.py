@@ -266,6 +266,26 @@ def test_psf_grid_accepts_matching_default_uncalibrated_sampling():
     assert result.compatible
 
 
+def test_psf_grid_does_not_invent_spacing_when_psf_calibration_is_missing():
+    image = _state(
+        (64, 64),
+        (
+            AxisMetadata("y", "space", unit="micrometer", scale=0.1),
+            AxisMetadata("x", "space", unit="micrometer", scale=0.1),
+        ),
+    )
+    uncalibrated_psf = image_state_from_array(
+        np.zeros((9, 9), dtype=np.float32)
+    )
+
+    validate_psf_image_states(
+        image,
+        uncalibrated_psf,
+        spatial_ndim=2,
+        operation_title="Richardson-Lucy Deconvolution",
+    )
+
+
 def test_psf_grid_rejects_sampling_mismatch_without_implicit_resampling():
     image = _state(
         (64, 64),

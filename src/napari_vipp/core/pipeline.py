@@ -6,10 +6,12 @@ import inspect
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from numbers import Integral, Real
 from typing import Any
+
+import numpy as np
 
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
@@ -158,6 +160,422 @@ class ParameterSpec:
     dynamic_choices: bool = False
     dynamic_choice_kind: str = ""
     tooltip: str = ""
+    visibility: str = "always"
+    visibility_parameter: str = ""
+    visibility_values: tuple[Any, ...] = ()
+    visibility_ports: tuple[str, ...] = ()
+
+
+PARAMETER_VISIBILITY_ALWAYS = "always"
+PARAMETER_VISIBILITY_FLOATING_INPUT = "floating_input"
+PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE = "negative_values_possible"
+PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT = "rgb_or_rgba_input"
+PARAMETER_VISIBILITY_MULTICHANNEL_INPUT = "multichannel_input"
+PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT = "spatial_mode_relevant"
+PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT = "stack_scope_relevant"
+PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS = "three_spatial_dimensions"
+PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING = "two_dimensional_processing"
+PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS = (
+    "at_least_two_spatial_dimensions"
+)
+PARAMETER_VISIBILITY_PARAMETER_IN = "parameter_in"
+PARAMETER_VISIBILITY_PARAMETER_NOT_IN = "parameter_not_in"
+PARAMETER_VISIBILITY_CONNECTED_INPUT_PORT = "connected_input_port"
+PARAMETER_VISIBILITY_MULTIPLE_INPUTS_OR_OUTPUTS = "multiple_inputs_or_outputs"
+_PARAMETER_VISIBILITY_VALUES = {
+    PARAMETER_VISIBILITY_ALWAYS,
+    PARAMETER_VISIBILITY_FLOATING_INPUT,
+    PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE,
+    PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT,
+    PARAMETER_VISIBILITY_MULTICHANNEL_INPUT,
+    PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
+    PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT,
+    PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+    PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
+    PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
+    PARAMETER_VISIBILITY_PARAMETER_IN,
+    PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+    PARAMETER_VISIBILITY_CONNECTED_INPUT_PORT,
+    PARAMETER_VISIBILITY_MULTIPLE_INPUTS_OR_OUTPUTS,
+}
+
+
+@dataclass(frozen=True)
+class ParameterVisibility:
+    """Resolved inspector visibility without a dependency on Qt."""
+
+    visible: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ParameterVisibilityContext:
+    """Qt-free scientific and graph context used by visibility rules.
+
+    The mappings use declared input-port names, not widget or graph-label
+    objects.  Missing data/state remains distinguishable from a disconnected
+    port so rules can default to keeping a control available.
+    """
+
+    operation_id: str = ""
+    parameter_values: Mapping[str, Any] = field(default_factory=dict)
+    input_data_by_port: Mapping[str, Any] = field(default_factory=dict)
+    input_state_by_port: Mapping[str, ImageState | None] = field(
+        default_factory=dict
+    )
+    declared_input_ports: tuple[str, ...] = ()
+    connected_input_ports: frozenset[str] = frozenset()
+    used_output_ports: frozenset[int] = frozenset()
+
+    @property
+    def primary_input_port(self) -> str:
+        if self.declared_input_ports:
+            return self.declared_input_ports[0]
+        if self.input_data_by_port:
+            return next(iter(self.input_data_by_port))
+        if self.input_state_by_port:
+            return next(iter(self.input_state_by_port))
+        return "in"
+
+    @property
+    def primary_input_data(self) -> Any:
+        return self.input_data_by_port.get(self.primary_input_port)
+
+    @property
+    def primary_input_state(self) -> ImageState | None:
+        state = self.input_state_by_port.get(self.primary_input_port)
+        return state if isinstance(state, ImageState) else None
+
+
+def resolve_parameter_visibility(
+    spec: ParameterSpec,
+    *,
+    context: ParameterVisibilityContext | None = None,
+    input_data: Any = None,
+    input_state: ImageState | None = None,
+) -> ParameterVisibility:
+    """Resolve a declarative parameter visibility rule conservatively.
+
+    Missing dtype or axis information keeps the control visible so the user can
+    resolve an input manually. RGB/RGBA relevance is based only on explicit
+    carried axis semantics; an axis length of three or four is never evidence
+    of encoded colour by itself.
+    """
+    validate_parameter_visibility_spec(spec)
+    visibility = str(spec.visibility or PARAMETER_VISIBILITY_ALWAYS)
+    if context is None:
+        connected = input_data is not None or input_state is not None
+        context = ParameterVisibilityContext(
+            input_data_by_port={"in": input_data},
+            input_state_by_port={"in": input_state},
+            declared_input_ports=("in",),
+            connected_input_ports=frozenset({"in"}) if connected else frozenset(),
+        )
+    if visibility == PARAMETER_VISIBILITY_ALWAYS:
+        return ParameterVisibility(True)
+    if visibility == PARAMETER_VISIBILITY_FLOATING_INPUT:
+        dtype = _parameter_input_dtype(
+            context.primary_input_data,
+            context.primary_input_state,
+        )
+        if dtype is None:
+            return ParameterVisibility(True, "Input dtype is unresolved.")
+        if np.issubdtype(dtype, np.floating):
+            return ParameterVisibility(True)
+        return ParameterVisibility(False, "The resolved input is not floating-point.")
+
+    if visibility == PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE:
+        dtype = _parameter_input_dtype(
+            context.primary_input_data,
+            context.primary_input_state,
+        )
+        if dtype is None:
+            return ParameterVisibility(True, "Input dtype is unresolved.")
+        relevant = np.issubdtype(dtype, np.signedinteger) or np.issubdtype(
+            dtype,
+            np.floating,
+        )
+        return ParameterVisibility(
+            relevant,
+            "The resolved unsigned or boolean input cannot contain negatives."
+            if not relevant
+            else "",
+        )
+
+    if visibility == PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT:
+        state = context.primary_input_state
+        if not _visibility_axes_resolved(state):
+            return ParameterVisibility(
+                True,
+                "Input encoded-colour axis semantics are unresolved.",
+            )
+        assert state is not None
+        if any(
+            axis.name.strip().casefold() in {"rgb", "rgba"}
+            for axis in state.axes
+        ):
+            return ParameterVisibility(True)
+        return ParameterVisibility(
+            False,
+            "The resolved input has no encoded RGB/RGBA axis.",
+        )
+
+    if visibility == PARAMETER_VISIBILITY_MULTICHANNEL_INPUT:
+        state = context.primary_input_state
+        if not _visibility_axes_resolved(state):
+            return ParameterVisibility(
+                True,
+                "Input channel-axis semantics are unresolved.",
+            )
+        assert state is not None
+        if any(
+            axis.type.strip().casefold() == "channel"
+            or axis.name.strip().casefold() in {"c", "channel", "rgb", "rgba"}
+            for axis in state.axes
+        ):
+            return ParameterVisibility(True)
+        return ParameterVisibility(False, "The resolved input is explicitly scalar.")
+
+    if visibility == PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT:
+        states = _visibility_relevant_input_states(context, spec, all_ports=True)
+        if states is None:
+            return ParameterVisibility(
+                True,
+                "Input spatial-axis semantics are unresolved.",
+            )
+        for state in states:
+            spatial_count = sum(
+                axis.type.strip().casefold() == "space" for axis in state.axes
+            )
+            has_non_spatial = any(
+                axis.type.strip().casefold() != "space" for axis in state.axes
+            )
+            is_scalar_yx = (
+                spatial_count == 2
+                and not has_non_spatial
+                and {axis.name.strip().casefold() for axis in state.axes}
+                == {"x", "y"}
+            )
+            if not is_scalar_yx:
+                return ParameterVisibility(True)
+        if spec.name == "spatial_mode":
+            selected_mode = str(
+                context.parameter_values.get(spec.name, "")
+            ).casefold()
+            if selected_mode and not (
+                selected_mode.startswith("auto")
+                or selected_mode.startswith("2d")
+            ):
+                return ParameterVisibility(
+                    True,
+                    "The stored spatial mode is not equivalent to scalar YX "
+                    "processing.",
+                )
+        return ParameterVisibility(
+            False,
+            "Every resolved input is a scalar 2D spatial image.",
+        )
+
+    if visibility == PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT:
+        return _stack_scope_parameter_visibility(context)
+
+    if visibility in {
+        PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+        PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
+        PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
+    }:
+        states = _visibility_relevant_input_states(context, spec, all_ports=False)
+        if states is None:
+            return ParameterVisibility(
+                True,
+                "Input spatial-axis semantics are unresolved.",
+            )
+        state = states[0]
+        spatial_count = sum(
+            axis.type.strip().casefold() == "space" for axis in state.axes
+        )
+        if visibility == PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS:
+            has_z = any(
+                axis.type.strip().casefold() == "space"
+                and axis.name.strip().casefold() == "z"
+                for axis in state.axes
+            )
+            return ParameterVisibility(
+                has_z or spatial_count >= 3,
+                "The resolved input has no Z spatial axis."
+                if not has_z and spatial_count < 3
+                else "",
+            )
+        if visibility == PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS:
+            return ParameterVisibility(
+                spatial_count >= 2,
+                "The resolved input has fewer than two spatial dimensions."
+                if spatial_count < 2
+                else "",
+            )
+        selected_mode = str(
+            context.parameter_values.get("spatial_mode", "Auto from axes")
+        ).casefold()
+        if selected_mode.startswith("2d"):
+            is_two_dimensional = True
+        elif selected_mode.startswith("3d"):
+            is_two_dimensional = False
+        else:
+            is_two_dimensional = spatial_count < 3
+        return ParameterVisibility(
+            is_two_dimensional,
+            "The resolved input uses volumetric spatial processing."
+            if not is_two_dimensional
+            else "",
+        )
+
+    if visibility in {
+        PARAMETER_VISIBILITY_PARAMETER_IN,
+        PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+    }:
+        if spec.visibility_parameter not in context.parameter_values:
+            return ParameterVisibility(
+                True,
+                f"Parameter {spec.visibility_parameter!r} is unresolved.",
+            )
+        matches = context.parameter_values[spec.visibility_parameter] in (
+            spec.visibility_values
+        )
+        if visibility == PARAMETER_VISIBILITY_PARAMETER_NOT_IN:
+            matches = not matches
+        return ParameterVisibility(
+            matches,
+            "This setting has no effect for the selected mode." if not matches else "",
+        )
+
+    if visibility == PARAMETER_VISIBILITY_CONNECTED_INPUT_PORT:
+        port = spec.visibility_ports[0]
+        return ParameterVisibility(
+            port in context.connected_input_ports,
+            f"Input port {port!r} is not connected."
+            if port not in context.connected_input_ports
+            else "",
+        )
+
+    if visibility == PARAMETER_VISIBILITY_MULTIPLE_INPUTS_OR_OUTPUTS:
+        relevant = (
+            len(context.connected_input_ports) > 1
+            or len(context.used_output_ports) > 1
+        )
+        if not context.declared_input_ports:
+            return ParameterVisibility(
+                True,
+                "Graph port usage is unresolved.",
+            )
+        return ParameterVisibility(
+            relevant,
+            "Only one input and output are currently in use." if not relevant else "",
+        )
+
+    # Validation above makes this unreachable, while retaining an explicit
+    # failure if a future branch is declared but not implemented.
+    raise ValueError(f"Visibility rule {visibility!r} has no resolver.")
+
+
+def validate_parameter_visibility_spec(spec: ParameterSpec) -> None:
+    """Fail clearly for unknown or incompletely declared visibility rules."""
+    visibility = str(spec.visibility or PARAMETER_VISIBILITY_ALWAYS)
+    if visibility not in _PARAMETER_VISIBILITY_VALUES:
+        raise ValueError(
+            f"Parameter {spec.name!r} has unknown visibility rule "
+            f"{visibility!r}."
+        )
+    if visibility in {
+        PARAMETER_VISIBILITY_PARAMETER_IN,
+        PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+    } and (not spec.visibility_parameter or not spec.visibility_values):
+        raise ValueError(
+            f"Parameter {spec.name!r} visibility rule {visibility!r} requires "
+            "visibility_parameter and visibility_values."
+        )
+    if (
+        visibility == PARAMETER_VISIBILITY_CONNECTED_INPUT_PORT
+        and len(spec.visibility_ports) != 1
+    ):
+        raise ValueError(
+            f"Parameter {spec.name!r} connected-port visibility requires exactly "
+            "one visibility_ports entry."
+        )
+
+
+def _visibility_axes_resolved(state: ImageState | None) -> bool:
+    return bool(
+        state is not None
+        and state.axes
+        and all(axis.is_explicit for axis in state.axes)
+    )
+
+
+def _visibility_relevant_input_states(
+    context: ParameterVisibilityContext,
+    spec: ParameterSpec,
+    *,
+    all_ports: bool,
+) -> tuple[ImageState, ...] | None:
+    ports = spec.visibility_ports
+    if not ports:
+        ports = (
+            context.declared_input_ports
+            if all_ports
+            else (context.primary_input_port,)
+        )
+    if not ports:
+        return None
+    states: list[ImageState] = []
+    for port in ports:
+        if port not in context.connected_input_ports:
+            return None
+        state = context.input_state_by_port.get(port)
+        if not isinstance(state, ImageState) or not _visibility_axes_resolved(state):
+            return None
+        states.append(state)
+    return tuple(states) if states else None
+
+
+def _stack_scope_parameter_visibility(
+    context: ParameterVisibilityContext,
+) -> ParameterVisibility:
+    data = context.primary_input_data
+    state = context.primary_input_state
+    shape = getattr(data, "shape", None)
+    if shape is None and state is not None:
+        shape = state.shape
+    try:
+        shape = tuple(int(size) for size in shape)
+    except (TypeError, ValueError):
+        return ParameterVisibility(True, "Input dimensionality is unresolved.")
+    if not _visibility_axes_resolved(state) or len(state.axes) != len(shape):
+        return ParameterVisibility(True, "Input stack-axis semantics are unresolved.")
+    for axis, size in zip(state.axes, shape, strict=True):
+        if size <= 1:
+            continue
+        name = axis.name.strip().casefold()
+        if name in {"x", "y"} or axis.type.strip().casefold() == "channel":
+            continue
+        if name in {"c", "channel", "rgb", "rgba"}:
+            continue
+        return ParameterVisibility(True)
+    return ParameterVisibility(False, "The resolved input has no stack axis.")
+
+
+def _parameter_input_dtype(
+    input_data: Any,
+    input_state: ImageState | None,
+) -> np.dtype | None:
+    candidate = getattr(input_data, "dtype", None)
+    if candidate is None and input_state is not None:
+        candidate = input_state.dtype
+    if candidate in {None, ""}:
+        return None
+    try:
+        return np.dtype(candidate)
+    except (TypeError, ValueError):
+        return None
 
 
 _RESOLVED_SPATIAL_NDIM_PARAMETER = ParameterSpec(
@@ -545,6 +963,7 @@ COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "masked_colocalized_voxels",
     "racc_index",
     "masked_racc_index",
+    "object_colocalization_metrics",
 }
 LABEL_METADATA_MULTI_INPUT_OPERATIONS = {
     "event_localization",
@@ -620,6 +1039,19 @@ SPATIAL_MODE_PARAMETER = ParameterSpec(
     choices=("Auto from axes", "2D YX", "3D ZYX"),
     dynamic_choices=True,
     dynamic_choice_kind="spatial_mode",
+    visibility=PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
+    tooltip=(
+        "Plane-wise and volumetric choices stay available until all relevant "
+        "input axes are explicit. The control is hidden only for a resolved "
+        "scalar YX input, where the available choices are equivalent."
+    ),
+)
+
+# A 3D-only measurement must continue to explain its dimensional requirement;
+# hiding its only mode on 2D input would conceal a validation error.
+VOLUMETRIC_SPATIAL_MODE_PARAMETER = replace(
+    SPATIAL_MODE_PARAMETER,
+    visibility=PARAMETER_VISIBILITY_ALWAYS,
 )
 
 BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
@@ -633,6 +1065,12 @@ BACKGROUND_SPATIAL_MODE_PARAMETER = ParameterSpec(
     choices=("2D YX", "3D ZYX", "Auto from axes"),
     dynamic_choices=True,
     dynamic_choice_kind="spatial_mode",
+    visibility=PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
+    tooltip=(
+        "Plane-wise and volumetric choices stay available until all relevant "
+        "input axes are explicit. The control is hidden only for a resolved "
+        "scalar YX input, where the available choices are equivalent."
+    ),
 )
 
 THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
@@ -644,6 +1082,11 @@ THRESHOLD_SCOPE_PARAMETER = ParameterSpec(
     0,
     1,
     choices=("Stack histogram", "Slice histogram"),
+    visibility=PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT,
+    tooltip=(
+        "Shown when a resolved or still-unresolved stack axis can make stack "
+        "and slice histograms differ."
+    ),
 )
 HISTOGRAM_BINS_PARAMETER = ParameterSpec(
     "histogram_bins",
@@ -653,6 +1096,7 @@ HISTOGRAM_BINS_PARAMETER = ParameterSpec(
     2,
     65_536,
     1,
+    visibility=PARAMETER_VISIBILITY_FLOATING_INPUT,
 )
 
 SCALAR_LUMA_CHANNEL_AXIS_PARAMETER = ParameterSpec(
@@ -663,6 +1107,14 @@ SCALAR_LUMA_CHANNEL_AXIS_PARAMETER = ParameterSpec(
     -1,
     64,
     1,
+    tooltip=(
+        "Select the axis containing encoded RGB or RGBA channels so the "
+        "operation can reduce colour to luminance. Leave at -1 for scalar "
+        "images. For encoded colour, choose the axis identified as RGB or "
+        "RGBA in the input metadata; select it manually when those semantics "
+        "are unresolved."
+    ),
+    visibility=PARAMETER_VISIBILITY_RGB_OR_RGBA_INPUT,
 )
 
 SCALAR_CHANNEL_AXIS_PARAMETER = ParameterSpec(
@@ -673,6 +1125,17 @@ SCALAR_CHANNEL_AXIS_PARAMETER = ParameterSpec(
     -1,
     64,
     1,
+    tooltip=(
+        "Select an explicitly identified fluorescence or encoded-colour "
+        "channel axis. Leave at -1 for scalar images; unresolved metadata "
+        "keeps this control available for a deliberate manual choice."
+    ),
+    visibility=PARAMETER_VISIBILITY_MULTICHANNEL_INPUT,
+)
+
+OPTIONAL_CHANNEL_AXIS_PARAMETER = replace(
+    SCALAR_CHANNEL_AXIS_PARAMETER,
+    label="Channel axis (-1 = none)",
 )
 
 SPATIAL_OPERATIONS = {
@@ -959,7 +1422,17 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            ParameterSpec("sigma_z", "Sigma Z", "float", 2.0, 0.0, 12.0, 0.1, 2),
+            ParameterSpec(
+                "sigma_z",
+                "Sigma Z",
+                "float",
+                2.0,
+                0.0,
+                12.0,
+                0.1,
+                2,
+                visibility=PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+            ),
             ParameterSpec("sigma_y", "Sigma Y", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("sigma_x", "Sigma X", "float", 2.0, 0.0, 12.0, 0.1, 2),
             ParameterSpec("lock_xy", "Lock X/Y sigma", "bool", True, 0, 1, 1),
@@ -975,7 +1448,15 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "array",
         "image",
         (
-            SPATIAL_MODE_PARAMETER,
+            replace(
+                SPATIAL_MODE_PARAMETER,
+                visibility=PARAMETER_VISIBILITY_ALWAYS,
+                tooltip=(
+                    "Choose 2D or 3D PSF generation explicitly. A connected YX "
+                    "image can still provide metadata for a manually configured "
+                    "3D PSF, so this control remains available."
+                ),
+            ),
             ParameterSpec(
                 "auto_parameters",
                 "Auto from metadata",
@@ -1035,8 +1516,34 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.001,
                 4,
             ),
-            ParameterSpec("xy_size", "PSF XY size", "int", 65, 9, 1025, 2),
-            ParameterSpec("z_size", "PSF Z size", "int", 33, 1, 1025, 2),
+            ParameterSpec(
+                "xy_size",
+                "PSF XY support (samples)",
+                "int",
+                65,
+                9,
+                1025,
+                2,
+                tooltip=(
+                    "Number of samples generated across both Y and X. This is "
+                    "the PSF support window, not the image width and not the "
+                    "physical pixel size. Auto from metadata does not change it."
+                ),
+            ),
+            ParameterSpec(
+                "z_size",
+                "PSF Z support (samples)",
+                "int",
+                33,
+                1,
+                1025,
+                2,
+                tooltip=(
+                    "Number of planes generated for the axial PSF support. It "
+                    "is independent of the input stack depth; Auto from metadata "
+                    "resolves Z spacing but does not change this support window."
+                ),
+            ),
             ParameterSpec("channel", "Channel", "int", -1, -1, 64, 1),
             ParameterSpec(
                 "pupil_samples",
@@ -1070,7 +1577,16 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 choices=("None", "Peak", "Centroid"),
             ),
-            ParameterSpec("clip_negatives", "Clip negatives", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "clip_negatives",
+                "Clip negatives",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+                visibility=PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE,
+            ),
             ParameterSpec("normalize_sum", "Normalize sum", "bool", True, 0, 1, 1),
             ParameterSpec(
                 "minimum_valid_sum",
@@ -1103,9 +1619,44 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "image",
         "image",
         (
-            SPATIAL_MODE_PARAMETER,
-            ParameterSpec("iterations", "Iterations", "int", 25, 1, 500, 1),
-            ParameterSpec("normalize_psf", "Normalize PSF", "bool", True, 0, 1, 1),
+            replace(
+                SPATIAL_MODE_PARAMETER,
+                tooltip=(
+                    "Restore each YX plane independently or restore a ZYX volume "
+                    "in 3D. The PSF rank must match, and its physical sampling "
+                    "and centering must be valid; more iterations cannot repair a "
+                    "miscentered or incorrectly sampled PSF."
+                ),
+            ),
+            ParameterSpec(
+                "iterations",
+                "Iterations",
+                "int",
+                25,
+                1,
+                500,
+                1,
+                tooltip=(
+                    "Few iterations may leave the reconstruction under-converged. "
+                    "Increasing iterations can recover detail, but can also "
+                    "amplify noise, ringing, boundaries, or PSF-mismatch artifacts; "
+                    "higher is not always scientifically better."
+                ),
+            ),
+            ParameterSpec(
+                "normalize_psf",
+                "Normalize PSF",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+                tooltip=(
+                    "Scale the PSF sum to one before deconvolution. Keep this on "
+                    "for normal microscopy PSFs. Normalization does not correct "
+                    "PSF rank, sampling, centering, or insufficient support."
+                ),
+            ),
             ParameterSpec(
                 "clip_negative_input",
                 "Clip negative input",
@@ -1114,6 +1665,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE,
+                tooltip=(
+                    "Replace negative observed intensities with zero before RL "
+                    "updates. This is normally appropriate because RL assumes "
+                    "non-negative photon intensities."
+                ),
             ),
             ParameterSpec(
                 "clip_output_negative",
@@ -1123,6 +1680,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Clamp negative output samples to zero after restoring the "
+                    "input scale. This is normally a safety setting."
+                ),
             ),
             ParameterSpec(
                 "preserve_input_scale",
@@ -1132,6 +1693,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                tooltip=(
+                    "Normalize each processed block internally and restore its "
+                    "positive input scale in the output."
+                ),
             ),
             ParameterSpec(
                 "filter_epsilon",
@@ -1142,6 +1707,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1.0,
                 1e-12,
                 12,
+                tooltip=(
+                    "Advanced numerical guard for ratio updates where predicted "
+                    "blur is extremely small. Normally leave it at 1e-12; changing "
+                    "guards should not be the first response to structure loss."
+                ),
             ),
         ),
         richardson_lucy_deconvolution,
@@ -1165,7 +1735,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 tooltip=(
                     "Choose whether each YX plane is restored independently or "
                     "a ZYX volume is restored in 3D. The connected PSF must have "
-                    "the same spatial dimensionality. Auto uses axis metadata."
+                    "the same spatial dimensionality and matching physical "
+                    "sampling. More iterations cannot repair a miscentered or "
+                    "incorrectly sampled PSF. Auto uses axis metadata."
                 ),
             ),
             ParameterSpec(
@@ -1177,10 +1749,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100,
                 1,
                 tooltip=(
-                    "More iterations can recover finer detail, but increase "
-                    "runtime and can amplify noise, ringing, and PSF mismatch. "
-                    "Start around 10-30; the slider covers 1-100 and the spinner "
-                    "accepts larger values."
+                    "Few iterations may leave the reconstruction under-converged. "
+                    "Increasing iterations can recover detail, but can also "
+                    "amplify noise, ringing, boundaries, and PSF-mismatch artifacts; "
+                    "higher is not always scientifically better."
                 ),
             ),
             ParameterSpec(
@@ -1193,10 +1765,10 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.0001,
                 6,
                 tooltip=(
-                    "Strength of total-variation denoising (lambda). Increasing it "
-                    "suppresses noise and favors piecewise-smooth regions; too much "
-                    "flattens dim or fine structure. The log slider covers 1e-6 to "
-                    "0.1; enter 0 in the spinner for ordinary RL."
+                    "Start at zero or a very small value and increase only as "
+                    "needed for noise. The conservative production default is "
+                    "0.002; values around 0.008-0.012 are comparatively strong and "
+                    "may erase real dim or fine structures. Zero gives ordinary RL."
                 ),
             ),
             ParameterSpec(
@@ -1209,11 +1781,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1e-7,
                 12,
                 tooltip=(
-                    "Smooths the TV gradient norm near zero. Larger values soften "
-                    "regularization of very weak gradients; extremely small values "
-                    "make flat-region updates more sensitive. The log slider covers "
-                    "1e-12 to 0.01; usually leave it at 1e-6."
+                    "Advanced numerical guard that smooths the TV gradient norm "
+                    "near zero. Usually leave it at 1e-6; it should not be the first "
+                    "parameter changed in response to missing structure."
                 ),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="tv_regularization",
+                visibility_values=(0, 0.0),
             ),
             ParameterSpec(
                 "normalize_psf",
@@ -1224,9 +1798,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 1,
                 tooltip=(
-                    "Scale the PSF so its sum is one before deconvolution. Keep this "
-                    "enabled for normal microscopy PSFs; disabling it trusts the PSF "
-                    "amplitude and can bias intensity or convergence."
+                    "Scale the PSF sum to one before deconvolution. Keep this on "
+                    "for normal microscopy PSFs. Normalization does not correct "
+                    "PSF rank, sampling, centering, or insufficient support."
                 ),
             ),
             ParameterSpec(
@@ -1237,6 +1811,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_NEGATIVE_VALUES_POSSIBLE,
                 tooltip=(
                     "Replace negative observed intensities with zero before the RL "
                     "updates. This is normally appropriate because RL assumes "
@@ -1283,10 +1858,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1e-12,
                 15,
                 tooltip=(
-                    "Ignore RL ratio corrections where the predicted blurred intensity "
-                    "is below this guard. Larger values improve stability but can lose "
-                    "very dim structure. The log slider covers 1e-15 to 0.001; enter "
-                    "0 in the spinner to disable the guard."
+                    "Advanced guard for RL ratio updates where predicted blur is "
+                    "extremely small. Normally leave it at 1e-12; changing numerical "
+                    "guards should not be the first response to structure loss."
                 ),
             ),
             ParameterSpec(
@@ -1299,11 +1873,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.01,
                 6,
                 tooltip=(
-                    "Lower bound for the TV update denominator. Increasing it limits "
-                    "extreme amplification and improves stability; making it too large "
-                    "weakens the intended TV correction. The log slider covers 0.001 "
-                    "to 1; start with 0.05."
+                    "Advanced lower bound for the TV update denominator. Keep the "
+                    "default 0.05 unless diagnosing a demonstrated instability; this "
+                    "guard is not a first response to blurred or missing structure."
                 ),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="tv_regularization",
+                visibility_values=(0, 0.0),
             ),
         ),
         richardson_lucy_tv_deconvolution,
@@ -1357,15 +1933,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0.1,
                 2,
             ),
-            ParameterSpec(
-                "channel_axis",
-                "Channel axis (-1 = none)",
-                "int",
-                -1,
-                -1,
-                64,
-                1,
-            ),
+            OPTIONAL_CHANNEL_AXIS_PARAMETER,
         ),
         bilateral_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1382,15 +1950,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ParameterSpec("patch_distance", "Patch distance", "int", 6, 1, 20, 1),
             ParameterSpec("h", "Filter strength", "float", 0.08, 0.0, 1.0, 0.01, 3),
             ParameterSpec("fast_mode", "Fast mode", "bool", True, 0, 1, 1),
-            ParameterSpec(
-                "channel_axis",
-                "Channel axis (-1 = none)",
-                "int",
-                -1,
-                -1,
-                64,
-                1,
-            ),
+            OPTIONAL_CHANNEL_AXIS_PARAMETER,
         ),
         non_local_means_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
@@ -1501,15 +2061,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         (
             ParameterSpec("radius", "Radius", "float", 1.0, 0.0, 50.0, 0.1, 2),
             ParameterSpec("amount", "Amount", "float", 1.0, 0.0, 10.0, 0.1, 2),
-            ParameterSpec(
-                "channel_axis",
-                "Channel axis (-1 = none)",
-                "int",
-                -1,
-                -1,
-                64,
-                1,
-            ),
+            OPTIONAL_CHANNEL_AXIS_PARAMETER,
         ),
         unsharp_mask_filter,
         subcategory=EDGE_DETAIL_GROUP,
@@ -1763,6 +2315,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 10000.0,
                 0.01,
                 4,
+                visibility=PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+                tooltip=(
+                    "Shown when explicit metadata identifies a Z spatial axis; "
+                    "unresolved axis metadata keeps it available."
+                ),
             ),
             ParameterSpec(
                 "unit",
@@ -1821,6 +2378,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 20.0,
                 0.01,
                 3,
+                visibility=PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS,
+                tooltip=(
+                    "Shown when explicit metadata identifies a Z spatial axis; "
+                    "unresolved axis metadata keeps it available."
+                ),
             ),
             ParameterSpec(
                 "lock_xy",
@@ -2448,6 +3010,12 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "All spatial borders",
                     "Lateral borders only (YX)",
                 ),
+                visibility=PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT,
+                tooltip=(
+                    "Lateral-only and all-spatial borders differ for volumetric "
+                    "or leading-axis data. Unresolved axes keep both choices "
+                    "available."
+                ),
             ),
         ),
         clear_border_objects,
@@ -2581,6 +3149,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
                 "include_2d_boundary_descriptors",
@@ -2590,6 +3159,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
             ParameterSpec(
                 "include_derived_shape_ratios",
@@ -2599,6 +3169,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
                 "include_2d_shape_moments",
@@ -2608,6 +3179,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
         ),
         measure_objects,
@@ -2638,6 +3210,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
                 "include_2d_boundary_descriptors",
@@ -2647,6 +3220,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
             ParameterSpec(
                 "include_derived_shape_ratios",
@@ -2656,6 +3230,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS,
             ),
             ParameterSpec(
                 "include_2d_shape_moments",
@@ -2665,6 +3240,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 1,
+                visibility=PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING,
             ),
         ),
         measure_objects_with_intensity,
@@ -2682,7 +3258,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "labels",
         "table",
         (
-            SPATIAL_MODE_PARAMETER,
+            VOLUMETRIC_SPATIAL_MODE_PARAMETER,
             ParameterSpec(
                 "minimum_voxel_count",
                 "Minimum voxel count",
@@ -2867,7 +3443,18 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                     "White edges + colored nodes",
                 ),
             ),
-            ParameterSpec("node_size", "Node size", "int", 1, 1, 5, 1),
+            ParameterSpec(
+                "node_size",
+                "Node size",
+                "int",
+                1,
+                1,
+                5,
+                1,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="display_mode",
+                visibility_values=("Colored edges",),
+            ),
         ),
         skeleton_graph_overlay,
         subcategory=SKELETON_NETWORK_GROUP,
@@ -2968,6 +3555,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -2978,6 +3568,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
         ),
         colocalization_metrics,
@@ -3014,6 +3607,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3024,6 +3620,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
         ),
         colocalization_metrics,
@@ -3061,6 +3660,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3071,6 +3673,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "display_mode",
@@ -3095,6 +3700,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="display_mode",
+                visibility_values=("White on black",),
             ),
             ParameterSpec(
                 "channel_2_color",
@@ -3105,6 +3713,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="display_mode",
+                visibility_values=("White on black",),
             ),
         ),
         colocalized_voxels,
@@ -3140,6 +3751,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3150,6 +3764,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "display_mode",
@@ -3174,6 +3791,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="display_mode",
+                visibility_values=("White on black",),
             ),
             ParameterSpec(
                 "channel_2_color",
@@ -3184,6 +3804,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("Red", "Green", "Blue", "Magenta", "Cyan", "Yellow"),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="display_mode",
+                visibility_values=("White on black",),
             ),
         ),
         colocalized_voxels,
@@ -3220,6 +3843,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3230,6 +3856,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "theta_degrees",
@@ -3296,6 +3925,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3306,6 +3938,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "theta_degrees",
@@ -3374,6 +4009,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
             ParameterSpec(
                 "channel_2_threshold",
@@ -3384,6 +4022,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 255.0,
                 1.0,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="threshold_mode",
+                visibility_values=("Manual",),
             ),
         ),
         object_colocalization_metrics,
@@ -3824,6 +4465,13 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1,
                 choices=("Percentiles", "Values"),
                 choice_labels=("Percentiles (exact)", "Explicit values"),
+                tooltip=(
+                    "Exact interior percentiles inspect every finite voxel and "
+                    "can take time on large volumes. Cutoffs at 0 and 100 use "
+                    "the exact finite minimum and maximum directly. Explicit "
+                    "values avoid percentile calculation when scientifically "
+                    "appropriate."
+                ),
             ),
             ParameterSpec(
                 "in_low_value",
@@ -3834,6 +4482,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 0.01,
                 3,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Values",),
             ),
             ParameterSpec(
                 "in_high_value",
@@ -3844,6 +4495,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 0.01,
                 3,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Values",),
             ),
             ParameterSpec(
                 "in_low_percentile",
@@ -3854,6 +4508,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100.0,
                 0.1,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Percentiles",),
             ),
             ParameterSpec(
                 "in_high_percentile",
@@ -3864,6 +4521,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100.0,
                 0.1,
                 2,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Percentiles",),
             ),
             ParameterSpec(
                 "out_min",
@@ -3935,6 +4595,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 1.0,
                 3,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Values",),
             ),
             ParameterSpec(
                 "maximum",
@@ -3945,6 +4608,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 100000.0,
                 1.0,
                 3,
+                visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+                visibility_parameter="cutoff_mode",
+                visibility_values=("Values",),
             ),
         ),
         clip_intensity,
@@ -4083,6 +4749,9 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 0,
                 1,
                 choices=("rescale", "clip", "preserve"),
+                visibility=PARAMETER_VISIBILITY_PARAMETER_NOT_IN,
+                visibility_parameter="output_dtype",
+                visibility_values=("bool",),
             ),
         ),
         convert_dtype,
@@ -5247,12 +5916,71 @@ class PrototypePipeline:
             for connection in self._input_connections(node_id)
         }
 
+    def input_states_by_port_for_node(
+        self,
+        node_id: str,
+    ) -> dict[int, ImageState | None]:
+        """Return carried input metadata keyed by the target port index."""
+        return {
+            int(connection.target_port): self._resolved_output_state(
+                connection.source_id,
+                connection.source_port,
+            )
+            for connection in self._input_connections(node_id)
+        }
+
     def input_state_for_node(self, node_id: str) -> ImageState | None:
         connections = self._input_connections(node_id)
         if not connections:
             return None
         primary = connections[0]
         return self._resolved_output_state(primary.source_id, primary.source_port)
+
+    def parameter_visibility_context(
+        self,
+        node_id: str,
+    ) -> ParameterVisibilityContext:
+        """Return immutable-by-convention graph facts for parameter rendering."""
+        node = self.nodes[node_id]
+        port_names = tuple(port.name for port in self.input_ports(node_id))
+        data_by_port: dict[str, Any] = {}
+        state_by_port: dict[str, ImageState | None] = {}
+        connected_ports: set[str] = set()
+        for connection in self._input_connections(node_id):
+            if not 0 <= connection.target_port < len(port_names):
+                continue
+            port_name = port_names[connection.target_port]
+            connected_ports.add(port_name)
+            data_by_port[port_name] = self._resolved_output(
+                connection.source_id,
+                connection.source_port,
+            )
+            state = self._resolved_output_state(
+                connection.source_id,
+                connection.source_port,
+            )
+            state_by_port[port_name] = (
+                state if isinstance(state, ImageState) else None
+            )
+        used_output_ports = {
+            int(connection.source_port)
+            for connection in self.connections
+            if connection.source_id == node_id
+        }
+        used_output_ports.update(
+            int(tunnel.source_port)
+            for tunnel in self.output_tunnels.values()
+            if tunnel.source_id == node_id
+        )
+        return ParameterVisibilityContext(
+            operation_id=node.operation_id,
+            parameter_values=dict(node.params),
+            input_data_by_port=data_by_port,
+            input_state_by_port=state_by_port,
+            declared_input_ports=port_names,
+            connected_input_ports=frozenset(connected_ports),
+            used_output_ports=frozenset(used_output_ports),
+        )
 
     def is_manual_node(self, node_id: str) -> bool:
         node = self.nodes.get(node_id)
@@ -5511,6 +6239,7 @@ class PrototypePipeline:
         source_payloads: dict[str, SourcePayload] | None = None,
         dirty_node_ids: Iterable[str] | None = None,
         node_started_callback: Callable[[str], None] | None = None,
+        node_finished_callback: Callable[[str], None] | None = None,
         progress_callback: Callable[[str, int, int, str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
         manual_mode: str = MANUAL_RUN_CALCULATE,
@@ -5644,6 +6373,8 @@ class PrototypePipeline:
                 remaining.remove(node_id)
                 completed.add(node_id)
                 self.completed_node_ids.add(node_id)
+                if node_finished_callback is not None:
+                    node_finished_callback(node_id)
                 if prune_unretained:
                     self._prune_completed_outputs(
                         completed,

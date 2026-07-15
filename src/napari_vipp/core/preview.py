@@ -40,6 +40,7 @@ def make_preview(
     contrast_mode: str = "Percentile",
     contrast_scope: str = "Slice",
     contrast_limits=None,
+    preview_size: tuple[int, int] | None = None,
 ) -> np.ndarray | None:
     """Reduce arbitrary image-like data to a 2D or RGB thumbnail source array."""
     if data is None or mode.lower() == "off":
@@ -48,6 +49,8 @@ def make_preview(
     arr = np.asarray(data)
     if arr.size == 0:
         return None
+    if preview_size is not None:
+        arr = _sample_spatial_axes_for_preview(arr, state, preview_size)
 
     mode = mode.lower()
     if state is not None:
@@ -232,6 +235,51 @@ def _slice(arr: np.ndarray, current_step=None, current_step_nsteps=None) -> np.n
         )
         arr = np.take(arr, index, axis=axis)
     return arr
+
+
+def _sample_spatial_axes_for_preview(
+    arr: np.ndarray,
+    state: ImageState | None,
+    size: tuple[int, int],
+) -> np.ndarray:
+    """Sample X/Y before reductions so thumbnail work stays thumbnail-sized.
+
+    Nearest-neighbour spatial sampling commutes with selecting a slice and with
+    a projection over non-X/Y axes. Doing it first therefore produces the same
+    thumbnail pixels without materializing or normalizing a full camera frame.
+    """
+    if arr.ndim < 2:
+        return arr
+    y_axis, x_axis = _preview_spatial_axes(arr, state)
+    if y_axis is None or x_axis is None:
+        return arr
+    target_w, target_h = (max(int(value), 1) for value in size)
+    height = int(arr.shape[y_axis])
+    width = int(arr.shape[x_axis])
+    if height <= 0 or width <= 0:
+        return arr
+    scale = min(1.0, target_w / width, target_h / height)
+    sampled_width = max(1, int(round(width * scale)))
+    sampled_height = max(1, int(round(height * scale)))
+    if sampled_width == width and sampled_height == height:
+        return arr
+    y_indices = np.linspace(0, height - 1, sampled_height).astype(np.intp)
+    x_indices = np.linspace(0, width - 1, sampled_width).astype(np.intp)
+    sampled = np.take(arr, y_indices, axis=y_axis)
+    return np.take(sampled, x_indices, axis=x_axis)
+
+
+def _preview_spatial_axes(
+    arr: np.ndarray,
+    state: ImageState | None,
+) -> tuple[int | None, int | None]:
+    if state is not None and len(state.axes) == arr.ndim:
+        y_axis = _axis_index_by_name(state, "y")
+        x_axis = _axis_index_by_name(state, "x")
+        return y_axis, x_axis
+    if arr.ndim == 3 and arr.shape[-1] in RGB_CHANNELS:
+        return 0, 1
+    return arr.ndim - 2, arr.ndim - 1
 
 
 def _state_aware_preview(
@@ -831,6 +879,8 @@ def _resize_nearest(arr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     scale = min(target_w / w, target_h / h)
     new_w = max(1, int(round(w * scale)))
     new_h = max(1, int(round(h * scale)))
+    if new_w == w and new_h == h:
+        return arr
     ys = np.linspace(0, h - 1, new_h).astype(np.intp)
     xs = np.linspace(0, w - 1, new_w).astype(np.intp)
     return arr[ys][:, xs]

@@ -1,7 +1,8 @@
 # PSF Generation And Deconvolution Plan
 
-Status: first implementation complete; follow-up validation and polish tracked below
-Last reviewed: 2026-07-10
+Status: first implementation and deterministic RL-TV validation complete;
+real-data validation and behavior-changing experiments remain deferred
+Last reviewed: 2026-07-15
 
 This plan tracks VIPP's restoration work: first-class point-spread functions
 and PSF-aware deconvolution. The immediate implementation target is
@@ -57,15 +58,30 @@ Implemented first pass:
 - Baseline `Richardson-Lucy Deconvolution` node.
 - `Richardson-Lucy TV Deconvolution` node.
 - Named `Image` and `PSF` ports with manual/cached execution.
+- Read-only RL/RL-TV inspector preflight for PSF rank, known physical sampling,
+  values, normalization, shape, centering, and support. It reports `Ready`,
+  `Warning`, `Invalid`, or `Unknown` without modifying the PSF.
 - Deterministic synthetic deconvolution samples plus 2D and 3D review workflows:
   `examples/synthetic-deconvolution-rl-tv.json` and
   `examples/synthetic-3d-deconvolution-rl-tv.json`.
 - User-facing restoration documentation and parameter caveats in
   `docs/user-guide.md`.
 
+Validated and retained:
+
+- the production TV default remains the conservative `0.002`;
+- TV regularization zero remains identical to ordinary RL;
+- wrong rank and metadata-known sampling mismatch remain hard failures;
+- missing physical calibration is reported as a warning rather than treated as
+  known unit-pixel sampling;
+- constant initialization and same-size/zero-extension boundary behavior remain
+  unchanged pending separate behavior-changing validation;
+- the bundled 2D and 3D comparisons now use 25 iterations and `0.002` TV rather
+  than presenting `0.008-0.012` as a general starting point.
+
 Still missing or intentionally deferred:
 
-- real microscopy/PSF validation datasets and comparison reports;
+- real microscopy/PSF validation datasets and blinded expert review;
 - reflect-padded or otherwise explicit edge/boundary policy options;
 - performance tuning for large 3D volumes;
 - release-facing screenshots or tutorial walkthroughs;
@@ -322,18 +338,16 @@ Open decision:
 Boundary policy is a major source of deconvolution artifacts. Do not overbuild
 it in the first pass, but document it clearly.
 
-Recommended first implementation:
-
-1. Pad each spatial block by half the PSF size.
-2. Use reflect padding by default.
-3. Run same-size convolution on the padded block.
-4. Crop the restored estimate back to the original spatial block.
-
-Initial implementation note: the first RL and RL-TV nodes use the same
+Current implementation: the RL and RL-TV nodes use the same
 `scipy.signal.convolve(..., mode="same")` convolution semantics as
 scikit-image's Richardson-Lucy baseline. That keeps `TV regularization = 0`
-close to ordinary RL for validation fixtures. Reflect-padded edge handling
-remains a follow-up boundary-policy improvement.
+identical to ordinary RL for validation fixtures.
+
+Deterministic validation found reflect padding promising at 25 iterations but
+regressive in some 5-iteration runs under the current constant initialization.
+It must not replace current behavior unconditionally. Any future boundary mode
+needs an explicit option and a behavior-changing validation pass across
+initialization, iteration count, boundary features, and global error.
 
 Candidate future choices:
 
@@ -414,20 +428,22 @@ Completed:
    metadata, export, progress, and cancellation.
 5. Add deterministic synthetic deconvolution samples and 2D/3D example workflows.
 6. Update user docs with measured-PSF workflow guidance and caveats.
+7. Validate constant initialization, TV strength/sign, PSF errors, boundary
+   behavior, and numerical guards on deterministic 2D/3D phantoms.
+8. Add cached inspector PSF preflight and conservative example settings.
 
 Follow-up backlog:
 
-1. Add release-note/changelog wording for the new nodes and example workflow.
-2. Add a short screenshot/tutorial walkthrough after the UI copy settles.
-3. Validate against real bead PSFs and microscopy images from at least one 2D
+1. Add a short screenshot/tutorial walkthrough after the UI copy settles.
+2. Validate against real bead PSFs and microscopy images from at least one 2D
    and one 3D acquisition.
-4. Compare numerical behavior against established references such as Fiji/ImageJ
+3. Compare numerical behavior against established references such as Fiji/ImageJ
    Ops using user-provided or public data.
-5. Add boundary-policy options, starting with reflect padding and documented
-   crop-margin guidance.
-6. Profile large 3D volumes and decide whether chunking, vector acceleration,
+4. Design and validate explicit boundary-policy options; do not make reflect
+   padding an unconditional default under current evidence.
+5. Profile large 3D volumes and decide whether chunking, vector acceleration,
    or optional GPU work is warranted.
-7. Consider Wiener/unsupervised Wiener after PSF handling and RL-TV are stable.
+6. Consider Wiener/unsupervised Wiener after PSF handling and RL-TV are stable.
 
 ## Later Deconvolution Nodes
 
@@ -448,7 +464,8 @@ These should not block the first RL-TV milestone.
    validation table?
 2. Should baseline RL and RL-TV be separate nodes, or one node with a
    regularization selector? Separate nodes are clearer for early validation.
-3. What default TV weight is safest for fluorescence microscopy examples?
+3. What real-data evidence would justify changing the provisional conservative
+   TV default `0.002`?
 4. Should output scaling preserve block max, dtype range, or robust percentile
    range?
 5. Should reflect padding be fixed initially, or exposed as an advanced

@@ -132,11 +132,11 @@ quietly changing a scientific result.
 | Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
 | Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
-| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. The Qt worker only forwards progress and the typed result. Source ownership remains an explicit upstream responsibility. |
+| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node for immediate presentation, but the live scientific cache is updated only from the accepted final result. Source ownership remains an explicit upstream responsibility. |
 | Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
 | Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
 | Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
-| Viewer presentation | `_widget.py`, `core/diagnostics.py` | Inspect and pin layers receive detached array copies, so napari edits cannot mutate pipeline caches. Large generated layers may start with provisional dtype-based contrast solely to keep Qt responsive, followed by exact finite extrema in a stale-safe worker. Viewer contrast, colormaps, and thumbnails never enter operation inputs. |
+| Viewer presentation | `_widget.py`, `core/diagnostics.py` | Generated inspect and pin layers receive non-writeable views of cached arrays, preventing napari writes without duplicating full volumes; a Labels layer alone may require a presentation conversion. Compatible Image layers reuse the same layer object while their data reference and display properties are reset. Large generated layers and incremental node cards may start with provisional dtype-based contrast solely to keep Qt responsive, followed by exact finite extrema in a stale-safe worker after final graph publication. Viewer contrast, colormaps, and thumbnails never enter operation inputs. |
 | Workflow and provenance artifacts | `core/atomic_io.py`, `core/workflow.py`, `core/batch.py` | Each JSON/text artifact is written to a same-directory temporary file, flushed and fsynced, then atomically replaced. Non-finite JSON is rejected. Each file is atomic; a set of related workflow/config/manifest files is not a single filesystem transaction. |
 | Headless Python export | `core/export.py`, `core/pipeline.py` | Generated programs embed a validated immutable workflow and reconstruct the shared executor for every call. They carry `ImageState` from `ImageDataset`/`SourcePayload`, preserve output states when saving, reject missing or ambiguous source bindings, and refuse a different VIPP runtime version. Export never recreates metadata-dependent behavior with incomplete direct operation calls. |
 | Batch publication | `core/batch.py` | Each item captures every source identity before reading, fully writes available outputs to private staged files, reverifies every source, and only then promotes staged files to final paths. Promotions are atomic per output. A changed source fails the item and removes its staged files, so no apparently complete result is published from a mixed revision. Multi-output promotion can still end in an explicitly recorded partial item if a later promotion fails. |
@@ -313,6 +313,38 @@ Special execution cases:
 - `split_channels` requires a semantic channel axis from metadata or a
   conventional RGB/RGBA channel-last input. `split_axis` is the dynamic-output
   node for arbitrary stack axes such as time, Z, or a leading non-channel axis.
+
+### Context-aware parameter presentation
+
+`ParameterSpec.visibility` declares reusable, Qt-free relevance rules.
+`ParameterVisibilityContext` is assembled by `PrototypePipeline` from stored
+parameters, named input ports, resolved data and `ImageState` values, connection
+state, and used output ports. The resolver uses explicit dtype/axis facts and
+defaults to visible whenever required context is unresolved. In particular,
+array rank or a trailing dimension of length three/four is never enough to hide
+a spatial or channel control.
+
+The widget consumes only the resolved `visible` flag and explanation. It may
+rebuild inspector rows after selection, topology changes, source/metadata
+replacement, execution completion, dynamic-port changes, workflow restoration,
+or a controlling parameter edit. A visibility-only rebuild snapshots and
+restores node parameters and returns no graph change; ordinary refresh also
+keeps stored values authoritative instead of round-tripping them through Qt
+control bounds or decimal formatting.
+
+Shared rules cover dtype, ordinary channel axes, encoded RGB/RGBA axes, stack
+scope, spatial mode across all relevant input ports, Z/2D dimensionality, and
+parameter dependencies. Specialized renderers remain for sources, Born-Wolf
+metadata resolution, PSF validation, Rescale Axes, Split Channels, and Composite
+to RGB because their scientific status and dynamic port behavior cannot be
+expressed safely as row predicates alone. The complete catalog audit and
+documented exceptions are in
+[context-aware-controls-audit.md](context-aware-controls-audit.md).
+
+Visibility is excluded from workflow JSON, execution kwargs, cache keys,
+scientific hashes, and undo/redo snapshots. Hidden parameters therefore retain
+their exact stored values and still participate in generated Python and batch
+execution. The workflow schema remains version 3.
 
 ## Node Library
 

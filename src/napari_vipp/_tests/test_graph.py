@@ -3,7 +3,7 @@ from __future__ import annotations
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
 from qtpy.QtGui import QPainterPath
 
-from napari_vipp._graph import PipelineGraphView, _wire_path
+from napari_vipp._graph import PipelineGraphView, PortLabelMode, _wire_path
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.pipeline import PrototypePipeline
 
@@ -376,6 +376,155 @@ def test_graph_view_can_apply_absolute_node_positions(qtbot):
     assert view.node_position("input") == QPointF(40, 50)
     assert view.node_position("gaussian") == QPointF(360, 120)
     assert not view.apply_node_positions({"input": QPointF(40, 50)})
+
+
+def test_port_label_modes_show_only_the_requested_labels(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    gaussian = view._proxies["gaussian"]
+    card = view._cards["gaussian"]
+    positions_before = view.node_positions()
+    compact_width = gaussian.sceneBoundingRect().width()
+
+    assert view.port_label_mode == PortLabelMode.AMBIGUOUS_ONLY
+    assert not gaussian.input_port.label_item.isVisible()
+    assert not gaussian.output_port.label_item.isVisible()
+
+    view.set_port_label_mode("Show all")
+
+    assert view.port_label_mode == PortLabelMode.SHOW_ALL
+    assert gaussian.input_port.label_item.isVisible()
+    assert gaussian.output_port.label_item.isVisible()
+    assert gaussian.sceneBoundingRect().width() > compact_width
+    content_rect = gaussian.mapRectToScene(QRectF(card.card_layout.contentsRect()))
+    assert not content_rect.intersects(
+        gaussian.input_port.label_item.sceneBoundingRect()
+    )
+    assert not content_rect.intersects(
+        gaussian.output_port.label_item.sceneBoundingRect()
+    )
+    assert view.node_positions() == positions_before
+
+    view.set_port_label_mode(PortLabelMode.HIDE_ALL)
+
+    assert not gaussian.input_port.label_item.isVisible()
+    assert not gaussian.output_port.label_item.isVisible()
+    assert gaussian.sceneBoundingRect().width() == compact_width
+    assert view.node_positions() == positions_before
+
+
+def test_ambiguous_port_labels_use_declared_deconvolution_input_names(qtbot):
+    pipeline = PrototypePipeline()
+    nodes = [
+        pipeline.add_node("richardson_lucy_deconvolution"),
+        pipeline.add_node("richardson_lucy_tv_deconvolution"),
+    ]
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+
+    for node in nodes:
+        proxy = view._proxies[node.id]
+        expanded_width = proxy.sceneBoundingRect().width()
+        assert [port.label for port in proxy.input_ports] == ["Image", "PSF"]
+        assert [port.label_item.toPlainText() for port in proxy.input_ports] == [
+            "Image",
+            "PSF",
+        ]
+        assert all(port.label_item.isVisible() for port in proxy.input_ports)
+
+        view.set_port_label_mode(PortLabelMode.HIDE_ALL)
+        assert proxy.sceneBoundingRect().width() < expanded_width
+        view.set_port_label_mode(PortLabelMode.AMBIGUOUS_ONLY)
+        assert proxy.sceneBoundingRect().width() == expanded_width
+
+
+def test_label_expansion_reports_overlap_without_moving_nodes(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.apply_node_positions(
+        {
+            "input": (-300.0, 0.0),
+            "gaussian": (0.0, 0.0),
+            "threshold": (235.0, 0.0),
+        }
+    )
+    positions_before = view.node_positions()
+
+    assert view.overlapping_node_pairs() == []
+
+    view.set_port_label_mode(PortLabelMode.SHOW_ALL)
+
+    assert ("gaussian", "threshold") in view.overlapping_node_pairs()
+    assert view.node_positions() == positions_before
+
+
+def test_resolved_dynamic_output_labels_are_drawn_in_ambiguous_mode(qtbot):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("split_channels")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    ports = pipeline.output_ports(node.id)
+
+    view.set_node_output_ports(
+        node.id,
+        len(ports),
+        [port.label for port in ports],
+        data_types=[port.output_type for port in ports],
+    )
+
+    drawn = view._proxies[node.id].output_ports
+    assert [port.label for port in drawn] == [port.label for port in ports]
+    assert [port.label_item.toPlainText() for port in drawn] == [
+        port.label for port in ports
+    ]
+    assert all(port.label_item.isVisible() for port in drawn)
+
+
+def test_long_port_labels_are_elided_with_full_tooltips(qtbot):
+    pipeline = PrototypePipeline()
+    node = pipeline.add_node("richardson_lucy_tv_deconvolution")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    long_label = "Observed fluorescence image with a deliberately long name"
+
+    view.set_node_input_ports(node.id, 2, [long_label, "PSF"])
+
+    proxy = view._proxies[node.id]
+    port = proxy.input_ports[0]
+    assert port.label_item.toPlainText() != long_label
+    assert port.label_item.toPlainText().endswith("…")
+    assert port.label_item.toolTip() == long_label
+    assert proxy.sceneBoundingRect().contains(port.label_item.sceneBoundingRect())
+    card = view._cards[node.id]
+    content_rect = proxy.mapRectToScene(QRectF(card.card_layout.contentsRect()))
+    assert not content_rect.intersects(port.label_item.sceneBoundingRect())
+
+
+def test_expanded_port_rows_keep_wires_attached_and_feed_layout_sizes(qtbot):
+    pipeline = PrototypePipeline()
+    target = pipeline.add_node("combine_channels")
+    view = PipelineGraphView()
+    view.build_graph(pipeline.nodes.values(), pipeline.connections)
+    qtbot.addWidget(view)
+    view.add_connection("input", target.id, target_port=0)
+    connection = view._connections[-1]
+    height_before = view.node_scene_rect(target.id).height()
+
+    view.set_node_input_ports(
+        target.id,
+        12,
+        [f"Channel {index + 1}" for index in range(12)],
+    )
+
+    proxy = view._proxies[target.id]
+    expected_end = proxy.port_scene_pos("input", 0)
+    actual_end = connection.path().pointAtPercent(1.0)
+    assert view.node_scene_rect(target.id).height() > height_before
+    assert view.node_card_sizes()[target.id][1] >= 348.0
+    assert (actual_end - expected_end).manhattanLength() < 0.01
 
 
 def test_connection_routes_around_intermediate_node(qtbot):

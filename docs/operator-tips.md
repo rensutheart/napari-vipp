@@ -1,6 +1,6 @@
 # VIPP Operator Tips and Performance
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-15
 
 This guide is for day-to-day operation of larger or more complex workflows.
 It focuses on responsiveness, stability, and practical tuning.
@@ -59,6 +59,28 @@ all finite pixels in that scope; VIPP does not introduce hidden sampling.
 - Prefer a stable input layer during intensive tuning to keep cache reuse high.
 - Use pinned outputs for side-by-side checks without reconfiguring the graph.
 - Save workflow snapshots before major parameter sweeps.
+
+## Deconvolution Tuning Order
+
+For blurred or missing structures, change one cause at a time:
+
+1. Read the RL/RL-TV PSF preflight and validate rank, physical sampling,
+   centering, and support. Missing calibration is a warning, not permission to
+   assume unit pixel spacing.
+2. Reduce TV regularization and compare directly with `0`. The default `0.002`
+   is conservative; `0.008-0.012` is comparatively strong and may erase real
+   dim or fine structures.
+3. Check under-convergence. More iterations may recover feature intensity, but
+   can also worsen noise, boundary artifacts, or global error.
+4. Compare ordinary RL and RL-TV at the same iteration count.
+5. Inspect boundary regions and PSF provenance.
+6. Only then test advanced numerical guards such as TV epsilon, filter epsilon,
+   or denominator floor.
+
+Do not use iteration count to compensate for a miscentered or incorrectly
+sampled PSF. A smoother reconstruction, or one with a better global denoising
+metric, is not automatically the result that best preserves meaningful dim
+structures.
 
 ## Troubleshooting Slow Updates
 

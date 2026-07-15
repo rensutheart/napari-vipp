@@ -321,15 +321,46 @@ def compare_psf_sampling(
                     f"{psf_axis.name!r})",
                 )
             )
-        issues.extend(
-            _axis_calibration_issues(
-                image_axis,
-                psf_axis,
-                axis_label=label,
-                compare_translation=False,
+        # A default scale of one pixel is an index-space fallback, not known
+        # physical calibration.  Only reject spacing mismatches when both
+        # inputs carry explicit physical units; missing calibration is reported
+        # by the deconvolution preflight instead of being treated as measured
+        # evidence that the grids match or differ.
+        if _axis_has_known_physical_sampling(
+            image_axis
+        ) and _axis_has_known_physical_sampling(psf_axis):
+            issues.extend(
+                _axis_calibration_issues(
+                    image_axis,
+                    psf_axis,
+                    axis_label=label,
+                    compare_translation=False,
+                )
             )
-        )
     return GridCompatibility(tuple(issues))
+
+
+def psf_physical_sampling_known(
+    image: ImageGrid,
+    psf: ImageGrid,
+    *,
+    spatial_ndim: int,
+) -> bool:
+    """Return whether image and PSF both have physical spatial calibration."""
+    spatial_ndim = int(spatial_ndim)
+    if spatial_ndim not in {2, 3}:
+        return False
+    if len(image.axes) < spatial_ndim or len(psf.axes) != spatial_ndim:
+        return False
+    return all(
+        _axis_has_known_physical_sampling(image_axis)
+        and _axis_has_known_physical_sampling(psf_axis)
+        for image_axis, psf_axis in zip(
+            image.axes[-spatial_ndim:],
+            psf.axes,
+            strict=True,
+        )
+    )
 
 
 def validate_aligned_image_states(
@@ -483,6 +514,11 @@ def _normalized_calibration(axis: GridAxis) -> tuple[str, float, float] | None:
         return None
     dimension, factor = _unit_dimension_and_factor(axis.unit)
     return dimension, axis.scale * factor, axis.translation * factor
+
+
+def _axis_has_known_physical_sampling(axis: GridAxis) -> bool:
+    dimension, _factor = _unit_dimension_and_factor(axis.unit)
+    return dimension != "index"
 
 
 def _unit_dimension_and_factor(unit: str | None) -> tuple[str, float]:

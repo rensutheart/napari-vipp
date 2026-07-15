@@ -14,7 +14,13 @@ from napari_vipp.core.operations import (
     COMPOSITE_RGB_MANUAL,
     COMPOSITE_RGB_PERCENTILE_1_99,
 )
-from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.pipeline import (
+    HISTOGRAM_BINS_PARAMETER,
+    SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+    PrototypePipeline,
+    SourcePayload,
+    resolve_parameter_visibility,
+)
 
 
 def _pipeline_with(operation_id: str) -> tuple[PrototypePipeline, str]:
@@ -23,6 +29,75 @@ def _pipeline_with(operation_id: str) -> tuple[PrototypePipeline, str]:
     node = pipeline.add_node(operation_id)
     assert pipeline.connect("input", node.id).success
     return pipeline, node.id
+
+
+@pytest.mark.parametrize(
+    ("dtype", "expected"),
+    (
+        (np.float32, True),
+        (np.float64, True),
+        (np.uint8, False),
+        (np.uint16, False),
+        (np.int16, False),
+        (np.bool_, False),
+    ),
+)
+def test_float_parameter_visibility_uses_resolved_input_dtype(dtype, expected):
+    data = np.zeros((4, 5), dtype=dtype)
+
+    result = resolve_parameter_visibility(
+        HISTOGRAM_BINS_PARAMETER,
+        input_data=data,
+    )
+
+    assert result.visible is expected
+
+
+def test_float_parameter_visibility_uses_state_dtype_without_materialized_data():
+    state = image_state_from_array(
+        np.zeros((4, 5), dtype=np.uint16),
+        layer_metadata={"axes": "YX"},
+    )
+
+    result = resolve_parameter_visibility(
+        HISTOGRAM_BINS_PARAMETER,
+        input_state=state,
+    )
+
+    assert not result.visible
+
+
+def test_unresolved_parameter_inputs_remain_visible():
+    assert resolve_parameter_visibility(HISTOGRAM_BINS_PARAMETER).visible
+    assert resolve_parameter_visibility(SCALAR_LUMA_CHANNEL_AXIS_PARAMETER).visible
+
+
+def test_rgb_parameter_visibility_requires_explicit_rgb_semantics():
+    rgb = np.zeros((4, 5, 3), dtype=np.uint8)
+    explicit_rgb = image_state_from_array(
+        rgb,
+        layer_metadata={"axes": "Y,X,rgb"},
+    )
+    explicit_scalar = image_state_from_array(
+        np.zeros((3, 4, 5), dtype=np.uint8),
+        layer_metadata={"axes": "ZYX"},
+    )
+    inferred_from_shape = image_state_from_array(rgb)
+
+    assert resolve_parameter_visibility(
+        SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        input_data=rgb,
+        input_state=explicit_rgb,
+    ).visible
+    assert not resolve_parameter_visibility(
+        SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        input_state=explicit_scalar,
+    ).visible
+    assert resolve_parameter_visibility(
+        SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        input_data=rgb,
+        input_state=inferred_from_shape,
+    ).visible
 
 
 def test_auto_spatial_mode_rejects_shape_inference_but_explicit_mode_runs():

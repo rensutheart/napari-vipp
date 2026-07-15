@@ -53,7 +53,7 @@
       "operation_id": "richardson_lucy_deconvolution",
       "params": {
         "spatial_mode": "2D YX",
-        "iterations": 18,
+        "iterations": 25,
         "normalize_psf": true,
         "clip_negative_input": true,
         "clip_output_negative": true,
@@ -66,15 +66,15 @@
       "operation_id": "richardson_lucy_tv_deconvolution",
       "params": {
         "spatial_mode": "2D YX",
-        "iterations": 18,
-        "tv_regularization": 0.012,
+        "iterations": 25,
+        "tv_regularization": 0.002,
         "tv_epsilon": 1e-06,
         "normalize_psf": true,
         "clip_negative_input": true,
         "clip_output_negative": true,
         "preserve_input_scale": true,
         "filter_epsilon": 1e-12,
-        "denominator_floor": 0.15
+        "denominator_floor": 0.05
       }
     }
   ],
@@ -136,7 +136,7 @@
     },
     {
       "id": "note_2",
-      "text": "Ordinary Richardson-Lucy is the comparator. The TV node uses the same PSF and iteration count with conservative regularization to suppress small noisy oscillations.",
+      "text": "Ordinary Richardson-Lucy is the comparator. The TV branch uses the conservative production-like starting point of 25 iterations and regularization 0.002. Compare with TV regularization zero before increasing it; values around 0.008-0.012 are strong and may suppress real dim or fine features.",
       "position": [1110.0, 610.0],
       "width": 330.0,
       "attached_node": "richardson_lucy_tv_deconvolution_1"

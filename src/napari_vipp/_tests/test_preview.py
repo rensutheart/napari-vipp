@@ -37,6 +37,24 @@ def test_mip_preview_reduces_3d_to_2d():
     assert preview[2, 3] == 10
 
 
+def test_preview_samples_spatial_axes_before_large_mip():
+    data = np.arange(3 * 400 * 600, dtype=np.float32).reshape(3, 400, 600)
+    state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+
+    preview = make_preview(
+        data,
+        mode="mip",
+        state=state,
+        preview_size=(180, 110),
+    )
+
+    y_indices = np.linspace(0, 399, 110).astype(np.intp)
+    x_indices = np.linspace(0, 599, 165).astype(np.intp)
+    expected = np.max(data, axis=0)[y_indices][:, x_indices]
+    assert preview.shape == (110, 165)
+    assert np.array_equal(preview, expected)
+
+
 def test_shape_inferred_yxc_preview_is_reduced_as_scalar_data():
     data = np.arange(5 * 7 * 3, dtype=np.uint16).reshape(5, 7, 3)
     state = image_state_from_array(data)

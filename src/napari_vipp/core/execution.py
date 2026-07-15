@@ -61,10 +61,30 @@ class PipelineRunResult:
     source_revisions: tuple[object, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class PipelineNodeResult:
+    """One completed node's presentation-safe result from an active run."""
+
+    run_id: int
+    node_id: str
+    operation_id: str
+    output: object
+    output_state: object
+    node_outputs: tuple[object, ...]
+    node_output_states: tuple[object, ...]
+    execution_state: str
+    execution_message: str = ""
+    source_revisions: tuple[object, ...] = ()
+
+
+NodeFinishedCallback = Callable[[PipelineNodeResult], None]
+
+
 def execute_pipeline_request(
     request: PipelineRunRequest,
     *,
     node_started_callback: NodeStartedCallback | None = None,
+    node_finished_callback: NodeFinishedCallback | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> PipelineRunResult:
     """Execute ``request`` without Qt and return errors as typed results."""
@@ -77,6 +97,31 @@ def execute_pipeline_request(
             workflow.get("output_tunnels", ()),
         )
         _hydrate_cached_pipeline_outputs(pipeline, request)
+
+        def publish_node_result(node_id: str) -> None:
+            if node_finished_callback is None:
+                return
+            node = pipeline.nodes[node_id]
+            node_finished_callback(
+                PipelineNodeResult(
+                    run_id=request.run_id,
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    output=pipeline.outputs.get(node_id),
+                    output_state=pipeline.output_states.get(node_id),
+                    node_outputs=tuple(pipeline.node_outputs.get(node_id, ())),
+                    node_output_states=tuple(
+                        pipeline.node_output_states.get(node_id, ())
+                    ),
+                    execution_state=pipeline.node_execution_states.get(node_id, ""),
+                    execution_message=pipeline.node_execution_messages.get(
+                        node_id,
+                        "",
+                    ),
+                    source_revisions=request.source_revisions,
+                )
+            )
+
         pipeline.run(
             request.input_data,
             input_metadata=request.input_metadata,
@@ -84,6 +129,7 @@ def execute_pipeline_request(
             source_payloads=request.source_payloads,
             dirty_node_ids=request.dirty_node_ids,
             node_started_callback=node_started_callback,
+            node_finished_callback=publish_node_result,
             progress_callback=progress_callback,
             cancel_callback=(
                 request.cancel_event.is_set
@@ -147,7 +193,9 @@ def _hydrate_cached_pipeline_outputs(
 
 
 __all__ = [
+    "NodeFinishedCallback",
     "NodeStartedCallback",
+    "PipelineNodeResult",
     "PipelineRunRequest",
     "PipelineRunResult",
     "ProgressCallback",

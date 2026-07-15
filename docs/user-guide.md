@@ -53,6 +53,15 @@ Graph direction is usually left to right: sources on the left, processing in
 the middle, analysis or saved outputs on the right. Node cards show a compact
 thumbnail, axis/dtype metadata, execution status, and typed input/output ports.
 
+The toolbar `Settings` menu controls persistent port names with three modes:
+`Ambiguous only` labels every port on nodes with multiple inputs or outputs,
+`Show all` labels every existing port, and `Hide all` shows ports without names.
+`Ambiguous only` is the default. Visible labels widen the card to reserve clear
+left and right gutters; unusually long names are shortened visually and retain
+their complete name as a tooltip. Changing the mode preserves manual node
+positions. If wider cards overlap, VIPP reports it in the status line; use
+`Auto structure graph` to reflow the graph using the new card sizes.
+
 ## Core Concepts
 
 ### Images, Masks, Labels, And Tables
@@ -143,10 +152,14 @@ population has genuinely changed.
 | `Explicit values` | `Low value` and `High value` are used directly; the percentile fields do not override them. |
 
 There is no size-dependent percentile sample. Large percentile calculations are
-backgrounded but still use all finite values. The selected mode is saved in
-workflow JSON. Dragging either histogram cutoff is a manual intensity edit, so a
-node in percentile mode changes to `Explicit values` before the dragged cutoff
-is saved.
+backgrounded but still use all finite values, with cutoff and voxel-rescaling
+phases shown in the pipeline progress area. Interior percentiles such as 99.9
+still require an exact order statistic over the volume; 0 and 100 use the exact
+finite minimum and maximum directly. Rescaling itself uses bounded work chunks
+without changing the requested arithmetic. The selected mode is saved in
+workflow JSON. Dragging either histogram cutoff is a manual intensity edit, so
+a node in percentile mode changes to `Explicit values` before the dragged
+cutoff is saved.
 
 `Clip Intensity` uses the same explicit-mode principle. New nodes default to
 `Data range`, which leaves the input range unchanged until explicit bounds are
@@ -173,6 +186,40 @@ The input-histogram slice/stack selector changes the distribution drawn for
 inspection. A percentile-mode Rescale marker and a data-range Clip marker still
 describe the complete connected input, because that is the data those node
 modes actually process.
+
+## Context-aware controls
+
+The Parameters inspector hides settings only when explicit input metadata or a
+selected mode proves that the setting has no effect. Examples include floating
+histogram bins on integer input, channel-axis fields on explicitly scalar
+images, Z-only values on resolved YX images, and manual values while an
+automatic mode is active.
+
+This behavior is conservative:
+
+- inferred or missing axis semantics keep potentially relevant settings
+  visible;
+- an array ending in 3 or 4 is not treated as RGB/RGBA without explicit colour
+  metadata;
+- a 3D-shaped array is not treated as a ZYX volume without explicit spatial
+  axes;
+- multi-input controls remain visible until every scientifically relevant port
+  is resolved and compatible;
+- one muted inspector note explains when rows are hidden or when unresolved
+  context is keeping them available.
+
+Hiding never edits a value. The exact stored value remains in workflow JSON,
+generated Python, batch execution, cache identity, and undo/redo history. If an
+upstream dtype, axis order, source, connection, dynamic port, or controlling
+parameter changes, the inspector re-evaluates the rows without recalculating
+the graph merely because their presentation changed.
+
+Some scientific controls intentionally remain visible. Born-Wolf auto fields
+show resolved values and missing-metadata status; 3D mesh measurement keeps its
+3D requirement visible on invalid input; dynamic input counts remain available
+for workflow preconfiguration. See
+[context-aware-controls-audit.md](context-aware-controls-audit.md) for the full
+catalog and rationale.
 
 ## Toolbar Controls
 
@@ -573,11 +620,15 @@ Review sequence:
 3. Select `Prepare / Validate PSF` and confirm the output is `float32`, odd
    shaped, centered, and normalized.
 4. Select `Richardson-Lucy Deconvolution` and click `Calculate`.
-5. Select `Richardson-Lucy TV Deconvolution` and click `Calculate`.
+5. Select `Richardson-Lucy TV Deconvolution`, read its PSF preflight status,
+   and click `Calculate`.
 6. Compare thumbnails, inspect outputs in napari, and check metadata.
 
 Use ordinary RL as a comparator. Use RL-TV when ordinary RL sharpens noise too
-strongly.
+strongly. Both bundled comparison branches use 25 iterations; RL-TV uses the
+conservative production-like starting value `TV regularization = 0.002`. These
+are review starting points, not evidence that more iterations or nonzero TV are
+best for every acquisition.
 
 ## Restoration And PSF Workflows
 
@@ -630,6 +681,28 @@ For multi-channel images, `Channel = -1` generates one output port per metadata
 channel, such as `488 PSF` and `561 PSF`. For a single channel, set `Channel`
 to that index.
 
+`PSF XY support (samples)` and `PSF Z support (samples)` specify the generated
+kernel window. They are deliberately independent of the input image dimensions:
+`Auto from metadata` resolves wavelength, NA, refractive index, XY spacing, and
+Z spacing, but it does not silently crop the optical model to the available
+image depth. The inspector therefore shows the requested PSF support beside the
+input image extent before deconvolution.
+
+The Born-Wolf inspector also reports a conventional-widefield Nyquist estimate.
+This is a sampling-interval check, not a stack-depth check. For example, the
+combination 561 nm emission, NA 1.46, refractive index 1.518, XY spacing 0.025
+um, and Z spacing 0.101 um has estimated critical distances of about 0.096 um
+in XY and 0.254 um in Z, so both sampling intervals pass. A 33-plane PSF and an
+11-plane image can therefore pass Nyquist while still failing the separate
+image-extent/support check. The estimate uses the conventional-widefield
+bandwidth equations documented by
+[Scientific Volume Imaging](https://svi.nl/Nyquistrate).
+
+The estimate and Born-Wolf model assume conventional widefield fluorescence.
+Reconstructed SIM, confocal, and other modalities may have different bandwidth
+and PSF requirements. A completed calculation does not prove that the selected
+model matches the acquisition.
+
 ### Channel-Specific Deconvolution
 
 Use one deconvolution branch per fluorescence channel:
@@ -660,21 +733,21 @@ spatial mode.
 
 | Parameter | Guidance |
 | --- | --- |
-| `Spatial processing` | Use `3D ZYX` for true volumetric restoration. Use `2D YX` when each plane should be restored independently. |
-| `Iterations` | Start around 10-30. More iterations may recover detail but cost time and amplify noise, ringing, or PSF mismatch. The linear slider covers 1-100. |
-| `Normalize PSF` | Keep on unless you have a specific reason. |
+| `Spatial processing` | Use `3D ZYX` for true volumetric restoration and `2D YX` when each plane should be restored independently. PSF rank and sampling must match; iterations cannot repair a miscentered or incorrectly sampled PSF. |
+| `Iterations` | Few iterations may leave the result under-converged. Increasing the count can recover detail, but can also amplify noise, ringing, boundary error, or PSF-mismatch artifacts. Higher is not universally better. |
+| `Normalize PSF` | Keep on unless you have a specific reason. Normalization does not fix rank, sampling, centering, or insufficient support. |
 | `Clip negative input` | Usually on for microscopy intensity images. |
 | `Clip output negative` | Usually on. |
 | `Preserve input scale` | Keeps output intensities near the input scale after internal normalization. |
-| `Filter epsilon` | Suppresses ratio updates where the predicted blur is extremely small. Larger values are more stable but may lose dim structure; for RL-TV the log slider covers `1e-15` to `0.001`, and `0` disables it. |
+| `Filter epsilon` | Advanced ratio-update guard. Normally leave it at `1e-12`; it should not be the first response to lost structure. |
 
 RL-TV adds:
 
 | Parameter | Guidance |
 | --- | --- |
-| `TV regularization` | Higher values suppress noise more strongly but can flatten fine structure. `0` gives ordinary RL; the log slider covers `1e-6` to `0.1`. |
-| `TV epsilon` | Smooths the TV gradient norm near zero. Leave at `1e-6` unless testing; the log slider covers `1e-12` to `0.01`. |
-| `Denominator floor` | Limits extreme TV amplification. Larger values are more stable but can weaken the TV correction; the log slider covers `0.001` to `1`. |
+| `TV regularization` | Begin at `0` or a very small value and increase only as needed. The conservative default is `0.002`. Values around `0.008-0.012` are comparatively strong and may suppress scientifically real dim or fine structures even when the result looks smoother. |
+| `TV epsilon` | Advanced TV-gradient guard. Leave at `1e-6` unless testing a demonstrated numerical problem. |
+| `Denominator floor` | Advanced TV-update guard. Leave at `0.05` unless diagnosing a demonstrated instability; it is not a first response to missing structure. |
 
 These slider ranges are practical exploration windows, not parameter validity
 limits. The adjacent spinner accepts valid values outside its slider window and
@@ -683,16 +756,66 @@ epsilon = 0` remain available through the spinner as explicit off values.
 
 ### Restoration Caveats
 
+- The inspector separates green `Checks passed` from `Needs attention` and
+  `What to do next`. A normalized sum near one and zero peak/centroid offsets
+  are passed checks, not warnings. Overall readiness remains `Ready`, `Warning`,
+  `Invalid`, or `Unknown`.
+- A support warning names the affected axis and compares actual sample counts.
+  For example, a 33-plane PSF on an 11-plane image means the axial kernel spans
+  beyond the whole Z stack. No output plane has full PSF support on both sides,
+  and the current same-size convolution treats signal beyond the stack as zero.
+  For true 3D restoration, acquire guard planes above and below the region of
+  interest and crop or interpret the restored margins. Use `2D YX` on both the
+  PSF generator and deconvolution only when independent plane-wise restoration
+  is scientifically appropriate. When PSF values are available, the warning
+  also reports how much current PSF intensity a centered image-sized crop would
+  retain and discard; this is why the generator does not silently force the
+  support to equal the image depth.
+- Boundary intensity is not intensity outside the array. It is the fraction of
+  the modeled PSF that remains on its outermost samples, indicating that the
+  PSF tail may be truncated. The inspector reports separate Z, Y, and X
+  boundary fractions so support can be enlarged only where the image has room.
+- `Prepare / Validate PSF` fixes sign, normalization, odd shape, and centering.
+  It does not shrink meaningful non-empty support, so adding it will not clear
+  an image-versus-PSF size warning. Do not crop a PSF merely to silence that
+  warning.
+- The inspector checks rank, known physical sampling, finite/non-negative
+  values, positive sum, approximate normalization, odd shape, peak and
+  centroid centering, and support relative to the image. It never recenters,
+  crops, pads, normalizes, or resamples the PSF.
+- Missing physical calibration is a warning: VIPP does not invent a pixel size.
+  Wrong rank and metadata-known sampling mismatches remain execution errors.
+- Even or off-center PSFs should be routed through `Prepare / Validate PSF` and
+  reviewed before deconvolution.
 - PSF dimensionality must match the selected spatial mode: 2D PSF for `2D YX`,
   3D PSF for `3D ZYX`.
 - Deconvolution outputs are `float32`.
 - Output metadata follows the image input, not the PSF input.
-- PSFs are normalized defensively inside deconvolution even when the preparation
-  node is skipped.
+- When `Normalize PSF` is enabled, deconvolution normalizes the PSF sum. This
+  explicit option does not prepare its shape, centering, sampling, or support.
 - The current boundary policy uses same-size convolution behavior. Edges can
   show artifacts; crop or interpret borders carefully.
 - GPU acceleration, blind deconvolution, spatially variant PSFs, and formal
   reference comparisons are later scope.
+
+### Blurred Or Missing Structures
+
+Diagnose in this order:
+
+1. Validate PSF rank, physical sampling, centering, and support.
+2. Reduce TV regularization, including a direct comparison with `0`.
+3. Check whether the reconstruction is simply under-converged; increase
+   iterations cautiously while watching noise, global error, and boundaries.
+4. Compare ordinary RL with RL-TV using the same PSF and iteration count.
+5. Inspect boundaries and PSF provenance, including acquisition channel and
+   whether the PSF was measured or generated at the correct sampling.
+6. Only then consider advanced numerical guards such as TV epsilon, filter
+   epsilon, or denominator floor.
+
+Higher iterations can recover feature intensity while worsening noise or global
+error. TV can improve global denoising metrics while suppressing scientifically
+meaningful dim structures. A visually smoother reconstruction is therefore not
+automatically a scientifically better reconstruction.
 
 ## Axis And Channel Workflows
 
@@ -806,8 +929,9 @@ two same-shaped channel images, usually from `Split Channels`, into the named
 
 Manual thresholds are normalized `0..255` values. VIPP jointly scales the two
 input channels into this range before calculating metrics, scatter views,
-colocalized-voxel images, or RACC. `Costes auto` writes calculated thresholds
-back into the controls so the values remain visible.
+colocalized-voxel images, or RACC. `Costes auto` stores its calculated
+thresholds and shows them as scatter guides/status; the manual threshold rows
+reappear with those stored values when you switch back to `Manual`.
 
 When a colocalization threshold node is selected, the inspector shows a scatter
 density panel with threshold guide lines. Dragging a guide switches the node to
@@ -873,9 +997,10 @@ unnecessary full-volume branches.
 | Napari Z scrubbing refreshes too much of the graph | Turn off `Link napari/VIPP sliders`. |
 | A manual node says `Not calculated` | Select it and click `Calculate`, or use `Calculate all`. |
 | A manual node is orange/stale | Upstream data or parameters changed. Click `Recalculate`. |
-| Deconvolution refuses the PSF | Check 2D/3D PSF dimensionality against `Spatial processing`. |
+| Deconvolution refuses the PSF | Read the PSF preflight. Check 2D/3D rank and metadata-known sampling, then use `Prepare / Validate PSF` for even or off-center kernels. |
 | Born-Wolf PSF auto fields are red | Metadata is missing. Supply manual values or load a source with richer acquisition metadata. |
 | Output looks over-sharpened | Reduce RL iterations or increase RL-TV regularization slightly. |
+| Structures remain blurred or disappear | Follow the ordered PSF/TV/convergence/RL comparison checklist in `Blurred Or Missing Structures`; do not start with numerical guards. |
 | Edges look unreliable after deconvolution | Crop margins or interpret borders cautiously. |
 | Batch saves the wrong output | Add explicit `Batch Output` nodes with clear tags. |
 

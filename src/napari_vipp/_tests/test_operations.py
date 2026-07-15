@@ -4328,6 +4328,50 @@ def test_intensity_rescale_normalize_and_clip():
     np.testing.assert_array_equal(clipped, np.array([[2, 2, 2], [3, 4, 4]]))
 
 
+def test_float_rescale_extrema_fast_path_reports_progress(monkeypatch):
+    data = np.linspace(-3.0, 9.0, 257, dtype=np.float32).reshape(1, -1)
+    updates = []
+    progress = ProgressContext(reporter=updates.append)
+
+    def unexpected_percentile(*_args, **_kwargs):
+        raise AssertionError("0/100 cutoffs should use the extrema fast path")
+
+    monkeypatch.setattr(operations.np, "percentile", unexpected_percentile)
+
+    result = rescale_intensity(data, progress=progress)
+
+    np.testing.assert_array_equal(
+        result,
+        np.linspace(0.0, 1.0, data.size, dtype=np.float32).reshape(data.shape),
+    )
+    assert updates[0].current == 0
+    assert updates[-1].current == updates[-1].total == 100
+    assert any("input range" in update.message.lower() for update in updates)
+    assert any("rescaling voxels" in update.message.lower() for update in updates)
+
+
+def test_float_rescale_preserves_exact_existing_percentile_arithmetic():
+    data = np.array(
+        [[np.nan, -5.0, -1.25, 0.0, 3.5, 10.0, np.inf]],
+        dtype=np.float32,
+    )
+    finite = data[np.isfinite(data)]
+    low, high = np.percentile(finite, [10.0, 90.0], overwrite_input=True)
+    expected = (data.astype(np.float64) - float(low)) / float(high - low)
+    expected = np.clip(expected, 0.0, 1.0)
+    expected = (expected * 7.25 - 2.5).astype(np.float32)
+
+    result = rescale_intensity(
+        data,
+        in_low_percentile=10.0,
+        in_high_percentile=90.0,
+        out_min=-2.5,
+        out_max=4.75,
+    )
+
+    np.testing.assert_array_equal(result, expected)
+
+
 @pytest.mark.parametrize(
     ("dtype", "base"),
     [

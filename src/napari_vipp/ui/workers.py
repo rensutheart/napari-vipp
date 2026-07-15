@@ -12,6 +12,7 @@ from napari_vipp.core.execution import (
 
 class PipelineRunSignals(QObject):
     node_started = Signal(object)
+    node_finished = Signal(object)
     progress = Signal(object)
     finished = Signal(object)
 
@@ -28,6 +29,7 @@ class PipelineRunWorker(QRunnable):
         result = execute_pipeline_request(
             self.request,
             node_started_callback=self._emit_node_started,
+            node_finished_callback=self.signals.node_finished.emit,
             progress_callback=self._emit_progress,
         )
         self.signals.finished.emit(result)

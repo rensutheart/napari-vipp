@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import html
 import inspect as py_inspect
 import os
 import re
@@ -78,7 +79,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__ as VIPP_VERSION
-from napari_vipp._graph import PipelineGraphView
+from napari_vipp._graph import PipelineGraphView, PortLabelMode
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
@@ -111,6 +112,17 @@ from napari_vipp.core.channel_colors import (
     color_value_to_rgb,
 )
 from napari_vipp.core.diagnostics import (
+    PsfPreflightResult,
+    WidefieldNyquistResult,
+    exact_histogram,
+    label_volumes,
+    largest_label_volume,
+    largest_object_size,
+    provisional_generated_layer_contrast_limits,
+    psf_preflight,
+    widefield_nyquist_sampling,
+)
+from napari_vipp.core.diagnostics import (
     exact_finite_percentiles as _exact_finite_percentiles,
 )
 from napari_vipp.core.diagnostics import (
@@ -119,12 +131,8 @@ from napari_vipp.core.diagnostics import (
 from napari_vipp.core.diagnostics import (
     exact_generated_layer_contrast_limits as _exact_generated_layer_contrast_limits,
 )
-from napari_vipp.core.diagnostics import (
-    exact_histogram,
-    label_volumes,
-    largest_label_volume,
-    largest_object_size,
-    provisional_generated_layer_contrast_limits,
+from napari_vipp.core.execution import (
+    PipelineNodeResult as PipelineNodeResult,
 )
 from napari_vipp.core.execution import (
     PipelineRunRequest as PipelineRunRequest,
@@ -188,6 +196,7 @@ from napari_vipp.core.pipeline import (
     EXECUTION_STALE,
     GLOBAL_THRESHOLD_OPERATIONS,
     MANUAL_RUN_SKIP,
+    GraphNode,
     InputSpec,
     OperationSpec,
     ParameterSpec,
@@ -195,6 +204,7 @@ from napari_vipp.core.pipeline import (
     SourcePayload,
     grouped_palette_specs,
     operation_call_parameter_value,
+    resolve_parameter_visibility,
 )
 from napari_vipp.core.preview import (
     MONOCHROME_COLORMAPS,
@@ -423,6 +433,15 @@ _RGB_VOLUME_CHANNELS = (
     (2, "Blue", "blue"),
 )
 
+_GENERATED_LAYER_CONTRAST_METADATA_KEYS = (
+    "vipp_display_contrast_basis",
+    "vipp_display_contrast_pending",
+    "vipp_display_contrast_adjustable",
+    "vipp_exact_finite_data_range",
+    "_vipp_display_contrast_key",
+    "_vipp_display_contrast_initial_limits",
+)
+
 COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES = (
     "Unassigned",
     *CHANNEL_COLOR_CHOICES,
@@ -589,6 +608,38 @@ def _toolbar_separator(width: int = 12) -> QFrame:
     line.setFrameShadow(QFrame.Sunken)
     line.setFixedWidth(int(width))
     return line
+
+
+def _toolbar_field_pair(
+    label_text: str,
+    control: QWidget,
+    *,
+    parent: QWidget | None = None,
+) -> tuple[QWidget, QLabel]:
+    """Return a compact, indivisible toolbar label/control pair."""
+    field = QWidget(parent)
+    layout = QHBoxLayout(field)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    label = QLabel(label_text, field)
+    label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    label.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+    layout.addWidget(label)
+    layout.addWidget(control)
+    field.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+    return field, label
+
+
+def _configure_toolbar_combo(combo: QComboBox) -> None:
+    """Keep toolbar choices readable without ambiguous compression."""
+    longest_text = max(
+        (len(combo.itemText(index)) for index in range(combo.count())),
+        default=0,
+    )
+    combo.setMinimumContentsLength(longest_text)
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+    combo.setMinimumWidth(max(78, combo.minimumSizeHint().width()))
+    combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -846,6 +897,10 @@ class VippWidget(QWidget):
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
         self._source_inspection_cache: dict[str, VerifiedSourceInspection] = {}
+        self._psf_preflight_cache: dict[
+            str,
+            tuple[tuple[object, ...], PsfPreflightResult],
+        ] = {}
         self._file_source_payload_cache: dict[
             tuple[object, ...],
             SourceFileSnapshot,
@@ -968,6 +1023,13 @@ class VippWidget(QWidget):
         self.thumbnail_scope_combo.addItems(THUMBNAIL_CONTRAST_SCOPES)
         self.thumbnail_colormap_combo = QComboBox()
         self.thumbnail_colormap_combo.addItems(MONOCHROME_COLORMAPS)
+        for combo in (
+            self.preview_mode_combo,
+            self.thumbnail_contrast_combo,
+            self.thumbnail_scope_combo,
+            self.thumbnail_colormap_combo,
+        ):
+            _configure_toolbar_combo(combo)
         self.follow_dims_checkbox = QCheckBox("Link napari/VIPP sliders")
         self.follow_dims_checkbox.setChecked(True)
         self.follow_dims_checkbox.setToolTip(
@@ -1074,11 +1136,26 @@ class VippWidget(QWidget):
             "}"
         )
         self.settings_menu_button.setToolTip(
-            "Collapsed thumbnail, preview, contrast, colormap, and zoom controls."
+            "Graph labels, cache behavior, and collapsed display controls."
         )
         self.settings_menu = QMenu(self.settings_menu_button)
         self.settings_menu.aboutToShow.connect(self._populate_settings_toolbar_menu)
         self.settings_menu_button.setMenu(self.settings_menu)
+        self.port_label_mode_combo = QComboBox()
+        self.port_label_mode_combo.addItems(
+            [
+                PortLabelMode.AMBIGUOUS_ONLY.value,
+                PortLabelMode.SHOW_ALL.value,
+                PortLabelMode.HIDE_ALL.value,
+            ]
+        )
+        self.port_label_mode_combo.setCurrentText(
+            PortLabelMode.AMBIGUOUS_ONLY.value
+        )
+        self.port_label_mode_combo.setToolTip(
+            "Show port names only on ambiguous multi-port nodes, on every node, "
+            "or nowhere on the graph."
+        )
         self.cache_mode_combo = QComboBox()
         self.cache_mode_combo.addItems(CACHE_MODE_CHOICES)
         self.cache_mode_combo.setCurrentText(CACHE_MODE_KEEP_ALL)
@@ -1519,38 +1596,103 @@ class VippWidget(QWidget):
 
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
-        input_row.setSpacing(4)
-        preview_label = QLabel("Preview")
-        input_row.addWidget(preview_label)
-        input_row.addWidget(self.preview_mode_combo)
-        contrast_label = QLabel("Contrast")
-        input_row.addWidget(contrast_label)
-        input_row.addWidget(self.thumbnail_contrast_combo)
-        scope_label = QLabel("Contrast Range")
-        input_row.addWidget(scope_label)
-        input_row.addWidget(self.thumbnail_scope_combo)
-        mono_label = QLabel("Mono")
-        input_row.addWidget(mono_label)
-        input_row.addWidget(self.thumbnail_colormap_combo)
-        zoom_separator = _toolbar_separator()
-        input_row.addWidget(zoom_separator)
-        zoom_label = QLabel("Zoom")
-        input_row.addWidget(zoom_label)
-        input_row.addWidget(self.graph_zoom_slider)
-        input_row.addWidget(self.graph_zoom_reset_button)
-        input_row.addWidget(self.graph_zoom_label)
-        action_separator = _toolbar_separator()
-        input_row.addWidget(action_separator)
-        input_row.addWidget(self.refresh_button)
-        input_row.addWidget(self.graph_focus_button)
-        input_row.addWidget(self.calculate_all_button)
-        input_row.addWidget(self.auto_structure_button)
-        input_row.addWidget(self.tunnel_manager_button)
-        input_row.addWidget(self.undo_button)
-        input_row.addWidget(self.redo_button)
-        compact_separator = _toolbar_separator(6)
-        input_row.addWidget(compact_separator)
+        input_row.setSpacing(6)
+
+        self.thumbnail_toolbar_group = QWidget(self)
+        thumbnail_layout = QHBoxLayout(self.thumbnail_toolbar_group)
+        thumbnail_layout.setContentsMargins(0, 0, 0, 0)
+        thumbnail_layout.setSpacing(10)
+        (
+            self.preview_toolbar_field,
+            self.preview_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Preview",
+            self.preview_mode_combo,
+            parent=self.thumbnail_toolbar_group,
+        )
+        (
+            self.contrast_toolbar_field,
+            self.contrast_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Contrast",
+            self.thumbnail_contrast_combo,
+            parent=self.thumbnail_toolbar_group,
+        )
+        (
+            self.contrast_range_toolbar_field,
+            self.contrast_range_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Contrast Range",
+            self.thumbnail_scope_combo,
+            parent=self.thumbnail_toolbar_group,
+        )
+        (
+            self.mono_toolbar_field,
+            self.mono_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Mono",
+            self.thumbnail_colormap_combo,
+            parent=self.thumbnail_toolbar_group,
+        )
+        for field in (
+            self.preview_toolbar_field,
+            self.contrast_toolbar_field,
+            self.contrast_range_toolbar_field,
+            self.mono_toolbar_field,
+        ):
+            thumbnail_layout.addWidget(field)
+        self.thumbnail_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        input_row.addWidget(self.thumbnail_toolbar_group)
+
+        self._toolbar_zoom_separator = _toolbar_separator()
+        input_row.addWidget(self._toolbar_zoom_separator)
+        self.zoom_toolbar_controls = QWidget(self)
+        zoom_controls_layout = QHBoxLayout(self.zoom_toolbar_controls)
+        zoom_controls_layout.setContentsMargins(0, 0, 0, 0)
+        zoom_controls_layout.setSpacing(4)
+        zoom_controls_layout.addWidget(self.graph_zoom_slider)
+        zoom_controls_layout.addWidget(self.graph_zoom_reset_button)
+        zoom_controls_layout.addWidget(self.graph_zoom_label)
+        (
+            self.zoom_toolbar_field,
+            self.zoom_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Zoom",
+            self.zoom_toolbar_controls,
+            parent=self,
+        )
+        input_row.addWidget(self.zoom_toolbar_field)
+
+        self._toolbar_action_separator = _toolbar_separator()
+        input_row.addWidget(self._toolbar_action_separator)
+        self.graph_actions_toolbar_group = QWidget(self)
+        graph_actions_layout = QHBoxLayout(self.graph_actions_toolbar_group)
+        graph_actions_layout.setContentsMargins(0, 0, 0, 0)
+        graph_actions_layout.setSpacing(4)
+        for button in (
+            self.refresh_button,
+            self.graph_focus_button,
+            self.calculate_all_button,
+            self.auto_structure_button,
+            self.tunnel_manager_button,
+            self.undo_button,
+            self.redo_button,
+        ):
+            graph_actions_layout.addWidget(button)
+        self.graph_actions_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        input_row.addWidget(self.graph_actions_toolbar_group)
+
+        self._toolbar_settings_separator = _toolbar_separator(6)
+        input_row.addWidget(self._toolbar_settings_separator)
         input_row.addWidget(self.settings_menu_button)
+        input_row.addStretch(1)
+        self.main_toolbar_layout = input_row
         root.addLayout(input_row)
         self._toolbar_checkbox_widgets = []
         for widget in (
@@ -1558,25 +1700,10 @@ class VippWidget(QWidget):
             self.follow_dims_checkbox,
         ):
             widget.setVisible(False)
-        self._toolbar_dropdown_widgets = [
-            preview_label,
-            self.preview_mode_combo,
-            contrast_label,
-            self.thumbnail_contrast_combo,
-            scope_label,
-            self.thumbnail_scope_combo,
-            mono_label,
-            self.thumbnail_colormap_combo,
-        ]
-        self._toolbar_zoom_widgets = [
-            zoom_separator,
-            zoom_label,
-            self.graph_zoom_slider,
-            self.graph_zoom_reset_button,
-            self.graph_zoom_label,
-        ]
+        self._toolbar_dropdown_widgets = [self.thumbnail_toolbar_group]
+        self._toolbar_zoom_widgets = [self.zoom_toolbar_field]
         self._toolbar_settings_widgets = [
-            compact_separator,
+            self._toolbar_settings_separator,
             self.settings_menu_button,
         ]
 
@@ -1621,7 +1748,11 @@ class VippWidget(QWidget):
 
     def _sync_toolbar_responsive_mode(self) -> None:
         width = int(self.width())
-        hide_dropdowns = 0 < width < self.TOOLBAR_HIDE_DROPDOWNS_WIDTH
+        expanded_width = max(
+            self.TOOLBAR_HIDE_DROPDOWNS_WIDTH,
+            self._expanded_toolbar_required_width(),
+        )
+        hide_dropdowns = 0 < width < expanded_width
         hide_zoom = 0 < width < self.TOOLBAR_HIDE_ZOOM_WIDTH
         hide_checkboxes = True
         stage = (hide_checkboxes, hide_dropdowns, hide_zoom)
@@ -1636,9 +1767,39 @@ class VippWidget(QWidget):
             widget.setVisible(not hide_zoom)
         for widget in self._toolbar_settings_widgets:
             widget.setVisible(True)
+        self._toolbar_zoom_separator.setVisible(
+            not hide_dropdowns and not hide_zoom
+        )
+        self._toolbar_action_separator.setVisible(
+            not hide_dropdowns or not hide_zoom
+        )
         self.auto_structure_button.setText(
             "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
         )
+
+    def _expanded_toolbar_required_width(self) -> int:
+        """Return the width needed to show the complete first toolbar row."""
+        original_text = self.auto_structure_button.text()
+        self.auto_structure_button.setText("Auto structure graph")
+        actions_layout = self.graph_actions_toolbar_group.layout()
+        if actions_layout is not None:
+            actions_layout.invalidate()
+        widgets = (
+            self.thumbnail_toolbar_group,
+            self._toolbar_zoom_separator,
+            self.zoom_toolbar_field,
+            self._toolbar_action_separator,
+            self.graph_actions_toolbar_group,
+            self._toolbar_settings_separator,
+            self.settings_menu_button,
+        )
+        required = sum(widget.sizeHint().width() for widget in widgets)
+        required += self.main_toolbar_layout.spacing() * (len(widgets) - 1)
+        required += 12
+        self.auto_structure_button.setText(original_text)
+        if actions_layout is not None:
+            actions_layout.invalidate()
+        return required
 
     def _populate_settings_toolbar_menu(self) -> None:
         menu = self.settings_menu
@@ -1664,6 +1825,8 @@ class VippWidget(QWidget):
             "Link napari/VIPP sliders",
             self.follow_dims_checkbox,
         )
+        menu.addSeparator()
+        self._add_combo_menu(menu, "Port labels", self.port_label_mode_combo)
         menu.addSeparator()
         self._add_combo_menu(menu, "Cache mode", self.cache_mode_combo)
         self._add_checkbox_menu_action(
@@ -1954,6 +2117,9 @@ class VippWidget(QWidget):
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
         self.pipeline_cancel_button.clicked.connect(self._cancel_background_pipeline_run)
+        self.port_label_mode_combo.currentTextChanged.connect(
+            self._on_port_label_mode_changed
+        )
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
             self._on_memory_guard_setting_changed
@@ -5025,6 +5191,18 @@ class VippWidget(QWidget):
     def _cache_pruning_enabled(self) -> bool:
         return self._cache_mode() != CACHE_MODE_KEEP_ALL
 
+    def _on_port_label_mode_changed(self, mode: str) -> None:
+        self.graph_view.set_port_label_mode(mode)
+        overlaps = self.graph_view.overlapping_node_pairs()
+        if overlaps:
+            suffix = "pair overlaps" if len(overlaps) == 1 else "pairs overlap"
+            self.status_label.setText(
+                f"Port labels set to {mode}; {len(overlaps)} node {suffix}. "
+                "Use Auto structure graph to create space."
+            )
+            return
+        self.status_label.setText(f"Port labels set to {mode}.")
+
     def _on_cache_mode_changed(self, _mode: str) -> None:
         self._memory_guard_dialog_shown = False
         self._apply_cache_retention()
@@ -6182,6 +6360,11 @@ class VippWidget(QWidget):
             self.status_label.setText(result.message)
             return
         self._apply_connection_result_to_graph(result)
+        affected = {node_id}
+        if result.connection is not None:
+            affected.add(result.connection.source_id)
+        if self._selected_node_id in affected:
+            self._refresh_selected_parameter_controls()
         if self._mark_pipeline_dirty(node_id):
             self.run_pipeline()
         self._push_undo_if_changed(before)
@@ -6200,6 +6383,8 @@ class VippWidget(QWidget):
         ):
             self._sync_port_tunnels()
             self._refresh_split_channel_display_surfaces({connection.source_id})
+            if self._selected_node_id in {node_id, connection.source_id}:
+                self._refresh_selected_parameter_controls()
             if self._mark_pipeline_dirty(node_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -6258,7 +6443,7 @@ class VippWidget(QWidget):
             return
         self._apply_connection_result_to_graph(result)
         self._sync_node_output_ports(target_id)
-        if self._selected_node_id == target_id:
+        if self._selected_node_id in {source_id, target_id}:
             self._refresh_selected_parameter_controls()
         if self._mark_pipeline_dirty(target_id):
             self.run_pipeline()
@@ -6276,6 +6461,8 @@ class VippWidget(QWidget):
         if self.pipeline.disconnect(source_id, target_id, target_port):
             self._sync_port_tunnels()
             self._refresh_split_channel_display_surfaces({source_id})
+            if self._selected_node_id in {source_id, target_id}:
+                self._refresh_selected_parameter_controls()
             if self._mark_pipeline_dirty(target_id):
                 self.run_pipeline()
             self._push_undo_if_changed(before)
@@ -6392,6 +6579,10 @@ class VippWidget(QWidget):
         if node_id not in self.pipeline.nodes:
             return
         self._selected_node_id = node_id
+        # Recompute at a deliberate selection boundary. Subsequent inspector
+        # repaints reuse the result while the resolved input identities and
+        # relevant metadata remain unchanged.
+        self._psf_preflight_cache.pop(node_id, None)
         self._remember_cache_node(node_id)
         node = self.pipeline.nodes[node_id]
         self.selected_title.setText(node.title)
@@ -6653,13 +6844,14 @@ class VippWidget(QWidget):
         specs = self.pipeline.node_parameter_specs(node_id)
         stack_note = self._stack_processing_note(node_id)
         help_note = self._operation_help_note(node_id)
+        help_status = self._operation_help_note_status(node_id)
         self.parameter_group.setHidden(not specs and not stack_note and not help_note)
         if not specs:
             if stack_note:
                 self._add_operation_note(stack_note)
                 self.parameter_group.setHidden(False)
             if help_note:
-                self._add_operation_note(help_note)
+                self._add_operation_note(help_note, status=help_status)
                 self.parameter_group.setHidden(False)
             return
         if node.operation_id == "select_axis_slice":
@@ -6730,14 +6922,14 @@ class VippWidget(QWidget):
                     )
                 else:
                     widget.slider.setMinimumWidth(72)
-            if not locked_split_channel:
-                node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
                 lambda value, name=spec.name: self._on_param_changed(name, value)
             )
             self.parameter_form.addRow(spec.label, widget)
             self._apply_parameter_tooltip(spec, widget)
             self._parameter_widgets[spec.name] = widget
+            rendered = True
+        if self._add_parameter_visibility_note(node_id, specs):
             rendered = True
         if node.operation_id == "fill_holes":
             note = QLabel()
@@ -6750,7 +6942,7 @@ class VippWidget(QWidget):
             self._add_operation_note(stack_note)
             rendered = True
         if help_note:
-            self._add_operation_note(help_note)
+            self._add_operation_note(help_note, status=help_status)
             rendered = True
         self.parameter_group.setHidden(not rendered)
 
@@ -6766,6 +6958,38 @@ class VippWidget(QWidget):
         if isinstance(label, QWidget):
             label.setToolTip(display_tooltip)
 
+    def _add_parameter_visibility_note(self, node_id: str, specs) -> bool:
+        """Add at most one explanation for contextual inspector rows."""
+        results = [
+            resolve_parameter_visibility(
+                spec,
+                context=self.pipeline.parameter_visibility_context(node_id),
+            )
+            for spec in specs
+            if str(getattr(spec, "visibility", "always") or "always") != "always"
+        ]
+        if any(not result.visible for result in results):
+            text = (
+                "Some settings are hidden because explicit input metadata or "
+                "the selected mode proves they have no effect. Their stored "
+                "values are preserved."
+            )
+        elif any(
+            result.visible and "unresolved" in result.reason.casefold()
+            for result in results
+        ):
+            text = (
+                "Input context is unresolved, so potentially relevant settings "
+                "remain available until metadata is resolved."
+            )
+        else:
+            return False
+        note = QLabel(text)
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #94a3b8;")
+        self.parameter_form.addRow(note)
+        return True
+
     def _render_rescale_axes_parameters(self, node_id: str) -> None:
         self._sync_rescale_axes_representations(node_id)
         node = self.pipeline.nodes[node_id]
@@ -6778,7 +7002,6 @@ class VippWidget(QWidget):
             else:
                 control_class = NumericEntryControl
             widget = control_class(spec, node.params.get(spec.name), bounds)
-            node.params[spec.name] = widget.value()
             widget.valueChanged.connect(
                 lambda value, name=spec.name: self._on_param_changed(name, value)
             )
@@ -6795,6 +7018,10 @@ class VippWidget(QWidget):
                 self._add_rescale_axis_reset_button(node_id, spec.name, widget)
             self.parameter_form.addRow(spec.label, widget)
             self._parameter_widgets[spec.name] = widget
+        self._add_parameter_visibility_note(
+            node_id,
+            self.pipeline.node_parameter_specs(node_id),
+        )
         self.parameter_group.setHidden(False)
 
     @staticmethod
@@ -6834,6 +7061,9 @@ class VippWidget(QWidget):
             option = options.get(role)
             if option is None:
                 continue
+            base_spec = base_specs[f"{role}_scale"]
+            if self._parameter_spec_hidden(node_id, base_spec):
+                continue
             if mode == "Output size":
                 current = max(int(node.params.get(f"{role}_size", option.size)), 1)
                 specs.append(
@@ -6845,13 +7075,17 @@ class VippWidget(QWidget):
                         1,
                         max(int(option.size) * 4, current, 32),
                         1,
+                        visibility=base_spec.visibility,
+                        visibility_parameter=base_spec.visibility_parameter,
+                        visibility_values=base_spec.visibility_values,
+                        visibility_ports=base_spec.visibility_ports,
                     )
                 )
             else:
                 specs.append(
                     self._effective_parameter_spec(
                         node_id,
-                        base_specs[f"{role}_scale"],
+                        base_spec,
                     )
                 )
         specs.append(base_specs["lock_xy"])
@@ -6898,6 +7132,8 @@ class VippWidget(QWidget):
             self._initialize_manual_born_wolf_psf_params(node_id, resolution)
 
         for name, spec in specs.items():
+            if self._parameter_spec_hidden(node_id, spec):
+                continue
             bounds = self._born_wolf_psf_bounds(
                 spec,
                 auto=auto,
@@ -6974,6 +7210,9 @@ class VippWidget(QWidget):
 
             self.parameter_form.addRow(label_widget, field_widget)
             self._parameter_widgets[name] = widget
+        self._add_parameter_visibility_note(node_id, tuple(specs.values()))
+        guidance, status = self._born_wolf_psf_guidance(node_id, resolution)
+        self._add_operation_note(guidance, status=status)
         self.parameter_group.setHidden(False)
 
     def _born_wolf_psf_resolution(self, node_id: str):
@@ -7107,6 +7346,143 @@ class VippWidget(QWidget):
             return "manual override"
         return "auto"
 
+    def _born_wolf_psf_nyquist(
+        self,
+        resolution,
+    ) -> WidefieldNyquistResult | None:
+        if resolution is None or resolution.unresolved:
+            return None
+        values = resolution.values
+        try:
+            return widefield_nyquist_sampling(
+                wavelength_nm=float(values["wavelength_nm"]),
+                numerical_aperture=float(values["numerical_aperture"]),
+                refractive_index=float(values["refractive_index"]),
+                xy_step_um=float(values["pixel_size_xy_um"]),
+                z_step_um=(
+                    float(values["z_step_um"])
+                    if resolution.spatial_ndim == 3
+                    else None
+                ),
+                spatial_ndim=resolution.spatial_ndim,
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _born_wolf_psf_guidance(self, node_id: str, resolution) -> tuple[str, str]:
+        node = self.pipeline.nodes[node_id]
+        data = self.pipeline.input_data_for_node(node_id)
+        shape = tuple(int(size) for size in getattr(data, "shape", ()) or ())
+        spatial_ndim = int(resolution.spatial_ndim)
+        xy_support = int(node.params.get("xy_size", 65))
+        z_support = int(node.params.get("z_size", 33))
+        psf_shape = (
+            (z_support, xy_support, xy_support)
+            if spatial_ndim == 3
+            else (xy_support, xy_support)
+        )
+        image_shape = shape[-spatial_ndim:] if len(shape) >= spatial_ndim else ()
+        support_text = " x ".join(str(size) for size in psf_shape)
+        sections = [
+            '<p><span style="color:#60a5fa"><b>SUPPORT WINDOW</b></span><br>'
+            f"Requested PSF: {support_text} samples. These dimensions control "
+            "how far the generated PSF extends; they are not copied from the "
+            "input image. Auto from metadata resolves optical values and sample "
+            "spacing, not support dimensions.</p>"
+        ]
+
+        nyquist = self._born_wolf_psf_nyquist(resolution)
+        status = "Unknown" if resolution.unresolved else "Ready"
+        if nyquist is None:
+            sections.insert(
+                0,
+                '<p><span style="color:#94a3b8"><b>SAMPLING CHECK PENDING</b>'
+                "</span><br>Resolve wavelength, NA, refractive index, and "
+                "physical sample spacing to estimate Nyquist sampling.</p>",
+            )
+        else:
+            sampling_text = self._widefield_nyquist_summary(nyquist)
+            if nyquist.met:
+                sections.insert(
+                    0,
+                    '<p><span style="color:#34d399"><b>&#10003; WIDEFIELD '
+                    "NYQUIST ESTIMATE MET</b></span><br>"
+                    + html.escape(sampling_text)
+                    + ".</p>",
+                )
+            else:
+                status = "Warning"
+                sections.insert(
+                    0,
+                    '<p><span style="color:#f59e0b"><b>! WIDEFIELD NYQUIST '
+                    "ESTIMATE NOT MET</b></span><br>"
+                    + html.escape(sampling_text)
+                    + ". Increase acquisition sampling density before relying "
+                    "on deconvolution for the missing frequencies.</p>",
+                )
+
+        oversized = []
+        if image_shape and len(image_shape) == len(psf_shape):
+            labels = ("Z", "Y", "X") if spatial_ndim == 3 else ("Y", "X")
+            oversized = [
+                (label, psf_size, image_size)
+                for label, psf_size, image_size in zip(
+                    labels,
+                    psf_shape,
+                    image_shape,
+                    strict=True,
+                )
+                if psf_size >= image_size
+            ]
+        if oversized:
+            status = "Warning"
+            comparisons = "; ".join(
+                f"{label}: PSF {psf_size}, image {image_size}"
+                for label, psf_size, image_size in oversized
+            )
+            sections.append(
+                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT NEEDS '
+                "ATTENTION</b></span><br>"
+                + html.escape(comparisons)
+                + ". Generation and deconvolution can still complete, but no "
+                "output sample on that axis has full PSF support on both sides. "
+                "The current same-size convolution treats signal beyond the "
+                "stack as zero.</p>"
+            )
+            sections.append(
+                '<p><span style="color:#60a5fa"><b>NEXT DECISION</b></span><br>'
+                "For trustworthy true 3D restoration, acquire guard planes above "
+                "and below the region of interest and crop or interpret the "
+                "restored margins. For independent plane-wise restoration, set "
+                "both this node and RL/RL-TV to 2D YX only when that model is "
+                "scientifically appropriate.</p>"
+            )
+        sections.append(
+            '<p><span style="color:#94a3b8"><b>MODEL SCOPE</b></span><br>'
+            "The Nyquist estimate and Born-Wolf PSF describe conventional "
+            "widefield fluorescence. Confirm that this model matches the "
+            "acquisition; reconstructed SIM, confocal, and other modalities may "
+            "need modality-specific sampling and PSFs.</p>"
+        )
+        return "".join(sections), status
+
+    @staticmethod
+    def _widefield_nyquist_summary(result: WidefieldNyquistResult) -> str:
+        comparisons = [
+            f"XY {result.xy_step_um:.4g} um "
+            f"{'<=' if result.xy_met else '>'} {result.xy_limit_um:.4g} um"
+        ]
+        if (
+            result.spatial_ndim == 3
+            and result.z_step_um is not None
+            and result.z_limit_um is not None
+        ):
+            comparisons.append(
+                f"Z {result.z_step_um:.4g} um "
+                f"{'<=' if result.z_met else '>'} {result.z_limit_um:.4g} um"
+            )
+        return "; ".join(comparisons)
+
     def _on_born_wolf_auto_changed(self, value) -> None:
         node_id = self._selected_node_id
         node = self.pipeline.nodes.get(node_id)
@@ -7152,12 +7528,39 @@ class VippWidget(QWidget):
             )
             node.params[name] = value
 
-    def _add_operation_note(self, text: str) -> None:
+    def _add_operation_note(self, text: str, *, status: str = "") -> None:
         note = QLabel(text)
         note.setWordWrap(True)
-        note.setStyleSheet("color: #f59e0b;")
+        note.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        if status:
+            note.setTextFormat(Qt.RichText)
+        self._style_operation_note(note, status)
         self.parameter_form.addRow(note)
         self._parameter_widgets["operation_notice"] = note
+
+    @staticmethod
+    def _style_operation_note(note: QLabel, status: str) -> None:
+        color = "#cbd5e1" if status else "#f59e0b"
+        note.setStyleSheet(f"color: {color};")
+        if status:
+            note.setProperty("preflightStatus", status.lower())
+
+    def _update_deconvolution_help_note(self) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        note = self._parameter_widgets.get("operation_notice")
+        if (
+            node is None
+            or node.operation_id not in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
+            or not isinstance(note, QLabel)
+        ):
+            return
+        report = self._deconvolution_psf_preflight(node_id)
+        note.setText(self._deconvolution_help_note(node_id))
+        self._style_operation_note(
+            note,
+            self._deconvolution_psf_display_status(node_id, report),
+        )
 
     def _stack_processing_note(self, node_id: str) -> str:
         node = self.pipeline.nodes.get(node_id)
@@ -7179,6 +7582,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return ""
+        if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
+            return self._deconvolution_help_note(node_id)
         if node.operation_id in {"h_maxima_markers", "auto_watershed_from_mask"}:
             return (
                 "H tuning guide:\n"
@@ -7203,6 +7608,447 @@ class VippWidget(QWidget):
                 "mesh or convex-hull metrics as NaN with a status message."
             )
         return ""
+
+    def _operation_help_note_status(self, node_id: str) -> str:
+        node = self.pipeline.nodes.get(node_id)
+        if (
+            node is None
+            or node.operation_id not in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS
+        ):
+            return ""
+        report = self._deconvolution_psf_preflight(node_id)
+        return self._deconvolution_psf_display_status(node_id, report)
+
+    def _deconvolution_help_note(self, node_id: str) -> str:
+        node = self.pipeline.nodes[node_id]
+        report = self._deconvolution_psf_preflight(node_id)
+        nyquist = self._deconvolution_psf_nyquist(node_id)
+        display_status = self._deconvolution_psf_display_status(node_id, report)
+        sections: list[str] = []
+        status_color = {
+            "Ready": "#34d399",
+            "Warning": "#f59e0b",
+            "Invalid": "#f87171",
+            "Unknown": "#94a3b8",
+        }[display_status]
+        status_summary = {
+            "Ready": (
+                "All available checks passed; confirm the PSF model matches "
+                "the acquisition."
+            ),
+            "Warning": (
+                "Calculation can run, but scientific reliability needs "
+                "attention."
+            ),
+            "Invalid": "Fix the item(s) below before calculating.",
+            "Unknown": "Some checks need resolved input data or metadata.",
+        }[display_status]
+        sections.append(
+            f'<p><span style="color:{status_color}"><b>PSF preflight: '
+            f"{display_status}</b></span> - {status_summary}</p>"
+        )
+
+        passed = self._deconvolution_psf_passed_checks(report, nyquist)
+        if passed:
+            items = "<br>".join(
+                f"&#10003; {html.escape(item)}" for item in passed
+            )
+            sections.append(
+                '<p><span style="color:#34d399"><b>CHECKS PASSED</b></span>'
+                f"<br>{items}</p>"
+            )
+
+        attention = [
+            (
+                issue.severity,
+                self._deconvolution_psf_issue_title(issue.code),
+                self._deconvolution_psf_issue_detail(
+                    issue.code,
+                    issue.detail,
+                    report,
+                ),
+            )
+            for issue in report.issues
+            if issue.severity in {"warning", "invalid"}
+        ]
+        if nyquist is not None and not nyquist.met:
+            attention.append(
+                (
+                    "warning",
+                    "Widefield Nyquist estimate not met",
+                    self._widefield_nyquist_summary(nyquist)
+                    + ". Deconvolution cannot recover frequencies that were "
+                    "aliased during acquisition.",
+                )
+            )
+        unknown = tuple(
+            issue for issue in report.issues if issue.severity == "unknown"
+        )
+        if attention:
+            items = "<br><br>".join(
+                '<span style="color:'
+                + ("#f87171" if severity == "invalid" else "#f59e0b")
+                + f'"><b>! {html.escape(title)}</b></span><br>'
+                + html.escape(detail)
+                for severity, title, detail in attention
+            )
+            sections.append(
+                '<p><span style="color:#f59e0b"><b>NEEDS ATTENTION</b></span>'
+                f"<br>{items}</p>"
+            )
+        if unknown:
+            items = "<br><br>".join(
+                "<b>? "
+                + html.escape(self._deconvolution_psf_issue_title(issue.code))
+                + "</b><br>"
+                + html.escape(issue.detail)
+                for issue in unknown
+            )
+            sections.append(
+                '<p><span style="color:#94a3b8"><b>COULD NOT CHECK</b></span>'
+                f"<br>{items}</p>"
+            )
+
+        actions = self._deconvolution_psf_next_actions(node_id, report)
+        if actions:
+            items = "<br>".join(
+                f"{index}. {html.escape(action)}"
+                for index, action in enumerate(actions, start=1)
+            )
+            sections.append(
+                '<p><span style="color:#60a5fa"><b>WHAT TO DO NEXT</b></span>'
+                f"<br>{items}</p>"
+            )
+        if node.operation_id == "richardson_lucy_tv_deconvolution":
+            sections.append(
+                '<p><span style="color:#94a3b8"><b>SCIENTIFIC CAUTION</b>'
+                "</span><br>Excessive TV regularization may remove fine or dim "
+                "structures. Early low-iteration outputs may be under-converged. "
+                "Validate PSF sampling and centering before tuning "
+                "regularization.</p>"
+            )
+        return "".join(sections)
+
+    @staticmethod
+    def _deconvolution_psf_passed_checks(
+        report: PsfPreflightResult,
+        nyquist: WidefieldNyquistResult | None = None,
+    ) -> tuple[str, ...]:
+        codes = {issue.code for issue in report.issues}
+        checks: list[str] = []
+        if (
+            report.spatial_ndim is not None
+            and len(report.psf_shape) == report.spatial_ndim
+            and len(report.image_shape) >= report.spatial_ndim
+        ):
+            checks.append(f"{report.spatial_ndim}D PSF rank matches")
+        if report.physical_sampling_known and "sampling_mismatch" not in codes:
+            checks.append("physical sampling matches the image")
+        if nyquist is not None and nyquist.met:
+            checks.append(
+                "conventional-widefield Nyquist estimate is met ("
+                + VippWidget._widefield_nyquist_summary(nyquist)
+                + ")"
+            )
+        invalid_value_codes = {
+            "empty",
+            "negative",
+            "non_numeric",
+            "nonfinite",
+            "nonpositive_sum",
+        }
+        if report.values_scanned and not (codes & invalid_value_codes):
+            checks.append("values are finite and non-negative")
+        if report.approximately_normalized is True and report.psf_sum is not None:
+            checks.append(f"normalized (sum = {report.psf_sum:.6g})")
+        if report.odd_shape is True:
+            checks.append("dimensions are odd")
+        if (
+            report.peak_offset_voxels is not None
+            and report.centroid_offset_voxels is not None
+            and "off_center_peak" not in codes
+            and "centroid_offset" not in codes
+        ):
+            checks.append(
+                "centered (peak offset "
+                f"{report.peak_offset_voxels:.3g}; centroid offset "
+                f"{report.centroid_offset_voxels:.3g} voxel)"
+            )
+        if (
+            report.support_fraction_of_image
+            and "support_vs_image" not in codes
+        ):
+            checks.append("support is smaller than the image on every axis")
+        if report.edge_mass_fraction is not None and "edge_mass" not in codes:
+            checks.append("PSF tail is contained within its support")
+        return tuple(checks)
+
+    @staticmethod
+    def _deconvolution_psf_issue_title(code: str) -> str:
+        return {
+            "support_vs_image": "PSF support exceeds the image extent",
+            "edge_mass": "PSF tail reaches its support boundary",
+            "missing_calibration": "Physical calibration is unavailable",
+            "sampling_mismatch": "Image and PSF sampling differ",
+            "even_shape": "PSF dimensions are even",
+            "off_center_peak": "PSF peak is off center",
+            "centroid_offset": "PSF centroid is off center",
+            "not_normalized": "PSF is not normalized",
+            "negative": "PSF contains negative values",
+            "nonfinite": "PSF contains non-finite values",
+            "psf_rank": "PSF dimensionality does not match",
+            "image_rank": "Image dimensionality does not match",
+            "unresolved_inputs": "Inputs are not resolved",
+            "unresolved_spatial_rank": "Spatial processing is not resolved",
+            "values_not_scanned": "PSF values were not scanned",
+        }.get(code, "PSF check")
+
+    @staticmethod
+    def _deconvolution_psf_issue_detail(
+        code: str,
+        detail: str,
+        report: PsfPreflightResult,
+    ) -> str:
+        retained_by_axis = report.centered_mass_within_image_support_by_axis
+        if (
+            code != "support_vs_image"
+            or retained_by_axis is None
+            or report.spatial_ndim is None
+            or len(retained_by_axis) != report.spatial_ndim
+        ):
+            return detail
+        image_shape = report.image_shape[-report.spatial_ndim :]
+        if len(image_shape) != len(report.psf_shape):
+            return detail
+        consequences = []
+        for label, psf_size, image_size, retained in zip(
+            report.spatial_axis_labels,
+            report.psf_shape,
+            image_shape,
+            retained_by_axis,
+            strict=True,
+        ):
+            if (
+                psf_size <= image_size
+                or retained >= 0.9995
+                or not detail.startswith(f"{label} support")
+            ):
+                continue
+            consequences.append(
+                f"Cropping {label} from {psf_size} to {image_size} centered "
+                f"samples would retain {retained:.1%} and discard "
+                f"{1.0 - retained:.1%} of the current PSF intensity."
+            )
+        if not consequences:
+            return detail
+        return detail + " " + " ".join(consequences)
+
+    def _deconvolution_psf_display_status(
+        self,
+        node_id: str,
+        report: PsfPreflightResult,
+    ) -> str:
+        nyquist = self._deconvolution_psf_nyquist(node_id)
+        if report.status == "Invalid":
+            return "Invalid"
+        if report.status == "Warning" or (nyquist is not None and not nyquist.met):
+            return "Warning"
+        return report.status
+
+    def _deconvolution_psf_next_actions(
+        self,
+        node_id: str,
+        report: PsfPreflightResult,
+    ) -> tuple[str, ...]:
+        codes = {issue.code for issue in report.issues}
+        source_operations = self._deconvolution_psf_source_operations(node_id)
+        actions: list[str] = []
+        if "support_vs_image" in codes:
+            if "born_wolf_psf" in source_operations and report.spatial_ndim == 3:
+                actions.append(
+                    "For true 3D restoration, acquire guard planes above and "
+                    "below the region of interest so the PSF fits well inside "
+                    "the stack, then interpret or crop the restored margins. "
+                    "With this existing stack, set Spatial processing to 2D YX "
+                    "on both Born-Wolf PSF and RL/RL-TV only if plane-wise "
+                    "restoration is scientifically acceptable."
+                )
+            else:
+                actions.append(
+                    "Use a larger image/stack or a scientifically justified "
+                    "smaller PSF support. Do not crop the PSF only to clear the "
+                    "warning, because that can truncate the optical model."
+                )
+            if "prepare_validate_psf" in source_operations:
+                actions.append(
+                    "Prepare / Validate PSF is working as intended: it fixes "
+                    "sign, normalization, odd shape, and centering, but it does "
+                    "not shrink a non-empty PSF support. No change from that "
+                    "node is expected for this size warning."
+                )
+        if "edge_mass" in codes:
+            actions.append(
+                "Resolve the image-versus-PSF size choice first. Then regenerate "
+                "or remeasure the PSF and recheck this tail warning; enlarge "
+                "support only on axes where it still fits comfortably inside "
+                "the image."
+            )
+        if codes & {
+            "even_shape",
+            "negative",
+            "nonfinite",
+            "not_normalized",
+            "off_center_peak",
+            "centroid_offset",
+        }:
+            actions.append(
+                "Use Prepare / Validate PSF, then calculate it and return here "
+                "to confirm the centering and normalization checks pass."
+            )
+        if "missing_calibration" in codes:
+            actions.append(
+                "Set physical pixel size on the image and PSF (or use metadata "
+                "that supplies it) before trusting the sampling comparison."
+            )
+        if "sampling_mismatch" in codes:
+            actions.append(
+                "Generate or measure a PSF at the image's physical sampling; "
+                "VIPP will not resample it implicitly."
+            )
+        return tuple(actions)
+
+    def _deconvolution_psf_source_operations(self, node_id: str) -> set[str]:
+        return {
+            source.operation_id
+            for source in self._deconvolution_psf_source_nodes(node_id)
+        }
+
+    def _deconvolution_psf_source_nodes(self, node_id: str) -> tuple[GraphNode, ...]:
+        sources: list[GraphNode] = []
+        target_id = node_id
+        target_port = 1
+        visited: set[str] = set()
+        while target_id not in visited:
+            visited.add(target_id)
+            connection = next(
+                (
+                    item
+                    for item in self.pipeline.connections
+                    if item.target_id == target_id
+                    and item.target_port == target_port
+                ),
+                None,
+            )
+            if connection is None:
+                break
+            source = self.pipeline.nodes.get(connection.source_id)
+            if source is None:
+                break
+            sources.append(source)
+            if source.operation_id != "prepare_validate_psf":
+                break
+            target_id = source.id
+            target_port = 0
+        return tuple(sources)
+
+    def _deconvolution_psf_nyquist(
+        self,
+        node_id: str,
+    ) -> WidefieldNyquistResult | None:
+        born_wolf = next(
+            (
+                source
+                for source in self._deconvolution_psf_source_nodes(node_id)
+                if source.operation_id == "born_wolf_psf"
+            ),
+            None,
+        )
+        if born_wolf is None:
+            return None
+        try:
+            resolution = self._born_wolf_psf_resolution(born_wolf.id)
+        except (KeyError, TypeError, ValueError):
+            return None
+        return self._born_wolf_psf_nyquist(resolution)
+
+    def _deconvolution_psf_preflight(self, node_id: str) -> PsfPreflightResult:
+        data_by_port = self.pipeline.input_data_by_port_for_node(node_id)
+        states_by_port = self.pipeline.input_states_by_port_for_node(node_id)
+        image = data_by_port.get(0)
+        psf = data_by_port.get(1)
+        image_state = states_by_port.get(0)
+        psf_state = states_by_port.get(1)
+        spatial_ndim = self._deconvolution_inspector_spatial_ndim(
+            node_id,
+            image,
+            image_state,
+        )
+        key = (
+            id(image),
+            id(psf),
+            tuple(getattr(image, "shape", ()) or ()),
+            tuple(getattr(psf, "shape", ()) or ()),
+            spatial_ndim,
+            self._psf_preflight_state_key(image_state),
+            self._psf_preflight_state_key(psf_state),
+        )
+        cached = self._psf_preflight_cache.get(node_id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = psf_preflight(
+            image,
+            psf,
+            spatial_ndim=spatial_ndim,
+            image_state=image_state,
+            psf_state=psf_state,
+        )
+        self._psf_preflight_cache[node_id] = (key, result)
+        return result
+
+    def _deconvolution_inspector_spatial_ndim(
+        self,
+        node_id: str,
+        image,
+        image_state: ImageState | None,
+    ) -> int | None:
+        mode = str(
+            self.pipeline.nodes[node_id].params.get(
+                "spatial_mode",
+                "Auto from axes",
+            )
+        ).strip().lower()
+        if mode.startswith("2d"):
+            return 2
+        if mode.startswith("3d"):
+            return 3
+        shape = tuple(getattr(image, "shape", ()) or ())
+        if shape and len(shape) <= 2:
+            return 2
+        if image_state is not None and image_state.spatial_axes_explicit:
+            count = sum(axis.type == "space" for axis in image_state.axes)
+            if count >= 3:
+                return 3
+            if count >= 2:
+                return 2
+        return None
+
+    @staticmethod
+    def _psf_preflight_state_key(state: ImageState | None) -> tuple[object, ...]:
+        if state is None:
+            return ()
+        return (
+            tuple(state.shape),
+            tuple(
+                (
+                    axis.name,
+                    axis.type,
+                    axis.unit,
+                    axis.scale,
+                    axis.confidence,
+                )
+                for axis in state.axes
+            ),
+        )
 
     def _render_combine_channels_parameters(self, node_id: str) -> None:
         node = self.pipeline.nodes[node_id]
@@ -7822,6 +8668,10 @@ class VippWidget(QWidget):
             return False
         changed = False
         node = self.pipeline.nodes[self._selected_node_id]
+        if self._refresh_selected_parameter_visibility():
+            # Visibility is presentation-only.  Do not pass freshly rendered
+            # controls through value normalization or report a graph change.
+            return False
         if node.operation_id == "input":
             widget = self._parameter_widgets.get("image_source")
             if isinstance(widget, ImageSourceControl):
@@ -7910,8 +8760,6 @@ class VippWidget(QWidget):
             previous = node.params.get(spec.name)
             if spec.kind == "choice" and previous not in spec.choices:
                 previous = spec.default
-                node.params[spec.name] = previous
-                changed = True
             bounds = self._parameter_bounds_for(self._selected_node_id, spec)
             locked_split_channel = (
                 node.operation_id == "split_channels"
@@ -7936,10 +8784,9 @@ class VippWidget(QWidget):
                 label.setText(spec.label)
             if locked_split_channel:
                 continue
-            current = widget.value()
-            if self._parameter_value_changed(spec, previous, current):
-                changed = True
-            node.params[spec.name] = current
+            # Refreshing bounds, labels, or visibility is presentation-only.
+            # User signals are the sole authority for ordinary parameter edits;
+            # never serialize a control's rounded/clamped representation here.
         if node.operation_id == "fill_holes":
             self._update_fill_holes_scope_note()
         if node.operation_id == "gaussian_blur_3d":
@@ -7958,62 +8805,54 @@ class VippWidget(QWidget):
                 )
                 or changed
             )
+        if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
+            self._update_deconvolution_help_note()
         return changed
+
+    def _refresh_selected_parameter_visibility(self) -> bool:
+        """Rebuild contextual rows without changing any serialized state."""
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or not self._parameter_visibility_controls_changed(node_id):
+            return False
+        saved_params = deepcopy(node.params)
+        try:
+            self._render_parameters(node_id)
+        finally:
+            node.params.clear()
+            node.params.update(saved_params)
+        return True
+
+    def _parameter_visibility_controls_changed(self, node_id: str) -> bool:
+        """Return whether input-aware controls need the form to be rebuilt."""
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None and node.operation_id == "rescale_axes":
+            expected = {
+                spec.name for spec in self._rescale_axes_visible_specs(node_id)
+            }
+            actual = {
+                name
+                for name in self._parameter_widgets
+                if not name.endswith("_reset")
+            }
+            return actual != expected
+        for spec in self.pipeline.node_parameter_specs(node_id):
+            if str(getattr(spec, "visibility", "always") or "always") == "always":
+                continue
+            expected = not self._parameter_spec_hidden(node_id, spec)
+            if (spec.name in self._parameter_widgets) != expected:
+                return True
+        return False
 
     def _parameter_spec_hidden(self, node_id: str, spec) -> bool:
         node = self.pipeline.nodes.get(node_id)
-        if (
-            node is not None
-            and node.operation_id == "auto_watershed_from_mask"
-            and spec.name == "spatial_mode"
-        ):
-            return self._input_spatial_count(node_id) < 3
-        if (
-            node is not None
-            and node.operation_id in GLOBAL_THRESHOLD_OPERATIONS
-            and spec.name == "threshold_scope"
-        ):
-            data = self.pipeline.input_data_for_node(node_id)
-            if data is None:
-                return False
-            state = self.pipeline.input_state_for_node(node_id)
-            return not _histogram_has_stack_scope(data, state)
-        if (
-            node is not None
-            and node.operation_id in {"measure_objects", "measure_objects_intensity"}
-            and spec.name
-            in {"include_2d_boundary_descriptors", "include_2d_shape_moments"}
-        ):
-            return self._input_spatial_count(node_id) >= 3
-        if (
-            node is not None
-            and node.operation_id == "set_pixel_size"
-            and spec.name == "z_size"
-        ):
-            return self._input_spatial_count(node_id) < 3
-        if (
-            node is not None
-            and node.operation_id == "rescale_axes"
-            and spec.name == "z_scale"
-        ):
-            return self._input_spatial_count(node_id) < 3
-        if node is not None and node.operation_id == "rescale_intensity":
-            percentile_mode = str(
-                node.params.get(RESCALE_CUTOFF_MODE_PARAMETER, "Percentiles")
-            ).lower().startswith("percent")
-            if spec.name in RESCALE_VALUE_PARAMETERS:
-                return percentile_mode
-            if spec.name in RESCALE_PERCENTILE_PARAMETERS:
-                return not percentile_mode
-        if (
-            node is not None
-            and node.operation_id == "clip_intensity"
-            and spec.name in CLIP_CUTOFF_PARAMETERS
-        ):
-            return str(node.params.get("cutoff_mode", "Data range")).lower().startswith(
-                "data"
-            )
-        return False
+        if node is None:
+            return False
+        visibility = resolve_parameter_visibility(
+            spec,
+            context=self.pipeline.parameter_visibility_context(node_id),
+        )
+        return not visibility.visible
 
     def _parameter_uses_numeric_entry_only(self, node_id: str, spec) -> bool:
         node = self.pipeline.nodes.get(node_id)
@@ -8145,6 +8984,16 @@ class VippWidget(QWidget):
                     else:
                         labels[index] = f"Auto from axes - using {resolved}"
                     break
+        state = self.pipeline.input_state_for_node(node_id)
+        spatial_count = (
+            sum(axis.type == "space" for axis in state.axes)
+            if state is not None and getattr(state, "axes_explicit", False)
+            else None
+        )
+        if spatial_count is not None and spatial_count < 3:
+            for index, choice in enumerate(choices):
+                if str(choice).startswith("3D"):
+                    labels[index] = f"{choice} - unavailable for resolved input"
         return tuple(labels)
 
     def _resolved_auto_spatial_mode_label(self, node_id: str) -> str:
@@ -8274,17 +9123,24 @@ class VippWidget(QWidget):
             role_map.setdefault("y", spatial_options[-2])
         if len(spatial_options) >= 3:
             role_map.setdefault("z", spatial_options[-3])
-        if self.pipeline.input_data_for_node(node_id) is None:
-            spatial_count = self._input_spatial_count(node_id)
-            fallback_roles = ("x", "y", "z")[:spatial_count]
-            for fallback_index, role in enumerate(fallback_roles):
+        state = self.pipeline.input_state_for_node(node_id)
+        axes_resolved = bool(
+            state is not None
+            and getattr(state, "axes_explicit", False)
+            and tuple(getattr(state, "axes", ()))
+        )
+        if not axes_resolved:
+            data = self.pipeline.input_data_for_node(node_id)
+            shape = tuple(getattr(data, "shape", ()))
+            for fallback_index, role in enumerate(("x", "y", "z")):
+                trailing_index = len(shape) - fallback_index - 1
                 role_map.setdefault(
                     role,
                     AxisSliceOption(
-                        fallback_index,
+                        max(trailing_index, 0),
                         role,
-                        "space",
-                        1,
+                        "unresolved",
+                        int(shape[trailing_index]) if trailing_index >= 0 else 1,
                     ),
                 )
         return role_map
@@ -8301,18 +9157,31 @@ class VippWidget(QWidget):
             choices = ("Auto from axes", "3D ZYX")
         else:
             choices = ("Auto from axes", "2D YX", "3D ZYX")
-        if self._input_spatial_count(node_id) >= 3:
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is None or not getattr(state, "axes_explicit", False):
+            return choices
+        spatial_count = sum(axis.type == "space" for axis in state.axes)
+        if spatial_count >= 3:
             return choices
         if node is not None and node.operation_id == "measure_3d_mesh_morphology":
-            return choices[:1]
-        return choices[:2]
+            available = choices
+        else:
+            available = choices[:2]
+        stored = str(node.params.get("spatial_mode", "")) if node is not None else ""
+        if stored in choices and stored not in available:
+            available = (*available, stored)
+        return available
 
     def _available_clear_border_modes(self, node_id: str) -> tuple[str, ...]:
         choices = (
             "All spatial borders",
             "Lateral borders only (YX)",
         )
-        return choices if self._input_spatial_count(node_id) >= 3 else choices[:1]
+        state = self.pipeline.input_state_for_node(node_id)
+        if state is None or not getattr(state, "axes_explicit", False):
+            return choices
+        spatial_count = sum(axis.type == "space" for axis in state.axes)
+        return choices if spatial_count >= 3 else choices[:1]
 
     def _input_spatial_count(self, node_id: str) -> int:
         state = self.pipeline.input_state_for_node(node_id)
@@ -9360,12 +10229,20 @@ class VippWidget(QWidget):
         used_ports = self._used_split_channel_ports(node_id)
         return used_ports[0] if len(used_ports) == 1 else None
 
-    def _split_channel_display_port(self, node_id: str) -> int:
+    def _split_channel_display_port(
+        self,
+        node_id: str,
+        output_count: int | None = None,
+    ) -> int:
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "split_channels":
             return 0
         outputs = self.pipeline.node_outputs.get(node_id) or []
-        port_count = max(len(outputs), len(self.pipeline.output_ports(node_id)), 1)
+        port_count = max(
+            len(outputs) if output_count is None else int(output_count),
+            len(self.pipeline.output_ports(node_id)),
+            1,
+        )
         single_used = self._single_used_split_channel_port(node_id)
         if single_used is not None:
             return int(np.clip(single_used, 0, port_count - 1))
@@ -9386,15 +10263,40 @@ class VippWidget(QWidget):
     def _node_display_payload(self, node_id: str, data=None):
         primary_data = self.pipeline.outputs.get(node_id) if data is None else data
         primary_state = self.pipeline.output_states.get(node_id)
+        return self._node_display_payload_from_values(
+            node_id,
+            primary_data,
+            primary_state,
+            self.pipeline.node_outputs.get(node_id) or [],
+            self.pipeline.node_output_states.get(node_id) or [],
+        )
+
+    def _node_display_payload_from_values(
+        self,
+        node_id: str,
+        primary_data,
+        primary_state,
+        outputs,
+        output_states,
+    ):
         node = self.pipeline.nodes.get(node_id)
         if node is None or node.operation_id != "split_channels":
             return primary_data, primary_state, 0
-        outputs = self.pipeline.node_outputs.get(node_id) or []
+        outputs = list(outputs or [])
+        output_states = list(output_states or [])
         if not outputs:
             return primary_data, primary_state, 0
-        index = self._split_channel_display_port(node_id)
+        index = self._split_channel_display_port(node_id, len(outputs))
+
+        def state_for_port(output_port: int):
+            if 0 <= int(output_port) < len(output_states):
+                state = output_states[int(output_port)]
+                if state is not None:
+                    return state
+            return primary_state if int(output_port) == 0 else None
+
         if 0 <= index < len(outputs) and outputs[index] is not None:
-            return outputs[index], self._node_output_state(node_id, index), index
+            return outputs[index], state_for_port(index), index
 
         # A connected port is an explicit presentation choice. If its cached
         # output is unavailable, leave the surface empty instead of silently
@@ -9411,7 +10313,7 @@ class VippWidget(QWidget):
             output_index, output = available[0]
             return (
                 output,
-                self._node_output_state(node_id, output_index),
+                state_for_port(output_index),
                 output_index,
             )
         if index == 0:
@@ -9728,6 +10630,24 @@ class VippWidget(QWidget):
         ):
             return False
         return True
+
+    def _provisional_thumbnail_contrast_limits(
+        self,
+        data,
+        state: ImageState | None,
+    ):
+        """Return scan-free limits while exact stack contrast is pending."""
+        if data is None:
+            return None
+        try:
+            arr = np.asarray(data)
+        except Exception:
+            return None
+        limits = _provisional_generated_layer_contrast_limits(arr)
+        channel_axis = self._thumbnail_channel_axis_for_contrast(arr, state)
+        if channel_axis is None:
+            return limits
+        return tuple(limits for _ in range(int(arr.shape[channel_axis])))
 
     def _contrast_parameter_bounds(self, node_id: str, spec) -> ParameterBounds:
         node = self.pipeline.nodes.get(node_id)
@@ -10375,6 +11295,8 @@ class VippWidget(QWidget):
             return
         self._record_parameter_undo(self._selected_node_id, name)
         self.pipeline.set_param(self._selected_node_id, name, value)
+        if self._parameter_visibility_controls_changed(self._selected_node_id):
+            self._render_parameters(self._selected_node_id)
         if node.operation_id == "split_channels" and name == "preview_channel":
             self._refresh_split_channel_display_surfaces({node.id})
             self.status_label.setText(
@@ -10443,6 +11365,12 @@ class VippWidget(QWidget):
             self._sync_node_input_ports(self._selected_node_id)
         if name in {"axis", "boundary_mode", "channel_axis", "spatial_mode"}:
             self._refresh_selected_parameter_controls()
+        if node.operation_id == "clear_border_objects" and name == "boundary_mode":
+            buffer_control = self._parameter_widgets.get("border_buffer")
+            if isinstance(buffer_control, ParameterControl):
+                clamped = buffer_control.value()
+                if node.params.get("border_buffer") != clamped:
+                    self.pipeline.set_param(node.id, "border_buffer", clamped)
         if node.operation_id == "split_axis" and name == "axis":
             for connection in self.pipeline.trim_invalid_output_connections(
                 self._selected_node_id
@@ -10468,6 +11396,8 @@ class VippWidget(QWidget):
                 self._update_colocalization_scatter()
         if name == "spatial_mode":
             self._update_fill_holes_scope_note()
+            if node.operation_id in COMPACT_DECONVOLUTION_INSPECTOR_OPERATIONS:
+                self._update_deconvolution_help_note()
         if node.operation_id == "born_wolf_psf" and name in {
             "auto_parameters",
             "channel",
@@ -10478,13 +11408,11 @@ class VippWidget(QWidget):
         if node.operation_id == "rescale_intensity" and name == (
             RESCALE_CUTOFF_MODE_PARAMETER
         ):
-            self._render_parameters(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
                 self._current_step(),
             )
         elif node.operation_id == "clip_intensity" and name == "cutoff_mode":
-            self._render_parameters(self._selected_node_id)
             self._update_rescale_input_histogram(
                 self._selected_node_id,
                 self._current_step(),
@@ -10776,6 +11704,7 @@ class VippWidget(QWidget):
             self._invalidate_pipeline_cache()
             self._restore_hidden_input_layers()
             self.pipeline.run(None)
+            self._refresh_selected_parameter_controls()
             self._update_thumbnails()
             self._sync_view_dims_bar()
             self._update_metadata_panel()
@@ -10964,15 +11893,26 @@ class VippWidget(QWidget):
         self._finish_pipeline_update(primary_layer, source_label)
 
     def _finish_pipeline_update(self, primary_layer, source_label: str) -> None:
+        self._set_pipeline_busy(True, None, cancelable=False)
+        self.pipeline_busy_label.setText("Preparing result display...")
         self._clear_output_histogram_cache()
         self._clear_colocalization_scatter_cache()
         self._hide_input_layer_for_inspection(primary_layer)
         self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
+        self._refresh_selected_parameter_visibility()
         self._discard_pending_thumbnail_contrast_limit_requests()
         self._update_thumbnails()
-        self._refresh_inspection_layer_if_active()
-        self._inspect_selected_node()
+        selected_data, _selected_state, _selected_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        if selected_data is not None and not is_table_data(selected_data):
+            # Inspecting the selected node replaces or refreshes this layer. Do
+            # not first copy the previously inspected volume only to replace it.
+            self._inspect_selected_node()
+        else:
+            self._refresh_inspection_layer_if_active()
+            self._inspect_selected_node()
         self._refresh_pinned_layer_if_active()
         self._sync_view_dims_bar()
         self._update_metadata_panel()
@@ -10995,6 +11935,16 @@ class VippWidget(QWidget):
             self.status_label.setText("No image source selected.")
         self._refresh_cache_status()
         self._complete_interactive_collection_batch_preview()
+        if (
+            self._queued_thumbnail_contrast_limit_requests
+            or self._pending_thumbnail_contrast_limit_keys
+            or self._active_thumbnail_contrast_run_id is not None
+        ):
+            self._thumbnail_contrast_busy_visible = True
+            self._set_pipeline_busy(True, None, cancelable=False)
+            self.pipeline_busy_label.setText("Calculating thumbnail contrast...")
+        else:
+            self._set_pipeline_busy(False)
 
     def _has_active_file_source_snapshot(self) -> bool:
         return any(
@@ -11296,6 +12246,9 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Processing '{title}' in background...")
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
+        worker.signals.node_finished.connect(
+            self._on_background_pipeline_node_finished
+        )
         worker.signals.progress.connect(self._on_background_pipeline_progress)
         worker.signals.finished.connect(self._on_background_pipeline_finished)
         self._pipeline_thread_pool.start(worker)
@@ -11336,6 +12289,46 @@ class VippWidget(QWidget):
         detail = f": {detail_message}" if detail_message else ""
         suffix = "; latest edit queued" if self._pipeline_run_pending else ""
         self.pipeline_busy_label.setText(f"Processing: {title}{detail}{suffix}")
+
+    def _on_background_pipeline_node_finished(
+        self,
+        result: PipelineNodeResult,
+    ) -> None:
+        """Publish a completed node's sampled card preview during a graph run."""
+        if result.run_id != self._active_pipeline_run_id:
+            return
+        if result.source_revisions and not self._live_source_adapter.tokens_are_current(
+            result.source_revisions
+        ):
+            return
+        node = self.pipeline.nodes.get(result.node_id)
+        if node is None or node.operation_id != result.operation_id:
+            return
+        pending_dirty = self._pending_dirty_node_ids & set(self.pipeline.nodes)
+        if (
+            self._pipeline_run_pending
+            and pending_dirty
+            and self._dirty_nodes_affect_node(pending_dirty, result.node_id)
+        ):
+            return
+
+        preview_data, preview_state, output_port = (
+            self._node_display_payload_from_values(
+                result.node_id,
+                result.output,
+                result.output_state,
+                result.node_outputs,
+                result.node_output_states,
+            )
+        )
+        self.graph_view.set_node_processing(result.node_id, False)
+        self._update_node_thumbnail(
+            result.node_id,
+            preview_data,
+            preview_state,
+            output_port,
+            queue_stack_contrast=False,
+        )
 
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
         if result.run_id != self._active_pipeline_run_id:
@@ -11870,39 +12863,66 @@ class VippWidget(QWidget):
         self._update_histogram()
 
     def _update_thumbnails(self) -> None:
-        mode = self.preview_mode_combo.currentText()
-        current_step = self._current_step()
-        current_step_nsteps = self._current_step_nsteps()
-        contrast_mode = self.thumbnail_contrast_combo.currentText()
-        contrast_scope = self.thumbnail_scope_combo.currentText()
-        previews_visible_globally = mode.lower() != "off"
         for node_id, data in self.pipeline.outputs.items():
-            preview_data, preview_state, _output_port = self._node_display_payload(
+            preview_data, preview_state, output_port = self._node_display_payload(
                 node_id,
                 data,
             )
-            node_output_type = self._node_output_type(node_id)
-            metadata_text = format_compact_metadata(preview_state)
-            batch_text = self._interactive_collection_card_metadata(node_id)
-            if batch_text:
-                metadata_text = (
-                    f"{batch_text}\n{metadata_text}"
-                    if metadata_text and metadata_text != "No output"
-                    else batch_text
-                )
-            self.graph_view.set_node_metadata(
+            self._update_node_thumbnail(
                 node_id,
-                metadata_text,
+                preview_data,
+                preview_state,
+                output_port,
+                queue_stack_contrast=True,
             )
-            self.graph_view.set_node_output_type(node_id, node_output_type)
             self.graph_view.set_node_can_pin(node_id, self._node_can_pin(node_id))
-            preview_enabled = previews_visible_globally and self._node_preview_enabled(
-                node_id
+        if self._active_pinned_node_id is not None and not self._node_can_pin(
+            self._active_pinned_node_id
+        ):
+            self._clear_active_pin(status=False)
+        else:
+            self._sync_pin_ui()
+
+    def _update_node_thumbnail(
+        self,
+        node_id: str,
+        preview_data,
+        preview_state,
+        output_port: int,
+        *,
+        queue_stack_contrast: bool,
+    ) -> None:
+        """Render one card without requiring its result in the live pipeline cache."""
+        mode = self.preview_mode_combo.currentText()
+        contrast_mode = self.thumbnail_contrast_combo.currentText()
+        contrast_scope = self.thumbnail_scope_combo.currentText()
+        node_output_type = self._node_output_type_for_payload(
+            node_id,
+            preview_data,
+            output_port,
+        )
+        metadata_text = format_compact_metadata(preview_state)
+        batch_text = self._interactive_collection_card_metadata(node_id)
+        if batch_text:
+            metadata_text = (
+                f"{batch_text}\n{metadata_text}"
+                if metadata_text and metadata_text != "No output"
+                else batch_text
             )
-            self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
-            if not preview_enabled:
-                self.graph_view.set_thumbnail(node_id, None)
-                continue
+        self.graph_view.set_node_metadata(node_id, metadata_text)
+        self.graph_view.set_node_output_type(node_id, node_output_type)
+        preview_enabled = (
+            mode.lower() != "off"
+            and node_output_type != "table"
+            and node_id not in self._preview_disabled_node_ids
+        )
+        self.graph_view.set_node_preview_enabled(node_id, preview_enabled)
+        if not preview_enabled:
+            self.graph_view.set_thumbnail(node_id, None)
+            return
+
+        contrast_limits = None
+        if queue_stack_contrast:
             contrast_limits = self._thumbnail_contrast_limits_for_node(
                 node_id,
                 preview_data,
@@ -11911,48 +12931,44 @@ class VippWidget(QWidget):
                 contrast_scope,
                 node_output_type,
             )
-            stack_scope = not str(contrast_scope).strip().lower().startswith("slice")
-            effective_contrast_scope = (
-                "Slice" if stack_scope and contrast_limits is None else contrast_scope
-            )
-            effective_scope_is_slice = (
-                str(effective_contrast_scope).strip().lower().startswith("slice")
-            )
-            preview_consumes_contrast = self._thumbnail_preview_consumes_contrast(
-                node_id,
+        stack_scope = not str(contrast_scope).strip().lower().startswith("slice")
+        if stack_scope and contrast_limits is None:
+            # Incremental results deliberately skip an exact full-stack display
+            # scan. The final graph publication queues that presentation-only
+            # work; dtype limits keep this first thumbnail immediate.
+            contrast_limits = self._provisional_thumbnail_contrast_limits(
                 preview_data,
                 preview_state,
             )
-            preview = make_preview(
-                preview_data,
-                mode=mode,
-                current_step=current_step,
-                current_step_nsteps=current_step_nsteps,
-                state=preview_state,
-                channel_colors=self._node_preview_channel_colors(node_id),
-                contrast_mode=contrast_mode,
-                contrast_scope=effective_contrast_scope,
-                contrast_limits=contrast_limits,
-            )
-            thumbnail = normalize_thumbnail_with_colormap(
-                preview,
-                colormap=self.thumbnail_colormap_combo.currentText(),
-                contrast_mode=contrast_mode,
-                contrast_reference=(
-                    preview if effective_scope_is_slice else None
-                ),
-                contrast_limits=(
-                    None if preview_consumes_contrast else contrast_limits
-                ),
-                data_kind=node_output_type,
-            )
-            self.graph_view.set_thumbnail(node_id, thumbnail)
-        if self._active_pinned_node_id is not None and not self._node_can_pin(
-            self._active_pinned_node_id
-        ):
-            self._clear_active_pin(status=False)
-        else:
-            self._sync_pin_ui()
+        effective_scope_is_slice = str(contrast_scope).strip().lower().startswith(
+            "slice"
+        )
+        preview_consumes_contrast = self._thumbnail_preview_consumes_contrast(
+            node_id,
+            preview_data,
+            preview_state,
+        )
+        preview = make_preview(
+            preview_data,
+            mode=mode,
+            current_step=self._current_step(),
+            current_step_nsteps=self._current_step_nsteps(),
+            state=preview_state,
+            channel_colors=self._node_preview_channel_colors(node_id),
+            contrast_mode=contrast_mode,
+            contrast_scope=contrast_scope,
+            contrast_limits=contrast_limits,
+            preview_size=(180, 110),
+        )
+        thumbnail = normalize_thumbnail_with_colormap(
+            preview,
+            colormap=self.thumbnail_colormap_combo.currentText(),
+            contrast_mode=contrast_mode,
+            contrast_reference=(preview if effective_scope_is_slice else None),
+            contrast_limits=(None if preview_consumes_contrast else contrast_limits),
+            data_kind=node_output_type,
+        )
+        self.graph_view.set_thumbnail(node_id, thumbnail)
 
     def _interactive_collection_card_metadata(self, node_id: str) -> str:
         items = self._interactive_collection_batch_items
@@ -13770,6 +14786,7 @@ class VippWidget(QWidget):
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
         if self._generated_layer_needs_replacement(layer, metadata):
+            self._invalidate_generated_layer_contrast(layer)
             self._remove_layer(layer)
             self._add_image_or_labels(
                 name,
@@ -13779,7 +14796,8 @@ class VippWidget(QWidget):
             )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
-        layer.data = _detached_presentation_array(display_data)
+        self._invalidate_generated_layer_contrast(layer)
+        layer.data = _read_only_presentation_array(display_data)
         layer.metadata.update(metadata)
         layer.visible = True
         self._configure_generated_layer(layer, data, metadata)
@@ -13857,20 +14875,23 @@ class VippWidget(QWidget):
                 data,
                 as_labels=metadata.get("display_kind") == "labels",
             )
-        presentation_data = _detached_presentation_array(display_data)
+        presentation_data = _read_only_presentation_array(display_data)
         scale = _layer_scale_from_metadata(metadata)
         if metadata["display_kind"] == "labels" and hasattr(self.viewer, "add_labels"):
             kwargs = {"name": name, "metadata": metadata}
             if scale is not None:
                 kwargs["scale"] = scale
             layer = self.viewer.add_labels(presentation_data, **kwargs)
-            self._make_integer_labels_noneditable(layer)
+            self._make_generated_layer_noneditable(layer)
             return layer
         kwargs = {"name": name, "metadata": metadata}
         if scale is not None:
             kwargs["scale"] = scale
         if metadata.get("display_rgb"):
             kwargs["rgb"] = True
+        kwargs["blending"] = "translucent"
+        if not metadata.get("display_rgb"):
+            kwargs["colormap"] = "gray"
         if metadata["data_kind"] == "mask":
             kwargs.update(
                 {
@@ -13883,7 +14904,9 @@ class VippWidget(QWidget):
             plan = self._generated_layer_contrast_plan(name, data)
             metadata.update(self._generated_layer_contrast_metadata(plan))
             kwargs["contrast_limits"] = plan.limits
-        return self.viewer.add_image(presentation_data, **kwargs)
+        layer = self.viewer.add_image(presentation_data, **kwargs)
+        self._make_generated_layer_noneditable(layer)
+        return layer
 
     def _display_rgb_as_channel_layers(self, display_data, metadata: dict) -> bool:
         arr = np.asarray(display_data)
@@ -13904,9 +14927,10 @@ class VippWidget(QWidget):
         if base_layer is not None and not bool(
             base_layer.metadata.get("display_rgb_as_channels")
         ):
+            self._invalidate_generated_layer_contrast(base_layer)
             self._remove_layer(base_layer)
         for index, channel_name, colormap in _RGB_VOLUME_CHANNELS:
-            channel_data = _detached_presentation_array(arr[..., index])
+            channel_data = _read_only_presentation_array(arr[..., index])
             layer_name = _rgb_channel_layer_name(name, index)
             channel_metadata = {
                 **metadata,
@@ -13922,6 +14946,7 @@ class VippWidget(QWidget):
                 layer,
                 channel_metadata,
             ):
+                self._invalidate_generated_layer_contrast(layer)
                 self._remove_layer(layer)
                 layer = None
             if layer is None:
@@ -13934,6 +14959,7 @@ class VippWidget(QWidget):
                     channel_index=index,
                 )
                 continue
+            self._invalidate_generated_layer_contrast(layer)
             layer.data = channel_data
             layer.metadata.update(channel_metadata)
             layer.visible = True
@@ -13973,7 +14999,9 @@ class VippWidget(QWidget):
         )
         metadata.update(self._generated_layer_contrast_metadata(plan))
         kwargs["contrast_limits"] = plan.limits
-        return self.viewer.add_image(data, **kwargs)
+        layer = self.viewer.add_image(data, **kwargs)
+        self._make_generated_layer_noneditable(layer)
+        return layer
 
     def _configure_rgb_channel_layer(
         self,
@@ -14011,6 +15039,7 @@ class VippWidget(QWidget):
             layer.contrast_limits = plan.limits
         except Exception:
             pass
+        self._make_generated_layer_noneditable(layer)
 
     def _rgb_channel_layers(self, group_name: str) -> list:
         layers = []
@@ -14024,6 +15053,7 @@ class VippWidget(QWidget):
 
     def _remove_rgb_channel_layers(self, group_name: str) -> None:
         for layer in self._rgb_channel_layers(group_name):
+            self._invalidate_generated_layer_contrast(layer)
             self._remove_layer(layer)
 
     def _remove_extra_rgb_channel_layers(self, group_name: str) -> None:
@@ -14033,6 +15063,7 @@ class VippWidget(QWidget):
         }
         for layer in self._rgb_channel_layers(group_name):
             if layer.name not in expected:
+                self._invalidate_generated_layer_contrast(layer)
                 self._remove_layer(layer)
 
     def _generated_layers_for_name(self, name: str) -> list:
@@ -14053,10 +15084,7 @@ class VippWidget(QWidget):
     def _generated_layer_needs_replacement(self, layer, metadata: dict) -> bool:
         return (
             layer.metadata.get("display_kind") != metadata["display_kind"]
-            or layer.metadata.get("data_kind") != metadata["data_kind"]
             or layer.metadata.get("display_ndim") != metadata["display_ndim"]
-            or tuple(layer.metadata.get("display_shape", ()))
-            != tuple(metadata["display_shape"])
             or bool(layer.metadata.get("display_rgb"))
             != bool(metadata.get("display_rgb"))
             or bool(layer.metadata.get("display_rgb_as_channels"))
@@ -14073,7 +15101,7 @@ class VippWidget(QWidget):
             except Exception:
                 pass
         if metadata["display_kind"] != "image":
-            self._make_integer_labels_noneditable(layer)
+            self._make_generated_layer_noneditable(layer)
             return
         if metadata["data_kind"] == "mask":
             for attr, value in (
@@ -14086,28 +15114,48 @@ class VippWidget(QWidget):
                 except Exception:
                     pass
         else:
+            for attr, value in (("blending", "translucent"),):
+                try:
+                    setattr(layer, attr, value)
+                except Exception:
+                    pass
+            if not metadata.get("display_rgb"):
+                try:
+                    layer.colormap = "gray"
+                except Exception:
+                    pass
             plan = self._generated_layer_contrast_plan(layer.name, data)
             layer.metadata.update(self._generated_layer_contrast_metadata(plan))
             try:
                 layer.contrast_limits = plan.limits
             except Exception:
                 pass
+        self._make_generated_layer_noneditable(layer)
 
     @staticmethod
-    def _make_integer_labels_noneditable(layer) -> None:
-        try:
-            is_integer = np.issubdtype(np.asarray(layer.data).dtype, np.integer)
-        except (AttributeError, TypeError, ValueError):
-            return
-        if not is_integer:
-            return
+    def _make_generated_layer_noneditable(layer) -> None:
         try:
             layer.editable = False
         except Exception:
             # Older napari versions and lightweight test viewers may not expose
-            # an editable Labels property. Array detachment remains the safety
+            # an editable property. The read-only NumPy view remains the safety
             # boundary in those environments.
             pass
+
+    def _invalidate_generated_layer_contrast(self, layer) -> None:
+        """Detach a layer from in-flight contrast results before reusing it."""
+        layer_name = str(getattr(layer, "name", ""))
+        if layer_name:
+            self._generated_layer_contrast_keys.pop(layer_name, None)
+        try:
+            metadata = layer.metadata
+        except Exception:
+            return
+        for key in _GENERATED_LAYER_CONTRAST_METADATA_KEYS:
+            try:
+                metadata.pop(key, None)
+            except Exception:
+                return
 
     def _generated_layer_contrast_plan(
         self,
@@ -14481,13 +15529,17 @@ class VippWidget(QWidget):
         return node.output_type != "table"
 
     def _node_output_type(self, node_id: str) -> str:
+        data, _state, output_port = self._node_display_payload(node_id)
+        return self._node_output_type_for_payload(node_id, data, output_port)
+
+    def _node_output_type_for_payload(
+        self,
+        node_id: str,
+        data,
+        output_port: int,
+    ) -> str:
         node = self.pipeline.nodes.get(node_id)
         ports = self.pipeline.output_ports(node_id)
-        output_port = (
-            self._split_channel_display_port(node_id)
-            if node is not None and node.operation_id == "split_channels"
-            else 0
-        )
         output_port = int(np.clip(output_port, 0, max(len(ports) - 1, 0)))
         if (
             node is not None
@@ -14498,7 +15550,6 @@ class VippWidget(QWidget):
             )
         ):
             return ports[output_port].output_type
-        data, _state, output_port = self._node_display_payload(node_id)
         if data is not None:
             return self._data_kind(data, node_id, output_port)
         return node.output_type if node is not None else "image"
@@ -15333,9 +16384,11 @@ def _finite_marker_value(value, label: str) -> int | float:
     return parsed
 
 
-def _detached_presentation_array(data) -> np.ndarray:
-    """Return viewer-owned data that cannot mutate a scientific result cache."""
-    return np.array(np.asarray(data), copy=True, order="K", subok=False)
+def _read_only_presentation_array(data) -> np.ndarray:
+    """Return an exact zero-copy, non-writeable presentation view."""
+    view = np.asarray(data).view()
+    view.flags.writeable = False
+    return view
 
 
 def _rgb_channel_layer_name(base_name: str, channel_index: int) -> str:

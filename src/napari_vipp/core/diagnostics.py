@@ -10,14 +10,676 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from numbers import Rational
+from typing import TYPE_CHECKING
 
 import numpy as np
 from scipy import ndimage as ndi
 
+from napari_vipp.core.grid import (
+    ImageGrid,
+    compare_psf_sampling,
+    psf_physical_sampling_known,
+)
 from napari_vipp.core.operations import exact_integer_percentiles
+
+if TYPE_CHECKING:
+    from napari_vipp.core.metadata import ImageState
 
 DIAGNOSTIC_CHUNK_ELEMENTS = 1_048_576
 DISPLAY_HISTOGRAM_BINS = 128
+PSF_PREFLIGHT_MAX_SCAN_ELEMENTS = 1_000_000
+PSF_CENTER_OFFSET_WARNING_VOXELS = 0.25
+PSF_NORMALIZATION_RTOL = 1e-3
+PSF_EDGE_MASS_WARNING_FRACTION = 0.01
+
+PSF_PREFLIGHT_READY = "Ready"
+PSF_PREFLIGHT_WARNING = "Warning"
+PSF_PREFLIGHT_INVALID = "Invalid"
+PSF_PREFLIGHT_UNKNOWN = "Unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class PsfPreflightIssue:
+    """One conservative PSF-readiness finding."""
+
+    severity: str
+    code: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class WidefieldNyquistResult:
+    """Critical sampling distances for a conventional widefield PSF model."""
+
+    spatial_ndim: int
+    xy_step_um: float
+    z_step_um: float | None
+    xy_limit_um: float
+    z_limit_um: float | None
+    xy_met: bool
+    z_met: bool | None
+
+    @property
+    def met(self) -> bool:
+        return self.xy_met and self.z_met is not False
+
+
+@dataclass(frozen=True, slots=True)
+class PsfPreflightResult:
+    """Qt-free image/PSF readiness summary for deconvolution."""
+
+    status: str
+    issues: tuple[PsfPreflightIssue, ...]
+    spatial_ndim: int | None
+    image_shape: tuple[int, ...]
+    psf_shape: tuple[int, ...]
+    spatial_axis_labels: tuple[str, ...] = ()
+    values_scanned: bool = False
+    psf_sum: float | None = None
+    approximately_normalized: bool | None = None
+    odd_shape: bool | None = None
+    peak_index: tuple[int, ...] | None = None
+    peak_offset_voxels: float | None = None
+    centroid: tuple[float, ...] | None = None
+    centroid_offset_voxels: float | None = None
+    support_fraction_of_image: tuple[float, ...] | None = None
+    edge_mass_fraction: float | None = None
+    edge_mass_fraction_by_axis: tuple[float, ...] | None = None
+    centered_mass_within_image_support_by_axis: tuple[float, ...] | None = None
+    physical_sampling_known: bool = False
+
+
+def psf_preflight(
+    image,
+    psf,
+    *,
+    spatial_ndim: int | None,
+    image_state: ImageState | None = None,
+    psf_state: ImageState | None = None,
+    max_scan_elements: int = PSF_PREFLIGHT_MAX_SCAN_ELEMENTS,
+) -> PsfPreflightResult:
+    """Inspect PSF readiness without changing either input.
+
+    Full value diagnostics are limited to already materialized NumPy arrays
+    below ``max_scan_elements``. Array-like lazy data are never coerced merely
+    to paint an inspector status.
+    """
+    issues: list[PsfPreflightIssue] = []
+    image_shape = _preflight_shape(image, image_state)
+    psf_shape = _preflight_shape(psf, psf_state)
+    resolved_ndim = _preflight_spatial_ndim(spatial_ndim)
+    spatial_axis_labels = _preflight_spatial_axis_labels(
+        image_state,
+        resolved_ndim,
+    )
+
+    if image is None or psf is None:
+        missing = []
+        if image is None:
+            missing.append("Image")
+        if psf is None:
+            missing.append("PSF")
+        issues.append(
+            PsfPreflightIssue(
+                "unknown",
+                "unresolved_inputs",
+                f"Connect and resolve the {' and '.join(missing)} input(s) to "
+                "complete PSF preflight.",
+            )
+        )
+    if resolved_ndim is None:
+        issues.append(
+            PsfPreflightIssue(
+                "unknown",
+                "unresolved_spatial_rank",
+                "Resolve 2D YX or 3D ZYX spatial processing to check PSF rank.",
+            )
+        )
+
+    rank_valid = bool(resolved_ndim is not None and image_shape and psf_shape)
+    if rank_valid and len(image_shape) < resolved_ndim:
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "image_rank",
+                f"Image rank is {len(image_shape)}D but {resolved_ndim}D spatial "
+                "processing was requested.",
+            )
+        )
+        rank_valid = False
+    if rank_valid and len(psf_shape) != resolved_ndim:
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "psf_rank",
+                f"PSF rank is {len(psf_shape)}D but deconvolution is resolved as "
+                f"{resolved_ndim}D.",
+            )
+        )
+        rank_valid = False
+
+    support_fraction: tuple[float, ...] | None = None
+    if rank_valid and resolved_ndim is not None:
+        image_spatial_shape = image_shape[-resolved_ndim:]
+        support_fraction = tuple(
+            float(psf_size) / float(image_size)
+            for psf_size, image_size in zip(
+                psf_shape,
+                image_spatial_shape,
+                strict=True,
+            )
+            if image_size > 0
+        )
+        if len(support_fraction) != resolved_ndim:
+            support_fraction = None
+        else:
+            for axis_label, psf_size, image_size in zip(
+                spatial_axis_labels,
+                psf_shape,
+                image_spatial_shape,
+                strict=True,
+            ):
+                if psf_size < image_size:
+                    continue
+                comparison = (
+                    "the same size as" if psf_size == image_size else "larger than"
+                )
+                issues.append(
+                    PsfPreflightIssue(
+                        "warning",
+                        "support_vs_image",
+                        f"{axis_label} support is {comparison} the image "
+                        f"({psf_size} PSF samples versus {image_size} image "
+                        "samples). No output sample on this axis has full PSF "
+                        "support on both sides. The calculation can complete, "
+                        "but current same-size convolution treats signal beyond "
+                        "the image as zero.",
+                    )
+                )
+
+    physical_sampling_known = False
+    if rank_valid and resolved_ndim is not None:
+        if image_state is None or psf_state is None:
+            issues.append(_missing_psf_calibration_issue())
+        else:
+            try:
+                image_grid = ImageGrid.from_image_state(image_state)
+                psf_grid = ImageGrid.from_image_state(psf_state)
+                physical_sampling_known = psf_physical_sampling_known(
+                    image_grid,
+                    psf_grid,
+                    spatial_ndim=resolved_ndim,
+                )
+                if not physical_sampling_known:
+                    issues.append(_missing_psf_calibration_issue())
+                else:
+                    compatibility = compare_psf_sampling(
+                        image_grid,
+                        psf_grid,
+                        spatial_ndim=resolved_ndim,
+                    )
+                    if not compatibility.compatible:
+                        detail = "; ".join(
+                            issue.detail for issue in compatibility.issues
+                        )
+                        issues.append(
+                            PsfPreflightIssue(
+                                "invalid",
+                                "sampling_mismatch",
+                                "Image and PSF physical sampling are incompatible: "
+                                f"{detail}. VIPP will not resample the PSF "
+                                "implicitly.",
+                            )
+                        )
+            except (TypeError, ValueError) as exc:
+                issues.append(
+                    PsfPreflightIssue(
+                        "unknown",
+                        "invalid_metadata",
+                        f"PSF sampling metadata could not be checked: {exc}",
+                    )
+                )
+
+    array = _preflight_scan_array(psf, max_scan_elements=max_scan_elements)
+    if psf is not None and array is None:
+        issues.append(
+            PsfPreflightIssue(
+                "unknown",
+                "values_not_scanned",
+                "PSF values were not scanned because the data are lazy, "
+                "non-array, or exceed the inspector scan limit.",
+            )
+        )
+
+    values_scanned = array is not None
+    psf_sum: float | None = None
+    approximately_normalized: bool | None = None
+    odd_shape: bool | None = None
+    peak_index: tuple[int, ...] | None = None
+    peak_offset: float | None = None
+    centroid: tuple[float, ...] | None = None
+    centroid_offset: float | None = None
+    edge_mass_fraction: float | None = None
+    edge_mass_fraction_by_axis: tuple[float, ...] | None = None
+    centered_mass_within_image_support_by_axis: tuple[float, ...] | None = None
+    if array is not None:
+        (
+            psf_sum,
+            approximately_normalized,
+            odd_shape,
+            peak_index,
+            peak_offset,
+            centroid,
+            centroid_offset,
+            edge_mass_fraction,
+            edge_mass_fraction_by_axis,
+        ) = _inspect_psf_values(
+            array,
+            issues,
+            axis_labels=spatial_axis_labels,
+        )
+        issue_codes = {issue.code for issue in issues}
+        if (
+            rank_valid
+            and resolved_ndim is not None
+            and psf_sum is not None
+            and psf_sum > 0
+            and not ({"negative", "nonfinite"} & issue_codes)
+        ):
+            centered_mass_within_image_support_by_axis = (
+                _psf_centered_mass_within_axis_support(
+                    array,
+                    psf_sum,
+                    image_shape[-resolved_ndim:],
+                )
+            )
+
+    return PsfPreflightResult(
+        status=_psf_preflight_status(issues),
+        issues=tuple(issues),
+        spatial_ndim=resolved_ndim,
+        image_shape=image_shape,
+        psf_shape=psf_shape,
+        spatial_axis_labels=spatial_axis_labels,
+        values_scanned=values_scanned,
+        psf_sum=psf_sum,
+        approximately_normalized=approximately_normalized,
+        odd_shape=odd_shape,
+        peak_index=peak_index,
+        peak_offset_voxels=peak_offset,
+        centroid=centroid,
+        centroid_offset_voxels=centroid_offset,
+        support_fraction_of_image=support_fraction,
+        edge_mass_fraction=edge_mass_fraction,
+        edge_mass_fraction_by_axis=edge_mass_fraction_by_axis,
+        centered_mass_within_image_support_by_axis=(
+            centered_mass_within_image_support_by_axis
+        ),
+        physical_sampling_known=physical_sampling_known,
+    )
+
+
+def _inspect_psf_values(
+    array: np.ndarray,
+    issues: list[PsfPreflightIssue],
+    *,
+    axis_labels: tuple[str, ...] = (),
+) -> tuple[
+    float | None,
+    bool | None,
+    bool | None,
+    tuple[int, ...] | None,
+    float | None,
+    tuple[float, ...] | None,
+    float | None,
+    float | None,
+    tuple[float, ...] | None,
+]:
+    if array.size == 0 or any(int(size) <= 0 for size in array.shape):
+        issues.append(PsfPreflightIssue("invalid", "empty", "PSF is empty."))
+        return (None, None, None, None, None, None, None, None, None)
+    if not np.issubdtype(array.dtype, np.number) or np.issubdtype(
+        array.dtype,
+        np.complexfloating,
+    ):
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "non_numeric",
+                "PSF values must be real numeric samples.",
+            )
+        )
+        return (None, None, None, None, None, None, None, None, None)
+
+    finite = bool(np.all(np.isfinite(array)))
+    if not finite:
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "nonfinite",
+                "PSF contains non-finite values; use Prepare / Validate PSF.",
+            )
+        )
+    negative = bool(np.any(array < 0))
+    if negative:
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "negative",
+                "PSF contains negative values; use Prepare / Validate PSF.",
+            )
+        )
+
+    odd_shape = all(int(size) % 2 == 1 for size in array.shape)
+    if not odd_shape:
+        issues.append(
+            PsfPreflightIssue(
+                "warning",
+                "even_shape",
+                "PSF has an even dimension and no single central sample; use "
+                "Prepare / Validate PSF.",
+            )
+        )
+
+    if not finite:
+        return (None, None, odd_shape, None, None, None, None, None, None)
+
+    psf_sum = float(np.sum(array, dtype=np.float64))
+    if not np.isfinite(psf_sum) or psf_sum <= 0:
+        issues.append(
+            PsfPreflightIssue(
+                "invalid",
+                "nonpositive_sum",
+                "PSF sum must be finite and positive.",
+            )
+        )
+
+    center = np.asarray([(int(size) - 1) / 2 for size in array.shape])
+    peak_index = tuple(
+        int(index)
+        for index in np.unravel_index(int(np.argmax(array)), array.shape)
+    )
+    peak_offset = float(
+        np.linalg.norm(np.asarray(peak_index, dtype=float) - center)
+    )
+    if peak_offset > PSF_CENTER_OFFSET_WARNING_VOXELS:
+        issues.append(
+            PsfPreflightIssue(
+                "warning",
+                "off_center_peak",
+                f"PSF peak is {peak_offset:.3g} voxels from the geometric center; "
+                "use Prepare / Validate PSF.",
+            )
+        )
+
+    approximately_normalized = None
+    centroid = None
+    centroid_offset = None
+    edge_mass_fraction = None
+    edge_mass_fraction_by_axis = None
+    if psf_sum > 0 and not negative:
+        approximately_normalized = bool(
+            np.isclose(
+                psf_sum,
+                1.0,
+                rtol=PSF_NORMALIZATION_RTOL,
+                atol=1e-6,
+            )
+        )
+        if not approximately_normalized:
+            issues.append(
+                PsfPreflightIssue(
+                    "warning",
+                    "not_normalized",
+                    f"PSF sum is {psf_sum:.6g}, not approximately one. Enable "
+                    "Normalize PSF or use Prepare / Validate PSF.",
+                )
+            )
+        centroid = _psf_centroid(array, psf_sum)
+        centroid_offset = float(
+            np.linalg.norm(np.asarray(centroid, dtype=float) - center)
+        )
+        if centroid_offset > PSF_CENTER_OFFSET_WARNING_VOXELS:
+            issues.append(
+                PsfPreflightIssue(
+                    "warning",
+                    "centroid_offset",
+                    "PSF intensity-weighted centroid is "
+                    f"{centroid_offset:.3g} voxels from the geometric center; "
+                    "use Prepare / Validate PSF.",
+                )
+            )
+        edge_mass_fraction = _psf_edge_mass_fraction(array, psf_sum)
+        edge_mass_fraction_by_axis = _psf_edge_mass_fraction_by_axis(
+            array,
+            psf_sum,
+        )
+        if edge_mass_fraction > PSF_EDGE_MASS_WARNING_FRACTION:
+            labels = (
+                axis_labels
+                if len(axis_labels) == array.ndim
+                else tuple(f"axis {index}" for index in range(array.ndim))
+            )
+            by_axis = ", ".join(
+                f"{label} {fraction:.1%}"
+                for label, fraction in zip(
+                    labels,
+                    edge_mass_fraction_by_axis,
+                    strict=True,
+                )
+            )
+            issues.append(
+                PsfPreflightIssue(
+                    "warning",
+                    "edge_mass",
+                    f"{edge_mass_fraction:.1%} of PSF intensity is still present "
+                    f"on the outermost samples ({by_axis}). This is not intensity "
+                    "outside the array; it means the modeled PSF tail may be "
+                    "truncated at the current support boundary.",
+                )
+            )
+
+    return (
+        psf_sum,
+        approximately_normalized,
+        odd_shape,
+        peak_index,
+        peak_offset,
+        centroid,
+        centroid_offset,
+        edge_mass_fraction,
+        edge_mass_fraction_by_axis,
+    )
+
+
+def _psf_centroid(array: np.ndarray, total: float) -> tuple[float, ...]:
+    centroid: list[float] = []
+    for axis, size in enumerate(array.shape):
+        reduce_axes = tuple(index for index in range(array.ndim) if index != axis)
+        marginal = np.sum(array, axis=reduce_axes, dtype=np.float64)
+        coordinate = np.arange(int(size), dtype=np.float64)
+        centroid.append(float(np.dot(coordinate, marginal) / total))
+    return tuple(centroid)
+
+
+def _psf_edge_mass_fraction(array: np.ndarray, total: float) -> float:
+    if any(int(size) <= 2 for size in array.shape):
+        return 1.0
+    interior = array[tuple(slice(1, -1) for _axis in array.shape)]
+    interior_sum = float(np.sum(interior, dtype=np.float64))
+    return float(np.clip((total - interior_sum) / total, 0.0, 1.0))
+
+
+def _psf_edge_mass_fraction_by_axis(
+    array: np.ndarray,
+    total: float,
+) -> tuple[float, ...]:
+    fractions: list[float] = []
+    for axis in range(array.ndim):
+        if int(array.shape[axis]) <= 1:
+            fractions.append(1.0)
+            continue
+        lower = np.take(array, 0, axis=axis)
+        upper = np.take(array, -1, axis=axis)
+        boundary_sum = float(np.sum(lower, dtype=np.float64)) + float(
+            np.sum(upper, dtype=np.float64)
+        )
+        fractions.append(float(np.clip(boundary_sum / total, 0.0, 1.0)))
+    return tuple(fractions)
+
+
+def _psf_centered_mass_within_axis_support(
+    array: np.ndarray,
+    total: float,
+    support_shape: tuple[int, ...],
+) -> tuple[float, ...]:
+    fractions: list[float] = []
+    for axis, requested_size in enumerate(support_shape):
+        size = int(array.shape[axis])
+        window = min(max(int(requested_size), 0), size)
+        if window >= size:
+            fractions.append(1.0)
+            continue
+        if window <= 0:
+            fractions.append(0.0)
+            continue
+        reduce_axes = tuple(index for index in range(array.ndim) if index != axis)
+        marginal = np.sum(array, axis=reduce_axes, dtype=np.float64)
+        start = (size - window) // 2
+        retained = float(np.sum(marginal[start : start + window], dtype=np.float64))
+        fractions.append(float(np.clip(retained / total, 0.0, 1.0)))
+    return tuple(fractions)
+
+
+def _preflight_shape(data, state: ImageState | None) -> tuple[int, ...]:
+    shape = getattr(data, "shape", None)
+    if shape is not None:
+        try:
+            return tuple(int(size) for size in shape)
+        except (TypeError, ValueError):
+            pass
+    if state is not None:
+        return tuple(int(size) for size in state.shape)
+    return ()
+
+
+def _preflight_scan_array(data, *, max_scan_elements: int) -> np.ndarray | None:
+    if not isinstance(data, np.ndarray):
+        return None
+    array = data
+    limit = max(int(max_scan_elements), 0)
+    if array.size > limit:
+        return None
+    return array
+
+
+def _preflight_spatial_ndim(value: int | None) -> int | None:
+    if value is None or isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return None
+    return resolved if resolved in {2, 3} else None
+
+
+def _preflight_spatial_axis_labels(
+    state: ImageState | None,
+    spatial_ndim: int | None,
+) -> tuple[str, ...]:
+    if spatial_ndim not in {2, 3}:
+        return ()
+    fallback = ("Y", "X") if spatial_ndim == 2 else ("Z", "Y", "X")
+    if state is None or len(state.axes) < spatial_ndim:
+        return fallback
+    labels = tuple(axis.short_label for axis in state.axes[-spatial_ndim:])
+    return labels if all(label.strip() for label in labels) else fallback
+
+
+def _missing_psf_calibration_issue() -> PsfPreflightIssue:
+    return PsfPreflightIssue(
+        "warning",
+        "missing_calibration",
+        "Physical image/PSF spacing cannot be compared because calibration is "
+        "missing or only index/pixel units are available; no spacing was assumed.",
+    )
+
+
+def _psf_preflight_status(issues: list[PsfPreflightIssue]) -> str:
+    severities = {issue.severity for issue in issues}
+    if "invalid" in severities:
+        return PSF_PREFLIGHT_INVALID
+    if "warning" in severities:
+        return PSF_PREFLIGHT_WARNING
+    if "unknown" in severities:
+        return PSF_PREFLIGHT_UNKNOWN
+    return PSF_PREFLIGHT_READY
+
+
+def widefield_nyquist_sampling(
+    *,
+    wavelength_nm: float,
+    numerical_aperture: float,
+    refractive_index: float,
+    xy_step_um: float,
+    z_step_um: float | None,
+    spatial_ndim: int,
+) -> WidefieldNyquistResult:
+    """Estimate conventional-widefield Nyquist critical sample distances.
+
+    The bandwidth-based distances are ``lambda / (4 NA)`` laterally and
+    ``lambda / (2 n (1 - cos(alpha)))`` axially, where
+    ``alpha = asin(NA / n)``. They match the conventional-widefield model used
+    by the Born-Wolf generator; other modalities require different limits.
+    """
+    resolved_ndim = _preflight_spatial_ndim(spatial_ndim)
+    if resolved_ndim is None:
+        raise ValueError("Nyquist sampling requires 2D or 3D spatial rank.")
+    values = {
+        "wavelength": wavelength_nm,
+        "numerical aperture": numerical_aperture,
+        "refractive index": refractive_index,
+        "XY step": xy_step_um,
+    }
+    if resolved_ndim == 3:
+        values["Z step"] = z_step_um
+    converted: dict[str, float] = {}
+    for name, value in values.items():
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be finite and positive.") from exc
+        if not np.isfinite(number) or number <= 0:
+            raise ValueError(f"{name} must be finite and positive.")
+        converted[name] = number
+    wavelength_um = converted["wavelength"] / 1000.0
+    na = converted["numerical aperture"]
+    refractive_index = converted["refractive index"]
+    if na >= refractive_index:
+        raise ValueError(
+            "Numerical aperture must be smaller than refractive index for the "
+            "Born-Wolf widefield sampling estimate."
+        )
+    alpha = float(np.arcsin(na / refractive_index))
+    xy_limit_um = wavelength_um / (4.0 * na)
+    z_limit_um = None
+    z_met = None
+    resolved_z_step = None
+    if resolved_ndim == 3:
+        resolved_z_step = converted["Z step"]
+        denominator = 2.0 * refractive_index * (1.0 - float(np.cos(alpha)))
+        z_limit_um = wavelength_um / denominator
+        z_met = resolved_z_step <= z_limit_um
+    resolved_xy_step = converted["XY step"]
+    return WidefieldNyquistResult(
+        spatial_ndim=resolved_ndim,
+        xy_step_um=resolved_xy_step,
+        z_step_um=resolved_z_step,
+        xy_limit_um=xy_limit_um,
+        z_limit_um=z_limit_um,
+        xy_met=resolved_xy_step <= xy_limit_um,
+        z_met=z_met,
+    )
 
 
 @dataclass(frozen=True, slots=True)

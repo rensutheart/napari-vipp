@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from enum import StrEnum
+from math import ceil
 
 import numpy as np
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
@@ -35,9 +37,32 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._theme import category_color, category_tint
+from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
 PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
+
+
+class PortLabelMode(StrEnum):
+    """Control which graph ports have persistent labels on the canvas."""
+
+    HIDE_ALL = "Hide all"
+    AMBIGUOUS_ONLY = "Ambiguous only"
+    SHOW_ALL = "Show all"
+
+
+def _coerce_port_label_mode(value: PortLabelMode | str) -> PortLabelMode:
+    if isinstance(value, PortLabelMode):
+        return value
+    normalized = str(value).strip().casefold().replace("_", " ")
+    for mode in PortLabelMode:
+        if normalized in {
+            mode.value.casefold(),
+            mode.name.casefold().replace("_", " "),
+        }:
+            return mode
+    choices = ", ".join(mode.value for mode in PortLabelMode)
+    raise ValueError(f"Unknown port-label mode {value!r}; expected one of: {choices}.")
 
 
 class ClickablePreview(QLabel):
@@ -88,6 +113,9 @@ class ProcessingBadge(QWidget):
 class NodeCard(QFrame):
     """Small embedded node UI with a thumbnail and graph actions."""
 
+    BASE_MINIMUM_WIDTH = 220
+    BASE_CONTENT_MARGINS = (10, 8, 10, 10)
+
     selected = Signal(str)
     pin_requested = Signal(str)
     calculate_requested = Signal(str)
@@ -119,7 +147,7 @@ class NodeCard(QFrame):
         self._auto_recalculate = False
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
-        self.setMinimumWidth(220)
+        self.setMinimumWidth(self.BASE_MINIMUM_WIDTH)
         self.setCursor(Qt.OpenHandCursor)
 
         self.accent_bar = QFrame()
@@ -157,16 +185,43 @@ class NodeCard(QFrame):
         self.pin_button.setVisible(False)
         self.processing_badge = ProcessingBadge(self)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 10)
-        layout.addWidget(self.accent_bar)
-        layout.addWidget(self.category_label)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.preview)
-        layout.addWidget(self.metadata_label)
-        layout.addWidget(self.execution_label)
-        layout.addWidget(self.calculate_button)
+        self.card_layout = QVBoxLayout(self)
+        self.card_layout.setContentsMargins(*self.BASE_CONTENT_MARGINS)
+        self.card_layout.addWidget(self.accent_bar)
+        self.card_layout.addWidget(self.category_label)
+        self.card_layout.addWidget(self.title_label)
+        self.card_layout.addWidget(self.preview)
+        self.card_layout.addWidget(self.metadata_label)
+        self.card_layout.addWidget(self.execution_label)
+        self.card_layout.addWidget(self.calculate_button)
         self._refresh_style()
+
+    def set_port_label_gutters(self, left: float, right: float) -> None:
+        """Reserve clear card space for persistent labels on either edge."""
+        left_gutter = max(int(ceil(left)), 0)
+        right_gutter = max(int(ceil(right)), 0)
+        base_left, top, base_right, bottom = self.BASE_CONTENT_MARGINS
+        margins = (
+            base_left + left_gutter,
+            top,
+            base_right + right_gutter,
+            bottom,
+        )
+        current = self.card_layout.contentsMargins()
+        if (
+            current.left(),
+            current.top(),
+            current.right(),
+            current.bottom(),
+        ) == margins:
+            return
+        self.card_layout.setContentsMargins(*margins)
+        self.setMinimumWidth(
+            self.BASE_MINIMUM_WIDTH + left_gutter + right_gutter
+        )
+        self.card_layout.invalidate()
+        self.updateGeometry()
+        self.adjustSize()
 
     def mousePressEvent(self, event):  # noqa: N802
         self.selected.emit(self.node_id)
@@ -664,6 +719,7 @@ class PortItem(QGraphicsEllipseItem):
     radius = 6.0
     hover_radius = 8.0
     target_radius = 10.0
+    label_gap = 7.0
 
     def __init__(
         self,
@@ -693,6 +749,17 @@ class PortItem(QGraphicsEllipseItem):
         self._active = False
         self._drop_state: str | None = None
         self._tunnel_highlight_role = ""
+        self._persistent_label_visible = False
+        self._persistent_label_max_width = 86.0
+        self.label_item = QGraphicsTextItem("", self)
+        label_font = QFont()
+        label_font.setPointSizeF(8.5)
+        self.label_item.setFont(label_font)
+        self.label_item.setDefaultTextColor(QColor("#dbe4f0"))
+        self.label_item.setAcceptedMouseButtons(Qt.NoButton)
+        self.label_item.setAcceptHoverEvents(False)
+        self.label_item.setZValue(2)
+        self.label_item.hide()
         self._tunnel_badge = TunnelBadgeItem(self.kind, self)
         self._refresh_style()
 
@@ -705,7 +772,28 @@ class PortItem(QGraphicsEllipseItem):
         self.label = label
         self.accent_color = accent_color
         self._update_tooltip()
+        self._refresh_persistent_label()
         self._refresh_style()
+
+    def set_persistent_label_visible(
+        self,
+        visible: bool,
+        *,
+        maximum_width: float,
+    ) -> None:
+        self._persistent_label_visible = bool(visible)
+        self._persistent_label_max_width = max(float(maximum_width), 24.0)
+        self._refresh_persistent_label()
+
+    def preferred_persistent_label_width(self, maximum_width: float) -> float:
+        """Return the rendered label width, capped for practical node sizes."""
+        full_label = str(self.label or "").strip()
+        if not full_label:
+            return 0.0
+        metrics = QFontMetricsF(self.label_item.font())
+        # QGraphicsTextItem's document contributes a small horizontal margin.
+        natural_width = metrics.horizontalAdvance(full_label) + 8.0
+        return min(natural_width, max(float(maximum_width), 24.0))
 
     def set_active(self, active: bool) -> None:
         self._active = active
@@ -831,6 +919,7 @@ class PortItem(QGraphicsEllipseItem):
         self.setRect(-radius, -radius, radius * 2, radius * 2)
         self.setBrush(QColor(color))
         self.setPen(QPen(QColor(pen_color), pen_width))
+        self._position_persistent_label()
         if self._tunnel_label:
             self._position_tunnel_badge(radius)
 
@@ -844,6 +933,36 @@ class PortItem(QGraphicsEllipseItem):
             name = f"{name}: {self.label}"
         tunnel = f"\nTunnel: {self._tunnel_label}" if self._tunnel_label else ""
         self.setToolTip(f"{name} ({self.data_type}){tunnel}")
+
+    def _refresh_persistent_label(self) -> None:
+        full_label = str(self.label or "").strip()
+        visible = self._persistent_label_visible and bool(full_label)
+        if not visible:
+            self.label_item.hide()
+            self.label_item.setPlainText("")
+            self.label_item.setToolTip("")
+            return
+        metrics = QFontMetricsF(self.label_item.font())
+        elided = metrics.elidedText(
+            full_label,
+            Qt.ElideRight,
+            int(self._persistent_label_max_width),
+        )
+        self.label_item.setPlainText(elided)
+        self.label_item.setToolTip(full_label)
+        self._position_persistent_label()
+        self.label_item.show()
+
+    def _position_persistent_label(self) -> None:
+        if not self.label_item.isVisible() and not self.label_item.toPlainText():
+            return
+        rect = self.label_item.boundingRect()
+        y = -rect.height() / 2.0
+        if self.kind == "input":
+            x = self.radius + self.label_gap
+        else:
+            x = -self.radius - self.label_gap - rect.width()
+        self.label_item.setPos(x, y)
 
     def _position_tunnel_badge(self, port_radius: float | None = None) -> None:
         rect = self._tunnel_badge.boundingRect()
@@ -861,6 +980,11 @@ class NodeProxy(QGraphicsProxyWidget):
     """Movable graphics item that keeps connected wires attached."""
 
     DRAG_OPACITY = 0.62
+    PORT_EDGE_INSET = 42.0
+    PORT_ROW_SPACING = 24.0
+    PORT_LABEL_CENTER_GAP = 24.0
+    PORT_LABEL_MAX_WIDTH = 140.0
+    PORT_LABEL_CONTENT_GAP = 8.0
 
     def __init__(
         self,
@@ -888,6 +1012,7 @@ class NodeProxy(QGraphicsProxyWidget):
         self._output_port_labels: list[str] = []
         self._output_port_colors: list[str | None] = []
         self._output_port_types: list[str] = []
+        self._port_label_mode = PortLabelMode.AMBIGUOUS_ONLY
         self.output_ports: list[PortItem] = []
         self._drag_start_scene: QPointF | None = None
         self._drag_start_pos: QPointF | None = None
@@ -899,11 +1024,16 @@ class NodeProxy(QGraphicsProxyWidget):
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
     def refresh_ports(self) -> None:
-        rect = self.boundingRect()
         if self._has_input and self.input_type is not None:
             self._ensure_input_ports()
-            top = rect.top() + 42
-            bottom = rect.bottom() - 42
+        if self._has_output:
+            self._ensure_output_ports()
+        self._update_card_minimum_height()
+        self._update_card_port_label_gutters()
+        rect = self.boundingRect()
+        if self._has_input and self.input_type is not None:
+            top = rect.top() + self.PORT_EDGE_INSET
+            bottom = rect.bottom() - self.PORT_EDGE_INSET
             if bottom <= top:
                 top = rect.top()
                 bottom = rect.bottom()
@@ -915,9 +1045,8 @@ class NodeProxy(QGraphicsProxyWidget):
                     y = top + step * index
                 port.setPos(rect.left(), y)
         if self._has_output:
-            self._ensure_output_ports()
-            top = rect.top() + 42
-            bottom = rect.bottom() - 42
+            top = rect.top() + self.PORT_EDGE_INSET
+            bottom = rect.bottom() - self.PORT_EDGE_INSET
             if bottom <= top:
                 top = rect.top()
                 bottom = rect.bottom()
@@ -928,6 +1057,20 @@ class NodeProxy(QGraphicsProxyWidget):
                     step = (bottom - top) / max(len(self.output_ports) - 1, 1)
                     y = top + step * index
                 port.setPos(rect.right(), y)
+        self._refresh_persistent_port_labels(rect)
+
+    @property
+    def port_label_mode(self) -> PortLabelMode:
+        return self._port_label_mode
+
+    def set_port_label_mode(self, mode: PortLabelMode | str) -> None:
+        resolved = _coerce_port_label_mode(mode)
+        if resolved == self._port_label_mode:
+            return
+        self._port_label_mode = resolved
+        self.refresh_ports()
+        for connection in self.connections:
+            connection.update_path()
 
     @property
     def input_port(self) -> PortItem | None:
@@ -952,6 +1095,85 @@ class NodeProxy(QGraphicsProxyWidget):
         self.refresh_ports()
         for connection in self.connections:
             connection.update_path()
+
+    def _persistent_port_labels_are_visible(self) -> bool:
+        if self._port_label_mode == PortLabelMode.HIDE_ALL:
+            return False
+        if self._port_label_mode == PortLabelMode.SHOW_ALL:
+            return True
+        return len(self.input_ports) > 1 or len(self.output_ports) > 1
+
+    def _refresh_persistent_port_labels(self, rect: QRectF) -> None:
+        visible = self._persistent_port_labels_are_visible()
+        maximum_width = min(
+            max(
+                (
+                    rect.width()
+                    - 2.0 * (PortItem.radius + PortItem.label_gap)
+                    - self.PORT_LABEL_CENTER_GAP
+                )
+                / 2.0,
+                24.0,
+            ),
+            self.PORT_LABEL_MAX_WIDTH,
+        )
+        for port in (*self.input_ports, *self.output_ports):
+            port.set_persistent_label_visible(
+                visible,
+                maximum_width=maximum_width,
+            )
+
+    def _update_card_port_label_gutters(self) -> None:
+        card = self._card()
+        if card is None:
+            return
+        if not self._persistent_port_labels_are_visible():
+            card.set_port_label_gutters(0.0, 0.0)
+            return
+
+        input_width = max(
+            (
+                port.preferred_persistent_label_width(self.PORT_LABEL_MAX_WIDTH)
+                for port in self.input_ports
+            ),
+            default=0.0,
+        )
+        output_width = max(
+            (
+                port.preferred_persistent_label_width(self.PORT_LABEL_MAX_WIDTH)
+                for port in self.output_ports
+            ),
+            default=0.0,
+        )
+        base_left, _top, base_right, _bottom = card.BASE_CONTENT_MARGINS
+
+        def gutter(label_width: float, base_margin: int) -> float:
+            if label_width <= 0.0:
+                return 0.0
+            label_end = (
+                PortItem.radius
+                + PortItem.label_gap
+                + label_width
+                + self.PORT_LABEL_CONTENT_GAP
+            )
+            return max(label_end - float(base_margin), 0.0)
+
+        card.set_port_label_gutters(
+            gutter(input_width, base_left),
+            gutter(output_width, base_right),
+        )
+
+    def _update_card_minimum_height(self) -> None:
+        card = self._card()
+        if card is None:
+            return
+        port_rows = max(len(self.input_ports), len(self.output_ports), 1)
+        required = int(
+            2.0 * self.PORT_EDGE_INSET + max(port_rows - 1, 0) * self.PORT_ROW_SPACING
+        )
+        card.setMinimumHeight(required if port_rows > 1 else 0)
+        card.updateGeometry()
+        card.adjustSize()
 
     def set_output_ports(
         self,
@@ -1453,6 +1675,7 @@ class PipelineGraphView(QGraphicsView):
         self._hover_tunnel_name = ""
         self._search_match_node_ids: set[str] = set()
         self._notes: dict[str, GraphNoteItem] = {}
+        self._port_label_mode = PortLabelMode.AMBIGUOUS_ONLY
 
     def build_graph(
         self,
@@ -1540,6 +1763,29 @@ class PipelineGraphView(QGraphicsView):
     @property
     def route_revision(self) -> int:
         return int(self._route_revision)
+
+    @property
+    def port_label_mode(self) -> PortLabelMode:
+        return self._port_label_mode
+
+    def set_port_label_mode(self, mode: PortLabelMode | str) -> None:
+        """Show persistent port labels without repositioning graph nodes."""
+        resolved = _coerce_port_label_mode(mode)
+        if resolved == self._port_label_mode:
+            return
+        self._port_label_mode = resolved
+        affected_rect = QRectF()
+        for proxy in self._proxies.values():
+            before = proxy.sceneBoundingRect()
+            proxy.set_port_label_mode(resolved)
+            after = proxy.sceneBoundingRect()
+            affected_rect = affected_rect.united(before).united(after)
+            self._ensure_scene_space_for_rect(after)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(
+            affected_rect=affected_rect if affected_rect.isValid() else None
+        )
+        self.scene.update()
 
     def _mark_graph_geometry_changed(self) -> None:
         self._route_revision += 1
@@ -1727,6 +1973,19 @@ class PipelineGraphView(QGraphicsView):
         if proxy is None:
             return None
         return proxy.sceneBoundingRect()
+
+    def overlapping_node_pairs(self) -> list[tuple[str, str]]:
+        """Return card pairs that currently overlap in scene coordinates."""
+        node_ids = list(self._proxies)
+        overlaps: list[tuple[str, str]] = []
+        for index, first_id in enumerate(node_ids):
+            first_rect = self._proxies[first_id].sceneBoundingRect()
+            for second_id in node_ids[index + 1 :]:
+                second_rect = self._proxies[second_id].sceneBoundingRect()
+                intersection = first_rect.intersected(second_rect)
+                if intersection.width() > 0.5 and intersection.height() > 0.5:
+                    overlaps.append((first_id, second_id))
+        return overlaps
 
     def apply_node_positions(
         self,
@@ -1936,11 +2195,18 @@ class PipelineGraphView(QGraphicsView):
         proxy.setWidget(card)
         self.scene.addItem(proxy)
         proxy.setPos(position)
+        proxy.set_port_label_mode(self._port_label_mode)
         proxy.set_input_ports(
             _node_input_port_count(node),
             _node_input_port_labels(node),
             _node_input_port_colors(node),
             _node_input_port_types(node),
+        )
+        proxy.set_output_ports(
+            _node_output_port_count(node),
+            _node_output_port_labels(node),
+            _node_output_port_colors(node),
+            _node_output_port_types(node),
         )
         proxy.refresh_ports()
         self._cards[node.id] = card
@@ -2323,7 +2589,9 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
+        before = proxy.sceneBoundingRect()
         proxy.set_input_ports(count, labels, colors, data_types)
+        self._finish_port_geometry_update(proxy, before)
 
     def set_node_output_ports(
         self,
@@ -2336,7 +2604,20 @@ class PipelineGraphView(QGraphicsView):
         proxy = self._proxies.get(node_id)
         if proxy is None:
             return
+        before = proxy.sceneBoundingRect()
         proxy.set_output_ports(count, labels, colors, data_types)
+        self._finish_port_geometry_update(proxy, before)
+
+    def _finish_port_geometry_update(
+        self,
+        proxy: NodeProxy,
+        before: QRectF,
+    ) -> None:
+        after = proxy.sceneBoundingRect()
+        self._ensure_scene_space_for_rect(after)
+        self._mark_graph_geometry_changed()
+        self.reroute_connections(affected_rect=before.united(after))
+        self.scene.update()
 
     def select_node(self, node_id: str) -> None:
         if node_id in self._cards:
@@ -3211,6 +3492,9 @@ def _types_compatible(output_type: str, input_type: str | None) -> bool:
 def _node_input_port_count(node) -> int:
     if not getattr(node, "has_input", False):
         return 0
+    spec = _operation_spec_for_node(node)
+    if spec is not None and spec.inputs:
+        return len(spec.input_ports)
     max_inputs = getattr(node, "max_inputs", 1)
     if max_inputs is None or max_inputs != 1:
         try:
@@ -3231,6 +3515,11 @@ def _node_input_port_labels(node) -> list[str]:
             f"Channel {index + 1}: {colors[index]}"
             for index in range(count)
         ]
+    spec = _operation_spec_for_node(node)
+    if spec is not None:
+        labels = [port.label for port in spec.input_ports]
+        if len(labels) == count:
+            return labels
     return [f"Input {index + 1}" for index in range(count)]
 
 
@@ -3241,8 +3530,43 @@ def _node_input_port_colors(node) -> list[str | None]:
 
 
 def _node_input_port_types(node) -> list[str]:
+    spec = _operation_spec_for_node(node)
+    if spec is not None and spec.inputs:
+        return [port.input_type for port in spec.input_ports]
     input_type = getattr(node, "input_type", None) or "any"
     return [input_type for _index in range(_node_input_port_count(node))]
+
+
+def _node_output_port_count(node) -> int:
+    spec = _operation_spec_for_node(node)
+    if spec is None or spec.output_factory is not None:
+        return 1
+    return max(len(spec.output_ports), 1)
+
+
+def _node_output_port_labels(node) -> list[str]:
+    spec = _operation_spec_for_node(node)
+    if spec is None or spec.output_factory is not None:
+        return ["Output"]
+    return [port.label for port in spec.output_ports]
+
+
+def _node_output_port_colors(node) -> list[str | None]:
+    spec = _operation_spec_for_node(node)
+    if spec is None or spec.output_factory is not None:
+        return []
+    return [_CHANNEL_COLOR_HEX.get(port.name.lower()) for port in spec.output_ports]
+
+
+def _node_output_port_types(node) -> list[str]:
+    spec = _operation_spec_for_node(node)
+    if spec is None or spec.output_factory is not None:
+        return [getattr(node, "output_type", "any") or "any"]
+    return [port.output_type for port in spec.output_ports]
+
+
+def _operation_spec_for_node(node):
+    return NODE_LIBRARY_BY_ID.get(str(getattr(node, "operation_id", "")))
 
 
 def _channel_color_names(node) -> list[str]:

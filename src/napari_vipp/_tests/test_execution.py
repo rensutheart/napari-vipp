@@ -5,6 +5,7 @@ import threading
 import numpy as np
 
 from napari_vipp.core.execution import (
+    PipelineNodeResult,
     PipelineRunRequest,
     execute_pipeline_request,
 )
@@ -30,10 +31,12 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
         source_revisions=("revision-1",),
     )
     started: list[str] = []
+    finished: list[PipelineNodeResult] = []
 
     result = execute_pipeline_request(
         request,
         node_started_callback=started.append,
+        node_finished_callback=finished.append,
     )
 
     assert result.run_id == 7
@@ -42,6 +45,13 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
     assert result.source_revisions == ("revision-1",)
     assert result.pipeline is not None
     assert started == ["input"]
+    assert [node.node_id for node in finished] == ["input"]
+    assert finished[0].run_id == 7
+    assert finished[0].operation_id == "input"
+    assert finished[0].source_revisions == ("revision-1",)
+    assert len(finished[0].node_outputs) == 1
+    assert finished[0].node_outputs[0] is data
+    assert finished[0].output_state is not None
     np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
 
 
@@ -123,3 +133,32 @@ def test_execute_pipeline_request_distinguishes_cooperative_cancellation():
     assert result.pipeline is None
     assert result.cancelled
     assert "cancel" in result.error.lower()
+
+
+def test_execute_pipeline_request_forwards_rescale_phase_progress():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    rescale = pipeline.add_node("rescale_intensity")
+    assert pipeline.connect("input", rescale.id).success
+    updates = []
+    request = PipelineRunRequest(
+        run_id=19,
+        workflow=serialize_workflow(pipeline),
+        input_data=np.linspace(0.0, 1.0, 512, dtype=np.float32),
+        input_metadata=None,
+        input_name="source",
+        source_payloads={},
+    )
+
+    result = execute_pipeline_request(
+        request,
+        progress_callback=lambda *update: updates.append(update),
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert updates
+    assert all(update[0] == rescale.id for update in updates)
+    assert updates[-1][1:3] == (100, 100)
+    assert any("cutoff" in update[3].lower() for update in updates)
+    assert any("rescal" in update[3].lower() for update in updates)

@@ -22,7 +22,7 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "86ac0b2e1e89014922eb93e62b1221abb97db246e89b1274e69986cf040fc8a6"
     ),
     "synthetic-3d-deconvolution-rl-tv.json": (
-        "c6509ed2cc72df887c81e8d96983ce377f747543b7103b8e6f7dc2f242ce04ee"
+        "f5acd6b427451d2a1419456438be60cf18e2e3fcaab273902f7a7f8fe81ce6f3"
     ),
     "synthetic-3d-mesh-morphology.json": (
         "cfb8daae1aae67de8fc183179d5e6c5957a99d21763f7167217e8bd5b27571dc"
@@ -37,7 +37,7 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
         "fda14842ee0e51144586143117050967fc7c287c75ee2d0457463ae0d6127336"
     ),
     "synthetic-deconvolution-rl-tv.json": (
-        "02b188d02569debd2fe0986fea2bdff4f58bf423d71fd5802895376a46f52002"
+        "0b71434287cdbb12204c65e64dc565adf104e7b13b1da81e175f089d7cde310f"
     ),
     "synthetic-derived-object-morphology.json": (
         "e994ba035f124802dc3d75cc9aaaaf8c1139f4e48dcf57dc0a1113b07e692bb9"
