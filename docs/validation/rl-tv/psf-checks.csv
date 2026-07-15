@@ -1,0 +1,9 @@
+phantom,check,status,detail
+2D,kernel_properties,pass,"shape=(15, 15); sum=0.999999991; min=2.19013543e-07; peak_at_center=True; centroid_offset_voxels=0"
+2D,matching_physical_sampling,pass,Explicit image and PSF grids with matching micrometer spacing accepted.
+2D,mismatched_physical_sampling,expected_rejection,Richardson-Lucy TV validation cannot combine Image and PSF: their physical grids are incompatible (axis 0 (y) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample); axis 1 (x) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample)). Supply a PSF measured or explicitly resampled at the image's spatial sampling; VIPP does not resample PSFs implicitly.
+2D,mismatched_dimensionality,expected_rejection,PSF dimensionality (3D) must match the resolved spatial dimensionality (2D).
+3D,kernel_properties,pass,"shape=(7, 15, 15); sum=0.999999988; min=5.58783384e-08; peak_at_center=True; centroid_offset_voxels=0"
+3D,matching_physical_sampling,pass,Explicit image and PSF grids with matching micrometer spacing accepted.
+3D,mismatched_physical_sampling,expected_rejection,Richardson-Lucy TV validation cannot combine Image and PSF: their physical grids are incompatible (axis 0 (z) sample spacing differs (0.3 micrometer per sample versus 0.225 micrometer per sample); axis 1 (y) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample); axis 2 (x) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample)). Supply a PSF measured or explicitly resampled at the image's spatial sampling; VIPP does not resample PSFs implicitly.
+3D,mismatched_dimensionality,expected_rejection,PSF dimensionality (4D) must match the resolved spatial dimensionality (3D).

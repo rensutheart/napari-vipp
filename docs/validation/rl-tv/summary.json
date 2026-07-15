@@ -1,0 +1,199 @@
+{
+  "generated_by": "scripts/validate_rl_tv_phantoms.py",
+  "seeds": {
+    "2D": 20260715,
+    "3D": 20260716
+  },
+  "defaults_evaluated": {
+    "iterations": 25,
+    "tv_regularization": 0.002,
+    "tv_epsilon": 1e-06,
+    "filter_epsilon": 1e-12,
+    "denominator_floor": 0.05
+  },
+  "environment": {
+    "python": "3.12.7",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "scikit_image": "0.26.0",
+    "platform": "Windows-11-10.0.26200-SP0"
+  },
+  "phantoms": {
+    "2D": {
+      "observed": {
+        "mse": 0.004754487721470458,
+        "psnr_db": 23.228962698356806,
+        "ssim": 0.8373123688305296,
+        "flux_ratio": 1.0886607822305532,
+        "border_mse": 0.0020327181963992686,
+        "points_recovery": 0.17266748502231952,
+        "thin_line_recovery": 0.3991335368157571,
+        "dim_structure_recovery": 0.47210201627147885,
+        "dim_structure_loss_fraction": 0.5278979837285211
+      },
+      "ordinary_rl": {
+        "mse": 0.0013571389867231124,
+        "psnr_db": 28.673756732864977,
+        "ssim": 0.9560771142146065,
+        "flux_ratio": 1.0886607322932023,
+        "border_mse": 0.0019441360977813283,
+        "points_recovery": 0.8351718627417815,
+        "thin_line_recovery": 0.8821769825831235,
+        "dim_structure_recovery": 0.7432547730644897,
+        "dim_structure_loss_fraction": 0.2567452269355103
+      },
+      "default_rl_tv": {
+        "mse": 0.0013162214953613043,
+        "psnr_db": 28.806710209660697,
+        "ssim": 0.956419843532141,
+        "flux_ratio": 1.0863785596098334,
+        "border_mse": 0.0018879201258211761,
+        "points_recovery": 0.8304415737559141,
+        "thin_line_recovery": 0.8789453143112511,
+        "dim_structure_recovery": 0.7390305076896856,
+        "dim_structure_loss_fraction": 0.2609694923103144
+      },
+      "best_lambda_by_mse": {
+        "lambda": 0.02,
+        "mse": 0.001090222030481515,
+        "psnr_db": 29.624850462856784,
+        "ssim": 0.9579572169723674,
+        "flux_ratio": 1.0675957604051443,
+        "border_mse": 0.0014817484724209459,
+        "points_recovery": 0.7886023677542098,
+        "thin_line_recovery": 0.8523565026098263,
+        "dim_structure_recovery": 0.7028333480801608,
+        "dim_structure_loss_fraction": 0.29716665191983915
+      },
+      "best_lambda_by_dim_structure_recovery": {
+        "lambda": 0.0,
+        "mse": 0.0013571389867231124,
+        "psnr_db": 28.673756732864977,
+        "ssim": 0.9560771142146065,
+        "flux_ratio": 1.0886607322932023,
+        "border_mse": 0.0019441360977813283,
+        "points_recovery": 0.8351718627417815,
+        "thin_line_recovery": 0.8821769825831235,
+        "dim_structure_recovery": 0.7432547730644897,
+        "dim_structure_loss_fraction": 0.2567452269355103
+      },
+      "lambda_zero_parity": {
+        "max_abs_difference": 0.0,
+        "mean_abs_difference": 0.0
+      }
+    },
+    "3D": {
+      "observed": {
+        "mse": 0.0015092689183230778,
+        "psnr_db": 28.212333716634404,
+        "ssim": 0.8155912928500139,
+        "flux_ratio": 1.3183137450681588,
+        "border_mse": 0.0010456622106275717,
+        "points_recovery": 0.06225675465600871,
+        "thin_line_recovery": 0.10185661437352307,
+        "dim_structure_recovery": 0.20867797937944282,
+        "dim_structure_loss_fraction": 0.7913220206205571
+      },
+      "ordinary_rl": {
+        "mse": 0.0005362841999019659,
+        "psnr_db": 32.706049981077356,
+        "ssim": 0.9581452190334797,
+        "flux_ratio": 1.3183137369783846,
+        "border_mse": 0.0005539286416070772,
+        "points_recovery": 0.5542852356074921,
+        "thin_line_recovery": 0.6346291224637076,
+        "dim_structure_recovery": 0.3347602241829942,
+        "dim_structure_loss_fraction": 0.6652397758170058
+      },
+      "default_rl_tv": {
+        "mse": 0.0005240931429163028,
+        "psnr_db": 32.80591522444121,
+        "ssim": 0.9575775783430324,
+        "flux_ratio": 1.3143389152590776,
+        "border_mse": 0.0005326485611254308,
+        "points_recovery": 0.5452371862097407,
+        "thin_line_recovery": 0.627571509528949,
+        "dim_structure_recovery": 0.3265730236342341,
+        "dim_structure_loss_fraction": 0.6734269763657659
+      },
+      "best_lambda_by_mse": {
+        "lambda": 0.02,
+        "mse": 0.00047674544881045347,
+        "psnr_db": 33.21713444198979,
+        "ssim": 0.9505075226917951,
+        "flux_ratio": 1.2824020415858937,
+        "border_mse": 0.0004075961566717371,
+        "points_recovery": 0.46817998024992064,
+        "thin_line_recovery": 0.5671014379391831,
+        "dim_structure_recovery": 0.26566098071491795,
+        "dim_structure_loss_fraction": 0.734339019285082
+      },
+      "best_lambda_by_dim_structure_recovery": {
+        "lambda": 0.0,
+        "mse": 0.0005362841999019659,
+        "psnr_db": 32.706049981077356,
+        "ssim": 0.9581452190334797,
+        "flux_ratio": 1.3183137369783846,
+        "border_mse": 0.0005539286416070772,
+        "points_recovery": 0.5542852356074921,
+        "thin_line_recovery": 0.6346291224637076,
+        "dim_structure_recovery": 0.3347602241829942,
+        "dim_structure_loss_fraction": 0.6652397758170058
+      },
+      "lambda_zero_parity": {
+        "max_abs_difference": 0.0,
+        "mean_abs_difference": 0.0
+      }
+    }
+  },
+  "psf_checks": [
+    {
+      "phantom": "2D",
+      "check": "kernel_properties",
+      "status": "pass",
+      "detail": "shape=(15, 15); sum=0.999999991; min=2.19013543e-07; peak_at_center=True; centroid_offset_voxels=0"
+    },
+    {
+      "phantom": "2D",
+      "check": "matching_physical_sampling",
+      "status": "pass",
+      "detail": "Explicit image and PSF grids with matching micrometer spacing accepted."
+    },
+    {
+      "phantom": "2D",
+      "check": "mismatched_physical_sampling",
+      "status": "expected_rejection",
+      "detail": "Richardson-Lucy TV validation cannot combine Image and PSF: their physical grids are incompatible (axis 0 (y) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample); axis 1 (x) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample)). Supply a PSF measured or explicitly resampled at the image's spatial sampling; VIPP does not resample PSFs implicitly."
+    },
+    {
+      "phantom": "2D",
+      "check": "mismatched_dimensionality",
+      "status": "expected_rejection",
+      "detail": "PSF dimensionality (3D) must match the resolved spatial dimensionality (2D)."
+    },
+    {
+      "phantom": "3D",
+      "check": "kernel_properties",
+      "status": "pass",
+      "detail": "shape=(7, 15, 15); sum=0.999999988; min=5.58783384e-08; peak_at_center=True; centroid_offset_voxels=0"
+    },
+    {
+      "phantom": "3D",
+      "check": "matching_physical_sampling",
+      "status": "pass",
+      "detail": "Explicit image and PSF grids with matching micrometer spacing accepted."
+    },
+    {
+      "phantom": "3D",
+      "check": "mismatched_physical_sampling",
+      "status": "expected_rejection",
+      "detail": "Richardson-Lucy TV validation cannot combine Image and PSF: their physical grids are incompatible (axis 0 (z) sample spacing differs (0.3 micrometer per sample versus 0.225 micrometer per sample); axis 1 (y) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample); axis 2 (x) sample spacing differs (0.1 micrometer per sample versus 0.075 micrometer per sample)). Supply a PSF measured or explicitly resampled at the image's spatial sampling; VIPP does not resample PSFs implicitly."
+    },
+    {
+      "phantom": "3D",
+      "check": "mismatched_dimensionality",
+      "status": "expected_rejection",
+      "detail": "PSF dimensionality (4D) must match the resolved spatial dimensionality (3D)."
+    }
+  ]
+}
