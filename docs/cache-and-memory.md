@@ -19,8 +19,8 @@ RAM free 11.4 GB / 31.7 GB`.
 | Mode | Intended use | Retained outputs |
 | --- | --- | --- |
 | Keep all node outputs cached | Default interactive graph design. Best for rapid inspection and branching. | Every calculated node output until the graph/source changes or memory guard intervenes. |
-| Smart interactive cache | Large graphs where repeated inspection still matters. Selecting a pruned node restores that node output and thumbnail for inspection. | All calculated manual nodes; selected and pinned nodes; direct working inputs; source nodes; branch points; explicit output nodes; recently inspected nodes; and nodes marked `Keep output cached`. |
-| Low-memory mode | Memory-constrained interactive work and batch-like runs. | All calculated manual nodes; the selected/pinned working input and result; explicit output nodes; and nodes marked `Keep output cached`. |
+| Smart interactive cache | Large graphs where repeated inspection still matters. Selecting a pruned node restores that node output and thumbnail for inspection. | All calculated manual nodes; temporarily blocked downstream snapshots; selected and pinned nodes; direct working inputs; source nodes; branch points; explicit output nodes; recently inspected nodes; and nodes marked `Keep output cached`. |
+| Low-memory mode | Memory-constrained interactive work and batch-like runs. | All calculated manual nodes; temporarily blocked downstream snapshots; the selected/pinned working input and result; explicit output nodes; and nodes marked `Keep output cached`. |
 
 Batch collection runs use low-memory retention internally. They keep only the
 outputs that must be saved, then clear item-level caches before moving to the
@@ -31,6 +31,11 @@ graph: Keep-all, Smart, and Low-memory modes all preserve them, including an
 expensive deconvolution several hops upstream from the node currently being
 edited. This prevents a downstream display/mapping change from silently
 discarding work that required an explicit Calculate action.
+
+A branch waiting behind a stale manual-node barrier is also retained as one
+coherent snapshot, including automatic descendants. Those nodes use the
+`blocked` execution state until the actionable `stale` frontier is recalculated;
+normal Smart/Low-memory pruning resumes after the branch becomes current.
 
 Automatic nodes follow the table's ordinary retention sets. A downstream edit
 does not invalidate an unchanged automatic upstream node, but Smart/Low-memory

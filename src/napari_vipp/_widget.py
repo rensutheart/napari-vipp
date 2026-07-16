@@ -79,7 +79,11 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__ as VIPP_VERSION
-from napari_vipp._graph import PipelineGraphView, PortLabelMode
+from napari_vipp._graph import (
+    STALE_EXECUTION_ACCENT,
+    PipelineGraphView,
+    PortLabelMode,
+)
 from napari_vipp._sample_data import make_sample_data
 from napari_vipp.core.batch import (
     BATCH_CONFIG_FILENAME,
@@ -112,6 +116,7 @@ from napari_vipp.core.channel_colors import (
     color_value_to_rgb,
 )
 from napari_vipp.core.diagnostics import (
+    PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
     WidefieldNyquistResult,
     exact_histogram,
@@ -189,6 +194,7 @@ from napari_vipp.core.operations import (
 )
 from napari_vipp.core.pipeline import (
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
+    EXECUTION_BLOCKED,
     EXECUTION_ERROR,
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
@@ -477,6 +483,22 @@ class GraphNoteState:
             result["attached_node"] = self.attached_node
         return result
 
+
+@dataclass(frozen=True)
+class _IsolatedTuningSnapshot:
+    node_id: str
+    params: dict[str, object]
+    output: object
+    output_state: object
+    node_outputs: tuple[object, ...]
+    node_output_states: tuple[object, ...]
+    execution_states: dict[str, str]
+    execution_messages: dict[str, str]
+    completed_node_ids: frozenset[str]
+    undo_stack: tuple[WorkflowHistorySnapshot, ...]
+    redo_stack: tuple[WorkflowHistorySnapshot, ...]
+    batch_workflow_stale: bool
+
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
 RESCALE_CUTOFF_PARAMETERS = RESCALE_VALUE_PARAMETERS | RESCALE_PERCENTILE_PARAMETERS
@@ -528,6 +550,17 @@ CACHE_MODE_STATUS_LABELS = {
     CACHE_MODE_LOW_MEMORY: "Low memory",
 }
 CACHE_KEEP_NODE_PARAM = "_vipp_keep_cached"
+CALCULATE_ALL_ATTENTION_STYLE = (
+    "QPushButton {"
+    " background-color: #78350f;"
+    " color: #fde68a;"
+    f" border: 2px solid {STALE_EXECUTION_ACCENT};"
+    " border-radius: 3px;"
+    " font-weight: 650;"
+    "}"
+    "QPushButton:hover { background-color: #92400e; }"
+    "QPushButton:pressed { background-color: #451a03; }"
+)
 DEFAULT_CACHE_MEMORY_LIMIT_PERCENT = 90
 MEMORY_GUARD_MIN_FREE_BYTES = 512 * 1024 * 1024
 EXPLICIT_OUTPUT_OPERATIONS = {"batch_output", "save_output"}
@@ -640,6 +673,34 @@ def _configure_toolbar_combo(combo: QComboBox) -> None:
     combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
     combo.setMinimumWidth(max(78, combo.minimumSizeHint().width()))
     combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+
+class _InspectorNoteLabel(QLabel):
+    """Wrapped inspector text that always reserves its rendered height."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self._sync_wrapped_minimum_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_wrapped_minimum_height()
+
+    def _sync_wrapped_minimum_height(self) -> None:
+        width = self.contentsRect().width()
+        if width <= 0 or not self.hasHeightForWidth():
+            return
+        required_height = max(int(self.heightForWidth(width)), 0)
+        if required_height != self.minimumHeight():
+            self.setMinimumHeight(required_height)
+            self.updateGeometry()
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -934,6 +995,9 @@ class VippWidget(QWidget):
         self._pending_dirty_node_ids: set[str] = set()
         self._pending_manual_node_ids: set[str] = set()
         self._inflight_dirty_node_ids: set[str] | None = None
+        self._isolated_tuning_node_id: str | None = None
+        self._isolated_tuning_snapshot: _IsolatedTuningSnapshot | None = None
+        self._isolated_tuning_has_changes = False
         self._last_pipeline_source_signature: tuple | None = None
         self._toolbar_compact_stage: tuple[bool, bool, bool] | None = None
         self._toolbar_checkbox_widgets: list[QWidget] = []
@@ -1261,6 +1325,11 @@ class VippWidget(QWidget):
         self._pipeline_run_context: dict[int, tuple] = {}
         self._pipeline_run_manual_node_ids: dict[int, frozenset[str]] = {}
         self._pipeline_cancel_events: dict[int, threading.Event] = {}
+        self._background_execution_state_overrides: dict[
+            str,
+            tuple[int, str, str],
+        ] = {}
+        self._background_node_result_overrides: dict[str, PipelineNodeResult] = {}
 
         self.selected_title = QLabel("Gaussian Blur")
         self.selected_title.setStyleSheet("font-weight: 650;")
@@ -1276,6 +1345,25 @@ class VippWidget(QWidget):
             "Retain this node output in Smart and Low-memory cache modes. "
             "Use this for expensive intermediate images or tables you inspect often."
         )
+        self.isolated_tuning_checkbox = QCheckBox("Tune node in isolation")
+        self.isolated_tuning_checkbox.setToolTip(
+            "Recalculate only this node while you tune its parameters. "
+            "Downstream nodes stay stale until Apply and continue."
+        )
+        self.isolated_tuning_panel = QFrame()
+        self.isolated_tuning_panel.setObjectName("IsolatedTuningPanel")
+        self.isolated_tuning_panel.setStyleSheet(
+            "QFrame#IsolatedTuningPanel { background: #2a2416; "
+            "border: 1px solid #f59e0b; border-radius: 5px; padding: 5px; }"
+        )
+        self.isolated_tuning_status = QLabel("Downstream paused")
+        self.isolated_tuning_status.setWordWrap(True)
+        self.isolated_tuning_status.setStyleSheet(
+            "color: #fde68a; font-weight: 650;"
+        )
+        self.apply_isolated_tuning_button = QPushButton("Apply and continue")
+        self.cancel_isolated_tuning_button = QPushButton("Cancel tuning")
+        self.isolated_tuning_panel.setVisible(False)
         self.execution_group = QGroupBox("Execution")
         self.execution_status_label = QLabel("Automatic")
         self.execution_status_label.setWordWrap(True)
@@ -1297,6 +1385,7 @@ class VippWidget(QWidget):
         self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
         self.calculate_button = QPushButton("Calculate")
         self.parameter_group = QGroupBox("Parameters")
+        self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
         self.auto_contrast_group = QGroupBox("Auto Contrast")
@@ -2000,6 +2089,15 @@ class VippWidget(QWidget):
         layout.addWidget(self.selected_title)
         layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.keep_cached_checkbox)
+        layout.addWidget(self.isolated_tuning_checkbox)
+        isolated_tuning_layout = QVBoxLayout(self.isolated_tuning_panel)
+        isolated_tuning_layout.setContentsMargins(7, 7, 7, 7)
+        isolated_tuning_layout.addWidget(self.isolated_tuning_status)
+        isolated_tuning_actions = QHBoxLayout()
+        isolated_tuning_actions.addWidget(self.apply_isolated_tuning_button)
+        isolated_tuning_actions.addWidget(self.cancel_isolated_tuning_button)
+        isolated_tuning_layout.addLayout(isolated_tuning_actions)
+        layout.addWidget(self.isolated_tuning_panel)
         execution_layout = QVBoxLayout(self.execution_group)
         execution_layout.addWidget(self.execution_status_label)
         execution_layout.addWidget(self.auto_recalculate_checkbox)
@@ -2140,6 +2238,15 @@ class VippWidget(QWidget):
         self.graph_zoom_reset_button.clicked.connect(self._reset_graph_zoom)
         self.view_dims_bar.value_changed.connect(self._on_view_dim_changed)
         self.calculate_button.clicked.connect(self._calculate_selected_node)
+        self.isolated_tuning_checkbox.toggled.connect(
+            self._on_isolated_tuning_toggled
+        )
+        self.apply_isolated_tuning_button.clicked.connect(
+            self._apply_isolated_tuning
+        )
+        self.cancel_isolated_tuning_button.clicked.connect(
+            self._cancel_isolated_tuning
+        )
         self.auto_recalculate_checkbox.toggled.connect(
             self._on_auto_recalculate_toggled
         )
@@ -2196,6 +2303,9 @@ class VippWidget(QWidget):
         self.graph_view.node_duplicate_requested.connect(self._duplicate_node)
         self.graph_view.node_code_requested.connect(self._inspect_node_code)
         self.graph_view.node_note_requested.connect(self._add_graph_note_for_node)
+        self.graph_view.node_isolation_requested.connect(
+            self._toggle_node_isolation_from_graph
+        )
         self.graph_view.node_moved.connect(self._on_node_moved)
         self.graph_view.node_splice_requested.connect(
             self._insert_existing_node_on_connection
@@ -2234,7 +2344,9 @@ class VippWidget(QWidget):
             )
         except Exception:
             pass
-        self._debounce_timer.timeout.connect(self._finish_parameter_history_group)
+        self._debounce_timer.timeout.connect(
+            self._finish_debounced_parameter_history_group
+        )
 
     def _toggle_left_panel(self) -> None:
         self._set_left_panel_visible(self.palette_panel.isHidden())
@@ -2364,6 +2476,8 @@ class VippWidget(QWidget):
 
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
+        if self._isolated_tuning_node_id is not None:
+            self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
         if not self._history.can_undo:
             return
@@ -2434,15 +2548,58 @@ class VippWidget(QWidget):
             self._mark_collection_batch_workflow_stale_if_needed()
 
     def _record_parameter_undo(self, node_id: str, name: str) -> None:
+        if (
+            self._isolated_tuning_node_id is not None
+            and node_id != self._isolated_tuning_node_id
+        ):
+            self._finish_parameter_history_group()
         key = (node_id, name)
         if not self._history.should_capture_group(key):
             return
         self._push_undo_snapshot()
 
-    def _finish_parameter_history_group(self) -> None:
+    def _finish_debounced_parameter_history_group(self) -> None:
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+
+    def _finish_parameter_history_group(
+        self,
+        *,
+        preserve_isolated_tuning: bool = False,
+    ) -> None:
+        """Close a parameter group before another history-backed edit.
+
+        A graph, layout, note, or other serialized workflow edit commits an
+        active isolated-tuning session first. This keeps Cancel from restoring
+        execution dictionaries and history stacks captured for an older graph.
+        """
+        if (
+            not preserve_isolated_tuning
+            and self._isolated_tuning_node_id is not None
+        ):
+            had_changes = self._apply_isolated_tuning(
+                run=False,
+                announce=False,
+            )
+            if had_changes:
+                QTimer.singleShot(
+                    0,
+                    self._resume_pipeline_after_history_edit,
+                )
+            return
         self._history.finish_group()
 
+    def _resume_pipeline_after_history_edit(self) -> None:
+        """Continue work committed before a serialized workflow edit."""
+        if self._debounce_timer.isActive():
+            # A parameter edit made immediately after committing isolation owns
+            # the combined rerun; its debounce will consume the same pending set.
+            return
+        if self._pending_dirty_node_ids & set(self.pipeline.nodes):
+            self.run_pipeline()
+
     def _restore_history_snapshot(self, snapshot: WorkflowHistorySnapshot) -> None:
+        if self._isolated_tuning_node_id is not None:
+            self._apply_isolated_tuning(run=False, announce=False)
         self._debounce_timer.stop()
         self._clear_interactive_collection_batch_session()
         with self._history.suspend_recording():
@@ -3683,6 +3840,8 @@ class VippWidget(QWidget):
         self._new_workflow()
 
     def _new_workflow(self) -> None:
+        if self._isolated_tuning_node_id is not None:
+            self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
         self._clear_interactive_collection_batch_session()
         before = self._current_history_snapshot()
@@ -3827,6 +3986,8 @@ class VippWidget(QWidget):
         Bundled examples request ``prefer_image_source`` so they open at the
         start of the scientific data flow instead of a saved terminal node.
         """
+        if self._isolated_tuning_node_id is not None:
+            self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
         self._clear_interactive_collection_batch_session(
             close_workspace=not preserve_batch_workspace,
@@ -5065,6 +5226,8 @@ class VippWidget(QWidget):
         self._source_load_pending = False
 
     def _mark_pipeline_dirty(self, node_id: str) -> bool:
+        if node_id == self._isolated_tuning_node_id:
+            return self._mark_isolated_tuning_dirty(node_id)
         return self._mark_pipeline_branches_dirty({node_id})
 
     def _mark_pipeline_branches_dirty(self, node_ids) -> bool:
@@ -5073,14 +5236,315 @@ class VippWidget(QWidget):
         }
         if not valid_node_ids:
             return False
+        active_node_id = self._isolated_tuning_node_id
+        if active_node_id is not None and valid_node_ids != {active_node_id}:
+            self._apply_isolated_tuning(run=False, announce=False)
+        affected_node_ids = self.pipeline.descendants_inclusive(valid_node_ids)
+        cleared_overrides = self._discard_background_node_result_overrides(
+            affected_node_ids
+        )
         self._clear_colocalization_scatter_cache()
         self._pending_dirty_node_ids.update(valid_node_ids)
         self.pipeline.mark_manual_descendants_stale(valid_node_ids)
         self._sync_execution_ui()
+        self._refresh_node_presentation_surfaces(cleared_overrides)
         self._mark_collection_batch_workflow_stale_if_needed()
         return True
 
+    def _mark_isolated_tuning_dirty(self, node_id: str) -> bool:
+        if node_id not in self.pipeline.nodes:
+            return False
+        self._clear_colocalization_scatter_cache()
+        self._pending_dirty_node_ids.add(node_id)
+        self.pipeline.mark_nodes_stale(
+            {node_id},
+            message=(
+                "Parameters changed. Recalculating this node while downstream "
+                "propagation is paused."
+            ),
+        )
+        descendants = self.pipeline.descendants_inclusive({node_id}) - {node_id}
+        cleared_overrides = self._discard_background_node_result_overrides(
+            descendants | {node_id}
+        )
+        self.pipeline.mark_nodes_blocked(
+            descendants,
+            message=(
+                "Downstream result is stale because propagation is paused while "
+                f"'{self._node_title(node_id)}' is tuned."
+            ),
+        )
+        self._isolated_tuning_has_changes = True
+        self._sync_execution_ui()
+        self._refresh_node_presentation_surfaces(cleared_overrides)
+        self._mark_collection_batch_workflow_stale_if_needed()
+        return True
+
+    def _on_isolated_tuning_toggled(self, checked: bool) -> None:
+        node_id = self._selected_node_id
+        if checked:
+            self._start_isolated_tuning(node_id)
+        elif node_id == self._isolated_tuning_node_id:
+            self._apply_isolated_tuning()
+        else:
+            self._sync_isolated_tuning_ui()
+
+    def _toggle_node_isolation_from_graph(self, node_id: str) -> None:
+        if node_id == self._isolated_tuning_node_id:
+            self._apply_isolated_tuning()
+            return
+        self._start_isolated_tuning(node_id)
+
+    def _start_isolated_tuning(self, node_id: str) -> bool:
+        if node_id not in self.pipeline.nodes:
+            self._sync_isolated_tuning_ui()
+            return False
+        if self._isolated_tuning_node_id is not None:
+            self.status_label.setText(
+                "Finish the current isolated tuning session with Apply and "
+                "continue or Cancel tuning first."
+            )
+            self._sync_isolated_tuning_ui()
+            return False
+        descendants = self.pipeline.descendants_inclusive({node_id}) - {node_id}
+        if not descendants:
+            self.status_label.setText(
+                f"'{self._node_title(node_id)}' has no downstream nodes to pause."
+            )
+            self._sync_isolated_tuning_ui()
+            return False
+        if (
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+            or self._collection_batch_running
+        ):
+            self.status_label.setText(
+                "Wait for the current calculation or source load to finish before "
+                "starting isolated tuning."
+            )
+            self._sync_isolated_tuning_ui()
+            return False
+        if (
+            self._last_pipeline_source_signature is None
+            or self._pending_dirty_node_ids
+            or self._inflight_dirty_node_ids is not None
+            or not self.pipeline._has_cached_output(node_id)
+        ):
+            self.status_label.setText(
+                "Calculate the current graph before starting isolated tuning so "
+                "Cancel tuning has a coherent result to restore."
+            )
+            self._sync_isolated_tuning_ui()
+            return False
+
+        self._finish_parameter_history_group()
+        node = self.pipeline.nodes[node_id]
+        self._isolated_tuning_snapshot = _IsolatedTuningSnapshot(
+            node_id=node_id,
+            params=deepcopy(node.params),
+            output=self.pipeline.outputs.get(node_id),
+            output_state=self.pipeline.output_states.get(node_id),
+            node_outputs=tuple(self.pipeline.node_outputs.get(node_id, ())),
+            node_output_states=tuple(
+                self.pipeline.node_output_states.get(node_id, ())
+            ),
+            execution_states=dict(self.pipeline.node_execution_states),
+            execution_messages=dict(self.pipeline.node_execution_messages),
+            completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+            undo_stack=tuple(self._history.undo_stack),
+            redo_stack=tuple(self._history.redo_stack),
+            batch_workflow_stale=self._interactive_collection_batch_workflow_stale,
+        )
+        self._isolated_tuning_node_id = node_id
+        self._isolated_tuning_has_changes = False
+        self._sync_isolated_tuning_ui()
+        self.status_label.setText(
+            f"Tuning '{self._node_title(node_id)}' in isolation. Downstream "
+            "propagation will pause after the first parameter change."
+        )
+        return True
+
+    def _apply_isolated_tuning(
+        self,
+        _checked: bool = False,
+        *,
+        run: bool = True,
+        announce: bool = True,
+    ) -> bool:
+        node_id = self._isolated_tuning_node_id
+        if node_id is None:
+            self._sync_isolated_tuning_ui()
+            return False
+        self._debounce_timer.stop()
+        had_changes = self._isolated_tuning_has_changes
+        self._finish_parameter_history_group(preserve_isolated_tuning=True)
+        self._isolated_tuning_node_id = None
+        self._isolated_tuning_snapshot = None
+        self._isolated_tuning_has_changes = False
+
+        dirty_targets: set[str] = set()
+        if had_changes and node_id in self.pipeline.nodes:
+            state = self.pipeline.node_execution_states.get(node_id)
+            isolated_result_in_flight = bool(
+                self._active_pipeline_run_id is not None
+                and self._inflight_dirty_node_ids is not None
+                and node_id in self._inflight_dirty_node_ids
+            )
+            latest_result_available = bool(
+                state == EXECUTION_READY or isolated_result_in_flight
+            )
+            if (
+                not latest_result_available
+                or not self.pipeline._has_cached_output(node_id)
+            ):
+                dirty_targets.add(node_id)
+            else:
+                dirty_targets.update(
+                    connection.target_id
+                    for connection in self.pipeline.connections
+                    if connection.source_id == node_id
+                )
+                if not dirty_targets:
+                    dirty_targets.add(node_id)
+            self._pending_dirty_node_ids.update(dirty_targets)
+            self.pipeline.mark_manual_descendants_stale(dirty_targets)
+            self._mark_collection_batch_workflow_stale_if_needed()
+
+        self._sync_execution_ui()
+        if announce:
+            self.status_label.setText(
+                (
+                    f"Applying the latest '{self._node_title(node_id)}' result "
+                    "and continuing downstream..."
+                )
+                if dirty_targets
+                else "Isolated tuning ended; no parameter changes to apply."
+            )
+        if run and dirty_targets:
+            self.run_pipeline()
+        return had_changes
+
+    def _cancel_isolated_tuning(
+        self,
+        _checked: bool = False,
+        *,
+        announce: bool = True,
+    ) -> bool:
+        snapshot = self._isolated_tuning_snapshot
+        node_id = self._isolated_tuning_node_id
+        if snapshot is None or node_id is None:
+            self._sync_isolated_tuning_ui()
+            return False
+        self._debounce_timer.stop()
+        if self._active_pipeline_run_id is not None:
+            self._abandon_background_pipeline_run()
+        self._pending_dirty_node_ids.discard(node_id)
+        self._pending_manual_node_ids.discard(node_id)
+        node = self.pipeline.nodes.get(node_id)
+        if node is not None:
+            node.params = deepcopy(snapshot.params)
+            self.pipeline.outputs[node_id] = snapshot.output
+            self.pipeline.output_states[node_id] = snapshot.output_state
+            self.pipeline.node_outputs[node_id] = list(snapshot.node_outputs)
+            self.pipeline.node_output_states[node_id] = list(
+                snapshot.node_output_states
+            )
+        self.pipeline.node_execution_states = dict(snapshot.execution_states)
+        self.pipeline.node_execution_messages = dict(snapshot.execution_messages)
+        self.pipeline.completed_node_ids = set(snapshot.completed_node_ids)
+        self._history.undo_stack[:] = snapshot.undo_stack
+        self._history.redo_stack[:] = snapshot.redo_stack
+        self._history.finish_group()
+        self._interactive_collection_batch_workflow_stale = (
+            snapshot.batch_workflow_stale
+        )
+        self._isolated_tuning_node_id = None
+        self._isolated_tuning_snapshot = None
+        self._isolated_tuning_has_changes = False
+        if node is not None:
+            self._sync_node_output_ports(node_id)
+            if self._selected_node_id == node_id:
+                self._render_parameters(node_id)
+        self._sync_history_actions()
+        self._update_thumbnails()
+        self._inspect_selected_node()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_execution_ui()
+        self._refresh_cache_status()
+        if announce:
+            self.status_label.setText(
+                f"Canceled isolated tuning for '{self._node_title(node_id)}'; "
+                "restored its original parameters and cached result."
+            )
+        return True
+
+    def _sync_isolated_tuning_ui(self) -> None:
+        active_node_id = self._isolated_tuning_node_id
+        if active_node_id not in self.pipeline.nodes:
+            active_node_id = None
+            self._isolated_tuning_node_id = None
+            self._isolated_tuning_snapshot = None
+            self._isolated_tuning_has_changes = False
+        selected_node_id = self._selected_node_id
+        has_downstream = bool(
+            selected_node_id in self.pipeline.nodes
+            and (
+                self.pipeline.descendants_inclusive({selected_node_id})
+                - {selected_node_id}
+            )
+        )
+        with QSignalBlocker(self.isolated_tuning_checkbox):
+            self.isolated_tuning_checkbox.setChecked(
+                active_node_id is not None and selected_node_id == active_node_id
+            )
+        self.isolated_tuning_checkbox.setEnabled(
+            bool(
+                selected_node_id in self.pipeline.nodes
+                and (
+                    selected_node_id == active_node_id
+                    or (active_node_id is None and has_downstream)
+                )
+            )
+        )
+        if active_node_id is not None and selected_node_id != active_node_id:
+            self.isolated_tuning_checkbox.setToolTip(
+                f"'{self._node_title(active_node_id)}' is already being tuned. "
+                "Apply or cancel that session before isolating another node."
+            )
+        else:
+            self.isolated_tuning_checkbox.setToolTip(
+                "Recalculate only this node while you tune its parameters. "
+                "Downstream nodes stay stale until Apply and continue."
+            )
+        self.isolated_tuning_panel.setVisible(active_node_id is not None)
+        if active_node_id is not None:
+            state, _message = self._node_execution_ui_state(active_node_id)
+            result_in_flight = bool(
+                self._active_pipeline_run_id is not None
+                and self._inflight_dirty_node_ids is not None
+                and active_node_id in self._inflight_dirty_node_ids
+            )
+            if not self._isolated_tuning_has_changes:
+                suffix = " Change a parameter to begin local recalculation."
+            elif result_in_flight or state == EXECUTION_RUNNING:
+                suffix = " Recalculating this node; downstream remains held."
+            elif state == EXECUTION_ERROR:
+                suffix = " Local calculation failed; fix the node or cancel tuning."
+            elif state == EXECUTION_READY:
+                suffix = " Latest local result is ready to apply."
+            else:
+                suffix = " Local result is waiting to be recalculated."
+            self.isolated_tuning_status.setText(
+                f"Downstream paused after '{self._node_title(active_node_id)}'."
+                f"{suffix}"
+            )
+        self.graph_view.set_isolated_tuning_node(active_node_id)
+
     def _invalidate_pipeline_cache(self) -> None:
+        if self._isolated_tuning_node_id is not None:
+            self._apply_isolated_tuning(run=False, announce=False)
+        cleared_overrides = self._discard_background_node_result_overrides()
         self._pending_dirty_node_ids.clear()
         self._pending_manual_node_ids.clear()
         self._inflight_dirty_node_ids = None
@@ -5094,6 +5558,7 @@ class VippWidget(QWidget):
         self.pipeline.completed_node_ids.clear()
         self.pipeline.mark_manual_descendants_stale(self.pipeline.nodes)
         self._sync_execution_ui()
+        self._refresh_node_presentation_surfaces(cleared_overrides)
 
     def _begin_pipeline_dispatch(self, dirty_node_ids: set[str] | None) -> None:
         """Mark a run as in flight and clear the dirty nodes it covers.
@@ -5104,11 +5569,13 @@ class VippWidget(QWidget):
         later debounced run will not see an empty pending set and recompute the
         whole pipeline from the source.
         """
+        cleared_overrides = self._discard_background_node_result_overrides()
         self._inflight_dirty_node_ids = (
             None if dirty_node_ids is None else set(dirty_node_ids)
         )
         if dirty_node_ids is not None:
             self._pending_dirty_node_ids.difference_update(dirty_node_ids)
+        self._refresh_node_presentation_surfaces(cleared_overrides)
 
     def _requeue_inflight_dirty_nodes(self) -> None:
         """Return a discarded run's dirty nodes to the pending set for a rerun."""
@@ -5258,7 +5725,20 @@ class VippWidget(QWidget):
             # because an intermediate node makes them more than one edge away
             # from the currently selected node.
             | self.pipeline.manual_node_ids()
+            # A blocked branch is one coherent cached snapshot. Keep it intact
+            # until its actionable upstream manual barrier is recalculated.
+            | {
+                node_id
+                for node_id, state in self.pipeline.node_execution_states.items()
+                if state == EXECUTION_BLOCKED
+            }
         )
+        if self._isolated_tuning_node_id in self.pipeline.nodes:
+            retained.update(
+                self.pipeline.descendants_inclusive(
+                    {str(self._isolated_tuning_node_id)}
+                )
+            )
         if mode == CACHE_MODE_SMART:
             retained.update(self._source_cache_nodes())
             retained.update(self._branch_point_cache_nodes())
@@ -6475,6 +6955,8 @@ class VippWidget(QWidget):
         node = self.pipeline.nodes.get(node_id)
         if node is None:
             return
+        if node_id == self._isolated_tuning_node_id:
+            self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
         title = node.title
@@ -6513,12 +6995,14 @@ class VippWidget(QWidget):
             if recent_id != node_id
         ]
         self._rescale_auto_output_ranges.pop(node_id, None)
+        self._discard_background_node_result_overrides({node_id})
         if self._active_pinned_node_id == node_id:
             self._clear_active_pin(status=False)
         if self._selected_node_id == node_id:
             self._select_first_available_node()
         if self._mark_pipeline_branches_dirty(dirty_targets):
             self.run_pipeline()
+        self._sync_execution_ui()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Deleted '{title}'.")
 
@@ -6574,6 +7058,7 @@ class VippWidget(QWidget):
         self.keep_cached_checkbox.setEnabled(False)
         with QSignalBlocker(self.keep_cached_checkbox):
             self.keep_cached_checkbox.setChecked(False)
+        self._sync_isolated_tuning_ui()
 
     def _select_node(self, node_id: str) -> None:
         if node_id not in self.pipeline.nodes:
@@ -6598,6 +7083,7 @@ class VippWidget(QWidget):
         self._restore_selected_output_for_interactive_cache(node_id)
         self._update_histogram()
         self._sync_execution_ui()
+        self._sync_isolated_tuning_ui()
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._workflow_load_selection_in_progress:
@@ -6661,18 +7147,34 @@ class VippWidget(QWidget):
         self.run_pipeline(manual_node_ids={node_id})
 
     def _calculate_all_nodes(self) -> None:
+        had_isolation = self._isolated_tuning_node_id is not None
+        if had_isolation:
+            self._apply_isolated_tuning(run=False, announce=False)
         node_ids = self._manual_node_ids_needing_calculation()
-        if not node_ids:
-            self.status_label.setText("No manual nodes need calculation.")
+        has_dirty_work = bool(
+            self._pending_dirty_node_ids & set(self.pipeline.nodes)
+        )
+        if not node_ids and not has_dirty_work:
+            self.status_label.setText(
+                "Isolated tuning disabled; no nodes need calculation."
+                if had_isolation
+                else "No manual nodes need calculation."
+            )
             return
         for node_id in node_ids:
             self.pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
             self.pipeline.node_execution_messages[node_id] = ""
         self._sync_execution_ui()
-        self.status_label.setText(
-            f"Calculating {len(node_ids)} manual node"
-            f"{'' if len(node_ids) == 1 else 's'}..."
-        )
+        if had_isolation:
+            self.status_label.setText(
+                "Isolated tuning disabled; applying the latest result and "
+                "calculating downstream nodes..."
+            )
+        else:
+            self.status_label.setText(
+                f"Calculating {len(node_ids)} manual node"
+                f"{'' if len(node_ids) == 1 else 's'}..."
+            )
         self.run_pipeline(manual_node_ids=node_ids)
 
     def _manual_node_ids_needing_calculation(self) -> set[str]:
@@ -6685,6 +7187,42 @@ class VippWidget(QWidget):
             )
             not in {EXECUTION_READY, EXECUTION_RUNNING}
         }
+
+    def _manual_node_ids_requiring_attention(self) -> set[str]:
+        """Return actionable manual frontiers represented in bright amber."""
+        return {
+            node_id
+            for node_id in self.pipeline.manual_node_ids()
+            if self.pipeline.node_execution_states.get(
+                node_id,
+                EXECUTION_NOT_CALCULATED,
+            )
+            in {EXECUTION_NOT_CALCULATED, EXECUTION_STALE}
+            and not self.pipeline.node_auto_recalculate(node_id)
+        }
+
+    def _sync_calculate_all_attention(self) -> None:
+        attention_required = bool(
+            self._manual_node_ids_requiring_attention()
+        )
+        current = self.calculate_all_button.property("attentionRequired")
+        if current is not None and bool(current) == attention_required:
+            return
+        self.calculate_all_button.setProperty(
+            "attentionRequired",
+            attention_required,
+        )
+        self.calculate_all_button.setStyleSheet(
+            CALCULATE_ALL_ATTENTION_STYLE if attention_required else ""
+        )
+        self.calculate_all_button.setToolTip(
+            (
+                "Manual nodes need calculation. Calculate every manual node "
+                "that is not current."
+            )
+            if attention_required
+            else "Calculate every manual node that is not current."
+        )
 
     def _on_auto_recalculate_toggled(self, checked: bool) -> None:
         node_id = self._selected_node_id
@@ -6716,11 +7254,7 @@ class VippWidget(QWidget):
     def _sync_execution_ui(self) -> None:
         for node_id in self.pipeline.nodes:
             manual = self.pipeline.is_manual_node(node_id)
-            state = self.pipeline.node_execution_states.get(
-                node_id,
-                EXECUTION_NOT_CALCULATED,
-            )
-            message = self.pipeline.node_execution_messages.get(node_id, "")
+            state, message = self._node_execution_ui_state(node_id)
             auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
             self.graph_view.set_node_execution_state(
                 node_id,
@@ -6730,17 +7264,16 @@ class VippWidget(QWidget):
                 auto_recalculate=auto_recalculate,
             )
 
+        self._sync_calculate_all_attention()
+        self._sync_isolated_tuning_ui()
+
         node_id = self._selected_node_id
         if node_id not in self.pipeline.nodes or not self.pipeline.is_manual_node(
             node_id
         ):
             self.execution_group.setHidden(True)
             return
-        state = self.pipeline.node_execution_states.get(
-            node_id,
-            EXECUTION_NOT_CALCULATED,
-        )
-        message = self.pipeline.node_execution_messages.get(node_id, "")
+        state, message = self._node_execution_ui_state(node_id)
         auto_recalculate = self.pipeline.node_auto_recalculate(node_id)
         self.execution_group.setHidden(False)
         self.execution_status_label.setText(
@@ -6748,11 +7281,108 @@ class VippWidget(QWidget):
         )
         with QSignalBlocker(self.auto_recalculate_checkbox):
             self.auto_recalculate_checkbox.setChecked(auto_recalculate)
-        self.calculate_button.setEnabled(state != EXECUTION_RUNNING)
-        self.calculate_button.setHidden(auto_recalculate)
-        self.calculate_button.setText(
-            "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
+        self.calculate_button.setEnabled(
+            state not in {EXECUTION_RUNNING, EXECUTION_BLOCKED}
         )
+        self.calculate_button.setHidden(auto_recalculate)
+        if state == EXECUTION_BLOCKED:
+            self.calculate_button.setText("Waiting upstream")
+        else:
+            self.calculate_button.setText(
+                "Calculate"
+                if state == EXECUTION_NOT_CALCULATED
+                else "Recalculate",
+            )
+
+    def _node_execution_ui_state(self, node_id: str) -> tuple[str, str]:
+        """Return live state plus an accepted active-run presentation overlay."""
+        state = self.pipeline.node_execution_states.get(
+            node_id,
+            EXECUTION_NOT_CALCULATED,
+        )
+        message = self.pipeline.node_execution_messages.get(node_id, "")
+        override = self._background_execution_state_overrides.get(node_id)
+        if override is None:
+            return state, message
+        run_id, override_state, override_message = override
+        if run_id != self._active_pipeline_run_id:
+            return state, message
+        return override_state, override_message
+
+    def _background_node_result_override(
+        self,
+        node_id: str,
+    ) -> PipelineNodeResult | None:
+        result = self._background_node_result_overrides.get(node_id)
+        if result is None or result.run_id != self._active_pipeline_run_id:
+            return None
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != result.operation_id:
+            return None
+        return result
+
+    def _discard_background_node_result_overrides(
+        self,
+        node_ids: Iterable[str] | None = None,
+    ) -> set[str]:
+        if node_ids is None:
+            removed = set(self._background_execution_state_overrides) | set(
+                self._background_node_result_overrides
+            )
+        else:
+            removed = set(node_ids) & (
+                set(self._background_execution_state_overrides)
+                | set(self._background_node_result_overrides)
+            )
+        for node_id in removed:
+            self._background_execution_state_overrides.pop(node_id, None)
+            self._background_node_result_overrides.pop(node_id, None)
+        return removed
+
+    def _refresh_node_presentation_surfaces(
+        self,
+        node_ids: Iterable[str],
+        *,
+        thumbnails: bool = True,
+    ) -> None:
+        affected = set(node_ids) & set(self.pipeline.nodes)
+        if not affected:
+            return
+        self._discard_pending_thumbnail_contrast_limit_requests()
+        if thumbnails:
+            for node_id in affected:
+                data, state, output_port = self._node_display_payload(node_id)
+                self._update_node_thumbnail(
+                    node_id,
+                    data,
+                    state,
+                    output_port,
+                    queue_stack_contrast=False,
+                )
+                self.graph_view.set_node_can_pin(
+                    node_id,
+                    self._node_can_pin(node_id),
+                )
+
+        inspection_layer = self._layer_by_name(self._inspect_layer_name)
+        inspected_node_id = (
+            getattr(inspection_layer, "metadata", {}).get("node_id")
+            if inspection_layer is not None
+            else None
+        )
+        selected_affected = self._selected_node_id in affected
+        if selected_affected:
+            self._clear_output_histogram_cache()
+            self._inspect_selected_node()
+            self._sync_view_dims_bar()
+            self._update_metadata_panel()
+            self._update_histogram()
+        elif inspected_node_id in affected:
+            self._refresh_inspection_layer_if_active()
+        if self._active_pinned_node_id in affected:
+            self._refresh_pinned_layer_if_active()
+            if not selected_affected:
+                self._sync_view_dims_bar()
 
     def _show_optional_reader_error(
         self,
@@ -6822,6 +7452,11 @@ class VippWidget(QWidget):
             return "Calculating..."
         if state == EXECUTION_STALE:
             return message or "Cached result is stale. Recalculate to refresh it."
+        if state == EXECUTION_BLOCKED:
+            return message or (
+                "Downstream result is stale; waiting for an upstream manual "
+                "result."
+            )
         if state == EXECUTION_ERROR:
             return message or "Calculation failed."
         return message or "This node calculates only when requested."
@@ -6984,8 +7619,7 @@ class VippWidget(QWidget):
             )
         else:
             return False
-        note = QLabel(text)
-        note.setWordWrap(True)
+        note = _InspectorNoteLabel(text)
         note.setStyleSheet("color: #94a3b8;")
         self.parameter_form.addRow(note)
         return True
@@ -7127,6 +7761,8 @@ class VippWidget(QWidget):
         auto = bool(node.params.get("auto_parameters", True))
         resolution = self._born_wolf_psf_resolution(node_id)
         managed_names = set(BORN_WOLF_PSF_AUTO_PARAMETERS) | {"channel"}
+        support_names = {"xy_size", "z_size"}
+        annotated_names = managed_names | support_names
         auto_channel_count = self._born_wolf_psf_auto_channel_count(node_id)
         if not auto:
             self._initialize_manual_born_wolf_psf_params(node_id, resolution)
@@ -7176,15 +7812,24 @@ class VippWidget(QWidget):
 
             label_widget = QLabel(spec.label)
             field_widget: QWidget = widget
-            if name in managed_names:
+            if name in annotated_names:
                 result = resolution.parameters.get(name)
                 unresolved = bool(
-                    auto
+                    name in managed_names
+                    and auto
                     and result is not None
                     and result.required
                     and not result.resolved
                 )
-                status = QLabel(self._born_wolf_psf_status_text(result, auto=auto))
+                if name in support_names:
+                    status_text = self._born_wolf_psf_support_status_text(
+                        name,
+                        resolution,
+                        value=node.params.get(name, spec.default),
+                    )
+                else:
+                    status_text = self._born_wolf_psf_status_text(result, auto=auto)
+                status = QLabel(status_text)
                 status.setWordWrap(True)
                 status.setStyleSheet(
                     "color: #f87171;" if unresolved else "color: #94a3b8;"
@@ -7209,6 +7854,7 @@ class VippWidget(QWidget):
                 self._parameter_widgets[f"{name}_label"] = label_widget
 
             self.parameter_form.addRow(label_widget, field_widget)
+            self._apply_parameter_tooltip(spec, field_widget)
             self._parameter_widgets[name] = widget
         self._add_parameter_visibility_note(node_id, tuple(specs.values()))
         guidance, status = self._born_wolf_psf_guidance(node_id, resolution)
@@ -7369,6 +8015,51 @@ class VippWidget(QWidget):
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _born_wolf_psf_support_status_text(
+        self,
+        name: str,
+        resolution,
+        *,
+        value,
+    ) -> str:
+        if name == "z_size" and int(resolution.spatial_ndim) < 3:
+            return "not used for 2D"
+        try:
+            support = max(int(value), 1)
+            if name == "xy_size":
+                step_um = float(resolution.values["pixel_size_xy_um"])
+            else:
+                step_um = float(resolution.values["z_step_um"])
+            half_span_um = (support // 2) * step_um
+            full_span_um = 2.0 * half_span_um
+            if not np.isfinite(full_span_um) or full_span_um <= 0:
+                return "user set"
+        except (KeyError, TypeError, ValueError):
+            return "user set"
+        return f"user set; {full_span_um:.3g} um span"
+
+    def _born_wolf_psf_tail_report(
+        self,
+        node_id: str,
+        *,
+        spatial_ndim: int,
+    ) -> PsfPreflightResult | None:
+        if (
+            node_id in self._pending_dirty_node_ids
+            or self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+        ):
+            return None
+        psf = self.pipeline.outputs.get(node_id)
+        if psf is None:
+            return None
+        return psf_preflight(
+            self.pipeline.input_data_for_node(node_id),
+            psf,
+            spatial_ndim=spatial_ndim,
+            image_state=self.pipeline.input_state_for_node(node_id),
+            psf_state=self.pipeline.output_states.get(node_id),
+        )
+
     def _born_wolf_psf_guidance(self, node_id: str, resolution) -> tuple[str, str]:
         node = self.pipeline.nodes[node_id]
         data = self.pipeline.input_data_for_node(node_id)
@@ -7383,12 +8074,31 @@ class VippWidget(QWidget):
         )
         image_shape = shape[-spatial_ndim:] if len(shape) >= spatial_ndim else ()
         support_text = " x ".join(str(size) for size in psf_shape)
+        physical_spans = []
+        try:
+            xy_span_um = (xy_support - 1) * float(
+                resolution.values["pixel_size_xy_um"]
+            )
+            if spatial_ndim == 3:
+                z_span_um = (z_support - 1) * float(
+                    resolution.values["z_step_um"]
+                )
+                physical_spans.append(f"Z {z_span_um:.3g} um")
+            physical_spans.append(f"YX {xy_span_um:.3g} um")
+        except (KeyError, TypeError, ValueError):
+            physical_spans = []
+        physical_text = (
+            " Physical span between outer sample centers: "
+            + html.escape("; ".join(physical_spans))
+            + "."
+            if physical_spans
+            else ""
+        )
         sections = [
-            '<p><span style="color:#60a5fa"><b>SUPPORT WINDOW</b></span><br>'
-            f"Requested PSF: {support_text} samples. These dimensions control "
-            "how far the generated PSF extends; they are not copied from the "
-            "input image. Auto from metadata resolves optical values and sample "
-            "spacing, not support dimensions.</p>"
+            '<p><span style="color:#60a5fa"><b>SUPPORT</b></span><br>'
+            f"Requested PSF: {support_text} samples. Support is user-set."
+            + physical_text
+            + " Use the tail check after calculation to assess this window.</p>"
         ]
 
         nyquist = self._born_wolf_psf_nyquist(resolution)
@@ -7417,9 +8127,47 @@ class VippWidget(QWidget):
                     '<p><span style="color:#f59e0b"><b>! WIDEFIELD NYQUIST '
                     "ESTIMATE NOT MET</b></span><br>"
                     + html.escape(sampling_text)
-                    + ". Increase acquisition sampling density before relying "
-                    "on deconvolution for the missing frequencies.</p>",
+                    + ". Changing PSF support cannot recover frequencies missing "
+                    "from the acquisition.</p>",
                 )
+
+        tail_report = self._born_wolf_psf_tail_report(
+            node_id,
+            spatial_ndim=spatial_ndim,
+        )
+        edge_mass = None if tail_report is None else tail_report.edge_mass_fraction
+        if edge_mass is None:
+            sections.append(
+                '<p><span style="color:#94a3b8"><b>TAIL CHECK PENDING</b>'
+                "</span><br>Calculate this node to evaluate tail containment.</p>"
+            )
+        elif edge_mass > PSF_EDGE_MASS_WARNING_FRACTION:
+            status = "Warning"
+            by_axis = tail_report.edge_mass_fraction_by_axis or ()
+            labels = ("Z", "Y", "X") if spatial_ndim == 3 else ("Y", "X")
+            axis_text = ", ".join(
+                f"{label} {fraction:.1%}"
+                for label, fraction in zip(labels, by_axis, strict=False)
+            )
+            sections.append(
+                '<p><span style="color:#f59e0b"><b>! TAIL REACHES THE '
+                "WINDOW EDGE</b></span><br>"
+                f"The outermost samples contain {edge_mass:.1%} of normalized "
+                "PSF intensity"
+                + (f" ({html.escape(axis_text)})" if axis_text else "")
+                + f", above the {PSF_EDGE_MASS_WARNING_FRACTION:.0%} practical "
+                "limit. Increase the identified support dimension and "
+                "recalculate.</p>"
+            )
+        else:
+            sections.append(
+                '<p><span style="color:#34d399"><b>&#10003; TAIL CONTAINMENT '
+                "CHECK PASSED</b></span><br>"
+                f"The outermost samples contain {edge_mass:.1%} of normalized "
+                f"PSF intensity, at or below the "
+                f"{PSF_EDGE_MASS_WARNING_FRACTION:.0%} practical limit. The "
+                "current support passes this check.</p>"
+            )
 
         oversized = []
         if image_shape and len(image_shape) == len(psf_shape):
@@ -7441,28 +8189,20 @@ class VippWidget(QWidget):
                 for label, psf_size, image_size in oversized
             )
             sections.append(
-                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT NEEDS '
-                "ATTENTION</b></span><br>"
+                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT '
+                "WARNING</b></span><br>"
                 + html.escape(comparisons)
-                + ". Generation and deconvolution can still complete, but no "
-                "output sample on that axis has full PSF support on both sides. "
-                "The current same-size convolution treats signal beyond the "
-                "stack as zero.</p>"
-            )
-            sections.append(
-                '<p><span style="color:#60a5fa"><b>NEXT DECISION</b></span><br>'
-                "For trustworthy true 3D restoration, acquire guard planes above "
-                "and below the region of interest and crop or interpret the "
-                "restored margins. For independent plane-wise restoration, set "
-                "both this node and RL/RL-TV to 2D YX only when that model is "
-                "scientifically appropriate.</p>"
+                + ". Review image extent, boundary assumptions, and processing "
+                "dimensionality; do not change support only to clear the "
+                "warning.</p>"
             )
         sections.append(
-            '<p><span style="color:#94a3b8"><b>MODEL SCOPE</b></span><br>'
-            "The Nyquist estimate and Born-Wolf PSF describe conventional "
-            "widefield fluorescence. Confirm that this model matches the "
-            "acquisition; reconstructed SIM, confocal, and other modalities may "
-            "need modality-specific sampling and PSFs.</p>"
+            '<p><span style="color:#94a3b8"><b>MORE GUIDANCE</b></span><br>'
+            "Confirm that the conventional-widefield model matches the "
+            "acquisition. See the <a href=\"https://rensutheart.github.io/"
+            "vipp-mkdocs/workflows/psf-deconvolution/"
+            "#choose-born-wolf-support\">Born-Wolf support guide</a> for "
+            "support selection, boundary interpretation, and validation.</p>"
         )
         return "".join(sections), status
 
@@ -7529,9 +8269,11 @@ class VippWidget(QWidget):
             node.params[name] = value
 
     def _add_operation_note(self, text: str, *, status: str = "") -> None:
-        note = QLabel(text)
-        note.setWordWrap(True)
-        note.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        note = _InspectorNoteLabel(text)
+        note.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        )
+        note.setOpenExternalLinks(True)
         if status:
             note.setTextFormat(Qt.RichText)
         self._style_operation_note(note, status)
@@ -7786,7 +8528,7 @@ class VippWidget(QWidget):
     @staticmethod
     def _deconvolution_psf_issue_title(code: str) -> str:
         return {
-            "support_vs_image": "PSF support exceeds the image extent",
+            "support_vs_image": "PSF support reaches or exceeds the image extent",
             "edge_mass": "PSF tail reaches its support boundary",
             "missing_calibration": "Physical calibration is unavailable",
             "sampling_mismatch": "Image and PSF sampling differ",
@@ -10253,14 +10995,32 @@ class VippWidget(QWidget):
         return int(np.clip(index, 0, port_count - 1))
 
     def _node_output_state(self, node_id: str, output_port: int = 0):
-        states = self.pipeline.node_output_states.get(node_id) or []
+        result = self._background_node_result_override(node_id)
+        states = (
+            result.node_output_states
+            if result is not None
+            else self.pipeline.node_output_states.get(node_id) or []
+        )
         if 0 <= int(output_port) < len(states) and states[int(output_port)] is not None:
             return states[int(output_port)]
         if int(output_port) == 0:
-            return self.pipeline.output_states.get(node_id)
+            return (
+                result.output_state
+                if result is not None
+                else self.pipeline.output_states.get(node_id)
+            )
         return None
 
     def _node_display_payload(self, node_id: str, data=None):
+        result = self._background_node_result_override(node_id)
+        if result is not None:
+            return self._node_display_payload_from_values(
+                node_id,
+                result.output,
+                result.output_state,
+                result.node_outputs,
+                result.node_output_states,
+            )
         primary_data = self.pipeline.outputs.get(node_id) if data is None else data
         primary_state = self.pipeline.output_states.get(node_id)
         return self._node_display_payload_from_values(
@@ -11731,12 +12491,29 @@ class VippWidget(QWidget):
             source_payloads,
         )
         source_unchanged = source_signature == self._last_pipeline_source_signature
+        if self._isolated_tuning_node_id is not None and not source_unchanged:
+            self._apply_isolated_tuning(run=False, announce=False)
         dirty_node_ids = self._dirty_nodes_for_run(source_signature)
-        manual_node_ids = self._manual_node_ids_for_run(
-            dirty_node_ids,
-            manual_node_ids,
-            source_unchanged=source_unchanged,
-        )
+        target_node_ids: set[str] | None = None
+        isolated_node_id = self._isolated_tuning_node_id
+        if (
+            isolated_node_id is not None
+            and dirty_node_ids is not None
+            and isolated_node_id in dirty_node_ids
+        ):
+            dirty_node_ids = {isolated_node_id}
+            target_node_ids = {isolated_node_id}
+            manual_node_ids = (
+                {isolated_node_id}
+                if self.pipeline.is_manual_node(isolated_node_id)
+                else set()
+            )
+        else:
+            manual_node_ids = self._manual_node_ids_for_run(
+                dirty_node_ids,
+                manual_node_ids,
+                source_unchanged=source_unchanged,
+            )
         if manual_node_ids and source_unchanged:
             if dirty_node_ids is None:
                 dirty_node_ids = set(manual_node_ids)
@@ -11762,6 +12539,7 @@ class VippWidget(QWidget):
                 dirty_node_ids,
                 manual_node_ids,
                 source_payloads,
+                target_node_ids,
             )
         ):
             self._start_background_pipeline_run(
@@ -11774,6 +12552,7 @@ class VippWidget(QWidget):
                 source_signature,
                 dirty_node_ids,
                 manual_node_ids,
+                target_node_ids,
             )
             return
         self._run_pipeline_synchronously(
@@ -11786,12 +12565,15 @@ class VippWidget(QWidget):
             source_signature,
             dirty_node_ids,
             manual_node_ids,
+            target_node_ids,
         )
 
     def _abandon_background_pipeline_run(self) -> None:
         """Cancel and detach an in-flight clone whose result must be ignored."""
         run_id = self._active_pipeline_run_id
         if run_id is None:
+            cleared_overrides = self._discard_background_node_result_overrides()
+            self._refresh_node_presentation_surfaces(cleared_overrides)
             return
         cancel_event = self._pipeline_cancel_events.pop(run_id, None)
         if cancel_event is not None:
@@ -11834,6 +12616,7 @@ class VippWidget(QWidget):
         source_signature: tuple,
         dirty_node_ids: set[str] | None,
         manual_node_ids: set[str] | None = None,
+        target_node_ids: set[str] | None = None,
     ) -> None:
         self._set_pipeline_busy(False)
         self._begin_pipeline_dispatch(dirty_node_ids)
@@ -11847,8 +12630,11 @@ class VippWidget(QWidget):
                     dirty_node_ids=dirty_node_ids,
                     manual_mode=MANUAL_RUN_SKIP,
                     manual_node_ids=manual_node_ids,
+                    target_node_ids=target_node_ids,
                     retain_node_ids=self._cache_retention_node_ids(),
-                    prune_unretained=self._cache_pruning_enabled(),
+                    prune_unretained=(
+                        self._cache_pruning_enabled() and target_node_ids is None
+                    ),
                 )
         except Exception as exc:
             for node_id in manual_node_ids or ():
@@ -11886,8 +12672,12 @@ class VippWidget(QWidget):
                         source_payloads=source_payloads,
                         dirty_node_ids=rerun_dirty,
                         manual_mode=MANUAL_RUN_SKIP,
+                        target_node_ids=target_node_ids,
                         retain_node_ids=self._cache_retention_node_ids(),
-                        prune_unretained=self._cache_pruning_enabled(),
+                        prune_unretained=(
+                            self._cache_pruning_enabled()
+                            and target_node_ids is None
+                        ),
                     )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
@@ -11926,6 +12716,15 @@ class VippWidget(QWidget):
         )
         if memory_guard_message:
             self.status_label.setText(f"{memory_guard_message}{snapshot_note}")
+        elif (
+            self._isolated_tuning_node_id in self.pipeline.nodes
+            and self._isolated_tuning_has_changes
+        ):
+            node_id = str(self._isolated_tuning_node_id)
+            self.status_label.setText(
+                f"Updated '{self._node_title(node_id)}' only. Downstream nodes "
+                "remain stale until Apply and continue."
+            )
         elif source_label:
             self.status_label.setText(
                 f"Graph updated from '{source_label}'. "
@@ -12039,12 +12838,14 @@ class VippWidget(QWidget):
         dirty_node_ids: set[str] | None = None,
         manual_node_ids: set[str] | None = None,
         source_payloads: dict[str, SourcePayload] | None = None,
+        target_node_ids: set[str] | None = None,
     ) -> bool:
         return (
             self._background_processing_node_id(
                 dirty_node_ids,
                 manual_node_ids,
                 source_payloads,
+                target_node_ids,
             )
             is not None
         )
@@ -12054,27 +12855,30 @@ class VippWidget(QWidget):
         dirty_node_ids: set[str] | None = None,
         manual_node_ids: set[str] | None = None,
         source_payloads: dict[str, SourcePayload] | None = None,
+        target_node_ids: set[str] | None = None,
     ) -> str | None:
         manual_node_ids = set(manual_node_ids or set())
+        execution_plan = self.pipeline.plan_execution(
+            dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=manual_node_ids,
+            target_node_ids=target_node_ids,
+        )
+        runnable_node_ids = set(execution_plan.runnable_node_ids)
+        if not runnable_node_ids:
+            return None
         if manual_node_ids:
             for node_id in self.pipeline.topological_order():
-                if node_id in manual_node_ids:
+                if node_id in runnable_node_ids:
                     return node_id
             return None
 
         if self.background_all_checkbox.isChecked():
-            if dirty_node_ids:
-                affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
-                for node_id in self.pipeline.topological_order():
-                    if node_id in affected_node_ids:
-                        return node_id
-                return None
-            order = self.pipeline.topological_order()
-            return order[0] if order else None
+            for node_id in self.pipeline.topological_order():
+                if node_id in runnable_node_ids:
+                    return node_id
+            return None
 
-        affected_node_ids = None
-        if dirty_node_ids:
-            affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
         large_source_descendants: set[str] = set()
         for source_id, payload in (source_payloads or {}).items():
             if source_id in self.pipeline.nodes and _should_auto_background_data(
@@ -12084,7 +12888,7 @@ class VippWidget(QWidget):
                     self.pipeline.descendants_inclusive({source_id})
                 )
         for node_id in self.pipeline.topological_order():
-            if affected_node_ids is not None and node_id not in affected_node_ids:
+            if node_id not in runnable_node_ids:
                 continue
             node = self.pipeline.nodes.get(node_id)
             if node is not None and node.operation_id in BACKGROUND_PIPELINE_OPERATIONS:
@@ -12116,12 +12920,14 @@ class VippWidget(QWidget):
         source_signature: tuple,
         dirty_node_ids: set[str] | None,
         manual_node_ids: set[str] | None = None,
+        target_node_ids: set[str] | None = None,
     ) -> None:
         manual_node_ids = set(manual_node_ids or set())
         processing_node_id = self._background_processing_node_id(
             dirty_node_ids,
             manual_node_ids,
             source_payloads,
+            target_node_ids,
         )
         if self._active_pipeline_run_id is not None:
             self._pipeline_run_pending = True
@@ -12212,8 +13018,13 @@ class VippWidget(QWidget):
             manual_node_ids=(
                 frozenset(manual_node_ids) if manual_node_ids else None
             ),
+            target_node_ids=(
+                frozenset(target_node_ids) if target_node_ids is not None else None
+            ),
             retain_node_ids=frozenset(self._cache_retention_node_ids()),
-            prune_unretained=self._cache_pruning_enabled(),
+            prune_unretained=(
+                self._cache_pruning_enabled() and target_node_ids is None
+            ),
             cancel_event=cancel_event,
             source_revisions=tuple(
                 dict.fromkeys(
@@ -12261,6 +13072,8 @@ class VippWidget(QWidget):
         if run_id != self._active_pipeline_run_id:
             return
         node_id = str(node_id)
+        cleared_overrides = self._discard_background_node_result_overrides({node_id})
+        self._refresh_node_presentation_surfaces(cleared_overrides)
         self._set_pipeline_busy(True, node_id, queued=self._pipeline_run_pending)
         title = self._node_title(node_id) if node_id in self.pipeline.nodes else "graph"
         suffix = "; latest edit queued" if self._pipeline_run_pending else ""
@@ -12321,7 +13134,6 @@ class VippWidget(QWidget):
                 result.node_output_states,
             )
         )
-        self.graph_view.set_node_processing(result.node_id, False)
         self._update_node_thumbnail(
             result.node_id,
             preview_data,
@@ -12329,6 +13141,21 @@ class VippWidget(QWidget):
             output_port,
             queue_stack_contrast=False,
         )
+        self._background_execution_state_overrides[result.node_id] = (
+            result.run_id,
+            result.execution_state,
+            result.execution_message,
+        )
+        if result.node_id in self._cache_retention_node_ids():
+            self._background_node_result_overrides[result.node_id] = result
+        else:
+            self._background_node_result_overrides.pop(result.node_id, None)
+        self._sync_execution_ui()
+        self._refresh_node_presentation_surfaces(
+            {result.node_id},
+            thumbnails=False,
+        )
+        self.graph_view.set_node_processing(result.node_id, False)
 
     def _on_background_pipeline_finished(self, result: PipelineRunResult) -> None:
         if result.run_id != self._active_pipeline_run_id:
@@ -12577,6 +13404,7 @@ class VippWidget(QWidget):
             )
             for node_id in live_node_ids
         }
+        self._discard_background_node_result_overrides()
 
     def _cancel_background_pipeline_run(self) -> None:
         run_id = self._active_pipeline_run_id
@@ -12621,12 +13449,14 @@ class VippWidget(QWidget):
         self.pipeline_busy_bar.setVisible(busy)
         self.pipeline_cancel_button.setVisible(busy and cancelable)
         if not busy:
+            cleared_overrides = self._discard_background_node_result_overrides()
             self.pipeline_busy_label.setText("Processing")
             self.pipeline_busy_bar.setRange(0, 0)
             self.pipeline_busy_bar.setTextVisible(False)
             self.graph_view.clear_node_processing()
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
+            self._refresh_node_presentation_surfaces(cleared_overrides)
             return
         if not keep_current_progress:
             self.pipeline_busy_bar.setRange(0, 0)
@@ -14349,7 +15179,9 @@ class VippWidget(QWidget):
         )
 
     def _update_table_preview(self) -> None:
-        data = self.pipeline.outputs.get(self._selected_node_id)
+        data, _state, _output_port = self._node_display_payload(
+            self._selected_node_id
+        )
         if not is_table_data(data):
             self.table_group.setHidden(True)
             self.table_preview.setRowCount(0)

@@ -31,9 +31,14 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__ as VIPP_VERSION
-from napari_vipp._graph import PortLabelMode
+from napari_vipp._graph import (
+    BLOCKED_EXECUTION_ACCENT,
+    STALE_EXECUTION_ACCENT,
+    PortLabelMode,
+)
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
+    CACHE_KEEP_NODE_PARAM,
     CACHE_MODE_KEEP_ALL,
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
@@ -105,8 +110,10 @@ from napari_vipp.core.operations import (
     automatic_threshold_value,
 )
 from napari_vipp.core.pipeline import (
+    EXECUTION_BLOCKED,
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
+    EXECUTION_RUNNING,
     EXECUTION_STALE,
     NODE_LIBRARY_BY_ID,
     PALETTE_NODE_LIBRARY,
@@ -117,6 +124,7 @@ from napari_vipp.core.pipeline import (
 )
 from napari_vipp.core.preview import make_preview
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.tables import TableData, TableState
 from napari_vipp.core.workflow import (
     deserialize_workflow,
     save_workflow,
@@ -396,6 +404,62 @@ def test_flexible_double_spinbox_shows_compact_float_text(qtbot):
 
     box.setValue(0.0)
     assert box.text() == "0"
+
+
+def test_flexible_double_spinbox_uses_scientific_text_below_one_thousandth(qtbot):
+    box = FlexibleDoubleSpinBox()
+    qtbot.addWidget(box)
+    box.setRange(-1.0, 1.0)
+    box.setDecimals(12)
+
+    for value, expected in (
+        (0.002, "0.002"),
+        (0.001, "0.001"),
+        (1e-4, "1e-4"),
+        (1e-6, "1e-6"),
+        (-1e-4, "-1e-4"),
+        (0.0, "0"),
+    ):
+        box.setValue(value)
+        assert box.text() == expected
+
+    box.show()
+    box.lineEdit().setFocus()
+    box.selectAll()
+    qtbot.keyClicks(box.lineEdit(), "1e-4")
+    assert box.lineEdit().text() == "1e-4"
+    qtbot.keyClick(box.lineEdit(), Qt.Key_Return)
+    assert box.value() == pytest.approx(1e-4)
+
+
+def test_numeric_parameter_context_menu_resets_to_default(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.graph_view.select_node(node.id)
+
+    for name, changed_value in (("iterations", 40), ("denominator_floor", 0.2)):
+        control = widget._parameter_widgets[name]
+        control.value_box.setValue(changed_value)
+        menu, reset_action = control.value_box._create_context_menu()
+
+        assert reset_action.text() == "Reset to default"
+        assert reset_action.isEnabled()
+        assert len(menu.actions()) > 2
+
+        reset_action.trigger()
+
+        spec = next(
+            spec
+            for spec in widget.pipeline.node_parameter_specs(node.id)
+            if spec.name == name
+        )
+        assert control.value() == pytest.approx(spec.default)
+        assert widget.pipeline.nodes[node.id].params[name] == pytest.approx(
+            spec.default
+        )
+        menu.deleteLater()
 
 
 def test_histogram_plot_dragging_marker_emits_histogram_value(qtbot):
@@ -2639,12 +2703,121 @@ def test_born_wolf_psf_auto_shows_resolved_values_without_sliders(qtbot):
     assert not wavelength.isEnabled()
     assert wavelength.value() == 520.0
     assert "metadata" in status.text()
+    assert "finite support window" in xy_size.toolTip()
+    assert "finite support window" in widget._parameter_widgets[
+        "z_size"
+    ].toolTip()
+    assert "Quadrature samples" in widget._parameter_widgets[
+        "pupil_samples"
+    ].toolTip()
+    assert widget._parameter_widgets["xy_size_label"].toolTip() == xy_size.toolTip()
+    assert "user set;" in widget._parameter_widgets["xy_size_status"].text()
     guidance = widget._parameter_widgets["operation_notice"]
     assert guidance.property("preflightStatus") == "warning"
     assert "WIDEFIELD NYQUIST ESTIMATE NOT MET" in guidance.text()
     assert "Requested PSF: 33 x 65 x 65 samples" in guidance.text()
-    assert "not copied from the input image" in guidance.text()
+    assert "Use the tail check after calculation" in guidance.text()
     assert "Z: PSF 33, image 3" in guidance.text()
+    assert "Born-Wolf support guide" in guidance.text()
+    assert guidance.openExternalLinks()
+
+
+def test_born_wolf_psf_support_shows_attached_metadata_scale_without_calculation(
+    qtbot,
+):
+    data = np.zeros((11, 35, 37), dtype=np.float32)
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.101),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        channels=(
+            ChannelMetadata(
+                name="561 nm",
+                emission_wavelength=561.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.46,
+            refractive_index=1.518,
+        ),
+    )
+    widget = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    )
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    assert widget.pipeline.connect("input", node.id).success
+    widget._render_parameters(node.id)
+
+    assert widget._parameter_widgets["xy_size_status"].text() == (
+        "user set; 1.6 um span"
+    )
+    assert widget._parameter_widgets["z_size_status"].text() == (
+        "user set; 3.23 um span"
+    )
+    guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "Physical span between outer sample centers" in guidance
+    assert "Z 3.23 um; YX 1.6 um" in guidance
+    assert "TAIL CHECK PENDING" in guidance
+    assert "Born-Wolf support guide" in guidance
+
+
+def test_born_wolf_psf_support_reports_generated_tail_containment(qtbot):
+    data = np.zeros((35, 70, 72), dtype=np.float32)
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.101),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        channels=(
+            ChannelMetadata(
+                name="561 nm",
+                emission_wavelength=561.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.46,
+            refractive_index=1.518,
+        ),
+    )
+    widget = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    )
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    assert widget.pipeline.connect("input", node.id).success
+    psf = np.zeros((33, 65, 65), dtype=np.float32)
+    psf[16, 32, 32] = 1.0
+    widget.pipeline.outputs[node.id] = psf
+    widget.pipeline.output_states[node.id] = image_state_from_array(psf, axes=axes)
+    widget.pipeline.node_execution_states[node.id] = "ready"
+    widget._pending_dirty_node_ids.discard(node.id)
+
+    widget._render_parameters(node.id)
+
+    guidance = widget._parameter_widgets["operation_notice"]
+    assert "TAIL CONTAINMENT CHECK PASSED" in guidance.text()
+    assert "outermost samples contain 0.0%" in guidance.text()
+
+    psf[0, 32, 32] = 0.02
+    psf[16, 32, 32] = 0.98
+    widget._render_parameters(node.id)
+
+    guidance = widget._parameter_widgets["operation_notice"]
+    assert guidance.property("preflightStatus") == "warning"
+    assert "TAIL REACHES THE WINDOW EDGE" in guidance.text()
+    assert "outermost samples contain 2.0%" in guidance.text()
 
 
 def test_born_wolf_psf_auto_marks_unresolved_metadata_red(qtbot):
@@ -6768,6 +6941,43 @@ def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
     assert run_calls == [((), {})]
 
 
+def test_loaded_workflow_highlights_uncalculated_manual_frontier(qtbot, tmp_path):
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[1:4, 1:4] = 10
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    labels = pipeline.add_node("label_connected_components")
+    measurements = pipeline.add_node("measure_objects")
+    selected = pipeline.add_node("select_table_columns")
+    pipeline.set_param(threshold.id, "threshold", 5)
+    assert pipeline.connect("input", threshold.id).success
+    assert pipeline.connect(threshold.id, labels.id).success
+    assert pipeline.connect(labels.id, measurements.id).success
+    assert pipeline.connect(measurements.id, selected.id).success
+    path = tmp_path / "manual-workflow.json"
+    save_workflow(path, pipeline, {})
+
+    restored = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    restored._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(restored)
+
+    restored.load_workflow_file(path)
+
+    assert restored.pipeline.node_execution_states[measurements.id] == (
+        EXECUTION_NOT_CALCULATED
+    )
+    assert restored.pipeline.node_execution_states[selected.id] == EXECUTION_BLOCKED
+    assert STALE_EXECUTION_ACCENT in restored.graph_view._cards[
+        measurements.id
+    ].styleSheet()
+    assert BLOCKED_EXECUTION_ACCENT in restored.graph_view._cards[
+        selected.id
+    ].styleSheet()
+    assert restored.calculate_all_button.property("attentionRequired") is True
+    assert STALE_EXECUTION_ACCENT in restored.calculate_all_button.styleSheet()
+
+
 def test_graph_zoom_slider_controls_view_and_shows_default(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -7037,7 +7247,7 @@ def test_richardson_lucy_tv_controls_explain_effects_and_separate_ranges(qtbot):
     filter_epsilon = widget._parameter_widgets["filter_epsilon"]
     assert filter_epsilon.value_box.decimals() == 15
     assert filter_epsilon.value() == pytest.approx(1e-12)
-    assert filter_epsilon.value_box.text() == "0.000000000001"
+    assert filter_epsilon.value_box.text() == "1e-12"
     filter_epsilon.value_box.setValue(0.0)
     assert filter_epsilon.value() == 0.0
     assert filter_epsilon.slider.value() == 0
@@ -7234,7 +7444,7 @@ def test_deconvolution_psf_note_separates_passes_and_actionable_size_warning(qtb
     assert "normalized (sum = 1)" in text
     assert "centered (peak offset 0; centroid offset 0 voxel)" in text
     assert "NEEDS ATTENTION" in text
-    assert "PSF support exceeds the image extent" in text
+    assert "PSF support reaches or exceeds the image extent" in text
     assert "Z support is larger than the image" in text
     assert "33 PSF samples versus 11 image samples" in text
     assert "Cropping Z from 33 to 11 centered samples" in text
@@ -7306,6 +7516,30 @@ def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
     gaussian = widget.add_node_from_palette("gaussian_blur")
     widget.graph_view.select_node(gaussian.id)
     assert widget.parameter_form.rowWrapPolicy() == QFormLayout.DontWrapRows
+
+
+def test_richardson_lucy_note_reserves_wrapped_height_without_group_stretch(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.graph_view.select_node(node.id)
+    note = widget._parameter_widgets["operation_notice"]
+
+    widget.show()
+    qtbot.waitUntil(
+        lambda: note.minimumHeight()
+        >= note.heightForWidth(note.contentsRect().width())
+    )
+
+    required_height = note.heightForWidth(note.contentsRect().width())
+    assert required_height > 0
+    assert note.minimumHeight() >= required_height
+    assert note.alignment() & Qt.AlignTop
+    assert (
+        widget.parameter_group.sizePolicy().verticalPolicy()
+        == QSizePolicy.Maximum
+    )
 
 
 def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
@@ -7634,8 +7868,9 @@ def test_force_sync_supersedes_full_background_scope(qtbot, monkeypatch):
     widget.run_pipeline(force_sync=True)
 
     assert len(captured) == 1
-    assert captured[0][-2] is None
-    assert manual.id in captured[0][-1]
+    assert captured[0][-3] is None
+    assert manual.id in captured[0][-2]
+    assert captured[0][-1] is None
     assert cancel_event.is_set()
     assert widget._active_pipeline_run_id is None
     assert widget._pending_dirty_node_ids == set()
@@ -7677,10 +7912,12 @@ def test_completed_background_node_publishes_thumbnail_without_live_cache_mutati
     qtbot,
     monkeypatch,
 ):
-    widget = VippWidget(_Viewer(np.zeros((5, 18, 20), dtype=np.float32)))
+    viewer = _Viewer(np.zeros((5, 18, 20), dtype=np.float32))
+    widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
     widget.thumbnail_scope_combo.setCurrentText("Stack")
+    otsu = widget.add_node_from_palette("otsu_threshold")
     old_output = widget.pipeline.outputs["gaussian"]
     state = widget.pipeline.output_states["gaussian"]
     completed_output = np.arange(5 * 18 * 20, dtype=np.float32).reshape(5, 18, 20)
@@ -7698,6 +7935,13 @@ def test_completed_background_node_publishes_thumbnail_without_live_cache_mutati
         ),
     )
     widget._active_pipeline_run_id = 412
+    widget.pipeline.node_execution_states["gaussian"] = EXECUTION_BLOCKED
+    widget._sync_execution_ui()
+    gaussian_card = widget.graph_view._cards["gaussian"]
+    widget.inspect_node("gaussian")
+    inspection_layer = viewer.layers["VIPP Inspect"]
+    assert np.shares_memory(inspection_layer.data, old_output)
+    assert BLOCKED_EXECUTION_ACCENT in gaussian_card.styleSheet()
     widget.graph_view.set_node_processing("gaussian", True)
 
     widget._on_background_pipeline_node_finished(
@@ -7714,9 +7958,155 @@ def test_completed_background_node_publishes_thumbnail_without_live_cache_mutati
     )
 
     assert widget.pipeline.outputs["gaussian"] is old_output
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_BLOCKED
+    assert widget._node_display_payload("gaussian")[0] is completed_output
+    assert np.shares_memory(inspection_layer.data, completed_output)
     assert thumbnails and thumbnails[-1][0] == "gaussian"
     assert thumbnails[-1][1] is not None
-    assert not widget.graph_view._cards["gaussian"].is_processing()
+    assert not gaussian_card.is_processing()
+    assert gaussian_card._execution_state == EXECUTION_READY
+    assert BLOCKED_EXECUTION_ACCENT not in gaussian_card.styleSheet()
+
+    widget._on_background_pipeline_node_started((412, otsu.id))
+
+    assert widget.graph_view._cards[otsu.id].is_processing()
+    assert gaussian_card._execution_state == EXECUTION_READY
+    assert BLOCKED_EXECUTION_ACCENT not in gaussian_card.styleSheet()
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(412, {}, cancelled=True)
+    )
+
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_BLOCKED
+    assert widget._node_display_payload("gaussian")[0] is old_output
+    assert np.shares_memory(inspection_layer.data, old_output)
+    assert gaussian_card._execution_state == EXECUTION_BLOCKED
+    assert BLOCKED_EXECUTION_ACCENT in gaussian_card.styleSheet()
+
+
+def test_completed_background_node_display_state_is_invalidated_by_new_edit(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((18, 20), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    old_output = widget.pipeline.outputs["gaussian"]
+    state = widget.pipeline.output_states["gaussian"]
+    completed_output = np.ones((18, 20), dtype=np.float32)
+    widget._active_pipeline_run_id = 413
+    widget.pipeline.node_execution_states["gaussian"] = EXECUTION_BLOCKED
+    widget._sync_execution_ui()
+
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=413,
+            node_id="gaussian",
+            operation_id=widget.pipeline.nodes["gaussian"].operation_id,
+            output=completed_output,
+            output_state=state,
+            node_outputs=(completed_output,),
+            node_output_states=(state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    card = widget.graph_view._cards["gaussian"]
+    assert card._execution_state == EXECUTION_READY
+    assert widget.pipeline.outputs["gaussian"] is old_output
+    assert widget._node_display_payload("gaussian")[0] is completed_output
+
+    widget._mark_pipeline_dirty("input")
+
+    assert card._execution_state == EXECUTION_BLOCKED
+    assert BLOCKED_EXECUTION_ACCENT in card.styleSheet()
+    assert widget.pipeline.outputs["gaussian"] is old_output
+    assert widget._node_display_payload("gaussian")[0] is old_output
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(413, {}, cancelled=True)
+    )
+
+
+def test_completed_background_table_uses_and_rolls_back_run_local_preview(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((18, 20), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    table_node = widget.add_node_from_palette("measure_objects")
+    old_table = TableData(("value",), ((1,),), name="old")
+    old_state = TableState(1, 1, ("value",), source_name="old")
+    new_table = TableData(("value",), ((2,), (3,)), name="new")
+    new_state = TableState(2, 1, ("value",), source_name="new")
+    widget.pipeline.outputs[table_node.id] = old_table
+    widget.pipeline.output_states[table_node.id] = old_state
+    widget.pipeline.node_outputs[table_node.id] = [old_table]
+    widget.pipeline.node_output_states[table_node.id] = [old_state]
+    widget.pipeline.node_execution_states[table_node.id] = EXECUTION_BLOCKED
+    widget._active_pipeline_run_id = 414
+    widget._sync_execution_ui()
+    widget._update_table_preview()
+
+    assert widget.table_preview.item(0, 0).text() == "1"
+
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=414,
+            node_id=table_node.id,
+            operation_id=table_node.operation_id,
+            output=new_table,
+            output_state=new_state,
+            node_outputs=(new_table,),
+            node_output_states=(new_state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    assert widget.pipeline.outputs[table_node.id] is old_table
+    assert widget._node_display_payload(table_node.id)[0] is new_table
+    assert widget.table_preview.rowCount() == 2
+    assert widget.table_preview.item(0, 0).text() == "2"
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(414, {}, cancelled=True)
+    )
+
+    assert widget._node_display_payload(table_node.id)[0] is old_table
+    assert widget.table_preview.rowCount() == 1
+    assert widget.table_preview.item(0, 0).text() == "1"
+
+
+def test_background_state_overlay_does_not_retain_unretained_payload(qtbot):
+    widget = VippWidget(_Viewer(np.zeros((18, 20), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    qtbot.waitUntil(lambda: widget._active_pipeline_run_id is None, timeout=30_000)
+    node = widget.add_node_from_palette("gamma_correction")
+    widget.graph_view.select_node("input")
+    widget.cache_mode_combo.setCurrentText(CACHE_MODE_LOW_MEMORY)
+    assert node.id not in widget._cache_retention_node_ids()
+    state = widget.pipeline.output_states["input"]
+    completed_output = np.ones((18, 20), dtype=np.float32)
+    widget._active_pipeline_run_id = 415
+
+    widget._on_background_pipeline_node_finished(
+        PipelineNodeResult(
+            run_id=415,
+            node_id=node.id,
+            operation_id=node.operation_id,
+            output=completed_output,
+            output_state=state,
+            node_outputs=(completed_output,),
+            node_output_states=(state,),
+            execution_state=EXECUTION_READY,
+        )
+    )
+
+    assert node.id in widget._background_execution_state_overrides
+    assert node.id not in widget._background_node_result_overrides
+    assert widget.graph_view._cards[node.id]._execution_state == EXECUTION_READY
+
+    widget._on_background_pipeline_finished(
+        PipelineRunResult(415, {}, cancelled=True)
+    )
+
+    assert widget._background_execution_state_overrides == {}
+    assert widget._background_node_result_overrides == {}
 
 
 def test_autodefault_rerun_starts_at_changed_node_not_original_dirty(
@@ -9582,7 +9972,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.resize(1600, 600)
+    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
 
@@ -9900,6 +10290,393 @@ def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):
     assert widget.pipeline.outputs[measurements.id].row_count == 0
 
 
+def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
+    qtbot,
+    monkeypatch,
+):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    cached_threshold = widget.pipeline.outputs["threshold"]
+    calls: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+
+    inspector_layout = widget.inspector_content.layout()
+    assert inspector_layout.indexOf(widget.isolated_tuning_checkbox) == (
+        inspector_layout.indexOf(widget.keep_cached_checkbox) + 1
+    )
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget.graph_view.select_node("input")
+    assert not widget.isolated_tuning_panel.isHidden()
+    assert not widget.isolated_tuning_checkbox.isChecked()
+    assert not widget.isolated_tuning_checkbox.isEnabled()
+    widget.graph_view.select_node("gaussian")
+    assert widget.isolated_tuning_checkbox.isChecked()
+    widget._on_param_changed("sigma", 0.0)
+    widget._debounce_timer.stop()
+
+    assert widget._isolated_tuning_node_id == "gaussian"
+    assert not widget.isolated_tuning_panel.isHidden()
+    assert widget.graph_view._cards["gaussian"]._isolated_tuning
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_BLOCKED
+    assert BLOCKED_EXECUTION_ACCENT in widget.graph_view._cards[
+        "threshold"
+    ].styleSheet()
+    assert "propagation is paused" in widget.graph_view._cards[
+        "threshold"
+    ].toolTip()
+    assert cached_threshold is widget.pipeline.outputs["threshold"]
+    assert {"gaussian", "threshold"} <= widget._cache_retention_node_ids(
+        CACHE_MODE_LOW_MEMORY
+    )
+
+    widget.run_pipeline(force_sync=True)
+
+    assert calls == ["gaussian"]
+    assert widget.pipeline.outputs["threshold"] is cached_threshold
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_BLOCKED
+
+    widget.apply_isolated_tuning_button.click()
+
+    assert calls == ["gaussian", "threshold"]
+    assert widget._isolated_tuning_node_id is None
+    assert widget.isolated_tuning_panel.isHidden()
+    assert not widget.isolated_tuning_checkbox.isChecked()
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+
+
+def test_cancel_isolated_tuning_restores_parameters_and_cached_results(qtbot):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    original_sigma = widget.pipeline.nodes["gaussian"].params["sigma"]
+    original_gaussian = widget.pipeline.outputs["gaussian"]
+    original_threshold = widget.pipeline.outputs["threshold"]
+
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    assert widget.pipeline.outputs["gaussian"] is not original_gaussian
+
+    widget.cancel_isolated_tuning_button.click()
+
+    assert widget._isolated_tuning_node_id is None
+    assert widget.pipeline.nodes["gaussian"].params["sigma"] == original_sigma
+    assert widget.pipeline.outputs["gaussian"] is original_gaussian
+    assert widget.pipeline.outputs["threshold"] is original_threshold
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+
+
+def test_isolated_tuning_debounce_keeps_session_open(qtbot):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+
+    widget._on_param_changed("sigma", 0.0)
+    qtbot.waitUntil(
+        lambda: not widget._debounce_timer.isActive(),
+        timeout=1000,
+    )
+
+    assert widget._isolated_tuning_node_id == "gaussian"
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_BLOCKED
+
+
+def test_isolated_tuning_recalculates_a_manual_root_without_auto_mode(
+    qtbot,
+    monkeypatch,
+):
+    image = np.zeros((9, 9), dtype=np.float32)
+    image[1:4, 1:4] = 10
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    threshold = widget.add_node_from_palette("binary_threshold")
+    labels = widget.add_node_from_palette("label_connected_components")
+    measurements = widget.add_node_from_palette("measure_objects")
+    selected = widget.add_node_from_palette("select_table_columns")
+    widget.pipeline.set_param(threshold.id, "threshold", 5)
+    widget._connect_nodes("input", threshold.id)
+    widget._connect_nodes(threshold.id, labels.id)
+    widget._connect_nodes(labels.id, measurements.id)
+    widget._connect_nodes(measurements.id, selected.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={measurements.id})
+    widget.graph_view.select_node(measurements.id)
+    calls: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.isolated_tuning_checkbox.setChecked(True)
+    current = bool(
+        widget.pipeline.nodes[measurements.id].params[
+            "include_shape_descriptors"
+        ]
+    )
+    widget._on_param_changed("include_shape_descriptors", not current)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    assert calls == [measurements.id]
+    assert not widget.pipeline.node_auto_recalculate(measurements.id)
+    assert widget.pipeline.node_execution_states[measurements.id] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states[selected.id] == EXECUTION_BLOCKED
+
+    widget.apply_isolated_tuning_button.click()
+
+    assert calls == [measurements.id, selected.id]
+    assert widget.pipeline.node_execution_states[selected.id] == EXECUTION_READY
+
+
+def test_calculate_all_releases_isolation_in_all_automatic_graph(
+    qtbot,
+    monkeypatch,
+):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    calls: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+    assert calls == ["gaussian"]
+    assert widget._manual_node_ids_needing_calculation() == set()
+
+    widget.calculate_all_button.click()
+
+    assert calls == ["gaussian", "threshold"]
+    assert widget._isolated_tuning_node_id is None
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+
+
+def test_apply_before_local_result_is_ready_recalculates_the_tuned_node(
+    qtbot,
+    monkeypatch,
+):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    calls: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    assert widget._debounce_timer.isActive()
+
+    widget.apply_isolated_tuning_button.click()
+    qtbot.wait(widget._debounce_timer.interval() + 50)
+
+    assert calls == ["gaussian", "threshold"]
+    assert not widget._debounce_timer.isActive()
+    assert widget._isolated_tuning_node_id is None
+    assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
+    assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+
+
+@pytest.mark.parametrize(
+    "edit_kind",
+    ["add", "duplicate", "delete", "disconnect", "note"],
+)
+def test_history_edit_commits_isolated_tuning_before_mutation(qtbot, edit_kind):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    assert widget._debounce_timer.isActive()
+
+    if edit_kind == "add":
+        widget.add_node_from_palette("invert")
+    elif edit_kind == "duplicate":
+        widget._duplicate_node("threshold")
+    elif edit_kind == "delete":
+        widget._delete_node("threshold")
+    elif edit_kind == "disconnect":
+        widget._disconnect_nodes("gaussian", "threshold")
+    else:
+        widget._add_graph_note("Review tuned result")
+
+    qtbot.waitUntil(
+        lambda: not (
+            widget._pending_dirty_node_ids & set(widget.pipeline.nodes)
+        ),
+        timeout=1000,
+    )
+    assert widget._isolated_tuning_node_id is None
+    assert widget._isolated_tuning_snapshot is None
+    assert not widget._debounce_timer.isActive()
+    assert set(widget.pipeline.node_execution_states) == set(widget.pipeline.nodes)
+    assert set(widget.pipeline.node_execution_messages) == set(widget.pipeline.nodes)
+    assert not widget._cancel_isolated_tuning(announce=False)
+
+
+def test_editing_other_node_setting_commits_isolated_tuning(qtbot):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    widget._debounce_timer.stop()
+    widget.graph_view.select_node("threshold")
+
+    widget.keep_cached_checkbox.setChecked(True)
+    qtbot.waitUntil(
+        lambda: not (
+            widget._pending_dirty_node_ids & set(widget.pipeline.nodes)
+        ),
+        timeout=1000,
+    )
+
+    assert widget._isolated_tuning_node_id is None
+    assert widget.pipeline.nodes["threshold"].params[CACHE_KEEP_NODE_PARAM]
+    assert not widget._cancel_isolated_tuning(announce=False)
+
+
+def test_editing_other_node_parameter_after_isolation_runs_branch_once(
+    qtbot,
+    monkeypatch,
+):
+    image = np.arange(100, dtype=np.float32).reshape(10, 10)
+    widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    calls: list[str] = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+    widget._on_param_changed("sigma", 0.0)
+    widget.graph_view.select_node("threshold")
+    widget._on_param_changed("histogram_bins", 128)
+
+    qtbot.wait(widget._debounce_timer.interval() + 100)
+
+    assert widget._isolated_tuning_node_id is None
+    assert calls == ["gaussian", "threshold"]
+    assert not widget._pending_dirty_node_ids
+
+def test_stale_deconvolution_holds_automatic_descendants_in_widget(qtbot, monkeypatch):
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[2:7, 2:7] = 0.1
+    data[4, 4] = 1.0
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    psf = widget.add_node_from_palette("gaussian_blur")
+    deconvolution = widget.add_node_from_palette(
+        "richardson_lucy_deconvolution"
+    )
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    otsu = widget.add_node_from_palette("otsu_threshold")
+    widget.pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+    widget.pipeline.set_param(deconvolution.id, "iterations", 1)
+    widget._connect_nodes("input", psf.id)
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes(psf.id, deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, rescale.id)
+    widget._connect_nodes(rescale.id, otsu.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={deconvolution.id})
+    cached_rescale = widget.pipeline.outputs[rescale.id]
+    cached_otsu = widget.pipeline.outputs[otsu.id]
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.pipeline.set_param(psf.id, "sigma", 2.0)
+    widget._mark_pipeline_dirty(psf.id)
+
+    deconvolution_card = widget.graph_view._cards[deconvolution.id]
+    rescale_card = widget.graph_view._cards[rescale.id]
+    otsu_card = widget.graph_view._cards[otsu.id]
+    assert STALE_EXECUTION_ACCENT in deconvolution_card.styleSheet()
+    assert BLOCKED_EXECUTION_ACCENT in rescale_card.styleSheet()
+    assert BLOCKED_EXECUTION_ACCENT in otsu_card.styleSheet()
+    assert QColor(BLOCKED_EXECUTION_ACCENT).lightness() < QColor(
+        STALE_EXECUTION_ACCENT
+    ).lightness()
+    assert "upstream manual node" in rescale_card.toolTip()
+    widget.background_all_checkbox.setChecked(True)
+    assert widget._background_processing_node_id({psf.id}) == psf.id
+    assert widget._background_processing_node_id({deconvolution.id}) is None
+    low_memory_retained = widget._cache_retention_node_ids(CACHE_MODE_LOW_MEMORY)
+    assert {deconvolution.id, rescale.id, otsu.id} <= low_memory_retained
+
+    widget.run_pipeline(force_sync=True)
+
+    assert calls == [psf.id]
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_STALE
+    assert widget.pipeline.node_execution_states[rescale.id] == EXECUTION_BLOCKED
+    assert widget.pipeline.node_execution_states[otsu.id] == EXECUTION_BLOCKED
+    assert widget.pipeline.outputs[rescale.id] is cached_rescale
+    assert widget.pipeline.outputs[otsu.id] is cached_otsu
+    assert not widget.graph_view._cards[rescale.id].is_processing()
+    assert not widget.graph_view._cards[otsu.id].is_processing()
+
+    calls.clear()
+    widget.run_pipeline(force_sync=True, manual_node_ids={deconvolution.id})
+
+    assert calls == [deconvolution.id, rescale.id, otsu.id]
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
+
+
 def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
     image = np.zeros((9, 9), dtype=np.float32)
     image[1:4, 1:4] = 10
@@ -9932,6 +10709,16 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
         measurements.id,
         intensity.id,
     }
+    assert widget._manual_node_ids_requiring_attention() == {
+        measurements.id,
+        intensity.id,
+    }
+    assert widget.calculate_all_button.property("attentionRequired") is True
+    assert STALE_EXECUTION_ACCENT in widget.calculate_all_button.styleSheet()
+    for node_id in (measurements.id, intensity.id):
+        card = widget.graph_view._cards[node_id]
+        assert STALE_EXECUTION_ACCENT in card.styleSheet()
+        assert "Calculate" in card.toolTip()
 
     widget.calculate_all_button.click()
 
@@ -9940,6 +10727,9 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
     assert widget.pipeline.outputs[measurements.id].row_count == 2
     assert widget.pipeline.outputs[intensity.id].row_count == 2
     assert widget._manual_node_ids_needing_calculation() == set()
+    assert widget._manual_node_ids_requiring_attention() == set()
+    assert widget.calculate_all_button.property("attentionRequired") is False
+    assert widget.calculate_all_button.styleSheet() == ""
 
     widget.pipeline.set_param(threshold.id, "threshold", 20)
     widget._mark_pipeline_dirty(threshold.id)
@@ -9951,6 +10741,12 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
         measurements.id,
         intensity.id,
     }
+    assert widget._manual_node_ids_requiring_attention() == {
+        measurements.id,
+        intensity.id,
+    }
+    assert widget.calculate_all_button.property("attentionRequired") is True
+    assert STALE_EXECUTION_ACCENT in widget.calculate_all_button.styleSheet()
 
     widget.calculate_all_button.click()
 
@@ -9958,6 +10754,49 @@ def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
     assert widget.pipeline.node_execution_states[intensity.id] == EXECUTION_READY
     assert widget.pipeline.outputs[measurements.id].row_count == 0
     assert widget.pipeline.outputs[intensity.id].row_count == 0
+    assert widget.calculate_all_button.property("attentionRequired") is False
+
+
+def test_calculate_all_attention_tracks_actionable_manual_frontiers(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    manual = widget.add_node_from_palette("measure_objects")
+    card = widget.graph_view._cards[manual.id]
+
+    widget.pipeline.set_node_auto_recalculate(manual.id, True)
+    widget.pipeline.node_execution_states[manual.id] = EXECUTION_NOT_CALCULATED
+    widget.pipeline.node_execution_messages[manual.id] = ""
+    widget._sync_execution_ui()
+
+    assert STALE_EXECUTION_ACCENT in card.styleSheet()
+    assert "auto recalculation is pending" in card.toolTip()
+    assert widget.calculate_all_button.property("attentionRequired") is False
+
+    widget.pipeline.set_node_auto_recalculate(manual.id, False)
+    widget.pipeline.node_execution_states[manual.id] = EXECUTION_BLOCKED
+    widget._sync_execution_ui()
+
+    assert BLOCKED_EXECUTION_ACCENT in card.styleSheet()
+    assert not card.calculate_button.isEnabled()
+    assert widget.calculate_all_button.property("attentionRequired") is False
+
+    widget.pipeline.node_execution_states[manual.id] = EXECUTION_RUNNING
+    widget._sync_execution_ui()
+
+    assert widget.calculate_all_button.property("attentionRequired") is False
+
+    widget.pipeline.node_execution_states[manual.id] = EXECUTION_STALE
+    widget._sync_execution_ui()
+
+    assert STALE_EXECUTION_ACCENT in card.styleSheet()
+    assert widget.calculate_all_button.property("attentionRequired") is True
+
+    widget.graph_view.select_node("input")
+    widget._delete_node(manual.id)
+
+    assert widget._manual_node_ids_requiring_attention() == set()
+    assert widget.calculate_all_button.property("attentionRequired") is False
+    assert widget.calculate_all_button.styleSheet() == ""
 
 
 def test_save_selected_output_dialog_defaults_to_ome_tiff(qtbot, monkeypatch, tmp_path):
@@ -10125,7 +10964,7 @@ def test_collection_batch_navigator_switches_the_complete_representative_pair(
     assert "01_shifted.npy" in widget.batch_navigator.sources_label.text()
     assert "alpha_reference.npy" in widget.batch_navigator.sources_label.text()
 
-    qtbot.mouseClick(widget.batch_navigator.next_button, Qt.LeftButton)
+    widget.batch_navigator.next_button.click()
     primary = np.load(demo.root / "inputs" / "primary" / "02_two_objects.npy")
     reference = np.load(demo.root / "inputs" / "reference" / "beta_reference.npy")
     qtbot.waitUntil(

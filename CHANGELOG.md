@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 0.12.0a2 - 2026-07-16
+
+### Release Overview
+
+This second 0.12 alpha makes expensive interactive workflows easier to tune
+and trust without changing workflow schema version 3. It adds isolated node
+tuning, clearer actionable-versus-waiting execution states, progressive
+run-scoped previews, responsive exact-pixel presentation paths, graph port
+label controls, and more legible PSF/deconvolution guidance. Scientific cache
+publication remains atomic, and existing schema-3 workflows remain
+structurally compatible.
+
+### Isolated Node Tuning
+
+- Added `Tune node in isolation` to the node context menu and the top of the
+  inspector, with a persistent `Downstream paused` panel.
+- Parameter edits recalculate only the tuned node while every downstream node
+  is held in the darker-amber waiting state and its prior cached output is
+  retained; the tuned root remains the actionable bright-amber frontier.
+- `Apply and continue` reuses the latest tuned output and resumes from its
+  direct children; `Cancel tuning` restores the session-start parameters and
+  cached result.
+- Toolbar `Calculate all` now releases isolated tuning before normal execution,
+  including for fully automatic graphs with no manual nodes.
+- Apply stops any pending parameter debounce, and any graph/history edit safely
+  commits the active tuning session before mutating the saved workflow.
+- The isolated execution boundary is shared by synchronous and detached
+  background runs and remains transient rather than entering workflow JSON.
+
 ### Responsive Result Presentation
 
 - Generated inspector, pinned-label, and RGB-channel layers now use exact
@@ -38,6 +67,28 @@
 
 ### Deconvolution Safety And Guidance
 
+- During background execution, each completed downstream node now leaves its
+  dark-amber waiting state immediately instead of waiting for the entire branch
+  to finish. This progressive display state remains separate from the live
+  scientific cache until the final run result is accepted.
+- Manual nodes that have never been calculated now use the same bright-amber
+  action styling as stale manual barriers. The toolbar `Calculate all` action
+  also turns amber whenever an uncalculated or stale manual frontier needs
+  attention; waiting descendants remain dark amber.
+- Every stale manual/cached node now acts as an execution barrier across VIPP.
+  The actionable barrier remains bright amber, while stale descendants use a
+  darker amber waiting state, retain their last coherent cached outputs when
+  present, and resume in dependency order when the barrier is recalculated.
+- Born-Wolf support fields now identify their user-set physical spans and the
+  inspector separates Nyquist sampling, tail containment, and image-extent
+  checks into concise statuses with direct actions. A documentation link carries
+  the underlying support-selection and boundary-model guidance.
+- Fixed wrapped RL/RL-TV guidance reserving too little rendered height while
+  the Parameters group absorbed unused vertical space. Long PSF preflight
+  notes now remain fully visible through normal inspector scrolling.
+- Float parameter fields now use compact scientific notation for non-zero
+  magnitudes below `0.001`, and every numeric node field keeps its standard
+  edit menu while adding a right-click `Reset to default` action.
 - Added a cached, read-only PSF preflight to both Richardson-Lucy inspectors.
   It reports rank, metadata-known physical sampling, finite/non-negative values,
   positive sum, approximate normalization, odd/even shape, peak and centroid
@@ -52,11 +103,12 @@
 - Added a conventional-widefield Nyquist estimate to Born-Wolf and downstream
   RL/RL-TV inspectors, kept it separate from image-extent/support checks, and
   made the fixed PSF support-window controls explicit. The inspector now states
-  that a kernel spanning an image axis can still calculate under the current
-  zero-outside-image boundary assumption but has no fully supported interior
-  sample on that axis. Boundary-tail mass is broken down by Z, Y, and X.
+  that a kernel matching an image axis has at most one centered fully supported
+  position and no interior margin, while a larger kernel has none. Both can
+  still calculate under the current zero-outside-image boundary assumption.
+  Boundary-tail mass is broken down by Z, Y, and X.
 - Kept wrong-rank and metadata-known sampling mismatch as hard failures while
-  treating absent physical calibration as unknown instead of inventing unit
+  reporting absent physical calibration as a warning instead of inventing unit
   pixel spacing.
 - Expanded RL/RL-TV parameter guidance and added one concise RL-TV scientific
   note covering under-convergence, feature loss from excessive TV, and PSF

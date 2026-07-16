@@ -70,7 +70,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.12.0a1`.
+Current alpha release: `0.12.0a2`.
 
 The 0.12 alpha adds deterministic batch configuration/provenance, explicit
 scientific source/grid/axis contracts, shared-executor Python export, workflow
@@ -311,7 +311,61 @@ Release acceptance:
   what is and is not copied, and the distinction between `Paste here` and
   `Paste parameters`.
 
-### 7. Graph Polish To Revisit Later
+### 7. Tune A Node In Isolation (Implemented For Next Release)
+
+The unreleased implementation adds a temporary interactive tuning mode for
+cases where one node is quick to
+calculate but its downstream branch is expensive. The user should be able to
+adjust and recalculate the selected node repeatedly, inspect that node's latest
+output, and defer all downstream recalculation until the chosen parameters are
+ready.
+
+The action is exposed as `Tune node in isolation`, with a
+visible `Downstream paused` state. Avoid calling this only "freeze" or "focus",
+because those terms can be confused with cached outputs, pinned nodes, or
+ordinary inspector selection.
+
+Implemented interaction contract:
+
+- activating isolation on a node continues to use its current upstream inputs
+  and allows that node itself to recalculate normally, but parameter changes do
+  not schedule any downstream node;
+- every isolated recalculation replaces the node's local preview/output with
+  the newest result, while descendants are visibly marked as darker-amber
+  blocked/waiting and held so an old downstream result cannot be mistaken for
+  a result of the new parameters;
+- the graph canvas, node, and inspector show a persistent and accessible
+  `Downstream paused` indicator, and provide a direct `Apply and continue`
+  action rather than relying on the user to remember that propagation is
+  paused;
+- `Apply and continue` leaves isolation mode, invalidates the affected
+  descendants once, and resumes normal branch-local execution using only the
+  latest accepted node output. Intermediate tuning attempts must not enter the
+  downstream execution queue;
+- `Cancel tuning` restores the parameters and output that were current when
+  isolation began, then leaves downstream results valid when restoration is
+  possible. If safe restoration is unavailable, it must clearly invalidate the
+  branch instead of silently presenting mismatched results;
+- unrelated branches remain runnable, and manual/cached downstream nodes keep
+  their existing execution policy when propagation resumes;
+- isolation is transient execution/UI state, not part of the saved scientific
+  workflow, generated Python, or batch contract. Those durable forms contain
+  the current parameters but never carry a paused-propagation flag; toolbar
+  `Calculate all` explicitly applies the session before ordinary execution;
+- any graph, layout, note, or other history-backed workflow edit applies the
+  active session before mutation so Cancel never restores state from a
+  different graph revision;
+- initially allow only one isolated tuning node at a time. Activating another
+  node must first resolve the existing session so nested pauses do not create
+  ambiguous stale-state boundaries.
+
+Acceptance coverage should include rapid parameter edits, stale-result
+rejection for calculations already in flight, expensive multi-node downstream
+branches, branch-local execution, undo/redo during tuning, apply/cancel
+semantics, failures in the isolated node, and attempts to save, export, or
+batch-run while downstream propagation is paused.
+
+### 8. Graph Polish To Revisit Later
 
 The 0.10 graph-readability work is implemented enough for the current alpha.
 Do not treat search, tunnels, notes, insert-on-wire mapping, inspector state, or
@@ -324,7 +378,7 @@ Revisit only when very large workflows show the need:
 - additional layout polish beyond current auto-structure and connector
   rerouting.
 
-### 8. AI-Assisted Graph Authoring
+### 9. AI-Assisted Graph Authoring
 
 This remains later-platform work.
 
@@ -446,6 +500,29 @@ Previous/Next/slider navigator calculates any paired representative through the
 graph without saving the complete batch. Semantic-axis iteration and
 plate/well/field HCS traversal are intentionally outside the 0.12 release gate.
 
+### Released: 0.12.0a2 - Interactive Tuning And Execution Feedback
+
+Goal: make expensive interactive graphs easier to tune, interpret, and inspect
+without weakening the atomic scientific-cache contract.
+
+Delivered:
+
+- isolated node tuning with apply/cancel behavior and a transient downstream
+  execution boundary;
+- generic bright actionable and dark waiting execution frontiers, plus an
+  attention-colored `Calculate all` control;
+- progressive run-scoped thumbnails and inspection payloads while later nodes
+  continue, without publishing partial runs into the scientific cache;
+- exact-pixel Image-layer reuse, bounded presentation conversion, and
+  display-resolution thumbnail rendering;
+- configurable graph port-label modes and size-aware auto layout; and
+- structured PSF preflight, support, Nyquist, centering, and boundary-tail
+  guidance.
+
+Workflow schema remains version 3. Existing schema-3 workflow documents stay
+structurally loadable; generated Python exports remain runtime-version pinned
+and should be regenerated under the release that will execute them.
+
 ### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
@@ -457,14 +534,16 @@ Release gate:
 - large local OME-Zarr data can be loaded and previewed without surprising full
   reads for ordinary inspection;
 - exported OME-Zarr datasets include useful multiscale metadata;
-- docs distinguish analysis-resolution data from preview-resolution rendering.
+- docs distinguish analysis-resolution data from preview-resolution rendering;
 - users can multi-select nodes and copy/paste a self-contained graph fragment
   with its internal wiring and relative layout through shortcuts or graph
   context menus;
 - users can copy one node and paste its complete validated parameter set onto
   another node with the exact same operation id;
 - graph paste and parameter paste are atomic, undoable, and do not copy cached
-  arrays, runtime state, or external graph dependencies.
+  arrays, runtime state, or external graph dependencies;
+- previews remain explicitly separate from analysis-resolution scientific
+  arrays and do not change saved numerical results.
 
 ### 0.14.0a1 - Scientific Validation Pack
 

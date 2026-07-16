@@ -30,12 +30,19 @@ class CaptureSpec:
     example_id: str
     selected_node: str
     zoom: int
-    capture_mode: Literal["context", "workflow", "viewer"] = "workflow"
+    capture_mode: Literal["context", "workflow", "viewer", "graph"] = "workflow"
     show_entire_graph: bool = False
     show_library: bool = True
     calculate_manual: bool = False
     pinned_node: str | None = None
     ndisplay: int = 2
+    scenario: Literal[
+        "standard",
+        "manual-frontier",
+        "isolated-tuning",
+        "psf-preflight",
+    ] = "standard"
+    asset_group: Literal["public", "app-user-guide"] = "public"
 
 
 CAPTURES = (
@@ -71,6 +78,7 @@ CAPTURES = (
         66,
         show_library=False,
         calculate_manual=True,
+        scenario="psf-preflight",
     ),
     CaptureSpec(
         "mesh-measurement-table.png",
@@ -88,6 +96,44 @@ CAPTURES = (
         68,
         capture_mode="viewer",
         ndisplay=3,
+    ),
+    CaptureSpec(
+        "manual-execution-frontier.png",
+        "deconvolution-2d",
+        "richardson_lucy_tv_deconvolution_1",
+        54,
+        show_entire_graph=True,
+        show_library=False,
+        scenario="manual-frontier",
+    ),
+    CaptureSpec(
+        "isolated-node-tuning.png",
+        "label-cleanup",
+        "gaussian",
+        58,
+        show_library=False,
+        scenario="isolated-tuning",
+    ),
+    CaptureSpec(
+        "vipp-3d-deconvolution-workspace.png",
+        "deconvolution-3d",
+        "richardson_lucy_tv_deconvolution_1",
+        54,
+        capture_mode="context",
+        show_entire_graph=True,
+        calculate_manual=False,
+        asset_group="app-user-guide",
+    ),
+    CaptureSpec(
+        "vipp-3d-deconvolution-graph.png",
+        "deconvolution-3d",
+        "richardson_lucy_tv_deconvolution_1",
+        80,
+        capture_mode="graph",
+        show_entire_graph=True,
+        show_library=False,
+        calculate_manual=False,
+        asset_group="app-user-guide",
     ),
 )
 
@@ -120,6 +166,24 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
     widget.splitter.setSizes([250 if spec.show_library else 0, 1080, 390])
     widget.graph_view.set_zoom_percent(spec.zoom)
     widget.graph_view.select_node(spec.selected_node)
+    if spec.scenario == "manual-frontier":
+        rescale = widget.add_node_from_palette("rescale_intensity")
+        threshold = widget.add_node_from_palette("otsu_threshold")
+        widget._connect_nodes(
+            "richardson_lucy_tv_deconvolution_1",
+            rescale.id,
+        )
+        widget._connect_nodes(rescale.id, threshold.id)
+        widget._auto_structure_graph()
+        widget.graph_view.select_node(spec.selected_node)
+    elif spec.scenario == "isolated-tuning":
+        widget.run_pipeline(force_sync=True)
+        widget.graph_view.select_node(spec.selected_node)
+        if not widget._start_isolated_tuning(spec.selected_node):
+            raise RuntimeError("Could not start the isolated-tuning capture.")
+        widget._on_param_changed("sigma", 0.6)
+        widget._debounce_timer.stop()
+        widget.run_pipeline(force_sync=True)
     if spec.calculate_manual:
         widget.run_pipeline(
             force_sync=True,
@@ -138,6 +202,10 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
         widget.graph_view.centerOn(widget.graph_view.scene.itemsBoundingRect().center())
     elif proxy is not None:
         widget.graph_view.centerOn(proxy)
+    if spec.scenario == "psf-preflight":
+        notice = widget._parameter_widgets.get("operation_notice")
+        if notice is not None:
+            widget.inspector_panel.ensureWidgetVisible(notice, 0, 16)
     _settle()
 
     target = output_dir / spec.filename
@@ -152,8 +220,25 @@ def _capture(spec: CaptureSpec, output_dir: Path) -> Path:
             )
         elif proxy is not None:
             widget.graph_view.centerOn(proxy)
+        if spec.scenario == "psf-preflight":
+            notice = widget._parameter_widgets.get("operation_notice")
+            if notice is not None:
+                widget.inspector_panel.ensureWidgetVisible(notice, 0, 16)
         _settle()
         dock.grab().save(str(target))
+    elif spec.capture_mode == "graph":
+        dock.setFloating(True)
+        dock.resize(1700, 900)
+        dock.show()
+        widget.splitter.setSizes([0, 1280, 0])
+        if spec.show_entire_graph:
+            widget.graph_view.centerOn(
+                widget.graph_view.scene.itemsBoundingRect().center()
+            )
+        elif proxy is not None:
+            widget.graph_view.centerOn(proxy)
+        _settle()
+        widget.graph_view.viewport().grab().save(str(target))
     else:
         if spec.capture_mode == "viewer":
             dock.hide()
@@ -186,6 +271,12 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         help="Capture only the named file; repeat to select several.",
     )
+    parser.add_argument(
+        "--group",
+        choices=("public", "app-user-guide"),
+        default="public",
+        help="Named screenshot set to capture when --only is not supplied.",
+    )
     return parser
 
 
@@ -195,7 +286,9 @@ def main(argv: list[str] | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     selected = set(args.only or ())
     captures = [
-        spec for spec in CAPTURES if not selected or spec.filename in selected
+        spec
+        for spec in CAPTURES
+        if (spec.filename in selected if selected else spec.asset_group == args.group)
     ]
     for spec in captures:
         target = _capture(spec, output_dir)

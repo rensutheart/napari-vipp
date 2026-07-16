@@ -472,6 +472,32 @@ def test_psf_preflight_explains_axis_support_and_boundary_intensity():
     )
 
 
+def test_psf_preflight_distinguishes_image_sized_support_from_larger_support():
+    image = np.zeros((5, 9), dtype=np.float32)
+    psf = np.zeros((5, 3), dtype=np.float32)
+    psf[2, 1] = 1.0
+    image_state, psf_state = _psf_states(
+        image_shape=image.shape,
+        psf_shape=psf.shape,
+    )
+
+    result = psf_preflight(
+        image,
+        psf,
+        spatial_ndim=2,
+        image_state=image_state,
+        psf_state=psf_state,
+    )
+
+    support_issue = next(
+        issue for issue in result.issues if issue.code == "support_vs_image"
+    )
+    assert "Y support is the same size as the image" in support_issue.detail
+    assert "At most one centered output sample" in support_issue.detail
+    assert "leaving no interior margin" in support_issue.detail
+    assert "No output sample" not in support_issue.detail
+
+
 def test_widefield_nyquist_sampling_passes_attached_workflow_metadata():
     result = widefield_nyquist_sampling(
         wavelength_nm=561.0,

@@ -132,7 +132,7 @@ quietly changing a scientific result.
 | Local file/store revisions | `core/source_identity.py`, `core/file_sources.py`, `ui/file_sources.py` | VIPP hashes every regular-file path and byte in a file or directory store before inspection/materialization and verifies the same identity afterward. The selected series is copied to an owned, read-only NumPy array. A path-and-series revision stays pinned until explicit `Refresh`; stale in-flight loads cannot repopulate the cache. |
 | Live napari revisions | `ui/source_adapter.py`, `_widget.py` | In-memory NumPy layer data and metadata are detached on the GUI thread and tagged with a revision token. Relevant layer events invalidate the token; a background result from an older revision is discarded. Live data that cannot be detached, including lazy arrays, is rejected with an instruction to materialize it or use an immutable file source. Non-axis-aligned napari transforms are rejected rather than ignored. |
 | Axis semantics | `core/metadata.py`, `core/pipeline.py` | Every axis carries `explicit` or `shape-inferred` confidence, with `mixed` available at the image-state level. Operations that need semantic auto-selection of spatial rank, channel axis, projection axes, or PSF parameters reject inferred-only axes with `AmbiguousAxisError`; callers must supply explicit metadata or an explicit supported mode/index. Positional kernels also reject explicit noncanonical layouts instead of treating a `ZX` suffix as `YX`; semantic-capable crop, projection, rescaling, and measurement paths resolve named axes directly. Array shape alone never establishes RGB or Z/Y/X meaning. Malformed declared axes, stale carried shapes, and non-finite or non-positive calibration fail instead of being replaced by inferred/default metadata. |
-| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node for immediate presentation, but the live scientific cache is updated only from the accepted final result. Source ownership remains an explicit upstream responsibility. |
+| Graph and execution state | `core/snapshots.py`, `core/workflow.py`, `core/execution.py`, `ui/workers.py` | `GraphSnapshot` and `WorkflowSnapshot` defensively copy persistable state and validate graph materialization. Background work crosses a typed `PipelineRunRequest`/`PipelineRunResult` boundary; the service deep-copies and validates the workflow before execution. A typed `PipelineNodeResult` may expose one completed node's transient execution-display state immediately, so its card and sampled thumbnail can advance while later nodes run. When the active cache policy already retains that node, its run-scoped presentation payload also keeps inspection, pinning, tables, and metadata synchronized without defeating Low-memory pruning. The live scientific cache and execution state are updated only from the accepted final result; cancellation, failure, or supersession discards transient presentation state and restores the coherent live-cache view. Source ownership remains an explicit upstream responsibility. |
 | Physical grids | `core/grid.py`, `core/pipeline.py` | Registered multi-image operations compare axis semantics, sizes, scale, unit, and origin for same-shaped inputs. A lower-rank mask is broadcast only through a unique explicit semantic/calibration mapping; coincident dimension sizes are never used to guess omitted axes. Deconvolution separately requires image/PSF axis semantics and sampling to agree while allowing a different PSF extent. Unit aliases are normalized for comparison. VIPP never resamples, reorders, or registers an input implicitly to make grids agree. |
 | Diagnostic calculations | `core/diagnostics.py` | Finite statistics, percentiles, histograms, generated-layer extrema, and label-volume summaries use the complete declared population. Chunking bounds temporary memory but is not sampling. Wide integer histogram placement avoids lossy float conversion, and multichannel behavior requires an explicit `channel_axis` rather than a trailing-size RGB guess. |
 | Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
@@ -252,6 +252,14 @@ it, and returns a `PipelineRunResult`; `ui.workers.PipelineRunWorker` is only th
 Qt signal adapter. The widget accepts the result only if its run id, workflow,
 and live-source revisions still match. Small synchronous runs currently call
 `PrototypePipeline.run()` directly, which is a remaining unification seam.
+
+Interactive isolated tuning uses the same execution path. A transient
+`target_node_ids` boundary is carried through synchronous execution and
+`PipelineRunRequest`, and planning intersects the dirty descendants with the
+dependency closure required to reach those targets. This allows the tuned node
+and any missing upstream dependency to run without scheduling descendants.
+The boundary is UI/session state and is not serialized into node parameters or
+workflow JSON.
 
 The active worker reports node-start events for the global busy indicator and
 per-node processing state. Operations that accept a `ProgressContext` can also
@@ -940,7 +948,8 @@ Main classes:
 | `ConnectionItem` | Curved visible wire storing source id, target id, `target_port`, and `source_port`. Tunnel-marked connections are not drawn as `ConnectionItem`s. |
 
 Right-clicking a node opens a context menu with Delete, Inspect Code, Duplicate
-Node, and, for image/mask/label-producing nodes, Pin or Unpin. Duplicate Node
+Node, Add note, and Tune node in isolation, plus Pin or Unpin for
+image/mask/label-producing nodes. Duplicate Node
 copies the node operation and current parameter values into an unconnected node
 near the original; it does not infer connections. Inspect Code opens a
 read-only dialog containing node metadata, connected input references, a
@@ -961,6 +970,7 @@ Signals to `VippWidget`:
 - `node_delete_requested(node_id)`
 - `node_duplicate_requested(node_id)`
 - `node_code_requested(node_id)`
+- `node_isolation_requested(node_id)`
 - `pin_requested(node_id)`
 - `node_create_requested(operation_id, scene_position)`
 - `connection_requested(source_id, target_id, target_port, source_port)`
@@ -1358,14 +1368,32 @@ Implemented now:
   manual nodes skip ordinary live recomputation, expose `Calculate`/
   `Recalculate` on the node card and inspector, keep their last cached output
   available downstream when stale, and show `not calculated`, `running`,
-  `ready`, `stale`, or `error` state. Manual nodes can opt into the persisted
-  private `_vipp_auto_recalculate` setting from the inspector; when enabled,
-  the widget includes affected manual nodes in ordinary dirty reruns and hides
-  the explicit recalculate button. Private `_vipp_*` settings are filtered out
-  before operation functions run. Headless `PrototypePipeline.run()` and
-  generated Python export still calculate manual nodes by default so batch
+  `ready`, `stale`, `blocked`, or `error` state. The first unresolved manual
+  node on each affected branch is an actionable `not calculated` or `stale`
+  barrier. Both actionable states render bright amber, and the toolbar
+  `Calculate all` action uses the same attention color while either exists.
+  Every automatic or manual descendant behind that frontier is `blocked`,
+  retains the last coherent branch snapshot, and renders darker amber until the
+  frontier advances. This partition is operation-agnostic and shared by
+  synchronous and detached background execution planning. Manual nodes can opt
+  into the
+  persisted private `_vipp_auto_recalculate` setting from the inspector; when
+  enabled, the widget includes affected manual nodes in ordinary dirty reruns
+  and hides the explicit recalculate button. Private `_vipp_*` settings are
+  filtered out before operation functions run. Headless `PrototypePipeline.run()`
+  and generated Python export still calculate manual nodes by default so batch
   output is deterministic and does not depend on UI caches. Workflow JSON
   persists node settings but does not serialize cached arrays or tables;
+- transient isolated-node tuning can hold an automatic or manual node's entire
+  downstream closure as darker-amber `blocked` while recalculating only the
+  bright-amber tuning root. The widget retains the held outputs even in
+  low-memory mode, and
+  `Apply and continue` dirties the root's direct children so the latest local
+  output is reused. `Cancel tuning` restores the session-start parameters,
+  output, execution states, and history boundary. Any history-backed workflow
+  edit first commits the session, preventing restoration across graph revisions.
+  `Calculate all` releases the boundary before applying its normal
+  automatic/manual scheduling policy;
 - generic skeletonization, skeleton-network and skeleton-branch measurement
   tables, branch-summary distributions, normalized connectedness summaries,
   keypoint masks, RGB graph overlays, branch/component labels, and short-branch
