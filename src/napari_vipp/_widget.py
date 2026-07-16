@@ -112,6 +112,7 @@ from napari_vipp.core.channel_colors import (
     color_value_to_rgb,
 )
 from napari_vipp.core.diagnostics import (
+    PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
     WidefieldNyquistResult,
     exact_histogram,
@@ -189,6 +190,7 @@ from napari_vipp.core.operations import (
 )
 from napari_vipp.core.pipeline import (
     DEFAULT_DYNAMIC_OUTPUT_PORTS,
+    EXECUTION_BLOCKED,
     EXECUTION_ERROR,
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
@@ -640,6 +642,34 @@ def _configure_toolbar_combo(combo: QComboBox) -> None:
     combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
     combo.setMinimumWidth(max(78, combo.minimumSizeHint().width()))
     combo.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+
+class _InspectorNoteLabel(QLabel):
+    """Wrapped inspector text that always reserves its rendered height."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self._sync_wrapped_minimum_height()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_wrapped_minimum_height()
+
+    def _sync_wrapped_minimum_height(self) -> None:
+        width = self.contentsRect().width()
+        if width <= 0 or not self.hasHeightForWidth():
+            return
+        required_height = max(int(self.heightForWidth(width)), 0)
+        if required_height != self.minimumHeight():
+            self.setMinimumHeight(required_height)
+            self.updateGeometry()
 
 
 AUTO_CONTRAST_SATURATION_SPEC = ParameterSpec(
@@ -1297,6 +1327,7 @@ class VippWidget(QWidget):
         self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
         self.calculate_button = QPushButton("Calculate")
         self.parameter_group = QGroupBox("Parameters")
+        self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_group)
         self._parameter_widgets: dict[str, QWidget] = {}
         self.auto_contrast_group = QGroupBox("Auto Contrast")
@@ -5258,6 +5289,13 @@ class VippWidget(QWidget):
             # because an intermediate node makes them more than one edge away
             # from the currently selected node.
             | self.pipeline.manual_node_ids()
+            # A blocked branch is one coherent cached snapshot. Keep it intact
+            # until its actionable upstream manual barrier is recalculated.
+            | {
+                node_id
+                for node_id, state in self.pipeline.node_execution_states.items()
+                if state == EXECUTION_BLOCKED
+            }
         )
         if mode == CACHE_MODE_SMART:
             retained.update(self._source_cache_nodes())
@@ -6748,11 +6786,18 @@ class VippWidget(QWidget):
         )
         with QSignalBlocker(self.auto_recalculate_checkbox):
             self.auto_recalculate_checkbox.setChecked(auto_recalculate)
-        self.calculate_button.setEnabled(state != EXECUTION_RUNNING)
-        self.calculate_button.setHidden(auto_recalculate)
-        self.calculate_button.setText(
-            "Calculate" if state == EXECUTION_NOT_CALCULATED else "Recalculate",
+        self.calculate_button.setEnabled(
+            state not in {EXECUTION_RUNNING, EXECUTION_BLOCKED}
         )
+        self.calculate_button.setHidden(auto_recalculate)
+        if state == EXECUTION_BLOCKED:
+            self.calculate_button.setText("Waiting upstream")
+        else:
+            self.calculate_button.setText(
+                "Calculate"
+                if state == EXECUTION_NOT_CALCULATED
+                else "Recalculate",
+            )
 
     def _show_optional_reader_error(
         self,
@@ -6822,6 +6867,11 @@ class VippWidget(QWidget):
             return "Calculating..."
         if state == EXECUTION_STALE:
             return message or "Cached result is stale. Recalculate to refresh it."
+        if state == EXECUTION_BLOCKED:
+            return message or (
+                "Downstream result is stale; waiting for an upstream manual "
+                "result."
+            )
         if state == EXECUTION_ERROR:
             return message or "Calculation failed."
         return message or "This node calculates only when requested."
@@ -6984,8 +7034,7 @@ class VippWidget(QWidget):
             )
         else:
             return False
-        note = QLabel(text)
-        note.setWordWrap(True)
+        note = _InspectorNoteLabel(text)
         note.setStyleSheet("color: #94a3b8;")
         self.parameter_form.addRow(note)
         return True
@@ -7127,6 +7176,8 @@ class VippWidget(QWidget):
         auto = bool(node.params.get("auto_parameters", True))
         resolution = self._born_wolf_psf_resolution(node_id)
         managed_names = set(BORN_WOLF_PSF_AUTO_PARAMETERS) | {"channel"}
+        support_names = {"xy_size", "z_size"}
+        annotated_names = managed_names | support_names
         auto_channel_count = self._born_wolf_psf_auto_channel_count(node_id)
         if not auto:
             self._initialize_manual_born_wolf_psf_params(node_id, resolution)
@@ -7176,15 +7227,24 @@ class VippWidget(QWidget):
 
             label_widget = QLabel(spec.label)
             field_widget: QWidget = widget
-            if name in managed_names:
+            if name in annotated_names:
                 result = resolution.parameters.get(name)
                 unresolved = bool(
-                    auto
+                    name in managed_names
+                    and auto
                     and result is not None
                     and result.required
                     and not result.resolved
                 )
-                status = QLabel(self._born_wolf_psf_status_text(result, auto=auto))
+                if name in support_names:
+                    status_text = self._born_wolf_psf_support_status_text(
+                        name,
+                        resolution,
+                        value=node.params.get(name, spec.default),
+                    )
+                else:
+                    status_text = self._born_wolf_psf_status_text(result, auto=auto)
+                status = QLabel(status_text)
                 status.setWordWrap(True)
                 status.setStyleSheet(
                     "color: #f87171;" if unresolved else "color: #94a3b8;"
@@ -7209,6 +7269,7 @@ class VippWidget(QWidget):
                 self._parameter_widgets[f"{name}_label"] = label_widget
 
             self.parameter_form.addRow(label_widget, field_widget)
+            self._apply_parameter_tooltip(spec, field_widget)
             self._parameter_widgets[name] = widget
         self._add_parameter_visibility_note(node_id, tuple(specs.values()))
         guidance, status = self._born_wolf_psf_guidance(node_id, resolution)
@@ -7369,6 +7430,51 @@ class VippWidget(QWidget):
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _born_wolf_psf_support_status_text(
+        self,
+        name: str,
+        resolution,
+        *,
+        value,
+    ) -> str:
+        if name == "z_size" and int(resolution.spatial_ndim) < 3:
+            return "not used for 2D"
+        try:
+            support = max(int(value), 1)
+            if name == "xy_size":
+                step_um = float(resolution.values["pixel_size_xy_um"])
+            else:
+                step_um = float(resolution.values["z_step_um"])
+            half_span_um = (support // 2) * step_um
+            full_span_um = 2.0 * half_span_um
+            if not np.isfinite(full_span_um) or full_span_um <= 0:
+                return "user set"
+        except (KeyError, TypeError, ValueError):
+            return "user set"
+        return f"user set; {full_span_um:.3g} um span"
+
+    def _born_wolf_psf_tail_report(
+        self,
+        node_id: str,
+        *,
+        spatial_ndim: int,
+    ) -> PsfPreflightResult | None:
+        if (
+            node_id in self._pending_dirty_node_ids
+            or self.pipeline.node_execution_states.get(node_id) != EXECUTION_READY
+        ):
+            return None
+        psf = self.pipeline.outputs.get(node_id)
+        if psf is None:
+            return None
+        return psf_preflight(
+            self.pipeline.input_data_for_node(node_id),
+            psf,
+            spatial_ndim=spatial_ndim,
+            image_state=self.pipeline.input_state_for_node(node_id),
+            psf_state=self.pipeline.output_states.get(node_id),
+        )
+
     def _born_wolf_psf_guidance(self, node_id: str, resolution) -> tuple[str, str]:
         node = self.pipeline.nodes[node_id]
         data = self.pipeline.input_data_for_node(node_id)
@@ -7383,12 +7489,31 @@ class VippWidget(QWidget):
         )
         image_shape = shape[-spatial_ndim:] if len(shape) >= spatial_ndim else ()
         support_text = " x ".join(str(size) for size in psf_shape)
+        physical_spans = []
+        try:
+            xy_span_um = (xy_support - 1) * float(
+                resolution.values["pixel_size_xy_um"]
+            )
+            if spatial_ndim == 3:
+                z_span_um = (z_support - 1) * float(
+                    resolution.values["z_step_um"]
+                )
+                physical_spans.append(f"Z {z_span_um:.3g} um")
+            physical_spans.append(f"YX {xy_span_um:.3g} um")
+        except (KeyError, TypeError, ValueError):
+            physical_spans = []
+        physical_text = (
+            " Physical span between outer sample centers: "
+            + html.escape("; ".join(physical_spans))
+            + "."
+            if physical_spans
+            else ""
+        )
         sections = [
-            '<p><span style="color:#60a5fa"><b>SUPPORT WINDOW</b></span><br>'
-            f"Requested PSF: {support_text} samples. These dimensions control "
-            "how far the generated PSF extends; they are not copied from the "
-            "input image. Auto from metadata resolves optical values and sample "
-            "spacing, not support dimensions.</p>"
+            '<p><span style="color:#60a5fa"><b>SUPPORT</b></span><br>'
+            f"Requested PSF: {support_text} samples. Support is user-set."
+            + physical_text
+            + " Use the tail check after calculation to assess this window.</p>"
         ]
 
         nyquist = self._born_wolf_psf_nyquist(resolution)
@@ -7417,9 +7542,47 @@ class VippWidget(QWidget):
                     '<p><span style="color:#f59e0b"><b>! WIDEFIELD NYQUIST '
                     "ESTIMATE NOT MET</b></span><br>"
                     + html.escape(sampling_text)
-                    + ". Increase acquisition sampling density before relying "
-                    "on deconvolution for the missing frequencies.</p>",
+                    + ". Changing PSF support cannot recover frequencies missing "
+                    "from the acquisition.</p>",
                 )
+
+        tail_report = self._born_wolf_psf_tail_report(
+            node_id,
+            spatial_ndim=spatial_ndim,
+        )
+        edge_mass = None if tail_report is None else tail_report.edge_mass_fraction
+        if edge_mass is None:
+            sections.append(
+                '<p><span style="color:#94a3b8"><b>TAIL CHECK PENDING</b>'
+                "</span><br>Calculate this node to evaluate tail containment.</p>"
+            )
+        elif edge_mass > PSF_EDGE_MASS_WARNING_FRACTION:
+            status = "Warning"
+            by_axis = tail_report.edge_mass_fraction_by_axis or ()
+            labels = ("Z", "Y", "X") if spatial_ndim == 3 else ("Y", "X")
+            axis_text = ", ".join(
+                f"{label} {fraction:.1%}"
+                for label, fraction in zip(labels, by_axis, strict=False)
+            )
+            sections.append(
+                '<p><span style="color:#f59e0b"><b>! TAIL REACHES THE '
+                "WINDOW EDGE</b></span><br>"
+                f"The outermost samples contain {edge_mass:.1%} of normalized "
+                "PSF intensity"
+                + (f" ({html.escape(axis_text)})" if axis_text else "")
+                + f", above the {PSF_EDGE_MASS_WARNING_FRACTION:.0%} practical "
+                "limit. Increase the identified support dimension and "
+                "recalculate.</p>"
+            )
+        else:
+            sections.append(
+                '<p><span style="color:#34d399"><b>&#10003; TAIL CONTAINMENT '
+                "CHECK PASSED</b></span><br>"
+                f"The outermost samples contain {edge_mass:.1%} of normalized "
+                f"PSF intensity, at or below the "
+                f"{PSF_EDGE_MASS_WARNING_FRACTION:.0%} practical limit. The "
+                "current support passes this check.</p>"
+            )
 
         oversized = []
         if image_shape and len(image_shape) == len(psf_shape):
@@ -7441,28 +7604,20 @@ class VippWidget(QWidget):
                 for label, psf_size, image_size in oversized
             )
             sections.append(
-                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT NEEDS '
-                "ATTENTION</b></span><br>"
+                '<p><span style="color:#f59e0b"><b>! IMAGE EXTENT '
+                "WARNING</b></span><br>"
                 + html.escape(comparisons)
-                + ". Generation and deconvolution can still complete, but no "
-                "output sample on that axis has full PSF support on both sides. "
-                "The current same-size convolution treats signal beyond the "
-                "stack as zero.</p>"
-            )
-            sections.append(
-                '<p><span style="color:#60a5fa"><b>NEXT DECISION</b></span><br>'
-                "For trustworthy true 3D restoration, acquire guard planes above "
-                "and below the region of interest and crop or interpret the "
-                "restored margins. For independent plane-wise restoration, set "
-                "both this node and RL/RL-TV to 2D YX only when that model is "
-                "scientifically appropriate.</p>"
+                + ". Review image extent, boundary assumptions, and processing "
+                "dimensionality; do not change support only to clear the "
+                "warning.</p>"
             )
         sections.append(
-            '<p><span style="color:#94a3b8"><b>MODEL SCOPE</b></span><br>'
-            "The Nyquist estimate and Born-Wolf PSF describe conventional "
-            "widefield fluorescence. Confirm that this model matches the "
-            "acquisition; reconstructed SIM, confocal, and other modalities may "
-            "need modality-specific sampling and PSFs.</p>"
+            '<p><span style="color:#94a3b8"><b>MORE GUIDANCE</b></span><br>'
+            "Confirm that the conventional-widefield model matches the "
+            "acquisition. See the <a href=\"https://rensutheart.github.io/"
+            "vipp-mkdocs/workflows/psf-deconvolution/"
+            "#choose-born-wolf-support\">Born-Wolf support guide</a> for "
+            "support selection, boundary interpretation, and validation.</p>"
         )
         return "".join(sections), status
 
@@ -7529,9 +7684,11 @@ class VippWidget(QWidget):
             node.params[name] = value
 
     def _add_operation_note(self, text: str, *, status: str = "") -> None:
-        note = QLabel(text)
-        note.setWordWrap(True)
-        note.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        note = _InspectorNoteLabel(text)
+        note.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        )
+        note.setOpenExternalLinks(True)
         if status:
             note.setTextFormat(Qt.RichText)
         self._style_operation_note(note, status)
@@ -12056,25 +12213,26 @@ class VippWidget(QWidget):
         source_payloads: dict[str, SourcePayload] | None = None,
     ) -> str | None:
         manual_node_ids = set(manual_node_ids or set())
+        execution_plan = self.pipeline.plan_execution(
+            dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=manual_node_ids,
+        )
+        runnable_node_ids = set(execution_plan.runnable_node_ids)
+        if not runnable_node_ids:
+            return None
         if manual_node_ids:
             for node_id in self.pipeline.topological_order():
-                if node_id in manual_node_ids:
+                if node_id in runnable_node_ids:
                     return node_id
             return None
 
         if self.background_all_checkbox.isChecked():
-            if dirty_node_ids:
-                affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
-                for node_id in self.pipeline.topological_order():
-                    if node_id in affected_node_ids:
-                        return node_id
-                return None
-            order = self.pipeline.topological_order()
-            return order[0] if order else None
+            for node_id in self.pipeline.topological_order():
+                if node_id in runnable_node_ids:
+                    return node_id
+            return None
 
-        affected_node_ids = None
-        if dirty_node_ids:
-            affected_node_ids = self.pipeline.descendants_inclusive(dirty_node_ids)
         large_source_descendants: set[str] = set()
         for source_id, payload in (source_payloads or {}).items():
             if source_id in self.pipeline.nodes and _should_auto_background_data(
@@ -12084,7 +12242,7 @@ class VippWidget(QWidget):
                     self.pipeline.descendants_inclusive({source_id})
                 )
         for node_id in self.pipeline.topological_order():
-            if affected_node_ids is not None and node_id not in affected_node_ids:
+            if node_id not in runnable_node_ids:
                 continue
             node = self.pipeline.nodes.get(node_id)
             if node is not None and node.operation_id in BACKGROUND_PIPELINE_OPERATIONS:

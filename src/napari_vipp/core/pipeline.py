@@ -912,9 +912,21 @@ class ConnectionResult:
     connection: GraphConnection | None = None
 
 
+@dataclass(frozen=True)
+class PipelineExecutionPlan:
+    """Read-only partition of one requested interactive graph execution."""
+
+    dirty_node_ids: frozenset[str] | None
+    candidate_node_ids: frozenset[str]
+    barrier_node_ids: frozenset[str]
+    blocked_node_ids: frozenset[str]
+    runnable_node_ids: frozenset[str]
+
+
 EXECUTION_READY = "ready"
 EXECUTION_RUNNING = "running"
 EXECUTION_STALE = "stale"
+EXECUTION_BLOCKED = "blocked"
 EXECUTION_ERROR = "error"
 EXECUTION_NOT_CALCULATED = "not_calculated"
 EXECUTION_POLICIES = {"auto", "manual"}
@@ -1525,9 +1537,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1025,
                 2,
                 tooltip=(
-                    "Number of samples generated across both Y and X. This is "
-                    "the PSF support window, not the image width and not the "
-                    "physical pixel size. Auto from metadata does not change it."
+                    "Odd Y/X width of the generated PSF kernel. This controls "
+                    "the finite support window, not the physical sampling "
+                    "interval. Start with the default, calculate the PSF, and "
+                    "increase this value if the tail-containment check identifies "
+                    "Y or X. Larger support costs more time and memory."
                 ),
             ),
             ParameterSpec(
@@ -1539,9 +1553,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 1025,
                 2,
                 tooltip=(
-                    "Number of planes generated for the axial PSF support. It "
-                    "is independent of the input stack depth; Auto from metadata "
-                    "resolves Z spacing but does not change this support window."
+                    "Odd Z depth of the generated PSF kernel. This controls the "
+                    "finite support window, not the physical Z sampling interval. "
+                    "Start with the default, calculate the PSF, and increase this "
+                    "value if the tail-containment check identifies Z. Larger "
+                    "support costs more time and memory."
                 ),
             ),
             ParameterSpec("channel", "Channel", "int", -1, -1, 64, 1),
@@ -1553,8 +1569,26 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
                 16,
                 2048,
                 16,
+                tooltip=(
+                    "Quadrature samples used for the optical pupil integral. "
+                    "This controls numerical integration accuracy, not spatial "
+                    "sampling or support. Increase it only when a convergence "
+                    "check justifies the additional generation time."
+                ),
             ),
-            ParameterSpec("normalize", "Normalize sum to 1", "bool", True, 0, 1, 1),
+            ParameterSpec(
+                "normalize",
+                "Normalize sum to 1",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+                tooltip=(
+                    "Scale the generated PSF to sum to one. This is normally "
+                    "enabled for Richardson-Lucy deconvolution."
+                ),
+            ),
         ),
         born_wolf_psf_outputs,
         subcategory=RESTORATION_PSF_GROUP,
@@ -6005,12 +6039,16 @@ class PrototypePipeline:
         self.node_execution_messages[node_id] = str(message)
 
     def mark_manual_descendants_stale(self, node_ids: Iterable[str]) -> set[str]:
-        """Mark manual nodes downstream of an edit as stale, preserving caches."""
+        """Mark stale manual barriers and their waiting descendants."""
         affected = self.descendants_inclusive(node_ids)
-        changed: set[str] = set()
-        for node_id in affected:
-            if not self.is_manual_node(node_id):
-                continue
+        affected_manual_nodes = self.manual_node_ids() & affected
+        barriers, blocked = self._manual_barrier_partition(
+            affected,
+            affected_manual_nodes,
+        )
+        for node_id in affected_manual_nodes:
+            self.completed_node_ids.discard(node_id)
+        for node_id in barriers:
             if self._has_cached_output(node_id):
                 self.node_execution_states[node_id] = EXECUTION_STALE
                 self.node_execution_messages[node_id] = (
@@ -6022,8 +6060,8 @@ class PrototypePipeline:
                 self.node_execution_messages[node_id] = (
                     "This manual node has no result yet."
                 )
-            changed.add(node_id)
-        return changed
+        self._mark_nodes_blocked_by_manual_barrier(blocked)
+        return barriers | blocked
 
     def _has_cached_output(self, node_id: str) -> bool:
         if self.outputs.get(node_id) is not None:
@@ -6046,6 +6084,76 @@ class PrototypePipeline:
             return set()
         return manual_nodes - set(manual_node_ids)
 
+    def _manual_barrier_partition(
+        self,
+        candidates: Iterable[str],
+        skipped_manual_nodes: Iterable[str],
+    ) -> tuple[set[str], set[str]]:
+        """Return first skipped barriers and all descendants waiting on them."""
+        candidate_set = set(candidates)
+        skipped = set(skipped_manual_nodes) & candidate_set
+        barriers: set[str] = set()
+        blocked: set[str] = set()
+        for node_id in self.topological_order():
+            if node_id not in skipped or node_id in blocked:
+                continue
+            barriers.add(node_id)
+            blocked.update(
+                (self.descendants_inclusive({node_id}) & candidate_set) - {node_id}
+            )
+        return barriers, blocked
+
+    def plan_execution(
+        self,
+        dirty_node_ids: Iterable[str] | None = None,
+        *,
+        manual_mode: str = MANUAL_RUN_CALCULATE,
+        manual_node_ids: Iterable[str] | None = None,
+    ) -> PipelineExecutionPlan:
+        """Plan runnable nodes and manual barriers without mutating caches."""
+        dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
+        candidates = (
+            set(self.nodes)
+            if dirty_nodes is None
+            else self.descendants_inclusive(dirty_nodes)
+        )
+        skipped = self._manual_nodes_to_skip(
+            candidates,
+            manual_mode,
+            manual_node_ids,
+        )
+        barriers, blocked = self._manual_barrier_partition(candidates, skipped)
+        return PipelineExecutionPlan(
+            dirty_node_ids=(
+                None if dirty_nodes is None else frozenset(dirty_nodes)
+            ),
+            candidate_node_ids=frozenset(candidates),
+            barrier_node_ids=frozenset(barriers),
+            blocked_node_ids=frozenset(blocked),
+            runnable_node_ids=frozenset(candidates - barriers - blocked),
+        )
+
+    def _mark_nodes_blocked_by_manual_barrier(
+        self,
+        node_ids: Iterable[str],
+    ) -> None:
+        """Mark downstream nodes as stale but non-actionable at this frontier."""
+        for node_id in node_ids:
+            if node_id not in self.nodes:
+                continue
+            self.node_execution_states[node_id] = EXECUTION_BLOCKED
+            if self._has_cached_output(node_id):
+                self.node_execution_messages[node_id] = (
+                    "Downstream result is stale; waiting for an upstream manual "
+                    "node to be recalculated. The last coherent cached result "
+                    "is retained."
+                )
+            else:
+                self.node_execution_messages[node_id] = (
+                    "Downstream result is unavailable; waiting for an upstream "
+                    "manual node to be calculated."
+                )
+
     def _mark_skipped_manual_node(self, node_id: str, *, dirty: bool) -> bool:
         """Return whether a skipped manual node can satisfy downstream inputs."""
         has_cached_output = self._has_cached_output(node_id)
@@ -6058,11 +6166,12 @@ class PrototypePipeline:
             )
             if self.node_execution_states[node_id] == EXECUTION_STALE:
                 self.node_execution_messages[node_id] = (
-                    "Cached result is stale. Recalculate to refresh this node."
+                    "Cached result is stale. Recalculate to refresh this node "
+                    "and resume downstream nodes."
                 )
             else:
                 self.node_execution_messages[node_id] = ""
-            return True
+            return self.node_execution_states[node_id] == EXECUTION_READY
         self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
         self.node_execution_messages[node_id] = (
             "Click Calculate to produce this result."
@@ -6250,7 +6359,19 @@ class PrototypePipeline:
         retained_nodes = {
             node_id for node_id in (retain_node_ids or ()) if node_id in self.nodes
         }
-        dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
+        execution_plan = self.plan_execution(
+            dirty_node_ids,
+            manual_mode=manual_mode,
+            manual_node_ids=manual_node_ids,
+        )
+        dirty_nodes = (
+            None
+            if execution_plan.dirty_node_ids is None
+            else set(execution_plan.dirty_node_ids)
+        )
+        candidates = set(execution_plan.candidate_node_ids)
+        barriers = set(execution_plan.barrier_node_ids)
+        blocked = set(execution_plan.blocked_node_ids)
         if dirty_nodes is None:
             prior_outputs = dict(self.outputs)
             prior_output_states = dict(self.output_states)
@@ -6272,24 +6393,54 @@ class PrototypePipeline:
                 node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
             }
             self.node_execution_messages = {node_id: "" for node_id in self.nodes}
-            remaining = set(self.nodes)
+            preserved = barriers | blocked
+            remaining = candidates - preserved
             completed: set[str] = set()
             self.completed_node_ids = set()
+            retained_nodes.update(preserved)
+            for node_id in preserved:
+                if node_id not in prior_outputs:
+                    continue
+                self.outputs[node_id] = prior_outputs[node_id]
+                self.output_states[node_id] = prior_output_states.get(node_id)
+                self.node_outputs[node_id] = prior_node_outputs.get(node_id, [])
+                self.node_output_states[node_id] = prior_node_output_states.get(
+                    node_id,
+                    [],
+                )
+                self.node_execution_states[node_id] = prior_execution_states.get(
+                    node_id,
+                    EXECUTION_NOT_CALCULATED,
+                )
+                self.node_execution_messages[node_id] = prior_execution_messages.get(
+                    node_id,
+                    "",
+                )
+            for node_id in blocked:
+                if self._has_cached_output(node_id) and not self.is_manual_node(
+                    node_id
+                ):
+                    self.completed_node_ids.add(node_id)
+            for node_id in barriers:
+                self._mark_skipped_manual_node(
+                    node_id,
+                    dirty=self._has_cached_output(node_id),
+                )
+            self._mark_nodes_blocked_by_manual_barrier(blocked)
         else:
-            remaining = self.descendants_inclusive(dirty_nodes)
-            self.completed_node_ids.difference_update(remaining)
             prior_outputs = {}
             prior_output_states = {}
             prior_node_outputs = {}
             prior_node_output_states = {}
             prior_execution_states = {}
             prior_execution_messages = {}
-            skipped = self._manual_nodes_to_skip(
-                remaining,
-                manual_mode,
-                manual_node_ids,
+            preserved = barriers | blocked
+            remaining = candidates - preserved
+            retained_nodes.update(preserved)
+            blocked_manual_nodes = blocked & self.manual_node_ids()
+            self.completed_node_ids.difference_update(
+                remaining | barriers | blocked_manual_nodes
             )
-            remaining.difference_update(skipped)
             for node_id in remaining:
                 self.outputs[node_id] = None
                 self.output_states[node_id] = None
@@ -6297,40 +6448,12 @@ class PrototypePipeline:
                 self.node_output_states[node_id] = []
                 self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
                 self.node_execution_messages[node_id] = ""
-            for node_id in skipped:
-                if self._mark_skipped_manual_node(node_id, dirty=True):
-                    self.completed_node_ids.add(node_id)
-            completed = set(self.nodes) - remaining
-
-        if dirty_nodes is None:
-            skipped = self._manual_nodes_to_skip(
-                remaining,
-                manual_mode,
-                manual_node_ids,
+            for node_id in barriers:
+                self._mark_skipped_manual_node(node_id, dirty=True)
+            self._mark_nodes_blocked_by_manual_barrier(blocked)
+            completed = (
+                set(self.nodes) - remaining - barriers - blocked_manual_nodes
             )
-            remaining.difference_update(skipped)
-            for node_id in skipped:
-                if node_id in prior_outputs:
-                    self.outputs[node_id] = prior_outputs[node_id]
-                    self.output_states[node_id] = prior_output_states.get(node_id)
-                    self.node_outputs[node_id] = prior_node_outputs.get(node_id, [])
-                    self.node_output_states[node_id] = prior_node_output_states.get(
-                        node_id,
-                        [],
-                    )
-                    self.node_execution_states[node_id] = prior_execution_states.get(
-                        node_id,
-                        EXECUTION_NOT_CALCULATED,
-                    )
-                    self.node_execution_messages[node_id] = (
-                        prior_execution_messages.get(node_id, "")
-                    )
-                if self._mark_skipped_manual_node(
-                    node_id,
-                    dirty=self._has_cached_output(node_id),
-                ):
-                    completed.add(node_id)
-                    self.completed_node_ids.add(node_id)
 
         while remaining:
             runnable = [

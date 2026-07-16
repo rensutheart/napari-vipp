@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 
 import numpy as np
 from qtpy.QtCore import QLocale, QSignalBlocker, Qt, Signal
+from qtpy.QtGui import QAction, QValidator
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,6 +17,7 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -69,8 +72,46 @@ def _slider_safe_bounds(
     )
 
 
-class FlexibleDoubleSpinBox(QDoubleSpinBox):
+class _ResettableSpinBoxMixin:
+    """Add a parameter-default action without replacing standard edit actions."""
+
+    _default_value: float | int | None = None
+
+    def setDefaultValue(self, value: float | int) -> None:  # noqa: N802
+        self._default_value = value
+
+    def resetToDefault(self) -> None:  # noqa: N802
+        if self._default_value is not None:
+            self.setValue(self._default_value)
+
+    def _create_context_menu(self) -> tuple[QMenu, QAction]:
+        menu = self.lineEdit().createStandardContextMenu()
+        menu.setParent(self)
+        menu.addSeparator()
+        reset_action = menu.addAction("Reset to default")
+        reset_action.setEnabled(
+            self._default_value is not None and self.value() != self._default_value
+        )
+        reset_action.triggered.connect(self.resetToDefault)
+        return menu, reset_action
+
+    def contextMenuEvent(self, event):  # noqa: N802
+        menu, _reset_action = self._create_context_menu()
+        try:
+            menu.exec(event.globalPos())
+        finally:
+            menu.deleteLater()
+        event.accept()
+
+
+class ResettableSpinBox(_ResettableSpinBoxMixin, QSpinBox):
+    """Integer parameter entry with a default-reset context action."""
+
+
+class FlexibleDoubleSpinBox(_ResettableSpinBoxMixin, QDoubleSpinBox):
     """Locale-independent float entry accepting decimal points and commas."""
+
+    SCIENTIFIC_THRESHOLD = 1e-3
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,8 +123,14 @@ class FlexibleDoubleSpinBox(QDoubleSpinBox):
         return str(text).replace(",", ".")
 
     def validate(self, text: str, position: int):
+        normalized = self._normalized_text(text)
+        if re.fullmatch(
+            r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?",
+            normalized.strip(),
+        ):
+            return QValidator.Intermediate, text, position
         state, _normalized, validated_position = super().validate(
-            self._normalized_text(text),
+            normalized,
             position,
         )
         return state, text, validated_position
@@ -93,6 +140,10 @@ class FlexibleDoubleSpinBox(QDoubleSpinBox):
 
     def textFromValue(self, value: float) -> str:  # noqa: N802
         decimals = max(int(self.decimals()), 0)
+        if 0.0 < abs(float(value)) < self.SCIENTIFIC_THRESHOLD:
+            mantissa, exponent = f"{float(value):.{decimals}e}".split("e")
+            mantissa = mantissa.rstrip("0").rstrip(".")
+            return f"{mantissa}e{int(exponent)}"
         text = f"{float(value):.{decimals}f}" if decimals else f"{float(value):.0f}"
         if "." in text:
             text = text.rstrip("0").rstrip(".")
@@ -122,10 +173,11 @@ class ParameterControl(QWidget):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setMinimumWidth(120)
         if self._is_integer:
-            self.value_box = QSpinBox()
+            self.value_box = ResettableSpinBox()
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setDefaultValue(spec.default)
         _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(74)
 
@@ -349,10 +401,11 @@ class NumericEntryControl(QWidget):
         self.spec = spec
         self._is_integer = spec.kind == "int"
         if self._is_integer:
-            self.value_box = QSpinBox()
+            self.value_box = ResettableSpinBox()
         else:
             self.value_box = FlexibleDoubleSpinBox()
             self.value_box.setDecimals(bounds.decimals)
+        self.value_box.setDefaultValue(spec.default)
         _configure_numeric_spin_box(self.value_box)
         self.value_box.setMinimumWidth(100)
 
@@ -757,6 +810,7 @@ __all__ = [
     "NumericEntryControl",
     "ParameterBounds",
     "ParameterControl",
+    "ResettableSpinBox",
     "TextControl",
     "_configure_numeric_spin_box",
     "_slider_safe_bounds",

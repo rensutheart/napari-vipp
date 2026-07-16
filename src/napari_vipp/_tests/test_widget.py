@@ -31,7 +31,11 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp import __version__ as VIPP_VERSION
-from napari_vipp._graph import PortLabelMode
+from napari_vipp._graph import (
+    BLOCKED_EXECUTION_ACCENT,
+    STALE_EXECUTION_ACCENT,
+    PortLabelMode,
+)
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp._widget import (
     CACHE_MODE_KEEP_ALL,
@@ -105,6 +109,7 @@ from napari_vipp.core.operations import (
     automatic_threshold_value,
 )
 from napari_vipp.core.pipeline import (
+    EXECUTION_BLOCKED,
     EXECUTION_NOT_CALCULATED,
     EXECUTION_READY,
     EXECUTION_STALE,
@@ -396,6 +401,62 @@ def test_flexible_double_spinbox_shows_compact_float_text(qtbot):
 
     box.setValue(0.0)
     assert box.text() == "0"
+
+
+def test_flexible_double_spinbox_uses_scientific_text_below_one_thousandth(qtbot):
+    box = FlexibleDoubleSpinBox()
+    qtbot.addWidget(box)
+    box.setRange(-1.0, 1.0)
+    box.setDecimals(12)
+
+    for value, expected in (
+        (0.002, "0.002"),
+        (0.001, "0.001"),
+        (1e-4, "1e-4"),
+        (1e-6, "1e-6"),
+        (-1e-4, "-1e-4"),
+        (0.0, "0"),
+    ):
+        box.setValue(value)
+        assert box.text() == expected
+
+    box.show()
+    box.lineEdit().setFocus()
+    box.selectAll()
+    qtbot.keyClicks(box.lineEdit(), "1e-4")
+    assert box.lineEdit().text() == "1e-4"
+    qtbot.keyClick(box.lineEdit(), Qt.Key_Return)
+    assert box.value() == pytest.approx(1e-4)
+
+
+def test_numeric_parameter_context_menu_resets_to_default(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.graph_view.select_node(node.id)
+
+    for name, changed_value in (("iterations", 40), ("denominator_floor", 0.2)):
+        control = widget._parameter_widgets[name]
+        control.value_box.setValue(changed_value)
+        menu, reset_action = control.value_box._create_context_menu()
+
+        assert reset_action.text() == "Reset to default"
+        assert reset_action.isEnabled()
+        assert len(menu.actions()) > 2
+
+        reset_action.trigger()
+
+        spec = next(
+            spec
+            for spec in widget.pipeline.node_parameter_specs(node.id)
+            if spec.name == name
+        )
+        assert control.value() == pytest.approx(spec.default)
+        assert widget.pipeline.nodes[node.id].params[name] == pytest.approx(
+            spec.default
+        )
+        menu.deleteLater()
 
 
 def test_histogram_plot_dragging_marker_emits_histogram_value(qtbot):
@@ -2639,12 +2700,121 @@ def test_born_wolf_psf_auto_shows_resolved_values_without_sliders(qtbot):
     assert not wavelength.isEnabled()
     assert wavelength.value() == 520.0
     assert "metadata" in status.text()
+    assert "finite support window" in xy_size.toolTip()
+    assert "finite support window" in widget._parameter_widgets[
+        "z_size"
+    ].toolTip()
+    assert "Quadrature samples" in widget._parameter_widgets[
+        "pupil_samples"
+    ].toolTip()
+    assert widget._parameter_widgets["xy_size_label"].toolTip() == xy_size.toolTip()
+    assert "user set;" in widget._parameter_widgets["xy_size_status"].text()
     guidance = widget._parameter_widgets["operation_notice"]
     assert guidance.property("preflightStatus") == "warning"
     assert "WIDEFIELD NYQUIST ESTIMATE NOT MET" in guidance.text()
     assert "Requested PSF: 33 x 65 x 65 samples" in guidance.text()
-    assert "not copied from the input image" in guidance.text()
+    assert "Use the tail check after calculation" in guidance.text()
     assert "Z: PSF 33, image 3" in guidance.text()
+    assert "Born-Wolf support guide" in guidance.text()
+    assert guidance.openExternalLinks()
+
+
+def test_born_wolf_psf_support_shows_attached_metadata_scale_without_calculation(
+    qtbot,
+):
+    data = np.zeros((11, 35, 37), dtype=np.float32)
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.101),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        channels=(
+            ChannelMetadata(
+                name="561 nm",
+                emission_wavelength=561.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.46,
+            refractive_index=1.518,
+        ),
+    )
+    widget = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    )
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    assert widget.pipeline.connect("input", node.id).success
+    widget._render_parameters(node.id)
+
+    assert widget._parameter_widgets["xy_size_status"].text() == (
+        "user set; 1.6 um span"
+    )
+    assert widget._parameter_widgets["z_size_status"].text() == (
+        "user set; 3.23 um span"
+    )
+    guidance = widget._parameter_widgets["operation_notice"].text()
+    assert "Physical span between outer sample centers" in guidance
+    assert "Z 3.23 um; YX 1.6 um" in guidance
+    assert "TAIL CHECK PENDING" in guidance
+    assert "Born-Wolf support guide" in guidance
+
+
+def test_born_wolf_psf_support_reports_generated_tail_containment(qtbot):
+    data = np.zeros((35, 70, 72), dtype=np.float32)
+    axes = (
+        AxisMetadata("z", "space", unit="micrometer", scale=0.101),
+        AxisMetadata("y", "space", unit="micrometer", scale=0.025),
+        AxisMetadata("x", "space", unit="micrometer", scale=0.025),
+    )
+    state = image_state_from_array(
+        data,
+        axes=axes,
+        channels=(
+            ChannelMetadata(
+                name="561 nm",
+                emission_wavelength=561.0,
+                emission_wavelength_unit="nanometer",
+            ),
+        ),
+        acquisition=AcquisitionMetadata(
+            objective_na=1.46,
+            refractive_index=1.518,
+        ),
+    )
+    widget = VippWidget(
+        _Viewer(data, metadata={"vipp_image_state": state.to_dict()})
+    )
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("born_wolf_psf")
+    assert widget.pipeline.connect("input", node.id).success
+    psf = np.zeros((33, 65, 65), dtype=np.float32)
+    psf[16, 32, 32] = 1.0
+    widget.pipeline.outputs[node.id] = psf
+    widget.pipeline.output_states[node.id] = image_state_from_array(psf, axes=axes)
+    widget.pipeline.node_execution_states[node.id] = "ready"
+    widget._pending_dirty_node_ids.discard(node.id)
+
+    widget._render_parameters(node.id)
+
+    guidance = widget._parameter_widgets["operation_notice"]
+    assert "TAIL CONTAINMENT CHECK PASSED" in guidance.text()
+    assert "outermost samples contain 0.0%" in guidance.text()
+
+    psf[0, 32, 32] = 0.02
+    psf[16, 32, 32] = 0.98
+    widget._render_parameters(node.id)
+
+    guidance = widget._parameter_widgets["operation_notice"]
+    assert guidance.property("preflightStatus") == "warning"
+    assert "TAIL REACHES THE WINDOW EDGE" in guidance.text()
+    assert "outermost samples contain 2.0%" in guidance.text()
 
 
 def test_born_wolf_psf_auto_marks_unresolved_metadata_red(qtbot):
@@ -7037,7 +7207,7 @@ def test_richardson_lucy_tv_controls_explain_effects_and_separate_ranges(qtbot):
     filter_epsilon = widget._parameter_widgets["filter_epsilon"]
     assert filter_epsilon.value_box.decimals() == 15
     assert filter_epsilon.value() == pytest.approx(1e-12)
-    assert filter_epsilon.value_box.text() == "0.000000000001"
+    assert filter_epsilon.value_box.text() == "1e-12"
     filter_epsilon.value_box.setValue(0.0)
     assert filter_epsilon.value() == 0.0
     assert filter_epsilon.slider.value() == 0
@@ -7306,6 +7476,30 @@ def test_richardson_lucy_inspector_controls_can_shrink(qtbot, operation_id):
     gaussian = widget.add_node_from_palette("gaussian_blur")
     widget.graph_view.select_node(gaussian.id)
     assert widget.parameter_form.rowWrapPolicy() == QFormLayout.DontWrapRows
+
+
+def test_richardson_lucy_note_reserves_wrapped_height_without_group_stretch(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+
+    node = widget.add_node_from_palette("richardson_lucy_tv_deconvolution")
+    widget.graph_view.select_node(node.id)
+    note = widget._parameter_widgets["operation_notice"]
+
+    widget.show()
+    qtbot.waitUntil(
+        lambda: note.minimumHeight()
+        >= note.heightForWidth(note.contentsRect().width())
+    )
+
+    required_height = note.heightForWidth(note.contentsRect().width())
+    assert required_height > 0
+    assert note.minimumHeight() >= required_height
+    assert note.alignment() & Qt.AlignTop
+    assert (
+        widget.parameter_group.sizePolicy().verticalPolicy()
+        == QSizePolicy.Maximum
+    )
 
 
 def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
@@ -9900,6 +10094,74 @@ def test_manual_node_auto_recalculate_updates_and_hides_button(qtbot):
     assert widget.pipeline.outputs[measurements.id].row_count == 0
 
 
+def test_stale_deconvolution_holds_automatic_descendants_in_widget(qtbot, monkeypatch):
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[2:7, 2:7] = 0.1
+    data[4, 4] = 1.0
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    psf = widget.add_node_from_palette("gaussian_blur")
+    deconvolution = widget.add_node_from_palette(
+        "richardson_lucy_deconvolution"
+    )
+    rescale = widget.add_node_from_palette("rescale_intensity")
+    otsu = widget.add_node_from_palette("otsu_threshold")
+    widget.pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+    widget.pipeline.set_param(deconvolution.id, "iterations", 1)
+    widget._connect_nodes("input", psf.id)
+    widget._connect_nodes("input", deconvolution.id, target_port=0)
+    widget._connect_nodes(psf.id, deconvolution.id, target_port=1)
+    widget._connect_nodes(deconvolution.id, rescale.id)
+    widget._connect_nodes(rescale.id, otsu.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={deconvolution.id})
+    cached_rescale = widget.pipeline.outputs[rescale.id]
+    cached_otsu = widget.pipeline.outputs[otsu.id]
+    calls = []
+    original_run_node = widget.pipeline._run_node
+
+    def counted_run_node(node_id, *args, **kwargs):
+        calls.append(node_id)
+        return original_run_node(node_id, *args, **kwargs)
+
+    monkeypatch.setattr(widget.pipeline, "_run_node", counted_run_node)
+    widget.pipeline.set_param(psf.id, "sigma", 2.0)
+    widget._mark_pipeline_dirty(psf.id)
+
+    deconvolution_card = widget.graph_view._cards[deconvolution.id]
+    rescale_card = widget.graph_view._cards[rescale.id]
+    otsu_card = widget.graph_view._cards[otsu.id]
+    assert STALE_EXECUTION_ACCENT in deconvolution_card.styleSheet()
+    assert BLOCKED_EXECUTION_ACCENT in rescale_card.styleSheet()
+    assert BLOCKED_EXECUTION_ACCENT in otsu_card.styleSheet()
+    assert QColor(BLOCKED_EXECUTION_ACCENT).lightness() < QColor(
+        STALE_EXECUTION_ACCENT
+    ).lightness()
+    assert "upstream manual node" in rescale_card.toolTip()
+    widget.background_all_checkbox.setChecked(True)
+    assert widget._background_processing_node_id({psf.id}) == psf.id
+    assert widget._background_processing_node_id({deconvolution.id}) is None
+    low_memory_retained = widget._cache_retention_node_ids(CACHE_MODE_LOW_MEMORY)
+    assert {deconvolution.id, rescale.id, otsu.id} <= low_memory_retained
+
+    widget.run_pipeline(force_sync=True)
+
+    assert calls == [psf.id]
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_STALE
+    assert widget.pipeline.node_execution_states[rescale.id] == EXECUTION_BLOCKED
+    assert widget.pipeline.node_execution_states[otsu.id] == EXECUTION_BLOCKED
+    assert widget.pipeline.outputs[rescale.id] is cached_rescale
+    assert widget.pipeline.outputs[otsu.id] is cached_otsu
+    assert not widget.graph_view._cards[rescale.id].is_processing()
+    assert not widget.graph_view._cards[otsu.id].is_processing()
+
+    calls.clear()
+    widget.run_pipeline(force_sync=True, manual_node_ids={deconvolution.id})
+
+    assert calls == [deconvolution.id, rescale.id, otsu.id]
+    assert widget.pipeline.node_execution_states[deconvolution.id] == EXECUTION_READY
+
+
 def test_calculate_all_button_runs_all_manual_nodes_needing_work(qtbot):
     image = np.zeros((9, 9), dtype=np.float32)
     image[1:4, 1:4] = 10
@@ -10125,7 +10387,7 @@ def test_collection_batch_navigator_switches_the_complete_representative_pair(
     assert "01_shifted.npy" in widget.batch_navigator.sources_label.text()
     assert "alpha_reference.npy" in widget.batch_navigator.sources_label.text()
 
-    qtbot.mouseClick(widget.batch_navigator.next_button, Qt.LeftButton)
+    widget.batch_navigator.next_button.click()
     primary = np.load(demo.root / "inputs" / "primary" / "02_two_objects.npy")
     reference = np.load(demo.root / "inputs" / "reference" / "beta_reference.npy")
     qtbot.waitUntil(

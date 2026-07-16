@@ -38,6 +38,20 @@
 
 ### Deconvolution Safety And Guidance
 
+- Every stale manual/cached node now acts as an execution barrier across VIPP.
+  The actionable barrier remains bright amber, while stale descendants use a
+  darker amber waiting state, retain their last coherent cached outputs, and
+  resume in dependency order when the barrier is recalculated.
+- Born-Wolf support fields now identify their user-set physical spans and the
+  inspector separates Nyquist sampling, tail containment, and image-extent
+  checks into concise statuses with direct actions. A documentation link carries
+  the underlying support-selection and boundary-model guidance.
+- Fixed wrapped RL/RL-TV guidance reserving too little rendered height while
+  the Parameters group absorbed unused vertical space. Long PSF preflight
+  notes now remain fully visible through normal inspector scrolling.
+- Float parameter fields now use compact scientific notation for non-zero
+  magnitudes below `0.001`, and every numeric node field keeps its standard
+  edit menu while adding a right-click `Reset to default` action.
 - Added a cached, read-only PSF preflight to both Richardson-Lucy inspectors.
   It reports rank, metadata-known physical sampling, finite/non-negative values,
   positive sum, approximate normalization, odd/even shape, peak and centroid

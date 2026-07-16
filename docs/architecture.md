@@ -1358,12 +1358,18 @@ Implemented now:
   manual nodes skip ordinary live recomputation, expose `Calculate`/
   `Recalculate` on the node card and inspector, keep their last cached output
   available downstream when stale, and show `not calculated`, `running`,
-  `ready`, `stale`, or `error` state. Manual nodes can opt into the persisted
-  private `_vipp_auto_recalculate` setting from the inspector; when enabled,
-  the widget includes affected manual nodes in ordinary dirty reruns and hides
-  the explicit recalculate button. Private `_vipp_*` settings are filtered out
-  before operation functions run. Headless `PrototypePipeline.run()` and
-  generated Python export still calculate manual nodes by default so batch
+  `ready`, `stale`, `blocked`, or `error` state. The first unresolved manual
+  node on each affected branch is the actionable `stale` barrier. Every
+  automatic or manual descendant behind it is `blocked`, retains the last
+  coherent branch snapshot, and cannot run until that frontier advances. The
+  graph renders the actionable barrier bright amber and waiting descendants
+  darker amber. This partition is operation-agnostic and shared by synchronous
+  and detached background execution planning. Manual nodes can opt into the
+  persisted private `_vipp_auto_recalculate` setting from the inspector; when
+  enabled, the widget includes affected manual nodes in ordinary dirty reruns
+  and hides the explicit recalculate button. Private `_vipp_*` settings are
+  filtered out before operation functions run. Headless `PrototypePipeline.run()`
+  and generated Python export still calculate manual nodes by default so batch
   output is deterministic and does not depend on UI caches. Workflow JSON
   persists node settings but does not serialize cached arrays or tables;
 - generic skeletonization, skeleton-network and skeleton-branch measurement

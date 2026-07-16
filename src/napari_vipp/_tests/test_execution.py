@@ -9,7 +9,11 @@ from napari_vipp.core.execution import (
     PipelineRunRequest,
     execute_pipeline_request,
 )
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.pipeline import (
+    EXECUTION_BLOCKED,
+    EXECUTION_STALE,
+    PrototypePipeline,
+)
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -109,6 +113,66 @@ def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():
     assert result.pipeline is not None
     assert result.pipeline.outputs["input"] is cached_input
     np.testing.assert_array_equal(result.pipeline.outputs["gaussian"], data)
+
+
+def test_background_request_holds_descendants_behind_stale_manual_node():
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[2:7, 2:7] = 0.1
+    data[4, 4] = 1.0
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    psf = pipeline.add_node("gaussian_blur")
+    deconvolution = pipeline.add_node("richardson_lucy_deconvolution")
+    rescale = pipeline.add_node("rescale_intensity")
+    otsu = pipeline.add_node("otsu_threshold")
+    pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+    pipeline.set_param(deconvolution.id, "iterations", 1)
+    assert pipeline.connect("input", psf.id).success
+    assert pipeline.connect("input", deconvolution.id, target_port=0).success
+    assert pipeline.connect(psf.id, deconvolution.id, target_port=1).success
+    assert pipeline.connect(deconvolution.id, rescale.id).success
+    assert pipeline.connect(rescale.id, otsu.id).success
+    pipeline.run(data, input_metadata={"axes": "YX"})
+    pipeline.set_param(psf.id, "sigma", 2.0)
+    pipeline.mark_manual_descendants_stale({psf.id})
+    cached_deconvolution = pipeline.outputs[deconvolution.id]
+    cached_rescale = pipeline.outputs[rescale.id]
+    cached_otsu = pipeline.outputs[otsu.id]
+    request = PipelineRunRequest(
+        run_id=15,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata={"axes": "YX"},
+        input_name="source",
+        source_payloads={},
+        dirty_node_ids=frozenset({psf.id}),
+        cached_outputs=dict(pipeline.outputs),
+        cached_output_states=dict(pipeline.output_states),
+        cached_node_outputs={
+            node_id: list(outputs)
+            for node_id, outputs in pipeline.node_outputs.items()
+        },
+        cached_node_output_states={
+            node_id: list(states)
+            for node_id, states in pipeline.node_output_states.items()
+        },
+        completed_node_ids=frozenset(pipeline.completed_node_ids),
+        cached_execution_states=dict(pipeline.node_execution_states),
+        cached_execution_messages=dict(pipeline.node_execution_messages),
+    )
+    started: list[str] = []
+
+    result = execute_pipeline_request(request, node_started_callback=started.append)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert started == [psf.id]
+    assert result.pipeline.node_execution_states[deconvolution.id] == EXECUTION_STALE
+    assert result.pipeline.node_execution_states[rescale.id] == EXECUTION_BLOCKED
+    assert result.pipeline.node_execution_states[otsu.id] == EXECUTION_BLOCKED
+    assert result.pipeline.outputs[deconvolution.id] is cached_deconvolution
+    assert result.pipeline.outputs[rescale.id] is cached_rescale
+    assert result.pipeline.outputs[otsu.id] is cached_otsu
 
 
 def test_execute_pipeline_request_distinguishes_cooperative_cancellation():

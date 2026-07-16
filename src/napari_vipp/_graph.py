@@ -37,10 +37,12 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp._theme import category_color, category_tint
-from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+from napari_vipp.core.pipeline import EXECUTION_BLOCKED, NODE_LIBRARY_BY_ID
 
 OPERATION_MIME = "application/x-napari-vipp-operation"
 PINNABLE_OUTPUT_TYPES = {"array", "image", "mask", "labels"}
+STALE_EXECUTION_ACCENT = "#f59e0b"
+BLOCKED_EXECUTION_ACCENT = "#b45309"
 
 
 class PortLabelMode(StrEnum):
@@ -271,14 +273,7 @@ class NodeCard(QFrame):
         self._processing_queued = queued if processing else False
         self.processing_badge.set_queued(self._processing_queued)
         self.processing_badge.setVisible(processing)
-        if processing:
-            self.setToolTip(
-                "Processing in background; latest edit is queued."
-                if queued
-                else "Processing in background."
-            )
-        else:
-            self.setToolTip("")
+        self._refresh_tooltip()
         self._position_processing_badge()
         self._refresh_style()
         self.update()
@@ -298,19 +293,43 @@ class NodeCard(QFrame):
         self.calculate_button.setVisible(
             self._manual_execution and not self._auto_recalculate
         )
-        self.calculate_button.setText(
-            "Calculate"
-            if self._execution_state == "not_calculated"
-            else "Recalculate"
+        self.calculate_button.setEnabled(
+            self._execution_state not in {"running", EXECUTION_BLOCKED}
         )
+        if self._execution_state == EXECUTION_BLOCKED:
+            self.calculate_button.setText("Waiting")
+        else:
+            self.calculate_button.setText(
+                "Calculate"
+                if self._execution_state == "not_calculated"
+                else "Recalculate"
+            )
         if not self._manual_execution:
             self.execution_label.setVisible(False)
             self.execution_label.setText("")
         else:
             self.execution_label.setVisible(True)
             self.execution_label.setText(self._execution_summary())
+        self._refresh_tooltip()
         self._refresh_style()
         self.update()
+
+    def _refresh_tooltip(self) -> None:
+        if self._processing:
+            self.setToolTip(
+                "Processing in background; latest edit is queued."
+                if self._processing_queued
+                else "Processing in background."
+            )
+            return
+        if self._execution_state == EXECUTION_BLOCKED:
+            self.setToolTip(
+                self._execution_message
+                or "Downstream result is stale; waiting for an upstream manual "
+                "node to be recalculated."
+            )
+            return
+        self.setToolTip("")
 
     def is_processing(self) -> bool:
         return self._processing
@@ -356,12 +375,20 @@ class NodeCard(QFrame):
             border = "#facc15"
             border_width = 4
             background = "#2a271b"
-        if self._manual_execution:
+        if self._execution_state == EXECUTION_BLOCKED:
+            border = BLOCKED_EXECUTION_ACCENT
+            background = "#21170f"
+            if self._selected:
+                border_width = 3
+            if self._pinned:
+                border = "#facc15"
+                border_width = 4
+        elif self._manual_execution:
             if self._execution_state == "ready":
                 border = "#22c55e"
                 background = "#182a20"
             elif self._execution_state == "stale":
-                border = "#f59e0b"
+                border = STALE_EXECUTION_ACCENT
                 background = "#2a2416"
             elif self._execution_state == "not_calculated":
                 border = "#64748b"
@@ -387,13 +414,17 @@ class NodeCard(QFrame):
         accent_color = self._category_color
         category_background = self._category_tint
         category_color = self._category_color
-        if self._manual_execution:
+        if self._execution_state == EXECUTION_BLOCKED:
+            accent_color = BLOCKED_EXECUTION_ACCENT
+            category_background = "#431407"
+            category_color = "#fdba74"
+        elif self._manual_execution:
             if self._execution_state == "ready":
                 accent_color = "#22c55e"
                 category_background = "#064e3b"
                 category_color = "#bbf7d0"
             elif self._execution_state == "stale":
-                accent_color = "#f59e0b"
+                accent_color = STALE_EXECUTION_ACCENT
                 category_background = "#78350f"
                 category_color = "#fde68a"
             elif self._execution_state == "not_calculated":
@@ -458,6 +489,8 @@ class NodeCard(QFrame):
                 if self._auto_recalculate
                 else "Stale cached result"
             )
+        if self._execution_state == EXECUTION_BLOCKED:
+            return "Stale; waiting upstream"
         if self._execution_state == "error":
             return self._execution_message or "Calculation failed"
         return "Not calculated"
