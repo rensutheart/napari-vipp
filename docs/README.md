@@ -50,6 +50,9 @@ reviewing VIPP itself.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
   defines the Windows/Linux NVIDIA path, macOS CPU contract, provider choices,
   and release gates.
+- [cuCIM native-Windows port plan](cucim-windows-port-plan.md) defines the
+  upstream-tracking fork, MSVC/Clara port, CUDA/Python wheel matrix, validation,
+  distribution, installation, and upstream contribution work.
 - [App improvements plan](app-improvements-plan.md) records the completed UI,
   graph-feedback, and RL-TV safety work packages.
 - [Node roadmap](node-roadmap.md) tracks current capability gaps by node family.

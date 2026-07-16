@@ -48,6 +48,9 @@ authoring remain later milestones.
   optional NVIDIA acceleration architecture, platform support matrix, packaging,
   validation gates, and delivery order. VIPP remains CPU-capable on Windows,
   macOS, and Linux; the CUDA path targets validated Windows/Linux systems only.
+- [cucim-windows-port-plan.md](cucim-windows-port-plan.md): upstream-tracking
+  fork, native Windows `libcucim`/Clara port, Python/CUDA artifact matrix,
+  validation, distribution, installation support, and upstreaming strategy.
 - [gpu-acceleration-spike.md](gpu-acceleration-spike.md): feasibility benchmark
   and provider evaluation that informed the production plan.
 - [cucim-windows-source-evaluation.md](cucim-windows-source-evaluation.md):

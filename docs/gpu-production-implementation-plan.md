@@ -5,6 +5,7 @@ Status: implementation-ready architecture and delivery plan; no production GPU
 operation is enabled by this document.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
+cuCIM Windows port-plan update: 2026-07-16
 
 ## Purpose and fixed constraints
 
@@ -22,8 +23,10 @@ The following constraints are non-negotiable:
   gated candidate. A follow-up pinned source evaluation established a native-
   Windows `cucim.skimage` wheel and material benefits for selected operations,
   but not the native `cucim.clara` layer or the required Linux/multi-device,
-  memory, cancellation, and packaging matrix. PyTorch remains out of scope for
-  this operation family.
+  memory, cancellation, and packaging matrix. The separate
+  [cuCIM Windows port plan](cucim-windows-port-plan.md) owns the proposed thin
+  upstream-tracking fork, native Clara port, wheel matrix, CI, installation,
+  and upstreaming work. PyTorch remains out of scope for this operation family.
 - The base installation, plugin discovery, workflow loading, generated Python,
   and CPU execution must work without importing an optional GPU package.
 - `core/` remains free of Qt and napari imports. Qt presents decisions; it does
@@ -96,7 +99,7 @@ Current provider audit:
 | --- | --- | --- | --- | --- |
 | NumPy, SciPy, scikit-image | Existing CPU stack | Existing CPU stack | Existing CPU stack | Keep as the cross-platform scientific reference |
 | CuPy/CuPyX 14 + CUDA 12/13 components | Official wheels; source build possible with a supported CUDA toolchain | Official x86-64/aarch64 wheels; source build possible on validated CUDA/glibc targets | No current CUDA runtime or CuPy wheel | Allow only as a lazy, platform-marked Windows/Linux optional provider |
-| cuCIM/RAPIDS | No official wheel; pinned `v26.06.00` Python/skimage source wheel reproduced on one native-Windows RTX 5090 host with small downstream patches; native Clara I/O absent | Official wheels and Ubuntu-tested source instructions; named target validation still required | No CUDA runtime | Continue as a narrow operation candidate; the Windows result advances but does not complete Pass 9 |
+| cuCIM/RAPIDS | No official wheel; pinned `v26.06.00` Python/skimage source wheel reproduced on one native-Windows RTX 5090 host with small downstream patches; native Clara I/O is not in that wheel and requires the separate Windows port | Official wheels and Ubuntu-tested source instructions; named target validation still required | No CUDA runtime | Continue as a narrow operation candidate while the [Windows port plan](cucim-windows-port-plan.md) evaluates maintainable full packaging and Clara support; the current result advances but does not complete Pass 9 |
 | PyTorch | Package available; CUDA builds available | Package available; CUDA builds available | Package available with CPU/Metal, not NVIDIA CUDA | Do not select: it cannot provide NVIDIA CUDA on macOS and adds a second large runtime/API without filling the current coverage gap |
 
 Platform claims must be rechecked before changing dependency ranges or cutting
@@ -129,7 +132,7 @@ The pinned source result was:
 | Artifact | `cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl`, 8,654,879 bytes |
 | Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA 13.3 compiler / 13.2 runtime |
 | Available surface | `cucim.skimage` and `cucim.core` |
-| Unavailable surface | Native `cucim.clara/libcucim` whole-slide image I/O |
+| Unavailable surface in this artifact | Native `cucim.clara/libcucim` whole-slide image I/O; feasibility and delivery are owned by the [Windows port plan](cucim-windows-port-plan.md) |
 | Clean reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
 | Selected upstream tests | Complete median file: 707 passed, 4 skipped; other selected operation tests: 172 passed, 8 skipped, 6 deselected |
 
@@ -168,9 +171,10 @@ This evidence changes cuCIM from “Windows feasibility unknown” to “promisi
 narrow Windows operation provider.” It does not admit a production dependency.
 Pass 9 still requires supported-Linux builds, another Windows GPU tier, CUDA
 policy, clean-install/JIT and memory measurements, cancellation behavior,
-schema adapters, optional-extra/CI maintenance, and an upstream-versus-
-downstream patch strategy. macOS remains CPU-only because it has no current
-NVIDIA CUDA runtime.
+schema adapters, and optional-extra/CI maintenance. The upstream-versus-
+downstream strategy and a bounded attempt to port native Clara are now specified
+in the [cuCIM Windows port plan](cucim-windows-port-plan.md). macOS remains
+CPU-only because it has no current NVIDIA CUDA runtime.
 
 ## 1. Target architecture
 
@@ -949,6 +953,12 @@ adaptation. If promoted, cuCIM uses its own optional extra/provider and CuPy
 delivery remains independent. macOS remains ineligible because source
 compilation cannot supply the missing CUDA runtime.
 
+The [cuCIM Windows port plan](cucim-windows-port-plan.md) is the delivery plan
+for making those Windows artifacts maintainable and for attempting native
+Clara/`CuImage` support. It deliberately runs alongside this provider-admission
+plan: successful packaging does not waive operation parity, memory,
+cancellation, provenance, or benefit gates.
+
 ## 10. UI/UX plan
 
 ### 10.1 Global controls
@@ -1465,7 +1475,11 @@ but one owner must coordinate `workflow.py`, schema goldens, and hash behavior.
 **Progress evidence:** the native-Windows cuCIM skimage sub-gate now has a
 reproducible build, selected upstream tests, and first operation benchmarks in
 [the source evaluation](cucim-windows-source-evaluation.md). Pass 9 remains open
-for the Linux/multi-device matrix and all other acceptance items below.
+for the Linux/multi-device matrix and all other acceptance items below. The
+separate [Windows port plan](cucim-windows-port-plan.md) owns the fork,
+Python/CUDA wheel matrix, native C++/Clara work, release engineering, and
+upstream PR sequence; Pass 9 owns whether any resulting package is admitted to
+VIPP.
 
 **Depends on:** Pass 0 contracts and the proposed optional-extra metadata;
 otherwise independent of production operation promotion.
@@ -1804,7 +1818,7 @@ them.
 | D12 | Provenance sidecars | Write atomic `.vipp-provenance.json` beside standalone exports by default; batch uses its manifest and output digest. | Creates additional files but supplies format-independent reproducibility. Approve before Pass 8. |
 | D13 | Precision policy | Ship only strict scientific-default behavior; no fast/mixed-precision UI. | A fast mode creates new scientific and cache semantics. Revisit only with operation-specific evidence. |
 | D14 | Meaning of cross-platform GPU support | Base/CPU support on Windows, macOS, and Linux; NVIDIA CUDA support on validated Windows/Linux only; macOS fails explicit GPU preflight with a platform reason. If NVIDIA GPU execution on macOS is required, stop the plan. | Current CUDA has no macOS target, so no Python library or source build can satisfy an all-three-OS NVIDIA requirement. Approve before Pass 0 wording and Pass 9 packaging work. |
-| D15 | cuCIM source-build option | Keep cuCIM as a separate narrow evaluation candidate. Native-Windows skimage feasibility is now demonstrated for pinned `v26.06.00`; promote only individual high-value operations after advertised-Linux builds and all remaining gates; keep CuPy independent. | The downstream Windows build omits Clara I/O and needs small packaging/NumPy patches. Maintenance, wider hardware, schemas, memory, cancellation, and Linux evidence remain approval conditions. |
+| D15 | cuCIM source-build option | Keep cuCIM as a separate narrow evaluation candidate. Native-Windows skimage feasibility is demonstrated for pinned `v26.06.00`; maintain it through a thin upstream-tracking fork, attempt the bounded native Clara port in the [separate plan](cucim-windows-port-plan.md), promote only individual high-value operations after advertised-Linux builds and all remaining gates, and keep CuPy independent. | The current Windows wheel omits Clara I/O. Full support adds MSVC/C++/Python-ABI, file-I/O, plugin, CI, packaging, and maintenance obligations; wider hardware, schemas, memory, cancellation, and Linux evidence remain approval conditions. |
 
 ### Principal risks and mitigations
 
