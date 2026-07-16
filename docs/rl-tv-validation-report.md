@@ -1,6 +1,6 @@
 # Richardson–Lucy Total Variation scientific validation
 
-Date: 2026-07-15  
+Date: 2026-07-15
 Status: **No definite production algorithm defect established; share with caveats**
 
 ## Executive finding

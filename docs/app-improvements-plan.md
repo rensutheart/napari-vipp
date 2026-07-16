@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This plan turns five requested improvements into independently assignable work
+This plan turns four requested improvements into independently assignable work
 packages. It is based on the current `src/napari_vipp` architecture and keeps
 scientific behavior, workflow compatibility, and CPU-only installations safe.
 
@@ -21,10 +21,6 @@ scientific behavior, workflow compatibility, and CPU-only installations safe.
   on the canvas.
 - The toolbar is one long `QHBoxLayout` in `_widget.py`. Its compact behavior
   moves controls into the Settings menu as width decreases.
-- Execution is headless and NumPy/SciPy/scikit-image based. Background and batch
-  execution serialize and reconstruct the same pipeline, so backend selection
-  must be part of the execution request/workflow contract rather than UI-only
-  state.
 - RL-TV is a local implementation in `core/operations.py`. It starts the
   estimate at `0.5`, uses zero-extension through `scipy.signal.convolve(...,
   mode="same")`, applies the TV term through `1 - lambda * div(...)`, and floors
@@ -39,13 +35,10 @@ scientific behavior, workflow compatibility, and CPU-only installations safe.
 2. Implement port labels and toolbar layout in parallel after agreeing on the
    small global-settings contract.
 3. Run the RL-TV validation work before changing scientific defaults.
-4. Build the GPU capability/benchmark spike, then implement only the backends
-   that pass the benchmark and parity gates.
-5. Finish with integrated UI, workflow, batch, documentation, and packaging QA.
+4. Finish with integrated UI, workflow, batch, documentation, and packaging QA.
 
-The UI packages are suitable for separate agents. The RL-TV and GPU packages
-should not be combined: one is scientific validation and the other is execution
-infrastructure.
+The UI packages are suitable for separate agents. RL-TV scientific validation
+should remain separate from presentation-only changes.
 
 ## Work package A: input-aware parameter visibility
 
@@ -254,68 +247,15 @@ changing defaults, then make the node safer and easier to tune.
 - The documentation clearly distinguishes iteration artifacts, TV suppression,
   PSF mismatch, and edge handling.
 
-## Work package E: optional GPU execution
+## Future GPU work
 
-### Goal
-
-Provide meaningful acceleration where measured, with transparent capability
-reporting and safe CPU fallback.
-
-### Phase 1: capability and benchmark spike
-
-1. Introduce a Qt-free compute-backend contract (`Auto`, `CPU`, `GPU`) and a
-   capability report containing availability, provider/version, device name,
-   supported operation IDs, and unavailability reason. Keep it in a new module
-   such as `core/compute.py`.
-2. Evaluate CuPy/CuPyX first because current kernels are NumPy/SciPy shaped;
-   evaluate cuCIM for scikit-image-like filters where it provides compatible
-   operations. Do not depend on PyTorch only for array math unless benchmarks
-   justify the extra dependency.
-3. Add GPU dependencies as optional extras, never base dependencies. Detect them
-   lazily so CPU-only import, plugin discovery, and tests remain clean.
-4. Benchmark representative 2D and 3D sizes, including host-to-device and
-   device-to-host transfer. Priority candidates: ordinary RL, RL-TV, Gaussian
-   and median filters, rolling-ball/background subtraction, and batch reuse.
-   Record peak GPU memory, speedup, and numerical difference. An RTX 5090-class
-   device should be tested if available, but support must be capability-based,
-   not GPU-model-specific.
-5. Promotion gate: implement a GPU path only where end-to-end speedup is
-   meaningful (suggested >=1.5x on a representative workload), memory behavior
-   is bounded, cancellation/progress remain functional, and numerical parity is
-   within operation-specific tolerance.
-
-### Phase 2: execution integration
-
-1. Add backend selection to `PipelineRunRequest`, batch requests/config, and
-   generated Python. `Auto` may choose GPU only for supported nodes; `CPU` must
-   be deterministic and preserve current behavior; explicit `GPU` should either
-   fail clearly before execution or fall back only when the user has enabled a
-   documented fallback policy.
-2. Add per-operation capability metadata to `OperationSpec` rather than a
-   scattered title/ID list. Display support in the palette/inspector and explain
-   why a selected node will run on CPU.
-3. Keep arrays on the device across consecutive supported nodes within one run.
-   Transfer at source/unsupported-node/output boundaries. A per-function
-   `cp.asarray`/`cp.asnumpy` wrapper would erase much of the gain and should not
-   be the final design.
-4. Include backend and device identity in cache keys/provenance so CPU results
-   are not confused with GPU results. Ensure memory guards account for GPU
-   memory separately from RAM.
-5. Map progress/cancellation into iterative GPU implementations. Catch GPU OOM
-   with a clear node/device message; if fallback is enabled, release device
-   allocations before retrying on CPU.
-
-### Tests and acceptance criteria
-
-- CPU-only CI: missing optional packages, `Auto` fallback, explicit-GPU error,
-  serialization, generated code, and batch behavior.
-- GPU CI/manual matrix: supported CUDA/provider versions, CPU/GPU parity per
-  operation, cancellation, OOM handling, device residency across a chain, and
-  memory cleanup between batch items.
-- No GPU dependency is required to import or use VIPP on CPU.
-- UI never claims acceleration for an unsupported node.
-- Published benchmark results identify workloads where GPU mode helps and where
-  transfer overhead makes CPU preferable.
+Optional GPU capability, benchmark, provider, and packaging research is
+intentionally isolated on the
+[`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
+branch. Main remains the CPU production baseline. The branch is future-looking
+and must pass its documented numerical-parity, memory, cancellation, packaging,
+and cross-platform gates before any production GPU behavior is proposed for
+main.
 
 ## Agent assignments and dependency boundaries
 
@@ -341,16 +281,9 @@ Own work package D Phase 1 first. Deliver fixtures, metrics, findings, and a
 recommendation PR before a numerical behavior PR. Scientific default changes
 must be reviewed separately from UI polish.
 
-### Agent 5: GPU spike and infrastructure
-
-Own work package E Phase 1. Deliver the backend interface, capability detection,
-benchmark harness/results, packaging recommendation, and a ranked node list.
-Implementation of promoted node backends can then be divided by operation
-family.
-
 ### Integration agent
 
-After the above branches land, resolve the two Settings menu additions, run the
+After the above packages land, resolve the two Settings menu additions, run the
 full suite, test workflow v3 round trips, execute synthetic examples in CPU
 mode, run narrow/high-DPI UI checks, and update `docs/user-guide.md`,
 `docs/operator-tips.md`, `docs/architecture.md`, `docs/cache-and-memory.md`, and
@@ -364,9 +297,6 @@ the changelog.
 4. Toolbar field-pair layout.
 5. RL-TV diagnostic fixtures and report (no changed defaults).
 6. RL-TV behavior/default changes justified by the report.
-7. GPU capability API, optional packaging, and benchmarks.
-8. One PR per promoted GPU operation family, followed by batch/device-residency
-   integration.
 
 This split keeps reviews small and prevents scientific-output changes from being
 hidden inside presentation or infrastructure work.

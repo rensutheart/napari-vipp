@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-14
+Last reviewed: 2026-07-16
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -54,6 +54,10 @@ authoring remain later milestones.
   publication-facing evidence.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md): MitoMorph-inspired
   feature parity tracking.
+- Future GPU backend research is kept off main on the
+  [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
+  branch. Main remains the CPU production baseline until that work passes its
+  scientific-parity, packaging, memory, and cross-platform promotion gates.
 
 ## Current Public Baseline
 

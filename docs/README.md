@@ -27,6 +27,8 @@ reviewing VIPP itself.
   assumptions, and publication cautions.
 - [Analytical phantom validation](analytical-phantom-validation.md): generated
   validation results for calibrated morphology.
+- [Richardson-Lucy TV validation](rl-tv-validation-report.md): deterministic
+  convergence, feature-recovery, PSF-sensitivity, and parameter evidence.
 
 ## Develop And Release
 
@@ -45,9 +47,16 @@ reviewing VIPP itself.
 
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
+- [App improvements plan](app-improvements-plan.md) records the completed UI,
+  graph-feedback, and RL-TV safety work packages.
 - [Node roadmap](node-roadmap.md) tracks current capability gaps by node family.
 - [MitoMorph feature parity](mitomorph-feature-parity.md) tracks remaining
   measurement goals.
+- Optional GPU backend research is intentionally isolated on the
+  [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
+  branch. Main remains the CPU production baseline; that branch contains
+  feasibility benchmarks, cross-platform provider evidence, and future-looking
+  implementation plans rather than a supported GPU execution mode.
 
 ## Implementation Records
 
@@ -57,6 +66,7 @@ override the current planning documents above.
 
 - [OME import and export](ome-io-plan.md)
 - [PSF and deconvolution](psf-and-deconvolution-plan.md)
+- [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)
 - [Colocalization and RACC](colocalization-racc-plan.md)
 - [Historical node-roadmap discussion](node-roadmap-history.md)
