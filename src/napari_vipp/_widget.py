@@ -8528,7 +8528,7 @@ class VippWidget(QWidget):
     @staticmethod
     def _deconvolution_psf_issue_title(code: str) -> str:
         return {
-            "support_vs_image": "PSF support exceeds the image extent",
+            "support_vs_image": "PSF support reaches or exceeds the image extent",
             "edge_mass": "PSF tail reaches its support boundary",
             "missing_calibration": "Physical calibration is unavailable",
             "sampling_mismatch": "Image and PSF sampling differ",

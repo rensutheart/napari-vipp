@@ -7444,7 +7444,7 @@ def test_deconvolution_psf_note_separates_passes_and_actionable_size_warning(qtb
     assert "normalized (sum = 1)" in text
     assert "centered (peak offset 0; centroid offset 0 voxel)" in text
     assert "NEEDS ATTENTION" in text
-    assert "PSF support exceeds the image extent" in text
+    assert "PSF support reaches or exceeds the image extent" in text
     assert "Z support is larger than the image" in text
     assert "33 PSF samples versus 11 image samples" in text
     assert "Cropping Z from 33 to 11 centered samples" in text
@@ -9972,7 +9972,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
 
-    widget.resize(1600, 600)
+    widget.resize(widget._expanded_toolbar_required_width() + 100, 600)
     widget._sync_toolbar_responsive_mode()
     widget._populate_settings_toolbar_menu()
 

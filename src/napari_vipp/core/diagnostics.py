@@ -181,8 +181,13 @@ def psf_preflight(
             ):
                 if psf_size < image_size:
                     continue
-                comparison = (
-                    "the same size as" if psf_size == image_size else "larger than"
+                same_size = psf_size == image_size
+                comparison = "the same size as" if same_size else "larger than"
+                support_consequence = (
+                    "At most one centered output sample on this axis has full "
+                    "PSF support, leaving no interior margin."
+                    if same_size
+                    else "No output sample on this axis has full PSF support."
                 )
                 issues.append(
                     PsfPreflightIssue(
@@ -190,8 +195,8 @@ def psf_preflight(
                         "support_vs_image",
                         f"{axis_label} support is {comparison} the image "
                         f"({psf_size} PSF samples versus {image_size} image "
-                        "samples). No output sample on this axis has full PSF "
-                        "support on both sides. The calculation can complete, "
+                        f"samples). {support_consequence} The calculation can "
+                        "complete, "
                         "but current same-size convolution treats signal beyond "
                         "the image as zero.",
                     )

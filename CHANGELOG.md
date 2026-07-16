@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.12.0a2 - 2026-07-16
+
+### Release Overview
+
+This second 0.12 alpha makes expensive interactive workflows easier to tune
+and trust without changing workflow schema version 3. It adds isolated node
+tuning, clearer actionable-versus-waiting execution states, progressive
+run-scoped previews, responsive exact-pixel presentation paths, graph port
+label controls, and more legible PSF/deconvolution guidance. Scientific cache
+publication remains atomic, and existing schema-3 workflows remain
+structurally compatible.
+
 ### Isolated Node Tuning
 
 - Added `Tune node in isolation` to the node context menu and the top of the
@@ -65,8 +77,8 @@
   attention; waiting descendants remain dark amber.
 - Every stale manual/cached node now acts as an execution barrier across VIPP.
   The actionable barrier remains bright amber, while stale descendants use a
-  darker amber waiting state, retain their last coherent cached outputs, and
-  resume in dependency order when the barrier is recalculated.
+  darker amber waiting state, retain their last coherent cached outputs when
+  present, and resume in dependency order when the barrier is recalculated.
 - Born-Wolf support fields now identify their user-set physical spans and the
   inspector separates Nyquist sampling, tail containment, and image-extent
   checks into concise statuses with direct actions. A documentation link carries
@@ -91,11 +103,12 @@
 - Added a conventional-widefield Nyquist estimate to Born-Wolf and downstream
   RL/RL-TV inspectors, kept it separate from image-extent/support checks, and
   made the fixed PSF support-window controls explicit. The inspector now states
-  that a kernel spanning an image axis can still calculate under the current
-  zero-outside-image boundary assumption but has no fully supported interior
-  sample on that axis. Boundary-tail mass is broken down by Z, Y, and X.
+  that a kernel matching an image axis has at most one centered fully supported
+  position and no interior margin, while a larger kernel has none. Both can
+  still calculate under the current zero-outside-image boundary assumption.
+  Boundary-tail mass is broken down by Z, Y, and X.
 - Kept wrong-rank and metadata-known sampling mismatch as hard failures while
-  treating absent physical calibration as unknown instead of inventing unit
+  reporting absent physical calibration as a warning instead of inventing unit
   pixel spacing.
 - Expanded RL/RL-TV parameter guidance and added one concise RL-TV scientific
   note covering under-convergence, feature loss from excessive TV, and PSF

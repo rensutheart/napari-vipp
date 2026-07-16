@@ -61,7 +61,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.12.0a1`.
+Current alpha release: `0.12.0a2`.
 
 The 0.12 alpha adds deterministic batch configuration/provenance, explicit
 scientific source/grid/axis contracts, shared-executor Python export, workflow
@@ -491,6 +491,29 @@ Previous/Next/slider navigator calculates any paired representative through the
 graph without saving the complete batch. Semantic-axis iteration and
 plate/well/field HCS traversal are intentionally outside the 0.12 release gate.
 
+### Released: 0.12.0a2 - Interactive Tuning And Execution Feedback
+
+Goal: make expensive interactive graphs easier to tune, interpret, and inspect
+without weakening the atomic scientific-cache contract.
+
+Delivered:
+
+- isolated node tuning with apply/cancel behavior and a transient downstream
+  execution boundary;
+- generic bright actionable and dark waiting execution frontiers, plus an
+  attention-colored `Calculate all` control;
+- progressive run-scoped thumbnails and inspection payloads while later nodes
+  continue, without publishing partial runs into the scientific cache;
+- exact-pixel Image-layer reuse, bounded presentation conversion, and
+  display-resolution thumbnail rendering;
+- configurable graph port-label modes and size-aware auto layout; and
+- structured PSF preflight, support, Nyquist, centering, and boundary-tail
+  guidance.
+
+Workflow schema remains version 3. Existing schema-3 workflow documents stay
+structurally loadable; generated Python exports remain runtime-version pinned
+and should be regenerated under the release that will execute them.
+
 ### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 
 Goal: make large, multidimensional OME datasets feel deliberate rather than
@@ -510,11 +533,8 @@ Release gate:
   another node with the exact same operation id;
 - graph paste and parameter paste are atomic, undoable, and do not copy cached
   arrays, runtime state, or external graph dependencies;
-- users can tune one node repeatedly while its descendants remain visibly
-  stale and unscheduled, then apply the latest local output once to resume the
-  branch;
-- `Calculate all` releases any isolated tuning session before returning to
-  ordinary automatic and manual-node execution.
+- previews remain explicitly separate from analysis-resolution scientific
+  arrays and do not change saved numerical results.
 
 ### 0.14.0a1 - Scientific Validation Pack
 
