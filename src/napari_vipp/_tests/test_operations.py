@@ -1432,6 +1432,65 @@ def test_pipeline_manual_measurement_nodes_skip_calculate_and_stale_cache():
     assert "node_outputs" not in workflow_text
 
 
+def test_targeted_dirty_execution_stops_after_tuned_node_and_keeps_descendant():
+    data = np.arange(81, dtype=np.float32).reshape(9, 9)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    threshold = pipeline.add_node("binary_threshold")
+    pipeline.set_param(threshold.id, "threshold", 30.0)
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, threshold.id).success
+    pipeline.run(data, input_metadata={"axes": "YX"})
+    cached_threshold = pipeline.outputs[threshold.id]
+
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.mark_nodes_stale(
+        {threshold.id},
+        message="Downstream propagation is paused.",
+    )
+    plan = pipeline.plan_execution(
+        {gaussian.id},
+        target_node_ids={gaussian.id},
+    )
+    started: list[str] = []
+    pipeline.run(
+        data,
+        input_metadata={"axes": "YX"},
+        dirty_node_ids={gaussian.id},
+        target_node_ids={gaussian.id},
+        node_started_callback=started.append,
+    )
+
+    assert plan.candidate_node_ids == {gaussian.id}
+    assert plan.runnable_node_ids == {gaussian.id}
+    assert started == [gaussian.id]
+    np.testing.assert_array_equal(pipeline.outputs[gaussian.id], data)
+    assert pipeline.outputs[threshold.id] is cached_threshold
+    assert pipeline.node_execution_states[threshold.id] == EXECUTION_STALE
+
+
+def test_targeted_execution_recovers_a_missing_required_upstream_cache():
+    data = np.arange(49, dtype=np.float32).reshape(7, 7)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, threshold.id).success
+    pipeline.run(data, input_metadata={"axes": "YX"})
+    pipeline._clear_cached_output("input")
+
+    plan = pipeline.plan_execution(
+        {gaussian.id},
+        target_node_ids={gaussian.id},
+    )
+
+    assert plan.dirty_node_ids == {"input", gaussian.id}
+    assert plan.candidate_node_ids == {"input", gaussian.id}
+    assert plan.runnable_node_ids == {"input", gaussian.id}
+
+
 def test_manual_execution_barrier_is_operation_agnostic():
     data = np.zeros((9, 9), dtype=np.float32)
     data[1:4, 1:4] = 10

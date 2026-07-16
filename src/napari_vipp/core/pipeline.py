@@ -921,6 +921,7 @@ class PipelineExecutionPlan:
     barrier_node_ids: frozenset[str]
     blocked_node_ids: frozenset[str]
     runnable_node_ids: frozenset[str]
+    target_node_ids: frozenset[str] | None = None
 
 
 EXECUTION_READY = "ready"
@@ -6063,6 +6064,54 @@ class PrototypePipeline:
         self._mark_nodes_blocked_by_manual_barrier(blocked)
         return barriers | blocked
 
+    def mark_nodes_stale(
+        self,
+        node_ids: Iterable[str],
+        *,
+        message: str,
+    ) -> set[str]:
+        """Mark explicit automatic or manual nodes stale without clearing outputs."""
+        stale_node_ids = {
+            node_id for node_id in node_ids if node_id in self.nodes
+        }
+        for node_id in stale_node_ids:
+            self.completed_node_ids.discard(node_id)
+            self.node_execution_states[node_id] = EXECUTION_STALE
+            self.node_execution_messages[node_id] = str(message)
+        return stale_node_ids
+
+    def mark_nodes_blocked(
+        self,
+        node_ids: Iterable[str],
+        *,
+        message: str | None = None,
+    ) -> set[str]:
+        """Mark nodes as waiting on an upstream execution frontier.
+
+        Existing outputs and completion records are retained so callers can
+        continue to present the last coherent result while making it clear
+        that the node is not the actionable source of the stale branch.
+        """
+        blocked_node_ids = {
+            node_id for node_id in node_ids if node_id in self.nodes
+        }
+        for node_id in blocked_node_ids:
+            self.node_execution_states[node_id] = EXECUTION_BLOCKED
+            if message is not None:
+                self.node_execution_messages[node_id] = str(message)
+            elif self._has_cached_output(node_id):
+                self.node_execution_messages[node_id] = (
+                    "Downstream result is stale; waiting for an upstream manual "
+                    "node to be recalculated. The last coherent cached result "
+                    "is retained."
+                )
+            else:
+                self.node_execution_messages[node_id] = (
+                    "Downstream result is unavailable; waiting for an upstream "
+                    "manual node to be calculated."
+                )
+        return blocked_node_ids
+
     def _has_cached_output(self, node_id: str) -> bool:
         if self.outputs.get(node_id) is not None:
             return True
@@ -6109,14 +6158,44 @@ class PrototypePipeline:
         *,
         manual_mode: str = MANUAL_RUN_CALCULATE,
         manual_node_ids: Iterable[str] | None = None,
+        target_node_ids: Iterable[str] | None = None,
     ) -> PipelineExecutionPlan:
         """Plan runnable nodes and manual barriers without mutating caches."""
-        dirty_nodes = self._validated_dirty_nodes(dirty_node_ids)
+        targets = (
+            None
+            if target_node_ids is None
+            else {
+                node_id for node_id in target_node_ids if node_id in self.nodes
+            }
+        )
+        if targets == set():
+            return PipelineExecutionPlan(
+                dirty_node_ids=frozenset(),
+                candidate_node_ids=frozenset(),
+                barrier_node_ids=frozenset(),
+                blocked_node_ids=frozenset(),
+                runnable_node_ids=frozenset(),
+                target_node_ids=frozenset(),
+            )
+        required_nodes = (
+            None if targets is None else self.ancestors_inclusive(targets)
+        )
+        requested_dirty_node_ids = (
+            targets
+            if dirty_node_ids is None and targets
+            else dirty_node_ids
+        )
+        dirty_nodes = self._validated_dirty_nodes(
+            requested_dirty_node_ids,
+            candidate_node_ids=required_nodes,
+        )
         candidates = (
             set(self.nodes)
             if dirty_nodes is None
             else self.descendants_inclusive(dirty_nodes)
         )
+        if required_nodes is not None:
+            candidates.intersection_update(required_nodes)
         skipped = self._manual_nodes_to_skip(
             candidates,
             manual_mode,
@@ -6131,6 +6210,9 @@ class PrototypePipeline:
             barrier_node_ids=frozenset(barriers),
             blocked_node_ids=frozenset(blocked),
             runnable_node_ids=frozenset(candidates - barriers - blocked),
+            target_node_ids=(
+                None if targets is None else frozenset(targets)
+            ),
         )
 
     def _mark_nodes_blocked_by_manual_barrier(
@@ -6138,21 +6220,7 @@ class PrototypePipeline:
         node_ids: Iterable[str],
     ) -> None:
         """Mark downstream nodes as stale but non-actionable at this frontier."""
-        for node_id in node_ids:
-            if node_id not in self.nodes:
-                continue
-            self.node_execution_states[node_id] = EXECUTION_BLOCKED
-            if self._has_cached_output(node_id):
-                self.node_execution_messages[node_id] = (
-                    "Downstream result is stale; waiting for an upstream manual "
-                    "node to be recalculated. The last coherent cached result "
-                    "is retained."
-                )
-            else:
-                self.node_execution_messages[node_id] = (
-                    "Downstream result is unavailable; waiting for an upstream "
-                    "manual node to be calculated."
-                )
+        self.mark_nodes_blocked(node_ids)
 
     def _mark_skipped_manual_node(self, node_id: str, *, dirty: bool) -> bool:
         """Return whether a skipped manual node can satisfy downstream inputs."""
@@ -6353,6 +6421,7 @@ class PrototypePipeline:
         cancel_callback: Callable[[], bool] | None = None,
         manual_mode: str = MANUAL_RUN_CALCULATE,
         manual_node_ids: Iterable[str] | None = None,
+        target_node_ids: Iterable[str] | None = None,
         retain_node_ids: Iterable[str] | None = None,
         prune_unretained: bool = False,
     ) -> dict[str, Any]:
@@ -6363,6 +6432,7 @@ class PrototypePipeline:
             dirty_node_ids,
             manual_mode=manual_mode,
             manual_node_ids=manual_node_ids,
+            target_node_ids=target_node_ids,
         )
         dirty_nodes = (
             None
@@ -6560,9 +6630,28 @@ class PrototypePipeline:
                     changed = True
         return descendants
 
+    def ancestors_inclusive(self, node_ids: Iterable[str]) -> set[str]:
+        sources = {node_id for node_id in node_ids if node_id in self.nodes}
+        if not sources:
+            return set()
+        ancestors = set(sources)
+        changed = True
+        while changed:
+            changed = False
+            for connection in self.connections:
+                if (
+                    connection.target_id in ancestors
+                    and connection.source_id not in ancestors
+                ):
+                    ancestors.add(connection.source_id)
+                    changed = True
+        return ancestors
+
     def _validated_dirty_nodes(
         self,
         dirty_node_ids: Iterable[str] | None,
+        *,
+        candidate_node_ids: Iterable[str] | None = None,
     ) -> set[str] | None:
         if dirty_node_ids is None:
             return None
@@ -6586,8 +6675,15 @@ class PrototypePipeline:
             for node_id in self.completed_node_ids & set(self.nodes)
             if self._has_cached_output(node_id)
         }
+        candidate_nodes = (
+            None
+            if candidate_node_ids is None
+            else set(candidate_node_ids) & set(self.nodes)
+        )
         while True:
             nodes_to_run = self.descendants_inclusive(dirty_nodes)
+            if candidate_nodes is not None:
+                nodes_to_run.intersection_update(candidate_nodes)
             required_cached_sources = {
                 source_id
                 for node_id in nodes_to_run

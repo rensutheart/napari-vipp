@@ -43,6 +43,7 @@ class PipelineRunRequest:
     cached_execution_states: dict[str, str] | None = None
     cached_execution_messages: dict[str, str] | None = None
     manual_node_ids: frozenset[str] | None = None
+    target_node_ids: frozenset[str] | None = None
     retain_node_ids: frozenset[str] = frozenset()
     prune_unretained: bool = False
     cancel_event: threading.Event | None = None
@@ -138,6 +139,7 @@ def execute_pipeline_request(
             ),
             manual_mode=MANUAL_RUN_SKIP,
             manual_node_ids=request.manual_node_ids,
+            target_node_ids=request.target_node_ids,
             retain_node_ids=request.retain_node_ids,
             prune_unretained=request.prune_unretained,
         )

@@ -314,6 +314,35 @@ thread, display `calculating...` briefly, and are cached for repeated views.
 Inspector histograms count all finite pixels in their selected slice or stack;
 they do not switch to a hidden sample for large inputs.
 
+### Tune A Node In Isolation
+
+Use isolated tuning when one node is quick to adjust but recalculating its
+downstream branch would take much longer.
+
+1. Select the node and enable `Tune node in isolation` near the top of the
+   inspector, or right-click the node and choose the same action.
+2. Change its parameters as often as needed. VIPP recalculates that node and
+   updates its local preview, but does not schedule any downstream node.
+3. Inspect the result, then choose `Apply and continue` to reuse the latest
+   node output and resume calculation from its direct downstream nodes.
+
+As soon as a parameter changes, the tuned node is the bright-amber actionable
+frontier. Every downstream node is held in darker amber and its cached result
+is labelled as waiting. Those cached outputs are retained for comparison but
+must not be interpreted as results of the new parameters. Selecting another
+node does not hide the amber `Downstream paused` panel.
+
+`Cancel tuning` restores the parameters and cached output from the start of the
+session without recalculating the downstream branch. Only one node can be
+tuned in isolation at a time, and the current graph must be calculated before
+isolation starts so this restoration point is coherent. Editing the saved
+workflow graph, layout, or notes commits the current tuning result before that
+edit, so Cancel can never restore state from a different graph revision.
+
+The toolbar `Calculate all` acts as `Apply and continue`: it disables isolated
+tuning first, then resumes ordinary automatic and manual-node execution. This
+also applies to pipelines with no manual nodes.
+
 ### Cache And Memory
 
 The Settings menu also exposes `Cache mode`, `Auto memory guard`, and
@@ -380,6 +409,10 @@ included in undo/redo. Use them for:
 - review reminders.
 
 Notes do not execute and do not affect outputs.
+
+The same node menu also contains `Tune node in isolation`. It is a transient
+interactive execution control: it does not change or serialize the scientific
+workflow graph.
 
 ## Workflow Save, Load, And Export
 
@@ -578,14 +611,20 @@ Status colours:
 
 | Colour | Meaning |
 | --- | --- |
-| Gray | Not calculated. |
+| Bright amber | Manual node has not been calculated, or its cached result is stale; user action is required. |
+| Dark amber | Downstream result is waiting for the bright-amber manual frontier. |
 | Green | Calculated and current. |
-| Orange | Cached result is stale. |
 | Red | Calculation failed. |
 
-`Calculate all` recalculates every manual node that is not current. `Auto
-Recalculate` can be enabled per manual node, but use it only when the node is
-fast enough for the current image size.
+`Calculate all` recalculates every manual node that is not current and turns
+bright amber while explicit user action is required. `Auto Recalculate` can be
+enabled per manual node, but use it only when the node is fast enough for the
+current image size.
+
+During isolated tuning, bright amber marks the tuned actionable node and dark
+amber marks every downstream result held at the temporary propagation boundary.
+`Calculate all` releases that boundary before applying the normal manual-node
+policy.
 
 ## Example Workflow: 3D PSF-Aware Deconvolution
 

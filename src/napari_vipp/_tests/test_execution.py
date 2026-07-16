@@ -115,6 +115,57 @@ def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():
     np.testing.assert_array_equal(result.pipeline.outputs["gaussian"], data)
 
 
+def test_background_request_honors_isolated_tuning_target():
+    data = np.arange(81, dtype=np.float32).reshape(9, 9)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    threshold = pipeline.add_node("binary_threshold")
+    pipeline.set_param(threshold.id, "threshold", 30.0)
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, threshold.id).success
+    pipeline.run(data, input_metadata={"axes": "YX"})
+    cached_threshold = pipeline.outputs[threshold.id]
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.mark_nodes_stale(
+        {threshold.id},
+        message="Downstream propagation is paused.",
+    )
+    request = PipelineRunRequest(
+        run_id=14,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata={"axes": "YX"},
+        input_name="source",
+        source_payloads={},
+        dirty_node_ids=frozenset({gaussian.id}),
+        target_node_ids=frozenset({gaussian.id}),
+        cached_outputs=dict(pipeline.outputs),
+        cached_output_states=dict(pipeline.output_states),
+        cached_node_outputs={
+            node_id: list(outputs)
+            for node_id, outputs in pipeline.node_outputs.items()
+        },
+        cached_node_output_states={
+            node_id: list(states)
+            for node_id, states in pipeline.node_output_states.items()
+        },
+        completed_node_ids=frozenset(pipeline.completed_node_ids),
+        cached_execution_states=dict(pipeline.node_execution_states),
+        cached_execution_messages=dict(pipeline.node_execution_messages),
+    )
+    started: list[str] = []
+
+    result = execute_pipeline_request(request, node_started_callback=started.append)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert started == [gaussian.id]
+    np.testing.assert_array_equal(result.pipeline.outputs[gaussian.id], data)
+    assert result.pipeline.outputs[threshold.id] is cached_threshold
+    assert result.pipeline.node_execution_states[threshold.id] == EXECUTION_STALE
+
+
 def test_background_request_holds_descendants_behind_stale_manual_node():
     data = np.zeros((9, 9), dtype=np.float32)
     data[2:7, 2:7] = 0.1

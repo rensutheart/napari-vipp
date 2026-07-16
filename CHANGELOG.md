@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Isolated Node Tuning
+
+- Added `Tune node in isolation` to the node context menu and the top of the
+  inspector, with a persistent `Downstream paused` panel.
+- Parameter edits recalculate only the tuned node while every downstream node
+  is held in the darker-amber waiting state and its prior cached output is
+  retained; the tuned root remains the actionable bright-amber frontier.
+- `Apply and continue` reuses the latest tuned output and resumes from its
+  direct children; `Cancel tuning` restores the session-start parameters and
+  cached result.
+- Toolbar `Calculate all` now releases isolated tuning before normal execution,
+  including for fully automatic graphs with no manual nodes.
+- Apply stops any pending parameter debounce, and any graph/history edit safely
+  commits the active tuning session before mutating the saved workflow.
+- The isolated execution boundary is shared by synchronous and detached
+  background runs and remains transient rather than entering workflow JSON.
+
 ### Responsive Result Presentation
 
 - Generated inspector, pinned-label, and RGB-channel layers now use exact
@@ -38,6 +55,14 @@
 
 ### Deconvolution Safety And Guidance
 
+- During background execution, each completed downstream node now leaves its
+  dark-amber waiting state immediately instead of waiting for the entire branch
+  to finish. This progressive display state remains separate from the live
+  scientific cache until the final run result is accepted.
+- Manual nodes that have never been calculated now use the same bright-amber
+  action styling as stale manual barriers. The toolbar `Calculate all` action
+  also turns amber whenever an uncalculated or stale manual frontier needs
+  attention; waiting descendants remain dark amber.
 - Every stale manual/cached node now acts as an execution barrier across VIPP.
   The actionable barrier remains bright amber, while stale descendants use a
   darker amber waiting state, retain their last coherent cached outputs, and

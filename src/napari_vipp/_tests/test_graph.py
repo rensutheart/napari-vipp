@@ -3,7 +3,12 @@ from __future__ import annotations
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
 from qtpy.QtGui import QPainterPath
 
-from napari_vipp._graph import PipelineGraphView, PortLabelMode, _wire_path
+from napari_vipp._graph import (
+    STALE_EXECUTION_ACCENT,
+    PipelineGraphView,
+    PortLabelMode,
+    _wire_path,
+)
 from napari_vipp._theme import category_color, category_tint
 from napari_vipp.core.pipeline import PrototypePipeline
 
@@ -165,6 +170,24 @@ def test_pin_button_is_not_shown_on_node_cards(qtbot):
     assert view._cards["threshold"]._can_pin
 
 
+def test_automatic_stale_node_is_visibly_amber(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["threshold"]
+
+    view.set_node_execution_state(
+        "threshold",
+        "stale",
+        manual=False,
+        message="Downstream propagation is paused.",
+    )
+
+    assert STALE_EXECUTION_ACCENT in card.styleSheet()
+    assert not card.execution_label.isHidden()
+    assert card.execution_label.text() == "Stale; downstream paused"
+    assert "paused" in card.toolTip().lower()
+
+
 def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -185,8 +208,51 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
 
     view._show_node_context_menu("threshold", QPoint(0, 0))
 
-    assert labels == ["Delete", "Inspect Code", "Duplicate Node", "Add note", "Pin"]
+    assert labels == [
+        "Delete",
+        "Inspect Code",
+        "Duplicate Node",
+        "Add note",
+        "Tune node in isolation",
+        "Pin",
+    ]
     assert deleted == ["threshold"]
+
+
+def test_node_context_menu_toggles_isolated_tuning(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    def fake_exec(menu, _pos):
+        return next(
+            action
+            for action in menu.actions()
+            if action.text() == "Tune node in isolation"
+        )
+
+    requested = []
+    view.node_isolation_requested.connect(requested.append)
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", fake_exec)
+
+    view._show_node_context_menu("gaussian", QPoint(0, 0))
+    view.set_isolated_tuning_node("gaussian")
+    checked = []
+
+    def inspect_exec(menu, _pos):
+        action = next(
+            action
+            for action in menu.actions()
+            if action.text() == "Tune node in isolation"
+        )
+        checked.append(action.isChecked())
+        return None
+
+    monkeypatch.setattr("napari_vipp._graph._exec_menu", inspect_exec)
+    view._show_node_context_menu("gaussian", QPoint(0, 0))
+
+    assert requested == ["gaussian"]
+    assert checked == [True]
+    assert view._cards["gaussian"]._isolated_tuning
 
 
 def test_node_context_menu_can_request_attached_note(qtbot, monkeypatch):

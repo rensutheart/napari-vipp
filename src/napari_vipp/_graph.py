@@ -147,6 +147,7 @@ class NodeCard(QFrame):
         self._execution_state = "not_calculated"
         self._execution_message = ""
         self._auto_recalculate = False
+        self._isolated_tuning = False
         self.setObjectName("NodeCard")
         self.setFrameShape(QFrame.StyledPanel)
         self.setMinimumWidth(self.BASE_MINIMUM_WIDTH)
@@ -278,6 +279,16 @@ class NodeCard(QFrame):
         self._refresh_style()
         self.update()
 
+    def set_isolated_tuning(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._isolated_tuning == enabled:
+            return
+        self._isolated_tuning = enabled
+        self._refresh_execution_label()
+        self._refresh_tooltip()
+        self._refresh_style()
+        self.update()
+
     def set_execution_state(
         self,
         state: str,
@@ -304,15 +315,19 @@ class NodeCard(QFrame):
                 if self._execution_state == "not_calculated"
                 else "Recalculate"
             )
-        if not self._manual_execution:
-            self.execution_label.setVisible(False)
-            self.execution_label.setText("")
-        else:
-            self.execution_label.setVisible(True)
-            self.execution_label.setText(self._execution_summary())
+        self._refresh_execution_label()
         self._refresh_tooltip()
         self._refresh_style()
         self.update()
+
+    def _refresh_execution_label(self) -> None:
+        visible = (
+            self._isolated_tuning
+            or self._manual_execution
+            or self._execution_state == "stale"
+        )
+        self.execution_label.setVisible(visible)
+        self.execution_label.setText(self._execution_summary() if visible else "")
 
     def _refresh_tooltip(self) -> None:
         if self._processing:
@@ -322,11 +337,35 @@ class NodeCard(QFrame):
                 else "Processing in background."
             )
             return
+        if self._isolated_tuning:
+            self.setToolTip(
+                "Tuning this node in isolation. Its downstream branch remains "
+                "paused until Apply and continue."
+            )
+            return
+        if self._execution_state == "stale":
+            self.setToolTip(
+                self._execution_message or "This node's cached result is stale."
+            )
+            return
         if self._execution_state == EXECUTION_BLOCKED:
             self.setToolTip(
                 self._execution_message
                 or "Downstream result is stale; waiting for an upstream manual "
                 "node to be recalculated."
+            )
+            return
+        if self._manual_execution and self._execution_state == "not_calculated":
+            if self._auto_recalculate:
+                self.setToolTip(
+                    "This manual node has not been calculated; auto "
+                    "recalculation is pending."
+                )
+                return
+            self.setToolTip(
+                self._execution_message
+                or "This manual node has not been calculated. Click Calculate "
+                "or use Calculate all."
             )
             return
         self.setToolTip("")
@@ -383,16 +422,21 @@ class NodeCard(QFrame):
             if self._pinned:
                 border = "#facc15"
                 border_width = 4
+        elif self._execution_state == "stale":
+            border = STALE_EXECUTION_ACCENT
+            background = "#2a2416"
+            if self._selected:
+                border_width = 3
+            if self._pinned:
+                border = "#facc15"
+                border_width = 4
         elif self._manual_execution:
             if self._execution_state == "ready":
                 border = "#22c55e"
                 background = "#182a20"
-            elif self._execution_state == "stale":
+            elif self._execution_state == "not_calculated":
                 border = STALE_EXECUTION_ACCENT
                 background = "#2a2416"
-            elif self._execution_state == "not_calculated":
-                border = "#64748b"
-                background = "#242932"
             elif self._execution_state == "error":
                 border = "#ef4444"
                 background = "#2f1d1d"
@@ -401,6 +445,14 @@ class NodeCard(QFrame):
             if self._pinned:
                 border = "#facc15"
                 border_width = 4
+        if (
+            self._isolated_tuning
+            and self._execution_state != "error"
+            and not self._pinned
+        ):
+            border = STALE_EXECUTION_ACCENT
+            border_width = max(border_width, 3)
+            background = "#2a2416"
         if self._processing:
             background = "#303640"
             if not self._pinned and not self._selected:
@@ -418,23 +470,27 @@ class NodeCard(QFrame):
             accent_color = BLOCKED_EXECUTION_ACCENT
             category_background = "#431407"
             category_color = "#fdba74"
+        elif self._execution_state == "stale":
+            accent_color = STALE_EXECUTION_ACCENT
+            category_background = "#78350f"
+            category_color = "#fde68a"
         elif self._manual_execution:
             if self._execution_state == "ready":
                 accent_color = "#22c55e"
                 category_background = "#064e3b"
                 category_color = "#bbf7d0"
-            elif self._execution_state == "stale":
+            elif self._execution_state == "not_calculated":
                 accent_color = STALE_EXECUTION_ACCENT
                 category_background = "#78350f"
                 category_color = "#fde68a"
-            elif self._execution_state == "not_calculated":
-                accent_color = "#94a3b8"
-                category_background = "#334155"
-                category_color = "#cbd5e1"
             elif self._execution_state == "error":
                 accent_color = "#ef4444"
                 category_background = "#7f1d1d"
                 category_color = "#fecaca"
+        if self._isolated_tuning and self._execution_state != "error":
+            accent_color = STALE_EXECUTION_ACCENT
+            category_background = "#78350f"
+            category_color = "#fde68a"
         if self._processing:
             accent_color = "#94a3b8"
             category_background = "#3a414c"
@@ -475,6 +531,8 @@ class NodeCard(QFrame):
         self.processing_badge.raise_()
 
     def _execution_summary(self) -> str:
+        if self._isolated_tuning:
+            return "Tuning in isolation"
         if self._execution_state == "ready":
             return (
                 "Auto result ready"
@@ -484,6 +542,8 @@ class NodeCard(QFrame):
         if self._execution_state == "running":
             return "Calculating..."
         if self._execution_state == "stale":
+            if "paused" in self._execution_message.casefold():
+                return "Stale; downstream paused"
             return (
                 "Auto recalculation pending"
                 if self._auto_recalculate
@@ -1645,6 +1705,7 @@ class PipelineGraphView(QGraphicsView):
     node_duplicate_requested = Signal(str)
     node_code_requested = Signal(str)
     node_note_requested = Signal(str)
+    node_isolation_requested = Signal(str)
     node_moved = Signal(str, object, object)
     node_splice_requested = Signal(str, object, object, object)
     pin_requested = Signal(str)
@@ -1674,6 +1735,7 @@ class PipelineGraphView(QGraphicsView):
         self.setAcceptDrops(True)
         self._proxies: dict[str, NodeProxy] = {}
         self._cards: dict[str, NodeCard] = {}
+        self._isolated_tuning_node_id: str | None = None
         self._connections: list[ConnectionItem] = []
         self._pending_source: PortItem | None = None
         self._pending_wire: PendingConnectionItem | None = None
@@ -2522,6 +2584,27 @@ class PipelineGraphView(QGraphicsView):
         for card_id, card in self._cards.items():
             card.set_pinned(card_id == node_id)
 
+    def set_isolated_tuning_node(self, node_id: str | None) -> None:
+        active_node_id = node_id if node_id in self._cards else None
+        self._isolated_tuning_node_id = active_node_id
+        for card_id, card in self._cards.items():
+            enabled = card_id == active_node_id
+            if card._isolated_tuning == enabled:
+                continue
+            proxy = self._proxies.get(card_id)
+            before = proxy.sceneBoundingRect() if proxy is not None else QRectF()
+            card.set_isolated_tuning(enabled)
+            if proxy is None:
+                continue
+            card.adjustSize()
+            proxy.refresh_ports()
+            after = proxy.sceneBoundingRect()
+            if _rect_changed(before, after):
+                self._mark_graph_geometry_changed()
+                self.reroute_connections(affected_rect=before.united(after))
+            else:
+                proxy.update()
+
     def set_node_can_pin(self, node_id: str, can_pin: bool) -> None:
         card = self._cards.get(node_id)
         if card is not None:
@@ -2912,6 +2995,13 @@ class PipelineGraphView(QGraphicsView):
         code_action = menu.addAction("Inspect Code")
         duplicate_action = menu.addAction("Duplicate Node")
         add_note_action = menu.addAction("Add note")
+        menu.addSeparator()
+        isolation_action = menu.addAction("Tune node in isolation")
+        isolation_action.setCheckable(True)
+        isolation_action.setChecked(node_id == self._isolated_tuning_node_id)
+        isolation_action.setEnabled(
+            self._isolated_tuning_node_id in {None, node_id}
+        )
         pin_action = None
         if card._can_pin:
             menu.addSeparator()
@@ -2925,6 +3015,8 @@ class PipelineGraphView(QGraphicsView):
             self.node_duplicate_requested.emit(node_id)
         elif action == add_note_action:
             self.node_note_requested.emit(node_id)
+        elif action == isolation_action:
+            self.node_isolation_requested.emit(node_id)
         elif pin_action is not None and action == pin_action:
             self.pin_requested.emit(node_id)
 
