@@ -3,6 +3,8 @@
 Date: 2026-07-15
 Status: implementation-ready architecture and delivery plan; no production GPU
 operation is enabled by this document.
+Cross-platform review: 2026-07-15
+cuCIM native-Windows evidence update: 2026-07-16
 
 ## Purpose and fixed constraints
 
@@ -13,8 +15,15 @@ batch manifest, workflow v3, and generated-Python contracts.
 
 The following constraints are non-negotiable:
 
-- CuPy/CuPyX is the first provider. cuCIM remains a separate Linux/WSL2
-  investigation and PyTorch is out of scope for this operation family.
+- VIPP's base installation and CPU execution are supported on Windows, macOS,
+  and Linux. NVIDIA GPU execution is supported only on native Windows and
+  supported Linux distributions. macOS is CPU-only for the NVIDIA-only phase.
+- CuPy/CuPyX is the first production GPU provider. cuCIM remains a separately
+  gated candidate. A follow-up pinned source evaluation established a native-
+  Windows `cucim.skimage` wheel and material benefits for selected operations,
+  but not the native `cucim.clara` layer or the required Linux/multi-device,
+  memory, cancellation, and packaging matrix. PyTorch remains out of scope for
+  this operation family.
 - The base installation, plugin discovery, workflow loading, generated Python,
   and CPU execution must work without importing an optional GPU package.
 - `core/` remains free of Qt and napari imports. Qt presents decisions; it does
@@ -35,6 +44,133 @@ The following constraints are non-negotiable:
 The minimum delivery is eleven passes, numbered 0 through 10. Pass 10 is an
 umbrella for separately reviewed operation promotions, so the eventual PR count
 will be greater than eleven.
+
+### Cross-platform support contract
+
+"Works on Windows, macOS, and Linux" applies to the VIPP application, saved
+workflows, generated Python, and CPU results. It cannot mean NVIDIA GPU
+execution on all three operating systems. NVIDIA's
+[CUDA 10.2 release notes](https://docs.nvidia.com/cuda/archive/10.2/pdf/CUDA_Toolkit_Release_Notes.pdf)
+state that 10.2 was the last toolkit release to support macOS, while this plan
+uses current CuPy 14 with CUDA 12 or 13. Compiling CuPy, cuCIM, PyTorch CUDA
+code, or a custom CUDA extension cannot restore a CUDA driver/runtime that
+NVIDIA no longer supplies for macOS. If NVIDIA GPU execution on macOS is a
+release requirement, this plan is a no-go rather than an implementation risk.
+
+The supported product matrix is:
+
+| Surface | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Base VIPP install, import, CPU execution, workflows, batch, and generated Python | Required and tested | Required and tested | Required and tested |
+| NVIDIA GPU execution | Native CuPy/CUDA path on validated x86-64 environments | CuPy/CUDA path on validated NVIDIA-supported glibc distributions and architectures | Not available; `Auto` selects CPU and explicit `GPU` fails preflight with a platform reason |
+| GPU package installation | Platform-marked optional extra | Platform-marked optional extra | CUDA packages are not resolved or installed |
+| Saved GPU-authored workflow | Opens portably; execution follows backend/fallback contract | Opens portably; execution follows backend/fallback contract | Opens portably; CPU session override or authored `Auto` is required to run |
+
+This plan does not claim support for every Linux distribution. The release
+matrix must name the tested glibc distributions and architectures. A platform
+without a compatible wheel is supported for GPU use only after a reproducible
+source build, real-device probe, scientific parity suite, and packaging smoke
+test pass on that exact platform. Alpine/musl and other unvalidated targets are
+CPU-only even if a local experimental build happens to succeed.
+
+Dependency admission follows these rules:
+
+1. Every base dependency must install and pass the CPU/package test matrix on
+   Windows, macOS, and Linux for every supported Python version.
+2. A CUDA dependency may be a platform-specific optional extra only when the
+   base application neither imports nor requires it. The dependency must have a
+   maintained wheel or a documented, CI-proven source build for each advertised
+   Windows/Linux target.
+3. A source-build claim is invalid when the underlying vendor runtime does not
+   support the operating system. This explicitly rules out CUDA builds on
+   current macOS.
+4. A provider with a narrower binary-package matrix than CuPy may remain an
+   evaluation candidate when upstream documents a source build. It becomes a
+   production option only after reproducible builds, package artifacts, real-
+   device probes, scientific parity, and material performance benefit are shown
+   on every Windows/Linux target where VIPP would advertise that provider.
+
+Current provider audit:
+
+| Library/runtime | Windows | Linux | macOS | Plan decision |
+| --- | --- | --- | --- | --- |
+| NumPy, SciPy, scikit-image | Existing CPU stack | Existing CPU stack | Existing CPU stack | Keep as the cross-platform scientific reference |
+| CuPy/CuPyX 14 + CUDA 12/13 components | Official wheels; source build possible with a supported CUDA toolchain | Official x86-64/aarch64 wheels; source build possible on validated CUDA/glibc targets | No current CUDA runtime or CuPy wheel | Allow only as a lazy, platform-marked Windows/Linux optional provider |
+| cuCIM/RAPIDS | No official wheel; pinned `v26.06.00` Python/skimage source wheel reproduced on one native-Windows RTX 5090 host with small downstream patches; native Clara I/O absent | Official wheels and Ubuntu-tested source instructions; named target validation still required | No CUDA runtime | Continue as a narrow operation candidate; the Windows result advances but does not complete Pass 9 |
+| PyTorch | Package available; CUDA builds available | Package available; CUDA builds available | Package available with CPU/Metal, not NVIDIA CUDA | Do not select: it cannot provide NVIDIA CUDA on macOS and adds a second large runtime/API without filling the current coverage gap |
+
+Platform claims must be rechecked before changing dependency ranges or cutting
+a GPU release. The primary sources are the
+[CuPy installation matrix](https://docs.cupy.dev/en/stable/install.html),
+[RAPIDS system requirements](https://docs.rapids.ai/install/),
+[cuCIM source-build guide](https://github.com/rapidsai/cucim/blob/main/CONTRIBUTING.md#setting-up-your-build-environment),
+[PyTorch local installation matrix](https://docs.pytorch.org/get-started/locally/),
+and [PyTorch's macOS Metal backend](https://docs.pytorch.org/docs/stable/notes/mps).
+
+### Native-Windows cuCIM evidence snapshot
+
+The 2026-07-15/16 follow-up completed the first native-Windows cuCIM sub-gate.
+The full procedure, package audit, output schemas, timing ranges, and artifacts
+are in the
+[cuCIM Windows source evaluation](cucim-windows-source-evaluation.md).
+
+No credible third-party Windows binary was found. The official PyPI 26.6.0
+files are manylinux x86-64/aarch64 wheels, the RAPIDS conda and nightly channels
+publish Linux packages, GitHub releases contain no Windows assets, and upstream
+Windows compatibility issue 454 remains open. The audit also found no Windows-
+named branch among the 83 current forks; that is supporting evidence, not a
+guarantee that no private or obscure build exists.
+
+The pinned source result was:
+
+| Build item | Evidence |
+| --- | --- |
+| Source | cuCIM `v26.06.00`, commit `3c15781c207eab93a317dd9803a6e726fe01f7c4` |
+| Artifact | `cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl`, 8,654,879 bytes |
+| Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA 13.3 compiler / 13.2 runtime |
+| Available surface | `cucim.skimage` and `cucim.core` |
+| Unavailable surface | Native `cucim.clara/libcucim` whole-slide image I/O |
+| Clean reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
+| Selected upstream tests | Complete median file: 707 passed, 4 skipped; other selected operation tests: 172 passed, 8 skipped, 6 deselected |
+
+The clean build required three downstream adaptations: put Git for Windows'
+`which.exe` on `PATH` for `rapids-build-backend`; replace the materialized
+relative `VERSION` symlink and include it in the wheel; and replace one
+deprecated NumPy shape assignment in vendored padding code with `reshape` for
+strict NumPy 2.5 compatibility. These are packaging/build-compatibility changes,
+not image-processing formula changes. The reproducible builder is
+[`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1).
+
+The synchronized RTX 5090 standard benchmark produced this operation-level
+evidence. Times include one input and output transfer. A speedup above 1 means
+cuCIM was faster than the named baseline.
+
+| Operation | Best admitted baseline | cuCIM end-to-end speedup | Result |
+| --- | --- | ---: | --- |
+| Rolling ball 2D / 3D | scikit-image CPU | **265.46x / 528.66x** | Exact fixture output; advance to wider validation |
+| Canny 2D | scikit-image CPU | **17.03x** | Exact; advance |
+| Region-properties table | scikit-image CPU | **10.49x** | Exact values; dtype/schema adapter and overflow policy required |
+| Connected components 2D / 3D | scikit-image CPU | **2.87x / 2.84x** | Exact values and `int32` output; advance |
+| Otsu threshold 2D | scikit-image CPU | **2.38x** | Exact `float32` scalar; advance |
+| uint16 31x31 histogram median | CuPyX median | 1.42x | Exact but below the 1.5x gate; defer and map crossover |
+| Gaussian 2D / 3D | CuPyX Gaussian | 1.03x / 0.95x | Exact; keep CuPy |
+| float32 5x5 median | CuPyX median | 1.08x | Exact; keep CuPy |
+| Sobel / binary closing | normalized CuPyX composition | 0.98x / 1.01x | Equivalent; keep CuPy |
+| Richardson-Lucy 2D / 3D | explicit CuPyX loop | 0.22x / 0.22x | Allclose but about 4.5x slower; keep explicit CuPy |
+
+All 15 benchmark fixtures passed the recorded numerical comparison. The
+region-properties values matched but cuCIM returned narrower area, label, and
+bounding-box dtypes than the CPU public table. The fast histogram median also
+requires a dense rectangular footprint. Both constraints must remain explicit
+support-policy checks rather than silent behavior changes.
+
+This evidence changes cuCIM from “Windows feasibility unknown” to “promising
+narrow Windows operation provider.” It does not admit a production dependency.
+Pass 9 still requires supported-Linux builds, another Windows GPU tier, CUDA
+policy, clean-install/JIT and memory measurements, cancellation behavior,
+schema adapters, optional-extra/CI maintenance, and an upstream-versus-
+downstream patch strategy. macOS remains CPU-only because it has no current
+NVIDIA CUDA runtime.
 
 ## 1. Target architecture
 
@@ -745,8 +881,12 @@ segment commits no new host output. Existing clean caches remain intact.
 Add no GPU dependency to base requirements. Add mutually exclusive extras:
 
 ```toml
-gpu-cuda12 = ["cupy-cuda12x[ctk]>=14,<15"]
-gpu-cuda13 = ["cupy-cuda13x[ctk]>=14,<15"]
+gpu-cuda12 = [
+    "cupy-cuda12x[ctk]>=14,<15; platform_system == 'Windows' or platform_system == 'Linux'",
+]
+gpu-cuda13 = [
+    "cupy-cuda13x[ctk]>=14,<15; platform_system == 'Windows' or platform_system == 'Linux'",
+]
 ```
 
 Documentation must say never to install both CuPy CUDA-major distributions in
@@ -755,19 +895,36 @@ still requires a compatible NVIDIA driver. A driver-only wheel can work for a
 subset but is not the supported VIPP install because missing component DLLs/
 shared libraries can surface only when another CuPyX module loads.
 
+The environment markers keep CUDA distributions out of macOS resolution. They
+do not imply that `pip install napari-vipp[gpu-cuda12]` enables a GPU on macOS;
+the UI and user guide must identify macOS as CPU-only and must not offer a CUDA
+install/repair command there. Before each release, build an isolated environment
+for every supported OS/Python pair, resolve the base package, and prove that the
+macOS dependency graph contains no `cupy`, `cupyx`, or NVIDIA CUDA component.
+For advertised Windows/Linux GPU targets, resolve the selected extra from a
+clean environment rather than relying on a developer machine's CUDA state.
+
 ### 9.2 Platform behavior
 
-- **CPU-only Windows/Linux/macOS:** base install and plugin import work;
-  capability says GPU unavailable without an exception. macOS remains CPU-only
-  for this CUDA provider.
-- **Native Windows:** supported for CuPy after import, device enumeration,
+- **CPU-only Windows/Linux/macOS:** base install, plugin import, workflow load,
+  generated Python, and CPU execution work. Capability says GPU unavailable
+  without an import exception.
+- **macOS:** always reports `platform_unsupported` for the NVIDIA provider.
+  `Auto` selects CPU as a normal policy decision. Explicit `GPU` fails before
+  execution with a concise explanation and a CPU override action; it does not
+  show a CUDA install command or attempt a source build.
+- **Native Windows x86-64:** supported for CuPy after import, device enumeration,
   context creation, one real kernel, and required CuPyX module probes pass.
   Diagnostics distinguish missing package, incompatible wheel, driver failure,
   missing runtime component, no device, and kernel-probe failure.
-- **Linux:** same probe and both CUDA-major CI tracks. Container use must expose
-  a compatible driver/device.
+- **Linux:** supported only for the named NVIDIA/CUDA-compatible glibc
+  distributions and architectures in the release matrix, using the same probe
+  and both CUDA-major CI tracks. Container use must expose a compatible
+  driver/device. An unvalidated distribution remains CPU-only; local source
+  compilation does not expand the published support matrix.
 - **WSL2:** report WSL explicitly in provenance and diagnostics; use Linux
-  wheels and document host-driver prerequisites.
+  wheels and document host-driver prerequisites. WSL2 is useful secondary
+  coverage, not a substitute for the required native-Windows CuPy path.
 - **Incompatible environments:** never surface a raw import traceback as the
   primary message. Show the classified cause, selected extra, installed package
   versions, and a copyable install/repair command. Raw CUDA details remain in
@@ -778,9 +935,19 @@ shared libraries can surface only when another CuPyX module loads.
   `cupy`, `cupyx`, and provider implementation modules are absent from
   `sys.modules`.
 
-cuCIM gets a separate experimental extra only after Pass 9 establishes a
-compatible Linux/WSL package matrix. It does not become a dependency of the
-CuPy path and no operation is advertised from import success alone.
+Do not add a cuCIM extra or provider before Pass 9. The
+[native-Windows source evaluation](cucim-windows-source-evaluation.md) now
+provides a reproducible `v26.06.00` CPython 3.12 `win_amd64` skimage wheel,
+selected upstream tests, and operation benchmarks. Rolling ball, Canny,
+labeling, Otsu, and region properties cleared the single-host performance gate;
+Gaussian, ordinary median, Sobel, binary morphology, and cuCIM Richardson-Lucy
+did not justify replacing their CuPy paths. The build required small downstream
+packaging/NumPy adaptations and excludes native Clara I/O. Pass 9 must still
+validate supported Linux targets, another Windows tier, memory, cancellation,
+clean-install/JIT cost, packaging/CI maintenance, and region-table schema
+adaptation. If promoted, cuCIM uses its own optional extra/provider and CuPy
+delivery remains independent. macOS remains ineligible because source
+compilation cannot supply the missing CUDA runtime.
 
 ## 10. UI/UX plan
 
@@ -956,7 +1123,14 @@ change requiring evidence and review, not a test-maintenance edit.
 
 ### 12.1 Required checks on every PR
 
-- Full CPU-only test suite with no GPU packages installed.
+- Full CPU-only test suite with no GPU packages installed on native Windows,
+  macOS, and Linux. Each OS builds the wheel, installs it into a clean
+  environment, validates the napari manifest, imports the plugin and generated
+  Python, and runs the tests.
+- Dependency-resolution assertions prove that the macOS base package and
+  platform-marked GPU extras resolve without installing CuPy or NVIDIA CUDA
+  components. Windows/Linux GPU-extra resolution is checked in isolated
+  scheduled environments for every supported Python/CUDA-major pair.
 - `test_plugin_contract.py`, npe2 validation, generated script import, and a
   subprocess assertion that CuPy/CuPyX/provider modules were not imported.
 - Compute-contract parsing/JSON round trips and stable reason-code tests.
@@ -982,9 +1156,11 @@ control flow, not scientific CuPy parity.
 
 | Dimension | Minimum matrix |
 | --- | --- |
-| OS | Native Windows and Linux scheduled; WSL2 manual/release candidate until a stable runner exists. |
+| CPU/package OS | Native Windows, macOS, and Linux required on every PR; include the supported macOS architectures in release CI. |
+| Real NVIDIA GPU OS | Native Windows and supported Linux scheduled; WSL2 manual/release candidate until a stable runner exists; macOS explicitly excluded because current CUDA has no macOS target. |
 | CUDA major | Separate CUDA 12 and CUDA 13 environments; never both CuPy wheels together. |
 | Provider | Supported CuPy major and at least the oldest/newest supported minor or lockfile endpoints. |
+| Packaging | Clean base and wheel install on all three OS families; clean platform-marked extra resolution on all three; real CuPy import/kernel/submodule probe on every advertised Windows/Linux target. |
 | Device tier | Minimum supported VRAM/tier, a mid-tier device, and a higher-tier device; include one laptop/WDDM system. |
 | Scientific parity | Every promoted operation, dtype, dimension, parameter boundary, deterministic fixture, and real-data gate. |
 | Performance | Cold diagnostic separately; warm synchronized end-to-end and resident-chain runs with robust medians/confidence. |
@@ -1034,7 +1210,7 @@ capability list remains empty. Rollback removes new unused contracts without
 affecting execution. **Still disabled:** all GPU execution and UI controls.
 
 **Parallelism:** after its contracts are merged/frozen, Pass 1 substrate, Pass
-2 median science fixtures/provider function, and Pass 9 cuCIM research can
+2 median science fixtures/provider function, and Pass 9 platform validation can
 start in parallel with disjoint files.
 
 ### Pass 1 — Execution substrate
@@ -1284,42 +1460,67 @@ documents with lost intent. **Still disabled:** per-node overrides.
 **Parallelism:** generated-Python work can begin against a frozen v4 fixture,
 but one owner must coordinate `workflow.py`, schema goldens, and hash behavior.
 
-### Pass 9 — cuCIM/Linux evaluation
+### Pass 9 — Cross-platform packaging and cuCIM source-build gate
 
-**Depends on:** Pass 0 contracts; independent of production CuPy sequence.
-**Owns:** a separate benchmark/probe script, Linux/WSL environment files,
-proposed as `scripts/benchmark_cucim.py`; uniquely named
-`docs/benchmarks/cucim-*` artifacts; and
-`docs/cucim-linux-wsl-evaluation.md`. It must not edit production declarations
-or base dependencies.
+**Progress evidence:** the native-Windows cuCIM skimage sub-gate now has a
+reproducible build, selected upstream tests, and first operation benchmarks in
+[the source evaluation](cucim-windows-source-evaluation.md). Pass 9 remains open
+for the Linux/multi-device matrix and all other acceptance items below.
 
-**Public contracts:** none unless the investigation recommends a later provider
-proposal. Test rolling-ball/background subtraction, RL where useful, packaging,
-memory, parity, cancellation feasibility, and residency interop.
+**Depends on:** Pass 0 contracts and the proposed optional-extra metadata;
+otherwise independent of production operation promotion.
+**Owns:** GPU-extra environment markers in `pyproject.toml`, cross-platform CI
+jobs, provider/package probe scripts, supported-platform documentation,
+isolated cuCIM build/benchmark artifacts, and machine-readable clean-environment
+resolution/probe evidence. It does not own workflow schemas or enable a
+scientific operation merely because cuCIM builds.
 
-**Tests/documentation:** reproducible unavailable result on native Windows;
-Linux and WSL probes; provider/version/runtime evidence; raw and end-to-end
-benchmarks; scientific parity.
+**Public contracts:** the Windows/Linux CUDA and macOS CPU-only support matrix,
+stable `platform_unsupported` diagnostics, named Linux distribution/
+architecture coverage, the rule that no CUDA package resolves on macOS, and a
+promote/defer/reject result for cuCIM as a separately packaged provider.
 
-**Migration:** none.
+**Tests/documentation:** clean wheel build/install/import/npe2/generated-Python
+and CPU suite on native Windows, macOS, and Linux; macOS base/extra dependency
+inspection; native Windows and supported-Linux CuPy extra installation plus
+real kernel and required-CuPyX-module probes; WSL2 secondary evidence; an
+explicit unsupported result for unvalidated Linux/musl targets. Clone cuCIM at
+a pinned revision and follow/adapt its documented source build on native
+Windows and each supported Linux target; build installable artifacts, run the
+relevant unit tests and real-device module probes, and benchmark only operations
+where cuCIM may materially outperform or avoid maintaining a custom CuPy kernel.
 
-**Acceptance/rollback:** a reviewable promote/defer/reject report with machine-
-readable evidence. No production operation is enabled in this pass. Rollback is
-deleting research artifacts. **Still disabled:** all cuCIM production support.
+**Migration:** none; packaging metadata changes only optional dependency
+resolution.
 
-**Parallelism:** safe in parallel with Passes 1-8 if it stays in scripts/docs and
-does not touch shared benchmark output paths currently owned by another agent.
+**Acceptance/rollback:** all three base OS jobs pass, macOS resolves no CUDA
+components, and each advertised Windows/Linux GPU environment installs and
+passes the provider probe from a clean environment. A CUDA target without a
+wheel or reproducible validated source build is removed from the published
+matrix. cuCIM is promoted only if reproducible package builds pass on every
+target where it is advertised and at least one operation clears the common
+parity, memory, cancellation, maintenance, and >=1.5x end-to-end benefit gates
+relative to the best admitted implementation. A Linux-only success remains
+research evidence unless the product explicitly approves a narrower provider
+matrix. Rollback removes cuCIM artifacts/extra independently and removes CuPy
+GPU extras/installation UX while retaining the base CPU matrix. **Still
+disabled:** NVIDIA GPU execution on macOS and every unvalidated OS/
+distribution/architecture.
+
+**Parallelism:** CI and packaging files have one owner. cuCIM build/benchmark
+evidence and other clean-environment probes can run in parallel with Passes 1-8
+after Pass 0 when they use disjoint artifacts.
 
 ### Pass 10 — Broader node promotion
 
-**Depends on:** stable passes 1-8 and operation-specific benchmark evidence.
+**Depends on:** stable passes 1-9 and operation-specific benchmark evidence.
 **Owns:** one operation family per sub-pass/PR, with its own provider module,
 declaration, memory/workload/parity policy, tests, benchmark artifacts, and docs.
 
 **Public contracts:** no new generic contract unless an operation proves the
 existing one insufficient. Candidate order is benchmark-driven; rolling-ball/
-background work waits for Pass 9. No family is promoted by provider API match
-alone.
+background work may use an admitted cuCIM implementation, a CuPy implementation,
+or remain CPU-only. No family is promoted by provider API match alone.
 
 **Tests/documentation:** full common promotion gate plus operation-specific
 scientific fixtures, mixed-graph/batch/export integration, performance,
@@ -1347,10 +1548,12 @@ Pass 0 contracts
               -> Pass 4 single-run UI/provenance
                   -> Pass 5 batch
                   -> Pass 6 RL -> Pass 7 RL-TV
-                      -> Pass 8 workflow/generated Python
-                          -> Pass 10 broader promotions
+                       -> Pass 8 workflow/generated Python
+                           -> Pass 10 broader promotions
 
-Pass 9 cuCIM research may start after Pass 0 and run independently.
+Pass 9 cross-platform packaging and cuCIM source-build validation may start
+after Pass 0. Its platform gate must pass before the first public GPU release;
+its cuCIM result may independently promote, defer, or reject that provider.
 ```
 
 Safe parallelism is evidence/UI-fixture work with disjoint files. Shared core
@@ -1544,18 +1747,24 @@ working-tree changes, and stop rather than overwrite overlapping work.
 
 ### Prompt — Pass 9
 
-> Execute Pass 9 as a research-only cuCIM evaluation. Own a new dedicated
-> `scripts/benchmark_cucim.py`, Linux/WSL environment instructions, new uniquely
-> named `docs/benchmarks/cucim-*` artifacts, and
-> `docs/cucim-linux-wsl-evaluation.md`. Inspect
-> concurrent changes and do not edit production compute declarations,
-> `pyproject.toml` base dependencies, workflow schemas, or CuPy provider code.
-> Reproduce native-Windows unavailability, test supported Linux and WSL2
-> versions, and measure rolling-ball/background subtraction plus any justified
-> RL comparison for parity, end-to-end/resident performance, memory, packaging,
-> and cancellation feasibility. Finish with a promote/defer/reject decision and
-> exact evidence; enable no production operation. Run script/tests/Ruff as
-> applicable and hand off commands/results/limitations. Do not commit or push.
+> Execute Pass 9 as the cross-platform packaging and cuCIM source-build gate.
+> Own only GPU-extra environment markers in `pyproject.toml`, cross-platform CI,
+> provider/package probes, supported-platform docs, isolated cuCIM build/
+> benchmark artifacts, and uniquely named clean-environment evidence. Do not
+> edit workflow schemas, base dependency versions, or enable an operation merely
+> because a provider builds. Build/install/import/test the base wheel on native
+> Windows, macOS, and Linux. Prove that macOS base and GPU-extra resolution
+> installs no CUDA package and returns the CPU-only platform diagnostic. On
+> native Windows and each advertised Linux target, install every selected CuPy
+> extra and run a real kernel plus required CuPyX probes. Separately pin a cuCIM
+> revision, adapt its documented Ubuntu source-build procedure for each target,
+> produce installable artifacts, run relevant tests/device probes, and benchmark
+> only justified operation candidates. Apply the common parity, memory,
+> cancellation, packaging, maintenance, and >=1.5x benefit gates. A Linux-only
+> build remains research evidence unless a narrower provider matrix is approved.
+> Finish with a promote/defer/reject result for cuCIM and remove unsupported
+> targets from the matrix. Hand off exact commands, versions, evidence, and
+> limitations. Do not commit or push.
 
 ### Prompt — Pass 10 family
 
@@ -1585,16 +1794,17 @@ them.
 | D2 | Explicit GPU fallback default | Off; explicit GPU fails closed. One checkbox enables enumerated CPU fallback. | Silent fallback weakens intent and reproducibility. Approve before Pass 4 UI. |
 | D3 | Auto OOM behavior | Clean and retry the affected transactional segment once on CPU, visibly. | Improves completion but changes backend after launch. Approve before Pass 1 retry contract. |
 | D4 | Workflow persistence | Add global intent in workflow v4; migrate v3 to CPU; never store resolved hardware. | Affects portability and scientific workflow hashes. Approve before Pass 8. |
-| D5 | GPU installation UX | Two explicit CUDA-major extras with `[ctk]`; guided copyable command; never auto-install and never include in base. | Dependency size and driver/runtime support. Approve before packaging changes. |
+| D5 | GPU installation UX | Two explicit CUDA-major extras with `[ctk]` and Windows/Linux environment markers; guided copyable command only on eligible platforms; never auto-install and never include in base. | Dependency size, platform resolution, and driver/runtime support. Approve before packaging changes. |
 | D6 | Cache sharing | Separate CPU/GPU always at launch; no median exception. Future sharing requires an approved bitwise parity equivalence group. | Prevents tolerance-equivalent results from aliasing. Approve before Pass 4. |
-| D7 | Supported hardware | NVIDIA CUDA through validated CuPy environments; Auto only for validated tiers. Recommend >=6 GiB for the supported initial UX, while smaller devices may use explicit GPU only if per-run memory preflight fits. | A hard minimum changes support burden and messaging. Approve before public GPU release. |
+| D7 | Supported hardware | NVIDIA CUDA through validated native-Windows and supported-Linux CuPy environments; macOS is CPU-only. Auto only for validated tiers. Recommend >=6 GiB for the supported initial UX, while smaller devices may use explicit GPU only if per-run memory preflight fits. | A hard minimum or broader OS claim changes support burden and messaging. Approve before public GPU release. |
 | D8 | Minimum Auto speedup | 1.5x predicted end-to-end including transfers, with uncertainty margin. | Lower values may not justify complexity/power/memory; higher values may exclude Gaussian. Approve before Pass 3. |
-| D9 | Real-GPU CI cost | CPU/fake-provider required per PR; scheduled Windows CUDA 13 and Linux CUDA 12, expanded matrix for release/promotion. | Dedicated runners and maintenance have recurring cost. Approve before first promotion. |
+| D9 | Cross-platform and real-GPU CI cost | Native Windows/macOS/Linux CPU/package jobs required per PR; scheduled Windows CUDA 13 and Linux CUDA 12, expanded matrix for release/promotion. | macOS plus dedicated GPU runners and maintenance have recurring cost. Approve before first promotion. |
 | D10 | Device identity in artifacts | Cache uses exact session device ID; portable provenance stores vendor/model, compute capability, VRAM/tier, driver/runtime, and a salted/hash identifier—not raw serial/UUID. | Balances reproducibility and privacy. Approve before Pass 4 provenance. |
 | D11 | GPU memory defaults | 80% cap and `max(512 MiB, 10%)` reserve, separately configurable from host RAM. | Determines OOM rate and coexistence with napari/other GPU users. Approve before Pass 1 public contract/Pass 4 UI. |
 | D12 | Provenance sidecars | Write atomic `.vipp-provenance.json` beside standalone exports by default; batch uses its manifest and output digest. | Creates additional files but supplies format-independent reproducibility. Approve before Pass 8. |
 | D13 | Precision policy | Ship only strict scientific-default behavior; no fast/mixed-precision UI. | A fast mode creates new scientific and cache semantics. Revisit only with operation-specific evidence. |
-| D14 | cuCIM | Research-only until Linux/WSL evidence; separate provider/extra if promoted. | Avoids coupling native Windows support and CuPy delivery to RAPIDS packaging. Decide after Pass 9. |
+| D14 | Meaning of cross-platform GPU support | Base/CPU support on Windows, macOS, and Linux; NVIDIA CUDA support on validated Windows/Linux only; macOS fails explicit GPU preflight with a platform reason. If NVIDIA GPU execution on macOS is required, stop the plan. | Current CUDA has no macOS target, so no Python library or source build can satisfy an all-three-OS NVIDIA requirement. Approve before Pass 0 wording and Pass 9 packaging work. |
+| D15 | cuCIM source-build option | Keep cuCIM as a separate narrow evaluation candidate. Native-Windows skimage feasibility is now demonstrated for pinned `v26.06.00`; promote only individual high-value operations after advertised-Linux builds and all remaining gates; keep CuPy independent. | The downstream Windows build omits Clara I/O and needs small packaging/NumPy patches. Maintenance, wider hardware, schemas, memory, cancellation, and Linux evidence remain approval conditions. |
 
 ### Principal risks and mitigations
 
@@ -1629,27 +1839,22 @@ them.
    structured provenance.
 2. **Critical path:** contracts -> substrate -> median -> Gaussian/Auto ->
    single-run UI/provenance -> batch and RL -> RL-TV -> workflow/generated
-   Python -> broader promotions.
+   Python -> cross-platform release gate -> broader promotions.
 3. **Safe parallel work:** median provider fixtures can overlap substrate after
-   Pass 0; batch and RL science work can overlap after Pass 4; cuCIM research is
-   independent. Shared registries and large composition files remain single-
-   owner.
+   Pass 0; batch and RL science work can overlap after Pass 4; platform/package
+   evidence can be collected independently after Pass 0. Shared registries,
+   large composition files, CI, and packaging metadata remain single-owner.
 4. **First production operation:** finite-float32 median filtering with current
    slice-wise YX semantics and exact parity in a deliberately narrow validated
    region.
-5. **Decisions needing approval:** D1-D14 above, especially fallback default,
+5. **Decisions needing approval:** D1-D15 above, especially fallback default,
    workflow v4 intent, cache separation, memory defaults, CI hardware cost, and
-   device/provenance policy.
+   the Windows/Linux CUDA plus macOS CPU-only platform contract.
 6. **Estimated implementation passes:** eleven numbered passes (0-10), with
    Pass 10 split into additional operation-family PRs.
-7. **Files changed by this planning pass:** only
-   `docs/gpu-production-implementation-plan.md`.
-8. **Verification performed:** reviewed every requested repository surface and
-   the existing worktree diffs; checked all 15 required plan areas, 11 passes,
-   and 11 matching agent prompts; found no trailing whitespace or mojibake; ran
-   `test_compute.py` (7 passed) and the non-index documentation checks (4
-   passed, one existing dependency deprecation warning). The full documentation
-   command has one index-only failure because `docs/README.md` does not yet list
-   four uncommitted planning/report pages—three pre-existing pages and this
-   plan. The shared index was left unchanged to avoid absorbing unrelated agent
-   work. No production code or GPU execution changed.
+7. **Platform conclusion:** the base application can be supported on Windows,
+   macOS, and Linux. NVIDIA acceleration can be supported on validated Windows
+   and Linux targets only. cuCIM's Windows skimage source build and material
+   operation-level benefit are now demonstrated on one RTX 5090; Pass 9 still
+   owns the remaining portability/production gates. No current NVIDIA-only
+   implementation can provide GPU execution on macOS.

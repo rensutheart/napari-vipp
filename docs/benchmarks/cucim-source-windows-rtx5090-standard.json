@@ -1,0 +1,1212 @@
+{
+  "created_at": "2026-07-15T21:39:12.499240+00:00",
+  "environment": {
+    "cucim_clara_available": false,
+    "cucim_skimage_available": true,
+    "cucim_version": "26.06.00",
+    "git_commit": "2a0e03c4c92a350ec06e502dea7bb739875f7355",
+    "gpu": {
+      "compute_capability": "120",
+      "driver_version": 13030,
+      "memory_bytes": 34190458880,
+      "name": "NVIDIA GeForce RTX 5090",
+      "runtime_version": 13020
+    },
+    "packages": {
+      "cucim-cu13": "26.6.0",
+      "cupy-cuda13x": "14.1.1",
+      "numpy": "2.5.1",
+      "scikit-image": "0.26.0",
+      "scipy": "1.18.0"
+    },
+    "platform": "Windows-10-10.0.19045-SP0",
+    "python": "3.12.9"
+  },
+  "methodology": {
+    "cold_call": "first synchronized call in the process; the persistent CuPy compiler cache is not cleared, so this is not clean-install JIT latency",
+    "comparison_interpretation": "speedup > 1 means cuCIM is faster than the named baseline",
+    "end_to_end_gpu": "one host-to-device and one device-to-host transfer",
+    "random_seed": 20260715,
+    "resident_gpu": "input already on device; output remains on device",
+    "time_statistic": "median synchronized wall-clock seconds",
+    "warmups": 2
+  },
+  "profile": "standard",
+  "profile_definition": {
+    "cpu_repeats": 3,
+    "gpu_repeats": 5,
+    "image_2d": [
+      1024,
+      1024
+    ],
+    "image_3d": [
+      32,
+      192,
+      192
+    ],
+    "labels_2d": [
+      2048,
+      2048
+    ],
+    "labels_3d": [
+      32,
+      192,
+      192
+    ],
+    "median_histogram_2d": [
+      1024,
+      1024
+    ],
+    "rl_2d": [
+      512,
+      512
+    ],
+    "rl_3d": [
+      24,
+      128,
+      128
+    ],
+    "rl_iterations": 15,
+    "rolling_radius_2d": 15,
+    "rolling_radius_3d": 5,
+    "warmups": 2
+  },
+  "results": [
+    {
+      "baseline": "cupyx.scipy.ndimage.gaussian_filter",
+      "cold_seconds": {
+        "baseline": 0.006926899994141422,
+        "cucim": 0.007521699997596443
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 1.033160670847167,
+        "resident": 0.9221698278694501
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.0021341999963624403,
+        "cucim": 0.0020656999986385927
+      },
+      "resident_seconds": {
+        "baseline": 0.0003519000019878149,
+        "cucim": 0.00038159999530762434
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.0021859999978914857,
+          "median": 0.0021341999963624403,
+          "minimum": 0.0020600999996531755
+        },
+        "baseline_resident": {
+          "maximum": 0.0003595000016503036,
+          "median": 0.0003519000019878149,
+          "minimum": 0.0003436999977566302
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.002192800006014295,
+          "median": 0.0020656999986385927,
+          "minimum": 0.002063299994915724
+        },
+        "cucim_resident": {
+          "maximum": 0.00038729999505449086,
+          "median": 0.00038159999530762434,
+          "minimum": 0.0003744999994523823
+        }
+      },
+      "workload": "gaussian_2d"
+    },
+    {
+      "baseline": "cupyx.scipy.ndimage.gaussian_filter",
+      "cold_seconds": {
+        "baseline": 0.011206899987882935,
+        "cucim": 0.010568800003966317
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1179648
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 0.9473651568553932,
+        "resident": 0.971307534848937
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.0030543999891960993,
+        "cucim": 0.003224099986255169
+      },
+      "resident_seconds": {
+        "baseline": 0.0005043999990448356,
+        "cucim": 0.000519299996085465
+      },
+      "shape": [
+        32,
+        192,
+        192
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.003127100004348904,
+          "median": 0.0030543999891960993,
+          "minimum": 0.0027864000003319234
+        },
+        "baseline_resident": {
+          "maximum": 0.000556500002858229,
+          "median": 0.0005043999990448356,
+          "minimum": 0.0004910999996354803
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.004349199996795505,
+          "median": 0.003224099986255169,
+          "minimum": 0.0027910000062547624
+        },
+        "cucim_resident": {
+          "maximum": 0.0005342000076780096,
+          "median": 0.000519299996085465,
+          "minimum": 0.0005096999957459047
+        }
+      },
+      "workload": "gaussian_3d"
+    },
+    {
+      "baseline": "cupyx.scipy.ndimage.median_filter",
+      "cold_seconds": {
+        "baseline": 0.061855499996454455,
+        "cucim": 0.02153610000095796
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 1.0768880623687438,
+        "resident": 0.9129188800645622
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.002602300010039471,
+        "cucim": 0.00241650000680238
+      },
+      "resident_seconds": {
+        "baseline": 0.0004140999953961,
+        "cucim": 0.0004535999905783683
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.0027353000041330233,
+          "median": 0.002602300010039471,
+          "minimum": 0.00251869999920018
+        },
+        "baseline_resident": {
+          "maximum": 0.0004225000011501834,
+          "median": 0.0004140999953961,
+          "minimum": 0.000411000000895001
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.0025778999988688156,
+          "median": 0.00241650000680238,
+          "minimum": 0.0023742000048514456
+        },
+        "cucim_resident": {
+          "maximum": 0.0006274000043049455,
+          "median": 0.0004535999905783683,
+          "minimum": 0.0004064999957336113
+        }
+      },
+      "workload": "median_sorting_float32_2d"
+    },
+    {
+      "baseline": "cupyx.scipy.ndimage.median_filter",
+      "cold_seconds": {
+        "baseline": 0.11835399999108631,
+        "cucim": 0.09730720000516158
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "uint16",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "uint16",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 1.4216108218457804,
+        "resident": 1.4257237383291135
+      },
+      "dtype": "uint16",
+      "end_to_end_seconds": {
+        "baseline": 0.08125699999800418,
+        "cucim": 0.05715839999902528
+      },
+      "resident_seconds": {
+        "baseline": 0.08011270000133663,
+        "cucim": 0.05619089999527205
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.08152260001224931,
+          "median": 0.08125699999800418,
+          "minimum": 0.0811598000000231
+        },
+        "baseline_resident": {
+          "maximum": 0.08030510001117364,
+          "median": 0.08011270000133663,
+          "minimum": 0.07969250000314787
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.057406099993386306,
+          "median": 0.05715839999902528,
+          "minimum": 0.05710130000079516
+        },
+        "cucim_resident": {
+          "maximum": 0.056477900012396276,
+          "median": 0.05619089999527205,
+          "minimum": 0.05615540000144392
+        }
+      },
+      "workload": "median_histogram_uint16_2d"
+    },
+    {
+      "baseline": "CuPy composition over cupyx.scipy.ndimage.sobel",
+      "cold_seconds": {
+        "baseline": 0.008883699993020855,
+        "cucim": 0.008372500000405125
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": false,
+        "maximum_absolute_error": 1.1920928955078125e-07,
+        "mismatch_fraction": 0.628972053527832,
+        "normalized_rmse": 3.025316742247544e-08,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 0.9837518369156442,
+        "resident": 1.2998426985465195
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.0021311999880708754,
+        "cucim": 0.002166400008718483
+      },
+      "resident_seconds": {
+        "baseline": 0.0006610999989788979,
+        "cucim": 0.0005086000019218773
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.0024127000069711357,
+          "median": 0.0021311999880708754,
+          "minimum": 0.0020409999997355044
+        },
+        "baseline_resident": {
+          "maximum": 0.0006714000046486035,
+          "median": 0.0006610999989788979,
+          "minimum": 0.0006588000105693936
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.00224829999206122,
+          "median": 0.002166400008718483,
+          "minimum": 0.0018496999982744455
+        },
+        "cucim_resident": {
+          "maximum": 0.0005146999901626259,
+          "median": 0.0005086000019218773,
+          "minimum": 0.0005056000081822276
+        }
+      },
+      "workload": "sobel_2d"
+    },
+    {
+      "baseline": "cupyx.scipy.ndimage.binary_closing",
+      "cold_seconds": {
+        "baseline": 0.02094030000444036,
+        "cucim": 0.006533100007800385
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "bool",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "bool",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 1.0143130953905197,
+        "resident": 0.9530254678983323
+      },
+      "dtype": "bool",
+      "end_to_end_seconds": {
+        "baseline": 0.0008999999990919605,
+        "cucim": 0.0008872999896993861
+      },
+      "resident_seconds": {
+        "baseline": 0.00035909999860450625,
+        "cucim": 0.00037680000241380185
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.0009972999978344887,
+          "median": 0.0008999999990919605,
+          "minimum": 0.0008673999982420355
+        },
+        "baseline_resident": {
+          "maximum": 0.0003603000077418983,
+          "median": 0.00035909999860450625,
+          "minimum": 0.0003552999987732619
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.0008978999976534396,
+          "median": 0.0008872999896993861,
+          "minimum": 0.0008702000050107017
+        },
+        "cucim_resident": {
+          "maximum": 0.00037930000689812005,
+          "median": 0.00037680000241380185,
+          "minimum": 0.0003744999994523823
+        }
+      },
+      "workload": "binary_closing_2d"
+    },
+    {
+      "baseline": "CuPy composition over cupyx.scipy.ndimage.convolve",
+      "cold_seconds": {
+        "baseline": 0.008417899996857159,
+        "cucim": 0.033522600002470426
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            512,
+            512
+          ]
+        },
+        "exact": false,
+        "maximum_absolute_error": 2.682209014892578e-07,
+        "mismatch_fraction": 0.9698333740234375,
+        "normalized_rmse": 3.833363190779815e-09,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            512,
+            512
+          ]
+        },
+        "shape_match": true,
+        "value_count": 262144
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 0.2195159783014353,
+        "resident": 0.17504427964359612
+      },
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_seconds": {
+        "baseline": 0.003679900008137338,
+        "cucim": 0.01676370001223404
+      },
+      "resident_seconds": {
+        "baseline": 0.002836400002706796,
+        "cucim": 0.016203899998799898
+      },
+      "shape": [
+        [
+          512,
+          512
+        ],
+        [
+          9,
+          9
+        ]
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.0037641999952029437,
+          "median": 0.003679900008137338,
+          "minimum": 0.003629599988926202
+        },
+        "baseline_resident": {
+          "maximum": 0.00401889999920968,
+          "median": 0.002836400002706796,
+          "minimum": 0.0028209000010974705
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.017931200010934845,
+          "median": 0.01676370001223404,
+          "minimum": 0.016704400011803955
+        },
+        "cucim_resident": {
+          "maximum": 0.016751099989051,
+          "median": 0.016203899998799898,
+          "minimum": 0.016031299994210713
+        }
+      },
+      "workload": "richardson_lucy_2d"
+    },
+    {
+      "baseline": "CuPy composition over cupyx.scipy.ndimage.convolve",
+      "cold_seconds": {
+        "baseline": 0.007241800005431287,
+        "cucim": 0.03503410000121221
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            24,
+            128,
+            128
+          ]
+        },
+        "exact": false,
+        "maximum_absolute_error": 2.8312206268310547e-07,
+        "mismatch_fraction": 0.9543075561523438,
+        "normalized_rmse": 5.106341427988428e-09,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            24,
+            128,
+            128
+          ]
+        },
+        "shape_match": true,
+        "value_count": 393216
+      },
+      "comparison_class": "cuCIM optimization versus ready CuPy path",
+      "cucim_speedup": {
+        "end_to_end": 0.2201692898113337,
+        "resident": 0.17110513308722775
+      },
+      "dtype": [
+        "float32",
+        "float32"
+      ],
+      "end_to_end_seconds": {
+        "baseline": 0.00405509999836795,
+        "cucim": 0.018418100007693283
+      },
+      "resident_seconds": {
+        "baseline": 0.003027500002644956,
+        "cucim": 0.01769379999313969
+      },
+      "shape": [
+        [
+          24,
+          128,
+          128
+        ],
+        [
+          5,
+          5,
+          5
+        ]
+      ],
+      "timing_ranges_seconds": {
+        "baseline_end_to_end": {
+          "maximum": 0.004128099986701272,
+          "median": 0.00405509999836795,
+          "minimum": 0.004048900009365752
+        },
+        "baseline_resident": {
+          "maximum": 0.003109299999778159,
+          "median": 0.003027500002644956,
+          "minimum": 0.0030002999992575496
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.01876349998929072,
+          "median": 0.018418100007693283,
+          "minimum": 0.018078400011290796
+        },
+        "cucim_resident": {
+          "maximum": 0.017883699998492375,
+          "median": 0.01769379999313969,
+          "minimum": 0.017414300004020333
+        }
+      },
+      "workload": "richardson_lucy_3d"
+    },
+    {
+      "baseline": "skimage.restoration.rolling_ball",
+      "cold_seconds": {
+        "cucim": 0.010868800003663637
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 265.4595527496631,
+        "resident": 456.43498849640895
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.950982299997122,
+        "cucim": 0.0035823999933199957
+      },
+      "resident_seconds": {
+        "baseline": 0.950982299997122,
+        "cucim": 0.0020835000032093376
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.9602277999947546,
+          "median": 0.950982299997122,
+          "minimum": 0.9495557000045665
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.0038475000037578866,
+          "median": 0.0035823999933199957,
+          "minimum": 0.0034868999937316403
+        },
+        "cucim_resident": {
+          "maximum": 0.00210759999754373,
+          "median": 0.0020835000032093376,
+          "minimum": 0.0020427999988896772
+        }
+      },
+      "workload": "rolling_ball_2d"
+    },
+    {
+      "baseline": "skimage.restoration.rolling_ball",
+      "cold_seconds": {
+        "cucim": 0.02601469999353867
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1179648
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 528.6556467825772,
+        "resident": 1518.2403137055292
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 3.062290700006997,
+        "cucim": 0.005792600000859238
+      },
+      "resident_seconds": {
+        "baseline": 3.062290700006997,
+        "cucim": 0.0020169999916106462
+      },
+      "shape": [
+        32,
+        192,
+        192
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 3.0670919000112917,
+          "median": 3.062290700006997,
+          "minimum": 3.051561300002504
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.0058102000039070845,
+          "median": 0.005792600000859238,
+          "minimum": 0.0055447000049753115
+        },
+        "cucim_resident": {
+          "maximum": 0.0020851000008406118,
+          "median": 0.0020169999916106462,
+          "minimum": 0.0020013000030303374
+        }
+      },
+      "workload": "rolling_ball_3d"
+    },
+    {
+      "baseline": "skimage.measure.label",
+      "cold_seconds": {
+        "cucim": 0.032840400002896786
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "int32",
+          "shape": [
+            2048,
+            2048
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "int32",
+          "shape": [
+            2048,
+            2048
+          ]
+        },
+        "shape_match": true,
+        "value_count": 4194304
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 2.865758202801583,
+        "resident": 29.627253577235226
+      },
+      "dtype": "bool",
+      "end_to_end_seconds": {
+        "baseline": 0.02826439999626018,
+        "cucim": 0.009862799997790717
+      },
+      "resident_seconds": {
+        "baseline": 0.02826439999626018,
+        "cucim": 0.0009540000028209761
+      },
+      "shape": [
+        2048,
+        2048
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.02967750000243541,
+          "median": 0.02826439999626018,
+          "minimum": 0.028231500007677823
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.010002800001529977,
+          "median": 0.009862799997790717,
+          "minimum": 0.009630100001231767
+        },
+        "cucim_resident": {
+          "maximum": 0.0009821999992709607,
+          "median": 0.0009540000028209761,
+          "minimum": 0.0009086999925784767
+        }
+      },
+      "workload": "connected_components_2d"
+    },
+    {
+      "baseline": "skimage.measure.label",
+      "cold_seconds": {
+        "cucim": 0.004302100001950748
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "int32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "int32",
+          "shape": [
+            32,
+            192,
+            192
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1179648
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 2.8411588363580003,
+        "resident": 12.116859425664336
+      },
+      "dtype": "bool",
+      "end_to_end_seconds": {
+        "baseline": 0.009953999993740581,
+        "cucim": 0.0035035000037169084
+      },
+      "resident_seconds": {
+        "baseline": 0.009953999993740581,
+        "cucim": 0.0008214999979827553
+      },
+      "shape": [
+        32,
+        192,
+        192
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.010071800003061071,
+          "median": 0.009953999993740581,
+          "minimum": 0.009904999998980202
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.00389960000757128,
+          "median": 0.0035035000037169084,
+          "minimum": 0.003210800001397729
+        },
+        "cucim_resident": {
+          "maximum": 0.000850600001285784,
+          "median": 0.0008214999979827553,
+          "minimum": 0.0008158999989973381
+        }
+      },
+      "workload": "connected_components_3d"
+    },
+    {
+      "baseline": "skimage.feature.canny",
+      "cold_seconds": {
+        "cucim": 0.035599999988335185
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "bool",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "bool",
+          "shape": [
+            1024,
+            1024
+          ]
+        },
+        "shape_match": true,
+        "value_count": 1048576
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 17.02543095894437,
+        "resident": 25.516604715441545
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.08167610000236891,
+        "cucim": 0.004797300003701821
+      },
+      "resident_seconds": {
+        "baseline": 0.08167610000236891,
+        "cucim": 0.0032008999987738207
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.08252129999164026,
+          "median": 0.08167610000236891,
+          "minimum": 0.08135920000495389
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.004883100002189167,
+          "median": 0.004797300003701821,
+          "minimum": 0.004595799997332506
+        },
+        "cucim_resident": {
+          "maximum": 0.0033676000020932406,
+          "median": 0.0032008999987738207,
+          "minimum": 0.0030491000070469454
+        }
+      },
+      "workload": "canny_2d"
+    },
+    {
+      "baseline": "skimage.filters.threshold_otsu",
+      "cold_seconds": {
+        "cucim": 0.02987359999679029
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "dtype": "float32",
+          "shape": []
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "dtype": "float32",
+          "shape": []
+        },
+        "shape_match": true,
+        "value_count": 1
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 2.3815499257660546,
+        "resident": 4.868119015305401
+      },
+      "dtype": "float32",
+      "end_to_end_seconds": {
+        "baseline": 0.008312799996929243,
+        "cucim": 0.003490499992039986
+      },
+      "resident_seconds": {
+        "baseline": 0.008312799996929243,
+        "cucim": 0.0017075999930966645
+      },
+      "shape": [
+        1024,
+        1024
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.008491100001265295,
+          "median": 0.008312799996929243,
+          "minimum": 0.008039099993766285
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.003507999994326383,
+          "median": 0.003490499992039986,
+          "minimum": 0.0033753000025171787
+        },
+        "cucim_resident": {
+          "maximum": 0.002381700003752485,
+          "median": 0.0017075999930966645,
+          "minimum": 0.0016826000064611435
+        }
+      },
+      "workload": "threshold_otsu_2d"
+    },
+    {
+      "baseline": "skimage.measure.regionprops_table",
+      "cold_seconds": {
+        "cucim": 0.04011079999327194
+      },
+      "comparison": {
+        "allclose_rtol_1e-4_atol_1e-6": true,
+        "candidate_schema": {
+          "area": {
+            "dtype": "float32",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-0": {
+            "dtype": "uint32",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-1": {
+            "dtype": "uint32",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-2": {
+            "dtype": "uint32",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-3": {
+            "dtype": "uint32",
+            "shape": [
+              4096
+            ]
+          },
+          "centroid-0": {
+            "dtype": "float64",
+            "shape": [
+              4096
+            ]
+          },
+          "centroid-1": {
+            "dtype": "float64",
+            "shape": [
+              4096
+            ]
+          },
+          "label": {
+            "dtype": "uint16",
+            "shape": [
+              4096
+            ]
+          }
+        },
+        "exact": true,
+        "maximum_absolute_error": 0.0,
+        "mismatch_fraction": 0.0,
+        "normalized_rmse": 0.0,
+        "reference_schema": {
+          "area": {
+            "dtype": "float64",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-0": {
+            "dtype": "int64",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-1": {
+            "dtype": "int64",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-2": {
+            "dtype": "int64",
+            "shape": [
+              4096
+            ]
+          },
+          "bbox-3": {
+            "dtype": "int64",
+            "shape": [
+              4096
+            ]
+          },
+          "centroid-0": {
+            "dtype": "float64",
+            "shape": [
+              4096
+            ]
+          },
+          "centroid-1": {
+            "dtype": "float64",
+            "shape": [
+              4096
+            ]
+          },
+          "label": {
+            "dtype": "int64",
+            "shape": [
+              4096
+            ]
+          }
+        },
+        "shape_match": true,
+        "value_count": 32768
+      },
+      "comparison_class": "cuCIM coverage versus CPU; no ready CuPy API",
+      "cucim_speedup": {
+        "end_to_end": 10.491493498356089,
+        "resident": 17.61603845688042
+      },
+      "dtype": "int32",
+      "end_to_end_seconds": {
+        "baseline": 0.21947469998849556,
+        "cucim": 0.020919300004607067
+      },
+      "resident_seconds": {
+        "baseline": 0.21947469998849556,
+        "cucim": 0.012458800003514625
+      },
+      "shape": [
+        2048,
+        2048
+      ],
+      "timing_ranges_seconds": {
+        "baseline": {
+          "maximum": 0.23210890000336803,
+          "median": 0.21947469998849556,
+          "minimum": 0.21923499999684282
+        },
+        "cucim_end_to_end": {
+          "maximum": 0.021225699994829483,
+          "median": 0.020919300004607067,
+          "minimum": 0.003869100008159876
+        },
+        "cucim_resident": {
+          "maximum": 0.012526799997431226,
+          "median": 0.012458800003514625,
+          "minimum": 0.01232779999554623
+        }
+      },
+      "workload": "regionprops_table_2d"
+    }
+  ],
+  "schema_version": 1,
+  "status": "completed"
+}

@@ -70,6 +70,8 @@ jobs:
             python-version: "3.12"
           - os: windows-latest
             python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
     env:
       PYTEST_QT_API: pyqt6
       QT_QPA_PLATFORM: offscreen

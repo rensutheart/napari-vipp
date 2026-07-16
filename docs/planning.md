@@ -44,6 +44,15 @@ authoring remain later milestones.
   operation memory policy.
 - [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
   generation, deconvolution, and microscope metadata requirements.
+- [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
+  optional NVIDIA acceleration architecture, platform support matrix, packaging,
+  validation gates, and delivery order. VIPP remains CPU-capable on Windows,
+  macOS, and Linux; the CUDA path targets validated Windows/Linux systems only.
+- [gpu-acceleration-spike.md](gpu-acceleration-spike.md): feasibility benchmark
+  and provider evaluation that informed the production plan.
+- [cucim-windows-source-evaluation.md](cucim-windows-source-evaluation.md):
+  pinned native-Windows cuCIM skimage build, tests, operation-level benchmark,
+  and promote/defer decisions.
 - [measurement-workflows.md](measurement-workflows.md),
   [skeleton-nodes.md](skeleton-nodes.md), and
   [object-mesh-morphology-plan.md](object-mesh-morphology-plan.md):

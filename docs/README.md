@@ -47,6 +47,9 @@ reviewing VIPP itself.
 
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
+- [Production GPU implementation plan](gpu-production-implementation-plan.md)
+  defines the Windows/Linux NVIDIA path, macOS CPU contract, provider choices,
+  and release gates.
 - [App improvements plan](app-improvements-plan.md) records the completed UI,
   graph-feedback, and RL-TV safety work packages.
 - [Node roadmap](node-roadmap.md) tracks current capability gaps by node family.
@@ -66,6 +69,8 @@ override the current planning documents above.
 
 - [OME import and export](ome-io-plan.md)
 - [PSF and deconvolution](psf-and-deconvolution-plan.md)
+- [GPU feasibility spike](gpu-acceleration-spike.md)
+- [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)
 - [Colocalization and RACC](colocalization-racc-plan.md)

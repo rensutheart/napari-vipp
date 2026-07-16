@@ -7,16 +7,18 @@ batch, generated-Python, or scientific-default behavior was changed.
 
 ## Technical summary
 
-CuPy/CuPyX is the recommended primary GPU provider. It is the closest fit for
-the existing NumPy/SciPy-shaped operations, can be imported lazily, and was
-usable on the available NVIDIA GeForce RTX 4050 Laptop GPU. Median filtering is
-the strongest first operation to promote: the standard workloads measured
-33.4x (2D) and 35.6x (3D) end-to-end speedups with exact CPU/GPU parity.
-Gaussian filtering is a lower-risk integration proof at 2.0-2.1x for standard
-inputs. Ordinary Richardson-Lucy (RL) and RL-TV also passed the standard-size
-performance and numerical-difference gates, but should follow filtering because
-they need iterative progress, cancellation, memory guards, and a wider
-scientific validation matrix.
+CuPy/CuPyX is the recommended primary GPU provider for native Windows and
+supported Linux distributions. It is the closest fit for the existing
+NumPy/SciPy-shaped operations, can be imported lazily, and was usable on the
+available NVIDIA GeForce RTX 4050 Laptop GPU. It has no current CUDA/macOS path;
+VIPP must remain CPU-only on macOS during the NVIDIA-only phase. Median
+filtering is the strongest first operation to promote: the standard workloads
+measured 33.4x (2D) and 35.6x (3D) end-to-end speedups with exact CPU/GPU
+parity. Gaussian filtering is a lower-risk integration proof at 2.0-2.1x for
+standard inputs. Ordinary Richardson-Lucy (RL) and RL-TV also passed the
+standard-size performance and numerical-difference gates, but should follow
+filtering because they need iterative progress, cancellation, memory guards,
+and a wider scientific validation matrix.
 
 Device residency matters. A six-item Gaussian-to-median batch took 142.6 ms
 when every node copied to and from the GPU, versus 99.9 ms when the intermediate
@@ -29,15 +31,40 @@ end-to-end. `Auto` therefore cannot mean “use an available GPU for every
 supported operation.” It needs validated thresholds keyed by operation,
 dimensionality, shape, dtype, and important parameters.
 
-cuCIM remains useful to evaluate for rolling-ball/background operations on
-Linux or WSL2, but its 26.4 package did not expose a compatible native Windows
-wheel in this environment. PyTorch should not be selected or added as an
-optional dependency in this phase: it adds a second large array/runtime API
-without filling the median, rolling-ball, or scikit-image-shaped coverage gap.
+cuCIM remains a gated source-build candidate for operations such as rolling-
+ball background estimation. RAPIDS publishes Linux/WSL packages, while the
+cuCIM contributor guide documents source and wheel builds but says its procedure
+is tested on Ubuntu and only suggests that other operating systems may be
+compatible. A later
+[native-Windows source evaluation](cucim-windows-source-evaluation.md) produced
+a working `cucim.skimage` wheel and found large benefits for rolling ball,
+Canny, labeling, Otsu, and region properties; Linux/multi-device packaging and
+production gates remain. PyTorch should not be selected or added as an optional dependency
+in this phase: its package is cross-platform but NVIDIA CUDA is not available on
+macOS, and it adds a second large array/runtime API without filling the current
+coverage gap.
 
 Overall assessment: **share with caveats**. The results are strong enough to
 choose the architecture and implementation order, but they come from one
 laptop GPU and do not yet authorize production GPU execution.
+
+## Cross-platform correction
+
+The application support target and the accelerator support target are
+different:
+
+| Target | Windows | Linux | macOS |
+|---|---|---|---|
+| VIPP base/CPU path | Required | Required | Required |
+| CuPy/NVIDIA acceleration | Eligible after validation | Eligible on named supported distributions after validation | Ineligible; CPU-only |
+
+NVIDIA identifies CUDA 10.2 as the last toolkit release with macOS support.
+That legacy stack is incompatible with this repository's Python 3.12, CuPy 14,
+and CUDA 12/13 direction. This is not fixable by compiling the Python library
+from source. If NVIDIA GPU acceleration itself must work on all three operating
+systems, the NVIDIA-only scope is infeasible. The production plan therefore
+requires platform-marked optional CUDA extras, a macOS CPU/package CI job, and
+real GPU validation on native Windows and supported Linux targets.
 
 ## Scope and metric definitions
 
@@ -173,27 +200,41 @@ documents device and pinned memory pools. The harness follows those constraints.
 Recommended optional extras, split by CUDA major:
 
 ```toml
-gpu-cuda12 = ["cupy-cuda12x[ctk]>=14,<15"]
-gpu-cuda13 = ["cupy-cuda13x[ctk]>=14,<15"]
+gpu-cuda12 = [
+    "cupy-cuda12x[ctk]>=14,<15; platform_system == 'Windows' or platform_system == 'Linux'",
+]
+gpu-cuda13 = [
+    "cupy-cuda13x[ctk]>=14,<15; platform_system == 'Windows' or platform_system == 'Linux'",
+]
 ```
 
 Do not add either to base dependencies, and do not create one ambiguous `gpu`
-extra: the user must choose a CUDA-major-compatible wheel. Prefer the `[ctk]`
-variant for the supported installation path because it brings the CUDA
+extra: the user must choose a CUDA-major-compatible wheel. Platform markers
+must prevent either CUDA distribution from resolving on macOS. Prefer the
+`[ctk]` variant for the supported installation path because it brings the CUDA
 component wheels while still requiring an NVIDIA driver. A driver-only
 `cupy-cuda13x` wheel was enough for the ndimage benchmark here, but a
 `cupyx.scipy.signal` import exposed a missing cuBLAS DLL; the supported install
 should avoid that partial configuration.
 
-### cuCIM: retain as a Linux/WSL candidate
+### cuCIM: retain as a gated source-build candidate
 
 cuCIM exposes compatible `richardson_lucy` and `rolling_ball` functions and may
 avoid reimplementing some scikit-image-shaped paths. However, `cucim-cu13==26.4.0`
 could not be installed on native Windows because no compatible distribution was
 published for this environment. RAPIDS documents Windows support through WSL2.
-Keep cuCIM in a separate Linux-only optional extra and benchmark it there before
-assigning any supported operation IDs. It is not required for the primary CuPy
-path.
+The contributor guide documents source and wheel builds, so absence of a wheel
+does not by itself reject the library. However, the guide says its instructions
+are tested on Ubuntu, relies on GCC/NVCC and shell scripts, and shows Linux
+`.so` artifacts. The subsequent
+[native-Windows source evaluation](cucim-windows-source-evaluation.md) pinned
+`v26.06.00`, produced a CPython 3.12 `win_amd64` wheel for the Python/skimage
+layer, passed selected upstream and real-device tests, and measured material
+benefit for several operations. It did not build the native `cucim.clara` image-
+I/O layer and does not complete the supported-Linux, multi-device, memory, or
+cancellation gates. Building from source still cannot overcome the missing
+macOS CUDA runtime. Do not add a production provider until every advertised
+target clears its remaining gates.
 
 ### PyTorch: do not select in this phase
 
@@ -221,10 +262,10 @@ No GPU dependency was added to `pyproject.toml` by this spike.
 5. **Richardson-Lucy TV.** Strong standard results (9.7x 2D, 3.3x 3D), but its
    small workloads lost and its scientific/cancellation validation surface is
    larger. Preserve all current CPU defaults and formulas.
-6. **Rolling-ball/background subtraction.** Unranked for promotion until a
-   Linux/WSL cuCIM run establishes end-to-end performance, parity, memory, and
-   cancellation behavior. Subtraction itself is cheap; background estimation
-   determines the value.
+6. **Rolling-ball/background subtraction.** Unranked for promotion until cuCIM
+   and/or a CuPy implementation establishes end-to-end performance, parity,
+   memory, packaging, and cancellation behavior on native Windows and supported
+   Linux. Subtraction itself is cheap; background estimation determines value.
 
 An operation is promoted only after all of these hold for its supported
 workload region:
@@ -325,9 +366,12 @@ decision from an explicit request and record any OOM/unsupported fallback.
    the Qt-free capability report.
 8. Only after the contract stabilizes, carry backend intent into workflows and
    generated Python. Preserve CPU as the portable default.
-9. Run the matrix on Linux with cuCIM, multiple GPU tiers, both supported CUDA
-   majors, and representative small/medium/large datasets before enabling Auto
-   GPU by default for any operation.
+9. Run clean base/package tests on Windows, macOS, and Linux, then run the real-
+   GPU matrix on native Windows and named supported Linux targets with multiple
+   GPU tiers, both supported CUDA majors, and representative small/medium/large
+   datasets before enabling Auto GPU by default for any operation. In the same
+   pass, attempt pinned cuCIM source/package builds on native Windows and the
+   supported Linux targets and issue a separate promote/defer/reject result.
 
 ## Commands and observed results
 
@@ -373,7 +417,11 @@ evidence on CPU-only systems.
 - The benchmark-only RL/RL-TV implementations demonstrate feasibility; they
   are not production code and have not passed the full image/PSF/boundary test
   matrix.
-- cuCIM rolling-ball/background performance is unknown on compatible hardware.
+- A CuPy rolling-ball/background implementation has not been designed. The
+  follow-up [cuCIM evaluation](cucim-windows-source-evaluation.md) established a
+  native-Windows `cucim.skimage` build and a large rolling-ball benefit on one
+  RTX 5090, but broader hardware/Linux, memory, and cancellation validation is
+  still required.
 - Thresholds should be recalibrated by operation, dimensions, dtype, shape,
   kernel/PSF size, iteration count, device tier, and whether neighboring nodes
   are already resident.
@@ -385,7 +433,11 @@ evidence on CPU-only systems.
 - [CuPy memory management](https://docs.cupy.dev/en/latest/user_guide/memory.html)
 - [CuPyX Gaussian filter API](https://docs.cupy.dev/en/stable/reference/generated/cupyx.scipy.ndimage.gaussian_filter.html)
 - [CuPy NumPy/SciPy comparison table](https://docs.cupy.dev/en/stable/reference/comparison.html)
+- [NVIDIA CUDA 10.2 release notes (last macOS-supporting toolkit)](https://docs.nvidia.com/cuda/archive/10.2/pdf/CUDA_Toolkit_Release_Notes.pdf)
 - [cuCIM API reference](https://docs.rapids.ai/api/cucim/stable/api/)
+- [cuCIM source-build guide](https://github.com/rapidsai/cucim/blob/main/CONTRIBUTING.md#setting-up-your-build-environment)
 - [RAPIDS platform requirements](https://docs.rapids.ai/install/)
+- [PyTorch local installation matrix](https://docs.pytorch.org/get-started/locally/)
+- [PyTorch macOS Metal backend](https://docs.pytorch.org/docs/stable/notes/mps)
 - [PyTorch CUDA API](https://docs.pytorch.org/docs/stable/cuda)
 - [PyTorch `conv2d` API](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.conv2d)
