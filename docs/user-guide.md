@@ -432,7 +432,7 @@ single-file convenience rather than a portable data package.
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-VIPP `0.12.0a2` writes workflow schema version 3. Versions 1 and 2 are
+VIPP `0.12.0a3` writes workflow schema version 3. Versions 1 and 2 are
 intentionally rejected because silently inventing threshold, cutoff, channel
 axis, color, or intensity-mapping choices could change scientific results. Keep
 the VIPP environment that created an older workflow to inspect and run it

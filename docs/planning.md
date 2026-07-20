@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-16
+Last reviewed: 2026-07-20
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -61,7 +61,7 @@ authoring remain later milestones.
 
 ## Current Public Baseline
 
-Current alpha release: `0.12.0a2`.
+Current alpha release: `0.12.0a3`.
 
 The 0.12 alpha adds deterministic batch configuration/provenance, explicit
 scientific source/grid/axis contracts, shared-executor Python export, workflow
@@ -513,6 +513,27 @@ Delivered:
 Workflow schema remains version 3. Existing schema-3 workflow documents stay
 structurally loadable; generated Python exports remain runtime-version pinned
 and should be regenerated under the release that will execute them.
+
+### Released: 0.12.0a3 - Batch Reliability And One-File Setup
+
+Goal: make real collection runs quicker to start, safer to recover, and easier
+to reopen without weakening batch planning or provenance.
+
+Delivered:
+
+- direct `Run batch` execution through a fresh plan-only preflight, while live
+  representative preview remains optional;
+- a user-confirmed default output-folder suggestion and a fast path for items
+  whose resolved `Skip` destinations all already exist;
+- retry handling for transient Windows/cloud-sync artifact locks and
+  continuation after exhausted item-sidecar writes when configured;
+- optional validated batch-config attachment inside workflow JSON, restored
+  without scanning or calculating a preview; and
+- one separated Batch workspace toolbar entry with consistent Load-before-Save
+  ordering.
+
+Workflow schema remains version 3 and batch-config schema remains version 1.
+The optional attached config is excluded from the scientific workflow hash.
 
 ### 0.13.0a1 - OME-Zarr Scale And Preview Strategy
 

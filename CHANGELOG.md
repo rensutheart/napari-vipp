@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.12.0a3 - 2026-07-20
+
+### Release Overview
+
+This third 0.12 alpha makes collection batching faster, clearer, and more
+dependable without changing workflow schema version 3 or batch-config schema
+version 1. It adds direct one-click execution with a fresh plan-only preflight,
+safer destination guidance, fast all-existing skips, more resilient atomic
+artifact handling, and an optional one-file workflow-plus-batch configuration.
+No scientific image-processing kernel or cached-pixel contract changed.
+
 ### Batch Workspace
 
 - The main `Batch workspace...` action now sits between workflow loading and
