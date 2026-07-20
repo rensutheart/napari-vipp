@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Batch Workspace
+
+- The main `Batch workspace...` action now sits between workflow loading and
+  the separated export group. The duplicate action in the representative strip
+  was removed; the retained workspace still reopens from the main toolbar.
+  Both the main toolbar and Batch workspace now consistently place Load before
+  Save.
+- Saving a workflow while a Batch workspace is active now offers Yes/No/Cancel.
+  Yes embeds the validated versioned batch config in the same workflow JSON and
+  loading that workflow restores the workspace without running a preview. No
+  keeps the ordinary graph-only workflow and standalone batch-config behavior.
+- `Run batch` now performs a plan-only preflight and starts an unpreviewed or
+  deliberately edited batch in the same click. `Preview batch` remains optional
+  and is the only action that calculates a live graph representative; an
+  unexpectedly changed, already reviewed plan still stops for confirmation.
+- The output folder is now suggested as an `output` subdirectory of the first
+  bound batch source. The amber field follows source changes until the user
+  focuses, clicks, edits, or explicitly chooses the destination; saved config
+  paths remain explicit and are never replaced by the suggestion.
+- An item whose resolved `Skip` destinations all exist is now finalized without
+  loading its source pixels or calculating the graph. Mixed existing/missing
+  output items still calculate normally so missing outputs remain correct.
+- Atomic artifact replacement now tolerates several seconds of transient
+  Windows, cloud-sync, or indexing locks. Redundant item-sidecar rewrites were
+  removed, and an exhausted final item-sidecar write is recorded as a partial
+  item that obeys `continue_on_error` instead of aborting the entire run; final
+  run-manifest persistence remains mandatory.
+
 ## 0.12.0a2 - 2026-07-16
 
 ### Release Overview

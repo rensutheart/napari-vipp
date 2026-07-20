@@ -224,7 +224,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     notes = _notes_from_data(data.get("notes", []), node_id_set)
     metadata = _workflow_metadata_to_dict(data.get("metadata", {}), node_id_set)
 
-    return {
+    restored = {
         "nodes": nodes,
         "connections": connections,
         "positions": positions,
@@ -232,6 +232,11 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         "notes": notes,
         "metadata": metadata,
     }
+    if "batch_config" in data:
+        restored["batch_config"] = _batch_config_document_from_data(
+            data.get("batch_config")
+        )
+    return restored
 
 
 def workflow_snapshot_from_pipeline(
@@ -305,11 +310,17 @@ def save_workflow(
     metadata: dict[str, Any] | None = None,
 ) -> Path:
     """Write the pipeline graph to ``path`` as a JSON workflow file."""
+    document = serialize_workflow(pipeline, positions, notes, metadata)
+    return save_workflow_document(path, document)
+
+
+def save_workflow_document(path: str | Path, document: object) -> Path:
+    """Validate and atomically write one complete workflow document."""
     raw_path = str(path).strip()
     if not raw_path:
         raise ValueError("Workflow save path cannot be blank.")
     target = Path(raw_path).expanduser()
-    document = serialize_workflow(pipeline, positions, notes, metadata)
+    deserialize_workflow(document)
     return atomic_write_json(
         target,
         document,
@@ -444,6 +455,23 @@ def _workflow_metadata_to_dict(
             node_id_set,
         )
     return {"vipp": vipp} if vipp else {}
+
+
+def _batch_config_document_from_data(raw_config: Any) -> dict[str, Any]:
+    """Preserve an attached batch document without coupling workflow schemas."""
+    if not isinstance(raw_config, dict):
+        raise ValueError("Workflow batch_config must be an object.")
+    try:
+        encoded = json.dumps(
+            raw_config,
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Workflow batch_config must contain finite JSON values."
+        ) from exc
+    return json.loads(encoded)
 
 
 def _inspector_metadata_to_dict(

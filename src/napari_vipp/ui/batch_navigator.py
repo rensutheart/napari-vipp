@@ -50,7 +50,6 @@ class BatchNavigator(QFrame):
     """
 
     itemSelected = Signal(int)
-    workspaceRequested = Signal()
 
     REPRESENTATIVE_MESSAGE = (
         "Representative only - this does not run or save the batch."
@@ -58,7 +57,8 @@ class BatchNavigator(QFrame):
     STALE_MESSAGE = (
         "Batch settings changed - this graph still shows the representative "
         "from the previous plan. You can keep browsing that previous source "
-        "pairing, or click Preview batch to refresh the runnable plan."
+        "pairing, or open Batch workspace from the main toolbar to run a fresh "
+        "plan or preview it."
     )
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -98,10 +98,6 @@ class BatchNavigator(QFrame):
         self.slider.setRange(0, 0)
         self.slider.setToolTip(
             "Choose one representative item to calculate through the graph."
-        )
-        self.workspace_button = QPushButton("Batch workspace...")
-        self.workspace_button.setToolTip(
-            "Open the collection setup, preview, and execution workspace."
         )
 
         self.representative_label = _WrappingLabel(self.REPRESENTATIVE_MESSAGE)
@@ -147,7 +143,6 @@ class BatchNavigator(QFrame):
         self.previous_button.clicked.connect(self._select_previous)
         self.next_button.clicked.connect(self._select_next)
         self.slider.valueChanged.connect(self._select_slider_value)
-        self.workspace_button.clicked.connect(self.workspaceRequested.emit)
 
         # Begin in the narrow form so a platform-specific wide size hint cannot
         # prevent the first resize event that would otherwise make it compact.
@@ -353,7 +348,6 @@ class BatchNavigator(QFrame):
             can_navigate and self._current_index < self._item_count - 1
         )
         self.slider.setEnabled(can_navigate and self._item_count > 1)
-        self.workspace_button.setEnabled(has_session)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -368,14 +362,6 @@ class BatchNavigator(QFrame):
         if compact:
             self._header_layout.addWidget(self.title_label, 0, 0)
             self._header_layout.addWidget(self.item_label, 0, 1)
-            self._header_layout.addWidget(
-                self.workspace_button,
-                1,
-                0,
-                1,
-                2,
-                Qt.AlignLeft,
-            )
             self._details_layout.addWidget(self.batch_id_label, 0, 0, 1, 2)
             self._details_layout.addWidget(self.sources_label, 1, 0, 1, 2)
             self._progress_layout.addWidget(self.progress_label, 0, 0, 1, 2)
@@ -383,14 +369,13 @@ class BatchNavigator(QFrame):
         else:
             self._header_layout.addWidget(self.title_label, 0, 0)
             self._header_layout.addWidget(self.item_label, 0, 1)
-            self._header_layout.addWidget(self.workspace_button, 0, 3)
             self._details_layout.addWidget(self.batch_id_label, 0, 0)
             self._details_layout.addWidget(self.sources_label, 0, 1)
             self._progress_layout.addWidget(self.progress_label, 0, 0)
             self._progress_layout.addWidget(self.progress_bar, 0, 1)
         self._header_layout.setColumnStretch(0, 2)
         self._header_layout.setColumnStretch(1, 1)
-        self._header_layout.setColumnStretch(2, 0 if compact else 1)
+        self._header_layout.setColumnStretch(2, 0)
         self._header_layout.setColumnStretch(3, 0)
         self._details_layout.setColumnStretch(0, 1)
         self._details_layout.setColumnStretch(1, 2)

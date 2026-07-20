@@ -100,12 +100,12 @@ still needs validation against a broader corpus of real acquisition files.
 6. Save the graph with `Save workflow...`.
 7. Add `Batch Output` nodes before `Batch workspace...` when exact saved outputs
    matter.
-8. Click `Preview batch` to plan the complete collection. Use the persistent
-   representative slider or a preview-table row to inspect any paired item
-   through the graph without running or saving the full batch.
-9. Run the collection from the retained workspace, where item-level progress,
-   final statuses, validation, and the `vipp_batch_manifest.json` path remain
-   available for inspection.
+8. Optionally click `Preview batch` to inspect the complete plan and use the
+   representative slider or a preview-table row without running or saving the
+   full batch. Preview is not required: `Run batch` performs its own preflight.
+9. Run the collection from the retained workspace with one click, where
+   item-level progress, final statuses, validation, and the
+   `vipp_batch_manifest.json` path remain available for inspection.
 10. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
    demo...`. Choose where to save its small working copy, review the populated
@@ -115,7 +115,10 @@ still needs validation against a broader corpus of real acquisition files.
    automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
-tables. `Export Python...` embeds a validated immutable workflow and executes it
+tables. When Batch workspace is active, Save workflow can optionally attach its
+versioned config so the same workspace reopens from that one JSON file; local
+paths are included, but source pixels are not. `Export Python...` embeds a
+validated immutable workflow and executes it
 through the same headless pipeline engine as VIPP, including normalized
 `ImageState` propagation. See the [user guide](docs/user-guide.md) for source
 binding, runtime-version, and command-line details.

@@ -421,6 +421,14 @@ workflow graph.
 `Save workflow...` writes the graph, parameters, connections, positions, named
 tunnels, graph notes, and selected inspector state.
 
+If a Batch workspace is active, Save asks whether its validated batch config
+should be included in the same workflow JSON. `Yes` stores a top-level
+`batch_config`; loading that workflow restores and opens the workspace without
+automatically previewing or scanning the collection. `No` saves only the normal
+workflow, while `Cancel` writes nothing. The attached config records local
+input/output paths and policies but never embeds source pixels, so it is a
+single-file convenience rather than a portable data package.
+
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
@@ -514,9 +522,11 @@ example remains available there through `Open batch demo...`.
 The graph commits a new representative label only after its matching source
 load and calculation succeed. If batch settings or scientific graph parameters
 change, the old pairing remains browsable but the runnable plan is marked stale.
-Run refreshes and stops for review whenever current files or destinations no
-longer match the displayed plan. Completed preflight rows remain visible as
-historical evidence until the next preview.
+Run performs a fresh plan-only preflight without requiring a representative. It
+executes immediately when no reviewed plan is current, but refreshes and stops
+for review when files or destinations unexpectedly diverge from an already
+displayed plan. Completed preflight rows remain visible as historical evidence
+until the next plan or run.
 
 Loading the demo replaces the current graph, so VIPP asks for confirmation
 first; save any graph changes you want to keep. The working copy is kept in the
@@ -551,9 +561,12 @@ colocalization_metrics
 ```
 
 The batch workspace supports local folder bindings and sorted positional pairing
-of multiple sources. `Preview batch` plans the collection without saving batch
-outputs, then calculates one selected item as the graph representative.
-`Save config...` writes a
+of multiple sources. `Preview batch` is optional: it plans the collection
+without saving batch outputs, then calculates one selected item as the graph
+representative. `Run batch` performs a fresh plan-only preflight and starts the
+full collection directly when no reviewed plan is current.
+The single `Batch workspace...` action is visually separated between workflow
+loading and the export actions in the main toolbar. `Save config...` writes a
 versioned `vipp_batch_config.json`; `Load config...` restores its source
 bindings, output folder, default format, existing-file policy, continuation
 behavior, required workflow companion, and optional runner choice, and validates
@@ -561,6 +574,11 @@ the resolved output declarations against the current graph. The saved workflow
 and config carry enough information to reproduce which outputs are selected and
 how their file names are planned. A workflow-hash mismatch is reported rather
 than silently running a different graph under an old configuration.
+
+For interactive convenience, `Save workflow...` can instead attach that
+versioned config to the workflow file after a Yes/No/Cancel prompt. A standalone
+config remains the appropriate choice for headless replay, explicit companion
+workflow files, and generated batch runner scripts.
 
 Choose the existing-file policy deliberately:
 
@@ -573,8 +591,9 @@ Choose the existing-file policy deliberately:
 An explicit overwrite choice on a `Batch Output` node takes precedence over
 the batch default. `Preview batch` uses the same deterministic pairing and
 output-planning rules as execution and shows existing-path collisions before
-expensive processing starts. `Run` performs a fresh preflight to detect changes
-since that preview.
+expensive processing starts. `Run` performs that preflight itself, so Preview is
+not a prerequisite. If a displayed plan exists, Run detects unexpected changes
+since it was reviewed before processing starts.
 
 A dialog-started run writes `vipp_batch_config.json` beside the outputs; a
 headless replay uses its existing config and workflow paths. Every execution

@@ -101,6 +101,7 @@ from napari_vipp.core.batch import (
     run_batch,
     save_batch_config,
     scientific_workflow_hash,
+    validate_batch_config,
 )
 from napari_vipp.core.batch_demo import (
     SYNTHETIC_BATCH_GROUND_TRUTH_FILENAME,
@@ -231,6 +232,7 @@ from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import (
     load_workflow,
     save_workflow,
+    save_workflow_document,
     serialize_workflow,
     workflow_snapshot_from_pipeline,
 )
@@ -979,6 +981,7 @@ class VippWidget(QWidget):
         self._active_collection_batch_dialog: CollectionBatchDialog | None = None
         self._collection_batch_running = False
         self._collection_batch_graph_refresh_pending = False
+        self._last_workflow_load_detail = ""
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
         self._source_load_pending = False
@@ -1801,12 +1804,14 @@ class VippWidget(QWidget):
         workflow_row.setSpacing(4)
         workflow_row.addWidget(self.new_workflow_button)
         workflow_row.addWidget(self.open_example_button)
-        workflow_row.addWidget(self.save_workflow_button)
         workflow_row.addWidget(self.load_workflow_button)
-        workflow_separator = _toolbar_separator()
-        workflow_row.addWidget(workflow_separator)
-        workflow_row.addWidget(self.export_button)
+        workflow_row.addWidget(self.save_workflow_button)
+        self._batch_toolbar_left_separator = _toolbar_separator()
+        workflow_row.addWidget(self._batch_toolbar_left_separator)
         workflow_row.addWidget(self.batch_button)
+        self._batch_toolbar_right_separator = _toolbar_separator()
+        workflow_row.addWidget(self._batch_toolbar_right_separator)
+        workflow_row.addWidget(self.export_button)
         workflow_row.addWidget(self.export_ome_button)
         export_separator = _toolbar_separator()
         workflow_row.addWidget(export_separator)
@@ -1816,6 +1821,7 @@ class VippWidget(QWidget):
         workflow_row.addWidget(self.pipeline_cancel_button)
         workflow_row.addWidget(self.cache_status_label)
         workflow_row.addWidget(self.version_label)
+        self.workflow_toolbar_layout = workflow_row
         root.addLayout(workflow_row)
         self.batch_navigator = BatchNavigator(self)
         root.addWidget(self.batch_navigator)
@@ -2208,9 +2214,6 @@ class VippWidget(QWidget):
         )
         self.batch_navigator.itemSelected.connect(
             self._preview_interactive_collection_batch_item
-        )
-        self.batch_navigator.workspaceRequested.connect(
-            self._open_active_collection_batch_workspace
         )
         self.export_ome_button.clicked.connect(self._export_ome_dataset_dialog)
         self.tunnel_manager_button.clicked.connect(self._show_tunnel_manager)
@@ -3898,7 +3901,59 @@ class VippWidget(QWidget):
         vipp = metadata.get("vipp", {})
         return vipp if isinstance(vipp, dict) else {}
 
+    def _include_batch_workspace_with_workflow(self) -> bool | None:
+        """Ask whether an active batch workspace belongs in this workflow."""
+        if self._active_collection_batch_dialog is None:
+            return False
+        answer = QMessageBox.question(
+            self,
+            "Include batch workspace?",
+            "An active Batch workspace is configured. Include its source "
+            "bindings, local input/output paths, formats, and run policies in "
+            "this workflow file?\n\n"
+            "Yes: loading the workflow will restore and open Batch workspace.\n"
+            "No: save only the workflow; use Save config in Batch workspace "
+            "when you want a separate batch configuration.\n"
+            "Cancel: do not save anything.",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Cancel:
+            return None
+        return answer == QMessageBox.Yes
+
+    def _workflow_document_with_batch_config(
+        self,
+        target: Path,
+        positions: dict[str, tuple[float, float]],
+    ) -> dict:
+        """Build one self-contained workflow plus validated batch config."""
+        dialog = self._active_collection_batch_dialog
+        if dialog is None:
+            raise RuntimeError("No active Batch workspace is available to include.")
+        workflow = self._batch_workflow_document(positions)
+        config = self._collection_batch_controller.build_config(
+            **dialog.values(),
+            workflow=workflow,
+        )
+        config = replace(
+            config,
+            workflow_file=Path(target.name),
+            base_dir=target.parent.resolve(),
+        )
+        workflow["batch_config"] = config.to_dict()
+        validate_batch_config(
+            workflow,
+            config,
+            workflow_path=target,
+        )
+        return workflow
+
     def _save_workflow_dialog(self) -> None:
+        include_batch = self._include_batch_workspace_with_workflow()
+        if include_batch is None:
+            self.status_label.setText("Workflow save cancelled.")
+            return
         path, _filter = QFileDialog.getSaveFileName(
             self,
             "Save VIPP workflow",
@@ -3911,17 +3966,27 @@ class VippWidget(QWidget):
             path += ".json"
         try:
             positions = self.graph_view.node_positions()
-            saved = save_workflow(
-                path,
-                self.pipeline,
-                positions,
-                self._graph_note_documents(),
-                self._workflow_metadata(),
-            )
+            if include_batch:
+                document = self._workflow_document_with_batch_config(
+                    Path(path).expanduser(),
+                    positions,
+                )
+                saved = save_workflow_document(path, document)
+            else:
+                saved = save_workflow(
+                    path,
+                    self.pipeline,
+                    positions,
+                    self._graph_note_documents(),
+                    self._workflow_metadata(),
+                )
         except Exception as exc:
             self.status_label.setText(f"Save failed: {exc}")
             return
-        self.status_label.setText(f"Workflow saved to {saved.name}.")
+        detail = " with its Batch workspace" if include_batch else ""
+        self.status_label.setText(
+            f"Workflow{detail} saved to {saved.name}."
+        )
 
     def _load_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
@@ -3937,7 +4002,14 @@ class VippWidget(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Load failed: {exc}")
             return
-        self.status_label.setText(f"Loaded workflow from {loaded.name}.")
+        detail = (
+            f" {self._last_workflow_load_detail}"
+            if self._last_workflow_load_detail
+            else ""
+        )
+        self.status_label.setText(
+            f"Loaded workflow from {loaded.name}.{detail}"
+        )
 
     def _open_example_workflow_dialog(self) -> None:
         dialog = ExampleWorkflowDialog(self)
@@ -3986,6 +4058,7 @@ class VippWidget(QWidget):
         Bundled examples request ``prefer_image_source`` so they open at the
         start of the scientific data flow instead of a saved terminal node.
         """
+        self._last_workflow_load_detail = ""
         if self._isolated_tuning_node_id is not None:
             self._apply_isolated_tuning(run=False, announce=False)
         self._finish_parameter_history_group()
@@ -4048,7 +4121,62 @@ class VippWidget(QWidget):
         self._invalidate_pipeline_cache()
         self.run_pipeline()
         self._push_undo_if_changed(before)
+        raw_batch_config = workflow.get("batch_config")
+        if raw_batch_config is not None:
+            try:
+                batch_config = self._batch_config_from_workflow_attachment(
+                    raw_batch_config,
+                    source,
+                    workflow,
+                )
+                batch_dialog = self._batch_collection_dialog(
+                    config=batch_config,
+                    preview_config=False,
+                )
+                if batch_dialog is None:
+                    raise RuntimeError("the Batch workspace could not be opened")
+            except Exception as exc:
+                self._last_workflow_load_detail = (
+                    "The attached Batch workspace could not be restored: "
+                    f"{exc}"
+                )
+                self.status_label.setText(self._last_workflow_load_detail)
+            else:
+                batch_dialog.preview_status.setText(
+                    "Batch workspace restored from this workflow. Run batch "
+                    "will build a fresh plan; Preview batch is optional."
+                )
+                self._last_workflow_load_detail = (
+                    "Its Batch workspace settings were restored."
+                )
         return source
+
+    def _batch_config_from_workflow_attachment(
+        self,
+        raw_config: object,
+        source: Path,
+        workflow: dict,
+    ) -> BatchConfig:
+        """Validate one attached config against its containing workflow."""
+        base_dir = source.parent.resolve()
+        config = BatchConfig.from_dict(raw_config, base_dir=base_dir)
+        config = replace(
+            config,
+            workflow_file=Path(source.name),
+            base_dir=base_dir,
+        )
+        validation_workflow = serialize_workflow(
+            self.pipeline,
+            workflow.get("positions", {}),
+            workflow.get("notes", ()),
+            workflow.get("metadata", {}),
+        )
+        validate_batch_config(
+            validation_workflow,
+            config,
+            workflow_path=source,
+        )
+        return config
 
     def _first_image_source_node_id(self) -> str:
         """Return the first Image Source in stable graph order, if present."""
@@ -4084,7 +4212,8 @@ class VippWidget(QWidget):
         *,
         config_path: str | Path | None = None,
         config: BatchConfig | None = None,
-    ) -> None:
+        preview_config: bool = True,
+    ) -> CollectionBatchDialog | None:
         if self._collection_batch_running:
             self.status_label.setText(
                 "A collection batch is already running. Its progress remains "
@@ -4095,13 +4224,13 @@ class VippWidget(QWidget):
                 active_dialog.show()
                 active_dialog.raise_()
                 active_dialog.activateWindow()
-            return
+            return active_dialog
         active_dialog = self._active_collection_batch_dialog
         if active_dialog is not None and config_path is None and config is None:
             active_dialog.show()
             active_dialog.raise_()
             active_dialog.activateWindow()
-            return
+            return active_dialog
         if active_dialog is not None:
             self._discard_collection_batch_dialog(active_dialog)
         dialog = CollectionBatchDialog(
@@ -4130,18 +4259,20 @@ class VippWidget(QWidget):
             except Exception as exc:
                 self._discard_collection_batch_dialog(dialog)
                 self.status_label.setText(f"Could not open batch config: {exc}")
-                return
+                return None
         elif config is not None:
             try:
                 dialog._apply_config(config)
-                dialog._preview_batch()
+                if preview_config:
+                    dialog._preview_batch()
             except Exception as exc:
                 self._discard_collection_batch_dialog(dialog)
                 self.status_label.setText(f"Could not open batch workspace: {exc}")
-                return
+                return None
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        return dialog
 
     def _discard_collection_batch_dialog(
         self,
@@ -4197,64 +4328,78 @@ class VippWidget(QWidget):
                 "calculation before running the full batch."
             )
             return
-        preview = dialog._preview_result
-        if preview is None:
-            if dialog._preview_batch():
-                dialog.show_plan_refresh_required(
-                    "The runnable plan was refreshed. Review its items, "
-                    "destinations, and preflight statuses, then click Run batch "
-                    "again."
-                )
-            return
-
-        current_hash = scientific_workflow_hash(self._batch_workflow_document())
-        if current_hash != preview.config.workflow_sha256:
-            dialog.invalidate_for_workflow_change()
-            self._mark_collection_batch_workflow_stale_if_needed()
-            if dialog._preview_batch():
-                dialog.show_plan_refresh_required(
-                    "The workflow changed, so VIPP rebuilt the runnable plan. "
-                    "Review it, then click Run batch again."
-                )
-            return
-
-        source_change = self._reviewed_batch_source_change(preview.items)
-        if source_change:
-            dialog.invalidate_for_source_change(source_change)
-            self._interactive_collection_batch_plan_stale = True
-            self.batch_navigator.set_session_stale(
-                True,
-                message=(
-                    "A reviewed source changed on disk. The graph keeps its "
-                    "pinned earlier revision; press Refresh, then Preview batch "
-                    "again before running."
-                ),
-            )
-            self.status_label.setText(
-                "Batch stopped because a reviewed source changed. Press "
-                "Refresh, then preview the batch again."
-            )
-            return
-
         try:
             fresh_preview = self._collection_batch_controller.preview(
                 **values,
                 preview_limit=25,
             )
-        except Exception:
-            dialog._preview_batch()
+        except Exception as exc:
+            dialog.show_run_error(f"Batch preflight failed: {exc}")
+            self.status_label.setText(f"Batch preflight failed: {exc}")
             return
-        if (
-            fresh_preview.config != preview.config
-            or fresh_preview.items != preview.items
-        ):
-            if dialog._preview_batch():
+
+        preview = dialog._preview_result
+        if preview is None:
+            # Run owns a pure, plan-only preflight. The optional Preview action
+            # remains the only path that calculates a representative through the
+            # live graph, so an unreviewed setup can execute with one click.
+            dialog.apply_preview_result(
+                fresh_preview,
+                preview_representative=False,
+            )
+            preview = fresh_preview
+        else:
+            current_hash = scientific_workflow_hash(
+                self._batch_workflow_document()
+            )
+            if current_hash != preview.config.workflow_sha256:
+                dialog.invalidate_for_workflow_change()
+                self._mark_collection_batch_workflow_stale_if_needed()
+                dialog.apply_preview_result(
+                    fresh_preview,
+                    preview_representative=False,
+                )
+                dialog.show_plan_refresh_required(
+                    "The workflow changed, so VIPP rebuilt the displayed plan "
+                    "without calculating a representative. Review it, then "
+                    "click Run batch again."
+                )
+                return
+
+            source_change = self._reviewed_batch_source_change(preview.items)
+            if source_change:
+                dialog.invalidate_for_source_change(source_change)
+                self._interactive_collection_batch_plan_stale = True
+                self.batch_navigator.set_session_stale(
+                    True,
+                    message=(
+                        "A reviewed source changed on disk. The graph keeps its "
+                        "pinned earlier revision; press Refresh and wait for it "
+                        "to recalculate before running."
+                    ),
+                )
+                self.status_label.setText(
+                    "Batch stopped because a reviewed source changed. Press "
+                    "Refresh and wait for recalculation before running."
+                )
+                return
+
+            if (
+                fresh_preview.config != preview.config
+                or fresh_preview.items != preview.items
+            ):
+                dialog.apply_preview_result(
+                    fresh_preview,
+                    preview_representative=False,
+                )
                 dialog.show_plan_refresh_required(
                     "Batch inputs, destinations, or preflight statuses changed "
-                    "since the displayed plan. VIPP refreshed the table; review "
-                    "it, then click Run batch again."
+                    "since the displayed plan. VIPP refreshed the table without "
+                    "calculating a representative; review it, then click Run "
+                    "batch again."
                 )
-            return
+                return
+            preview = fresh_preview
 
         total = preview.total_items
         if total <= 0:
@@ -4347,8 +4492,8 @@ class VippWidget(QWidget):
                 True,
                 message=(
                     "The displayed representative belongs to the completed "
-                    "run. Preview batch again before replaying so current "
-                    "inputs and destinations are rechecked."
+                    "run. Run batch will freshly preflight current inputs and "
+                    "destinations before replaying; Preview batch is optional."
                 ),
             )
 
@@ -4673,8 +4818,9 @@ class VippWidget(QWidget):
         if self._interactive_collection_batch_plan_stale:
             message = (
                 "The scientific workflow changed - this representative uses "
-                "the previous source pairing through the edited graph. Preview "
-                "batch again before running."
+                "the previous source pairing through the edited graph. Run "
+                "batch will preflight the edited workflow; Preview batch is "
+                "optional."
                 if self._interactive_collection_batch_workflow_stale
                 else None
             )
@@ -4766,7 +4912,8 @@ class VippWidget(QWidget):
             message=(
                 "The scientific workflow changed - representative navigation "
                 "still uses the previous source pairing through the edited "
-                "graph. Preview batch again before running."
+                "graph. Run batch will preflight the edited workflow; Preview "
+                "batch is optional."
             ),
         )
 
@@ -4798,19 +4945,6 @@ class VippWidget(QWidget):
             self._discard_collection_batch_dialog(
                 self._active_collection_batch_dialog,
             )
-
-    def _open_active_collection_batch_workspace(self) -> None:
-        """Open or focus the workspace associated with the current session."""
-        dialog = self._active_collection_batch_dialog
-        if dialog is not None:
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            return
-        self._batch_collection_dialog(
-            config_path=self._interactive_collection_batch_config_path,
-            config=self._interactive_collection_batch_config,
-        )
 
     def _load_collection_batch_demo_preview(
         self,
@@ -4934,8 +5068,9 @@ class VippWidget(QWidget):
         plan = preflight_batch(workflow, config, workflow_path=workflow_path)
         if expected_items is not None and plan.items != tuple(expected_items):
             raise RuntimeError(
-                "The batch plan changed after it was reviewed. No batch item "
-                "was run; preview the batch again before retrying."
+                "The batch plan changed during run startup. No batch item was "
+                "run; click Run batch to refresh the displayed plan, review it, "
+                "then run again."
             )
         output_path.mkdir(parents=True, exist_ok=True)
         artifact_paths: list[Path] = [

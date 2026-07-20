@@ -159,7 +159,7 @@ def test_atomic_json_write_retries_transient_windows_replace_lock(
     def transient_replace(source, destination):
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= 7:
             raise PermissionError("simulated transient lock")
         return original_replace(source, destination)
 
@@ -167,8 +167,9 @@ def test_atomic_json_write_retries_transient_windows_replace_lock(
     monkeypatch.setattr(batch_module.time, "sleep", lambda _delay: None)
 
     assert atomic_write_json(target, {"ok": True}) == target
-    assert attempts == 2
+    assert attempts == 8
     assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True}
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_atomic_json_write_normalizes_non_finite_values(tmp_path):
@@ -288,6 +289,15 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
     )
 
     assert scientific_workflow_hash(decorated) == scientific_workflow_hash(plain)
+    decorated["batch_config"] = {
+        "type": "napari-vipp-batch-config",
+        "version": 1,
+        "output_dir": "local-output",
+    }
+    attached_hash = scientific_workflow_hash(decorated)
+    decorated["batch_config"]["output_dir"] = "different-local-output"
+    assert attached_hash == scientific_workflow_hash(plain)
+    assert scientific_workflow_hash(decorated) == attached_hash
 
     pipeline.set_param("gaussian", "sigma", 3.25)
     changed = serialize_workflow(pipeline)
@@ -869,6 +879,106 @@ def test_run_batch_continues_after_middle_source_read_failure(tmp_path):
     np.testing.assert_array_equal(np.load(last_output), last)
 
 
+def test_run_batch_recovers_when_a_later_item_checkpoint_succeeds(
+    tmp_path,
+    monkeypatch,
+):
+    inputs = tmp_path / "inputs"
+    source = np.arange(12, dtype=np.uint8).reshape(3, 4)
+    _write_arrays(inputs, sample=source)
+    workflow, output_ids = _batch_workflow()
+    config = _batch_config(workflow, inputs, tmp_path / "outputs", output_ids)
+    saved_statuses: list[BatchStatus] = []
+    original_save_item_record = batch_module._save_item_record
+
+    def transient_checkpoint_failure(directory, item):
+        saved_statuses.append(item.status)
+        if len(saved_statuses) == 1:
+            raise PermissionError("simulated transient checkpoint lock")
+        return original_save_item_record(directory, item)
+
+    monkeypatch.setattr(
+        batch_module,
+        "_save_item_record",
+        transient_checkpoint_failure,
+    )
+
+    result = run_batch(workflow, config)
+
+    assert result.manifest.items[0].status == BatchStatus.COMPLETED
+    assert not result.manifest.items[0].error_type
+    assert saved_statuses == [BatchStatus.RUNNING, BatchStatus.COMPLETED]
+
+
+@pytest.mark.parametrize(
+    ("continue_on_error", "expected_statuses"),
+    [
+        (
+            True,
+            [BatchStatus.COMPLETED, BatchStatus.PARTIAL, BatchStatus.COMPLETED],
+        ),
+        (
+            False,
+            [BatchStatus.COMPLETED, BatchStatus.PARTIAL, BatchStatus.SKIPPED],
+        ),
+    ],
+)
+def test_item_checkpoint_failure_obeys_continue_on_error(
+    tmp_path,
+    monkeypatch,
+    continue_on_error,
+    expected_statuses,
+):
+    inputs = tmp_path / "inputs"
+    _write_arrays(
+        inputs,
+        **{
+            "01_first": np.ones((2, 3), dtype=np.uint8),
+            "02_middle": np.full((2, 3), 2, dtype=np.uint8),
+            "03_last": np.full((2, 3), 3, dtype=np.uint8),
+        },
+    )
+    workflow, output_ids = _batch_workflow()
+    output_dir = tmp_path / "outputs"
+    config = _batch_config(
+        workflow,
+        inputs,
+        output_dir,
+        output_ids,
+        continue_on_error=continue_on_error,
+    )
+    original_save_item_record = batch_module._save_item_record
+    progress: list[tuple[int, str]] = []
+
+    def fail_middle_final_checkpoint(directory, item):
+        if item.index == 2 and item.status != BatchStatus.RUNNING:
+            raise PermissionError("simulated persistent checkpoint lock")
+        return original_save_item_record(directory, item)
+
+    monkeypatch.setattr(
+        batch_module,
+        "_save_item_record",
+        fail_middle_final_checkpoint,
+    )
+
+    result = run_batch(
+        workflow,
+        config,
+        progress_callback=lambda index, _total, _batch_id, status: progress.append(
+            (index, status)
+        ),
+    )
+
+    assert [item.status for item in result.manifest.items] == expected_statuses
+    middle = result.manifest.items[1]
+    assert middle.error_type == "PermissionError"
+    assert "final per-item provenance record" in middle.error_message
+    assert (output_dir / "01_first__output.npy").is_file()
+    assert (output_dir / "02_middle__output.npy").is_file()
+    assert (output_dir / "03_last__output.npy").is_file() is continue_on_error
+    assert ((3, BatchStatus.COMPLETED.value) in progress) is continue_on_error
+
+
 def test_run_batch_preserves_run_manifest_archive_across_reruns(tmp_path):
     inputs = tmp_path / "inputs"
     _write_arrays(inputs, sample=np.ones((2, 3), dtype=np.uint8))
@@ -1043,6 +1153,54 @@ def test_run_batch_existing_file_policies(
         np.testing.assert_array_equal(np.load(destination), source)
     else:
         np.testing.assert_array_equal(np.load(destination), original)
+
+
+def test_skip_rechecks_all_destinations_before_loading_or_calculating(
+    tmp_path,
+    monkeypatch,
+):
+    inputs = tmp_path / "inputs"
+    source = np.arange(12, dtype=np.uint8).reshape(3, 4)
+    _write_arrays(inputs, sample=source)
+    output_dir = tmp_path / "outputs"
+    workflow, output_ids = _batch_workflow()
+    config = _batch_config(
+        workflow,
+        inputs,
+        output_dir,
+        output_ids,
+        policy=ExistingFilePolicy.SKIP,
+    )
+    plan = build_batch_plan(config)
+    destination = output_dir / "sample__output.npy"
+    assert not plan.items[0].outputs[0].exists
+    output_dir.mkdir()
+    original = np.full((2, 2), 99, dtype=np.uint8)
+    np.save(destination, original)
+    saved_item_statuses: list[BatchStatus] = []
+    original_save_item_record = batch_module._save_item_record
+
+    def record_item_status(directory, item):
+        saved_item_statuses.append(item.status)
+        return original_save_item_record(directory, item)
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("a fully skipped item must not load its source")
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("a fully skipped item must not calculate the graph")
+
+    monkeypatch.setattr(batch_module, "_save_item_record", record_item_status)
+    monkeypatch.setattr(batch_module, "read_image", unexpected_read)
+    monkeypatch.setattr(PrototypePipeline, "run", unexpected_run)
+
+    result = run_batch(workflow, config, plan=plan)
+
+    assert result.manifest.items[0].status == BatchStatus.SKIPPED
+    assert result.manifest.items[0].outputs[0].status == BatchStatus.SKIPPED
+    assert saved_item_statuses == [BatchStatus.SKIPPED]
+    assert not result.saved_paths
+    np.testing.assert_array_equal(np.load(destination), original)
 
 
 def test_mixed_completed_and_skipped_outputs_are_not_a_failure(tmp_path):

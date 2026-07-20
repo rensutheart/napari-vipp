@@ -1172,10 +1172,15 @@ Collection batch UI:
   revisions on revisit.
 - The batch workspace is retained and modeless so the graph remains visible.
   Preview-table selection and the full-plan navigator stay synchronized;
-  execution compares fresh preflight with the reviewed full plan and revalidates
+  explicit Preview planning activates one representative, while Run uses a
+  separate plan-only preflight and can execute without that representative.
+  Execution compares fresh preflight with any reviewed full plan and revalidates
   pinned representative source identities, stopping for review when either
-  changes. It reports accurate item-level progress, final manifest statuses,
-  validation, and the manifest path in the workspace.
+  changes unexpectedly. It reports accurate item-level progress, final manifest
+  statuses, validation, and the manifest path in the workspace.
+- The main toolbar is the sole Batch workspace entry point. The representative
+  navigator owns sample selection and progress only, avoiding a second button
+  that could be mistaken for a different batch surface.
 - The dialog lists every `Image Source` node as a possible batch source binding.
   A blank row is accepted only for an existing fixed file-path source;
   napari-layer and sample sources must be collection-bound.
@@ -1207,6 +1212,11 @@ Collection batch UI:
   optional runner choice, the workflow hash, and resolved output declarations.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
+- An active workspace may attach the exact versioned config as optional
+  top-level `batch_config` in workflow schema 3. The scientific hash explicitly
+  excludes that field, preventing self-reference and calculation drift. Load
+  validates it against the containing graph and path, restores the form without
+  a preview calculation, and leaves standalone config/runner export unchanged.
 - The batch-level existing-file choices are `Error`, `Skip`, and `Overwrite`.
   A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
   precedence over the default. Collision state is part of the plan and shown

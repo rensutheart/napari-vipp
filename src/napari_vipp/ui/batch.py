@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -126,6 +126,8 @@ class CollectionBatchDialog(QDialog):
         self._preview_table_rows: dict[int, int] = {}
         self._run_control_enabled_states: dict[QWidget, bool] | None = None
         self._run_in_progress = False
+        self._output_path_is_suggested = True
+        self._setting_suggested_output = False
         self._run_control_restore_timer = QTimer(self)
         self._run_control_restore_timer.setSingleShot(True)
         self._run_control_restore_timer.setInterval(50)
@@ -142,6 +144,7 @@ class CollectionBatchDialog(QDialog):
         ]
 
         self.output_edit = QLineEdit()
+        self.output_edit.installEventFilter(self)
         self.format_combo = QComboBox()
         self.format_combo.addItems(["ome-tiff", "imagej-tiff", "tiff", "npy"])
         self.existing_policy_combo = QComboBox()
@@ -162,8 +165,9 @@ class CollectionBatchDialog(QDialog):
         self.continue_checkbox.setChecked(True)
         self.preview_button = QPushButton("Preview batch")
         self.preview_button.setToolTip(
-            "Plan every batch item and destination, then calculate the first "
-            "item as a graph representative without saving batch outputs."
+            "Optionally inspect every planned batch item and destination, then "
+            "calculate the first item as a graph representative without saving "
+            "batch outputs. Run batch performs its own fresh preflight."
         )
         self.preview_button.clicked.connect(self._preview_batch)
         self.preview_status = QLabel("")
@@ -259,10 +263,11 @@ class CollectionBatchDialog(QDialog):
         help_label = QLabel(
             "Bind each Image Source that should change per batch item to a "
             "folder and file pattern. VIPP zips bound sources by sorted file "
-            "order and assigns each row a stable batch ID. Preview batch plans "
-            "the complete collection and calculates the first row only as a "
-            "representative graph view. Preview selected in graph changes that "
-            "single representative; Run batch processes the full plan and saves "
+            "order and assigns each row a stable batch ID. Preview batch is "
+            "optional: it plans the complete collection and calculates the "
+            "first row only as a representative graph view. Preview selected "
+            "in graph changes that single representative. Run batch performs a "
+            "fresh preflight, processes the full plan immediately, and saves "
             "only Batch Output nodes when present. Without Batch Output nodes, "
             "terminal graph outputs are saved as a compatibility fallback."
         )
@@ -375,7 +380,7 @@ class CollectionBatchDialog(QDialog):
         layout.addWidget(self.content_scroll, 1)
         layout.addWidget(self.button_box)
 
-        self.output_edit.textChanged.connect(self._invalidate_preview_plan)
+        self.output_edit.textChanged.connect(self._output_path_changed)
         self.format_combo.currentIndexChanged.connect(self._invalidate_preview_plan)
         self.existing_policy_combo.currentIndexChanged.connect(
             self._invalidate_preview_plan
@@ -383,9 +388,9 @@ class CollectionBatchDialog(QDialog):
         self.script_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.continue_checkbox.toggled.connect(self._invalidate_preview_plan)
         self.preview_status.setText(
-            "Configure the collections, then click Preview batch to plan the "
-            "complete run and calculate one graph representative without saving "
-            "batch outputs."
+            "Configure the collections, then Run batch. Preview batch is optional "
+            "and lets you inspect the full plan plus one graph representative "
+            "without saving batch outputs."
         )
 
         screen = self.screen()
@@ -397,6 +402,18 @@ class CollectionBatchDialog(QDialog):
             )
         else:
             self.resize(840, 720)
+
+    def eventFilter(self, watched, event):
+        if watched is self.output_edit:
+            deliberate_focus = event.type() == QEvent.FocusIn and event.reason() in {
+                Qt.MouseFocusReason,
+                Qt.TabFocusReason,
+                Qt.BacktabFocusReason,
+                Qt.ShortcutFocusReason,
+            }
+            if event.type() == QEvent.MouseButtonPress or deliberate_focus:
+                self._acknowledge_output_path()
+        return super().eventFilter(watched, event)
 
     def set_demo_context(self, demo: SyntheticBatchDemo) -> None:
         """Present a generated bundle as a ready-to-run example workspace."""
@@ -459,6 +476,7 @@ class CollectionBatchDialog(QDialog):
         else:
             self.input_edit = QLineEdit()
             self.pattern_edit = QLineEdit("*.tif;*.tiff;*.ome.tif;*.ome.tiff")
+        self._refresh_suggested_output_path()
 
     def _make_source_row(
         self,
@@ -474,7 +492,9 @@ class CollectionBatchDialog(QDialog):
         browse_button.clicked.connect(
             lambda _checked=False, edit=folder_edit: self._browse_source_input(edit)
         )
-        folder_edit.textChanged.connect(self._invalidate_preview_plan)
+        folder_edit.textChanged.connect(
+            lambda text, edit=folder_edit: self._source_folder_changed(edit, text)
+        )
         pattern_edit.textChanged.connect(self._invalidate_preview_plan)
         title_label = QLabel(
             f"{title} ({node_id})"
@@ -526,6 +546,67 @@ class CollectionBatchDialog(QDialog):
         )
         return row
 
+    def _source_folder_changed(self, edit: QLineEdit, _text: str) -> None:
+        if self._output_path_is_suggested and any(
+            edit is row["folder"] for row in self._source_rows
+        ):
+            self._refresh_suggested_output_path()
+        self._invalidate_preview_plan()
+
+    def _refresh_suggested_output_path(self) -> None:
+        if not self._output_path_is_suggested:
+            return
+        source = next(
+            (
+                row["folder"].text().strip()
+                for row in self._source_rows
+                if row["folder"].text().strip()
+            ),
+            "",
+        )
+        suggested = str(Path(source).expanduser() / "output") if source else ""
+        self._set_output_path(suggested, suggested=True)
+
+    def _set_output_path(self, path: str, *, suggested: bool) -> None:
+        self._output_path_is_suggested = suggested
+        self._setting_suggested_output = suggested
+        try:
+            self.output_edit.setText(path)
+        finally:
+            self._setting_suggested_output = False
+        self._refresh_output_path_style()
+
+    def _output_path_changed(self, _text: str) -> None:
+        if self._setting_suggested_output:
+            return
+        self._acknowledge_output_path()
+        self._invalidate_preview_plan()
+
+    def _acknowledge_output_path(self) -> None:
+        if not self._output_path_is_suggested:
+            return
+        self._output_path_is_suggested = False
+        self._refresh_output_path_style()
+
+    def _refresh_output_path_style(self) -> None:
+        is_visible_suggestion = self._output_path_is_suggested and bool(
+            self.output_edit.text().strip()
+        )
+        self.output_edit.setProperty("suggestedDefault", is_visible_suggestion)
+        if is_visible_suggestion:
+            self.output_edit.setStyleSheet(
+                "QLineEdit { color: #f59e0b; border: 1px solid #f59e0b; }"
+            )
+            description = (
+                "Suggested from the first bound batch source. Review this folder; "
+                "click or edit the field to acknowledge it."
+            )
+        else:
+            self.output_edit.setStyleSheet("")
+            description = "Folder where VIPP will save this batch's outputs."
+        self.output_edit.setToolTip(description)
+        self.output_edit.setAccessibleDescription(description)
+
     def values(self) -> dict[str, object]:
         bindings = []
         for row in self._source_rows:
@@ -566,10 +647,11 @@ class CollectionBatchDialog(QDialog):
         self.preview_table.setRowCount(0)
         self.preview_item_button.setEnabled(False)
         self.preview_status.setText(
-            "Batch settings changed; click Preview batch to refresh the full plan."
+            "Batch settings changed. Run batch will build a fresh plan, or use "
+            "Preview batch to inspect it first."
         )
         self.graph_preview_status.setText(
-            "Preview the batch before selecting a representative graph item."
+            "Use Preview batch to select a representative graph item if desired."
         )
         self.previewInvalidated.emit()
 
@@ -579,8 +661,8 @@ class CollectionBatchDialog(QDialog):
             return
         self._invalidate_preview_plan()
         self.preview_status.setText(
-            "The scientific workflow changed; click Preview batch to refresh "
-            "all destinations before running."
+            "The scientific workflow changed. Run batch will rebuild all "
+            "destinations, or use Preview batch to inspect them first."
         )
         self.graph_preview_status.setText(
             "Representative navigation still uses the previous source pairing "
@@ -594,7 +676,7 @@ class CollectionBatchDialog(QDialog):
         self._invalidate_preview_plan()
         self.preview_status.setText(
             "A representative source changed after it was reviewed. Press "
-            f"Refresh, then Preview batch again before running. {str(message)}"
+            f"Refresh and wait for recalculation before running. {str(message)}"
         )
         self.graph_preview_status.setText(
             "The graph still uses its pinned earlier source revision until "
@@ -613,7 +695,8 @@ class CollectionBatchDialog(QDialog):
         self._invalidate_preview_plan()
         self.preview_status.setText(
             "Source snapshots are being refreshed. Wait for the representative "
-            "calculation, then Preview batch again to review the runnable plan."
+            "calculation to finish. Run batch will then build a fresh plan; "
+            "Preview batch remains available for optional inspection."
         )
         self.graph_preview_status.setText(
             f"Refreshing representative item {int(position) + 1} of "
@@ -637,9 +720,8 @@ class CollectionBatchDialog(QDialog):
         self.preview_item_button.setEnabled(False)
         self.preview_status.setText(
             "Historical preflight: the column above records the completed "
-            "run's plan. "
-            "Click Preview batch to refresh current inputs and destinations "
-            "before running again."
+            "run's plan. Run batch will preflight current inputs and destinations "
+            "again; Preview batch remains available for inspection."
         )
 
     def _sync_preview_item_button(self) -> None:
@@ -779,6 +861,16 @@ class CollectionBatchDialog(QDialog):
             self.preview_item_button.setEnabled(False)
             self.previewInvalidated.emit()
             return False
+        self.apply_preview_result(result, preview_representative=True)
+        return True
+
+    def apply_preview_result(
+        self,
+        result: BatchPreviewResult,
+        *,
+        preview_representative: bool,
+    ) -> None:
+        """Display one validated plan, optionally calculating a graph sample."""
         self._preview_result = result
         self._reset_run_display()
         self._preview_table_rows = {
@@ -819,9 +911,18 @@ class CollectionBatchDialog(QDialog):
         explicit_outputs = result.explicit_outputs
         messages = [
             f"Showing {len(result)} of {total_items} planned batch item(s). "
-            "The first row is calculated only as a graph representative; the "
-            "full batch has not run and no batch outputs have been saved."
+            "Planning has not saved any batch outputs."
         ]
+        if preview_representative:
+            messages.append(
+                "The first row is calculated only as a graph representative; "
+                "the full batch has not run."
+            )
+        else:
+            messages.append(
+                "No graph representative was calculated; this fresh plan is "
+                "ready for the requested full run."
+            )
         if collision_count:
             messages.append(f"{collision_count} collision(s) need attention.")
         if not explicit_outputs:
@@ -839,19 +940,27 @@ class CollectionBatchDialog(QDialog):
         self.preview_status.setText(" ".join(messages))
         if result.rows:
             self.select_preview_item(0)
-            if self._actions.preview_item is not None:
+            if (
+                preview_representative
+                and self._actions is not None
+                and self._actions.preview_item is not None
+            ):
                 self._preview_selected_item()
-            else:
+            elif preview_representative:
                 self.graph_preview_status.setText(
                     "The full plan is ready. Representative graph preview is "
                     "unavailable in this context."
+                )
+            else:
+                self.graph_preview_status.setText(
+                    "Run preflight is ready. No representative was loaded into "
+                    "the graph; use Preview selected in graph later if desired."
                 )
         else:
             self.graph_preview_status.setText(
                 "The batch plan contains no representative items to preview."
             )
         self._sync_preview_item_button()
-        return True
 
     def begin_run(self, total: int) -> None:
         """Enter retained, determinate item-level batch progress mode."""
@@ -1108,6 +1217,7 @@ class CollectionBatchDialog(QDialog):
                 + ", ".join(missing)
                 + "."
             )
+        self._acknowledge_output_path()
         configured_ids = [source.node_id for source in config.sources]
         ordered_rows = [rows[node_id] for node_id in configured_ids]
         ordered_rows.extend(
@@ -1134,7 +1244,10 @@ class CollectionBatchDialog(QDialog):
         if self._source_rows:
             self.input_edit = self._source_rows[0]["folder"]
             self.pattern_edit = self._source_rows[0]["pattern"]
-        self.output_edit.setText(str(config.resolve_path(config.output_dir)))
+        self._set_output_path(
+            str(config.resolve_path(config.output_dir)),
+            suggested=False,
+        )
         format_index = self.format_combo.findText(config.default_image_format)
         if format_index >= 0:
             self.format_combo.setCurrentIndex(format_index)
@@ -1172,7 +1285,7 @@ class CollectionBatchDialog(QDialog):
             self.output_edit.text(),
         )
         if path:
-            self.output_edit.setText(path)
+            self._set_output_path(path, suggested=False)
 
 __all__ = [
     "BatchDialogValues",

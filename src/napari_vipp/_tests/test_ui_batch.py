@@ -87,6 +87,146 @@ def _actions(result, previewed: list[int]) -> CollectionBatchActions:
     )
 
 
+def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(
+        source_nodes=[
+            {"node_id": "input", "title": "Primary"},
+            {"node_id": "reference", "title": "Reference"},
+        ],
+        actions=_actions(result, []),
+    )
+    qtbot.addWidget(dialog)
+
+    reference = tmp_path / "reference"
+    dialog._source_rows[1]["folder"].setText(str(reference))
+    assert dialog.output_edit.text() == str(reference / "output")
+
+    primary = tmp_path / "primary"
+    dialog._source_rows[0]["folder"].setText(str(primary))
+
+    assert dialog.output_edit.text() == str(primary / "output")
+    assert dialog.output_edit.property("suggestedDefault") is True
+    assert "#f59e0b" in dialog.output_edit.styleSheet()
+    assert "Suggested from the first bound batch source" in dialog.output_edit.toolTip()
+
+    dialog._source_rows[1]["folder"].setText(str(tmp_path / "new-reference"))
+    assert dialog.output_edit.text() == str(primary / "output")
+
+    updated_primary = tmp_path / "updated-primary"
+    dialog._source_rows[0]["folder"].setText(str(updated_primary))
+    assert dialog.output_edit.text() == str(updated_primary / "output")
+
+
+def test_batch_output_suggestion_stops_tracking_after_user_acknowledges(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(tmp_path / "inputs"))
+    suggested = dialog.output_edit.text()
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+
+    qtbot.mouseClick(dialog.output_edit, Qt.LeftButton)
+
+    assert dialog.output_edit.property("suggestedDefault") is False
+    assert dialog.output_edit.styleSheet() == ""
+    dialog.input_edit.setText(str(tmp_path / "different-inputs"))
+    assert dialog.output_edit.text() == suggested
+
+
+def test_clicking_empty_batch_output_prevents_a_later_suggestion(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+
+    qtbot.mouseClick(dialog.output_edit, Qt.LeftButton)
+    dialog.input_edit.setText(str(tmp_path / "inputs"))
+
+    assert dialog.output_edit.text() == ""
+    assert dialog.output_edit.property("suggestedDefault") is False
+
+
+def test_tab_focus_acknowledges_batch_output_suggestion(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(tmp_path / "inputs"))
+    suggested = dialog.output_edit.text()
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    assert dialog.output_edit.property("suggestedDefault") is True
+    dialog.pattern_edit.setFocus(Qt.OtherFocusReason)
+    qtbot.waitUntil(dialog.pattern_edit.hasFocus)
+
+    dialog.output_edit.setFocus(Qt.TabFocusReason)
+    qtbot.waitUntil(dialog.output_edit.hasFocus)
+
+    assert dialog.output_edit.property("suggestedDefault") is False
+    dialog.input_edit.setText(str(tmp_path / "different-inputs"))
+    assert dialog.output_edit.text() == suggested
+
+
+def test_editing_batch_output_replaces_and_acknowledges_suggestion(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(tmp_path / "inputs"))
+    custom_output = tmp_path / "custom-output"
+
+    dialog.output_edit.setText(str(custom_output))
+
+    assert dialog.output_edit.property("suggestedDefault") is False
+    dialog.input_edit.setText(str(tmp_path / "different-inputs"))
+    assert dialog.output_edit.text() == str(custom_output)
+
+
+def test_batch_output_folder_choice_acknowledges_unchanged_suggestion(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(tmp_path / "inputs"))
+    suggested = dialog.output_edit.text()
+    monkeypatch.setattr(
+        "napari_vipp.ui.batch.QFileDialog.getExistingDirectory",
+        lambda *_args, **_kwargs: suggested,
+    )
+
+    dialog._browse_output()
+
+    assert dialog.output_edit.text() == suggested
+    assert dialog.output_edit.property("suggestedDefault") is False
+    dialog.input_edit.setText(str(tmp_path / "different-inputs"))
+    assert dialog.output_edit.text() == suggested
+
+
+def test_loaded_batch_output_is_custom_and_does_not_follow_source(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.input_edit.setText(str(tmp_path / "before-load"))
+
+    dialog._apply_config(result.config)
+
+    configured_output = str(result.config.resolve_path(result.config.output_dir))
+    assert dialog.output_edit.text() == configured_output
+    assert dialog.output_edit.property("suggestedDefault") is False
+    dialog.input_edit.setText(str(tmp_path / "after-load"))
+    assert dialog.output_edit.text() == configured_output
+
+
 def test_batch_dialog_run_request_does_not_accept_workspace(qtbot, tmp_path):
     result = _preview_result(tmp_path)
     dialog = CollectionBatchDialog(actions=_actions(result, []))
@@ -126,6 +266,25 @@ def test_batch_preview_auto_loads_first_representative_and_selection_is_explicit
 
     dialog.preview_table.itemDoubleClicked.emit(dialog.preview_table.item(2, 1))
     assert previewed == [0, 1, 2]
+
+
+def test_plan_only_result_does_not_calculate_a_graph_representative(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    previewed: list[int] = []
+    dialog = CollectionBatchDialog(actions=_actions(result, previewed))
+    qtbot.addWidget(dialog)
+
+    dialog.apply_preview_result(result, preview_representative=False)
+
+    assert dialog._preview_result is result
+    assert previewed == []
+    assert dialog.preview_table.rowCount() == 3
+    assert "No graph representative was calculated" in dialog.preview_status.text()
+    assert "No representative was loaded" in dialog.graph_preview_status.text()
+    assert dialog.preview_item_button.isEnabled()
 
 
 def test_batch_preview_status_tracks_full_plan_item_beyond_table_limit(

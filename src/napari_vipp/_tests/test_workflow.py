@@ -25,6 +25,7 @@ from napari_vipp.core.workflow import (
     deserialize_workflow,
     load_workflow,
     save_workflow,
+    save_workflow_document,
     serialize_workflow,
 )
 
@@ -682,6 +683,44 @@ def test_workflow_preserves_vipp_metadata(tmp_path):
     workflow = load_workflow(path)
 
     assert workflow["metadata"] == metadata
+
+
+def test_workflow_preserves_attached_batch_config_document(tmp_path):
+    document = serialize_workflow(_build_pipeline())
+    batch_config = {
+        "type": "napari-vipp-batch-config",
+        "version": 1,
+        "workflow": {"file": "combined.json", "sha256": "a" * 64},
+        "sources": [],
+    }
+    document["batch_config"] = batch_config
+
+    restored = deserialize_workflow(document)
+    saved = save_workflow_document(tmp_path / "combined.json", document)
+    loaded = load_workflow(saved)
+
+    assert restored["batch_config"] == batch_config
+    assert loaded["batch_config"] == batch_config
+    assert json.loads(saved.read_text(encoding="utf-8"))["batch_config"] == (
+        batch_config
+    )
+
+
+@pytest.mark.parametrize("batch_config", [[], "config", None])
+def test_workflow_rejects_non_object_attached_batch_config(batch_config):
+    document = serialize_workflow(_build_pipeline())
+    document["batch_config"] = batch_config
+
+    with pytest.raises(ValueError, match="batch_config must be an object"):
+        deserialize_workflow(document)
+
+
+def test_workflow_rejects_non_finite_attached_batch_config():
+    document = serialize_workflow(_build_pipeline())
+    document["batch_config"] = {"invalid": float("nan")}
+
+    with pytest.raises(ValueError, match="finite JSON values"):
+        deserialize_workflow(document)
 
 
 def test_workflow_loads_without_thumbnail_metadata():
