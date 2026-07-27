@@ -270,7 +270,10 @@ def _device_oom_once(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
     return value.runtime.allocate(value.payload)
 
 
-def _runtime_descriptor() -> RuntimeDescriptor:
+def _runtime_descriptor(
+    *,
+    interoperability_claims: tuple[str, ...] = (),
+) -> RuntimeDescriptor:
     return RuntimeDescriptor(
         runtime_id="fake-device",
         display_name="Fake device",
@@ -278,16 +281,22 @@ def _runtime_descriptor() -> RuntimeDescriptor:
         array_domain="fake-array",
         device_domain="fake",
         supported_os_families=("Windows", "Linux", "macOS"),
+        interoperability_claims=interoperability_claims,
     )
 
 
-def _library_descriptor() -> ImplementationLibraryDescriptor:
+def _library_descriptor(
+    library_id: str = "fake-library",
+    *,
+    interoperability_claims: tuple[str, ...] = (),
+) -> ImplementationLibraryDescriptor:
     return ImplementationLibraryDescriptor(
-        library_id="fake-library",
+        library_id=library_id,
         display_name="Fake implementation library",
         runtime_ids=("fake-device",),
         array_domain="fake-array",
         supported_os_families=("Windows", "Linux", "macOS"),
+        interoperability_claims=interoperability_claims,
     )
 
 
@@ -454,6 +463,63 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
     assert all(
         not runtime.is_device_value(value) for value in result.host_values.values()
     )
+    registry.close()
+
+
+@pytest.mark.parametrize(
+    ("common_claims", "expected_segments"),
+    [
+        ((), 2),
+        (("fake-zero-copy-v1",), 1),
+    ],
+)
+def test_cross_library_residency_requires_a_common_interoperability_contract(
+    common_claims,
+    expected_segments,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+
+    runtime = _FakeRuntime()
+    first = _implementation_spec("gaussian_blur", _device_copy)
+    second = replace(
+        _implementation_spec("median_filter", _device_copy),
+        implementation_library_id="fake-library-b",
+    )
+    registry = ComputeRegistry(
+        runtime_descriptors=(
+            _runtime_descriptor(interoperability_claims=common_claims),
+        ),
+        library_descriptors=(
+            _library_descriptor(interoperability_claims=common_claims),
+            _library_descriptor(
+                "fake-library-b",
+                interoperability_claims=common_claims,
+            ),
+        ),
+        implementation_specs=(first, second),
+        runtime_factories={"fake-device": lambda: runtime},
+    )
+    request = _request()
+    decisions = {
+        gaussian.id: _decision(gaussian.id, "gaussian_blur", first),
+        median.id: _decision(median.id, "median_filter", second),
+    }
+
+    plan = plan_device_execution(pipeline, decisions, registry, request)
+
+    assert len(plan.segments) == expected_segments
+    if common_claims:
+        assert plan.segments[0].node_ids == (gaussian.id, median.id)
+    else:
+        assert tuple(segment.node_ids for segment in plan.segments) == (
+            (gaussian.id,),
+            (median.id,),
+        )
     registry.close()
 
 

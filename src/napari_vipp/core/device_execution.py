@@ -357,7 +357,11 @@ def plan_device_execution(
 
     eligible: dict[
         str,
-        tuple[NodeExecutionDecision, OperationComputeSpec, tuple[str, str, str]],
+        tuple[
+            NodeExecutionDecision,
+            OperationComputeSpec,
+            tuple[str, str, str, str],
+        ],
     ] = {}
     host_units: dict[str, HostExecutionUnit] = {}
     for node_id in order:
@@ -421,10 +425,16 @@ def plan_device_execution(
             implementation.runtime_id,
             request.device_id,
             implementation.array_domain,
+            implementation.implementation_library_id,
         )
         eligible[node_id] = (decision, implementation, key)
 
-    components = _device_components(order, pipeline.connections, eligible)
+    components = _device_components(
+        order,
+        pipeline.connections,
+        eligible,
+        registry,
+    )
     component_for_node: dict[str, int] = {}
     for index, component in enumerate(components):
         for node_id in component:
@@ -930,8 +940,13 @@ def _device_components(
     connections: Sequence[GraphConnection],
     eligible: Mapping[
         str,
-        tuple[NodeExecutionDecision, OperationComputeSpec, tuple[str, str, str]],
+        tuple[
+            NodeExecutionDecision,
+            OperationComputeSpec,
+            tuple[str, str, str, str],
+        ],
     ],
+    registry: ComputeRegistry,
 ) -> tuple[tuple[str, ...], ...]:
     adjacency: dict[str, set[str]] = {node_id: set() for node_id in eligible}
     for connection in connections:
@@ -939,7 +954,16 @@ def _device_components(
         target = connection.target_id
         if source not in eligible or target not in eligible:
             continue
-        if eligible[source][2] != eligible[target][2]:
+        source_key = eligible[source][2]
+        target_key = eligible[target][2]
+        if source_key[:3] != target_key[:3]:
+            continue
+        source_library = source_key[3]
+        target_library = target_key[3]
+        if source_library != target_library and not registry.interoperability_contract(
+            source_key[0],
+            (source_library, target_library),
+        ):
             continue
         adjacency[source].add(target)
         adjacency[target].add(source)
