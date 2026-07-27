@@ -14,9 +14,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from inspect import getattr_static, isroutine
 from threading import RLock
-from types import MappingProxyType
+from types import MappingProxyType, MemberDescriptorType
+
+import numpy as np
 
 from napari_vipp.core.compute import (
     CacheAdmissibility,
@@ -36,7 +40,38 @@ from napari_vipp.core.compute_specs import (
 )
 
 _CPU_RUNTIME_ID = "cpu-numpy"
-_JSON_PRIMITIVES = (str, bytes, bool, int, float, complex, type(None))
+_EXACT_IMMUTABLE_TYPES = frozenset({str, bytes, bool, int, float, complex, type(None)})
+_RESULT_CONTRACT_TAG = "vipp-result-v1"
+_MISSING = object()
+_REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY = MappingProxyType(
+    {
+        "vipp-cpu-supported-v1": frozenset(
+            {"napari-vipp", "numpy", "scipy", "scikit-image"}
+        ),
+        "cuda-cupy-py312-windows-linux-v1": frozenset(
+            {
+                "napari-vipp",
+                "numpy",
+                "scipy",
+                "scikit-image",
+                "cupy",
+                "cuda-runtime",
+            }
+        ),
+        "cuda-cupy-cucim-py312-windows-linux-v1": frozenset(
+            {
+                "napari-vipp",
+                "numpy",
+                "scipy",
+                "scikit-image",
+                "cupy",
+                "cuda-runtime",
+                "cucim",
+                "cucim-artifact",
+            }
+        ),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +138,24 @@ def implementation_identity(
         implementation_version=spec.implementation_version,
         parity_policy_id=spec.parity_policy_id,
         cache_equivalence_group=spec.cache_equivalence_group,
+    )
+
+
+def scientific_implementation_fingerprint(
+    actual: ScientificImplementationIdentity,
+) -> str:
+    """Digest every producer field required to validate cached provenance."""
+
+    return canonical_digest(
+        {
+            "operation_id": actual.operation_id,
+            "runtime_id": actual.runtime_id,
+            "array_domain": actual.array_domain,
+            "implementation_library_id": actual.implementation_library_id,
+            "implementation_id": actual.implementation_id,
+            "implementation_version": actual.implementation_version,
+            "parity_policy_id": actual.parity_policy_id,
+        }
     )
 
 
@@ -233,6 +286,26 @@ class CacheEquivalenceCatalog:
 EMPTY_CACHE_EQUIVALENCE_CATALOG = CacheEquivalenceCatalog()
 
 
+def required_scientific_dependency_ids(
+    spec: OperationComputeSpec,
+) -> tuple[str, ...]:
+    """Return exact dependency identifiers required by a validated policy.
+
+    Unknown policies fail closed: a new validated environment must explicitly
+    define its scientific dependency identity before its results are cacheable.
+    """
+
+    policy_id = spec.validated_environment_policy_id
+    try:
+        required = _REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY[policy_id]
+    except KeyError as exc:
+        raise ValueError(
+            "Unknown validated environment policy for scientific caching: "
+            f"{policy_id!r}."
+        ) from exc
+    return tuple(sorted(required))
+
+
 def build_scientific_result_key(
     spec: OperationComputeSpec,
     *,
@@ -260,6 +333,14 @@ def build_scientific_result_key(
     parameters = _canonical_mapping(public_parameters, "public_parameters")
     axis_grid = _canonical_mapping(axis_grid_identity or {}, "axis_grid_identity")
     dependencies = _string_mapping(dependency_versions, "dependency_versions")
+    required_dependencies = set(required_scientific_dependency_ids(spec))
+    missing_dependencies = sorted(required_dependencies - dependencies.keys())
+    if missing_dependencies:
+        missing = ", ".join(missing_dependencies)
+        raise ValueError(
+            f"Dependency identity for {spec.validated_environment_policy_id!r} "
+            f"is missing required identifier(s): {missing}."
+        )
     runtime_properties = _canonical_mapping(
         scientifically_relevant_runtime or {},
         "scientifically_relevant_runtime",
@@ -357,7 +438,10 @@ def build_scientific_result_key(
         implementation_id=actual.implementation_id,
         implementation_version=actual.implementation_version,
         dependency_fingerprint=canonical_digest(dependency_payload),
-        result_contract_id=canonical_digest(scientific_contract),
+        result_contract_id=_tagged_result_contract_id(
+            canonical_digest(scientific_contract),
+            actual,
+        ),
     )
 
 
@@ -418,16 +502,51 @@ class ScientificCacheRecord[HostValueT]:
         )
 
 
+def _tagged_result_contract_id(
+    scientific_contract_digest: str,
+    actual: ScientificImplementationIdentity,
+) -> str:
+    return (
+        f"{_RESULT_CONTRACT_TAG}:{scientific_contract_digest}:"
+        f"{scientific_implementation_fingerprint(actual)}"
+    )
+
+
+def _split_result_contract_id(value: str) -> tuple[str, str]:
+    parts = str(value).split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != _RESULT_CONTRACT_TAG
+        or any(len(part) != 64 for part in parts[1:])
+        or any(
+            character not in "0123456789abcdef"
+            for part in parts[1:]
+            for character in part
+        )
+    ):
+        raise ValueError(
+            "Scientific result key lacks a canonical full producer fingerprint."
+        )
+    return parts[1], parts[2]
+
+
 def result_key_matches_implementation(
     key: ScientificResultKey,
     actual: ScientificImplementationIdentity,
 ) -> bool:
-    """Fail-closed check that a key names its exact actual producer."""
+    """Fail-closed check that a key names its full exact actual producer."""
 
+    try:
+        _contract_digest, producer_fingerprint = _split_result_contract_id(
+            key.result_contract_id
+        )
+    except ValueError:
+        return False
     return (
         key.operation_id == actual.operation_id
         and key.implementation_id == actual.implementation_id
         and key.implementation_version == actual.implementation_version
+        and producer_fingerprint == scientific_implementation_fingerprint(actual)
     )
 
 
@@ -441,6 +560,7 @@ def validate_scientific_result_key(key: ScientificResultKey) -> None:
         )
     if any(not isinstance(item, str) or not item.strip() for item in upstream):
         raise ValueError("Upstream fingerprints must be nonempty strings.")
+    _split_result_contract_id(key.result_contract_id)
     # Exercise canonical serialization now rather than at an arbitrary lookup.
     _ = key.digest
 
@@ -461,7 +581,7 @@ def scientific_equivalence_scope_digest(key: ScientificResultKey) -> str:
             "parameter_fingerprint": key.parameter_fingerprint,
             "upstream_fingerprints": key.upstream_fingerprints,
             "dependency_fingerprint": key.dependency_fingerprint,
-            "result_contract_id": key.result_contract_id,
+            "result_contract_id": _split_result_contract_id(key.result_contract_id)[0],
         }
     )
 
@@ -603,6 +723,10 @@ class CacheTransactionConflict(RuntimeError):
     """Raised when a concurrent cache write invalidates a transaction snapshot."""
 
 
+class CacheValueIsolationError(TypeError):
+    """Raised when a host value cannot be copied into an isolated cache record."""
+
+
 class TransientScientificCacheStore[HostValueT]:
     """Thread-safe, host-only, process-local scientific result store."""
 
@@ -642,15 +766,17 @@ class TransientScientificCacheStore[HostValueT]:
         self,
         key: ScientificResultKey,
     ) -> tuple[ScientificCacheRecord[HostValueT], ...]:
-        """Return an immutable snapshot of all actual records for a result key."""
+        """Return validated private copies of records for a result key."""
 
+        validate_scientific_result_key(key)
         digest = key.digest
         with self._lock:
-            return tuple(
+            records = tuple(
                 record
                 for record in self._records.values()
                 if record.key.digest == digest
             )
+        return tuple(self._isolated_record_copy(record) for record in records)
 
     def find_admissible(
         self,
@@ -660,12 +786,17 @@ class TransientScientificCacheStore[HostValueT]:
         current_decision: NodeExecutionDecision,
         planned_implementation: ScientificImplementationIdentity,
     ) -> ScientificCacheRecord[HostValueT] | None:
-        """Return an admissible record, preferring the exact planned producer."""
+        """Select by immutable metadata, then copy only the admitted record."""
 
-        candidates = self.records_for(key)
-        if self._equivalence_catalog.entry_for(planned_implementation) is not None:
-            with self._lock:
-                candidates = tuple(self._records.values())
+        validate_scientific_result_key(key)
+        digest = key.digest
+        reviewed = self._equivalence_catalog.entry_for(planned_implementation)
+        with self._lock:
+            candidates = tuple(
+                record
+                for record in self._records.values()
+                if reviewed is not None or record.key.digest == digest
+            )
         exact = planned_implementation.member_key
         ordered = sorted(
             candidates,
@@ -685,7 +816,7 @@ class TransientScientificCacheStore[HostValueT]:
                 equivalence_catalog=self._equivalence_catalog,
             )
             if admissibility.admissible:
-                return record
+                return self._isolated_record_copy(record)
         return None
 
     def _validate_record(self, record: ScientificCacheRecord[HostValueT]) -> None:
@@ -696,25 +827,47 @@ class TransientScientificCacheStore[HostValueT]:
             raise ValueError(
                 "Cache record key does not name its exact actual implementation."
             )
-        if _contains_non_host_value(record.host_value, self._is_host_value):
-            raise TypeError("Scientific result cache accepts host values only.")
+        _validate_supported_host_value(record.host_value, self._is_host_value)
+
+    def _isolated_record_copy(
+        self,
+        record: ScientificCacheRecord[HostValueT],
+    ) -> ScientificCacheRecord[HostValueT]:
+        """Validate and copy a record without retaining mutable aliases."""
+
+        self._validate_record(record)
+        copied_value = _defensive_deepcopy(record.host_value)
+        copied = ScientificCacheRecord(
+            key=record.key,
+            actual_implementation=record.actual_implementation,
+            host_value=copied_value,
+            fallback_reason=record.fallback_reason,
+            fallback_preference=record.fallback_preference,
+        )
+        self._validate_record(copied)
+        _assert_isolated_host_values(record.host_value, copied_value)
+        return copied
 
     def _commit(
         self,
         records: Mapping[str, ScientificCacheRecord[HostValueT]],
         expected_generation: int,
     ) -> None:
-        for record in records.values():
-            self._validate_record(record)
+        private_records: dict[str, ScientificCacheRecord[HostValueT]] = {}
+        for record_id, record in records.items():
+            private_record = self._isolated_record_copy(record)
+            if private_record.record_id != record_id:
+                raise ValueError("Staged scientific cache record identity changed.")
+            private_records[record_id] = private_record
         with self._lock:
             if self._generation != expected_generation:
                 raise CacheTransactionConflict(
                     "Scientific cache changed while the transaction was open."
                 )
-            if not records:
+            if not private_records:
                 return
             updated = dict(self._records)
-            updated.update(records)
+            updated.update(private_records)
             self._records = updated
             self._generation += 1
 
@@ -752,12 +905,13 @@ class ScientificCacheTransaction[HostValueT]:
         """Validate and stage one record without mutating the store."""
 
         self._ensure_open()
-        self._store._validate_record(record)
-        if record.record_id in self._staged:
+        private_record = self._store._isolated_record_copy(record)
+        if private_record.record_id in self._staged:
             raise ValueError(
-                f"Duplicate staged scientific cache record {record.record_id!r}."
+                "Duplicate staged scientific cache record "
+                f"{private_record.record_id!r}."
             )
-        self._staged[record.record_id] = record
+        self._staged[private_record.record_id] = private_record
         return self
 
     def commit(self) -> None:
@@ -859,43 +1013,297 @@ def _string_mapping(
     return dict(sorted(normalized.items()))
 
 
-def _contains_non_host_value(
+def _defensive_deepcopy[ValueT](value: ValueT) -> ValueT:
+    try:
+        return deepcopy(value)
+    except Exception as exc:
+        raise CacheValueIsolationError(
+            "Scientific cache host value could not be deep-copied."
+        ) from exc
+
+
+def _assert_isolated_host_values(original: object, copied: object) -> None:
+    original_ids, original_arrays = _host_alias_graph(original)
+    copied_ids, copied_arrays = _host_alias_graph(copied)
+    if original_ids.intersection(copied_ids):
+        raise CacheValueIsolationError(
+            "Scientific cache deep copy retained a mutable or opaque alias."
+        )
+    for original_array in original_arrays:
+        for copied_array in copied_arrays:
+            try:
+                shares_memory = bool(np.shares_memory(original_array, copied_array))
+            except Exception as exc:
+                raise CacheValueIsolationError(
+                    "Scientific cache could not prove native array isolation."
+                ) from exc
+            if shares_memory:
+                raise CacheValueIsolationError(
+                    "Scientific cache deep copy retained shared native array memory."
+                )
+
+
+def _host_alias_graph(
+    value: object,
+) -> tuple[set[int], tuple[np.ndarray, ...]]:
+    identities: set[int] = set()
+    arrays: list[np.ndarray] = []
+    seen: set[int] = set()
+
+    def visit(item: object) -> None:
+        if _is_deeply_immutable(item):
+            return
+        identity = id(item)
+        if identity in seen:
+            return
+        seen.add(identity)
+        identities.add(identity)
+        if type(item) is np.ndarray:
+            arrays.append(item)
+            return
+        if type(item) is dict:
+            for key, child in item.items():
+                visit(key)
+                visit(child)
+            return
+        if type(item) in {tuple, list, set, frozenset}:
+            for child in item:
+                visit(child)
+            return
+        state = _python_object_state(item)
+        if state is None:
+            raise CacheValueIsolationError(
+                "Scientific cache encountered opaque or native host storage."
+            )
+        for child in state:
+            visit(child)
+
+    visit(value)
+    return identities, tuple(arrays)
+
+
+def _is_deeply_immutable(
+    value: object,
+    active: set[int] | None = None,
+) -> bool:
+    if type(value) in _EXACT_IMMUTABLE_TYPES:
+        return True
+    if _is_supported_numpy_scalar(value):
+        return True
+    if type(value) not in {tuple, frozenset}:
+        return False
+    if active is None:
+        active = set()
+    identity = id(value)
+    if identity in active:
+        return False
+    active.add(identity)
+    try:
+        return all(_is_deeply_immutable(item, active) for item in value)
+    finally:
+        active.remove(identity)
+
+
+def _validate_supported_host_value(
     value: object,
     is_host_value: Callable[[object], bool],
     seen: set[int] | None = None,
-) -> bool:
-    # The CUDA array protocol is provider-neutral and unambiguously device-like.
-    if hasattr(value, "__cuda_array_interface__"):
-        return True
-    if isinstance(value, _JSON_PRIMITIVES):
-        return False
+) -> None:
     if seen is None:
         seen = set()
-    identity = id(value)
-    if identity in seen:
-        return False
-    seen.add(identity)
-    if isinstance(value, Mapping):
-        return any(
-            _contains_non_host_value(item, is_host_value, seen)
-            for pair in value.items()
-            for item in pair
-        )
-    if isinstance(value, (tuple, list, set, frozenset)):
-        return any(
-            _contains_non_host_value(item, is_host_value, seen) for item in value
-        )
+
+    def visit(item: object) -> None:
+        if _has_cuda_array_interface(item):
+            raise TypeError(
+                "Scientific result cache accepts host values only; "
+                "a CUDA array interface was found."
+            )
+        if type(item) in _EXACT_IMMUTABLE_TYPES or _is_supported_numpy_scalar(item):
+            return
+
+        identity = id(item)
+        if identity in seen:
+            return
+        seen.add(identity)
+
+        if isinstance(item, np.ndarray):
+            if item.dtype.hasobject:
+                for child in item.flat:
+                    visit(child)
+                raise TypeError("Scientific cache rejects object-dtype host arrays.")
+            if type(item) is not np.ndarray:
+                raise TypeError(
+                    "Scientific cache rejects ndarray subclasses and native views."
+                )
+            return
+        if _supports_native_buffer(item):
+            raise TypeError(
+                "Scientific cache rejects unsupported native buffer values."
+            )
+
+        if isinstance(item, tuple) and type(item) is not tuple:
+            raise TypeError("Scientific cache rejects tuple subclasses.")
+        if any(
+            isinstance(item, primitive_type)
+            for primitive_type in _EXACT_IMMUTABLE_TYPES
+            if primitive_type is not type(None)
+        ):
+            raise TypeError("Scientific cache rejects primitive subclasses.")
+
+        if type(item) is dict:
+            for key, child in item.items():
+                visit(key)
+                visit(child)
+            return
+        if type(item) in {tuple, list, set, frozenset}:
+            for child in item:
+                visit(child)
+            return
+        if isinstance(item, (dict, list, set, frozenset)):
+            raise TypeError("Scientific cache rejects container subclasses.")
+        try:
+            approved = bool(is_host_value(item))
+        except Exception as exc:
+            raise TypeError(
+                "Host-value predicate failed while validating cache data."
+            ) from exc
+        if not approved:
+            raise TypeError("Scientific result cache accepts host values only.")
+        state = _python_object_state(item)
+        if state is None:
+            raise TypeError("Scientific cache rejects opaque or native host values.")
+        for child in state:
+            visit(child)
+
+    visit(value)
+
+
+def _supports_native_buffer(value: object) -> bool:
     try:
-        return not bool(is_host_value(value))
+        buffer_view = memoryview(value)
+    except TypeError:
+        return False
     except Exception as exc:
         raise TypeError(
-            "Host-value predicate failed while validating cache data."
+            "Scientific cache could not inspect native buffer storage."
         ) from exc
+    buffer_view.release()
+    return True
+
+
+def _has_cuda_array_interface(value: object) -> bool:
+    try:
+        static_marker = getattr_static(value, "__cuda_array_interface__", _MISSING)
+    except Exception as exc:
+        raise TypeError(
+            "Scientific cache could not inspect device-array protocols."
+        ) from exc
+    if static_marker is not _MISSING:
+        return True
+    try:
+        _ = value.__cuda_array_interface__
+    except AttributeError:
+        return False
+    except Exception as exc:
+        raise TypeError(
+            "Scientific cache could not inspect device-array protocols."
+        ) from exc
+    return True
+
+
+def _is_supported_numpy_scalar(value: object) -> bool:
+    return (
+        isinstance(value, np.generic)
+        and type(value).__module__.startswith("numpy")
+        and not value.dtype.hasobject
+    )
+
+
+def _python_object_state(value: object) -> tuple[object, ...] | None:
+    state: list[object] = []
+    has_state_schema = False
+    try:
+        attributes = object.__getattribute__(value, "__dict__")
+    except AttributeError:
+        pass
+    except Exception as exc:
+        raise CacheValueIsolationError(
+            "Scientific cache could not inspect host object state."
+        ) from exc
+    else:
+        if not isinstance(attributes, dict):
+            raise CacheValueIsolationError(
+                "Scientific cache host object has a non-dictionary __dict__."
+            )
+        has_state_schema = True
+        state.extend(attributes.values())
+
+    for slot_name in _declared_slot_names(type(value)):
+        has_state_schema = True
+        try:
+            child = object.__getattribute__(value, slot_name)
+        except AttributeError:
+            continue
+        except Exception as exc:
+            raise CacheValueIsolationError(
+                "Scientific cache could not inspect host object slots."
+            ) from exc
+        state.append(child)
+
+    state.extend(_class_level_state(type(value)))
+
+    if not has_state_schema:
+        return None
+    return tuple(state)
+
+
+def _class_level_state(value_type: type) -> tuple[object, ...]:
+    state: list[object] = []
+    for owner in value_type.__mro__:
+        for name, value in owner.__dict__.items():
+            if name.startswith("__") and name.endswith("__"):
+                continue
+            if isinstance(value, MemberDescriptorType):
+                continue
+            if isinstance(value, (staticmethod, classmethod)):
+                continue
+            if isroutine(value) or isinstance(value, type):
+                continue
+            try:
+                descriptor = getattr_static(value, "__get__", _MISSING)
+            except Exception as exc:
+                raise CacheValueIsolationError(
+                    "Scientific cache could not inspect class-level state."
+                ) from exc
+            if descriptor is not _MISSING:
+                raise CacheValueIsolationError(
+                    "Scientific cache rejects ambiguous class data descriptors."
+                )
+            state.append(value)
+    return tuple(state)
+
+
+def _declared_slot_names(value_type: type) -> tuple[str, ...]:
+    names: list[str] = []
+    for owner in value_type.__mro__:
+        raw_slots = owner.__dict__.get("__slots__", ())
+        slots = (raw_slots,) if isinstance(raw_slots, str) else tuple(raw_slots)
+        for raw_name in slots:
+            name = str(raw_name)
+            if name in {"__dict__", "__weakref__"}:
+                continue
+            if name.startswith("__") and not name.endswith("__"):
+                owner_name = owner.__name__.lstrip("_")
+                name = f"_{owner_name}{name}"
+            if name not in names:
+                names.append(name)
+    return tuple(names)
 
 
 __all__ = [
     "CacheEquivalenceCatalog",
     "CacheTransactionConflict",
+    "CacheValueIsolationError",
     "EMPTY_CACHE_EQUIVALENCE_CATALOG",
     "ReviewedCacheEquivalence",
     "ScientificCacheRecord",
@@ -905,7 +1313,9 @@ __all__ = [
     "build_scientific_result_key",
     "evaluate_cache_admissibility",
     "implementation_identity",
+    "required_scientific_dependency_ids",
     "result_key_matches_implementation",
     "scientific_equivalence_scope_digest",
+    "scientific_implementation_fingerprint",
     "validate_scientific_result_key",
 ]
