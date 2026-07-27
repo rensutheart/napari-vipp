@@ -574,6 +574,47 @@ def test_real_runtime_scope_releases_its_private_pool_when_cuda_is_available():
     runtime.close()
 
 
+def test_real_runtime_classifies_oom_cleans_and_recovers_on_next_scope():
+    pytest.importorskip("cupy")
+    runtime = CuPyRuntime()
+    probe = runtime.probe()
+    if not probe.available:
+        pytest.skip(probe.message)
+
+    oversized = np.ones(2 * 1024**2 // np.dtype(np.float32).itemsize, dtype=np.float32)
+    with pytest.raises(Exception) as raised:
+        with runtime.execution_scope(
+            device_id=probe.selected_device_id,
+            memory_limit_bytes=1024**2,
+            safety_reserve_bytes=0,
+        ):
+            runtime.to_device(oversized, device_id=probe.selected_device_id)
+
+    failure = runtime.classify_exception(raised.value)
+    assert failure.kind is RuntimeExceptionKind.OUT_OF_MEMORY
+    assert failure.retryable
+    snapshot = runtime.memory_snapshot(device_id=probe.selected_device_id)
+    assert snapshot.runtime_live_bytes == 0
+    assert snapshot.runtime_reserved_bytes == 0
+    assert runtime.probe().available
+
+    recovery = np.arange(4096, dtype=np.float32)
+    with runtime.execution_scope(
+        device_id=probe.selected_device_id,
+        memory_limit_bytes=8 * 1024**2,
+        safety_reserve_bytes=0,
+    ):
+        device = runtime.to_device(recovery, device_id=probe.selected_device_id)
+        np.testing.assert_array_equal(runtime.to_host(device), recovery)
+        runtime.release(device)
+        del device
+
+    recovered = runtime.memory_snapshot(device_id=probe.selected_device_id)
+    assert recovered.runtime_live_bytes == 0
+    assert recovered.runtime_reserved_bytes == 0
+    runtime.close()
+
+
 def test_real_runtime_keeps_a_view_valid_after_releasing_its_base():
     cupy = pytest.importorskip("cupy")
     runtime = CuPyRuntime()
