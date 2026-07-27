@@ -74,6 +74,17 @@ class _FakeDeviceArray:
         raise AssertionError("Device values must remain opaque outside the runtime.")
 
 
+class _FakeTracebackScratch:
+    """Track a value whose only lasting owner is a provider traceback frame."""
+
+    def __init__(self, runtime: _FakeRuntime) -> None:
+        self.runtime = runtime
+        runtime.traceback_scratch_live += 1
+
+    def __del__(self) -> None:
+        self.runtime.traceback_scratch_live -= 1
+
+
 class _FakeRuntime:
     runtime_id = "fake-device"
     array_domain = "fake-array"
@@ -92,6 +103,9 @@ class _FakeRuntime:
         self.closed = False
         self.scope_active = False
         self.cleanup_fails_after_oom = False
+        self.oom_was_classified = False
+        self.classified_inside_scope: list[bool] = []
+        self.traceback_scratch_live = 0
 
     def allocate(self, payload: object) -> _FakeDeviceArray:
         value = _FakeDeviceArray(self, payload)
@@ -130,6 +144,11 @@ class _FakeRuntime:
                     "private allocation remained live after OOM"
                 ) from exc
             raise
+        else:
+            if self.cleanup_fails_after_oom and self.oom_was_classified:
+                raise _FakeCleanupFailure(
+                    "private allocation remained live after detached OOM"
+                )
         finally:
             self.scope_active = False
             self.events.append(("scope-exit", device_id))
@@ -181,6 +200,7 @@ class _FakeRuntime:
         )
 
     def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo:
+        self.classified_inside_scope.append(self.scope_active)
         if isinstance(exc, _FakeCleanupFailure):
             return RuntimeExceptionInfo(
                 RuntimeExceptionKind.KERNEL_FAILURE,
@@ -190,6 +210,7 @@ class _FakeRuntime:
                 retryable=False,
             )
         if isinstance(exc, _FakeOOM):
+            self.oom_was_classified = True
             return RuntimeExceptionInfo(
                 RuntimeExceptionKind.OUT_OF_MEMORY,
                 "fake_oom",
@@ -268,6 +289,35 @@ def _device_oom_once(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
         value.runtime.oom_remaining -= 1
         raise _FakeOOM("synthetic device allocation failure")
     return value.runtime.allocate(value.payload)
+
+
+def _device_oom_once_with_traceback_scratch(
+    value: _FakeDeviceArray,
+    **_kwargs,
+) -> _FakeDeviceArray:
+    assert not value.released
+    value.runtime.operation_count += 1
+    if value.runtime.oom_remaining:
+        value.runtime.oom_remaining -= 1
+        scratch = _FakeTracebackScratch(value.runtime)
+        assert scratch.runtime is value.runtime
+        raise _FakeOOM("synthetic kernel OOM with traceback-local scratch")
+    return value.runtime.allocate(value.payload)
+
+
+def _cupy_kernel_oom_or_copy(value, *, sigma=0.0, **_kwargs):
+    """Create traceback-local private allocations before a real CuPy OOM."""
+
+    import cupy
+
+    if float(sigma) != 0.0:
+        return value.copy()
+    scratch = cupy.empty_like(value)
+    assert scratch.shape == value.shape
+    # The focused integration test installs an 8 MiB private-pool limit.  This
+    # request is deliberately larger and therefore cannot consume device-wide
+    # memory outside the runtime-owned allocator.
+    return cupy.empty((32 * 1024**2,), dtype=cupy.uint8)
 
 
 def _runtime_descriptor(
@@ -817,7 +867,168 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
     assert runtime.host_to_device_count == 1
     assert runtime.device_to_host_count == 0
     assert runtime.live == {}
+    assert runtime.classified_inside_scope == [True]
     registry.close()
+
+
+def test_kernel_oom_traceback_is_detached_before_scope_cleanup_and_reuse():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    runtime.oom_remaining = 1
+    registry, specs = _registry(
+        runtime,
+        (("gaussian_blur", _device_oom_once_with_traceback_scratch),),
+    )
+    request = _request(FallbackPolicy.VISIBLE)
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+
+    first = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+    )
+
+    assert first.fallback_segment_ids == (plan.segments[0].segment_id,)
+    assert runtime.classified_inside_scope == [True]
+    assert runtime.traceback_scratch_live == 0
+    assert runtime.live == {}
+
+    second = execute_device_plan(
+        plan,
+        pipeline,
+        registry,
+        request,
+        host_values={OutputPortKey("input", 0): data},
+        prepare_call=_prepare_call(pipeline),
+    )
+
+    assert second.fallback_segment_ids == ()
+    np.testing.assert_array_equal(
+        second.host_values[OutputPortKey(gaussian.id, 0)],
+        data,
+    )
+    assert runtime.traceback_scratch_live == 0
+    assert runtime.live == {}
+    assert runtime.operation_count == 2
+    registry.close()
+
+
+def test_real_cupy_kernel_oom_falls_back_and_runtime_remains_reusable():
+    cupy = pytest.importorskip("cupy")
+    try:
+        if int(cupy.cuda.runtime.getDeviceCount()) < 1:
+            pytest.skip("No CUDA device is available.")
+        cupy.zeros(1, dtype=cupy.float32).sum().item()
+    except Exception as exc:
+        pytest.skip(f"A working CUDA device is unavailable: {exc}")
+
+    base = next(
+        spec
+        for spec in compute_specs_for(
+            "gaussian_blur",
+            include_cpu=False,
+            allow_experimental=True,
+        )
+        if spec.runtime_id == "cuda-cupy"
+    )
+    implementation = replace(
+        base,
+        implementation_id="test-cupy-kernel-oom-v1",
+        callable_ref=f"{__name__}:_cupy_kernel_oom_or_copy",
+    )
+    registry = ComputeRegistry(implementation_specs=(implementation,))
+    runtime = registry.runtime(implementation.runtime_id)
+    probe = runtime.probe()
+    if not probe.available or not probe.selected_device_id:
+        registry.close()
+        pytest.skip(probe.message or "The CUDA runtime is unavailable.")
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        fallback_policy=FallbackPolicy.VISIBLE,
+        runtime_id=implementation.runtime_id,
+        device_id=probe.selected_device_id,
+        accelerator_memory_cap_bytes=8 * 1024**2,
+        accelerator_safety_reserve_bytes=0,
+        allow_experimental=True,
+    )
+    plan = plan_device_execution(
+        pipeline,
+        {
+            gaussian.id: _decision(
+                gaussian.id,
+                gaussian.operation_id,
+                implementation,
+            )
+        },
+        registry,
+        request,
+    )
+    data = np.arange(81, dtype=np.float32).reshape(9, 9)
+
+    try:
+        first = execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): data},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+        assert first.fallback_segment_ids == (plan.segments[0].segment_id,)
+        np.testing.assert_array_equal(
+            first.host_values[OutputPortKey(gaussian.id, 0)],
+            data,
+        )
+        first_terminal = runtime.memory_snapshot(
+            device_id=probe.selected_device_id
+        )
+        assert first_terminal.runtime_live_bytes == 0
+        assert first_terminal.runtime_reserved_bytes == 0
+        assert runtime.probe(refresh=True).available
+
+        pipeline.set_param(gaussian.id, "sigma", 1.0)
+        second = execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={OutputPortKey("input", 0): data},
+            prepare_call=_prepare_call(pipeline),
+        )
+
+        assert second.fallback_segment_ids == ()
+        np.testing.assert_array_equal(
+            second.host_values[OutputPortKey(gaussian.id, 0)],
+            data,
+        )
+        second_terminal = runtime.memory_snapshot(
+            device_id=probe.selected_device_id
+        )
+        assert second_terminal.runtime_live_bytes == 0
+        assert second_terminal.runtime_reserved_bytes == 0
+        assert runtime.probe(refresh=True).available
+    finally:
+        registry.close()
 
 
 def test_cleanup_failure_overrides_oom_and_prevents_visible_cpu_fallback():

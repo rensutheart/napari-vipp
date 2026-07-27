@@ -94,6 +94,21 @@ class DeviceExecutionError(RuntimeError):
         )
 
 
+class _DetachedRuntimeFailure(RuntimeError):
+    """Carry classified provider failure data without its device traceback.
+
+    Provider exceptions may retain adapter frames whose locals still reference
+    private-pool arrays.  Raising those exceptions through ``execution_scope``
+    makes terminal cleanup observe allocations that are reachable only through
+    the traceback.  This wrapper is created only after the scope has cleaned up
+    and retains the immutable, provider-neutral classification instead.
+    """
+
+    def __init__(self, failure: RuntimeExceptionInfo) -> None:
+        self.failure = failure
+        super().__init__(failure.reason_code)
+
+
 @dataclass(frozen=True, slots=True)
 class HostExecutionUnit:
     """One source, CPU operation, or explicit host/writer boundary."""
@@ -650,6 +665,8 @@ def execute_device_plan(
 
         runtime = runtimes[unit.segment.runtime_id]
         segment_cleanup = _CleanupStatus()
+        failure: RuntimeExceptionInfo | None = None
+        failure_cause: BaseException | None = None
         try:
             provisional = _execute_device_segment(
                 unit,
@@ -665,8 +682,16 @@ def execute_device_plan(
             )
         except OperationCancelled:
             raise
+        except _DetachedRuntimeFailure as exc:
+            failure = exc.failure
         except Exception as exc:
             failure = _classify_runtime_exception(runtime, exc)
+            failure_cause = exc
+        finally:
+            cleanup_succeeded = (
+                cleanup_succeeded and segment_cleanup.succeeded
+            )
+        if failure is not None:
             if (
                 failure.kind is RuntimeExceptionKind.OUT_OF_MEMORY
                 and failure.retryable
@@ -684,11 +709,10 @@ def execute_device_plan(
                 )
                 fallback_segments.append(unit.segment.segment_id)
             else:
-                raise DeviceExecutionError(unit.segment.segment_id, failure) from exc
-        finally:
-            cleanup_succeeded = (
-                cleanup_succeeded and segment_cleanup.succeeded
-            )
+                error = DeviceExecutionError(unit.segment.segment_id, failure)
+                if failure_cause is None:
+                    raise error from None
+                raise error from failure_cause
         committed.update(provisional)
 
     _ensure_host_only(committed, tuple(runtimes.values()))
@@ -760,116 +784,132 @@ def _execute_device_segment(
     persistent = set(segment.exit_ports) | set(segment.retained_ports)
     store = _SegmentStore(runtime, request.device_id)
     provisional: dict[OutputPortKey, object] = {}
+    detached_failure: RuntimeExceptionInfo | None = None
     with runtime.execution_scope(
         device_id=request.device_id,
         memory_limit_bytes=request.accelerator_memory_cap_bytes,
         safety_reserve_bytes=request.accelerator_safety_reserve_bytes,
     ):
         try:
-            for port in segment.entry_ports:
-                _check_cancelled(cancel_callback)
-                try:
-                    host_value = committed[port]
-                except KeyError as exc:
-                    raise DevicePlanningError(
-                        f"Segment {segment.segment_id!r} is missing host entry "
-                        f"{port.node_id!r} output {port.port_index}."
-                    ) from exc
-                device_value = runtime.to_device(
-                    host_value,
-                    device_id=request.device_id,
-                )
-                try:
-                    store.add(
-                        port,
-                        device_value,
-                        remaining_consumers=counts.get(port, 0),
-                        persistent=False,
+            try:
+                for port in segment.entry_ports:
+                    _check_cancelled(cancel_callback)
+                    try:
+                        host_value = committed[port]
+                    except KeyError as exc:
+                        raise DevicePlanningError(
+                            f"Segment {segment.segment_id!r} is missing host entry "
+                            f"{port.node_id!r} output {port.port_index}."
+                        ) from exc
+                    device_value = runtime.to_device(
+                        host_value,
+                        device_id=request.device_id,
                     )
-                except Exception:
-                    if runtime.is_device_value(device_value) and not store.owns(
-                        device_value
-                    ):
-                        _release_quietly(runtime, device_value)
-                    raise
-
-            for node_id, implementation in zip(
-                segment.node_ids,
-                unit.implementation_specs,
-                strict=True,
-            ):
-                _check_cancelled(cancel_callback)
-                connections = pipeline._input_connections(node_id)
-                input_ports = tuple(
-                    OutputPortKey(connection.source_id, connection.source_port)
-                    for connection in connections
-                )
-                inputs = tuple(store.value(port) for port in input_ports)
-                call = prepare_call(node_id, inputs)
-                _validate_prepared_call(
-                    call,
-                    node_id,
-                    pipeline.nodes[node_id].operation_id,
-                    len(pipeline.output_ports(node_id)),
-                )
-                # Resolution remains lazy and occurs only after preflight and
-                # after the segment's runtime scope has been entered.
-                implementation_callable = registry.implementation_callable(
-                    implementation,
-                    allow_experimental=request.allow_experimental,
-                )
-                raw = implementation_callable(
-                    call.positional_input(),
-                    **call.keyword_arguments(),
-                )
-                try:
-                    outputs = _normalized_outputs(raw, call.output_port_count)
-                except Exception:
-                    _release_orphan_outputs(runtime, raw, store)
-                    raise
-                invalid = tuple(
-                    value for value in outputs if not runtime.is_device_value(value)
-                )
-                if invalid:
-                    _release_orphan_outputs(runtime, outputs, store)
-                    raise TypeError(
-                        f"Implementation {implementation.implementation_id!r} "
-                        "returned a host value inside a device segment."
-                    )
-                try:
-                    for index, value in enumerate(outputs):
-                        port = OutputPortKey(node_id, index)
+                    try:
                         store.add(
                             port,
-                            value,
+                            device_value,
                             remaining_consumers=counts.get(port, 0),
-                            persistent=port in persistent,
+                            persistent=False,
                         )
-                except Exception:
-                    # Earlier outputs may already be owned by ``store`` while
-                    # the value which failed registration is still orphaned.
-                    # Release only the latter; the transactional ``finally``
-                    # block owns cleanup of every successfully registered one.
-                    _release_orphan_outputs(runtime, outputs, store)
-                    raise
-                if node_outputs_callback is not None:
-                    node_outputs_callback(
-                        node_id,
-                        call,
-                        outputs,
-                        segment.runtime_id,
-                    )
-                for port in input_ports:
-                    store.consume(port)
-                for index in range(len(outputs)):
-                    store.release_if_dead(OutputPortKey(node_id, index))
+                    except Exception:
+                        if runtime.is_device_value(device_value) and not store.owns(
+                            device_value
+                        ):
+                            _release_quietly(runtime, device_value)
+                        raise
 
-            for port in _unique_ports((*segment.exit_ports, *segment.retained_ports)):
+                for node_id, implementation in zip(
+                    segment.node_ids,
+                    unit.implementation_specs,
+                    strict=True,
+                ):
+                    _check_cancelled(cancel_callback)
+                    connections = pipeline._input_connections(node_id)
+                    input_ports = tuple(
+                        OutputPortKey(
+                            connection.source_id,
+                            connection.source_port,
+                        )
+                        for connection in connections
+                    )
+                    inputs = tuple(store.value(port) for port in input_ports)
+                    call = prepare_call(node_id, inputs)
+                    _validate_prepared_call(
+                        call,
+                        node_id,
+                        pipeline.nodes[node_id].operation_id,
+                        len(pipeline.output_ports(node_id)),
+                    )
+                    # Resolution remains lazy and occurs only after preflight and
+                    # after the segment's runtime scope has been entered.
+                    implementation_callable = registry.implementation_callable(
+                        implementation,
+                        allow_experimental=request.allow_experimental,
+                    )
+                    raw = implementation_callable(
+                        call.positional_input(),
+                        **call.keyword_arguments(),
+                    )
+                    try:
+                        outputs = _normalized_outputs(raw, call.output_port_count)
+                    except Exception:
+                        _release_orphan_outputs(runtime, raw, store)
+                        raise
+                    invalid = tuple(
+                        value
+                        for value in outputs
+                        if not runtime.is_device_value(value)
+                    )
+                    if invalid:
+                        _release_orphan_outputs(runtime, outputs, store)
+                        raise TypeError(
+                            f"Implementation {implementation.implementation_id!r} "
+                            "returned a host value inside a device segment."
+                        )
+                    try:
+                        for index, value in enumerate(outputs):
+                            port = OutputPortKey(node_id, index)
+                            store.add(
+                                port,
+                                value,
+                                remaining_consumers=counts.get(port, 0),
+                                persistent=port in persistent,
+                            )
+                    except Exception:
+                        # Earlier outputs may already be owned by ``store`` while
+                        # the value which failed registration is still orphaned.
+                        # Release only the latter; the transactional ``finally``
+                        # block owns cleanup of every successfully registered one.
+                        _release_orphan_outputs(runtime, outputs, store)
+                        raise
+                    if node_outputs_callback is not None:
+                        node_outputs_callback(
+                            node_id,
+                            call,
+                            outputs,
+                            segment.runtime_id,
+                        )
+                    for port in input_ports:
+                        store.consume(port)
+                    for index in range(len(outputs)):
+                        store.release_if_dead(OutputPortKey(node_id, index))
+
+                for port in _unique_ports(
+                    (*segment.exit_ports, *segment.retained_ports)
+                ):
+                    _check_cancelled(cancel_callback)
+                    provisional[port] = runtime.to_host(store.value(port))
                 _check_cancelled(cancel_callback)
-                provisional[port] = runtime.to_host(store.value(port))
-            _check_cancelled(cancel_callback)
-            runtime.synchronize(device_id=request.device_id)
-            return provisional
+                runtime.synchronize(device_id=request.device_id)
+            except OperationCancelled:
+                raise
+            except Exception as exc:
+                # Classify while provider types are available, then suppress
+                # the provider exception before leaving the private allocator
+                # scope.  Once this handler ends, its traceback -- including
+                # adapter-local scratch arrays -- is no longer retained.
+                detached_failure = _classify_runtime_exception(runtime, exc)
         finally:
             # Release while the runtime's private allocator/device scope still
             # owns these arrays.  Releasing after ``__exit__`` can strand pool
@@ -890,6 +930,10 @@ def _execute_device_segment(
             outputs = ()
             invalid = ()
             value = None
+
+    if detached_failure is not None:
+        raise _DetachedRuntimeFailure(detached_failure) from None
+    return provisional
 
 
 def _execute_cpu_segment_fallback(
