@@ -1,0 +1,836 @@
+"""Lazy runtime and implementation registry for optional compute providers.
+
+The registry stores immutable descriptors and import strings.  Constructing or
+validating it never imports a provider module, creates a device context, or
+discovers third-party entry points.  A runtime factory or implementation
+callable is resolved only after an execution request explicitly asks for it.
+"""
+
+from __future__ import annotations
+
+import importlib
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager
+from dataclasses import asdict, dataclass
+from enum import StrEnum
+from types import MappingProxyType
+from typing import Protocol, runtime_checkable
+
+from napari_vipp.core.compute import MemoryTopology
+from napari_vipp.core.compute_policy import validate_spec_policy_references
+from napari_vipp.core.compute_specs import (
+    AdmissionTier,
+    OperationComputeSpec,
+    accelerator_compute_specs,
+    validate_compute_specs,
+)
+
+
+def _required_text(value: object, field_name: str) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must not be empty.")
+    return normalized
+
+
+def _validated_ref(value: object, field_name: str) -> str:
+    reference = _required_text(value, field_name)
+    module_name, separator, attribute = reference.partition(":")
+    if not separator or not module_name.strip() or not attribute.strip():
+        raise ValueError(f"{field_name} must use 'module:attribute' syntax.")
+    return reference
+
+
+def _normalized_strings(values: Sequence[object]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(str(value).strip() for value in values if str(value).strip())
+    )
+
+
+def _normalized_nonempty(values: Sequence[object], field_name: str) -> tuple[str, ...]:
+    normalized = _normalized_strings(values)
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one value.")
+    return normalized
+
+
+def _normalized_metadata(
+    values: Sequence[tuple[object, object]],
+) -> tuple[tuple[str, str], ...]:
+    normalized = tuple((str(key).strip(), str(value)) for key, value in values)
+    if any(not key for key, _value in normalized):
+        raise ValueError("metadata keys must not be empty.")
+    if len({key for key, _value in normalized}) != len(normalized):
+        raise ValueError("metadata keys must be unique.")
+    return normalized
+
+
+def _validate_optional_bytes(
+    value: object,
+    field_name: str,
+    *,
+    optional: bool = True,
+) -> None:
+    if value is None and optional:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        suffix = " or None" if optional else ""
+        raise ValueError(f"{field_name} must be a non-negative integer{suffix}.")
+
+
+class RuntimeExceptionKind(StrEnum):
+    """Provider-neutral classification of a runtime failure."""
+
+    OUT_OF_MEMORY = "out_of_memory"
+    RUNTIME_UNAVAILABLE = "runtime_unavailable"
+    INVALID_DEVICE = "invalid_device"
+    KERNEL_FAILURE = "kernel_failure"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDevice:
+    """One device reported by a runtime probe."""
+
+    device_id: str
+    display_name: str
+    total_memory_bytes: int | None = None
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "device_id", _required_text(self.device_id, "device_id")
+        )
+        object.__setattr__(
+            self,
+            "display_name",
+            _required_text(self.display_name, "display_name"),
+        )
+        _validate_optional_bytes(self.total_memory_bytes, "total_memory_bytes")
+        object.__setattr__(self, "metadata", _normalized_metadata(self.metadata))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "device_id": self.device_id,
+            "display_name": self.display_name,
+            "total_memory_bytes": self.total_memory_bytes,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProbeResult:
+    """JSON-safe result of an explicitly requested runtime probe."""
+
+    runtime_id: str
+    available: bool
+    version: str = ""
+    devices: tuple[RuntimeDevice, ...] = ()
+    selected_device_id: str = ""
+    reason_code: str = ""
+    message: str = ""
+    environment_fingerprint: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "runtime_id",
+            _required_text(self.runtime_id, "runtime_id"),
+        )
+        if not isinstance(self.available, bool):
+            raise TypeError("available must be a boolean.")
+        devices = tuple(self.devices)
+        if any(not isinstance(device, RuntimeDevice) for device in devices):
+            raise TypeError("devices must contain RuntimeDevice values.")
+        device_ids = tuple(device.device_id for device in devices)
+        if len(set(device_ids)) != len(device_ids):
+            raise ValueError("runtime probe device IDs must be unique.")
+        selected = str(self.selected_device_id).strip()
+        if selected and selected not in device_ids:
+            raise ValueError("selected_device_id must reference a reported device.")
+        object.__setattr__(self, "version", str(self.version).strip())
+        object.__setattr__(self, "devices", devices)
+        object.__setattr__(self, "selected_device_id", selected)
+        for name in ("reason_code", "message", "environment_fingerprint"):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        object.__setattr__(self, "metadata", _normalized_metadata(self.metadata))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "runtime_id": self.runtime_id,
+            "available": self.available,
+            "version": self.version,
+            "devices": [device.as_dict() for device in self.devices],
+            "selected_device_id": self.selected_device_id,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "environment_fingerprint": self.environment_fingerprint,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMemorySnapshot:
+    """Device-wide and runtime-owned memory observed at one checkpoint."""
+
+    runtime_id: str
+    device_id: str
+    topology: MemoryTopology | str
+    device_total_bytes: int | None = None
+    device_free_bytes: int | None = None
+    runtime_live_bytes: int = 0
+    runtime_reserved_bytes: int = 0
+    out_of_pool_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "runtime_id",
+            _required_text(self.runtime_id, "runtime_id"),
+        )
+        object.__setattr__(self, "device_id", str(self.device_id).strip())
+        topology = (
+            self.topology
+            if isinstance(self.topology, MemoryTopology)
+            else MemoryTopology(str(self.topology).strip().lower())
+        )
+        object.__setattr__(self, "topology", topology)
+        for name in (
+            "device_total_bytes",
+            "device_free_bytes",
+            "runtime_live_bytes",
+            "runtime_reserved_bytes",
+            "out_of_pool_bytes",
+        ):
+            _validate_optional_bytes(
+                getattr(self, name), name, optional=name.startswith("device_")
+            )
+        if (
+            self.device_total_bytes is not None
+            and self.device_free_bytes is not None
+            and self.device_free_bytes > self.device_total_bytes
+        ):
+            raise ValueError("device_free_bytes must not exceed device_total_bytes.")
+        if self.runtime_live_bytes > self.runtime_reserved_bytes:
+            raise ValueError(
+                "runtime_live_bytes must not exceed runtime_reserved_bytes."
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["topology"] = self.topology.value
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeExceptionInfo:
+    """Sanitized provider-neutral information about one exception."""
+
+    kind: RuntimeExceptionKind | str
+    reason_code: str
+    message: str
+    exception_type: str = ""
+    retryable: bool = False
+    cleanup_required: bool = True
+
+    def __post_init__(self) -> None:
+        kind = (
+            self.kind
+            if isinstance(self.kind, RuntimeExceptionKind)
+            else RuntimeExceptionKind(str(self.kind).strip().lower())
+        )
+        object.__setattr__(self, "kind", kind)
+        object.__setattr__(
+            self,
+            "reason_code",
+            _required_text(self.reason_code, "reason_code"),
+        )
+        object.__setattr__(self, "message", str(self.message).strip())
+        object.__setattr__(self, "exception_type", str(self.exception_type).strip())
+        if not isinstance(self.retryable, bool):
+            raise TypeError("retryable must be a boolean.")
+        if not isinstance(self.cleanup_required, bool):
+            raise TypeError("cleanup_required must be a boolean.")
+
+    def as_dict(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["kind"] = self.kind.value
+        return payload
+
+
+@runtime_checkable
+class RuntimeProtocol(Protocol):
+    """Array-runtime boundary used by device execution.
+
+    Device values are deliberately typed as ``object``.  Callers must not
+    inspect or coerce them outside the owning runtime.
+    """
+
+    runtime_id: str
+    array_domain: str
+
+    def probe(self, *, refresh: bool = False) -> RuntimeProbeResult: ...
+
+    def execution_scope(
+        self,
+        *,
+        device_id: str = "",
+        memory_limit_bytes: int | None = None,
+        safety_reserve_bytes: int | None = None,
+    ) -> AbstractContextManager[None]: ...
+
+    def is_device_value(self, value: object) -> bool: ...
+
+    def to_device(self, value: object, *, device_id: str = "") -> object: ...
+
+    def to_host(self, value: object) -> object: ...
+
+    def release(self, value: object) -> None: ...
+
+    def synchronize(self, *, device_id: str = "") -> None: ...
+
+    def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot: ...
+
+    def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo: ...
+
+    def close(self) -> None: ...
+
+
+RuntimeFactory = Callable[[], RuntimeProtocol]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeDescriptor:
+    """Import-free declaration of one array/device runtime."""
+
+    runtime_id: str
+    display_name: str
+    factory_ref: str
+    array_domain: str
+    device_domain: str
+    supported_os_families: tuple[str, ...]
+    interoperability_claims: tuple[str, ...] = ()
+    origin: str = "builtin"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "runtime_id",
+            "display_name",
+            "array_domain",
+            "device_domain",
+            "origin",
+        ):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(
+            self, "factory_ref", _validated_ref(self.factory_ref, "factory_ref")
+        )
+        object.__setattr__(
+            self,
+            "supported_os_families",
+            _normalized_nonempty(self.supported_os_families, "supported_os_families"),
+        )
+        object.__setattr__(
+            self,
+            "interoperability_claims",
+            _normalized_strings(self.interoperability_claims),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ImplementationLibraryDescriptor:
+    """Import-free declaration of a library layered on array runtimes."""
+
+    library_id: str
+    display_name: str
+    runtime_ids: tuple[str, ...]
+    array_domain: str
+    supported_os_families: tuple[str, ...]
+    probe_ref: str = ""
+    interoperability_claims: tuple[str, ...] = ()
+    origin: str = "builtin"
+
+    def __post_init__(self) -> None:
+        for name in ("library_id", "display_name", "array_domain", "origin"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(
+            self,
+            "runtime_ids",
+            _normalized_nonempty(self.runtime_ids, "runtime_ids"),
+        )
+        object.__setattr__(
+            self,
+            "supported_os_families",
+            _normalized_nonempty(self.supported_os_families, "supported_os_families"),
+        )
+        probe_ref = str(self.probe_ref).strip()
+        object.__setattr__(
+            self,
+            "probe_ref",
+            _validated_ref(probe_ref, "probe_ref") if probe_ref else "",
+        )
+        object.__setattr__(
+            self,
+            "interoperability_claims",
+            _normalized_strings(self.interoperability_claims),
+        )
+
+
+CUDA_CUPY_RUNTIME = RuntimeDescriptor(
+    runtime_id="cuda-cupy",
+    display_name="CUDA via CuPy",
+    factory_ref="napari_vipp.core.gpu.cupy_runtime:create_runtime",
+    array_domain="cuda-cupy",
+    device_domain="nvidia-cuda",
+    supported_os_families=("Windows", "Linux"),
+    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+)
+
+DEFAULT_RUNTIME_DESCRIPTORS = (CUDA_CUPY_RUNTIME,)
+DEFAULT_LIBRARY_DESCRIPTORS: tuple[ImplementationLibraryDescriptor, ...] = ()
+
+
+class ComputeRegistryError(RuntimeError):
+    """Base class for lazy registry failures."""
+
+
+class ComputeRegistryClosed(ComputeRegistryError):
+    """Raised when a terminally closed registry is reused."""
+
+
+class ComputeRegistryLoadError(ComputeRegistryError):
+    """Raised when a lazy factory or implementation cannot be loaded."""
+
+
+def validate_registry(
+    runtime_descriptors: Sequence[RuntimeDescriptor],
+    library_descriptors: Sequence[ImplementationLibraryDescriptor],
+    implementation_specs: Sequence[OperationComputeSpec],
+) -> None:
+    """Validate registry references without loading any descriptor import ref."""
+
+    runtimes = _unique_by_id(runtime_descriptors, "runtime", "runtime_id")
+    libraries = _unique_by_id(library_descriptors, "library", "library_id")
+    specs = tuple(implementation_specs)
+    if specs:
+        validate_compute_specs(specs)
+    identities: set[tuple[str, str, str]] = set()
+    for spec in specs:
+        validate_spec_policy_references(spec)
+        identity = (
+            spec.runtime_id,
+            spec.implementation_id,
+            spec.implementation_version,
+        )
+        if identity in identities:
+            raise ValueError(f"Duplicate runtime implementation identity {identity!r}.")
+        identities.add(identity)
+        runtime = runtimes.get(spec.runtime_id)
+        if runtime is None:
+            raise ValueError(
+                f"Implementation {spec.implementation_id!r} references unknown "
+                f"runtime {spec.runtime_id!r}."
+            )
+        library = libraries.get(spec.implementation_library_id)
+        if library is None:
+            raise ValueError(
+                f"Implementation {spec.implementation_id!r} references unknown "
+                f"library {spec.implementation_library_id!r}."
+            )
+        if spec.runtime_id not in library.runtime_ids:
+            raise ValueError(
+                f"Library {library.library_id!r} does not support runtime "
+                f"{spec.runtime_id!r}."
+            )
+        if spec.array_domain != runtime.array_domain:
+            raise ValueError(
+                f"Implementation {spec.implementation_id!r} array domain "
+                f"{spec.array_domain!r} does not match runtime domain "
+                f"{runtime.array_domain!r}."
+            )
+        if spec.array_domain != library.array_domain:
+            raise ValueError(
+                f"Implementation {spec.implementation_id!r} array domain "
+                f"{spec.array_domain!r} does not match library domain "
+                f"{library.array_domain!r}."
+            )
+    for library in libraries.values():
+        missing = set(library.runtime_ids) - set(runtimes)
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ValueError(
+                f"Library {library.library_id!r} references unknown runtime(s): "
+                f"{names}."
+            )
+
+
+class ComputeRegistry:
+    """Thread-safe lazy runtime and implementation registry."""
+
+    def __init__(
+        self,
+        *,
+        runtime_descriptors: Sequence[RuntimeDescriptor] = DEFAULT_RUNTIME_DESCRIPTORS,
+        library_descriptors: Sequence[ImplementationLibraryDescriptor] = (
+            DEFAULT_LIBRARY_DESCRIPTORS
+        ),
+        implementation_specs: Sequence[OperationComputeSpec] | None = None,
+        runtime_factories: Mapping[str, RuntimeFactory] | None = None,
+    ) -> None:
+        runtimes = tuple(runtime_descriptors)
+        libraries = tuple(library_descriptors)
+        specs = tuple(
+            accelerator_compute_specs()
+            if implementation_specs is None
+            else implementation_specs
+        )
+        validate_registry(runtimes, libraries, specs)
+        runtime_map = _unique_by_id(runtimes, "runtime", "runtime_id")
+        library_map = _unique_by_id(libraries, "library", "library_id")
+        factories = dict(runtime_factories or {})
+        unknown_factories = set(factories) - set(runtime_map)
+        if unknown_factories:
+            names = ", ".join(sorted(unknown_factories))
+            raise ValueError(
+                f"Runtime factories reference unknown runtime(s): {names}."
+            )
+        if any(not callable(factory) for factory in factories.values()):
+            raise TypeError("runtime_factories values must be callable.")
+
+        self._runtime_descriptors = MappingProxyType(runtime_map)
+        self._library_descriptors = MappingProxyType(library_map)
+        self._implementation_specs = specs
+        self._runtime_factories = MappingProxyType(factories)
+        self._runtime_instances: dict[str, RuntimeProtocol] = {}
+        self._probe_results: dict[str, RuntimeProbeResult] = {}
+        self._implementation_callables: dict[tuple[str, str, str], Callable] = {}
+        self._lock = threading.RLock()
+        self._closed = False
+
+    @property
+    def runtime_descriptors(self) -> tuple[RuntimeDescriptor, ...]:
+        return tuple(self._runtime_descriptors.values())
+
+    @property
+    def library_descriptors(self) -> tuple[ImplementationLibraryDescriptor, ...]:
+        return tuple(self._library_descriptors.values())
+
+    @property
+    def implementation_specs(self) -> tuple[OperationComputeSpec, ...]:
+        return self._implementation_specs
+
+    def runtime_descriptor(self, runtime_id: str) -> RuntimeDescriptor:
+        return self._lookup(self._runtime_descriptors, runtime_id, "runtime")
+
+    def library_descriptor(self, library_id: str) -> ImplementationLibraryDescriptor:
+        return self._lookup(self._library_descriptors, library_id, "library")
+
+    def implementations_for_operation(
+        self,
+        operation_id: str,
+        *,
+        allow_experimental: bool = False,
+    ) -> tuple[OperationComputeSpec, ...]:
+        operation_id = str(operation_id).strip()
+        return tuple(
+            spec
+            for spec in self._implementation_specs
+            if spec.operation_id == operation_id
+            and spec.visible_for(allow_experimental=allow_experimental)
+        )
+
+    def implementation_spec(
+        self,
+        implementation_id: str,
+        implementation_version: str | None = None,
+        *,
+        allow_experimental: bool = False,
+    ) -> OperationComputeSpec:
+        implementation_id = str(implementation_id).strip()
+        version = (
+            None
+            if implementation_version is None
+            else str(implementation_version).strip()
+        )
+        matches = tuple(
+            spec
+            for spec in self._implementation_specs
+            if spec.implementation_id == implementation_id
+            and (version is None or spec.implementation_version == version)
+        )
+        if not matches:
+            raise KeyError(f"Unknown implementation {implementation_id!r}.")
+        if len(matches) > 1:
+            raise KeyError(
+                f"Implementation {implementation_id!r} has multiple versions; "
+                "an exact version is required."
+            )
+        spec = matches[0]
+        if (
+            spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
+            and not allow_experimental
+        ):
+            raise KeyError(f"Implementation {implementation_id!r} is developer-hidden.")
+        return spec
+
+    def runtime(self, runtime_id: str) -> RuntimeProtocol:
+        """Return one process-lifetime runtime, constructing it on first use."""
+
+        runtime_id = str(runtime_id).strip()
+        with self._lock:
+            self._ensure_open()
+            descriptor = self.runtime_descriptor(runtime_id)
+            existing = self._runtime_instances.get(runtime_id)
+            if existing is not None:
+                return existing
+            try:
+                factory = self._runtime_factories.get(runtime_id)
+                if factory is None:
+                    factory = _load_ref(descriptor.factory_ref)
+                if not callable(factory):
+                    raise TypeError(
+                        f"Runtime factory {descriptor.factory_ref!r} is not callable."
+                    )
+                instance = factory()
+                _validate_runtime_instance(instance, descriptor)
+            except Exception as exc:
+                _close_quietly(locals().get("instance"))
+                raise ComputeRegistryLoadError(
+                    f"Could not load runtime {runtime_id!r}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            self._runtime_instances[runtime_id] = instance
+            return instance
+
+    def probe_runtime(
+        self,
+        runtime_id: str,
+        *,
+        refresh: bool = False,
+    ) -> RuntimeProbeResult:
+        runtime_id = str(runtime_id).strip()
+        with self._lock:
+            self._ensure_open()
+            if not refresh and runtime_id in self._probe_results:
+                return self._probe_results[runtime_id]
+            try:
+                runtime = self.runtime(runtime_id)
+            except ComputeRegistryLoadError as exc:
+                result = RuntimeProbeResult(
+                    runtime_id,
+                    False,
+                    reason_code="runtime_load_failed",
+                    message=str(exc),
+                )
+                self._probe_results[runtime_id] = result
+                return result
+            try:
+                result = runtime.probe(refresh=refresh)
+            except Exception as exc:
+                try:
+                    failure = runtime.classify_exception(exc)
+                except Exception:
+                    failure = RuntimeExceptionInfo(
+                        RuntimeExceptionKind.UNKNOWN,
+                        "runtime_probe_failed",
+                        str(exc),
+                        exception_type=type(exc).__name__,
+                    )
+                result = RuntimeProbeResult(
+                    runtime_id,
+                    False,
+                    reason_code=failure.reason_code,
+                    message=failure.message,
+                    metadata=(
+                        ("exception_kind", failure.kind.value),
+                        ("exception_type", failure.exception_type),
+                    ),
+                )
+            if not isinstance(result, RuntimeProbeResult):
+                raise TypeError("Runtime probe must return RuntimeProbeResult.")
+            if result.runtime_id != runtime_id:
+                raise ValueError("Runtime probe result belongs to a different runtime.")
+            self._probe_results[runtime_id] = result
+            return result
+
+    def implementation_callable(
+        self,
+        implementation: OperationComputeSpec | str,
+        implementation_version: str | None = None,
+        *,
+        allow_experimental: bool = False,
+    ) -> Callable:
+        """Resolve one implementation import string only when explicitly used."""
+
+        with self._lock:
+            self._ensure_open()
+            if isinstance(implementation, OperationComputeSpec):
+                spec = self.implementation_spec(
+                    implementation.implementation_id,
+                    implementation.implementation_version,
+                    allow_experimental=allow_experimental,
+                )
+                if spec != implementation:
+                    raise KeyError(
+                        f"Implementation {implementation.implementation_id!r} does "
+                        "not match its registered declaration."
+                    )
+            else:
+                spec = self.implementation_spec(
+                    implementation,
+                    implementation_version,
+                    allow_experimental=allow_experimental,
+                )
+            if (
+                spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
+                and not allow_experimental
+            ):
+                raise KeyError(
+                    f"Implementation {spec.implementation_id!r} is developer-hidden."
+                )
+            if not spec.callable_ref:
+                raise ComputeRegistryLoadError(
+                    f"Implementation {spec.implementation_id!r} is a host boundary "
+                    "without a callable."
+                )
+            identity = (
+                spec.runtime_id,
+                spec.implementation_id,
+                spec.implementation_version,
+            )
+            cached = self._implementation_callables.get(identity)
+            if cached is not None:
+                return cached
+            try:
+                candidate = _load_ref(spec.callable_ref)
+            except Exception as exc:
+                raise ComputeRegistryLoadError(
+                    f"Could not load implementation {spec.implementation_id!r}: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            if not callable(candidate):
+                raise ComputeRegistryLoadError(
+                    f"Implementation {spec.callable_ref!r} is not callable."
+                )
+            self._implementation_callables[identity] = candidate
+            return candidate
+
+    def release_runtime(self, runtime_id: str) -> bool:
+        """Close and evict one initialized runtime without closing the registry."""
+
+        runtime_id = str(runtime_id).strip()
+        with self._lock:
+            self._ensure_open()
+            instance = self._runtime_instances.pop(runtime_id, None)
+            self._probe_results.pop(runtime_id, None)
+        if instance is None:
+            return False
+        instance.close()
+        return True
+
+    def close(self) -> None:
+        """Close every initialized runtime.  Closing is idempotent and terminal."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            instances = tuple(reversed(tuple(self._runtime_instances.values())))
+            self._runtime_instances.clear()
+            self._probe_results.clear()
+            self._implementation_callables.clear()
+        failures = []
+        for instance in instances:
+            try:
+                instance.close()
+            except Exception as exc:  # pragma: no cover - exercised via aggregation
+                failures.append(f"{type(exc).__name__}: {exc}")
+        if failures:
+            raise ComputeRegistryError(
+                "One or more runtimes failed to close: " + "; ".join(failures)
+            )
+
+    def __enter__(self) -> ComputeRegistry:
+        with self._lock:
+            self._ensure_open()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise ComputeRegistryClosed("Compute registry is closed.")
+
+    @staticmethod
+    def _lookup(mapping: Mapping[str, object], value: str, description: str):
+        identifier = str(value).strip()
+        try:
+            return mapping[identifier]
+        except KeyError as exc:
+            raise KeyError(f"Unknown {description} {identifier!r}.") from exc
+
+
+def _load_ref(reference: str):
+    module_name, attribute_path = reference.split(":", 1)
+    value = importlib.import_module(module_name)
+    for attribute in attribute_path.split("."):
+        value = getattr(value, attribute)
+    return value
+
+
+def _validate_runtime_instance(
+    instance: object,
+    descriptor: RuntimeDescriptor,
+) -> None:
+    if not isinstance(instance, RuntimeProtocol):
+        raise TypeError(
+            "Runtime factory returned an object that violates RuntimeProtocol."
+        )
+    if str(instance.runtime_id) != descriptor.runtime_id:
+        raise ValueError("Runtime instance ID does not match its descriptor.")
+    if str(instance.array_domain) != descriptor.array_domain:
+        raise ValueError("Runtime instance array domain does not match its descriptor.")
+
+
+def _unique_by_id(values: Sequence, description: str, field_name: str) -> dict:
+    result = {}
+    for value in values:
+        if not hasattr(value, field_name):
+            raise TypeError(f"{description} descriptors have an invalid type.")
+        identifier = getattr(value, field_name)
+        if identifier in result:
+            raise ValueError(f"Duplicate {description} ID {identifier!r}.")
+        result[identifier] = value
+    return result
+
+
+def _close_quietly(instance: object) -> None:
+    close = getattr(instance, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+__all__ = [
+    "CUDA_CUPY_RUNTIME",
+    "ComputeRegistry",
+    "ComputeRegistryClosed",
+    "ComputeRegistryError",
+    "ComputeRegistryLoadError",
+    "DEFAULT_LIBRARY_DESCRIPTORS",
+    "DEFAULT_RUNTIME_DESCRIPTORS",
+    "ImplementationLibraryDescriptor",
+    "RuntimeDescriptor",
+    "RuntimeDevice",
+    "RuntimeExceptionInfo",
+    "RuntimeExceptionKind",
+    "RuntimeFactory",
+    "RuntimeMemorySnapshot",
+    "RuntimeProbeResult",
+    "RuntimeProtocol",
+    "validate_registry",
+]
