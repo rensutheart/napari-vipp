@@ -91,6 +91,11 @@ row is reproducible only when that `Image Source` already uses a fixed local
 file path; napari-layer and bundled-sample sources must be bound to a collection
 before saving or running a batch config.
 
+The main toolbar places `Batch workspace...` between workflow loading and the
+separate export actions. It is the single entry point for opening or returning
+to the retained workspace; the representative strip only navigates samples and
+reports batch progress.
+
 The easiest way to explore batching is `Open example...` -> `Deterministic
 Batch & Provenance` -> `Open batch demo...`. Choose where to save the demo's
 small working copy; VIPP then opens the batch workspace with its two-source
@@ -117,20 +122,23 @@ second file from every bound source, and so on. The first bound source is the
 primary source used for default naming. Each item gets a stable batch index
 (`0001`, `0002`, ...) and a stable batch id such as `0001_field_a`.
 
-Use `Preview batch` before running to check the item ids, bound source files,
-planned output filenames, and existing-path collision state. Planning itself
-does not process or save the collection; it also activates the first item as a
-representative graph calculation. The persistent strip above the graph says
+`Preview batch` is optional. Use it when you want to inspect item ids, bound
+source files, planned output filenames, existing-path collision state, and one
+representative graph calculation before execution. Planning itself does not
+process or save the collection. The persistent strip above the graph says
 `Representative only - this does not run or save the batch.`, shows `Item N of
 M`, the batch ID, and every paired filename. Moving its slider calculates only
 the selected representative
 through the live graph. It does not create batch outputs. The workspace table
 shows up to the first 25 plan rows, while the slider covers the complete plan.
-`Run batch` compares a fresh plan with the plan you reviewed. If files,
-destinations, collision states, or the scientific graph changed, VIPP refreshes
-the table and stops so you can review it before clicking Run again. Editing
-batch settings or the graph marks the runnable plan stale, but the slider stays
-available as an explicitly labelled view of the previous source pairing.
+`Run batch` always performs a fresh, plan-only preflight and does not require a
+representative preview. If there is no displayed plan, it immediately executes
+that fresh plan in the same click. If an already displayed plan changed
+unexpectedly through files, destinations, collision states, or the scientific
+graph, VIPP refreshes the table and stops so you can review it before clicking
+Run again. Editing batch settings or the graph deliberately invalidates the
+old runnable plan, but the slider stays available as an explicitly labelled
+view of the previous source pairing and Run can build and execute a new plan.
 Files opened as representatives are pinned to their verified revision. If one
 is overwritten in place after review, Run stops and asks you to refresh while
 the graph keeps showing the earlier verified bytes rather than silently mixing
@@ -143,9 +151,10 @@ counts, validation text, and the manifest path. Progress is item-level; a long
 single item can therefore remain on `running` until that graph invocation
 finishes. On smaller displays, the workspace body scrolls vertically while
 `Run batch` and `Close` remain fixed at the bottom. Reopen the same workspace
-from either `Batch workspace...` button.
+from the main toolbar's `Batch workspace...` button.
 After a run, its preflight and row statuses remain visible as historical run
-evidence; preview again before replaying so current paths are checked.
+evidence. Run preflights current paths again before replay; use Preview first
+only when you want to inspect them.
 
 Add `Batch Output` nodes to mark the exact images, masks, labels, RGB outputs,
 or tables that should be saved. Each `Batch Output` marker is pass-through
@@ -177,6 +186,15 @@ policy, required workflow companion, optional runner choice, workflow hash, and
 resolved declarations for the selected outputs. Loading it against a different
 workflow reports the hash mismatch instead of silently using stale output
 selections.
+
+When a Batch workspace is active, `Save workflow...` asks whether to include
+that validated batch config inside the workflow JSON. `Yes` creates one file;
+loading it restores and opens the workspace without planning or calculating a
+representative. `No` saves the ordinary graph-only workflow, and `Cancel` saves
+nothing. The attached config contains local input/output paths but not input
+pixels, so review those paths before sharing or moving the file. Keep using
+standalone `Save config...` when a separate config and headless runner are
+needed.
 
 `Continue after item failures` is enabled by default. Clear it only when a
 pipeline exception or failed output should stop execution; intentional skips

@@ -40,14 +40,12 @@ def test_batch_navigator_starts_hidden_and_presents_a_session(qtbot):
     assert navigator.next_button.isEnabled()
 
 
-def test_batch_navigator_emits_zero_based_navigation_and_workspace_requests(qtbot):
+def test_batch_navigator_emits_zero_based_navigation(qtbot):
     navigator = BatchNavigator()
     qtbot.addWidget(navigator)
     navigator.set_session(4, 0, "0001_a", ["a.npy", "reference-a.npy"])
     selected: list[int] = []
-    workspace_requests: list[None] = []
     navigator.itemSelected.connect(selected.append)
-    navigator.workspaceRequested.connect(lambda: workspace_requests.append(None))
 
     assert not navigator.previous_button.isEnabled()
     qtbot.mouseClick(navigator.next_button, Qt.LeftButton)
@@ -66,9 +64,6 @@ def test_batch_navigator_emits_zero_based_navigation_and_workspace_requests(qtbo
     assert selected == [1, 3, 2]
     assert navigator.current_index == 2
 
-    qtbot.mouseClick(navigator.workspace_button, Qt.LeftButton)
-    assert workspace_requests == [None]
-
 
 def test_batch_navigator_clear_session_resets_and_hides_everything(qtbot):
     navigator = BatchNavigator()
@@ -85,7 +80,6 @@ def test_batch_navigator_clear_session_resets_and_hides_everything(qtbot):
     assert navigator.slider.maximum() == 0
     assert not navigator.previous_button.isEnabled()
     assert not navigator.next_button.isEnabled()
-    assert not navigator.workspace_button.isEnabled()
     assert navigator.progress_frame.isHidden()
 
     navigator.set_session(0, 0, "", [])
@@ -103,7 +97,6 @@ def test_batch_navigator_can_lock_item_changes_while_retaining_context(qtbot):
     assert not navigator.previous_button.isEnabled()
     assert not navigator.next_button.isEnabled()
     assert not navigator.slider.isEnabled()
-    assert navigator.workspace_button.isEnabled()
 
     navigator.set_navigation_enabled(True)
     assert navigator.previous_button.isEnabled()
@@ -238,5 +231,4 @@ def test_batch_navigator_stacks_long_details_in_a_narrow_dock(qtbot):
     assert navigator.item_label.width() > 0
     assert navigator.batch_id_label.width() > 0
     assert navigator.sources_label.width() > 0
-    assert navigator.workspace_button.geometry().right() <= navigator.width()
     assert "extremely_long" in navigator.batch_id_label.toolTip()

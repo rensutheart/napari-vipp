@@ -19,11 +19,13 @@ from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
     QFormLayout,
+    QFrame,
     QGraphicsItem,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QSpinBox,
@@ -78,6 +80,7 @@ from napari_vipp.core.batch import (
     BATCH_MANIFEST_TYPE,
     BATCH_SCRIPT_FILENAME,
     BATCH_WORKFLOW_FILENAME,
+    BatchConfig,
     BatchStatus,
     ExistingFilePolicy,
     load_batch_config,
@@ -1454,6 +1457,8 @@ def test_microscope_file_source_loads_in_background(qtbot, tmp_path, monkeypatch
         lambda: (
             widget._active_thumbnail_contrast_run_id is None
             and not widget._pending_thumbnail_contrast_limit_keys
+            and not widget._queued_thumbnail_contrast_limit_requests
+            and widget.pipeline_busy_bar.isHidden()
         ),
         timeout=5_000,
     )
@@ -9855,6 +9860,49 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.auto_structure_button.text() == "Auto structure graph"
 
 
+def test_load_precedes_save_and_batch_is_separated_from_exports(
+    qtbot,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    layout = widget.workflow_toolbar_layout
+
+    load_index = layout.indexOf(widget.load_workflow_button)
+    save_index = layout.indexOf(widget.save_workflow_button)
+    left_separator_index = layout.indexOf(widget._batch_toolbar_left_separator)
+    batch_index = layout.indexOf(widget.batch_button)
+    right_separator_index = layout.indexOf(widget._batch_toolbar_right_separator)
+    export_index = layout.indexOf(widget.export_button)
+    export_ome_index = layout.indexOf(widget.export_ome_button)
+
+    assert (
+        load_index
+        < save_index
+        < left_separator_index
+        < batch_index
+        < right_separator_index
+        < export_index
+        < export_ome_index
+    )
+    assert isinstance(widget._batch_toolbar_left_separator, QFrame)
+    assert isinstance(widget._batch_toolbar_right_separator, QFrame)
+
+    widget.batch_navigator.set_session(2, 0, "0001_a", ["a.npy"])
+    batch_buttons = [
+        button
+        for button in widget.findChildren(QPushButton)
+        if button.text() == "Batch workspace..."
+    ]
+    assert batch_buttons == [widget.batch_button]
+
+    dialog = CollectionBatchDialog()
+    qtbot.addWidget(dialog)
+    config_layout = dialog.load_config_button.parentWidget().layout()
+    assert config_layout.indexOf(dialog.load_config_button) < config_layout.indexOf(
+        dialog.save_config_button
+    )
+
+
 def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -10856,6 +10904,262 @@ def test_save_selected_output_dialog_allows_raster_for_2d_output(
     assert iio.imread(path).ndim == 2
 
 
+def _configure_workflow_attached_batch(widget, tmp_path):
+    input_dir = tmp_path / "batch-input"
+    input_dir.mkdir(exist_ok=True)
+    np.save(input_dir / "field.npy", np.arange(20, dtype=np.uint16).reshape(4, 5))
+    output_dir = tmp_path / "batch-output"
+    dialog = widget._batch_collection_dialog()
+    assert dialog is not None
+    dialog.input_edit.setText(str(input_dir))
+    dialog.pattern_edit.setText("*.npy")
+    dialog.output_edit.setText(str(output_dir))
+    dialog.format_combo.setCurrentText("npy")
+    dialog.existing_policy_combo.setCurrentIndex(
+        dialog.existing_policy_combo.findData(ExistingFilePolicy.SKIP.value)
+    )
+    dialog.continue_checkbox.setChecked(False)
+    return dialog, input_dir, output_dir
+
+
+def test_save_workflow_can_include_active_batch_workspace(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    dialog, input_dir, output_dir = _configure_workflow_attached_batch(
+        widget,
+        tmp_path,
+    )
+    target = tmp_path / "workflow-with-batch.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    widget._save_workflow_dialog()
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    attached = BatchConfig.from_dict(
+        document["batch_config"],
+        base_dir=target.parent,
+    )
+    assert attached.workflow_file == Path(target.name)
+    assert attached.workflow_sha256 == scientific_workflow_hash(document)
+    assert attached.resolve_path(attached.output_dir) == output_dir.resolve()
+    assert attached.resolve_path(attached.sources[0].input_dir) == input_dir.resolve()
+    assert attached.sources[0].pattern == "*.npy"
+    assert attached.default_image_format == "npy"
+    assert attached.existing_file_policy == ExistingFilePolicy.SKIP
+    assert attached.continue_on_error is False
+    assert dialog._preview_result is None
+    assert not (tmp_path / BATCH_CONFIG_FILENAME).exists()
+    assert "with its Batch workspace" in widget.status_label.text()
+
+
+def test_save_workflow_without_batch_workspace_does_not_prompt(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "ordinary-workflow.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: pytest.fail(
+            "An ordinary workflow save must not show the batch prompt."
+        ),
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    widget._save_workflow_dialog()
+
+    assert "batch_config" not in json.loads(target.read_text(encoding="utf-8"))
+
+
+def test_save_workflow_can_exclude_active_batch_workspace(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _configure_workflow_attached_batch(widget, tmp_path)
+    target = tmp_path / "workflow-only.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.No,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    widget._save_workflow_dialog()
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert "batch_config" not in document
+    assert widget._active_collection_batch_dialog is not None
+
+
+def test_cancel_batch_workspace_save_prompt_writes_nothing(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    _configure_workflow_attached_batch(widget, tmp_path)
+    file_dialog_calls = []
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Cancel,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: file_dialog_calls.append(True),
+    )
+
+    widget._save_workflow_dialog()
+
+    assert file_dialog_calls == []
+    assert list(tmp_path.glob("*.json")) == []
+    assert "cancelled" in widget.status_label.text().lower()
+
+
+def test_invalid_included_batch_workspace_aborts_workflow_save(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    dialog = widget._batch_collection_dialog()
+    assert dialog is not None
+    target = tmp_path / "invalid-batch-workflow.json"
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    widget._save_workflow_dialog()
+
+    assert not target.exists()
+    assert widget.status_label.text().startswith("Save failed:")
+
+
+def test_workflow_load_restores_attached_batch_without_previewing(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    source_widget = VippWidget(_Viewer())
+    qtbot.addWidget(source_widget)
+    _dialog, input_dir, output_dir = _configure_workflow_attached_batch(
+        source_widget,
+        tmp_path,
+    )
+    target = tmp_path / "restorable-batch-workflow.json"
+    document = source_widget._workflow_document_with_batch_config(
+        target,
+        source_widget.graph_view.node_positions(),
+    )
+    target.write_text(json.dumps(document), encoding="utf-8")
+
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+    monkeypatch.setattr(
+        restored._collection_batch_controller,
+        "preview",
+        lambda **_kwargs: pytest.fail(
+            "Loading attached settings must not plan or preview the batch."
+        ),
+    )
+
+    restored.load_workflow_file(target)
+
+    dialog = restored._active_collection_batch_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
+    assert dialog._preview_result is None
+    assert dialog._loaded_config_path is None
+    assert restored._interactive_collection_batch_items == ()
+    assert restored._interactive_collection_batch_config_path is None
+    assert Path(dialog.input_edit.text()) == input_dir.resolve()
+    assert dialog.pattern_edit.text() == "*.npy"
+    assert Path(dialog.output_edit.text()) == output_dir.resolve()
+    assert dialog.format_combo.currentText() == "npy"
+    assert dialog.values()["existing_file_policy"] == ExistingFilePolicy.SKIP.value
+    assert dialog.continue_checkbox.isChecked() is False
+    assert "restored from this workflow" in dialog.preview_status.text()
+    assert "settings were restored" in restored._last_workflow_load_detail
+
+
+def test_invalid_attached_batch_config_does_not_block_workflow_load(
+    qtbot,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    document = serialize_workflow(
+        source.pipeline,
+        source.graph_view.node_positions(),
+    )
+    document["batch_config"] = {
+        "type": "unsupported-batch-config",
+        "version": 999,
+    }
+    target = tmp_path / "workflow-with-invalid-batch.json"
+    target.write_text(json.dumps(document), encoding="utf-8")
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+
+    restored.load_workflow_file(target)
+
+    assert set(restored.pipeline.nodes) == set(source.pipeline.nodes)
+    assert restored._active_collection_batch_dialog is None
+    assert "could not be restored" in restored._last_workflow_load_detail
+
+
+def test_attached_batch_hash_mismatch_does_not_block_workflow_load(
+    qtbot,
+    tmp_path,
+):
+    source = VippWidget(_Viewer())
+    qtbot.addWidget(source)
+    _configure_workflow_attached_batch(source, tmp_path)
+    target = tmp_path / "workflow-with-mismatched-batch-hash.json"
+    document = source._workflow_document_with_batch_config(
+        target,
+        source.graph_view.node_positions(),
+    )
+    document["batch_config"]["workflow"]["sha256"] = "0" * 64
+    target.write_text(json.dumps(document), encoding="utf-8")
+    restored = VippWidget(_Viewer())
+    qtbot.addWidget(restored)
+
+    restored.load_workflow_file(target)
+
+    assert set(restored.pipeline.nodes) == set(source.pipeline.nodes)
+    assert restored._active_collection_batch_dialog is None
+    assert "could not be restored" in restored._last_workflow_load_detail
+    assert "hash does not match" in restored._last_workflow_load_detail
+
+
 def test_collection_batch_dialog_defaults(qtbot):
     dialog = CollectionBatchDialog()
     qtbot.addWidget(dialog)
@@ -11246,6 +11550,97 @@ def test_run_stops_when_reviewed_source_changes_in_place(qtbot, tmp_path):
     )
 
 
+def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._clear_interactive_collection_batch_session(close_workspace=False)
+    widget._batch_collection_dialog()
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    monkeypatch.setattr(
+        "napari_vipp.ui.batch.QFileDialog.getOpenFileName",
+        lambda *_args, **_kwargs: (str(demo.config_path), ""),
+    )
+
+    qtbot.mouseClick(dialog.load_config_button, Qt.LeftButton)
+
+    assert dialog._preview_result is None
+    assert "Loaded" in dialog.preview_status.text()
+    plan_calls = []
+    expected_plans = []
+    original_preview = widget._collection_batch_controller.preview
+    original_run = widget._run_collection_batch
+
+    def tracked_preview(**kwargs):
+        result = original_preview(**kwargs)
+        plan_calls.append(result)
+        return result
+
+    def tracked_run(**kwargs):
+        expected_plans.append(kwargs.get("expected_items"))
+        return original_run(**kwargs)
+
+    monkeypatch.setattr(
+        widget._collection_batch_controller,
+        "preview",
+        tracked_preview,
+    )
+    monkeypatch.setattr(widget, "_run_collection_batch", tracked_run)
+    monkeypatch.setattr(
+        dialog,
+        "_preview_batch",
+        lambda: pytest.fail("Run must not launch the graph-preview action."),
+    )
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Run must not calculate a live graph representative."
+        ),
+    )
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert len(plan_calls) == 1
+    assert expected_plans == [plan_calls[0].items]
+    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert "3 completed" in dialog.run_progress_label.text()
+
+
+def test_edited_batch_settings_run_on_first_click_without_repreview(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    qtbot.waitUntil(dialog.run_button.isEnabled, timeout=5_000)
+    edited_output = tmp_path / "edited-results"
+
+    dialog.output_edit.setText(str(edited_output))
+
+    assert dialog._preview_result is None
+    monkeypatch.setattr(
+        dialog,
+        "_preview_batch",
+        lambda: pytest.fail("Run must not force an optional preview."),
+    )
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert (edited_output / BATCH_MANIFEST_FILENAME).is_file()
+    assert "3 completed" in dialog.run_progress_label.text()
+
+
 def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
     collection_dir = tmp_path / "collection"
     collection_dir.mkdir()
@@ -11326,8 +11721,8 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     assert dialog._preview_result is None
     assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
-    assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
-    assert "review" in dialog.preview_status.text().lower()
+    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert "3 completed" in dialog.run_progress_label.text()
 
 
 def test_batch_progress_survives_non_user_workflow_reset_event(
@@ -11415,7 +11810,11 @@ def test_image_source_topology_change_rebuilds_batch_workspace(
     assert {str(row["node_id"]) for row in rebuilt._source_rows} == graph_source_ids
 
 
-def test_run_refreshes_changed_filesystem_plan_and_requires_review(qtbot, tmp_path):
+def test_run_refreshes_changed_filesystem_plan_and_requires_review(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     demo = widget._create_collection_batch_demo(tmp_path / "demo")
@@ -11433,12 +11832,37 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(qtbot, tmp_pa
         demo.root / "inputs" / "reference" / "delta_reference.npy",
         np.zeros((8, 8), dtype=np.uint16),
     )
+    preview_calls = 0
+    original_preview = widget._collection_batch_controller.preview
+
+    def tracked_preview(**kwargs):
+        nonlocal preview_calls
+        preview_calls += 1
+        return original_preview(**kwargs)
+
+    monkeypatch.setattr(
+        widget._collection_batch_controller,
+        "preview",
+        tracked_preview,
+    )
+    monkeypatch.setattr(
+        dialog,
+        "_preview_batch",
+        lambda: pytest.fail("Run-plan refresh must not calculate a representative."),
+    )
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
 
+    assert preview_calls == 1
     assert dialog.preview_table.rowCount() == 4
     assert dialog._preview_result is not None
     assert "review it" in dialog.preview_status.text().lower()
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+
+    assert preview_calls == 2
+    assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
+    assert "4 completed" in dialog.run_progress_label.text()
 
 
 def test_preflight_failure_does_not_fill_batch_progress(qtbot, tmp_path):

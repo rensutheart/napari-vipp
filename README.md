@@ -100,12 +100,12 @@ still needs validation against a broader corpus of real acquisition files.
 6. Save the graph with `Save workflow...`.
 7. Add `Batch Output` nodes before `Batch workspace...` when exact saved outputs
    matter.
-8. Click `Preview batch` to plan the complete collection. Use the persistent
-   representative slider or a preview-table row to inspect any paired item
-   through the graph without running or saving the full batch.
-9. Run the collection from the retained workspace, where item-level progress,
-   final statuses, validation, and the `vipp_batch_manifest.json` path remain
-   available for inspection.
+8. Optionally click `Preview batch` to inspect the complete plan and use the
+   representative slider or a preview-table row without running or saving the
+   full batch. Preview is not required: `Run batch` performs its own preflight.
+9. Run the collection from the retained workspace with one click, where
+   item-level progress, final statuses, validation, and the
+   `vipp_batch_manifest.json` path remain available for inspection.
 10. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
    demo...`. Choose where to save its small working copy, review the populated
@@ -115,7 +115,10 @@ still needs validation against a broader corpus of real acquisition files.
    automatically.
 
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
-tables. `Export Python...` embeds a validated immutable workflow and executes it
+tables. When Batch workspace is active, Save workflow can optionally attach its
+versioned config so the same workspace reopens from that one JSON file; local
+paths are included, but source pixels are not. `Export Python...` embeds a
+validated immutable workflow and executes it
 through the same headless pipeline engine as VIPP, including normalized
 `ImageState` propagation. See the [user guide](docs/user-guide.md) for source
 binding, runtime-version, and command-line details.
@@ -123,7 +126,7 @@ binding, runtime-version, and command-line details.
 ## Documentation
 
 - [Published VIPP documentation](https://rensutheart.github.io/vipp-mkdocs/)
-- [Categorized 0.12 release notes](CHANGELOG.md#0120a2---2026-07-16)
+- [Categorized 0.12 release notes](CHANGELOG.md#0120a3---2026-07-20)
 - [Documentation index](docs/README.md)
 - [User guide](docs/user-guide.md)
 - [Image import and export](docs/io-user-guide.md)
@@ -167,18 +170,19 @@ guidance, and report suspected vulnerabilities privately through
 
 ## 0.12 Alpha Highlights
 
-`0.12.0a2` is the current alpha. It builds on the 0.12 architecture and
+`0.12.0a3` is the current alpha. It builds on the 0.12 architecture and
 reproducibility baseline with:
 
-- isolated node tuning that keeps downstream propagation paused until the
-  latest local result is applied or the session is cancelled;
-- bright actionable and dark waiting graph states, an attention-colored
-  `Calculate all`, and progressive node previews during longer runs;
-- exact-pixel napari layer reuse and display-resolution thumbnail rendering
-  that reduce UI stalls without changing scientific arrays;
-- configurable port labels and responsive graph layout; and
-- clearer PSF preflight, Nyquist, support, centering, and boundary-tail
-  feedback for deconvolution workflows.
+- direct batch execution with a fresh plan-only preflight while representative
+  preview remains optional;
+- an amber, user-confirmed `output` destination suggestion for new collection
+  bindings;
+- fast no-read/no-calculation handling when every resolved `Skip` output exists,
+  plus more resilient atomic artifact handling on Windows and synced folders;
+- optional workflow JSON attachment of the validated Batch workspace settings,
+  restored without scanning or calculating a representative; and
+- one clearly separated main-toolbar Batch workspace entry, with Load before
+  Save consistently across workflow and batch controls.
 
 The 0.12 foundation also provides:
 
@@ -201,7 +205,7 @@ The 0.12 foundation also provides:
 
 Breaking alpha changes are intentional where preserving an older implicit
 behavior would weaken scientific validity. See the categorized
-[0.12 release notes](CHANGELOG.md#0120a2---2026-07-16), the
+[0.12 release notes](CHANGELOG.md#0120a3---2026-07-20), the
 [upgrade and workflow contract](docs/user-guide.md#save-workflow-json), and
 [planning.md](docs/planning.md) for later milestones. Semantic-axis collection
 iteration, HCS traversal, scalable OME-Zarr previews, and broader scientific

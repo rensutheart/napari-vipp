@@ -16,6 +16,18 @@ from pathlib import Path
 
 JsonNormalizer = Callable[[object], object]
 
+_ATOMIC_REPLACE_RETRY_DELAYS = (
+    0.02,
+    0.04,
+    0.08,
+    0.16,
+    0.32,
+    0.64,
+    1.28,
+    2.0,
+)
+_WINDOWS_TRANSIENT_LOCK_ERRORS = {5, 32, 33}
+
 
 def atomic_write_json(
     path: str | Path,
@@ -84,16 +96,20 @@ def _temporary_path(target: Path) -> Path:
 
 def atomic_replace(source: Path, target: Path) -> None:
     """Replace ``target`` atomically, retrying transient permission locks."""
-    for attempt in range(6):
+    for attempt in range(len(_ATOMIC_REPLACE_RETRY_DELAYS) + 1):
         try:
             os.replace(source, target)
             return
-        except PermissionError:
-            if attempt == 5:
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or (
+                getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_LOCK_ERRORS
+            )
+            if not retryable or attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
                 raise
             # Virus scanners, file indexers, and network filesystems can hold
-            # a newly created or replaced file briefly.
-            time.sleep(0.01 * (2**attempt))
+            # a newly created or replaced file for several seconds. Keep the
+            # retry window bounded so a genuinely unwritable path still fails.
+            time.sleep(_ATOMIC_REPLACE_RETRY_DELAYS[attempt])
 
 
 __all__ = ["atomic_replace", "atomic_write_json", "atomic_write_text"]

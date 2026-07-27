@@ -731,6 +731,78 @@ def _save_item_record(directory: Path, item: BatchItemRecord) -> Path:
     return atomic_write_json(directory / filename, item.to_dict())
 
 
+def _try_save_item_record(
+    directory: Path,
+    item: BatchItemRecord,
+) -> OSError | None:
+    """Persist a recoverable item checkpoint without aborting the whole run."""
+    try:
+        _save_item_record(directory, item)
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _fully_skipped_item_record(
+    item: BatchItemRecord,
+    plan: BatchItemPlan,
+) -> BatchItemRecord | None:
+    """Return a terminal no-op record when every destination should be skipped."""
+    if not plan.outputs or not all(
+        output.existing_file_policy == ExistingFilePolicy.SKIP
+        and output.path.exists()
+        for output in plan.outputs
+    ):
+        return None
+    started_at = _timestamp()
+    outputs = tuple(
+        replace(
+            record,
+            status=BatchStatus.SKIPPED,
+            existing_identity=_path_identity(output.path),
+            error_type="",
+            error_message=(
+                f"Existing destination was left unchanged: {output.path}"
+            ),
+        )
+        for record, output in zip(item.outputs, plan.outputs, strict=True)
+    )
+    return replace(
+        item,
+        outputs=outputs,
+        status=BatchStatus.SKIPPED,
+        started_at=started_at,
+        finished_at=_timestamp(),
+    )
+
+
+def _with_item_record_write_failure(
+    item: BatchItemRecord,
+    error: OSError,
+) -> BatchItemRecord:
+    """Expose missing per-item provenance in the authoritative run manifest."""
+    detail = (
+        "Could not save the final per-item provenance record "
+        f"({type(error).__name__}): {error}"
+    )
+    message = (
+        f"{item.error_message} Additionally, {detail}"
+        if item.error_message
+        else detail
+    )
+    status = (
+        item.status
+        if item.status in {BatchStatus.PARTIAL, BatchStatus.FAILED}
+        else BatchStatus.PARTIAL
+    )
+    return replace(
+        item,
+        status=status,
+        error_type=item.error_type or type(error).__name__,
+        error_message=message,
+    )
+
+
 def atomic_write_json(path: str | Path, document: object) -> Path:
     """Preserve the batch API's explicit JSON value normalization."""
     return _atomic_write_json(path, document, normalizer=_json_safe)
@@ -1059,13 +1131,49 @@ def run_batch(
 
     for item_position, item_plan in enumerate(plan.items):
         item_record = manifest.items[item_position]
+        skipped_record = _fully_skipped_item_record(item_record, item_plan)
+        if skipped_record is not None:
+            item_record = skipped_record
+            manifest = manifest.replace_item(item_record)
+            _report_progress(
+                progress_callback,
+                item_plan.index,
+                total,
+                item_plan.batch_id,
+                "running",
+            )
+            record_error = _try_save_item_record(item_records_dir, item_record)
+            if record_error is not None:
+                item_record = _with_item_record_write_failure(
+                    item_record,
+                    record_error,
+                )
+                manifest = manifest.replace_item(item_record)
+            _report_progress(
+                progress_callback,
+                item_plan.index,
+                total,
+                item_plan.batch_id,
+                item_record.status.value,
+            )
+            if item_record.error_type and not config.continue_on_error:
+                manifest = _skip_remaining_items(
+                    manifest,
+                    start_index=item_position + 1,
+                    reason="Not run because continue_on_error is disabled.",
+                )
+                for remaining_item in manifest.items[item_position + 1 :]:
+                    _try_save_item_record(item_records_dir, remaining_item)
+                break
+            continue
+
         item_record = replace(
             item_record,
             status=BatchStatus.RUNNING,
             started_at=_timestamp(),
         )
         manifest = manifest.replace_item(item_record)
-        _save_item_record(item_records_dir, item_record)
+        _try_save_item_record(item_records_dir, item_record)
         _report_progress(
             progress_callback,
             item_plan.index,
@@ -1110,6 +1218,7 @@ def run_batch(
             staged_outputs: dict[int, _StagedBatchOutput] = {}
             for output_index, output_plan in enumerate(item_plan.outputs):
                 output_record = output_records[output_index]
+                output_checkpoint_changed = False
                 if (
                     item_error is not None
                     and pipeline.outputs.get(output_plan.node_id) is None
@@ -1120,6 +1229,7 @@ def run_batch(
                         error_type=type(item_error).__name__,
                         error_message=str(item_error),
                     )
+                    output_checkpoint_changed = True
                 else:
                     try:
                         staged = _save_planned_output(pipeline, output_plan)
@@ -1130,6 +1240,7 @@ def run_batch(
                             error_type="",
                             error_message=str(exc),
                         )
+                        output_checkpoint_changed = True
                     except Exception as exc:
                         output_record = replace(
                             output_record,
@@ -1137,6 +1248,7 @@ def run_batch(
                             error_type=type(exc).__name__,
                             error_message=str(exc),
                         )
+                        output_checkpoint_changed = True
                     else:
                         staged_outputs[output_index] = staged
                 output_records[output_index] = output_record
@@ -1146,7 +1258,8 @@ def run_batch(
                     outputs=tuple(output_records),
                 )
                 manifest = manifest.replace_item(running_record)
-                _save_item_record(item_records_dir, running_record)
+                if output_checkpoint_changed:
+                    _try_save_item_record(item_records_dir, running_record)
 
             source_change_error: SourceChangedError | None = None
             if source_identities:
@@ -1180,11 +1293,11 @@ def run_batch(
                     outputs=tuple(output_records),
                 )
                 manifest = manifest.replace_item(running_record)
-                _save_item_record(item_records_dir, running_record)
             else:
                 # All source-dependent bytes are now private and stable. Only
                 # atomic promotion remains; it cannot read a source again.
-                for output_index, staged in staged_outputs.items():
+                staged_items = tuple(staged_outputs.items())
+                for staged_position, (output_index, staged) in enumerate(staged_items):
                     output_record = output_records[output_index]
                     try:
                         saved = _promote_staged_output(staged)
@@ -1225,7 +1338,8 @@ def run_batch(
                         outputs=tuple(output_records),
                     )
                     manifest = manifest.replace_item(running_record)
-                    _save_item_record(item_records_dir, running_record)
+                    if staged_position + 1 < len(staged_items):
+                        _try_save_item_record(item_records_dir, running_record)
             item_record = replace(
                 item_record,
                 sources=tuple(sources),
@@ -1252,7 +1366,13 @@ def run_batch(
             )
         item_record = replace(item_record, finished_at=_timestamp())
         manifest = manifest.replace_item(item_record)
-        _save_item_record(item_records_dir, item_record)
+        record_error = _try_save_item_record(item_records_dir, item_record)
+        if record_error is not None:
+            item_record = _with_item_record_write_failure(
+                item_record,
+                record_error,
+            )
+            manifest = manifest.replace_item(item_record)
         _report_progress(
             progress_callback,
             item_plan.index,
@@ -1275,7 +1395,7 @@ def run_batch(
                 reason="Not run because continue_on_error is disabled.",
             )
             for skipped_item in manifest.items[item_position + 1 :]:
-                _save_item_record(item_records_dir, skipped_item)
+                _try_save_item_record(item_records_dir, skipped_item)
             break
 
     manifest = replace(manifest, finished_at=_timestamp())
