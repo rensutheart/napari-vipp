@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -84,6 +86,20 @@ def test_plan_only_prints_exact_cuda13_plan_without_writing(tmp_path, capsys):
     assert document["expected_cupy_distribution"] == "cupy-cuda13x"
     assert document["venv_root"] == str(target.resolve())
     assert document["constraint"].endswith("gpu-cuda13-py312.txt")
+    record = document["environment_record"]
+    assert record == {
+        "path": str(
+            target.resolve() / "share" / "napari-vipp" / "gpu-environment.json"
+        ),
+        "document": {
+            "schema": "napari-vipp-gpu-environment",
+            "schema_version": 1,
+            "track": "cuda13",
+            "cupy_distribution": "cupy-cuda13x",
+            "cucim": None,
+        },
+        "write_after": ["probe_cuda_runtime", "check_dependencies"],
+    }
 
     actions = {action["name"]: action["argv"] for action in document["actions"]}
     assert actions["create_venv"] == [
@@ -114,6 +130,113 @@ def test_track_specs_use_separate_default_venvs_and_distributions():
     assert cuda12.cupy_distribution == "cupy-cuda12x"
     assert cuda13.cupy_distribution == "cupy-cuda13x"
     assert cuda12.constraint_name != cuda13.constraint_name
+
+
+def test_setup_probes_use_only_private_memory_pools():
+    for probe in (setup_gpu_dev.GPU_PROBE, setup_gpu_dev.CUCIM_PROBE):
+        assert "cuda.MemoryPool()" in probe
+        assert "cuda.using_allocator(pool.malloc)" in probe
+        assert "pool.free_all_blocks()" in probe
+        assert "pool.used_bytes()" in probe
+        assert "pool.total_bytes()" in probe
+        assert "get_default_memory_pool" not in probe
+
+
+@pytest.mark.parametrize("probe_name", ["GPU_PROBE", "CUCIM_PROBE"])
+@pytest.mark.parametrize("failure_point", ["operation", "synchronize"])
+def test_setup_probes_release_private_pool_without_masking_primary_failure(
+    monkeypatch,
+    probe_name,
+    failure_point,
+):
+    events = []
+    primary_error = RuntimeError(f"simulated {failure_point} failure")
+
+    class Array:
+        shape = (4, 4)
+
+        def reshape(self, *_shape):
+            return self
+
+    class Pool:
+        def malloc(self, _size):
+            raise AssertionError("The test array does not use the CuPy allocator")
+
+        def free_all_blocks(self):
+            events.append("free")
+
+        @staticmethod
+        def used_bytes():
+            return 0
+
+        @staticmethod
+        def total_bytes():
+            return 0
+
+    class Stream:
+        def synchronize(self):
+            events.append("sync")
+            if failure_point == "synchronize":
+                raise primary_error
+
+    class Cuda:
+        MemoryPool = Pool
+
+        @staticmethod
+        @contextmanager
+        def using_allocator(_allocator):
+            yield
+
+        @staticmethod
+        def get_current_stream():
+            return Stream()
+
+    cupy = ModuleType("cupy")
+    cupy.float32 = "float32"
+    cupy.cuda = Cuda()
+    cupy.arange = lambda *_args, **_kwargs: Array()
+    monkeypatch.setitem(sys.modules, "cupy", cupy)
+
+    if probe_name == "GPU_PROBE":
+        cupyx = ModuleType("cupyx")
+        scipy = ModuleType("cupyx.scipy")
+        ndimage = ModuleType("cupyx.scipy.ndimage")
+
+        def gaussian_filter(values, *_args, **_kwargs):
+            if failure_point == "operation":
+                raise primary_error
+            return values
+
+        ndimage.gaussian_filter = gaussian_filter
+        ndimage.median_filter = lambda values, **_kwargs: values
+        scipy.ndimage = ndimage
+        cupyx.scipy = scipy
+        monkeypatch.setitem(sys.modules, "cupyx", cupyx)
+        monkeypatch.setitem(sys.modules, "cupyx.scipy", scipy)
+        monkeypatch.setitem(sys.modules, "cupyx.scipy.ndimage", ndimage)
+    else:
+        cucim = ModuleType("cucim")
+        skimage = ModuleType("cucim.skimage")
+        restoration = ModuleType("cucim.skimage.restoration")
+
+        def rolling_ball(values, **_kwargs):
+            if failure_point == "operation":
+                raise primary_error
+            return values
+
+        restoration.rolling_ball = rolling_ball
+        skimage.restoration = restoration
+        cucim.skimage = skimage
+        cucim.is_available = lambda component: component == "skimage"
+        monkeypatch.setitem(sys.modules, "cucim", cucim)
+        monkeypatch.setitem(sys.modules, "cucim.skimage", skimage)
+        monkeypatch.setitem(sys.modules, "cucim.skimage.restoration", restoration)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        exec(getattr(setup_gpu_dev, probe_name), {})
+
+    assert exc_info.value is primary_error
+    assert "free" in events
 
 
 def test_mixed_or_wrong_cupy_distributions_fail_closed():
@@ -191,6 +314,16 @@ def test_cucim_plan_installs_only_the_checksum_verified_local_wheel(tmp_path):
     assert "nvidia-nvimgcodec-cu13==0.8.0.22" in plan.install_project.argv
     assert plan.cucim_probe is not None
     assert plan.actions[-1] is plan.pip_check
+    record = plan.as_dict(plan_only=True)["environment_record"]
+    assert record["document"]["cucim"] == {
+        "distribution": "cucim-cu13",
+        "wheel_sha256": expected,
+    }
+    assert record["write_after"] == [
+        "probe_cuda_runtime",
+        "probe_cucim",
+        "check_dependencies",
+    ]
 
 
 def test_cucim_wheel_and_checksum_must_be_provided_together(tmp_path):
@@ -227,6 +360,32 @@ def test_unsafe_venv_targets_and_macos_are_rejected(tmp_path):
         )
 
 
+def test_environment_record_path_cannot_escape_venv(tmp_path, monkeypatch):
+    venv_root = tmp_path / "gpu-venv"
+    venv_root.mkdir()
+    expected = venv_root / setup_gpu_dev.GPU_ENVIRONMENT_RECORD_RELATIVE_PATH
+    outside = tmp_path / "outside" / "gpu-environment.json"
+
+    with pytest.raises(setup_gpu_dev.SetupError, match="inside its dedicated venv"):
+        setup_gpu_dev._validated_environment_record_path(
+            outside,
+            venv_root=venv_root,
+        )
+
+    share = venv_root / "share"
+    original_predicate = setup_gpu_dev._is_link_or_junction
+    monkeypatch.setattr(
+        setup_gpu_dev,
+        "_is_link_or_junction",
+        lambda path: path == share or original_predicate(path),
+    )
+    with pytest.raises(setup_gpu_dev.SetupError, match="symlink or junction parent"):
+        setup_gpu_dev._validated_environment_record_path(
+            expected,
+            venv_root=venv_root,
+        )
+
+
 @pytest.mark.skipif(
     sys.platform == "darwin",
     reason="CUDA setup intentionally refuses macOS before planning.",
@@ -254,13 +413,105 @@ def test_all_install_and_probe_actions_target_only_the_dedicated_venv(tmp_path):
         assert action.argv[0] != str(plan.base_python)
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="CUDA setup intentionally refuses macOS before planning.",
+)
+def test_successful_setup_writes_record_only_after_probes_and_pip_check(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "gpu-venv"
+    plan = setup_gpu_dev.create_setup_plan(
+        track_name="cuda13",
+        base_python=sys.executable,
+        venv_path=target,
+    )
+    record_path = plan.environment_record_path
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(
+        json.dumps(
+            {
+                "schema": "napari-vipp-gpu-environment",
+                "schema_version": 1,
+                "track": "cuda13",
+                "cupy_distribution": "cupy-cuda13x",
+                "cucim": {
+                    "distribution": "cucim-cu13",
+                    "wheel_sha256": "f" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = []
+
+    def run(action):
+        events.append(action.name)
+        if action is plan.pip_check:
+            assert not record_path.exists()
+
+    monkeypatch.setattr(setup_gpu_dev, "_run_action", run)
+    monkeypatch.setattr(
+        setup_gpu_dev,
+        "_validate_existing_venv",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        setup_gpu_dev,
+        "_installed_cupy_distributions",
+        lambda _python: ("cupy-cuda13x",),
+    )
+
+    setup_gpu_dev.execute_setup_plan(plan)
+
+    assert events[-2:] == ["probe_cuda_runtime", "check_dependencies"]
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {
+        "schema": "napari-vipp-gpu-environment",
+        "schema_version": 1,
+        "track": "cuda13",
+        "cupy_distribution": "cupy-cuda13x",
+        "cucim": None,
+    }
+
+
+def test_environment_record_replacement_is_atomic_on_failure(tmp_path, monkeypatch):
+    path = tmp_path / "share" / "napari-vipp" / "gpu-environment.json"
+    path.parent.mkdir(parents=True)
+    original = '{"old": true}\n'
+    path.write_text(original, encoding="utf-8")
+    document = {
+        "schema": "napari-vipp-gpu-environment",
+        "schema_version": 1,
+        "track": "cuda13",
+        "cupy_distribution": "cupy-cuda13x",
+        "cucim": None,
+    }
+
+    def fail_replace(source, target):
+        assert target == path
+        assert json.loads(Path(source).read_text(encoding="utf-8")) == document
+        assert path.read_text(encoding="utf-8") == original
+        raise OSError("simulated atomic replacement failure")
+
+    monkeypatch.setattr(setup_gpu_dev.os, "replace", fail_replace)
+
+    with pytest.raises(setup_gpu_dev.SetupError, match="Could not write"):
+        setup_gpu_dev._write_environment_record_atomic(
+            path,
+            document,
+            venv_root=tmp_path,
+        )
+
+    assert path.read_text(encoding="utf-8") == original
+    assert not tuple(path.parent.glob(f".{path.name}.*.tmp"))
+
+
 def test_platform_wrappers_delegate_to_the_shared_setup_helper():
     powershell = (PROJECT_ROOT / "scripts" / "setup_gpu_dev.ps1").read_text(
         encoding="utf-8"
     )
-    shell = (PROJECT_ROOT / "scripts" / "setup_gpu_dev.sh").read_text(
-        encoding="utf-8"
-    )
+    shell = (PROJECT_ROOT / "scripts" / "setup_gpu_dev.sh").read_text(encoding="utf-8")
 
     assert "setup_gpu_dev.py" in powershell
     assert 'setup_gpu_dev.py"' in shell

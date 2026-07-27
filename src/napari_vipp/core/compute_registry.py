@@ -9,11 +9,16 @@ callable is resolved only after an execution request explicitly asks for it.
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
+import json
+import re
+import sys
 import threading
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
@@ -581,9 +586,7 @@ class ComputeRegistry:
         self._library_probes = MappingProxyType(probes)
         self._runtime_instances: dict[str, RuntimeProtocol] = {}
         self._probe_results: dict[str, RuntimeProbeResult] = {}
-        self._library_probe_results: dict[
-            str, ImplementationLibraryProbeResult
-        ] = {}
+        self._library_probe_results: dict[str, ImplementationLibraryProbeResult] = {}
         self._implementation_callables: dict[tuple[str, str, str], Callable] = {}
         self._lock = threading.RLock()
         self._closed = False
@@ -958,29 +961,105 @@ def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
             reason_code="cupyx_ndimage_incomplete",
             message="CuPyX ndimage does not expose Gaussian and median filters.",
         )
+    pool = cupy.cuda.MemoryPool()
     values = gaussian = median = None
+    probe_error: BaseException | None = None
     try:
-        values = cupy.arange(49, dtype=cupy.float32).reshape(7, 7)
-        gaussian = ndimage.gaussian_filter(values, sigma=0.8, mode="reflect")
-        median = ndimage.median_filter(values, size=3, mode="reflect")
-        float((gaussian + median).sum().item())
-        cupy.cuda.get_current_stream().synchronize()
+        with cupy.cuda.using_allocator(pool.malloc):
+            values = cupy.arange(49, dtype=cupy.float32).reshape(7, 7)
+            gaussian = ndimage.gaussian_filter(
+                values,
+                sigma=0.8,
+                mode="reflect",
+            )
+            median = ndimage.median_filter(values, size=3, mode="reflect")
+            float((gaussian + median).sum().item())
+            cupy.cuda.get_current_stream().synchronize()
         return ImplementationLibraryProbeResult(
             "cupyx",
             True,
             version=str(getattr(cupy, "__version__", "")),
             message="CuPyX completed synchronized Gaussian and median probes.",
         )
+    except BaseException as exc:
+        probe_error = exc
+        raise
     finally:
         values = gaussian = median = None
-        try:
-            cupy.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
+        _drain_private_probe_pool(
+            cupy,
+            pool,
+            library_id="cupyx",
+            suppress_errors=probe_error is not None,
+        )
 
 
-def _probe_cucim_skimage_library() -> ImplementationLibraryProbeResult:
+def _probe_cucim_skimage_library(
+    *,
+    record_path: Path | None = None,
+) -> ImplementationLibraryProbeResult:
     """Import the checksum-installed cuCIM restoration layer lazily."""
+
+    path = record_path or _gpu_environment_record_path()
+    try:
+        provenance = _read_cucim_environment_provenance(path)
+    except FileNotFoundError:
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            reason_code="cucim_provenance_missing",
+            message=(
+                f"The verified GPU environment record is missing at {path}. "
+                "Re-run scripts/setup_gpu_dev.py with --cucim-wheel and "
+                "--cucim-sha256."
+            ),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            reason_code="cucim_provenance_invalid",
+            message=(
+                f"The GPU environment record at {path} is invalid: {exc}. "
+                "Re-run scripts/setup_gpu_dev.py with a verified cuCIM wheel."
+            ),
+        )
+    if provenance is None:
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            reason_code="cucim_provenance_unverified",
+            message=(
+                "The completed GPU setup did not approve a checksum-verified "
+                "cuCIM wheel. Re-run scripts/setup_gpu_dev.py with "
+                "--cucim-wheel and --cucim-sha256."
+            ),
+        )
+
+    try:
+        distribution_version = _verify_installed_cucim_provenance(provenance)
+    except _InstalledProvenanceError as exc:
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            reason_code=exc.reason_code,
+            message=(
+                f"{exc} Re-run scripts/setup_gpu_dev.py with the verified cuCIM wheel."
+            ),
+        )
+
+    metadata = (
+        ("environment_record_schema", _GPU_ENVIRONMENT_RECORD_SCHEMA),
+        (
+            "environment_record_schema_version",
+            str(_GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION),
+        ),
+        ("environment_track", provenance.track),
+        ("cupy_distribution", provenance.cupy_distribution),
+        ("cucim_distribution", provenance.distribution),
+        ("cucim_distribution_version", distribution_version),
+        ("cucim_artifact_sha256", provenance.wheel_sha256),
+    )
 
     cucim = importlib.import_module("cucim")
     restoration = importlib.import_module("cucim.skimage.restoration")
@@ -992,6 +1071,7 @@ def _probe_cucim_skimage_library() -> ImplementationLibraryProbeResult:
             version=str(getattr(cucim, "__version__", "")),
             reason_code="cucim_skimage_unavailable",
             message="cuCIM reports that its skimage component is unavailable.",
+            metadata=metadata,
         )
     if not callable(getattr(restoration, "rolling_ball", None)):
         return ImplementationLibraryProbeResult(
@@ -1000,26 +1080,302 @@ def _probe_cucim_skimage_library() -> ImplementationLibraryProbeResult:
             version=str(getattr(cucim, "__version__", "")),
             reason_code="cucim_rolling_ball_missing",
             message="cuCIM restoration does not expose rolling_ball.",
+            metadata=metadata,
         )
     cupy = importlib.import_module("cupy")
+    pool = cupy.cuda.MemoryPool()
     values = background = None
+    probe_error: BaseException | None = None
     try:
-        values = cupy.arange(81, dtype=cupy.float32).reshape(9, 9)
-        background = restoration.rolling_ball(values, radius=2)
-        float(background.sum().item())
-        cupy.cuda.get_current_stream().synchronize()
+        with cupy.cuda.using_allocator(pool.malloc):
+            values = cupy.arange(81, dtype=cupy.float32).reshape(9, 9)
+            background = restoration.rolling_ball(values, radius=2)
+            float(background.sum().item())
+            cupy.cuda.get_current_stream().synchronize()
         return ImplementationLibraryProbeResult(
             "cucim",
             True,
             version=str(getattr(cucim, "__version__", "")),
             message="cuCIM completed a synchronized rolling-ball probe.",
+            metadata=metadata,
         )
+    except BaseException as exc:
+        probe_error = exc
+        raise
     finally:
         values = background = None
-        try:
-            cupy.get_default_memory_pool().free_all_blocks()
-        except Exception:
-            pass
+        _drain_private_probe_pool(
+            cupy,
+            pool,
+            library_id="cucim",
+            suppress_errors=probe_error is not None,
+        )
+
+
+_GPU_ENVIRONMENT_RECORD_SCHEMA = "napari-vipp-gpu-environment"
+_GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION = 1
+_GPU_ENVIRONMENT_RECORD_RELATIVE_PATH = (
+    Path("share") / "napari-vipp" / "gpu-environment.json"
+)
+_GPU_ENVIRONMENT_RECORD_KEYS = frozenset(
+    {"schema", "schema_version", "track", "cupy_distribution", "cucim"}
+)
+_CUCIM_RECORD_KEYS = frozenset({"distribution", "wheel_sha256"})
+_TRACK_DISTRIBUTIONS = {
+    "cuda12": "cupy-cuda12x",
+    "cuda13": "cupy-cuda13x",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CucimEnvironmentProvenance:
+    track: str
+    cupy_distribution: str
+    distribution: str
+    wheel_sha256: str
+
+
+class _InstalledProvenanceError(ValueError):
+    """An actionable mismatch between a setup marker and installed packages."""
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
+def _gpu_environment_record_path(*, prefix: Path | None = None) -> Path:
+    """Return the record location for an interpreter, with test injection."""
+
+    root = Path(sys.prefix) if prefix is None else Path(prefix)
+    return root / _GPU_ENVIRONMENT_RECORD_RELATIVE_PATH
+
+
+def _read_cucim_environment_provenance(
+    path: Path,
+) -> _CucimEnvironmentProvenance | None:
+    """Read a strict setup marker and return its optional cuCIM approval."""
+
+    if path.stat().st_size > 64 * 1024:
+        raise ValueError("record exceeds the 64 KiB size limit")
+    with path.open("r", encoding="utf-8") as stream:
+        document = json.load(stream, object_pairs_hook=_unique_json_object)
+    if not isinstance(document, dict):
+        raise ValueError("record root must be a JSON object")
+    if set(document) != _GPU_ENVIRONMENT_RECORD_KEYS:
+        raise ValueError("record fields do not match schema version 1")
+    if document["schema"] != _GPU_ENVIRONMENT_RECORD_SCHEMA:
+        raise ValueError("record schema identifier is not supported")
+    schema_version = document["schema_version"]
+    if type(schema_version) is not int or schema_version != 1:
+        raise ValueError("record schema_version must be integer 1")
+    track = document["track"]
+    cupy_distribution = document["cupy_distribution"]
+    if not isinstance(track, str) or track not in _TRACK_DISTRIBUTIONS:
+        raise ValueError("record track must be cuda12 or cuda13")
+    if cupy_distribution != _TRACK_DISTRIBUTIONS[track]:
+        raise ValueError("record CuPy distribution does not match its track")
+
+    cucim = document["cucim"]
+    if cucim is None:
+        return None
+    if track != "cuda13":
+        raise ValueError("verified cuCIM provenance is valid only for cuda13")
+    if not isinstance(cucim, dict) or set(cucim) != _CUCIM_RECORD_KEYS:
+        raise ValueError("record cucim fields do not match schema version 1")
+    distribution = cucim["distribution"]
+    if distribution != "cucim-cu13":
+        raise ValueError("record cuCIM distribution must be cucim-cu13")
+    digest = cucim["wheel_sha256"]
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(
+            r"[0-9a-fA-F]{64}",
+            digest,
+        )
+        is None
+    ):
+        raise ValueError("record cuCIM wheel_sha256 must be 64 hexadecimal digits")
+    return _CucimEnvironmentProvenance(
+        track=track,
+        cupy_distribution=cupy_distribution,
+        distribution=distribution,
+        wheel_sha256=digest.lower(),
+    )
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        result[key] = value
+    return result
+
+
+def _verify_installed_cucim_provenance(
+    provenance: _CucimEnvironmentProvenance,
+) -> str:
+    """Verify that installed packages still match the completed setup marker."""
+
+    try:
+        cupy_distributions = _installed_cupy_distribution_names()
+    except Exception as exc:
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            f"Could not verify the installed CuPy distribution: {exc}.",
+        ) from exc
+    expected_cupy = _canonical_distribution_name(provenance.cupy_distribution)
+    if cupy_distributions != (expected_cupy,):
+        rendered = ", ".join(cupy_distributions) if cupy_distributions else "none"
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            "The GPU environment record approves "
+            f"{expected_cupy}, but the installed CuPy distributions are {rendered}.",
+        )
+
+    try:
+        distribution = importlib.metadata.distribution(provenance.distribution)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            "The GPU environment record approves "
+            f"{provenance.distribution}, but that distribution is not installed.",
+        ) from exc
+    except Exception as exc:
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            f"Could not inspect the installed {provenance.distribution}: {exc}.",
+        ) from exc
+
+    installed_name = _canonical_distribution_name(distribution.metadata.get("Name", ""))
+    if installed_name != _canonical_distribution_name(provenance.distribution):
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            "The installed cuCIM distribution metadata does not match the "
+            "approved name.",
+        )
+    version = str(distribution.version).strip()
+    if not version:
+        raise _InstalledProvenanceError(
+            "cucim_provenance_stale",
+            "The installed cuCIM distribution does not report a version.",
+        )
+
+    try:
+        direct_url = distribution.read_text("direct_url.json")
+    except (OSError, UnicodeError) as exc:
+        raise _InstalledProvenanceError(
+            "cucim_artifact_unverified",
+            f"Could not read installed cuCIM PEP 610 provenance: {exc}.",
+        ) from exc
+    if not direct_url:
+        raise _InstalledProvenanceError(
+            "cucim_artifact_unverified",
+            "The installed cuCIM distribution has no PEP 610 archive provenance.",
+        )
+    try:
+        installed_digest = _pep610_archive_sha256(direct_url)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise _InstalledProvenanceError(
+            "cucim_artifact_unverified",
+            f"Installed cuCIM PEP 610 provenance is invalid: {exc}.",
+        ) from exc
+    if installed_digest != provenance.wheel_sha256:
+        raise _InstalledProvenanceError(
+            "cucim_artifact_mismatch",
+            "The installed cuCIM archive SHA-256 does not match the approved wheel "
+            f"(expected {provenance.wheel_sha256}, found {installed_digest}).",
+        )
+    return version
+
+
+def _installed_cupy_distribution_names() -> tuple[str, ...]:
+    names: set[str] = set()
+    for distribution in importlib.metadata.distributions():
+        name = _canonical_distribution_name(distribution.metadata.get("Name", ""))
+        if (
+            name == "cupy"
+            or name == "amd-cupy"
+            or name.startswith("cupy-cuda")
+            or name.startswith("cupy-rocm")
+        ):
+            names.add(name)
+    return tuple(sorted(names))
+
+
+def _canonical_distribution_name(value: object) -> str:
+    return re.sub(r"[-_.]+", "-", str(value)).lower()
+
+
+def _pep610_archive_sha256(document_text: str) -> str:
+    document = json.loads(document_text, object_pairs_hook=_unique_json_object)
+    if not isinstance(document, dict):
+        raise ValueError("direct_url.json root must be a JSON object")
+    archive_info = document.get("archive_info")
+    if not isinstance(archive_info, dict):
+        raise ValueError("direct_url.json has no archive_info object")
+
+    candidates: list[str] = []
+    hashes = archive_info.get("hashes")
+    if hashes is not None:
+        if not isinstance(hashes, dict):
+            raise ValueError("archive_info.hashes must be a JSON object")
+        candidate = hashes.get("sha256")
+        if candidate is not None:
+            candidates.append(str(candidate).lower())
+    legacy_hash = archive_info.get("hash")
+    if legacy_hash is not None:
+        match = re.fullmatch(r"sha256=([0-9a-fA-F]{64})", str(legacy_hash))
+        if match is None:
+            raise ValueError("archive_info.hash must contain a SHA-256 digest")
+        candidates.append(match.group(1).lower())
+    if not candidates or any(
+        re.fullmatch(r"[0-9a-f]{64}", candidate) is None for candidate in candidates
+    ):
+        raise ValueError("archive_info does not contain a valid SHA-256 digest")
+    if len(set(candidates)) != 1:
+        raise ValueError("archive_info SHA-256 fields disagree")
+    return candidates[0]
+
+
+def _drain_private_probe_pool(
+    cupy,
+    pool,
+    *,
+    library_id: str,
+    suppress_errors: bool = False,
+) -> None:
+    """Synchronize and release only the allocation pool owned by a probe."""
+
+    cleanup_errors: list[BaseException] = []
+    try:
+        cupy.cuda.get_current_stream().synchronize()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        pool.free_all_blocks()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        used = int(pool.used_bytes())
+        reserved = int(pool.total_bytes())
+        if used or reserved:
+            cleanup_errors.append(
+                RuntimeError(
+                    f"{library_id} probe private memory pool did not drain "
+                    f"(used={used}, reserved={reserved})."
+                )
+            )
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    if cleanup_errors and not suppress_errors:
+        primary = cleanup_errors[0]
+        for additional in cleanup_errors[1:]:
+            primary.add_note(
+                "Additional private-pool cleanup failure: "
+                f"{type(additional).__name__}: {additional}"
+            )
+        raise primary
 
 
 def _load_ref(reference: str):

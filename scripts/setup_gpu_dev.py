@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,31 +52,70 @@ TRACKS = {
 # checksum-verified wheel so ``--no-deps`` cannot leave a broken environment.
 CUCIM_CUDA13_REQUIREMENTS = ("nvidia-nvimgcodec-cu13==0.8.0.22",)
 
+GPU_ENVIRONMENT_RECORD_SCHEMA = "napari-vipp-gpu-environment"
+GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION = 1
+GPU_ENVIRONMENT_RECORD_RELATIVE_PATH = (
+    Path("share") / "napari-vipp" / "gpu-environment.json"
+)
+
 
 GPU_PROBE = """\
 import json
 import cupy as cp
 from cupyx.scipy import ndimage
 
-x = cp.arange(16, dtype=cp.float32).reshape(4, 4)
-y = ndimage.gaussian_filter(x, 1.0)
-z = ndimage.median_filter(x, size=3)
-cp.cuda.get_current_stream().synchronize()
-properties = cp.cuda.runtime.getDeviceProperties(0)
-name = properties.get("name", "CUDA device 0")
-if isinstance(name, bytes):
-    name = name.decode(errors="replace")
-payload = {
-    "cupy": cp.__version__,
-    "device": str(name),
-    "compute_capability": cp.cuda.Device(0).compute_capability,
-    "driver_version": int(cp.cuda.runtime.driverGetVersion()),
-    "runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
-    "probe_sum": float((y + z).sum().get()),
-}
-del x, y, z
-cp.cuda.get_current_stream().synchronize()
-cp.get_default_memory_pool().free_all_blocks()
+pool = cp.cuda.MemoryPool()
+x = y = z = None
+probe_error = None
+
+def drain_private_pool():
+    cleanup_errors = []
+    try:
+        cp.cuda.get_current_stream().synchronize()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        pool.free_all_blocks()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        if pool.used_bytes() or pool.total_bytes():
+            cleanup_errors.append(
+                RuntimeError("CUDA probe private memory pool did not drain")
+            )
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    if cleanup_errors:
+        raise cleanup_errors[0]
+
+try:
+    with cp.cuda.using_allocator(pool.malloc):
+        x = cp.arange(16, dtype=cp.float32).reshape(4, 4)
+        y = ndimage.gaussian_filter(x, 1.0)
+        z = ndimage.median_filter(x, size=3)
+        cp.cuda.get_current_stream().synchronize()
+        properties = cp.cuda.runtime.getDeviceProperties(0)
+        name = properties.get("name", "CUDA device 0")
+        if isinstance(name, bytes):
+            name = name.decode(errors="replace")
+        payload = {
+            "cupy": cp.__version__,
+            "device": str(name),
+            "compute_capability": cp.cuda.Device(0).compute_capability,
+            "driver_version": int(cp.cuda.runtime.driverGetVersion()),
+            "runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
+            "probe_sum": float((y + z).sum().get()),
+        }
+except BaseException as exc:
+    probe_error = exc
+    raise
+finally:
+    x = y = z = None
+    try:
+        drain_private_pool()
+    except BaseException:
+        if probe_error is None:
+            raise
 print(json.dumps(payload, sort_keys=True))
 """
 
@@ -86,15 +126,49 @@ import cucim
 import cupy as cp
 from cucim.skimage import restoration
 
-x = cp.arange(4096, dtype=cp.float32).reshape(64, 64)
-y = restoration.rolling_ball(x, radius=8)
-cp.cuda.get_current_stream().synchronize()
-assert y.shape == x.shape
-assert cucim.is_available("skimage")
-print(json.dumps({"cucim": cucim.__version__, "skimage": True}, sort_keys=True))
-del x, y
-cp.cuda.get_current_stream().synchronize()
-cp.get_default_memory_pool().free_all_blocks()
+pool = cp.cuda.MemoryPool()
+x = y = None
+probe_error = None
+
+def drain_private_pool():
+    cleanup_errors = []
+    try:
+        cp.cuda.get_current_stream().synchronize()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        pool.free_all_blocks()
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    try:
+        if pool.used_bytes() or pool.total_bytes():
+            cleanup_errors.append(
+                RuntimeError("cuCIM probe private memory pool did not drain")
+            )
+    except BaseException as exc:
+        cleanup_errors.append(exc)
+    if cleanup_errors:
+        raise cleanup_errors[0]
+
+try:
+    with cp.cuda.using_allocator(pool.malloc):
+        x = cp.arange(4096, dtype=cp.float32).reshape(64, 64)
+        y = restoration.rolling_ball(x, radius=8)
+        cp.cuda.get_current_stream().synchronize()
+        assert y.shape == x.shape
+        assert cucim.is_available("skimage")
+        payload = {"cucim": cucim.__version__, "skimage": True}
+except BaseException as exc:
+    probe_error = exc
+    raise
+finally:
+    x = y = None
+    try:
+        drain_private_pool()
+    except BaseException:
+        if probe_error is None:
+            raise
+print(json.dumps(payload, sort_keys=True))
 """
 
 
@@ -134,6 +208,7 @@ class SetupPlan:
     install_project: SetupAction
     pip_check: SetupAction
     gpu_probe: SetupAction
+    environment_record_path: Path
     cucim_wheel: CucimWheel | None = None
     install_cucim: SetupAction | None = None
     cucim_probe: SetupAction | None = None
@@ -163,9 +238,16 @@ class SetupPlan:
             "venv_python": str(self.venv_python),
             "constraint": str(self.constraint_path),
             "expected_cupy_distribution": self.track.cupy_distribution,
-            "cucim_wheel": (
-                self.cucim_wheel.as_dict() if self.cucim_wheel else None
-            ),
+            "cucim_wheel": (self.cucim_wheel.as_dict() if self.cucim_wheel else None),
+            "environment_record": {
+                "path": str(self.environment_record_path),
+                "document": _environment_record_document(self),
+                "write_after": [
+                    "probe_cuda_runtime",
+                    *(["probe_cucim"] if self.cucim_probe is not None else []),
+                    "check_dependencies",
+                ],
+            },
             "actions": [action.as_dict() for action in self.actions],
         }
 
@@ -251,9 +333,7 @@ def create_setup_plan(
         cucim_sha256,
     )
     python = str(target_python)
-    project_requirements = (
-        CUCIM_CUDA13_REQUIREMENTS if wheel is not None else ()
-    )
+    project_requirements = CUCIM_CUDA13_REQUIREMENTS if wheel is not None else ()
     install_project = SetupAction(
         "install_project_and_cuda_runtime",
         (
@@ -323,6 +403,7 @@ def create_setup_plan(
             "probe_cuda_runtime",
             (python, "-c", GPU_PROBE),
         ),
+        environment_record_path=target / GPU_ENVIRONMENT_RECORD_RELATIVE_PATH,
         cucim_wheel=wheel,
         install_cucim=install_cucim,
         cucim_probe=cucim_probe,
@@ -335,6 +416,15 @@ def execute_setup_plan(plan: SetupPlan) -> None:
     if plan.create_venv is not None:
         _run_action(plan.create_venv)
     _validate_existing_venv(plan.venv_root, plan.venv_python)
+    record_path = _validated_environment_record_path(
+        plan.environment_record_path,
+        venv_root=plan.venv_root,
+    )
+
+    # An environment record is an approval marker for the *completed* setup.
+    # Invalidate an earlier marker before changing packages so a failed rerun,
+    # or a rerun without a verified cuCIM wheel, cannot retain stale approval.
+    _invalidate_environment_record(record_path, venv_root=plan.venv_root)
 
     before = _installed_cupy_distributions(plan.venv_python)
     _validate_cupy_distributions(
@@ -373,6 +463,133 @@ def execute_setup_plan(plan: SetupPlan) -> None:
     # Validate the final environment, including the optional cuCIM wheel and
     # every dependency declared by its upstream metadata.
     _run_action(plan.pip_check)
+    _write_environment_record_atomic(
+        record_path,
+        _environment_record_document(plan),
+        venv_root=plan.venv_root,
+    )
+
+
+def _environment_record_document(plan: SetupPlan) -> dict[str, object]:
+    """Return the strict provenance marker written after successful setup."""
+
+    cucim: dict[str, str] | None = None
+    if plan.cucim_wheel is not None:
+        cucim = {
+            "distribution": "cucim-cu13",
+            "wheel_sha256": plan.cucim_wheel.sha256.lower(),
+        }
+    return {
+        "schema": GPU_ENVIRONMENT_RECORD_SCHEMA,
+        "schema_version": GPU_ENVIRONMENT_RECORD_SCHEMA_VERSION,
+        "track": plan.track.name,
+        "cupy_distribution": plan.track.cupy_distribution,
+        "cucim": cucim,
+    }
+
+
+def _invalidate_environment_record(path: Path, *, venv_root: Path) -> None:
+    """Remove an earlier approval marker before mutating its environment."""
+
+    path = _validated_environment_record_path(path, venv_root=venv_root)
+    try:
+        if path.exists():
+            if path.is_dir():
+                raise SetupError(f"GPU environment record path is a directory: {path}")
+            path.unlink()
+    except OSError as exc:
+        raise SetupError(
+            f"Could not invalidate the earlier GPU environment record: {path}"
+        ) from exc
+
+
+def _write_environment_record_atomic(
+    path: Path,
+    document: dict[str, object],
+    *,
+    venv_root: Path,
+) -> None:
+    """Durably replace the setup marker without exposing partial JSON."""
+
+    path = _validated_environment_record_path(path, venv_root=venv_root)
+    parent = path.parent
+    temporary: Path | None = None
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        path = _validated_environment_record_path(path, venv_root=venv_root)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=parent,
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(document, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        path = _validated_environment_record_path(path, venv_root=venv_root)
+        os.replace(temporary, path)
+        temporary = None
+    except (OSError, TypeError, ValueError) as exc:
+        raise SetupError(f"Could not write GPU environment record: {path}") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _validated_environment_record_path(path: Path, *, venv_root: Path) -> Path:
+    """Return the canonical marker path without traversing redirecting parents."""
+
+    try:
+        root = venv_root.expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise SetupError(
+            f"Could not resolve the GPU virtual environment: {venv_root}"
+        ) from exc
+    if not root.is_dir():
+        raise SetupError(f"The GPU virtual environment is not a directory: {root}")
+
+    expected = root / GPU_ENVIRONMENT_RECORD_RELATIVE_PATH
+    declared = Path(os.path.abspath(os.fspath(path.expanduser())))
+    if os.path.normcase(str(declared)) != os.path.normcase(str(expected)):
+        raise SetupError(
+            "The GPU environment record must remain inside its dedicated venv: "
+            f"expected {expected}, found {declared}."
+        )
+
+    current = root
+    for part in GPU_ENVIRONMENT_RECORD_RELATIVE_PATH.parts[:-1]:
+        current /= part
+        if _is_link_or_junction(current):
+            raise SetupError(
+                "Refusing a GPU environment record path with a symlink or junction "
+                f"parent: {current}"
+            )
+        if current.exists() and not current.is_dir():
+            raise SetupError(
+                f"GPU environment record parent is not a directory: {current}"
+            )
+    if _is_link_or_junction(expected):
+        raise SetupError(
+            f"Refusing a symlink or junction GPU environment record: {expected}"
+        )
+    return expected
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    """Return whether a path redirects traversal on the current platform."""
+
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
 
 
 def _require_supported_platform(platform_name: str) -> None:
@@ -411,9 +628,7 @@ def _python_environment(python: Path) -> dict[str, Any]:
     try:
         value = json.loads(completed.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise SetupError(
-            f"Could not inspect Python interpreter {python}."
-        ) from exc
+        raise SetupError(f"Could not inspect Python interpreter {python}.") from exc
     if not isinstance(value, dict):
         raise SetupError(f"Python interpreter report was invalid: {python}")
     return value
@@ -476,9 +691,7 @@ def _validated_cucim_wheel(
     if wheel_path is None and expected_sha256 is None:
         return None
     if wheel_path is None or expected_sha256 is None:
-        raise SetupError(
-            "--cucim-wheel and --cucim-sha256 must be provided together."
-        )
+        raise SetupError("--cucim-wheel and --cucim-sha256 must be provided together.")
     if track.name != "cuda13":
         raise SetupError("The current experimental cuCIM wheel is CUDA 13 only.")
     normalized_hash = expected_sha256.strip().lower()
@@ -489,9 +702,7 @@ def _validated_cucim_wheel(
         raise SetupError(f"The local cuCIM wheel does not exist: {wheel}")
     filename = wheel.name.lower()
     if not filename.startswith("cucim_cu13-") or not filename.endswith(".whl"):
-        raise SetupError(
-            "The experimental wheel must be a cucim_cu13 wheel file."
-        )
+        raise SetupError("The experimental wheel must be a cucim_cu13 wheel file.")
     if "cp312" not in filename:
         raise SetupError("The experimental cuCIM wheel must target CPython 3.12.")
     actual_hash = _sha256(wheel)
