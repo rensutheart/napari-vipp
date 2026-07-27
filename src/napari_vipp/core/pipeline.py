@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from napari_vipp.core import metadata as _metadata
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
     validate_mask_broadcast_image_states,
@@ -928,6 +929,22 @@ class PipelineExecutionPlan:
     blocked_node_ids: frozenset[str]
     runnable_node_ids: frozenset[str]
     target_node_ids: frozenset[str] | None = None
+
+
+@dataclass
+class PipelineRunState:
+    """Mutable bookkeeping for one prepared graph execution.
+
+    The graph and cache initialization is shared by the established CPU loop
+    and the transactional device runner.  Values are committed separately so
+    a device segment can finish before any result becomes caller-visible.
+    """
+
+    execution_plan: PipelineExecutionPlan
+    remaining_node_ids: set[str]
+    completed_node_ids: set[str]
+    retained_node_ids: set[str]
+    prune_unretained: bool = False
 
 
 EXECUTION_READY = "ready"
@@ -6414,27 +6431,17 @@ class PrototypePipeline:
         node.params["channel_1_threshold"] = float(threshold_1)
         node.params["channel_2_threshold"] = float(threshold_2)
 
-    def run(
+    def prepare_execution(
         self,
-        input_data,
-        input_metadata: dict | None = None,
-        input_name: str = "",
-        source_payloads: dict[str, SourcePayload] | None = None,
         dirty_node_ids: Iterable[str] | None = None,
-        node_started_callback: Callable[[str], None] | None = None,
-        node_finished_callback: Callable[[str], None] | None = None,
-        progress_callback: Callable[[str, int, int, str], None] | None = None,
-        cancel_callback: Callable[[], bool] | None = None,
+        *,
         manual_mode: str = MANUAL_RUN_CALCULATE,
         manual_node_ids: Iterable[str] | None = None,
         target_node_ids: Iterable[str] | None = None,
         retain_node_ids: Iterable[str] | None = None,
         prune_unretained: bool = False,
-        node_executor: NodeCallExecutor | None = None,
-    ) -> dict[str, Any]:
-        resolved_node_executor = (
-            DEFAULT_CPU_NODE_EXECUTOR if node_executor is None else node_executor
-        )
+    ) -> PipelineRunState:
+        """Initialize graph/cache state without executing a scientific node."""
         retained_nodes = {
             node_id for node_id in (retain_node_ids or ()) if node_id in self.nodes
         }
@@ -6508,12 +6515,6 @@ class PrototypePipeline:
                 )
             self._mark_nodes_blocked_by_manual_barrier(blocked)
         else:
-            prior_outputs = {}
-            prior_output_states = {}
-            prior_node_outputs = {}
-            prior_node_output_states = {}
-            prior_execution_states = {}
-            prior_execution_messages = {}
             preserved = barriers | blocked
             remaining = candidates - preserved
             retained_nodes.update(preserved)
@@ -6535,6 +6536,102 @@ class PrototypePipeline:
                 set(self.nodes) - remaining - barriers - blocked_manual_nodes
             )
 
+        return PipelineRunState(
+            execution_plan,
+            remaining,
+            completed,
+            retained_nodes,
+            bool(prune_unretained),
+        )
+
+    def commit_node_results(
+        self,
+        execution: PipelineRunState,
+        node_id: str,
+        results: list[tuple[Any, ImageState | TableState | None]],
+    ) -> None:
+        """Commit one finalized node result into a prepared execution."""
+        if node_id not in execution.remaining_node_ids:
+            raise ValueError(f"Node {node_id!r} is not pending in this execution.")
+        if not results:
+            raise ValueError("A node commit requires at least one output result.")
+        self.node_outputs[node_id] = [data for data, _state in results]
+        self.node_output_states[node_id] = [state for _data, state in results]
+        primary_output, primary_state = results[0]
+        self.outputs[node_id] = primary_output
+        self.output_states[node_id] = primary_state
+        self.node_execution_states[node_id] = (
+            EXECUTION_READY
+            if primary_output is not None
+            else EXECUTION_NOT_CALCULATED
+        )
+        self.node_execution_messages[node_id] = ""
+        execution.remaining_node_ids.remove(node_id)
+        execution.completed_node_ids.add(node_id)
+        self.completed_node_ids.add(node_id)
+        if execution.prune_unretained:
+            self._prune_completed_outputs(
+                execution.completed_node_ids,
+                execution.remaining_node_ids,
+                execution.retained_node_ids,
+            )
+
+    def commit_uncached_node(
+        self,
+        execution: PipelineRunState,
+        node_id: str,
+    ) -> None:
+        """Record successful execution when no host cache value was requested."""
+        if node_id not in execution.remaining_node_ids:
+            raise ValueError(f"Node {node_id!r} is not pending in this execution.")
+        output_count = len(self.output_ports(node_id))
+        self.outputs[node_id] = None
+        self.output_states[node_id] = None
+        self.node_outputs[node_id] = [None] * output_count
+        self.node_output_states[node_id] = [None] * output_count
+        self.node_execution_states[node_id] = EXECUTION_READY
+        self.node_execution_messages[node_id] = ""
+        execution.remaining_node_ids.remove(node_id)
+        # An unmaterialized device value is no longer a reusable host result.
+        self.completed_node_ids.discard(node_id)
+
+    def finish_execution(self, execution: PipelineRunState) -> dict[str, Any]:
+        """Apply final cache retention after all runnable nodes were committed."""
+        if execution.prune_unretained:
+            self.prune_cached_outputs(execution.retained_node_ids)
+        return self.outputs
+
+    def run(
+        self,
+        input_data,
+        input_metadata: dict | None = None,
+        input_name: str = "",
+        source_payloads: dict[str, SourcePayload] | None = None,
+        dirty_node_ids: Iterable[str] | None = None,
+        node_started_callback: Callable[[str], None] | None = None,
+        node_finished_callback: Callable[[str], None] | None = None,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+        manual_mode: str = MANUAL_RUN_CALCULATE,
+        manual_node_ids: Iterable[str] | None = None,
+        target_node_ids: Iterable[str] | None = None,
+        retain_node_ids: Iterable[str] | None = None,
+        prune_unretained: bool = False,
+        node_executor: NodeCallExecutor | None = None,
+    ) -> dict[str, Any]:
+        resolved_node_executor = (
+            DEFAULT_CPU_NODE_EXECUTOR if node_executor is None else node_executor
+        )
+        execution = self.prepare_execution(
+            dirty_node_ids,
+            manual_mode=manual_mode,
+            manual_node_ids=manual_node_ids,
+            target_node_ids=target_node_ids,
+            retain_node_ids=retain_node_ids,
+            prune_unretained=prune_unretained,
+        )
+        remaining = execution.remaining_node_ids
+        completed = execution.completed_node_ids
         while remaining:
             runnable = [
                 node_id
@@ -6563,31 +6660,10 @@ class PrototypePipeline:
                 except Exception as exc:
                     self.set_node_execution_error(node_id, str(exc))
                     raise
-                self.node_outputs[node_id] = [data for data, _ in results]
-                self.node_output_states[node_id] = [state for _, state in results]
-                primary_output, primary_state = results[0]
-                self.outputs[node_id] = primary_output
-                self.output_states[node_id] = primary_state
-                self.node_execution_states[node_id] = (
-                    EXECUTION_READY
-                    if primary_output is not None
-                    else EXECUTION_NOT_CALCULATED
-                )
-                self.node_execution_messages[node_id] = ""
-                remaining.remove(node_id)
-                completed.add(node_id)
-                self.completed_node_ids.add(node_id)
+                self.commit_node_results(execution, node_id, results)
                 if node_finished_callback is not None:
                     node_finished_callback(node_id)
-                if prune_unretained:
-                    self._prune_completed_outputs(
-                        completed,
-                        remaining,
-                        retained_nodes,
-                    )
-        if prune_unretained:
-            self.prune_cached_outputs(retained_nodes)
-        return self.outputs
+        return self.finish_execution(execution)
 
     def prune_cached_outputs(self, retain_node_ids: Iterable[str]) -> None:
         """Drop cached output data for nodes outside ``retain_node_ids``."""
@@ -6718,185 +6794,137 @@ class PrototypePipeline:
         cancel_callback: Callable[[], bool] | None = None,
         node_executor: NodeCallExecutor = DEFAULT_CPU_NODE_EXECUTOR,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
+        """Prepare, execute, and finalize one node through the shared seams."""
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
         port_count = len(self.output_ports(node_id))
         if not spec.has_input:
-            payload = source_payloads.get(node_id)
-            if payload is None:
-                payload = SourcePayload(input_data, input_metadata, input_name)
-            state = payload.image_state
-            if state is None or state.value_range == DEFERRED_VALUE_RANGE:
-                state = image_state_from_array(
-                    payload.data,
-                    layer_metadata=payload.metadata,
-                    source_name=payload.name,
-                    axes=(state.axes if state is not None else None),
-                    metadata_source=(
-                        state.metadata_source if state is not None else None
-                    ),
-                    history=(state.history if state is not None else ()),
-                    channels=(state.channels if state is not None else None),
-                    acquisition=(state.acquisition if state is not None else None),
-                    source=(state.source if state is not None else None),
-                )
-            state = with_channel_colors(state, node.params.get("channel_colors", ""))
-            return [
-                (
-                    payload.data,
-                    state,
-                )
-            ]
+            return self.source_node_results(
+                node_id,
+                input_data,
+                input_metadata,
+                input_name,
+                source_payloads,
+            )
+
+        call = self.prepare_node_call(
+            node_id,
+            progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
+        )
+        if call is None:
+            return [(None, None)] * port_count
+        output = execute_prepared_node_call(call, node_executor)
+        return self.finalize_node_call(call, output)
+
+    def source_node_results(
+        self,
+        node_id: str,
+        input_data: Any,
+        input_metadata: dict | None,
+        input_name: str,
+        source_payloads: Mapping[str, SourcePayload],
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
+        """Resolve one source boundary without invoking an operation callable."""
+        node = self.nodes[node_id]
+        spec = self.operation_spec(node.operation_id)
+        if spec.has_input:
+            raise ValueError(f"Node {node_id!r} is not a source boundary.")
+        payload = source_payloads.get(node_id)
+        if payload is None:
+            payload = SourcePayload(input_data, input_metadata, input_name)
+        state = payload.image_state
+        if state is None or state.value_range == DEFERRED_VALUE_RANGE:
+            state = image_state_from_array(
+                payload.data,
+                layer_metadata=payload.metadata,
+                source_name=payload.name,
+                axes=(state.axes if state is not None else None),
+                metadata_source=(
+                    state.metadata_source if state is not None else None
+                ),
+                history=(state.history if state is not None else ()),
+                channels=(state.channels if state is not None else None),
+                acquisition=(state.acquisition if state is not None else None),
+                source=(state.source if state is not None else None),
+            )
+        state = with_channel_colors(state, node.params.get("channel_colors", ""))
+        return [(payload.data, state)]
+
+    def prepare_node_call(
+        self,
+        node_id: str,
+        inputs: tuple[Any, ...] | None = None,
+        input_states: tuple[ImageState | TableState | None, ...] | None = None,
+        *,
+        progress_callback: Callable[[str, int, int, str], None] | None = None,
+        cancel_callback: Callable[[], bool] | None = None,
+    ) -> PreparedNodeCall | None:
+        """Build the canonical Qt-free call used by CPU and device execution.
+
+        When ``inputs`` are supplied they must already be ordered by target
+        port.  This permits a device executor to keep values resident while
+        reusing the authoritative parameter and metadata validation path.
+        """
+        node = self.nodes[node_id]
+        spec = self.operation_spec(node.operation_id)
+        if not spec.has_input:
+            raise ValueError(f"Node {node_id!r} is a source boundary.")
+        if spec.function is None:
+            return None
 
         connections = self._input_connections(node_id)
         if not connections:
-            return [(None, None)] * port_count
-        if self._node_accepts_multiple_inputs(node):
+            return None
+        multiple_inputs = self._node_accepts_multiple_inputs(node)
+        if multiple_inputs:
             required = self._required_inputs_for(node)
             input_connections = {
                 connection.target_port: connection
                 for connection in connections
             }
             if any(port not in input_connections for port in range(required)):
-                return [(None, None)] * port_count
-            ordered = [input_connections[port] for port in range(required)]
-            source_outputs = [
-                self._resolved_output(conn.source_id, conn.source_port)
-                for conn in ordered
-            ]
-            if (
-                any(output is None for output in source_outputs)
-                or spec.function is None
-            ):
-                return [(None, None)] * port_count
+                return None
+            ordered = tuple(input_connections[port] for port in range(required))
+        else:
+            required = 1
+            ordered = (connections[0],)
 
-            input_states = [
-                self._resolved_output_state(conn.source_id, conn.source_port)
-                for conn in ordered
-            ]
-            kwargs = self._operation_kwargs(node)
-            _validate_operation_axis_semantics(
-                node,
-                input_states[0] if input_states else None,
-                kwargs,
+        if inputs is None:
+            resolved_inputs = tuple(
+                self._resolved_output(connection.source_id, connection.source_port)
+                for connection in ordered
             )
-            self._inject_progress_context(
-                spec,
-                kwargs,
-                node_id,
-                progress_callback,
-                cancel_callback,
-            )
-            if node.operation_id in SPATIAL_OPERATIONS:
-                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
-                resolved_spatial_ndim = _resolved_spatial_ndim(
-                    input_states[0],
-                    source_outputs[0],
-                    spatial_mode,
-                    operation_title=node.title,
+        else:
+            resolved_inputs = tuple(inputs)
+            if len(resolved_inputs) != required:
+                raise ValueError(
+                    f"Node {node_id!r} requires {required} ordered input(s), "
+                    f"received {len(resolved_inputs)}."
                 )
-                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
-                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
-            _validate_positional_spatial_layout(
-                node,
-                input_states[0] if input_states else None,
-                kwargs,
-            )
-            if node.operation_id == "combine_channels":
-                derived_axis = _default_combined_channel_axis(
-                    input_states[0],
-                )
-                kwargs["channel_axis"] = derived_axis
-                node.params["channel_axis"] = derived_axis
-            if node.operation_id in LABEL_METADATA_MULTI_INPUT_OPERATIONS:
-                labels_state = input_states[0]
-                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
-                resolved_spatial_ndim = _resolved_spatial_ndim(
-                    labels_state,
-                    source_outputs[0],
-                    spatial_mode,
-                    operation_title=node.title,
-                )
-                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
-                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
-                if isinstance(labels_state, ImageState):
-                    kwargs["axis_names"] = tuple(
-                        axis.name for axis in labels_state.axes
-                    )
-                    kwargs["axis_types"] = tuple(
-                        axis.type for axis in labels_state.axes
-                    )
-                    kwargs["axis_scales"] = tuple(
-                        axis.scale for axis in labels_state.axes
-                    )
-                    kwargs["axis_units"] = tuple(
-                        axis.unit for axis in labels_state.axes
-                    )
-                    kwargs["source_name"] = labels_state.source_name
-            if node.operation_id == "filter_labels_by_property":
-                labels_state = input_states[0]
-                spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
-                resolved_spatial_ndim = _resolved_spatial_ndim(
-                    labels_state,
-                    source_outputs[0],
-                    spatial_mode,
-                    operation_title=node.title,
-                )
-                kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
-                node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
-                if isinstance(labels_state, ImageState):
-                    kwargs["axis_names"] = tuple(
-                        axis.name for axis in labels_state.axes
-                    )
-                    kwargs["axis_types"] = tuple(
-                        axis.type for axis in labels_state.axes
-                    )
-            self._validate_multi_input_grids(node, input_states, kwargs)
-            self._sync_colocalization_costes_thresholds(
-                node,
-                source_outputs,
-                kwargs,
-            )
-            output = execute_prepared_node_call(
-                PreparedNodeCall(
-                    node_id=node_id,
-                    operation_id=node.operation_id,
-                    cpu_function=spec.function,
-                    inputs=tuple(source_outputs),
-                    input_states=tuple(input_states),
-                    kwargs=kwargs,
-                    multiple_inputs=True,
-                    output_port_count=port_count,
-                ),
-                node_executor,
-            )
-            if spec.output_type == "table":
-                history = _table_history(input_states, node.title, output)
-                state = table_state_from_data(
-                    output,
-                    history=history,
-                    source_name=_combined_source_name(input_states),
-                )
-                return [(output, state)]
-            state = transform_multi_input_image_state(
-                output,
-                input_states,
-                operation_id=node.operation_id,
-                operation_title=node.title,
-                params=kwargs,
-            )
-            return [(output, state)]
+        if any(value is None for value in resolved_inputs):
+            return None
 
-        primary = connections[0]
-        source_output = self._resolved_output(primary.source_id, primary.source_port)
-        if source_output is None or spec.function is None:
-            return [(None, None)] * port_count
+        if input_states is None:
+            resolved_states = tuple(
+                self._resolved_output_state(
+                    connection.source_id,
+                    connection.source_port,
+                )
+                for connection in ordered
+            )
+        else:
+            resolved_states = tuple(input_states)
+            if len(resolved_states) != required:
+                raise ValueError(
+                    f"Node {node_id!r} requires {required} input state(s), "
+                    f"received {len(resolved_states)}."
+                )
 
-        input_state = self._resolved_output_state(
-            primary.source_id, primary.source_port
-        )
         kwargs = self._operation_kwargs(node)
-        _validate_operation_axis_semantics(node, input_state, kwargs)
+        primary_state = resolved_states[0] if resolved_states else None
+        primary_input = resolved_inputs[0]
+        _validate_operation_axis_semantics(node, primary_state, kwargs)
         self._inject_progress_context(
             spec,
             kwargs,
@@ -6904,21 +6932,102 @@ class PrototypePipeline:
             progress_callback,
             cancel_callback,
         )
-        if node.operation_id == "save_output":
-            kwargs["image_state"] = input_state
         if node.operation_id in SPATIAL_OPERATIONS:
             spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
             if node.operation_id == "clear_border_objects":
                 spatial_mode = "Auto from axes"
             resolved_spatial_ndim = _resolved_spatial_ndim(
-                input_state,
-                source_output,
+                primary_state,
+                primary_input,
                 spatial_mode,
                 operation_title=node.title,
             )
             kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
             node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
-        _validate_positional_spatial_layout(node, input_state, kwargs)
+        _validate_positional_spatial_layout(node, primary_state, kwargs)
+
+        if multiple_inputs:
+            self._prepare_multi_input_kwargs(
+                node,
+                list(resolved_inputs),
+                list(resolved_states),
+                kwargs,
+            )
+        else:
+            self._prepare_single_input_kwargs(
+                node,
+                primary_input,
+                primary_state,
+                kwargs,
+            )
+
+        return PreparedNodeCall(
+            node_id=node_id,
+            operation_id=node.operation_id,
+            cpu_function=spec.function,
+            inputs=resolved_inputs,
+            input_states=resolved_states,
+            kwargs=kwargs,
+            multiple_inputs=multiple_inputs,
+            output_port_count=len(self.output_ports(node_id)),
+        )
+
+    def _prepare_multi_input_kwargs(
+        self,
+        node: GraphNode,
+        source_outputs: list[Any],
+        input_states: list[ImageState | TableState | None],
+        kwargs: dict[str, Any],
+    ) -> None:
+        if node.operation_id == "combine_channels":
+            derived_axis = _default_combined_channel_axis(input_states[0])
+            kwargs["channel_axis"] = derived_axis
+            node.params["channel_axis"] = derived_axis
+        if node.operation_id in LABEL_METADATA_MULTI_INPUT_OPERATIONS:
+            labels_state = input_states[0]
+            spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+            resolved_spatial_ndim = _resolved_spatial_ndim(
+                labels_state,
+                source_outputs[0],
+                spatial_mode,
+                operation_title=node.title,
+            )
+            kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+            node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+            if isinstance(labels_state, ImageState):
+                kwargs["axis_names"] = tuple(axis.name for axis in labels_state.axes)
+                kwargs["axis_types"] = tuple(axis.type for axis in labels_state.axes)
+                kwargs["axis_scales"] = tuple(
+                    axis.scale for axis in labels_state.axes
+                )
+                kwargs["axis_units"] = tuple(axis.unit for axis in labels_state.axes)
+                kwargs["source_name"] = labels_state.source_name
+        if node.operation_id == "filter_labels_by_property":
+            labels_state = input_states[0]
+            spatial_mode = kwargs.get("spatial_mode", "Auto from axes")
+            resolved_spatial_ndim = _resolved_spatial_ndim(
+                labels_state,
+                source_outputs[0],
+                spatial_mode,
+                operation_title=node.title,
+            )
+            kwargs["resolved_spatial_ndim"] = resolved_spatial_ndim
+            node.params["resolved_spatial_ndim"] = resolved_spatial_ndim
+            if isinstance(labels_state, ImageState):
+                kwargs["axis_names"] = tuple(axis.name for axis in labels_state.axes)
+                kwargs["axis_types"] = tuple(axis.type for axis in labels_state.axes)
+        self._validate_multi_input_grids(node, input_states, kwargs)
+        self._sync_colocalization_costes_thresholds(node, source_outputs, kwargs)
+
+    def _prepare_single_input_kwargs(
+        self,
+        node: GraphNode,
+        source_output: Any,
+        input_state: ImageState | TableState | None,
+        kwargs: dict[str, Any],
+    ) -> None:
+        if node.operation_id == "save_output":
+            kwargs["image_state"] = input_state
         if node.operation_id in {
             "measure_objects",
             "analyze_skeleton",
@@ -7020,18 +7129,40 @@ class PrototypePipeline:
                 )
             elif mapping_mode == COMPOSITE_RGB_AUTO:
                 kwargs["channel_colors"] = ()
-        output = execute_prepared_node_call(
-            PreparedNodeCall(
-                node_id=node_id,
+
+    def finalize_node_call(
+        self,
+        call: PreparedNodeCall,
+        output: Any,
+    ) -> list[tuple[Any, ImageState | TableState | None]]:
+        """Apply the authoritative host metadata transform to a raw result."""
+        node = self.nodes[call.node_id]
+        if call.operation_id != node.operation_id:
+            raise ValueError(
+                f"Prepared call operation {call.operation_id!r} does not match "
+                f"node {call.node_id!r}."
+            )
+        spec = self.operation_spec(node.operation_id)
+        input_states = list(call.input_states)
+        if call.multiple_inputs:
+            if spec.output_type == "table":
+                history = _table_history(input_states, node.title, output)
+                state = table_state_from_data(
+                    output,
+                    history=history,
+                    source_name=_combined_source_name(input_states),
+                )
+                return [(output, state)]
+            state = transform_multi_input_image_state(
+                output,
+                input_states,
                 operation_id=node.operation_id,
-                cpu_function=spec.function,
-                inputs=(source_output,),
-                input_states=(input_state,),
-                kwargs=kwargs,
-                output_port_count=port_count,
-            ),
-            node_executor,
-        )
+                operation_title=node.title,
+                params=dict(call.kwargs),
+            )
+            return [(output, state)]
+
+        input_state = input_states[0] if input_states else None
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
         if node.operation_id == "batch_output":
@@ -7044,27 +7175,36 @@ class PrototypePipeline:
                 source_name=getattr(input_state, "source_name", ""),
             )
             return [(output, state)]
+        keyword_arguments = dict(call.kwargs)
         transform_params = self._public_params(node.params)
         if node.operation_id == "born_wolf_psf":
             transform_params = {
                 **transform_params,
                 **{
-                    name: kwargs.get(name, transform_params.get(name))
+                    name: keyword_arguments.get(name, transform_params.get(name))
                     for name in BORN_WOLF_PSF_AUTO_PARAMETERS
                 },
-                "channel": kwargs.get("channel", transform_params.get("channel")),
+                "channel": keyword_arguments.get(
+                    "channel",
+                    transform_params.get("channel"),
+                ),
             }
         if node.operation_id == "composite_to_rgb":
             transform_params = {
                 **transform_params,
-                "resolved_channel_axis": kwargs.get("channel_axis"),
-                "channel_axis_semantics": kwargs.get(
+                "resolved_channel_axis": keyword_arguments.get("channel_axis"),
+                "channel_axis_semantics": keyword_arguments.get(
                     "channel_axis_semantics",
                     "",
                 ),
-                "resolved_channel_axis_mode": kwargs.get("channel_axis_mode"),
-                "resolved_mapping_mode": kwargs.get("mapping_mode"),
-                "resolved_channel_colors": kwargs.get("channel_colors", ()),
+                "resolved_channel_axis_mode": keyword_arguments.get(
+                    "channel_axis_mode"
+                ),
+                "resolved_mapping_mode": keyword_arguments.get("mapping_mode"),
+                "resolved_channel_colors": keyword_arguments.get(
+                    "channel_colors",
+                    (),
+                ),
                 "output_dtype": str(getattr(output, "dtype", "floating RGB")),
             }
         state = transform_image_state(
@@ -7075,6 +7215,43 @@ class PrototypePipeline:
             params=transform_params,
         )
         return [(output, state)]
+
+    def predict_shape_preserving_node_states(
+        self,
+        call: PreparedNodeCall,
+    ) -> tuple[ImageState | None, ...]:
+        """Carry preparation metadata through a resident device operation.
+
+        This prediction never inspects the device value.  It is intentionally
+        limited to one-output, shape- and dtype-preserving image declarations;
+        callers must finalize any materialized host output with
+        :meth:`finalize_node_call` before committing it to the cache.
+        """
+        if call.multiple_inputs or call.output_port_count != 1:
+            raise ValueError(
+                "Resident metadata prediction currently requires one input and "
+                "one output."
+            )
+        input_state = call.input_states[0] if call.input_states else None
+        if input_state is None:
+            return (None,)
+        if not isinstance(input_state, ImageState):
+            raise TypeError("Resident image metadata requires an ImageState input.")
+        node = self.nodes[call.node_id]
+        history_item = _metadata._operation_history(
+            input_state,
+            node.operation_id,
+            node.title,
+            self._public_params(node.params),
+        )
+        return (
+            replace(
+                input_state,
+                history=input_state.history + (history_item,),
+                value_range=DEFERRED_VALUE_RANGE,
+                value_pattern="",
+            ),
+        )
 
     def _validate_multi_input_grids(
         self,
