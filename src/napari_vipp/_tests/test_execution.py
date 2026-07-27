@@ -4,6 +4,7 @@ import threading
 
 import numpy as np
 
+from napari_vipp.core.compute import ComputeMode
 from napari_vipp.core.execution import (
     PipelineNodeResult,
     PipelineRunRequest,
@@ -34,6 +35,7 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
         source_payloads={},
         source_revisions=("revision-1",),
     )
+    assert request.compute_request.mode is ComputeMode.CPU
     started: list[str] = []
     finished: list[PipelineNodeResult] = []
 
@@ -47,6 +49,7 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
     assert result.error == ""
     assert not result.cancelled
     assert result.source_revisions == ("revision-1",)
+    assert result.execution_report is None
     assert result.pipeline is not None
     assert started == ["input"]
     assert [node.node_id for node in finished] == ["input"]

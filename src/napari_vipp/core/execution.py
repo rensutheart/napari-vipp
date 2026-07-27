@@ -10,8 +10,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from napari_vipp.core.compute import ComputeRequest, ExecutionReport
 from napari_vipp.core.pipeline import (
     MANUAL_RUN_SKIP,
     PrototypePipeline,
@@ -34,6 +35,7 @@ class PipelineRunRequest:
     input_metadata: object
     input_name: str
     source_payloads: dict[str, SourcePayload]
+    compute_request: ComputeRequest = field(default_factory=ComputeRequest)
     dirty_node_ids: frozenset[str] | None = None
     cached_outputs: dict[str, object] | None = None
     cached_output_states: dict[str, object] | None = None
@@ -60,6 +62,7 @@ class PipelineRunResult:
     error: str = ""
     cancelled: bool = False
     source_revisions: tuple[object, ...] = ()
+    execution_report: ExecutionReport | None = None
 
 
 @dataclass(frozen=True, slots=True)

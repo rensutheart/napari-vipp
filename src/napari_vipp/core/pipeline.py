@@ -28,6 +28,12 @@ from napari_vipp.core.metadata import (
     transform_split_output_state,
     with_channel_colors,
 )
+from napari_vipp.core.node_execution import (
+    DEFAULT_CPU_NODE_EXECUTOR,
+    NodeCallExecutor,
+    PreparedNodeCall,
+    execute_prepared_node_call,
+)
 from napari_vipp.core.operations import (
     BORN_WOLF_PSF_AUTO_PARAMETERS,
     COMPOSITE_RGB_AUTO,
@@ -6424,7 +6430,11 @@ class PrototypePipeline:
         target_node_ids: Iterable[str] | None = None,
         retain_node_ids: Iterable[str] | None = None,
         prune_unretained: bool = False,
+        node_executor: NodeCallExecutor | None = None,
     ) -> dict[str, Any]:
+        resolved_node_executor = (
+            DEFAULT_CPU_NODE_EXECUTOR if node_executor is None else node_executor
+        )
         retained_nodes = {
             node_id for node_id in (retain_node_ids or ()) if node_id in self.nodes
         }
@@ -6548,6 +6558,7 @@ class PrototypePipeline:
                         source_payloads or {},
                         progress_callback,
                         cancel_callback,
+                        resolved_node_executor,
                     )
                 except Exception as exc:
                     self.set_node_execution_error(node_id, str(exc))
@@ -6705,6 +6716,7 @@ class PrototypePipeline:
         source_payloads: dict[str, SourcePayload],
         progress_callback: Callable[[str, int, int, str], None] | None = None,
         cancel_callback: Callable[[], bool] | None = None,
+        node_executor: NodeCallExecutor = DEFAULT_CPU_NODE_EXECUTOR,
     ) -> list[tuple[Any, ImageState | TableState | None]]:
         node = self.nodes[node_id]
         spec = self.operation_spec(node.operation_id)
@@ -6845,7 +6857,19 @@ class PrototypePipeline:
                 source_outputs,
                 kwargs,
             )
-            output = spec.function(source_outputs, **kwargs)
+            output = execute_prepared_node_call(
+                PreparedNodeCall(
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    cpu_function=spec.function,
+                    inputs=tuple(source_outputs),
+                    input_states=tuple(input_states),
+                    kwargs=kwargs,
+                    multiple_inputs=True,
+                    output_port_count=port_count,
+                ),
+                node_executor,
+            )
             if spec.output_type == "table":
                 history = _table_history(input_states, node.title, output)
                 state = table_state_from_data(
@@ -6996,7 +7020,18 @@ class PrototypePipeline:
                 )
             elif mapping_mode == COMPOSITE_RGB_AUTO:
                 kwargs["channel_colors"] = ()
-        output = spec.function(source_output, **kwargs)
+        output = execute_prepared_node_call(
+            PreparedNodeCall(
+                node_id=node_id,
+                operation_id=node.operation_id,
+                cpu_function=spec.function,
+                inputs=(source_output,),
+                input_states=(input_state,),
+                kwargs=kwargs,
+                output_port_count=port_count,
+            ),
+            node_executor,
+        )
         if spec.is_multi_output:
             return self._split_node_outputs(node, spec, output, input_state)
         if node.operation_id == "batch_output":
