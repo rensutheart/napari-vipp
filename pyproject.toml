@@ -130,7 +130,11 @@ where = ["src"]
 exclude = ["napari_vipp._tests*"]
 
 [tool.setuptools.package-data]
-napari_vipp = ["napari.yaml", "examples/*.json"]
+napari_vipp = [
+    "napari.yaml",
+    "examples/*.json",
+    "compute_policies/*.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["src/napari_vipp/_tests"]

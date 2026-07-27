@@ -1,8 +1,8 @@
-"""Pure policy identifiers and declaration validation.
+"""Provider-free scientific support, memory, and performance policy.
 
-Policy records are versioned data.  This initial catalog validates references
-without making a GPU performance decision; Commit C extends it with workload
-support and benefit evaluation.
+Executable admission remains authoritative here.  The packaged Phase 1 policy
+artifact mirrors the reviewed regions and thresholds for auditability without
+becoming a second execution engine.
 """
 
 from __future__ import annotations
@@ -486,9 +486,7 @@ def estimate_candidate_memory(
         # CuPyX median may allocate an output, rank-sized footprint metadata,
         # and an implementation workspace.  The 4x upper bound is calibrated
         # conservatively until the reviewed real-device matrix replaces it.
-        requested_size = _finite_number(
-            dict(workload.parameters).get("size", 5)
-        )
+        requested_size = _finite_number(dict(workload.parameters).get("size", 5))
         canonical_size = max(1, int(round(requested_size or 1.0)))
         if canonical_size % 2 == 0:
             canonical_size += 1
