@@ -12,6 +12,7 @@ import pytest
 from scipy import ndimage as scipy_ndimage
 from skimage import restoration as skimage_restoration
 
+from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.gpu import cucim_background as gpu_background
 from napari_vipp.core.operations import (
     rolling_ball_background as cpu_rolling_ball_background,
@@ -620,6 +621,108 @@ def test_real_rtx_cucim_exact_nonfinite_policy_parity(real_gpu_stack, operation)
         region=f"nonfinite_{operation}",
         dtype=np.float32,
     )
+
+
+_RANDOMIZED_FLOAT32_PARITY_CASES = (
+    ("2d-dark-smoothed", (31, 37), 5, False, False, "2D YX", None, 1.0),
+    ("2d-light-smoothed-high", (17, 19), 2, True, False, "2D YX", None, 1e5),
+    ("leading-2d-dark", (2, 9, 11), 2, False, False, "2D YX", None, 120.0),
+    ("3d-dark-smoothed", (5, 7, 9), 2, False, False, "3D ZYX", None, 120.0),
+    (
+        "channel-blocks-light",
+        (2, 3, 7, 9),
+        2,
+        True,
+        False,
+        "2D YX",
+        1,
+        1.0,
+    ),
+    ("2d-dark-unsmoothed", (17, 19), 5, False, True, "2D YX", None, 120.0),
+)
+
+
+@pytest.mark.parametrize("seed", (107, 811))
+@pytest.mark.parametrize(
+    (
+        "region",
+        "shape",
+        "radius",
+        "light_background",
+        "disable_smoothing",
+        "spatial_mode",
+        "channel_axis",
+        "scale",
+    ),
+    _RANDOMIZED_FLOAT32_PARITY_CASES,
+    ids=[case[0] for case in _RANDOMIZED_FLOAT32_PARITY_CASES],
+)
+@pytest.mark.parametrize("operation", ("background", "subtract"))
+def test_real_rtx_randomized_float32_background_v2_parity(
+    real_gpu_stack,
+    seed,
+    region,
+    shape,
+    radius,
+    light_background,
+    disable_smoothing,
+    spatial_mode,
+    channel_axis,
+    scale,
+    operation,
+):
+    """Exercise the v2 bounded-float policy beyond bitwise-friendly fixtures."""
+
+    cupy = real_gpu_stack
+    rng = np.random.default_rng(seed + sum(shape))
+    spread = max(abs(scale) * 0.2, 1e-5)
+    host = rng.normal(scale, spread, size=shape).astype(np.float32)
+    host.flat[:5] = np.asarray(
+        (-spread, 0.0, scale + 4 * spread, 7.0, 7.0),
+        dtype=np.float32,
+    )
+    if seed == 811 and region == "channel-blocks-light":
+        host.flat[:3] = (np.nan, np.inf, -np.inf)
+    kwargs = {
+        "radius": radius,
+        "light_background": light_background,
+        "disable_smoothing": disable_smoothing,
+        "spatial_mode": spatial_mode,
+        "channel_axis": channel_axis,
+    }
+    device = cupy.asarray(host)
+    if operation == "background":
+        expected = cpu_rolling_ball_background(host, **kwargs)
+        output = gpu_background.rolling_ball_background(device, **kwargs)
+        operation_id = "rolling_ball_background"
+    else:
+        expected = cpu_subtract_background(
+            host,
+            clip_negative=bool(seed % 2),
+            **kwargs,
+        )
+        output = gpu_background.subtract_background(
+            device,
+            clip_negative=bool(seed % 2),
+            **kwargs,
+        )
+        operation_id = "subtract_background"
+    actual = cupy.asnumpy(output)
+    finite_input = np.asarray(host)[np.isfinite(host)]
+    input_peak = (
+        float(np.max(np.abs(finite_input.astype(np.float64))))
+        if finite_input.size
+        else 0.0
+    )
+
+    parity = operation_parity(
+        operation_id,
+        expected,
+        actual,
+        input_peak=input_peak,
+    )
+
+    assert parity.passed, f"{region}/{operation}/{seed}: {parity.detail}"
 
 
 @pytest.mark.parametrize("operation", ("background", "subtract"))

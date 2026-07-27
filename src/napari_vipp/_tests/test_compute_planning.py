@@ -18,13 +18,19 @@ from napari_vipp.core.compute_planning import (
     ComputePreflightError,
     actual_cpu_fallback_decision,
     plan_compute_decisions,
+    probe_compute_environment,
 )
 from napari_vipp.core.compute_policy import (
     ArrayFacts,
     FactCompleteness,
     PerformanceEvidence,
 )
-from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.compute_registry import (
+    ComputeRegistry,
+    ImplementationLibraryProbeResult,
+    RuntimeDevice,
+    RuntimeProbeResult,
+)
 from napari_vipp.core.compute_specs import compute_specs_for
 
 
@@ -36,10 +42,30 @@ def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
         python_abi="cpython-312",
         runtime_ids=("cpu-numpy", "cuda-cupy") if runtime else ("cpu-numpy",),
         implementation_libraries=libraries,
-        runtime_versions=(("cuda-cupy", "14.1.1"),) if runtime else (),
+        runtime_versions=(
+            (("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")) if runtime else ()
+        ),
+        runtime_probe_fingerprints=(
+            (("cuda-cupy", "fake-runtime-fingerprint"),) if runtime else ()
+        ),
+        runtime_metadata=(
+            (
+                (
+                    "cuda-cupy",
+                    (
+                        ("cuda_runtime_version", "13020"),
+                        ("driver_version", "13030"),
+                    ),
+                ),
+            )
+            if runtime
+            else ()
+        ),
+        driver_version="13030" if runtime else "",
         device_id="cuda:0" if runtime else "cpu:0",
         device_name="Fake RTX" if runtime else "Host CPU",
         device_class="nvidia-cuda" if runtime else "host",
+        device_metadata=((("compute_capability", "12.0"),) if runtime else ()),
         memory_topology="discrete" if runtime else "host",
         total_accelerator_memory_bytes=16 * 1024**3 if runtime else 0,
         probe_status="available",
@@ -101,6 +127,86 @@ def test_cpu_mode_returns_before_registry_construction_or_gpu_probe(monkeypatch)
     assert result.environment.runtime_ids == ("cpu-numpy",)
 
 
+def test_selective_all_cpu_preserves_a_healthy_host_environment(monkeypatch):
+    registry = ComputeRegistry()
+
+    def forbidden_probe(*_args, **_kwargs):
+        raise AssertionError("An all-CPU selective plan must not probe a provider.")
+
+    monkeypatch.setattr(registry, "probe_runtime", forbidden_probe)
+    monkeypatch.setattr(registry, "probe_library", forbidden_probe)
+
+    result = plan_compute_decisions(
+        _request("cpu"),
+        (_workload(),),
+        registry=registry,
+    )
+
+    assert result.environment.probe_status == "available"
+    assert result.environment.device_class == "host"
+    assert result.environment.runtime_ids == ("cpu-numpy",)
+    assert not result.warnings
+    registry.close()
+
+
+@pytest.mark.parametrize(
+    ("os_name", "warning_fragment"),
+    (("Linux", "Linux"), ("Darwin", "macOS")),
+)
+def test_unsupported_hosts_reject_exact_policy_without_provider_probe(
+    monkeypatch,
+    os_name,
+    warning_fragment,
+):
+    registry = ComputeRegistry()
+
+    def forbidden_probe(*_args, **_kwargs):
+        raise AssertionError("An unsupported host must not import or probe a provider.")
+
+    monkeypatch.setattr(registry, "probe_runtime", forbidden_probe)
+    monkeypatch.setattr(registry, "probe_library", forbidden_probe)
+    monkeypatch.setattr(
+        planning_module,
+        "ComputeEnvironment",
+        lambda: ComputeEnvironment(os_name=os_name),
+    )
+    specs = compute_specs_for(
+        "gaussian_blur",
+        include_cpu=False,
+        allow_experimental=True,
+    )
+
+    environment, warnings = probe_compute_environment(
+        registry,
+        ComputeRequest(mode="auto", allow_experimental=True),
+        specs,
+    )
+
+    assert environment.probe_status == "available"
+    assert environment.device_class == "host"
+    assert warning_fragment in environment.probe_reason
+    assert warnings == (environment.probe_reason,)
+    registry.close()
+
+
+def test_static_workload_rejection_precedes_environment_but_missing_facts_do_not():
+    environment = _environment(runtime=False, libraries=("cpu",))
+
+    invalid_dtype = plan_compute_decisions(
+        ComputeRequest(mode="auto", allow_experimental=True),
+        (_workload(dtype="uint16"),),
+        environment=environment,
+    )
+    missing_facts = plan_compute_decisions(
+        ComputeRequest(mode="auto", allow_experimental=True),
+        (_workload(dtype="float32"),),
+        environment=environment,
+    )
+
+    assert invalid_dtype.decisions[0].reason is DecisionReason.WORKLOAD_UNSUPPORTED
+    assert missing_facts.decisions[0].reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+
+
 def test_selective_exact_and_library_preferences_bypass_auto_threshold():
     workload = _workload()
     facts = {"node": _facts(workload)}
@@ -154,8 +260,7 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
             performance_evidence=evidence,
         )
         assert (
-            result.decisions[0].implementation_id
-            == "cupyx-gaussian-blur-alternate-v1"
+            result.decisions[0].implementation_id == "cupyx-gaussian-blur-alternate-v1"
         )
     registry.close()
 
@@ -187,6 +292,51 @@ def test_auto_cpu_is_policy_not_fallback_until_evidence_clears_gate():
     assert not without_evidence.decisions[0].fallback_used
     assert without_evidence.decisions[0].reason is DecisionReason.PERFORMANCE_GATE
     assert with_evidence.decisions[0].decision_kind is DecisionKind.SELECTED
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        None,
+        PerformanceEvidence(
+            0.2,
+            0.19,
+            lower_confidence_speedup=1.01,
+        ),
+    ),
+    ids=("missing", "below-threshold"),
+)
+def test_unforced_auto_performance_gate_precedes_complete_fact_requirement(evidence):
+    performance_evidence = (
+        {} if evidence is None else {("node", "cupyx-gaussian-blur-v1"): evidence}
+    )
+
+    result = plan_compute_decisions(
+        ComputeRequest(mode="auto", allow_experimental=True),
+        (_workload(),),
+        environment=_environment(),
+        performance_evidence=performance_evidence,
+    )
+
+    assert result.decisions[0].reason is DecisionReason.PERFORMANCE_GATE
+
+
+def test_viable_auto_evidence_still_requires_complete_scientific_facts():
+    result = plan_compute_decisions(
+        ComputeRequest(mode="auto", allow_experimental=True),
+        (_workload(),),
+        environment=_environment(),
+        performance_evidence={
+            ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+                0.2,
+                0.1,
+                lower_confidence_speedup=1.5,
+            )
+        },
+    )
+
+    assert result.decisions[0].reason is DecisionReason.WORKLOAD_UNSUPPORTED
+    assert "facts" in result.decisions[0].reason_text.lower()
 
 
 @pytest.mark.parametrize(
@@ -341,3 +491,116 @@ def test_execution_plan_shell_and_actual_fallback_preserve_typed_identity():
     assert actual.reason is DecisionReason.OUT_OF_MEMORY_FALLBACK
     assert public_plan.decisions == planned.decisions
     assert public_plan.request_fingerprint == planned.request.fingerprint
+
+
+def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatch):
+    registry = ComputeRegistry()
+    runtime_fingerprint = "runtime-fingerprint-a"
+    runtime_metadata = (
+        ("cuda_runtime_version", "13020"),
+        ("driver_version", "13030"),
+    )
+    device_metadata = (("compute_capability", "12.0"),)
+    cucim_metadata = (
+        ("environment_record_schema", "napari-vipp-gpu-environment"),
+        ("environment_record_schema_version", "1"),
+        ("environment_track", "cuda13"),
+        ("cupy_distribution", "cupy-cuda13x"),
+        ("cucim_distribution", "cucim-cu13"),
+        ("cucim_distribution_version", "26.6.0"),
+        (
+            "cucim_artifact_sha256",
+            "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+        ),
+    )
+
+    def runtime_probe(_runtime_id):
+        return RuntimeProbeResult(
+            "cuda-cupy",
+            True,
+            version="14.1.1",
+            devices=(
+                RuntimeDevice(
+                    "cuda:0",
+                    "Fake RTX",
+                    16 * 1024**3,
+                    metadata=device_metadata,
+                ),
+            ),
+            selected_device_id="cuda:0",
+            environment_fingerprint=runtime_fingerprint,
+            metadata=runtime_metadata,
+        )
+
+    def library_probe(library_id):
+        if library_id == "cupyx":
+            return ImplementationLibraryProbeResult(
+                "cupyx",
+                True,
+                version="14.1.1",
+            )
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            True,
+            version="26.6.0",
+            metadata=cucim_metadata,
+        )
+
+    monkeypatch.setattr(registry, "probe_runtime", runtime_probe)
+    monkeypatch.setattr(registry, "probe_library", library_probe)
+    specs = (
+        compute_specs_for("gaussian_blur", include_cpu=False, allow_experimental=True)[
+            0
+        ],
+        compute_specs_for(
+            "rolling_ball_background",
+            include_cpu=False,
+            allow_experimental=True,
+        )[0],
+    )
+
+    environment, warnings = probe_compute_environment(
+        registry,
+        ComputeRequest(mode="auto", allow_experimental=True),
+        specs,
+    )
+
+    assert not warnings
+    assert dict(environment.runtime_probe_fingerprints) == {
+        "cuda-cupy": runtime_fingerprint
+    }
+    assert dict(dict(environment.runtime_metadata)["cuda-cupy"]) == dict(
+        runtime_metadata
+    )
+    assert environment.driver_version == "13030"
+    assert dict(environment.device_metadata) == dict(device_metadata)
+    assert dict(dict(environment.implementation_library_metadata)["cucim"]) == dict(
+        cucim_metadata
+    )
+
+    baseline_fingerprint = environment.fingerprint
+    runtime_fingerprint = "runtime-fingerprint-b"
+    changed, _warnings = probe_compute_environment(
+        registry,
+        ComputeRequest(mode="auto", allow_experimental=True),
+        specs,
+    )
+    assert changed.fingerprint != baseline_fingerprint
+    registry.close()
+
+
+def test_preprobed_environment_reason_remains_a_visible_planning_warning():
+    environment = replace(
+        _environment(),
+        probe_reason="A requested optional provider was unavailable.",
+    )
+    workload = _workload()
+
+    result = plan_compute_decisions(
+        _request("best_gpu"),
+        (workload,),
+        environment=environment,
+        array_facts={"node": _facts(workload)},
+    )
+
+    assert result.warnings == (environment.probe_reason,)

@@ -252,37 +252,30 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
         "rounding_policy_id": "background-bankers-round-clip-v1",
         "overflow_policy_id": "background-clip-public-dtype-v1",
         "boundary_policy_id": "background-nearest-rolling-ball-v1",
-        "precision_policy_id": "background-public-dtype-v1",
+        "precision_policy_id": "background-public-dtype-v2",
     }
     return OperationComputeSpec(
         operation_id=operation_id,
-        implementation_id=f"cucim-{operation_id}-v1",
-        implementation_version="1",
+        implementation_id=f"cucim-{operation_id}-v2",
+        implementation_version="2",
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cucim",
-        callable_ref=(
-            "napari_vipp.core.gpu.cucim_background:"
-            f"{operation_id}"
-        ),
+        callable_ref=(f"napari_vipp.core.gpu.cucim_background:{operation_id}"),
         host_boundary=False,
         admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
         validated_environment_policy_id=(
-            "cuda-cupy-cucim-py312-windows-linux-v1"
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
         ),
-        input_ports=(
-            _gpu_image_port(0, name="image", **port_values),
-        ),
-        output_ports=(
-            _gpu_image_port(0, name="image", output=True, **port_values),
-        ),
+        input_ports=(_gpu_image_port(0, name="image", **port_values),),
+        output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
         parameter_policy_id="background-parameters-v1",
-        workload_policy_id="background-u8-u16-f32-v1",
-        parity_policy_id="background-production-exact-v1",
+        workload_policy_id="background-u8-u16-f32-v2",
+        parity_policy_id="background-dtype-parity-v2",
         memory_model_id="cucim-background-memory-v1",
         shape_policy_id="shape-preserving-v1",
         boundary_policy_id="background-nearest-rolling-ball-v1",
-        precision_policy_id="background-public-dtype-v1",
+        precision_policy_id="background-public-dtype-v2",
         progress_policy_id="background-block-progress-v1",
         cancellation_policy_id="background-block-cancel-v1",
         side_effect_policy_id="pure-v1",
@@ -313,13 +306,11 @@ def _median_spec() -> OperationComputeSpec:
         callable_ref="napari_vipp.core.gpu.cupy_median:median_filter",
         host_boundary=False,
         admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
-        validated_environment_policy_id="cuda-cupy-py312-windows-linux-v1",
-        input_ports=(
-            _gpu_image_port(0, name="image", **port_values),
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
         ),
-        output_ports=(
-            _gpu_image_port(0, name="image", output=True, **port_values),
-        ),
+        input_ports=(_gpu_image_port(0, name="image", **port_values),),
+        output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
         parameter_policy_id="median-parameters-v1",
         workload_policy_id="median-exact-u8-u16-f32-v1",
         parity_policy_id="median-production-bitwise-v1",
@@ -332,18 +323,14 @@ def _median_spec() -> OperationComputeSpec:
         side_effect_policy_id="pure-v1",
         supported_spatial_ndims=(2,),
         supports_device_residency=True,
-        limitations=(
-            "float32-requires-complete-finite-no-negative-zero-v1",
-        ),
+        limitations=("float32-requires-complete-finite-no-negative-zero-v1",),
     )
 
 
 def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
     operation_id = "gaussian_blur_3d" if three_dimensional else "gaussian_blur"
     implementation_id = (
-        "cupyx-gaussian-blur-3d-v1"
-        if three_dimensional
-        else "cupyx-gaussian-blur-v1"
+        "cupyx-gaussian-blur-3d-v1" if three_dimensional else "cupyx-gaussian-blur-v1"
     )
     port_values = {
         # Integer execution is deliberately not advertised.  The reviewed RTX
@@ -365,19 +352,14 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
         runtime_id="cuda-cupy",
         array_domain="cuda-cupy",
         implementation_library_id="cupyx",
-        callable_ref=(
-            "napari_vipp.core.gpu.cupy_gaussian:"
-            f"{operation_id}"
-        ),
+        callable_ref=(f"napari_vipp.core.gpu.cupy_gaussian:{operation_id}"),
         host_boundary=False,
         admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
-        validated_environment_policy_id="cuda-cupy-py312-windows-linux-v1",
-        input_ports=(
-            _gpu_image_port(0, name="image", **port_values),
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
         ),
-        output_ports=(
-            _gpu_image_port(0, name="image", output=True, **port_values),
-        ),
+        input_ports=(_gpu_image_port(0, name="image", **port_values),),
+        output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
         parameter_policy_id=(
             "gaussian-3d-parameters-v1"
             if three_dimensional

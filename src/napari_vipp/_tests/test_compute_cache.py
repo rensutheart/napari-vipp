@@ -63,9 +63,11 @@ def _spec(
         if runtime_id == "cpu-numpy":
             environment_policy = "vipp-cpu-supported-v1"
         elif library_id == "cucim":
-            environment_policy = "cuda-cupy-cucim-py312-windows-linux-v1"
+            environment_policy = (
+                "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+            )
         else:
-            environment_policy = "cuda-cupy-py312-windows-linux-v1"
+            environment_policy = "cuda-cupy-14.1.1-cpython312-windows-native-v2"
     return OperationComputeSpec(
         operation_id=operation_id,
         implementation_id=implementation_id,

@@ -266,10 +266,16 @@ class ComputeEnvironment:
     runtime_ids: tuple[str, ...] = ("cpu-numpy",)
     implementation_libraries: tuple[str, ...] = ("cpu",)
     runtime_versions: tuple[tuple[str, str], ...] = ()
+    runtime_probe_fingerprints: tuple[tuple[str, str], ...] = ()
+    runtime_metadata: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
+    implementation_library_metadata: tuple[
+        tuple[str, tuple[tuple[str, str], ...]], ...
+    ] = ()
     driver_version: str = ""
     device_id: str = "cpu:0"
     device_name: str = "Host CPU"
     device_class: str = "host"
+    device_metadata: tuple[tuple[str, str], ...] = ()
     memory_topology: MemoryTopology | str = MemoryTopology.HOST
     total_accelerator_memory_bytes: int = 0
     probe_status: str = "available"
@@ -281,11 +287,27 @@ class ComputeEnvironment:
             if isinstance(self.memory_topology, MemoryTopology)
             else MemoryTopology(str(self.memory_topology).strip().lower())
         )
-        versions = tuple(
-            sorted(
-                (str(key).strip(), str(value).strip())
-                for key, value in self.runtime_versions
-            )
+        versions = _normalized_unique_pairs(
+            self.runtime_versions,
+            "runtime_versions",
+            strip_values=True,
+        )
+        runtime_fingerprints = _normalized_unique_pairs(
+            self.runtime_probe_fingerprints,
+            "runtime_probe_fingerprints",
+            strip_values=True,
+        )
+        runtime_metadata = _normalized_scoped_metadata(
+            self.runtime_metadata,
+            "runtime_metadata",
+        )
+        library_metadata = _normalized_scoped_metadata(
+            self.implementation_library_metadata,
+            "implementation_library_metadata",
+        )
+        device_metadata = _normalized_unique_pairs(
+            self.device_metadata,
+            "device_metadata",
         )
         if (
             isinstance(self.total_accelerator_memory_bytes, bool)
@@ -305,6 +327,19 @@ class ComputeEnvironment:
             _normalized_operation_ids(self.implementation_libraries),
         )
         object.__setattr__(self, "runtime_versions", versions)
+        object.__setattr__(
+            self,
+            "runtime_probe_fingerprints",
+            runtime_fingerprints,
+        )
+        object.__setattr__(self, "runtime_metadata", runtime_metadata)
+        object.__setattr__(
+            self,
+            "implementation_library_metadata",
+            library_metadata,
+        )
+        object.__setattr__(self, "device_metadata", device_metadata)
+        object.__setattr__(self, "driver_version", str(self.driver_version).strip())
 
     def as_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -312,6 +347,15 @@ class ComputeEnvironment:
         payload["runtime_ids"] = list(self.runtime_ids)
         payload["implementation_libraries"] = list(self.implementation_libraries)
         payload["runtime_versions"] = dict(self.runtime_versions)
+        payload["runtime_probe_fingerprints"] = dict(self.runtime_probe_fingerprints)
+        payload["runtime_metadata"] = {
+            scope: dict(metadata) for scope, metadata in self.runtime_metadata
+        }
+        payload["implementation_library_metadata"] = {
+            scope: dict(metadata)
+            for scope, metadata in self.implementation_library_metadata
+        }
+        payload["device_metadata"] = dict(self.device_metadata)
         return payload
 
     @classmethod
@@ -322,6 +366,27 @@ class ComputeEnvironment:
         versions = values.get("runtime_versions", ())
         if isinstance(versions, Mapping):
             values["runtime_versions"] = tuple(versions.items())
+        fingerprints = values.get("runtime_probe_fingerprints", ())
+        if isinstance(fingerprints, Mapping):
+            values["runtime_probe_fingerprints"] = tuple(fingerprints.items())
+        for field_name in (
+            "runtime_metadata",
+            "implementation_library_metadata",
+        ):
+            raw_scopes = values.get(field_name, ())
+            if isinstance(raw_scopes, Mapping):
+                values[field_name] = tuple(
+                    (
+                        scope,
+                        tuple(metadata.items())
+                        if isinstance(metadata, Mapping)
+                        else metadata,
+                    )
+                    for scope, metadata in raw_scopes.items()
+                )
+        device_metadata = values.get("device_metadata", ())
+        if isinstance(device_metadata, Mapping):
+            values["device_metadata"] = tuple(device_metadata.items())
         return cls(**values)
 
     @property
@@ -470,9 +535,7 @@ class BenchmarkRecordKey:
             or not isinstance(safety_reserve, int)
             or safety_reserve < 0
         ):
-            raise ValueError(
-                "safety_reserve_bytes must be non-negative or None."
-            )
+            raise ValueError("safety_reserve_bytes must be non-negative or None.")
         object.__setattr__(self, "device_id", device_id)
 
     @property
@@ -564,9 +627,7 @@ class BenchmarkCandidateResult:
         for name in ("warm_transfer_seconds", "warm_resident_seconds"):
             values = tuple(getattr(self, name))
             if values and len(values) != len(self.warm_seconds):
-                raise ValueError(
-                    f"{name} must be empty or describe every warm round."
-                )
+                raise ValueError(f"{name} must be empty or describe every warm round.")
             object.__setattr__(self, name, tuple(float(value) for value in values))
         object.__setattr__(self, "implementation_id", implementation_id)
         object.__setattr__(self, "timing_scope", timing_scope)
@@ -1045,6 +1106,44 @@ def _detect_cupy_capability(
 
 def _normalized_operation_ids(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+
+
+def _normalized_unique_pairs(
+    values: Iterable[tuple[object, object]],
+    field_name: str,
+    *,
+    strip_values: bool = False,
+) -> tuple[tuple[str, str], ...]:
+    normalized = tuple(
+        (
+            str(raw_key).strip(),
+            str(raw_value).strip() if strip_values else str(raw_value),
+        )
+        for raw_key, raw_value in values
+    )
+    if any(not key for key, _value in normalized):
+        raise ValueError(f"{field_name} keys must not be empty.")
+    if len({key for key, _value in normalized}) != len(normalized):
+        raise ValueError(f"{field_name} keys must be unique.")
+    return tuple(sorted(normalized))
+
+
+def _normalized_scoped_metadata(
+    values: Iterable[tuple[object, Iterable[tuple[object, object]]]],
+    field_name: str,
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    normalized = tuple(
+        (
+            str(raw_scope).strip(),
+            _normalized_unique_pairs(metadata, f"{field_name}[{raw_scope!r}]"),
+        )
+        for raw_scope, metadata in values
+    )
+    if any(not scope for scope, _metadata in normalized):
+        raise ValueError(f"{field_name} scope IDs must not be empty.")
+    if len({scope for scope, _metadata in normalized}) != len(normalized):
+        raise ValueError(f"{field_name} scope IDs must be unique.")
+    return tuple(sorted(normalized))
 
 
 def _provider_error(prefix: str, exc: Exception) -> str:

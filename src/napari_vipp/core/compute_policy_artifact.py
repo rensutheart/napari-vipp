@@ -18,10 +18,10 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-developer-v1"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-developer-v1.json"
+PHASE1_POLICY_ID = "phase1-gpu-developer-v2"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-developer-v2.json"
 PHASE1_POLICY_SHA256 = (
-    "9d436925db426e712a1b46ab12196664841618ab1f5e7f0fefdbc08b2089b5a7"
+    "2cbd80480ffdbc9ab0855dee0e7707b88f7c530c911f8ea3847c7e6a86d44234"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -66,9 +66,25 @@ class LocalBenchmarkPolicy:
 @dataclass(frozen=True, slots=True)
 class PlatformAdmissionPolicy:
     operating_systems: tuple[str, ...]
+    execution_modes: tuple[str, ...]
     python_implementation: str
     python_minor_versions: tuple[str, ...]
+    python_abis: tuple[str, ...]
     cuda_major_versions: tuple[int, ...]
+    cupy_versions: tuple[str, ...]
+    cupyx_versions: tuple[str, ...]
+    runtime_probe_fingerprint_required: bool
+    driver_version_metadata_required: bool
+    nvidia_compute_capability_required: bool
+    cucim_versions: tuple[str, ...]
+    cucim_environment_record_schema: str
+    cucim_environment_record_schema_version: int
+    cucim_environment_track: str
+    cupy_distribution: str
+    cucim_distribution: str
+    cucim_artifact_sha256: str
+    validated_environment_policy_ids: tuple[str, ...]
+    linux_policy: str
     macos_policy: str
     public_advertisement_enabled: bool
 
@@ -172,7 +188,7 @@ def load_phase1_compute_policy() -> Phase1ComputePolicyArtifact:
 def parse_compute_policy_artifact(
     raw: bytes | bytearray | memoryview | str,
 ) -> Phase1ComputePolicyArtifact:
-    """Verify and strictly parse one version-1 compute policy document."""
+    """Verify and strictly parse the supported Phase 1 policy document."""
 
     try:
         document = json.loads(
@@ -210,7 +226,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 1:
+    if policy_version != 2:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -418,16 +434,43 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
         path,
         {
             "operating_systems",
+            "execution_modes",
             "python_implementation",
             "python_minor_versions",
+            "python_abis",
             "cuda_major_versions",
+            "cupy_versions",
+            "cupyx_versions",
+            "runtime_probe_fingerprint_required",
+            "driver_version_metadata_required",
+            "nvidia_compute_capability_required",
+            "cucim_versions",
+            "cucim_environment_record_schema",
+            "cucim_environment_record_schema_version",
+            "cucim_environment_track",
+            "cupy_distribution",
+            "cucim_distribution",
+            "cucim_artifact_sha256",
+            "validated_environment_policy_ids",
+            "linux_policy",
             "macos_policy",
             "public_advertisement_enabled",
         },
     )
+    cucim_artifact_sha256 = _string(
+        record["cucim_artifact_sha256"],
+        f"{path}.cucim_artifact_sha256",
+    )
+    if not _SHA256_RE.fullmatch(cucim_artifact_sha256):
+        raise ComputePolicyArtifactError(
+            f"{path}.cucim_artifact_sha256 must be a lowercase SHA-256 digest."
+        )
     return PlatformAdmissionPolicy(
         operating_systems=_string_tuple(
             record["operating_systems"], f"{path}.operating_systems", nonempty=True
+        ),
+        execution_modes=_identifier_tuple(
+            record["execution_modes"], f"{path}.execution_modes", nonempty=True
         ),
         python_implementation=_string(
             record["python_implementation"], f"{path}.python_implementation"
@@ -437,9 +480,59 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             f"{path}.python_minor_versions",
             nonempty=True,
         ),
+        python_abis=_identifier_tuple(
+            record["python_abis"], f"{path}.python_abis", nonempty=True
+        ),
         cuda_major_versions=_integer_tuple(
             record["cuda_major_versions"], f"{path}.cuda_major_versions", minimum=1
         ),
+        cupy_versions=_string_tuple(
+            record["cupy_versions"], f"{path}.cupy_versions", nonempty=True
+        ),
+        cupyx_versions=_string_tuple(
+            record["cupyx_versions"], f"{path}.cupyx_versions", nonempty=True
+        ),
+        runtime_probe_fingerprint_required=_boolean(
+            record["runtime_probe_fingerprint_required"],
+            f"{path}.runtime_probe_fingerprint_required",
+        ),
+        driver_version_metadata_required=_boolean(
+            record["driver_version_metadata_required"],
+            f"{path}.driver_version_metadata_required",
+        ),
+        nvidia_compute_capability_required=_boolean(
+            record["nvidia_compute_capability_required"],
+            f"{path}.nvidia_compute_capability_required",
+        ),
+        cucim_versions=_string_tuple(
+            record["cucim_versions"], f"{path}.cucim_versions", nonempty=True
+        ),
+        cucim_environment_record_schema=_identifier(
+            record["cucim_environment_record_schema"],
+            f"{path}.cucim_environment_record_schema",
+        ),
+        cucim_environment_record_schema_version=_integer(
+            record["cucim_environment_record_schema_version"],
+            f"{path}.cucim_environment_record_schema_version",
+            minimum=1,
+        ),
+        cucim_environment_track=_identifier(
+            record["cucim_environment_track"],
+            f"{path}.cucim_environment_track",
+        ),
+        cupy_distribution=_identifier(
+            record["cupy_distribution"], f"{path}.cupy_distribution"
+        ),
+        cucim_distribution=_identifier(
+            record["cucim_distribution"], f"{path}.cucim_distribution"
+        ),
+        cucim_artifact_sha256=cucim_artifact_sha256,
+        validated_environment_policy_ids=_identifier_tuple(
+            record["validated_environment_policy_ids"],
+            f"{path}.validated_environment_policy_ids",
+            nonempty=True,
+        ),
+        linux_policy=_identifier(record["linux_policy"], f"{path}.linux_policy"),
         macos_policy=_identifier(record["macos_policy"], f"{path}.macos_policy"),
         public_advertisement_enabled=_boolean(
             record["public_advertisement_enabled"],

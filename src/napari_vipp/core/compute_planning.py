@@ -34,9 +34,11 @@ from napari_vipp.core.compute_policy import (
     ArrayFacts,
     PerformanceEvidence,
     SupportDecision,
+    _evaluate_phase1_cuda_host_environment,
     estimate_candidate_memory,
     evaluate_auto_performance,
     evaluate_candidate_support,
+    evaluate_candidate_workload_support,
     evaluate_memory_support,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
@@ -126,9 +128,7 @@ def plan_compute_decisions(
     registry: ComputeRegistry | None = None,
     environment: ComputeEnvironment | None = None,
     array_facts: Mapping[str, tuple[ArrayFacts, ...]] | None = None,
-    performance_evidence: Mapping[
-        tuple[str, str], PerformanceEvidence
-    ] | None = None,
+    performance_evidence: Mapping[tuple[str, str], PerformanceEvidence] | None = None,
 ) -> ComputePlanningResult:
     """Resolve CPU/Auto/Selective intent for prepared node workloads.
 
@@ -177,14 +177,18 @@ def plan_compute_decisions(
     try:
         potential = _potential_specs(selected_registry, request, prepared)
         if environment is None:
-            resolved_environment, probe_warnings = _probe_environment(
+            resolved_environment, probe_warnings = probe_compute_environment(
                 selected_registry,
                 request,
                 potential,
             )
         else:
             resolved_environment = environment
-            probe_warnings = ()
+            probe_warnings = (
+                (resolved_environment.probe_reason,)
+                if resolved_environment.probe_reason
+                else ()
+            )
 
         warnings = list(probe_warnings)
         decisions: list[NodeExecutionDecision] = []
@@ -217,6 +221,7 @@ def plan_compute_decisions(
             )
             candidates, rejections = _admit_candidates(
                 request,
+                preference,
                 workload,
                 specs,
                 resolved_environment,
@@ -371,9 +376,7 @@ def _specs_for_preference(
         specs = tuple(spec for spec in specs if spec.runtime_id == request.runtime_id)
     if preference.kind is NodePreferenceKind.LIBRARY:
         specs = tuple(
-            spec
-            for spec in specs
-            if spec.implementation_library_id == preference.value
+            spec for spec in specs if spec.implementation_library_id == preference.value
         )
     elif preference.kind is NodePreferenceKind.IMPLEMENTATION:
         specs = tuple(
@@ -382,21 +385,54 @@ def _specs_for_preference(
     return specs
 
 
-def _probe_environment(
+def probe_compute_environment(
     registry: ComputeRegistry,
     request: ComputeRequest,
-    specs: tuple[OperationComputeSpec, ...],
+    specs: Sequence[OperationComputeSpec],
 ) -> tuple[ComputeEnvironment, tuple[str, ...]]:
+    """Probe only candidate providers and preserve their exact provenance.
+
+    The returned environment can be passed back to
+    :func:`plan_compute_decisions` to avoid a second probe.  No provider is
+    imported until the caller explicitly invokes this function.
+    """
+
+    if not isinstance(registry, ComputeRegistry):
+        raise TypeError("registry must be a ComputeRegistry.")
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    selected_specs = tuple(specs)
+    if any(not isinstance(spec, OperationComputeSpec) for spec in selected_specs):
+        raise TypeError("specs must contain OperationComputeSpec values.")
+
     base = ComputeEnvironment()
+    if not selected_specs:
+        return base, ()
+
+    warnings: list[str] = []
+    probe_specs: list[OperationComputeSpec] = []
+    for spec in selected_specs:
+        host_decision = _evaluate_phase1_cuda_host_environment(spec, base)
+        if host_decision is None:
+            probe_specs.append(spec)
+            continue
+        if host_decision.reason_text not in warnings:
+            warnings.append(host_decision.reason_text)
+    if not probe_specs:
+        return replace(base, probe_reason="; ".join(warnings)), tuple(warnings)
+
     runtime_ids: list[str] = [CPU_RUNTIME_ID]
     library_ids: list[str] = [CPU_LIBRARY_ID]
     versions: list[tuple[str, str]] = []
-    warnings: list[str] = []
+    runtime_fingerprints: list[tuple[str, str]] = []
+    runtime_metadata: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+    library_metadata: list[tuple[str, tuple[tuple[str, str], ...]]] = []
     selected_device = None
+    selected_runtime_metadata: tuple[tuple[str, str], ...] = ()
 
-    relevant_runtimes = tuple(dict.fromkeys(spec.runtime_id for spec in specs))
+    relevant_runtimes = tuple(dict.fromkeys(spec.runtime_id for spec in probe_specs))
     relevant_libraries = tuple(
-        dict.fromkeys(spec.implementation_library_id for spec in specs)
+        dict.fromkeys(spec.implementation_library_id for spec in probe_specs)
     )
     for runtime_id in relevant_runtimes:
         descriptor = registry.runtime_descriptor(runtime_id)
@@ -438,8 +474,12 @@ def _probe_environment(
         runtime_ids.append(runtime_id)
         if probe.version:
             versions.append((runtime_id, probe.version))
+        if probe.environment_fingerprint:
+            runtime_fingerprints.append((runtime_id, probe.environment_fingerprint))
+        runtime_metadata.append((runtime_id, probe.metadata))
         if selected_device is None:
             selected_device = device
+            selected_runtime_metadata = probe.metadata
 
     for library_id in relevant_libraries:
         descriptor = registry.library_descriptor(library_id)
@@ -462,15 +502,20 @@ def _probe_environment(
         library_ids.append(library_id)
         if probe.version:
             versions.append((library_id, probe.version))
+        library_metadata.append((library_id, probe.metadata))
 
     available = len(runtime_ids) > 1
+    selected_runtime_values = dict(selected_runtime_metadata)
     return (
         replace(
             base,
             runtime_ids=tuple(runtime_ids),
             implementation_libraries=tuple(library_ids),
             runtime_versions=tuple(versions),
-            driver_version="",
+            runtime_probe_fingerprints=tuple(runtime_fingerprints),
+            runtime_metadata=tuple(runtime_metadata),
+            implementation_library_metadata=tuple(library_metadata),
+            driver_version=selected_runtime_values.get("driver_version", ""),
             device_id=(
                 selected_device.device_id if selected_device is not None else "cpu:0"
             ),
@@ -480,6 +525,9 @@ def _probe_environment(
                 else "Host CPU"
             ),
             device_class=("nvidia-cuda" if available else "host"),
+            device_metadata=(
+                selected_device.metadata if selected_device is not None else ()
+            ),
             memory_topology=(
                 MemoryTopology.DISCRETE if available else MemoryTopology.HOST
             ),
@@ -497,6 +545,7 @@ def _probe_environment(
 
 def _admit_candidates(
     request: ComputeRequest,
+    preference: NodeComputePreference,
     workload: WorkloadDescriptor,
     specs: tuple[OperationComputeSpec, ...],
     environment: ComputeEnvironment,
@@ -505,7 +554,20 @@ def _admit_candidates(
 ) -> tuple[tuple[_Candidate, ...], tuple[SupportDecision, ...]]:
     candidates: list[_Candidate] = []
     rejections: list[SupportDecision] = []
+    forced = _is_forced_gpu_preference(request.mode, preference)
     for spec in specs:
+        static_support = evaluate_candidate_workload_support(
+            spec,
+            workload,
+            array_facts=(),
+        )
+        if not static_support.supported and not static_support.requires_complete_facts:
+            rejections.append(static_support)
+            continue
+        host_support = _evaluate_phase1_cuda_host_environment(spec, environment)
+        if host_support is not None:
+            rejections.append(host_support)
+            continue
         if spec.runtime_id not in environment.runtime_ids:
             rejections.append(
                 SupportDecision(
@@ -525,6 +587,28 @@ def _admit_candidates(
                 )
             )
             continue
+        candidate_evidence = evidence.get((workload.node_id, spec.implementation_id))
+        if not forced:
+            if candidate_evidence is None:
+                rejections.append(
+                    SupportDecision(
+                        False,
+                        DecisionReason.PERFORMANCE_GATE,
+                        "No validated performance evidence is available for this "
+                        "Auto candidate.",
+                    )
+                )
+                continue
+            performance = evaluate_auto_performance(candidate_evidence)
+            if not performance.select_candidate:
+                rejections.append(
+                    SupportDecision(
+                        False,
+                        performance.reason,
+                        performance.reason_text,
+                    )
+                )
+                continue
         support = evaluate_candidate_support(
             spec,
             workload,
@@ -559,7 +643,7 @@ def _admit_candidates(
             _Candidate(
                 spec,
                 memory,
-                evidence.get((workload.node_id, spec.implementation_id)),
+                candidate_evidence,
             )
         )
     return tuple(candidates), tuple(rejections)
@@ -622,6 +706,7 @@ def _preferred_rejection(
 ) -> SupportDecision:
     if rejections:
         priority = {
+            DecisionReason.PERFORMANCE_GATE: -1,
             DecisionReason.WORKLOAD_UNSUPPORTED: 0,
             DecisionReason.MEMORY_LIMIT: 1,
             DecisionReason.DEPENDENCY_UNAVAILABLE: 2,
@@ -750,4 +835,5 @@ __all__ = [
     "ComputePreflightFailure",
     "actual_cpu_fallback_decision",
     "plan_compute_decisions",
+    "probe_compute_environment",
 ]

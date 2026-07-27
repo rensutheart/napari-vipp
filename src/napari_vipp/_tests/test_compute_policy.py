@@ -12,6 +12,8 @@ from napari_vipp.core.compute import (
     WorkloadDescriptor,
 )
 from napari_vipp.core.compute_policy import (
+    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     ArrayFacts,
     ArrayFactsCache,
     ArrayFactsKey,
@@ -21,6 +23,7 @@ from napari_vipp.core.compute_policy import (
     estimate_candidate_memory,
     evaluate_auto_performance,
     evaluate_candidate_support,
+    evaluate_candidate_workload_support,
     propagate_output_descriptors,
     validate_spec_policy_references,
 )
@@ -54,9 +57,7 @@ def _gpu_spec(*, finite_only: bool = False):
     input_port = replace(
         cpu_spec.input_ports[0],
         public_dtypes=("float32",),
-        nonfinite_policy_id=(
-            "finite-only-v1" if finite_only else "cpu-reference-v1"
-        ),
+        nonfinite_policy_id=("finite-only-v1" if finite_only else "cpu-reference-v1"),
     )
     output_port = replace(
         cpu_spec.output_ports[0],
@@ -69,7 +70,7 @@ def _gpu_spec(*, finite_only: bool = False):
         array_domain="cuda-cupy",
         implementation_library_id="cupyx",
         admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
-        validated_environment_policy_id="cuda-cupy-py312-windows-linux-v1",
+        validated_environment_policy_id=CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
         input_ports=(input_port,),
         output_ports=(output_port,),
         shape_policy_id="shape-preserving-v1",
@@ -90,11 +91,31 @@ def _workload(*, dtype: str = "float32", spatial_ndim: int = 2):
 def _cuda_environment(**updates):
     values = {
         "os_name": "Windows",
+        "execution_mode": "native",
         "python_implementation": "CPython",
         "python_version": "3.12",
         "python_abi": "cpython-312",
         "runtime_ids": ("cpu-numpy", "cuda-cupy"),
         "implementation_libraries": ("cpu", "cupyx"),
+        "runtime_versions": (
+            ("cuda-cupy", "14.1.1"),
+            ("cupyx", "14.1.1"),
+        ),
+        "runtime_probe_fingerprints": (("cuda-cupy", "probe-fingerprint"),),
+        "runtime_metadata": (
+            (
+                "cuda-cupy",
+                (
+                    ("cuda_runtime_version", "13020"),
+                    ("driver_version", "13030"),
+                ),
+            ),
+        ),
+        "driver_version": "13030",
+        "device_id": "cuda:0",
+        "device_name": "Fake RTX",
+        "device_class": "nvidia-cuda",
+        "device_metadata": (("compute_capability", "12.0"),),
         "probe_status": "available",
     }
     values.update(updates)
@@ -144,9 +165,7 @@ def test_sampled_facts_never_prove_a_finite_only_scientific_region():
         _workload(),
         _cuda_environment(),
         allow_experimental=False,
-        array_facts=(
-            _facts("sampled", completeness=FactCompleteness.SAMPLED),
-        ),
+        array_facts=(_facts("sampled", completeness=FactCompleteness.SAMPLED),),
     )
     complete = evaluate_candidate_support(
         spec,
@@ -167,6 +186,7 @@ def test_sampled_facts_never_prove_a_finite_only_scientific_region():
     [
         ({}, "float32", True),
         ({"os_name": "Darwin"}, "float32", False),
+        ({"os_name": "Linux"}, "float32", False),
         ({"python_version": "3.13"}, "float32", False),
         ({"probe_status": "failed"}, "float32", False),
         ({}, "uint16", False),
@@ -185,6 +205,227 @@ def test_support_evaluation_is_conservative_outside_the_validated_matrix(
     )
 
     assert decision.supported is supported
+
+
+def test_provider_free_workload_gate_rejects_static_region_without_environment():
+    decision = evaluate_candidate_workload_support(
+        _gpu_spec(),
+        _workload(dtype="uint16"),
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.WORKLOAD_UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    "environment_updates",
+    [
+        {"runtime_versions": (("cuda-cupy", "999"), ("cupyx", "14.1.1"))},
+        {"runtime_versions": (("cuda-cupy", "14.1.1"), ("cupyx", "999"))},
+        {"runtime_probe_fingerprints": ()},
+        {
+            "runtime_metadata": (
+                (
+                    "cuda-cupy",
+                    (
+                        ("cuda_runtime_version", "11080"),
+                        ("driver_version", "13030"),
+                    ),
+                ),
+            )
+        },
+        {
+            "runtime_metadata": (
+                (
+                    "cuda-cupy",
+                    (
+                        ("cuda_runtime_version", "14000"),
+                        ("driver_version", "14000"),
+                    ),
+                ),
+            ),
+            "driver_version": "14000",
+        },
+        {
+            "runtime_metadata": (
+                (
+                    "cuda-cupy",
+                    (
+                        ("cuda_runtime_version", "CUDA 13.2"),
+                        ("driver_version", "13030"),
+                    ),
+                ),
+            )
+        },
+        {"driver_version": ""},
+        {"driver_version": "13040"},
+        {"device_metadata": ()},
+        {"device_class": "host"},
+        {"execution_mode": "wsl2"},
+    ],
+)
+def test_cupyx_environment_policy_fails_closed_on_unproven_provenance(
+    environment_updates,
+):
+    decision = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        _cuda_environment(**environment_updates),
+        allow_experimental=False,
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+
+
+def _cucim_environment(**updates):
+    values = {
+        "implementation_libraries": ("cpu", "cucim"),
+        "runtime_versions": (
+            ("cuda-cupy", "14.1.1"),
+            ("cucim", "26.6.0"),
+        ),
+        "implementation_library_metadata": (
+            (
+                "cucim",
+                (
+                    (
+                        "environment_record_schema",
+                        "napari-vipp-gpu-environment",
+                    ),
+                    ("environment_record_schema_version", "1"),
+                    ("environment_track", "cuda13"),
+                    ("cupy_distribution", "cupy-cuda13x"),
+                    ("cucim_distribution", "cucim-cu13"),
+                    ("cucim_distribution_version", "26.6.0"),
+                    (
+                        "cucim_artifact_sha256",
+                        "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+                    ),
+                ),
+            ),
+        ),
+    }
+    values.update(updates)
+    return _cuda_environment(**values)
+
+
+def _background_workload():
+    return WorkloadDescriptor(
+        node_id="node-1",
+        operation_id="rolling_ball_background",
+        input_shapes=((31, 37),),
+        input_dtypes=("float32",),
+        parameters=(("radius", 5),),
+        resolved_spatial_ndim=2,
+    )
+
+
+def _cucim_spec():
+    spec = compute_specs_for(
+        "rolling_ball_background",
+        include_cpu=False,
+        allow_experimental=True,
+    )[0]
+    assert (
+        spec.validated_environment_policy_id
+        == CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID
+    )
+    return spec
+
+
+@pytest.mark.parametrize("version", ("26.6.0", "26.06.00"))
+def test_cucim_environment_policy_accepts_only_the_approved_windows_artifact(
+    version,
+):
+    metadata = dict(dict(_cucim_environment().implementation_library_metadata)["cucim"])
+    metadata["cucim_distribution_version"] = version
+    environment = _cucim_environment(
+        runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", version)),
+        implementation_library_metadata=(("cucim", tuple(metadata.items())),),
+    )
+
+    decision = evaluate_candidate_support(
+        _cucim_spec(),
+        _background_workload(),
+        environment,
+        allow_experimental=True,
+    )
+
+    assert decision.supported
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        _cucim_environment(
+            runtime_versions=(("cuda-cupy", "14.1.1"), ("cucim", "0.0.0"))
+        ),
+        _cucim_environment(implementation_library_metadata=()),
+        _cucim_environment(
+            implementation_library_metadata=(
+                (
+                    "cucim",
+                    (
+                        ("environment_record_schema", "napari-vipp-gpu-environment"),
+                        ("environment_record_schema_version", "1"),
+                        ("environment_track", "cuda13"),
+                        ("cupy_distribution", "cupy-cuda13x"),
+                        ("cucim_distribution", "cucim-cu13"),
+                        ("cucim_distribution_version", "26.6.0"),
+                        ("cucim_artifact_sha256", "0" * 64),
+                    ),
+                ),
+            )
+        ),
+        _cucim_environment(os_name="Linux"),
+        _cucim_environment(os_name="Darwin"),
+    ],
+    ids=("version", "missing-metadata", "digest", "linux", "darwin"),
+)
+def test_cucim_environment_policy_rejects_unapproved_provenance(environment):
+    decision = evaluate_candidate_support(
+        _cucim_spec(),
+        _background_workload(),
+        environment,
+        allow_experimental=True,
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+
+
+def test_exact_environment_policies_reject_runtime_library_relabeling():
+    relabeled_cucim = replace(
+        _cucim_spec(),
+        validated_environment_policy_id=CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
+    )
+    relabeled_cupyx = replace(
+        _gpu_spec(),
+        validated_environment_policy_id=(CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID),
+    )
+
+    for spec, workload, environment in (
+        (
+            relabeled_cucim,
+            _background_workload(),
+            _cucim_environment(
+                runtime_versions=(("cuda-cupy", "14.1.1"),),
+                implementation_library_metadata=(),
+            ),
+        ),
+        (relabeled_cupyx, _workload(), _cuda_environment()),
+    ):
+        decision = evaluate_candidate_support(
+            spec,
+            workload,
+            environment,
+            allow_experimental=True,
+        )
+
+        assert not decision.supported
+        assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+        assert "is bound to runtime/library" in decision.reason_text
 
 
 def test_shape_preserving_policy_propagates_schema_dtype_and_guarantees():
@@ -295,9 +536,7 @@ def _operation_facts(
 
 def test_background_policy_uses_public_2d_and_conservative_3d_radius_bounds():
     spec = _builtin_spec("rolling_ball_background")
-    environment = _cuda_environment(
-        implementation_libraries=("cpu", "cupyx", "cucim")
-    )
+    environment = _cucim_environment()
 
     two_dimensional = evaluate_candidate_support(
         spec,

@@ -318,10 +318,27 @@ class PerformanceDecision:
         object.__setattr__(self, "reason_text", reason_text)
 
 
+CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID = (
+    "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+)
+CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
+    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+)
 CUDA_ENVIRONMENT_POLICIES = {
-    "cuda-cupy-py312-windows-linux-v1",
-    "cuda-cupy-cucim-py312-windows-linux-v1",
+    CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
 }
+
+_PHASE1_CUDA_POLICY_PROVIDER = {
+    CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupyx"),
+    CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cucim"),
+}
+
+_PHASE1_CUPY_VERSION = "14.1.1"
+_PHASE1_CUCIM_VERSIONS = frozenset({"26.6.0", "26.06.00"})
+_PHASE1_CUCIM_ARTIFACT_SHA256 = (
+    "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
+)
 
 
 def evaluate_candidate_support(
@@ -348,21 +365,36 @@ def evaluate_candidate_support(
             DecisionReason.ENVIRONMENT_UNSUPPORTED,
             "No executable environment policy is registered.",
         )
-    if (
-        environment.os_name not in {"Windows", "Linux"}
-        or environment.python_implementation != "CPython"
-        or environment.python_version != "3.12"
-        or not environment.python_abi.startswith("cpython-312")
-        or spec.runtime_id not in environment.runtime_ids
-        or spec.implementation_library_id not in environment.implementation_libraries
-        or environment.probe_status != "available"
-    ):
-        return SupportDecision(
-            False,
-            DecisionReason.ENVIRONMENT_UNSUPPORTED,
-            "The current OS/Python/runtime/library probe is outside the "
-            "validated matrix.",
-        )
+    environment_decision = _evaluate_phase1_cuda_environment(spec, environment)
+    if environment_decision is not None:
+        return environment_decision
+    return evaluate_candidate_workload_support(
+        spec,
+        workload,
+        array_facts=array_facts,
+    )
+
+
+def evaluate_candidate_workload_support(
+    spec: OperationComputeSpec,
+    workload: WorkloadDescriptor,
+    *,
+    array_facts: tuple[ArrayFacts, ...] = (),
+) -> SupportDecision:
+    """Evaluate provider-free scientific/workload gates before any probe.
+
+    Visibility and environment admission intentionally remain the caller's
+    responsibility.  This split lets execution discard statically unsupported
+    candidates without importing or probing an optional GPU provider.
+    """
+
+    if not isinstance(spec, OperationComputeSpec):
+        raise TypeError("spec must be an OperationComputeSpec.")
+    if not isinstance(workload, WorkloadDescriptor):
+        raise TypeError("workload must be a WorkloadDescriptor.")
+    facts = tuple(array_facts)
+    if any(not isinstance(item, ArrayFacts) for item in facts):
+        raise TypeError("array_facts must contain ArrayFacts values.")
     if (
         workload.resolved_spatial_ndim is not None
         and workload.resolved_spatial_ndim not in spec.supported_spatial_ndims
@@ -386,13 +418,13 @@ def evaluate_candidate_support(
             "The resolved input-port count does not match the declaration.",
             fallback_allowed=False,
         )
-    facts_decision = _validate_supplied_facts(workload, array_facts)
+    facts_decision = _validate_supplied_facts(workload, facts)
     if facts_decision is not None:
         return facts_decision
     operation_decision = _evaluate_operation_region(
         spec,
         workload,
-        array_facts=array_facts,
+        array_facts=facts,
     )
     if operation_decision is not None:
         return operation_decision
@@ -410,7 +442,7 @@ def evaluate_candidate_support(
         port.nonfinite_policy_id == "finite-only-v1" for port in spec.input_ports
     )
     if requires_finite:
-        if len(array_facts) != len(spec.input_ports):
+        if len(facts) != len(spec.input_ports):
             return SupportDecision(
                 False,
                 DecisionReason.WORKLOAD_UNSUPPORTED,
@@ -418,9 +450,9 @@ def evaluate_candidate_support(
                 requires_complete_facts=True,
             )
         if any(
-            facts.completeness is not FactCompleteness.COMPLETE
-            or facts.all_finite is not True
-            for facts in array_facts
+            item.completeness is not FactCompleteness.COMPLETE
+            or item.all_finite is not True
+            for item in facts
         ):
             return SupportDecision(
                 False,
@@ -432,6 +464,194 @@ def evaluate_candidate_support(
         True,
         DecisionReason.SELECTED_IMPLEMENTATION,
         "The candidate is inside its declared scientific and environment region.",
+    )
+
+
+def _evaluate_phase1_cuda_host_environment(
+    spec: OperationComputeSpec,
+    environment: ComputeEnvironment,
+) -> SupportDecision | None:
+    """Reject an invalid provider/policy binding or host without probing CUDA."""
+
+    def rejected(reason: str) -> SupportDecision:
+        return SupportDecision(
+            False,
+            DecisionReason.ENVIRONMENT_UNSUPPORTED,
+            reason,
+        )
+
+    expected_provider = _PHASE1_CUDA_POLICY_PROVIDER.get(
+        spec.validated_environment_policy_id
+    )
+    actual_provider = (spec.runtime_id, spec.implementation_library_id)
+    if expected_provider is None:
+        return rejected("No executable environment policy is registered.")
+    if actual_provider != expected_provider:
+        return rejected(
+            f"Environment policy {spec.validated_environment_policy_id!r} is bound "
+            f"to runtime/library {expected_provider!r}, not {actual_provider!r}."
+        )
+    if environment.os_name == "Darwin":
+        return rejected(
+            "Phase-1 CUDA admission is unavailable on macOS; Apple GPU provider "
+            "investigation remains pending and CPU is authoritative."
+        )
+    if environment.os_name == "Linux":
+        return rejected(
+            "Native Linux Phase-1 CUDA admission is pending clean-host "
+            "validation evidence and therefore fails closed."
+        )
+    if environment.os_name != "Windows" or environment.execution_mode != "native":
+        return rejected(
+            "Phase-1 GPU admission requires an exactly validated native Windows "
+            "environment."
+        )
+    if (
+        environment.python_implementation != "CPython"
+        or environment.python_version != "3.12"
+        or environment.python_abi != "cpython-312"
+    ):
+        return rejected(
+            "Phase-1 GPU admission requires the exact CPython 3.12 cpython-312 ABI."
+        )
+    return None
+
+
+def _evaluate_phase1_cuda_environment(
+    spec: OperationComputeSpec,
+    environment: ComputeEnvironment,
+) -> SupportDecision | None:
+    def rejected(reason: str) -> SupportDecision:
+        return SupportDecision(
+            False,
+            DecisionReason.ENVIRONMENT_UNSUPPORTED,
+            reason,
+        )
+
+    host_decision = _evaluate_phase1_cuda_host_environment(spec, environment)
+    if host_decision is not None:
+        return host_decision
+    if environment.probe_status != "available":
+        return rejected("The accelerator runtime probe did not report availability.")
+    if spec.runtime_id not in environment.runtime_ids:
+        return rejected(f"Runtime {spec.runtime_id!r} was not admitted by the probe.")
+    if spec.implementation_library_id not in environment.implementation_libraries:
+        return rejected(
+            f"Implementation library {spec.implementation_library_id!r} was not "
+            "admitted by its probe."
+        )
+
+    versions = dict(environment.runtime_versions)
+    if versions.get("cuda-cupy") != _PHASE1_CUPY_VERSION:
+        return rejected("Phase-1 CUDA admission requires exact CuPy 14.1.1 provenance.")
+    if spec.implementation_library_id == "cupyx" and (
+        versions.get("cupyx") != _PHASE1_CUPY_VERSION
+    ):
+        return rejected(
+            "Phase-1 CuPyX admission requires exact CuPyX 14.1.1 provenance."
+        )
+
+    fingerprints = dict(environment.runtime_probe_fingerprints)
+    if not fingerprints.get("cuda-cupy"):
+        return rejected(
+            "The CUDA runtime probe did not supply a nonempty environment fingerprint."
+        )
+    runtime_metadata = _metadata_for_scope(
+        environment.runtime_metadata,
+        "cuda-cupy",
+    )
+    cuda_runtime = runtime_metadata.get("cuda_runtime_version", "")
+    if not cuda_runtime.isascii() or not cuda_runtime.isdecimal():
+        return rejected("The CUDA runtime version metadata must be numeric.")
+    if int(cuda_runtime) // 1000 not in {12, 13}:
+        return rejected(
+            "Phase-1 admission has executable evidence only for CUDA runtime "
+            "major 12 or 13."
+        )
+    metadata_driver = runtime_metadata.get("driver_version", "")
+    if (
+        not metadata_driver.isascii()
+        or not metadata_driver.isdecimal()
+        or int(metadata_driver) <= 0
+        or not environment.driver_version
+        or environment.driver_version != metadata_driver
+    ):
+        return rejected(
+            "The CUDA probe must preserve matching numeric driver-version metadata."
+        )
+    if (
+        not environment.device_id.startswith("cuda:")
+        or environment.device_class != "nvidia-cuda"
+        or not environment.device_name
+    ):
+        return rejected("Phase-1 admission requires a selected NVIDIA CUDA device.")
+    compute_capability = dict(environment.device_metadata).get(
+        "compute_capability",
+        "",
+    )
+    if not _valid_compute_capability(compute_capability):
+        return rejected(
+            "The selected NVIDIA device is missing numeric compute-capability metadata."
+        )
+
+    if spec.validated_environment_policy_id == (
+        CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID
+    ):
+        cucim_version = versions.get("cucim", "")
+        if cucim_version not in _PHASE1_CUCIM_VERSIONS:
+            return rejected(
+                "Phase-1 cuCIM admission requires exact cuCIM 26.6.0/26.06.00 "
+                "provenance."
+            )
+        library_metadata = _metadata_for_scope(
+            environment.implementation_library_metadata,
+            "cucim",
+        )
+        expected_metadata = {
+            "environment_record_schema": "napari-vipp-gpu-environment",
+            "environment_record_schema_version": "1",
+            "environment_track": "cuda13",
+            "cupy_distribution": "cupy-cuda13x",
+            "cucim_distribution": "cucim-cu13",
+            "cucim_artifact_sha256": _PHASE1_CUCIM_ARTIFACT_SHA256,
+        }
+        for key, expected in expected_metadata.items():
+            if library_metadata.get(key) != expected:
+                return rejected(
+                    "The cuCIM environment record is missing or has unapproved "
+                    f"{key!r} provenance."
+                )
+        if library_metadata.get("cucim_distribution_version") not in (
+            _PHASE1_CUCIM_VERSIONS
+        ):
+            return rejected(
+                "The installed cuCIM distribution version is outside the exact "
+                "Phase-1 matrix."
+            )
+        if int(cuda_runtime) // 1000 != 13:
+            return rejected(
+                "The approved Phase-1 cuCIM artifact is specific to the CUDA 13 "
+                "environment track."
+            )
+    return None
+
+
+def _metadata_for_scope(
+    values: tuple[tuple[str, tuple[tuple[str, str], ...]], ...],
+    scope: str,
+) -> dict[str, str]:
+    return dict(dict(values).get(scope, ()))
+
+
+def _valid_compute_capability(value: str) -> bool:
+    major, separator, minor = value.partition(".")
+    return bool(
+        separator
+        and major.isascii()
+        and major.isdecimal()
+        and minor.isascii()
+        and minor.isdecimal()
+        and int(major) > 0
     )
 
 
@@ -995,13 +1215,13 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
             "vipp-best-available-v1",
-            "background-u8-u16-f32-v1",
+            "background-u8-u16-f32-v2",
             "median-exact-u8-u16-f32-v1",
             "gaussian-finite-f32-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
-            "background-production-exact-v1",
+            "background-dtype-parity-v2",
             "median-production-bitwise-v1",
             "gaussian-float32-tolerance-v1",
         },
@@ -1052,7 +1272,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
-            "background-public-dtype-v1",
+            "background-public-dtype-v2",
             "median-bitwise-v1",
             "gaussian-float32-v1",
         },
@@ -1120,6 +1340,8 @@ __all__ = [
     "ArrayFacts",
     "ArrayFactsCache",
     "ArrayFactsKey",
+    "CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID",
+    "CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_ENVIRONMENT_POLICIES",
     "DEFAULT_POLICY_CATALOG",
     "FactCompleteness",
@@ -1131,6 +1353,7 @@ __all__ = [
     "ValueDescriptor",
     "evaluate_auto_performance",
     "evaluate_candidate_support",
+    "evaluate_candidate_workload_support",
     "evaluate_memory_support",
     "estimate_candidate_memory",
     "propagate_output_descriptors",

@@ -43,7 +43,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 1
+    assert policy.policy_version == 2
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "developer-preview"
@@ -58,8 +58,8 @@ def test_loads_versioned_policy_through_installed_package_resources():
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
     policy = load_phase1_compute_policy()
     expected_implementations = {
-        "rolling_ball_background": "cucim-rolling_ball_background-v1",
-        "subtract_background": "cucim-subtract_background-v1",
+        "rolling_ball_background": "cucim-rolling_ball_background-v2",
+        "subtract_background": "cucim-subtract_background-v2",
         "median_filter": "cupyx-median-filter-v1",
         "gaussian_blur": "cupyx-gaussian-blur-v1",
         "gaussian_blur_3d": "cupyx-gaussian-blur-3d-v1",
@@ -96,10 +96,33 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert policy.local_benchmark.adaptive_near_threshold_relative_fraction == 0.05
     assert policy.local_benchmark.adaptive_near_threshold_absolute_ms == 5.0
     assert policy.local_benchmark.adaptive_speedup_mad_fraction == 0.05
-    assert policy.platform_admission.operating_systems == ("Windows", "Linux")
+    platform = policy.platform_admission
+    assert platform.operating_systems == ("Windows",)
+    assert platform.execution_modes == ("native",)
     assert policy.platform_admission.python_implementation == "CPython"
     assert policy.platform_admission.python_minor_versions == ("3.12",)
+    assert platform.python_abis == ("cpython-312",)
     assert policy.platform_admission.cuda_major_versions == (12, 13)
+    assert platform.cupy_versions == ("14.1.1",)
+    assert platform.cupyx_versions == ("14.1.1",)
+    assert platform.runtime_probe_fingerprint_required
+    assert platform.driver_version_metadata_required
+    assert platform.nvidia_compute_capability_required
+    assert platform.cucim_versions == ("26.6.0", "26.06.00")
+    assert platform.cucim_environment_record_schema == "napari-vipp-gpu-environment"
+    assert platform.cucim_environment_record_schema_version == 1
+    assert platform.cucim_environment_track == "cuda13"
+    assert platform.cupy_distribution == "cupy-cuda13x"
+    assert platform.cucim_distribution == "cucim-cu13"
+    assert platform.cucim_artifact_sha256 == (
+        "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
+    )
+    assert platform.validated_environment_policy_ids == (
+        "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2",
+    )
+    assert platform.linux_policy == "pending-native-clean-host-evidence-v1"
+    assert platform.macos_policy == "cpu-only-provider-investigation-pending-v1"
     assert not policy.platform_admission.public_advertisement_enabled
 
 
@@ -176,7 +199,7 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_valid_but_changed_v1_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v2_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

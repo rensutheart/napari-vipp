@@ -1,0 +1,281 @@
+{
+  "schema_id": "napari-vipp-compute-policy-artifact-v1",
+  "policy_id": "phase1-gpu-developer-v2",
+  "policy_version": 2,
+  "content_sha256": "2cbd80480ffdbc9ab0855dee0e7707b88f7c530c911f8ea3847c7e6a86d44234",
+  "policy": {
+    "phase": "phase1",
+    "status": "developer-preview",
+    "exposure": {
+      "global_default": "auto",
+      "public_controls_enabled": false,
+      "developer_enablement_required": true
+    },
+    "auto_selection": {
+      "broad_calibration_enabled": false,
+      "evidence_scope": "local-or-reviewed-segment-only-v1",
+      "non_local_lower_confidence_speedup": 1.2,
+      "non_local_minimum_saving_ms": 20.0,
+      "local_noise_relative_fraction": 0.05,
+      "local_noise_absolute_ms": 10.0,
+      "tie_breaker": "retain-current-else-cpu-v1",
+      "pending_evidence": [
+        "rtx40-series-secondary-v1",
+        "native-linux-clean-host-v1",
+        "cuda12-clean-host-v1"
+      ]
+    },
+    "local_benchmark": {
+      "initial_warm_rounds": 7,
+      "adaptive_warm_rounds": [15, 21],
+      "confidence_level": 0.95,
+      "confidence_method": "paired-bootstrap-median-ratio-v1",
+      "bootstrap_resamples": 2000,
+      "bootstrap_seed": 17029,
+      "outlier_policy": "retain-all-finite-paired-rounds-v1",
+      "round_order_policy": "randomized-paired-candidate-order-v1",
+      "adaptive_near_threshold_relative_fraction": 0.05,
+      "adaptive_near_threshold_absolute_ms": 5.0,
+      "adaptive_speedup_mad_fraction": 0.05
+    },
+    "platform_admission": {
+      "operating_systems": ["Windows"],
+      "execution_modes": ["native"],
+      "python_implementation": "CPython",
+      "python_minor_versions": ["3.12"],
+      "python_abis": ["cpython-312"],
+      "cuda_major_versions": [12, 13],
+      "cupy_versions": ["14.1.1"],
+      "cupyx_versions": ["14.1.1"],
+      "runtime_probe_fingerprint_required": true,
+      "driver_version_metadata_required": true,
+      "nvidia_compute_capability_required": true,
+      "cucim_versions": ["26.6.0", "26.06.00"],
+      "cucim_environment_record_schema": "napari-vipp-gpu-environment",
+      "cucim_environment_record_schema_version": 1,
+      "cucim_environment_track": "cuda13",
+      "cupy_distribution": "cupy-cuda13x",
+      "cucim_distribution": "cucim-cu13",
+      "cucim_artifact_sha256": "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+      "validated_environment_policy_ids": [
+        "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+      ],
+      "linux_policy": "pending-native-clean-host-evidence-v1",
+      "macos_policy": "cpu-only-provider-investigation-pending-v1",
+      "public_advertisement_enabled": false
+    },
+    "operations": [
+      {
+        "operation_id": "rolling_ball_background",
+        "implementation_id": "cucim-rolling_ball_background-v2",
+        "implementation_version": "2",
+        "runtime_id": "cuda-cupy",
+        "implementation_library_id": "cucim",
+        "admission_tier": "developer_hidden",
+        "environment_policy_id": "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2",
+        "parameter_policy_id": "background-parameters-v1",
+        "workload_policy_id": "background-u8-u16-f32-v2",
+        "parity_policy_id": "background-dtype-parity-v2",
+        "memory_model_id": "cucim-background-memory-v1",
+        "supported_spatial_ndims": [2, 3],
+        "supports_device_residency": true,
+        "support_summary": {
+          "authority": "audit-mirror-of-executable-policy-v1",
+          "public_dtypes": ["uint8", "uint16", "float32"],
+          "spatial_semantics_id": "background-2d-slicewise-or-3d-zyx-v1",
+          "required_facts": [
+            "uint8-uint16-bitwise-output-v2",
+            "float32-mask-signed-zero-bounded-error-v2"
+          ],
+          "parameter_bounds": [
+            {
+              "parameter": "radius",
+              "minimum": 1.0,
+              "maximum": 500.0,
+              "scope": "spatial-ndim-2",
+              "canonicalization_policy_id": "cpu-reference-radius-v1"
+            },
+            {
+              "parameter": "radius",
+              "minimum": 1.0,
+              "maximum": 50.0,
+              "scope": "spatial-ndim-3",
+              "canonicalization_policy_id": "cpu-reference-radius-v1"
+            }
+          ],
+          "explicit_cpu_regions": [
+            "unsupported-dtype-v1",
+            "radius-outside-reviewed-bound-v1"
+          ]
+        }
+      },
+      {
+        "operation_id": "subtract_background",
+        "implementation_id": "cucim-subtract_background-v2",
+        "implementation_version": "2",
+        "runtime_id": "cuda-cupy",
+        "implementation_library_id": "cucim",
+        "admission_tier": "developer_hidden",
+        "environment_policy_id": "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2",
+        "parameter_policy_id": "background-parameters-v1",
+        "workload_policy_id": "background-u8-u16-f32-v2",
+        "parity_policy_id": "background-dtype-parity-v2",
+        "memory_model_id": "cucim-background-memory-v1",
+        "supported_spatial_ndims": [2, 3],
+        "supports_device_residency": true,
+        "support_summary": {
+          "authority": "audit-mirror-of-executable-policy-v1",
+          "public_dtypes": ["uint8", "uint16", "float32"],
+          "spatial_semantics_id": "background-2d-slicewise-or-3d-zyx-v1",
+          "required_facts": [
+            "uint8-uint16-bitwise-output-v2",
+            "float32-mask-signed-zero-bounded-error-v2"
+          ],
+          "parameter_bounds": [
+            {
+              "parameter": "radius",
+              "minimum": 1.0,
+              "maximum": 500.0,
+              "scope": "spatial-ndim-2",
+              "canonicalization_policy_id": "cpu-reference-radius-v1"
+            },
+            {
+              "parameter": "radius",
+              "minimum": 1.0,
+              "maximum": 50.0,
+              "scope": "spatial-ndim-3",
+              "canonicalization_policy_id": "cpu-reference-radius-v1"
+            }
+          ],
+          "explicit_cpu_regions": [
+            "unsupported-dtype-v1",
+            "radius-outside-reviewed-bound-v1"
+          ]
+        }
+      },
+      {
+        "operation_id": "median_filter",
+        "implementation_id": "cupyx-median-filter-v1",
+        "implementation_version": "1",
+        "runtime_id": "cuda-cupy",
+        "implementation_library_id": "cupyx",
+        "admission_tier": "developer_hidden",
+        "environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+        "parameter_policy_id": "median-parameters-v1",
+        "workload_policy_id": "median-exact-u8-u16-f32-v1",
+        "parity_policy_id": "median-production-bitwise-v1",
+        "memory_model_id": "cupyx-median-memory-v1",
+        "supported_spatial_ndims": [2],
+        "supports_device_residency": true,
+        "support_summary": {
+          "authority": "audit-mirror-of-executable-policy-v1",
+          "public_dtypes": ["uint8", "uint16", "float32"],
+          "spatial_semantics_id": "median-slicewise-active-yx-v1",
+          "required_facts": [
+            "float32-complete-finite-no-negative-zero-v1",
+            "footprint-not-larger-than-active-xy-v1"
+          ],
+          "parameter_bounds": [
+            {
+              "parameter": "size",
+              "minimum": 1.0,
+              "maximum": 51.0,
+              "scope": "canonicalized-odd-footprint",
+              "canonicalization_policy_id": "round-clamp-one-next-odd-v1"
+            }
+          ],
+          "explicit_cpu_regions": [
+            "float64-unvalidated-v1",
+            "nonfinite-or-negative-zero-float32-v1",
+            "footprint-outside-reviewed-bound-v1"
+          ]
+        }
+      },
+      {
+        "operation_id": "gaussian_blur",
+        "implementation_id": "cupyx-gaussian-blur-v1",
+        "implementation_version": "1",
+        "runtime_id": "cuda-cupy",
+        "implementation_library_id": "cupyx",
+        "admission_tier": "developer_hidden",
+        "environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+        "parameter_policy_id": "gaussian-2d-parameters-v1",
+        "workload_policy_id": "gaussian-finite-f32-v1",
+        "parity_policy_id": "gaussian-float32-tolerance-v1",
+        "memory_model_id": "cupyx-gaussian-2d-memory-v1",
+        "supported_spatial_ndims": [2],
+        "supports_device_residency": true,
+        "support_summary": {
+          "authority": "audit-mirror-of-executable-policy-v1",
+          "public_dtypes": ["float32"],
+          "spatial_semantics_id": "gaussian-slicewise-active-yx-reflect-v1",
+          "required_facts": ["finite-values-v1"],
+          "parameter_bounds": [
+            {
+              "parameter": "sigma",
+              "minimum": 0.0,
+              "maximum": 12.0,
+              "scope": "active-yx",
+              "canonicalization_policy_id": "finite-float-v1"
+            }
+          ],
+          "explicit_cpu_regions": [
+            "uint8-uint16-reviewed-parity-gap-v1",
+            "float64-unvalidated-v1",
+            "nonfinite-values-v1"
+          ]
+        }
+      },
+      {
+        "operation_id": "gaussian_blur_3d",
+        "implementation_id": "cupyx-gaussian-blur-3d-v1",
+        "implementation_version": "1",
+        "runtime_id": "cuda-cupy",
+        "implementation_library_id": "cupyx",
+        "admission_tier": "developer_hidden",
+        "environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+        "parameter_policy_id": "gaussian-3d-parameters-v1",
+        "workload_policy_id": "gaussian-finite-f32-v1",
+        "parity_policy_id": "gaussian-float32-tolerance-v1",
+        "memory_model_id": "cupyx-gaussian-3d-memory-v1",
+        "supported_spatial_ndims": [3],
+        "supports_device_residency": true,
+        "support_summary": {
+          "authority": "audit-mirror-of-executable-policy-v1",
+          "public_dtypes": ["float32"],
+          "spatial_semantics_id": "gaussian-active-zyx-reflect-v1",
+          "required_facts": ["finite-values-v1"],
+          "parameter_bounds": [
+            {
+              "parameter": "sigma_z",
+              "minimum": 0.0,
+              "maximum": 12.0,
+              "scope": "active-z",
+              "canonicalization_policy_id": "finite-float-v1"
+            },
+            {
+              "parameter": "sigma_y",
+              "minimum": 0.0,
+              "maximum": 12.0,
+              "scope": "active-y",
+              "canonicalization_policy_id": "finite-float-v1"
+            },
+            {
+              "parameter": "sigma_x",
+              "minimum": 0.0,
+              "maximum": 12.0,
+              "scope": "active-x",
+              "canonicalization_policy_id": "finite-float-v1"
+            }
+          ],
+          "explicit_cpu_regions": [
+            "uint8-uint16-reviewed-parity-gap-v1",
+            "float64-unvalidated-v1",
+            "nonfinite-values-v1"
+          ]
+        }
+      }
+    ]
+  }
+}

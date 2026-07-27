@@ -30,7 +30,12 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
     WorkloadDescriptor,
 )
-from napari_vipp.core.compute_registry import ComputeRegistry
+from napari_vipp.core.compute_registry import (
+    ComputeRegistry,
+    ImplementationLibraryProbeResult,
+    RuntimeDevice,
+    RuntimeProbeResult,
+)
 from napari_vipp.core.compute_specs import OperationComputeSpec
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline
@@ -52,11 +57,36 @@ class _ShapeAwareDeviceArray(_FakeDeviceArray):
 
 
 class _ShapeAwareRuntime(_FakeRuntime):
+    runtime_id = "cuda-cupy"
+    array_domain = "cuda-cupy"
+
     def allocate(self, payload):
         value = _ShapeAwareDeviceArray(self, payload)
         self.live[id(value)] = value
         self.events.append("allocate")
         return value
+
+    def probe(self, *, refresh: bool = False) -> RuntimeProbeResult:
+        del refresh
+        return RuntimeProbeResult(
+            self.runtime_id,
+            True,
+            version="14.1.1",
+            devices=(
+                RuntimeDevice(
+                    "cuda:0",
+                    "Fake device",
+                    self.free_bytes,
+                    metadata=(("compute_capability", "12.0"),),
+                ),
+            ),
+            selected_device_id="cuda:0",
+            environment_fingerprint="fake-runtime-environment-v1",
+            metadata=(
+                ("cuda_runtime_version", "13020"),
+                ("driver_version", "13030"),
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -91,18 +121,20 @@ class _StaticPlanner:
         self.request = request
         self.decisions = decisions
         self.workloads: tuple[WorkloadDescriptor, ...] = ()
+        self.array_facts = MappingProxyType({})
 
     def __call__(self, request, workloads, **_kwargs):
         assert request is self.request
         self.workloads = tuple(workloads)
+        self.array_facts = MappingProxyType(dict(_kwargs.get("array_facts", {})))
         return _PlanningResult(
             request,
             ComputeEnvironment(
-                runtime_ids=("cpu-numpy", "fake-device"),
-                implementation_libraries=("cpu", "fake-library"),
-                device_id="fake:0",
+                runtime_ids=("cpu-numpy", "cuda-cupy"),
+                implementation_libraries=("cpu", "cupyx", "cucim"),
+                device_id="cuda:0",
                 device_name="Fake device",
-                device_class="test",
+                device_class="nvidia-cuda",
                 memory_topology="discrete",
                 total_accelerator_memory_bytes=10_000,
             ),
@@ -129,18 +161,74 @@ def _test_registry(
     runtime: _FakeRuntime,
     implementations: tuple[tuple[str, Callable], ...],
 ) -> tuple[ComputeRegistry, dict[str, OperationComputeSpec]]:
-    shaped = {
-        operation_id: _shape_preserving_spec(
-            _implementation_spec(operation_id, function)
+    shaped: dict[str, OperationComputeSpec] = {}
+    for operation_id, function in implementations:
+        uses_cucim = operation_id in {
+            "rolling_ball_background",
+            "subtract_background",
+        }
+        shaped[operation_id] = _shape_preserving_spec(
+            replace(
+                _implementation_spec(operation_id, function),
+                runtime_id="cuda-cupy",
+                array_domain="cuda-cupy",
+                implementation_library_id=("cucim" if uses_cucim else "cupyx"),
+                validated_environment_policy_id=(
+                    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+                    if uses_cucim
+                    else "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+                ),
+            )
         )
-        for operation_id, function in implementations
-    }
+    library_ids = {spec.implementation_library_id for spec in shaped.values()}
+    library_probes = {}
+    if "cupyx" in library_ids:
+        library_probes["cupyx"] = lambda: ImplementationLibraryProbeResult(
+            "cupyx",
+            True,
+            version="14.1.1",
+        )
+    if "cucim" in library_ids:
+        library_probes["cucim"] = lambda: ImplementationLibraryProbeResult(
+            "cucim",
+            True,
+            version="26.06.00",
+            metadata=(
+                ("environment_record_schema", "napari-vipp-gpu-environment"),
+                ("environment_record_schema_version", "1"),
+                ("environment_track", "cuda13"),
+                ("cupy_distribution", "cupy-cuda13x"),
+                ("cucim_distribution", "cucim-cu13"),
+                ("cucim_distribution_version", "26.6.0"),
+                (
+                    "cucim_artifact_sha256",
+                    "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8",
+                ),
+            ),
+        )
     return (
         ComputeRegistry(
-            runtime_descriptors=(_runtime_descriptor(),),
-            library_descriptors=(_library_descriptor(),),
+            runtime_descriptors=(
+                replace(
+                    _runtime_descriptor(),
+                    runtime_id="cuda-cupy",
+                    array_domain="cuda-cupy",
+                    device_domain="nvidia-cuda",
+                    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+                ),
+            ),
+            library_descriptors=tuple(
+                replace(
+                    _library_descriptor(library_id),
+                    runtime_ids=("cuda-cupy",),
+                    array_domain="cuda-cupy",
+                    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+                )
+                for library_id in sorted(library_ids)
+            ),
             implementation_specs=tuple(shaped.values()),
-            runtime_factories={"fake-device": lambda: runtime},
+            runtime_factories={"cuda-cupy": lambda: runtime},
+            library_probes=library_probes,
         ),
         shaped,
     )
@@ -191,9 +279,7 @@ def _accelerated_request(
         manual_node_ids=manual_node_ids,
         dirty_node_ids=dirty_node_ids,
         cached_outputs=None if cached is None else dict(cached.outputs),
-        cached_output_states=(
-            None if cached is None else dict(cached.output_states)
-        ),
+        cached_output_states=(None if cached is None else dict(cached.output_states)),
         cached_node_outputs=(
             None
             if cached is None
@@ -247,8 +333,8 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
     )
     compute_request = ComputeRequest(
         mode=ComputeMode.AUTO,
-        runtime_id="fake-device",
-        device_id="fake:0",
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
     )
     planner = _StaticPlanner(
         compute_request,
@@ -311,6 +397,75 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
     registry.close()
 
 
+@pytest.mark.parametrize(
+    ("downstream_operation", "parameter_name", "parameter_value"),
+    (
+        ("median_filter", "size", 3),
+        ("gaussian_blur", "sigma", 1.0),
+    ),
+)
+def test_extreme_float_background_facts_fail_closed_for_downstream_gpu(
+    downstream_operation,
+    parameter_name,
+    parameter_value,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    background = pipeline.add_node("rolling_ball_background")
+    downstream = pipeline.add_node(downstream_operation)
+    pipeline.set_param(background.id, "radius", 2.0)
+    pipeline.set_param(background.id, "light_background", True)
+    pipeline.set_param(background.id, "spatial_mode", "2D YX")
+    pipeline.set_param(downstream.id, parameter_name, parameter_value)
+    assert pipeline.connect("input", background.id).success
+    assert pipeline.connect(background.id, downstream.id).success
+
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(
+        runtime,
+        (
+            ("rolling_ball_background", _device_copy),
+            (downstream_operation, _device_copy),
+        ),
+    )
+    compute_request = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={
+            background.id: (
+                f"implementation:{specs['rolling_ball_background'].implementation_id}"
+            ),
+            downstream.id: (
+                f"implementation:{specs[downstream_operation].implementation_id}"
+            ),
+        },
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    planner = _StaticPlanner(compute_request, ())
+    data = np.full(
+        (9, 9),
+        np.finfo(np.float32).max,
+        dtype=np.float32,
+    )
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = execute_pipeline_request(
+            _accelerated_request(pipeline, data, compute_request),
+            compute_registry=registry,
+            compute_planner=planner,
+        )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert planner.array_facts[background.id][0].all_finite is True
+    predicted = planner.array_facts[downstream.id][0]
+    assert predicted.completeness.value == "unknown"
+    assert predicted.all_finite is None
+    assert runtime.operation_count == 0
+    assert np.isnan(result.pipeline.outputs[downstream.id]).all()
+    registry.close()
+
+
 def test_device_oom_reports_actual_cpu_fallback_decision():
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -326,8 +481,8 @@ def test_device_oom_reports_actual_cpu_fallback_decision():
     failing = specs["gaussian_blur"]
     compute_request = ComputeRequest(
         mode=ComputeMode.AUTO,
-        runtime_id="fake-device",
-        device_id="fake:0",
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
     )
     planner = _StaticPlanner(
         compute_request,
@@ -374,8 +529,8 @@ def test_dirty_device_run_reuses_clean_cached_upstream_output():
     )
     compute_request = ComputeRequest(
         mode=ComputeMode.AUTO,
-        runtime_id="fake-device",
-        device_id="fake:0",
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
     )
     planner = _StaticPlanner(
         compute_request,
@@ -423,8 +578,8 @@ def test_selected_manual_host_node_runs_after_a_device_predecessor():
     )
     compute_request = ComputeRequest(
         mode=ComputeMode.AUTO,
-        runtime_id="fake-device",
-        device_id="fake:0",
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
     )
     planner = _StaticPlanner(
         compute_request,
@@ -465,8 +620,8 @@ def test_cancelled_device_request_does_not_publish_a_partial_pipeline():
     )
     compute_request = ComputeRequest(
         mode=ComputeMode.AUTO,
-        runtime_id="fake-device",
-        device_id="fake:0",
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
     )
     planner = _StaticPlanner(
         compute_request,
@@ -541,6 +696,17 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
         cupy.zeros(1, dtype=cupy.float32).sum().item()
     except Exception as exc:
         pytest.skip(f"A working CUDA device is unavailable: {exc}")
+    registry = ComputeRegistry()
+    try:
+        for library_id in ("cucim", "cupyx"):
+            library_probe = registry.probe_library(library_id)
+            if not library_probe.available:
+                pytest.skip(
+                    library_probe.message
+                    or f"The {library_id} implementation library is unavailable."
+                )
+    finally:
+        registry.close()
 
     pipeline = PrototypePipeline()
     pipeline.reset_empty_graph()
@@ -560,9 +726,7 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     compute_request = ComputeRequest(
         mode=ComputeMode.SELECTIVE,
         node_preferences={
-            background.id: (
-                "implementation:cucim-subtract_background-v1"
-            ),
+            background.id: ("implementation:cucim-subtract_background-v2"),
             gaussian.id: "implementation:cupyx-gaussian-blur-v1",
             median.id: "implementation:cupyx-median-filter-v1",
         },
@@ -606,3 +770,113 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
         rtol=5e-6,
         atol=1e-6,
     )
+
+
+@pytest.mark.parametrize(
+    ("downstream_operation", "parameter_name", "parameter_value"),
+    (
+        ("median_filter", "size", 3),
+        ("gaussian_blur", "sigma", 1.0),
+    ),
+)
+def test_real_extreme_float_background_keeps_finite_only_nodes_on_cpu(
+    downstream_operation,
+    parameter_name,
+    parameter_value,
+):
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    if importlib.util.find_spec("cucim") is None:
+        pytest.skip("The optional cuCIM wheel is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy")
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        for library_id in ("cucim", "cupyx"):
+            library_probe = registry.probe_library(library_id)
+            if not library_probe.available:
+                pytest.skip(
+                    library_probe.message
+                    or f"The {library_id} implementation library is unavailable."
+                )
+
+        def implementation_for(operation_id):
+            candidates = tuple(
+                spec
+                for spec in registry.implementations_for_operation(
+                    operation_id,
+                    allow_experimental=True,
+                )
+                if spec.runtime_id == "cuda-cupy"
+            )
+            if not candidates:
+                pytest.skip(f"No CUDA implementation is registered for {operation_id}.")
+            return max(
+                candidates,
+                key=lambda spec: (
+                    spec.implementation_version,
+                    spec.implementation_id,
+                ),
+            )
+
+        background_spec = implementation_for("rolling_ball_background")
+        downstream_spec = implementation_for(downstream_operation)
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        background = pipeline.add_node("rolling_ball_background")
+        downstream = pipeline.add_node(downstream_operation)
+        pipeline.set_param(background.id, "radius", 2.0)
+        pipeline.set_param(background.id, "light_background", True)
+        pipeline.set_param(background.id, "spatial_mode", "2D YX")
+        pipeline.set_param(downstream.id, parameter_name, parameter_value)
+        assert pipeline.connect("input", background.id).success
+        assert pipeline.connect(background.id, downstream.id).success
+        data = np.full(
+            (9, 9),
+            np.finfo(np.float32).max,
+            dtype=np.float32,
+        )
+        compute_request = ComputeRequest(
+            mode=ComputeMode.SELECTIVE,
+            node_preferences={
+                background.id: (f"implementation:{background_spec.implementation_id}"),
+                downstream.id: (f"implementation:{downstream_spec.implementation_id}"),
+            },
+            runtime_id="cuda-cupy",
+            device_id=runtime_probe.selected_device_id,
+            allow_experimental=True,
+        )
+
+        with np.errstate(over="ignore", invalid="ignore"):
+            result = execute_pipeline_request(
+                _accelerated_request(
+                    pipeline,
+                    data,
+                    compute_request,
+                    retain_node_ids=frozenset({downstream.id}),
+                    prune_unretained=True,
+                ),
+                compute_registry=registry,
+            )
+
+        assert result.error == ""
+        assert result.pipeline is not None
+        assert result.execution_report is not None
+        actual = next(
+            decision
+            for decision in result.execution_report.actual_decisions
+            if decision.node_id == downstream.id
+        )
+        assert actual.decision_kind is DecisionKind.FALLBACK_CPU
+        assert actual.runtime_id == "cpu-numpy"
+        assert actual.fallback_reason.value == "workload_unsupported"
+        assert "finite" in actual.reason_text.lower()
+        assert all(
+            downstream.id not in segment.node_ids
+            for segment in result.execution_report.plan.segments
+        )
+        assert np.isnan(result.pipeline.outputs[downstream.id]).all()
+    finally:
+        registry.close()

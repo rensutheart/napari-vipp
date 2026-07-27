@@ -111,15 +111,56 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
         runtime_ids=("cuda-cupy", "cpu-numpy"),
         implementation_libraries=("cupyx", "cpu"),
         runtime_versions=(("cupy", "14.1.1"),),
+        runtime_probe_fingerprints=(("cuda-cupy", "probe-a"),),
+        runtime_metadata=(
+            (
+                "cuda-cupy",
+                (
+                    ("cuda_runtime_version", "13020"),
+                    ("driver_version", "13030"),
+                ),
+            ),
+        ),
+        implementation_library_metadata=(("cupyx", (("build", "reviewed"),)),),
+        driver_version="13030",
+        device_metadata=(("compute_capability", "12.0"),),
         memory_topology="discrete",
         total_accelerator_memory_bytes=8_000_000_000,
     )
     changed = replace(environment, python_abi="cpython-313")
 
     assert environment.fingerprint != changed.fingerprint
+    assert (
+        environment.fingerprint
+        != replace(
+            environment,
+            runtime_probe_fingerprints=(("cuda-cupy", "probe-b"),),
+        ).fingerprint
+    )
+    assert (
+        environment.fingerprint
+        != replace(
+            environment,
+            device_metadata=(("compute_capability", "11.0"),),
+        ).fingerprint
+    )
+    assert (
+        environment.fingerprint
+        != replace(
+            environment,
+            implementation_library_metadata=(("cupyx", (("build", "changed"),)),),
+        ).fingerprint
+    )
     json.dumps(environment.as_dict(), allow_nan=False)
     assert ComputeEnvironment.from_dict(environment.as_dict()) == environment
     json.dumps(ExecutionReport(ComputeRequest(), environment).as_dict())
+
+
+def test_environment_provenance_rejects_duplicate_metadata_keys():
+    with pytest.raises(ValueError, match="keys must be unique"):
+        ComputeEnvironment(
+            device_metadata=(("compute_capability", "12.0"),) * 2,
+        )
 
 
 def test_numeric_contracts_reject_bool_nan_and_noncanonical_values():
@@ -220,13 +261,16 @@ def test_compute_spec_registry_declares_only_lazy_phase_one_candidates():
     assert all(spec.runtime_id == "cuda-cupy" for spec in accelerator_specs)
     assert all(spec.array_domain == "cuda-cupy" for spec in accelerator_specs)
     assert compute_specs_for("gaussian_blur", include_cpu=False) == ()
-    assert len(
-        compute_specs_for(
-            "gaussian_blur",
-            include_cpu=False,
-            allow_experimental=True,
+    assert (
+        len(
+            compute_specs_for(
+                "gaussian_blur",
+                include_cpu=False,
+                allow_experimental=True,
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_compute_spec_validation_can_cross_check_a_lightweight_catalog():
