@@ -5,6 +5,15 @@ Date: 2026-07-15
 Status: capability/benchmark spike only. No production pipeline, workflow,
 batch, generated-Python, or scientific-default behavior was changed.
 
+> **Historical contract notice (2026-07-27):** retain this document's measured
+> feasibility evidence, but do not implement its old global CPU/Auto/GPU model,
+> coarse dtype declaration, universal 1.5x promotion gate, or median-first
+> delivery order. The authoritative
+> [production plan](gpu-production-implementation-plan.md) uses CPU/Auto/
+> Selective, per-node preferences and graph-global benchmarking, per-port value
+> contracts, separate Selective/Auto admission, and a Background → Median →
+> Gaussian headless first slice.
+
 ## Technical summary
 
 CuPy/CuPyX is the recommended primary GPU provider for native Windows and

@@ -146,6 +146,54 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
+### Experimental GPU Branch Environment
+
+GPU execution is currently design/development work on
+[`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
+not a supported feature in the released plugin. The first implementation phase
+will be headless and will cover Rolling-Ball/Subtract Background, median, and
+2D/3D Gaussian before the toolbar controls are exposed. See the
+[production GPU plan](docs/gpu-production-implementation-plan.md) for the
+CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
+memory, and promotion rules.
+
+Until the planned setup scripts and `GPU doctor` command land, use a dedicated
+Python 3.12 environment for native-Windows CUDA 13 development:
+
+```powershell
+py -3.12 -m venv .venv-gpu-cu13
+.\.venv-gpu-cu13\Scripts\python.exe -m pip install --upgrade pip
+.\.venv-gpu-cu13\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv-gpu-cu13\Scripts\python.exe -m pip install "cupy-cuda13x[ctk]>=14,<15"
+.\.venv-gpu-cu13\Scripts\python.exe -m pip check
+.\.venv-gpu-cu13\Scripts\python.exe -c "import cupy as cp; from cupyx.scipy import ndimage; x = cp.arange(16, dtype=cp.float32).reshape(4, 4); y = ndimage.gaussian_filter(x, 1.0); z = ndimage.median_filter(x, size=3); cp.cuda.get_current_stream().synchronize(); print(cp.cuda.runtime.getDeviceProperties(0)['name']); print(float(cp.asnumpy((y + z).sum())))"
+```
+
+The base package accepts Python 3.12 and newer, but the initial GPU development
+and validation matrix is deliberately CPython 3.12 only. A newer interpreter
+resolving the base package or CuPy is not yet a VIPP GPU support claim; each
+Python minor must pass the clean-install, real-kernel, scientific-parity, memory,
+and cleanup gates first.
+
+The `[ctk]` extra installs the CUDA components supported by CuPy, but the machine
+still needs a compatible NVIDIA driver. For CUDA 12, create a separate
+`.venv-gpu-cu12` and install `cupy-cuda12x[ctk]>=14,<15` instead. Never install
+the CUDA 12 and CUDA 13 CuPy distributions into the same environment; consult
+the [official CuPy installation matrix](https://docs.cupy.dev/en/stable/install.html)
+when selecting a track.
+
+The pinned native-Windows cuCIM skimage build remains experimental. Its current
+reproduction path is documented in the
+[cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) and
+[`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1); it omits
+Clara I/O and is not yet a user-facing install route. The builder uses its own
+temporary environment and reports the wheel path/hash; it does not install
+cuCIM into `.venv-gpu-cu13`. Phase 1 will add an explicit, verified developer-
+only wheel option to the setup/doctor path. CUDA acceleration targets
+validated Windows/Linux systems first. macOS continues to use VIPP's CPU path
+while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
+must be reported as one shared budget, not RAM plus VRAM.
+
 Run the required checks:
 
 ```bash

@@ -1,7 +1,7 @@
 # cuCIM native-Windows source-build and benchmark evaluation
 
 Date: 2026-07-15
-Status: successful research build; operation-level promotion candidate, not a
+Status: successful research build; primitive-level implementation candidate, not a
 supported dependency yet
 
 ## Bottom line
@@ -23,21 +23,29 @@ filters, feature detection, labeling, measurements, morphology, restoration,
 segmentation, and transforms. It does not provide `cucim.clara`: the native
 `libcucim/_cucim` whole-slide image-I/O library was not ported or packaged.
 
-The first benchmark gives a clear operation-level answer:
+The first benchmark gives a clear library-primitive answer:
 
-- **Promising cuCIM coverage:** rolling ball (265-529x faster end-to-end),
+- **Promising primitive coverage:** rolling ball (265-529x faster end-to-end),
   Canny (17x), region-properties tables (10x), connected components (2.8x),
-  and Otsu thresholding (2.4x) versus the CPU implementation.
+  and Otsu thresholding (2.4x) versus the CPU primitive baseline.
 - **Keep the existing CuPy path:** Gaussian, ordinary median, Sobel, and binary
   closing were within about 5-10% of their direct CuPy equivalents. The 31x31
-  uint16 histogram median reached 1.42x, just below the current 1.5x promotion
-  threshold.
+  uint16 histogram median reached a clear 1.42x primitive win that still needs
+  production-adapter crossover mapping.
 - **Do not adopt cuCIM Richardson-Lucy for speed:** it took about 4.5x as long
   as the existing explicit CuPy/CuPyX loop in both 2D and 3D.
 
 The evidence supports continuing cuCIM as a narrow provider for the operations
 where it adds substantial value. It does not support replacing CuPy as the
 primary array/runtime layer or importing all cuCIM APIs wholesale.
+
+These timings compare optional-library primitives, not complete VIPP nodes.
+Rolling-Ball/Subtract Background must additionally preserve VIPP's smoothing,
+inversion, clipping, block/channel, non-finite, dtype-restoration, progress, and
+metadata behavior. Canny, Otsu, connected-components, and measurement adapters
+likewise need their complete VIPP parameter and output-schema contracts. The
+"exact" labels below therefore describe only the recorded fixtures and cannot
+admit a production implementation by themselves.
 
 ## Windows binary search
 
@@ -131,7 +139,7 @@ NumPy version that VIPP will ship.
   operate on device arrays; and
 - **coverage comparisons**, where cuCIM supplies a GPU implementation but CuPy
   has no equivalent high-level API, so the current CPU scikit-image operation is
-  the baseline.
+  the primitive baseline. It is not necessarily the complete VIPP adapter.
 
 The standard profile used two warmups, five synchronized GPU repetitions, and
 three CPU repetitions. Resident times exclude transfers. End-to-end times
@@ -146,7 +154,7 @@ schemas, and numerical comparisons are in
 
 ## Standard benchmark results
 
-| Workload | Baseline | Baseline ms | cuCIM ms | cuCIM speedup | Value parity |
+| Primitive workload | Primitive baseline | Baseline ms | cuCIM ms | cuCIM speedup | Recorded fixture comparison |
 |---|---|---:|---:|---:|---|
 | Gaussian 2D | CuPyX Gaussian | 2.134 | 2.066 | 1.03x | exact |
 | Gaussian 3D | CuPyX Gaussian | 3.054 | 3.224 | 0.95x | exact |
@@ -191,18 +199,18 @@ provider dependency on their own.
 
 | Operation family | Decision from this host | Reason |
 |---|---|---|
-| Rolling ball/background subtraction | **Promote to wider validation** | Exact output and two-to-three orders of magnitude end-to-end benefit. |
-| Canny | **Promote to wider validation** | Exact output and 17x benefit. |
-| Connected components | **Promote to wider validation** | Exact output/schema and 2.8x benefit in both 2D and 3D. |
-| Otsu threshold | **Promote to wider validation** | Exact scalar dtype/value and 2.4x benefit. |
-| Region-properties table | **Promote with schema work** | 10x value benefit, but output dtypes differ and need an explicit adapter/overflow policy. |
-| Histogram median | **Defer** | Promising at 1.42x but below the 1.5x gate; map size/range crossover and include arbitrary-footprint fallback. |
+| Rolling ball/background subtraction | **Advance to VIPP-adapter validation** | Primitive output matched and showed two-to-three orders of magnitude benefit; the full background wrapper is not yet reproduced. |
+| Canny | **Advance to VIPP-adapter validation** | Primitive output matched with a 17x benefit; VIPP's full parameter/grayscale contract remains. |
+| Connected components | **Advance to VIPP-adapter validation** | Primitive output/schema matched with 2.8x benefit in both 2D and 3D. |
+| Otsu threshold | **Advance to VIPP-adapter validation** | Primitive scalar dtype/value matched with 2.4x benefit; VIPP's finite-value histogram policy remains. |
+| Region-properties table | **Advance with schema work** | 10x primitive benefit, but output dtypes and VIPP's production table schema need an explicit adapter/overflow policy. |
+| Histogram median | **Map production crossover** | The 1.42x primitive result is worth retaining as a Selective candidate study; compare the complete adapter and neighboring-node residency before any Auto policy. |
 | Gaussian, ordinary median, Sobel, binary morphology | **Keep CuPy** | No material cuCIM advantage on the tested workload. |
 | Richardson-Lucy | **Keep explicit CuPy** | cuCIM was about 4.5x slower and offers worse progress/cancellation control. |
-| `cucim.clara` image I/O | **Out of scope / unavailable** | Requires a separate native C++/codec port and is not needed for these operation gains. |
+| `cucim.clara` image I/O | **Deferred from Phase 1; investigate soon** | Requires a separate native C++/codec port. A named feature-completeness/upstream review should decide a maintainable full-cuCIM path rather than normalize a permanently hobbled build. |
 
-cuCIM should therefore remain an **optional narrow operation provider layered on
-CuPy**, not a replacement backend. Before release it still needs the Linux
+cuCIM should therefore remain an **optional implementation library on the CuPy
+runtime**, not a replacement array runtime. Before release it still needs the Linux
 comparison, a second Windows GPU tier, CUDA 12/13 policy, clean-install/JIT and
 memory measurements, production-schema adapters, and a decision about whether
 VIPP will maintain downstream Windows patches or seek their inclusion upstream.
@@ -221,6 +229,12 @@ $python = Join-Path $env:TEMP "napari-vipp-cucim-windows\venv\Scripts\python.exe
 & $python scripts\benchmark_cucim.py --profile smoke
 & $python scripts\benchmark_cucim.py --profile standard --output docs\benchmarks\cucim-source-windows-rtx5090-standard.json
 ```
+
+That temporary interpreter validates the standalone build; it is not VIPP's
+dedicated GPU development environment. Phase 1 must also install the emitted,
+checksum-recorded wheel through an explicit experimental option into
+`.venv-gpu-cu13` and run every production-adapter parity/benchmark test there.
+The builder must never silently mutate the application environment.
 
 The source procedure is adapted from the upstream
 [cuCIM contributor guide](https://github.com/rapidsai/cucim/blob/main/CONTRIBUTING.md#setting-up-your-build-environment),

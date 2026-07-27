@@ -48,8 +48,9 @@ reviewing VIPP itself.
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
-  defines the Windows/Linux NVIDIA path, macOS CPU contract, provider choices,
-  and release gates.
+  defines CPU/Auto/Selective behavior, per-node and graph-global benchmarking,
+  the Windows/Linux CUDA path, Apple-provider investigation, implementation-
+  library choices, installation UX, and release gates.
 - [cuCIM native-Windows port plan](cucim-windows-port-plan.md) defines the
   upstream-tracking fork, MSVC/Clara port, CUDA/Python wheel matrix, validation,
   distribution, installation, and upstream contribution work.
@@ -60,9 +61,10 @@ reviewing VIPP itself.
   measurement goals.
 - Optional GPU backend research is intentionally isolated on the
   [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
-  branch. Main remains the CPU production baseline; that branch contains
-  feasibility benchmarks, cross-platform provider evidence, and future-looking
-  implementation plans rather than a supported GPU execution mode.
+  branch, which has absorbed current `main` while development remains separate.
+  Main remains the CPU production baseline; the GPU branch contains feasibility
+  evidence and an implementation-ready headless Phase 1 plan, not a supported
+  GPU execution mode yet.
 
 ## Implementation Records
 

@@ -1,5 +1,6 @@
 .venv/
 .venv-macos/
+.venv-gpu-*/
 .pytest_cache/
 .ruff_cache/
 .cache/

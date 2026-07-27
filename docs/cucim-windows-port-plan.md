@@ -1,6 +1,7 @@
 # cuCIM native-Windows port and distribution plan
 
 Date: 2026-07-16
+Product-matrix revision: 2026-07-27
 Status: approved planning direction; the existing `cucim.skimage` wheel remains
 research evidence and no downstream cuCIM package is a supported VIPP
 dependency yet.
@@ -77,12 +78,12 @@ The maintenance rules are:
 | Dimension | Initial target |
 | --- | --- |
 | Operating system | Native 64-bit Windows 10/11 on x86-64 |
-| Python | CPython 3.11, 3.12, 3.13, and 3.14 |
+| Python | CPython 3.12 first as the GPU-validation ABI; VIPP's base metadata accepts 3.12 and newer, but each later minor needs its own GPU admission evidence |
 | CUDA packaging | Separate CUDA 12.x and CUDA 13.x distributions |
 | GPU vendor | NVIDIA only |
 | Validation devices | RTX 5090/Blackwell and RTX 4060 Laptop/Ada initially |
 | Linux | Continue to use and compare against official upstream packages |
-| macOS | No NVIDIA execution; VIPP remains CPU-only |
+| macOS | No NVIDIA execution; VIPP uses CPU initially while a separate Apple provider is investigated |
 
 CUDA 12 and CUDA 13 must remain distinct package tracks because
 `cupy-cuda12x` and `cupy-cuda13x` conflict. CUDA 12 supplies the broader driver
@@ -185,10 +186,12 @@ but no Clara native library. The current CPython 3.12 tag is produced by
 upstream packaging that assumes a vendored native extension. It must not be
 changed by renaming the wheel or editing metadata after the build.
 
-For the first preview release, build and test explicit Python-minor wheels for
-all admitted Python/CUDA combinations. An ABI-independent skimage-only wheel may
-be considered later after the build metadata is corrected and all supported
-Python versions prove identical behavior.
+For the first preview release, prove CPython 3.12/CUDA 13, then CPython
+3.12/CUDA 12. An ABI-independent skimage-only wheel may be considered later
+after the build metadata is corrected and each additional base-compatible Python
+minor proves identical behavior. Do not treat the base package's open-ended
+`>=3.12` metadata as GPU evidence or create an unused ABI matrix ahead of named
+GPU support.
 
 ### 4.2 Full wheel with Clara
 
@@ -203,14 +206,14 @@ CPython-ABI-specific. Its required payload is expected to include:
 - no bundled duplicate of a dependency DLL when the declared nvImageCodec/CUDA
   package supplies and owns that DLL.
 
-The initial full release matrix is eight wheels:
+The initial VIPP qualification matrix is two wheels:
 
 | Python | CUDA 12 | CUDA 13 |
 | --- | --- | --- |
-| 3.11 | `cp311-cp311-win_amd64` | `cp311-cp311-win_amd64` |
 | 3.12 | `cp312-cp312-win_amd64` | `cp312-cp312-win_amd64` |
-| 3.13 | `cp313-cp313-win_amd64` | `cp313-cp313-win_amd64` |
-| 3.14 | `cp314-cp314-win_amd64` | `cp314-cp314-win_amd64` |
+
+Additional ABI wheels are built only when VIPP supports that Python version or
+when the downstream cuCIM distribution has an independently justified audience.
 
 Each CUDA track depends on exactly one matching CuPy distribution with `[ctk]`
 and the matching nvImageCodec CUDA-major package. A clean user environment must
@@ -273,13 +276,18 @@ does not port `libcucim` or Clara by itself.
 - Correct classifiers, dependency extras, package name, feature declarations,
   and console entry points.
 - Ensure Clara is reported as unavailable rather than exposing a broken CLI.
-- Parameterize the builder for Python 3.11-3.14 and CUDA 12/13.
+- Parameterize the builder for Python 3.12 with CUDA 13 and CUDA 12; leave the
+  ABI dimension data-driven for later product-supported versions.
+- Reproduce the current experimental NVCC 13.3 result with the toolkit minor
+  documented by the selected CuPy release (13.2 for the pinned CuPy 14.1.1
+  evidence) before advertising CUDA 13 support.
 - Add deterministic source pins, artifact manifests, checksums, and clean-install
   probes.
 
 **Acceptance**
 
-- Eight preview wheel jobs build from clean checkouts.
+- Both CPython 3.12 preview wheel jobs build from clean checkouts, with CUDA 13
+  validated first and CUDA 12 second.
 - Each wheel installs in a clean environment with only the driver as a system
   prerequisite and executes representative real CUDA kernels.
 - `cucim.is_available("skimage")` is true and Clara capability is false with an
@@ -380,11 +388,13 @@ does not port `libcucim` or Clara by itself.
 - Performance is measured, but correctness and safety remain release blockers
   even when the speedup is large.
 
-### Phase 6 — Expand the ABI/CUDA matrix
+### Phase 6 — Qualify CUDA 12 and expand supported ABIs when needed
 
 **Work**
 
-- Expand the proven Python 3.12/CUDA 13 native build to all eight release jobs.
+- Expand the proven Python 3.12/CUDA 13 native build to Python 3.12/CUDA 12.
+- Add another Python ABI only after VIPP supports it or a separately approved
+  downstream distribution requirement exists.
 - Add CUDA-major-specific dependency constraints and conflict detection.
 - Run clean install, uninstall, repair, and upgrade tests.
 - Verify the CUDA 12 build on the two available validation devices and add an
@@ -393,7 +403,8 @@ does not port `libcucim` or Clara by itself.
 
 **Acceptance**
 
-- All eight wheels build, install, import, and pass the required test tiers.
+- Both initial wheels build, install, import, and pass the required test tiers;
+  every later ABI is held to the same gates before advertisement.
 - One environment can never contain both CuPy CUDA-major packages or both
   upstream and downstream cuCIM distributions without a clear resolver error.
 - Wheel inspection finds no absolute build paths, undeclared DLLs, debug
@@ -432,7 +443,7 @@ does not port `libcucim` or Clara by itself.
 | Package smoke | Every Windows-port PR | Clean wheel install/import/uninstall without developer tools on PATH |
 | GPU smoke | Trusted/self-hosted PR or queued validation | CuPy kernel, skimage kernels, CuImage CUDA region read, synchronization |
 | Full GPU/WSI | Scheduled and release candidate | Upstream selected tests, WSI corpus, concurrency, leak, memory and benchmark suites |
-| Matrix release | Release candidate | Python 3.11-3.14 by CUDA 12/13, artifact inspection and install scripts |
+| Matrix release | Release candidate | Every advertised Python/CUDA pair (initially Python 3.12 by CUDA 12/13), artifact inspection, and install scripts |
 | Linux parity | Release candidate | Official Linux cuCIM on shared scientific and WSI fixtures |
 
 GitHub-hosted Windows runners may build artifacts and run non-GPU tests. They
@@ -549,7 +560,8 @@ package and individual VIPP operation admission remain independently removable.
 The Windows cuCIM port is complete only when:
 
 - the fork and upstream synchronization process are documented and exercised;
-- all eight full wheels build reproducibly from a downstream release tag;
+- every advertised full wheel (initially CPython 3.12 for CUDA 12 and CUDA 13)
+  builds reproducibly from a downstream release tag;
 - clean Windows environments install without a compiler or system CUDA Toolkit;
 - skimage and Clara capability probes pass on both initial validation devices;
 - the required whole-slide corpus passes Windows/Linux parity, concurrency,

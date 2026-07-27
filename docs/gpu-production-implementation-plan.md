@@ -1,6 +1,7 @@
 # Production GPU implementation plan
 
 Date: 2026-07-15
+Product-direction revision: 2026-07-27
 Status: implementation-ready architecture and delivery plan; no production GPU
 operation is enabled by this document.
 Cross-platform review: 2026-07-15
@@ -14,39 +15,61 @@ changing current CPU results by accident. It is grounded in the current
 `PrototypePipeline`, detached `PipelineRunRequest`, host-only interactive cache,
 batch manifest, workflow v3, and generated-Python contracts.
 
-The following constraints are non-negotiable:
+The following constraints and approved product directions are non-negotiable:
 
 - VIPP's base installation and CPU execution are supported on Windows, macOS,
   and Linux. NVIDIA GPU execution is supported only on native Windows and
   supported Linux distributions. macOS is CPU-only for the NVIDIA-only phase.
-- CuPy/CuPyX is the first production GPU provider. cuCIM remains a separately
-  gated candidate. A follow-up pinned source evaluation established a native-
-  Windows `cucim.skimage` wheel and material benefits for selected operations,
-  but not the native `cucim.clara` layer or the required Linux/multi-device,
-  memory, cancellation, and packaging matrix. The separate
-  [cuCIM Windows port plan](cucim-windows-port-plan.md) owns the proposed thin
-  upstream-tracking fork, native Clara port, wheel matrix, CI, installation,
-  and upstreaming work. PyTorch remains out of scope for this operation family.
+- The main toolbar exposes three execution modes: `CPU`, `Auto (best
+  available)`, and `Selective`. New interactive sessions default to `Auto`.
+  `Selective` exposes an authored per-node preference (`Auto`, `CPU`, `Best
+  GPU`, an implementation library such as `CuPyX`/`cuCIM`, or an exact validated
+  implementation) and the
+  node/pipeline benchmark actions described below. Older workflows and callers
+  remain CPU until they explicitly adopt the new execution contract.
+- CuPy owns the first CUDA runtime/array substrate. CuPyX and cuCIM are
+  implementation libraries that may share that substrate only when zero-copy
+  array, stream, device, allocator, and lifetime interoperability is proved.
+  cuCIM is admitted operation by operation, initially for high-value skimage
+  functions. `cucim.clara` is temporarily outside the first compute milestone,
+  but a time-boxed feature-complete Windows/Clara investigation is a named
+  near-term deliverable rather than an indefinite omission. PyTorch remains out
+  of the initial CUDA operation family; Metal/MPS and MLX are later Apple-
+  accelerator research candidates behind the same provider contracts.
 - The base installation, plugin discovery, workflow loading, generated Python,
   and CPU execution must work without importing an optional GPU package.
 - `core/` remains free of Qt and napari imports. Qt presents decisions; it does
-  not make backend, fallback, memory, or scientific-parity decisions.
+  not make implementation, fallback, memory, or scientific-parity decisions.
 - Existing CPU functions in `core/operations.py` remain the scientific
   reference. A GPU path must not change an algorithm, default, boundary mode,
   dtype conversion, initialization, PSF rule, clipping rule, or axis meaning.
-- A CuPy array may exist only inside the provider execution scope. It must not
+- A device array may exist only inside the runtime execution scope. It must not
   appear in `PrototypePipeline.outputs`, `node_outputs`, a `SourcePayload`, a
   napari layer, an exported result, or a batch writer.
 - RTX 4050 measurements are evidence for ordering and feasibility, not a
   universal `Auto` policy. Unknown workload-policy regions resolve to CPU.
-- GPU work is introduced behind contracts and promotion gates. Median is the
-  first production operation; Gaussian, RL, and RL-TV follow in that order.
+- GPU work is introduced behind contracts and promotion gates. The first
+  headless vertical slice covers Subtract Background/Rolling-Ball Background,
+  median, and 2D/3D Gaussian. Ordinary RL, RL-TV, Otsu, Canny, connected
+  components, region measurements, and other reasonable nodes follow quickly
+  in evidence-driven families.
+- Capability declarations are dtype-explicit and designed for bool, common
+  microscopy integers, float32, float64, and non-finite policies from the
+  beginning. A provider may still expose only the dtype/parameter regions that
+  have passed parity and memory gates; unsupported regions use a visible CPU
+  decision or fallback rather than an implicit conversion.
+- Benchmarking is transactional and scientific: it never runs writers or other
+  side effects, never changes live caches until the user accepts a choice, and
+  excludes an implementation immediately if the candidate output fails its
+  parity policy.
 - Existing unrelated working-tree changes, especially the current graph,
   parameter-visibility, toolbar, and axis-semantics work, must be preserved.
 
-The minimum delivery is eleven passes, numbered 0 through 10. Pass 10 is an
-umbrella for separately reviewed operation promotions, so the eventual PR count
-will be greater than eleven.
+Delivery remains split into small reviewable passes. Phase 1 groups the
+headless contracts, execution/benchmark substrate, reproducible developer
+environments, and the first three operation families. Later phases add the
+interactive controls, persistence/batch/export surfaces, deconvolution and
+segmentation waves, broader node coverage, and release-grade platform gates.
 
 ### Cross-platform support contract
 
@@ -65,9 +88,10 @@ The supported product matrix is:
 | Surface | Windows | Linux | macOS |
 | --- | --- | --- | --- |
 | Base VIPP install, import, CPU execution, workflows, batch, and generated Python | Required and tested | Required and tested | Required and tested |
-| NVIDIA GPU execution | Native CuPy/CUDA path on validated x86-64 environments | CuPy/CUDA path on validated NVIDIA-supported glibc distributions and architectures | Not available; `Auto` selects CPU and explicit `GPU` fails preflight with a platform reason |
+| NVIDIA GPU execution | Native CuPy/CUDA path on validated x86-64 environments | CuPy/CUDA path on validated NVIDIA-supported glibc distributions and architectures | Not available; `Auto` uses CPU, Selective visible fallback uses CPU with a warning, and strict CUDA selection fails preflight |
 | GPU package installation | Platform-marked optional extra | Platform-marked optional extra | CUDA packages are not resolved or installed |
-| Saved GPU-authored workflow | Opens portably; execution follows backend/fallback contract | Opens portably; execution follows backend/fallback contract | Opens portably; CPU session override or authored `Auto` is required to run |
+| Saved implementation preferences | Open portably; resolve against the current environment and fallback policy | Open portably; resolve against the current environment and fallback policy | Open portably; CUDA preferences are unavailable and resolve/fail according to the recorded policy |
+| Apple GPU research | Not applicable | Not applicable | M1 Max validation host; evaluate a Metal/MPS or MLX runtime after the CUDA substrate is stable, without promising parity or coverage before evidence exists |
 
 This plan does not claim support for every Linux distribution. The release
 matrix must name the tested glibc distributions and architectures. A platform
@@ -90,7 +114,7 @@ Dependency admission follows these rules:
 4. A provider with a narrower binary-package matrix than CuPy may remain an
    evaluation candidate when upstream documents a source build. It becomes a
    production option only after reproducible builds, package artifacts, real-
-   device probes, scientific parity, and material performance benefit are shown
+   device probes, scientific parity, and operation-level value are shown
    on every Windows/Linux target where VIPP would advertise that provider.
 
 Current provider audit:
@@ -99,8 +123,9 @@ Current provider audit:
 | --- | --- | --- | --- | --- |
 | NumPy, SciPy, scikit-image | Existing CPU stack | Existing CPU stack | Existing CPU stack | Keep as the cross-platform scientific reference |
 | CuPy/CuPyX 14 + CUDA 12/13 components | Official wheels; source build possible with a supported CUDA toolchain | Official x86-64/aarch64 wheels; source build possible on validated CUDA/glibc targets | No current CUDA runtime or CuPy wheel | Allow only as a lazy, platform-marked Windows/Linux optional provider |
-| cuCIM/RAPIDS | No official wheel; pinned `v26.06.00` Python/skimage source wheel reproduced on one native-Windows RTX 5090 host with small downstream patches; native Clara I/O is not in that wheel and requires the separate Windows port | Official wheels and Ubuntu-tested source instructions; named target validation still required | No CUDA runtime | Continue as a narrow operation candidate while the [Windows port plan](cucim-windows-port-plan.md) evaluates maintainable full packaging and Clara support; the current result advances but does not complete Pass 9 |
-| PyTorch | Package available; CUDA builds available | Package available; CUDA builds available | Package available with CPU/Metal, not NVIDIA CUDA | Do not select: it cannot provide NVIDIA CUDA on macOS and adds a second large runtime/API without filling the current coverage gap |
+| cuCIM/RAPIDS | No official wheel; pinned `v26.06.00` Python/skimage source wheel reproduced on one native-Windows RTX 5090 host with small downstream patches; native Clara I/O is not in that wheel and requires the separate Windows port | Official wheels and Ubuntu-tested source instructions; named target validation still required | No CUDA runtime | Continue as a narrow implementation-library candidate while the [Windows port plan](cucim-windows-port-plan.md) evaluates maintainable full packaging and Clara support; the current result advances but does not complete Pass 9 |
+| PyTorch | Package available; CUDA builds available | Package available; CUDA builds available | Package available with CPU/Metal, not NVIDIA CUDA | Do not add it to the initial CUDA substrate: it is a second large runtime with unproved VIPP operation coverage. Retain MPS as one candidate for the separate Apple feasibility study |
+| Apple Metal/MPS or MLX | Not applicable | Not applicable | Native Apple-silicon acceleration with unified memory is technically possible | Investigate after Phase 1 as a separate runtime provider; admit only operation families that preserve VIPP semantics and materially outperform the M1 Max CPU path |
 
 Platform claims must be rechecked before changing dependency ranges or cutting
 a GPU release. The primary sources are the
@@ -108,7 +133,8 @@ a GPU release. The primary sources are the
 [RAPIDS system requirements](https://docs.rapids.ai/install/),
 [cuCIM source-build guide](https://github.com/rapidsai/cucim/blob/main/CONTRIBUTING.md#setting-up-your-build-environment),
 [PyTorch local installation matrix](https://docs.pytorch.org/get-started/locally/),
-and [PyTorch's macOS Metal backend](https://docs.pytorch.org/docs/stable/notes/mps).
+the [PyTorch macOS Metal backend](https://docs.pytorch.org/docs/stable/notes/mps),
+and [MLX unified-memory model](https://ml-explore.github.io/mlx/build/html/usage/unified_memory.html).
 
 ### Native-Windows cuCIM evidence snapshot
 
@@ -136,6 +162,12 @@ The pinned source result was:
 | Clean reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
 | Selected upstream tests | Complete median file: 707 passed, 4 skipped; other selected operation tests: 172 passed, 8 skipped, 6 deselected |
 
+The successful build used an NVCC 13.3 compiler with a 13.2 runtime. Keep that
+as experimental evidence; before advertising the track, reproduce it with a
+toolkit minor documented as supported by the selected CuPy release (currently
+13.2 for the pinned CuPy 14.1.1 evidence) or obtain reviewed newer-version
+support evidence.
+
 The clean build required three downstream adaptations: put Git for Windows'
 `which.exe` on `PATH` for `rapids-build-backend`; replace the materialized
 relative `VERSION` symlink and include it in the wheel; and replace one
@@ -144,67 +176,72 @@ strict NumPy 2.5 compatibility. These are packaging/build-compatibility changes,
 not image-processing formula changes. The reproducible builder is
 [`scripts/build_cucim_windows.ps1`](../scripts/build_cucim_windows.ps1).
 
-The synchronized RTX 5090 standard benchmark produced this operation-level
-evidence. Times include one input and output transfer. A speedup above 1 means
-cuCIM was faster than the named baseline.
+The synchronized RTX 5090 standard benchmark produced primitive-level
+feasibility evidence. Times include one input and output transfer. A speedup
+above 1 means cuCIM was faster than the named primitive baseline; none of these
+rows is production-node admission.
 
-| Operation | Best admitted baseline | cuCIM end-to-end speedup | Result |
+| Primitive workload | Comparison baseline | cuCIM end-to-end speedup | Result |
 | --- | --- | ---: | --- |
-| Rolling ball 2D / 3D | scikit-image CPU | **265.46x / 528.66x** | Exact fixture output; advance to wider validation |
-| Canny 2D | scikit-image CPU | **17.03x** | Exact; advance |
-| Region-properties table | scikit-image CPU | **10.49x** | Exact values; dtype/schema adapter and overflow policy required |
-| Connected components 2D / 3D | scikit-image CPU | **2.87x / 2.84x** | Exact values and `int32` output; advance |
-| Otsu threshold 2D | scikit-image CPU | **2.38x** | Exact `float32` scalar; advance |
-| uint16 31x31 histogram median | CuPyX median | 1.42x | Exact but below the 1.5x gate; defer and map crossover |
+| Rolling ball 2D / 3D | scikit-image CPU primitive | **265.46x / 528.66x** | Fixture matched; advance to complete VIPP-adapter validation |
+| Canny 2D | scikit-image CPU primitive | **17.03x** | Fixture matched; advance to complete VIPP-adapter validation |
+| Region-properties table | scikit-image CPU primitive | **10.49x** | Fixture values matched; full VIPP schema/overflow adapter required |
+| Connected components 2D / 3D | scikit-image CPU primitive | **2.87x / 2.84x** | Fixture values and `int32` output matched; advance to complete adapter validation |
+| Otsu threshold 2D | scikit-image CPU primitive | **2.38x** | Fixture `float32` scalar matched; advance to VIPP histogram/mask validation |
+| uint16 31x31 histogram median | CuPyX median | 1.42x | Exact primitive result; map the production-adapter crossover before Auto admission |
 | Gaussian 2D / 3D | CuPyX Gaussian | 1.03x / 0.95x | Exact; keep CuPy |
 | float32 5x5 median | CuPyX median | 1.08x | Exact; keep CuPy |
 | Sobel / binary closing | normalized CuPyX composition | 0.98x / 1.01x | Equivalent; keep CuPy |
 | Richardson-Lucy 2D / 3D | explicit CuPyX loop | 0.22x / 0.22x | Allclose but about 4.5x slower; keep explicit CuPy |
 
-All 15 benchmark fixtures passed the recorded numerical comparison. The
-region-properties values matched but cuCIM returned narrower area, label, and
-bounding-box dtypes than the CPU public table. The fast histogram median also
+All 15 primitive benchmark fixtures passed the recorded numerical comparison.
+The region-properties values matched but cuCIM returned narrower area, label,
+and bounding-box dtypes than the scikit-image baseline table. The fast histogram median also
 requires a dense rectangular footprint. Both constraints must remain explicit
 support-policy checks rather than silent behavior changes.
 
 This evidence changes cuCIM from “Windows feasibility unknown” to “promising
-narrow Windows operation provider.” It does not admit a production dependency.
+narrow Windows implementation-library candidate.” It does not admit a
+production dependency or a VIPP node.
 Pass 9 still requires supported-Linux builds, another Windows GPU tier, CUDA
 policy, clean-install/JIT and memory measurements, cancellation behavior,
 schema adapters, and optional-extra/CI maintenance. The upstream-versus-
 downstream strategy and a bounded attempt to port native Clara are now specified
-in the [cuCIM Windows port plan](cucim-windows-port-plan.md). macOS remains
-CPU-only because it has no current NVIDIA CUDA runtime.
+in the [cuCIM Windows port plan](cucim-windows-port-plan.md). macOS uses the CPU
+path initially because it has no NVIDIA CUDA runtime while a separate Apple
+Metal/MPS/MLX provider is investigated.
 
 ## 1. Target architecture
 
 ### 1.1 Components and ownership
 
-The target keeps graph definition, scientific CPU functions, provider code,
+The target keeps graph definition, scientific CPU functions, runtime/
+implementation code,
 execution policy, and UI presentation separate.
 
 | Component | Proposed owner | Responsibility |
 | --- | --- | --- |
-| Compute request and result contracts | `core/compute.py` | Immutable user intent, selected device, fallback permission, precision policy, per-node decisions, typed reason codes, and JSON-safe reports. |
-| Operation implementation declarations | `core/compute_specs.py` | Immutable declarations associated with operation IDs. Contains no implementation callable and imports no provider. Validates that declared operation IDs exist in `NODE_LIBRARY`. |
-| Provider registry and protocols | `core/compute_registry.py` | Lazy provider descriptors, entry-point discovery, provider protocol, instance lifetime, capability probing, and implementation lookup by stable ID. |
-| Workload policy | `core/compute_policy.py` plus packaged JSON under `src/napari_vipp/compute_policies/` | Deterministic support and benefit decisions from workload, topology, environment, and validated threshold records. CPU is the conservative answer outside a validated region. |
-| Graph planning | `core/device_execution.py` | Scheduled-node closure, support resolution, maximal GPU segment construction, boundary transfers, liveness, memory preflight, fallback planning, and execution reports. |
+| Compute request and result contracts | `core/compute.py` | Immutable `CPU`/`Auto`/`Selective` intent, per-node preferences, strict/visible fallback policy, selected device, precision policy, typed reason codes, and JSON-safe reports. |
+| Operation implementation declarations | `core/compute_specs.py` | Immutable declarations associated with operation IDs. Each CPU/CuPy/cuCIM/future implementation declares its runtime, exact dtype/parameter region, parity, memory, progress, and benchmark contracts without importing optional packages. |
+| Runtime and implementation registry | `core/compute_registry.py` | Lazy runtime descriptors, entry-point discovery, instance lifetime and capability probing, plus implementation lookup by stable ID. It distinguishes an array runtime (`numpy`, `cuda-cupy`, future `metal-*`) from an implementation library (`cpu`, `cupyx`, `cucim`). |
+| Workload policy | `core/compute_policy.py` plus packaged JSON under `src/napari_vipp/compute_policies/` | Deterministic support and benefit decisions from workload, topology, environment, reviewed thresholds, and non-stale local benchmark records. CPU is conservative outside a validated region. |
+| Graph planning | `core/device_execution.py` | Scheduled-node closure, implementation assignment, maximal same-runtime device segments, runtime-transition costs, boundary transfers, liveness, memory preflight, fallback planning, and execution reports. |
 | CPU/GPU call preparation | a small extraction from `core/pipeline.py` into `core/node_execution.py` | Build validated operation inputs/kwargs and apply existing metadata transforms once, independent of the chosen implementation. The CPU path uses the same extraction. |
-| Built-in CuPy provider | `core/gpu/cupy_provider.py` | Lazy CuPy import, real device probe, device/context and private-pool scope, transfer/synchronization primitives, OOM classification, cleanup, and environment identity. |
-| CuPy implementations | one module per promoted family under `core/gpu/` | Pure provider operations accepting and returning device arrays. They mirror current CPU semantics and expose no UI behavior. |
+| Built-in CUDA/CuPy runtime | `core/gpu/cupy_runtime.py` | Lazy CuPy import, real device probe, device/context and private-pool scope, transfer/synchronization primitives, OOM classification, cleanup, environment identity, and verified sharing rules for cuCIM implementations. |
+| GPU implementations | one family-owned module per implementation library under `core/gpu/` | Pure CuPyX or cuCIM operations accepting and returning runtime-owned device arrays. They mirror current CPU semantics and expose no UI behavior. |
+| Benchmark and optimizer service | new `core/compute_benchmark.py` | Transactional node benchmarking, local fingerprinted result storage, parity-before-timing checks, cold/warm timing, and whole-pipeline assignment that includes transfers, residency, runtime switches, and memory. |
 | Capability/policy diagnostics | `core/compute_diagnostics.py` | JSON-safe support report, installation diagnosis, policy explanation, memory snapshot, and recent execution/fallback information. |
-| Single-run service | `core/execution.py` | The only application execution entry point after Pass 4. It validates a detached workflow, creates a plan, executes it, and returns host outputs plus provenance. |
-| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Global backend control, device/status text, node support explanations, decision/fallback display, and install guidance. No provider import or policy logic. |
-| Batch integration | `core/batch.py`, `core/batch_setup.py`, and existing `ui/batch*` adapters | Persist the run request, reuse the core execution service per item, checkpoint decisions in manifests, cancel safely, and clean the provider at item/run boundaries. |
-| Workflow and generated Python | `core/workflow.py`, `core/export.py` | In Pass 8 only: persist portable backend intent, migrate v3 to CPU intent, expose explicit runtime override, and return/write provenance. |
+| Single-run service | `core/execution.py` | Introduced as the mandatory headless/device execution entry in Pass 1, then made the only interactive application entry in Pass 4. It validates a detached workflow, plans, executes, and returns host outputs plus provenance. |
+| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Selective node preferences, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
+| Batch integration | `core/batch.py`, `core/batch_setup.py`, and existing `ui/batch*` adapters | Persist the run request, reuse the core execution service per item, checkpoint decisions in manifests, cancel safely, and clean runtime state at item/run boundaries. |
+| Workflow and generated Python | `core/workflow.py`, `core/export.py` | Persist portable global mode and per-node preferences, not machine timings or resolved hardware; migrate v3 safely, expose explicit runtime overrides, and return/write provenance. |
 
-`core/pipeline.py` is already large and has active unrelated changes. Provider
+`core/pipeline.py` is already large and has active unrelated changes. Accelerator
 callables must not be added there. The preferred association is an immutable
 side table in `core/compute_specs.py`, keyed by operation ID and validated
 against `NODE_LIBRARY_BY_ID`. `OperationSpec` remains the source of graph and
 scientific-call metadata; `compute_specs_for(operation_id)` is the source of
-backend implementations. This avoids importing provider code from the node
+compute implementations. This avoids importing optional implementation code from the node
 library and lets operation-family agents edit separate declaration blocks.
 
 ### 1.2 Core value objects
@@ -212,18 +249,37 @@ library and lets operation-family agents edit separate declaration blocks.
 The public contracts should settle on these concepts before an operation is
 promoted:
 
-- `ComputeRequest`: global backend intent (`cpu`, `auto`, or `gpu`), fallback
-  permission, selected provider/device, precision-policy ID, workload-policy
-  ID, minimum speedup, GPU cap, and safety reserve. It has no Qt types.
-- `ComputeEnvironment`: detected provider, provider version, driver/runtime,
-  device identity/class, memory, OS execution mode, and probe status.
-- `OperationComputeSpec`: one immutable declared implementation and its exact
-  support/parity/memory/progress constraints.
+- `ComputeRequest`: global mode (`cpu`, `auto`, or `selective`), immutable
+  node-ID-to-preference mapping, visible/strict fallback policy, selected
+  runtime/device, precision-policy ID, workload-policy ID, accelerator-memory
+  budget, and safety reserve. It has no Qt types.
+- `NodeComputePreference`: `auto`, `cpu`, `best_gpu`, an implementation-library
+  preference such as `cupyx`/`cucim`, or an advanced stable implementation ID.
+  Preferences are retained while another global mode is active but ignored
+  outside Selective.
+- `ComputeEnvironment`: detected runtimes and implementation libraries,
+  versions, driver/runtime, Python implementation/minor/ABI tag, device
+  identity/class, discrete/unified memory topology, OS execution mode, and probe
+  status.
+- `OperationComputeSpec`: one immutable declared implementation and its runtime,
+  public/input/internal dtypes, conversion policy, support/parity/memory/
+  progress constraints, and stable implementation/library IDs.
+- `ArrayFacts`: revision-keyed per-port facts needed by support/performance
+  policy, including finite counts, min/max/range, label maximum/count,
+  foreground density where relevant, strides/contiguity, and guarantees
+  propagated by upstream contracts. Facts are complete for any scientific
+  exclusion; sampled facts may inform performance only and are labelled.
 - `WorkloadDescriptor`: operation, resolved dimensions, shapes, dtypes,
-  parameters, topology/transfer facts, device/host tiers, and available memory.
-- `NodeExecutionDecision`: requested and resolved backend, implementation,
-  policy record, reason code/text, estimate, and whether a fallback occurred.
-- `ExecutionSegment`: a host node or a maximal connected GPU sub-DAG with
+  parameters, `ArrayFacts`, topology/transfer facts, device/host tiers, and
+  available memory, including the cost of any required fact scan.
+- `BenchmarkRecord`: environment/workload fingerprints, candidates, cold and
+  warm synchronized samples, parity result, memory observations, expiry rules,
+  and artifact/policy versions. Raw timings are local environment data.
+- `NodeExecutionDecision`: global mode, node preference, resolved runtime and
+  implementation, policy/benchmark record, reason code/text, estimate, and
+  whether a fallback occurred.
+- `ExecutionSegment`: a host node or a maximal connected same-runtime device
+  sub-DAG with
   entry/exit ports, retained ports, liveness counts, and a memory estimate.
 - `ExecutionPlan`: immutable ordered segments plus environment and decisions.
 - `ExecutionProvenance`: run-level environment and per-node records, cache-key
@@ -238,15 +294,16 @@ device array.
 
 ```mermaid
 flowchart TD
-    U["User selects CPU, Auto, or GPU"] --> UI["Qt presentation captures ComputeRequest"]
+    U["User selects CPU, Auto, or Selective"] --> UI["Qt presentation captures ComputeRequest"]
+    S["Selective node preferences or benchmark actions"] --> UI
     UI --> R["PipelineRunRequest with detached workflow and host snapshots"]
     R --> V["Qt-free workflow, source, axis, grid, and manual/dirty validation"]
     V --> C["Lazy capability and environment snapshot"]
-    C --> P["Workload policy and graph segment planner"]
-    P --> M["GPU and host-memory preflight"]
+    C --> P["Policy, local benchmark evidence, and whole-graph planner"]
+    P --> M["Accelerator and host-memory preflight"]
     M --> E["Segment executor"]
     E -->|"host segment"| CPU["Existing CPU operation functions"]
-    E -->|"GPU segment"| GPU["Lazy provider registry and CuPy implementations"]
+    E -->|"device segment"| GPU["Lazy runtime plus CuPyX/cuCIM implementation"]
     GPU --> B["Host materialization only at declared boundaries"]
     CPU --> H["Host-only result store"]
     B --> H
@@ -255,9 +312,9 @@ flowchart TD
     PR --> O
 ```
 
-Preflight is complete before a scientific or side-effecting node runs. An
-explicit GPU request that cannot be honored therefore fails without partial
-graph execution. GPU segments are execution transactions: device values and
+Preflight is complete before a scientific or side-effecting node runs. A strict
+Selective preference that cannot be honored therefore fails without partial
+graph execution. Device segments are execution transactions: device values and
 provisional host copies are committed to the public host result store only
 after the whole segment succeeds. This makes one-time CPU retry after a GPU OOM
 safe and prevents duplicate side effects.
@@ -266,94 +323,141 @@ safe and prevents duplicate side effects.
 
 ### 2.1 User-visible meanings
 
-| Request | Exact behavior |
+| Toolbar mode | Exact behavior |
 | --- | --- |
-| `CPU` | Do not probe or import a GPU provider for execution. Every scientific operation uses the current CPU implementation. CPU remains the default for a new or migrated workflow. |
-| `Auto` | Probe lazily, reject unsupported or unvalidated regions, and choose GPU only where a shipped policy predicts at least the configured minimum end-to-end speedup and memory preflight passes. Mixed CPU/GPU graphs are allowed. Choosing CPU is a normal Auto decision, not a fallback. An attempted GPU segment that encounters a classified OOM may be cleaned up and retried once on CPU; that retry is a visible fallback. |
-| `GPU` | Require every scheduled scientific compute node to have a validated GPU implementation for its actual inputs and parameters. Source, output, save, and explicit host-boundary infrastructure nodes are exempt. Preflight fails closed if any scheduled scientific node is unsupported, the provider is unavailable, or memory is insufficient. No CPU work starts after such a failure. |
-| `GPU` with explicit fallback | Unsupported scientific nodes may run on CPU and compatible nodes may form GPU segments. Provider-unavailable and classified OOM cases may retry on CPU once. Every affected node and the run summary record the fallback. Unclassified CUDA/provider errors still fail. |
+| `CPU` | Do not discover, probe, or import an accelerator runtime for execution. Every scientific operation uses the current CPU implementation. This is the compatibility/reproduction mode and the migration result for workflow v3. |
+| `Auto (best available)` | Default for new interactive sessions. Lazily discover usable implementations and choose CPU, CuPyX, cuCIM, or a future validated provider per node while optimizing the complete scheduled graph. The choice includes transfer/runtime-switch cost, device residency, memory, cold-start state, and confidence. CPU is a normal Auto decision, not fallback. |
+| `Selective` | Show a compute preference for every implemented node: `Auto`, `CPU`, `Best GPU`, an implementation-library choice such as `CuPyX` or `cuCIM`, and an advanced exact implementation choice when more than one exists. Unimplemented nodes remain visibly CPU. Preferences are planned together, so the UI may explain that a locally faster node would make the complete pipeline slower by forcing a transfer/runtime boundary. |
 
-`Auto` CPU selection and GPU fallback must have different machine-readable
+New sessions default to Auto even when no accelerator package is installed. In
+that environment Auto runs normally on CPU, the toolbar status says that GPU
+acceleration is not installed, and diagnostics offer one copyable command for
+the compatible optional extra. Absence of an optional package is not an error.
+
+`Auto` CPU selection and runtime fallback have different machine-readable
 states. Use `decision_kind=policy_cpu` for the former and
 `decision_kind=fallback_cpu` plus `fallback_reason` for the latter. The spike's
-current `BackendSelection.fell_back=True` for an unsupported Auto operation
-should be corrected during Pass 0.
+current `BackendSelection.fell_back=True` for an unsupported Auto operation and
+its eager capability detection before an explicit CPU decision are corrected
+during Pass 0.
 
-### 2.2 Global versus per-node choice
+### 2.2 Selective choices and fallback
 
-Production scope has one global request per run. There is no per-node user
-override in passes 0-10. `Auto` still resolves individual nodes because that is
-policy, not authored per-node intent. A per-node UI would complicate graph
-portability, cache identity, batch configuration, generated signatures, and
-explicit-GPU fail-closed semantics without a demonstrated use case.
+`ComputeRequest.node_preferences` is a validated immutable mapping keyed by
+stable node ID. It is active only in Selective mode but retained when the user
+temporarily changes global mode. A node preference may be:
 
-The plan leaves a future extension point—a validated mapping of node ID to
-backend intent in `ComputeRequest`—but does not publish or persist it. Adding it
-later requires its own workflow-schema and UX decision.
+- `auto`: use the whole-graph optimizer;
+- `cpu`: require the scientific reference implementation;
+- `best_gpu`: require the fastest validated GPU candidate without forcing the
+  user to know whether CuPyX or cuCIM is preferable;
+- `library:<id>`: choose the best validated implementation from that library,
+  for example `cupyx` or `cucim`; or
+- `implementation:<stable-id>`: advanced exact pin used for reproduction or an
+  accepted benchmark result.
 
-### 2.3 Mixed graphs and explicit-GPU preflight
+Interactive Selective mode defaults to **visible fallback** for usability. If a
+forced `best_gpu`, library, or exact-implementation choice is unavailable,
+unsupported for the actual dtype/parameters, or encounters a classified OOM,
+the planner may choose CPU once and
+must show a persistent node badge and run-level warning. An advanced **Strict
+selected implementations** switch changes the same request to fail complete
+preflight instead. Batch, headless, and generated callers can select either
+policy explicitly. Invalid parameters, axis/grid errors, parity failures,
+unclassified runtime errors, and writer errors never become fallbacks.
+Selective `auto` choosing CPU is a normal policy result, not fallback.
+
+### 2.3 Mixed graphs and preflight
 
 - `CPU`: never mixed.
 - `Auto`: mixed graphs are expected and partitioned at operation, support,
-  benefit, or memory boundaries.
-- `GPU`: host-only infrastructure may surround GPU compute, but an unsupported
-  scheduled scientific node fails the complete preflight.
-- `GPU` plus fallback: mixed compute is allowed and recorded.
-- Skipped manual nodes are not scheduled and therefore do not make an explicit
-  GPU request fail. A cached skipped-manual output is a host boundary. A manual
-  node explicitly selected for calculation is included in preflight.
+  benefit, runtime, or memory boundaries.
+- `Selective`: authored node preferences are constraints on a whole-graph plan,
+  not independent wrappers. Compatible CuPyX and cuCIM implementations may stay
+  in one CUDA/CuPy segment only after their zero-copy interoperability contract
+  passes; otherwise a runtime/library transition is costed as a boundary.
+- Skipped manual nodes are not scheduled. A cached skipped-manual output is a
+  host boundary. A manual node explicitly selected for calculation is included
+  in preflight and benchmarking.
 - A side-effecting `Save Image` or batch publication node is never part of a
-  GPU segment and cannot run until all required compute preflight succeeds.
+  device segment and cannot run until all required compute preflight succeeds.
 
-Fallback is permitted only for enumerated cases: provider unavailable before
-launch when the request allows it, unsupported declared region when the request
-allows it, memory preflight for Auto/allowed fallback, and provider-classified
-OOM. Invalid parameters, axis/grid errors, scientific validation errors,
-unclassified CUDA errors, and writer errors never become CPU fallbacks.
+Fallback is permitted only for enumerated cases: implementation unavailable
+before launch, unsupported declared region, memory preflight, and runtime-
+classified OOM. A fallback never silently changes the stored preference and one
+item's fallback never changes later batch items.
 
 ### 2.4 Persistence and portability
 
-Backend intent does belong in workflow JSON, but only in Pass 8 after execution,
-UI, cache, batch, and provenance contracts are stable. Workflow v4 should add:
+Compute intent belongs in workflow JSON once the headless execution, UI, cache,
+and provenance contracts are stable. Pass 4 introduces the minimal workflow v4
+compute block together with the public controls so accepted benchmark choices
+survive reopening; Pass 8 extends the same frozen schema into generated Python,
+CLI, batch/hash integration, and export sidecars. Workflow v4 adds:
 
 ```json
 "execution": {
   "compute": {
-    "backend": "cpu",
-    "allow_fallback": false,
+    "mode": "auto",
+    "fallback_policy": "visible",
+    "node_preferences": {
+      "median_filter_1": "implementation:vipp.cupy.median_filter"
+    },
     "precision_policy": "scientific-default-v1",
-    "workload_policy": "vipp-conservative-v1"
+    "workload_policy": "vipp-best-available-v1"
   }
 }
 ```
 
 Device index, exact device identity, memory cap, driver, and resolved decisions
 are runtime environment, not authored workflow intent, and are not stored here.
+Benchmark samples, predicted times, and a machine-derived winner are also not
+portable workflow data. When a user accepts a benchmark result, only the stable
+node preference is saved; the local benchmark record remains in a fingerprinted
+machine cache and becomes stale when inputs/parameters, VIPP, implementation,
+runtime, Python implementation/minor/ABI, driver, or device identity changes,
+with the separate node/pipeline
+scopes defined in section 5.3.
 Workflow v3 is safely migrated to the v4 CPU default because v3 could only run
 the current CPU path; v1/v2 remain rejected for the existing scientific-schema
 reasons.
 
-Opening a GPU-authored workflow on CPU-only hardware preserves its authored
-intent and shows an unavailable status. `backend=gpu` fails closed on run; the
-user may choose a CPU session override without mutating the document, or choose
-"Use CPU and save" to rewrite intent. `backend=auto` opens and runs on CPU with
-a visible policy reason. Generated Python uses the embedded intent unless the
-caller supplies an explicit override. Batch config records the effective run
-override so a batch replay cannot silently inherit a different UI preference.
+Opening a workflow with CUDA preferences on CPU-only or Apple-only hardware
+preserves the authored preferences and shows their unavailable status. Auto runs
+on CPU. Selective visible-fallback mode runs on CPU with explicit warnings;
+strict mode fails preflight. A session override does not mutate the document;
+"Use CPU and save" or accepting new benchmark choices does. Generated Python
+uses embedded intent unless the caller supplies an explicit override. Batch
+config records the effective request so replay cannot inherit a different UI
+preference.
+
+Workflow loading validates node IDs and preference syntax without importing an
+optional library. Unknown or currently unavailable stable implementation IDs
+are preserved so a portable workflow does not lose intent; preflight, not
+deserialization, explains availability. An exact implementation pin is stronger
+intent, not a guarantee of bit-for-bit reproduction without the recorded
+version/environment/provenance.
+
+Deleting a node removes its authored preference. Graph duplicate/copy-paste
+remaps and copies the authored preference to each new node ID, but never local
+benchmark evidence, planned/used decisions, caches, or hardware state. `Paste
+parameters` remains scientific-parameter-only and does not replace the target's
+compute preference; a future explicitly named `Paste all node settings` action
+would be required to do that.
 
 The canonical scientific workflow hash includes authored compute intent after
-v4. It never includes a resolved backend, device, or policy result. Those belong
+v4. It never includes a resolved implementation, device, or policy result. Those belong
 to execution provenance.
 
 ### 2.5 Consequences across execution surfaces
 
-| Surface | Consequence of the backend contract |
+| Surface | Consequence of the compute contract |
 | --- | --- |
-| Interactive run | The session request is captured in every synchronous or background `PipelineRunRequest`; stale-run rejection compares graph/source state as today and discards the accompanying provenance with the stale result. |
-| Cache | Requested and resolved backend are part of every output-port record. A CPU result cannot satisfy a GPU-key lookup, and an Auto CPU result remains distinguishable from an explicit CPU result. |
+| Interactive run | The session request is captured in every synchronous or background `PipelineRunRequest`; stale-run rejection compares graph/source plus compute mode, fallback, node preferences, and policy fingerprints, and discards provenance with a stale result. |
+| Cache | Every output-port record carries scientific result identity plus separate request/decision provenance. Only the actual implementation and result-affecting semantics key values; global mode, preference, fallback, and benchmark evidence explain the decision but do not invalidate an otherwise identical result. An exact pin cannot consume another implementation's entry. |
 | Batch | `BatchConfig` records the effective override; each item is replanned against current free memory but the request is unchanged. A fallback on one item does not silently rewrite later items to CPU. |
 | Generated Python | Embedded workflow intent is the default. Function/CLI override is explicit, returned in provenance, and does not mutate `_WORKFLOW_JSON`. |
-| Reproducibility | `CPU` is portable and stable. `GPU` is fail-closed and environment-dependent. `Auto` is intentionally hardware-dependent, so the policy/environment/actual decisions—not workflow intent alone—are required to reproduce a result. |
+| Reproducibility | `CPU` is portable and stable. Auto is intentionally hardware-dependent. Selective exact pins express stronger intent but may be unavailable elsewhere. Policy, environment, actual decisions, fallback records, and implementation versions are required to reproduce a result. |
 
 ## 3. Operation capability model
 
@@ -365,12 +469,16 @@ The declaration should be data, not code. A representative contract is:
 @dataclass(frozen=True, slots=True)
 class OperationComputeSpec:
     operation_id: str
-    backend: ComputeBackend                 # GPU for the new declarations
-    provider_id: str                        # "cupy"
+    runtime_id: str                         # "cpu-numpy" or "cuda-cupy"
+    implementation_library_id: str          # "cpu", "cupyx", or "cucim"
     implementation_id: str                  # "vipp.cupy.median_filter"
     implementation_version: str             # "1"
     supported_spatial_dims: frozenset[int]  # {2} or {2, 3}
-    supported_dtypes: tuple[str, ...]        # canonical NumPy dtype strings
+    input_contract_ids: tuple[tuple[str, str], ...]
+    output_contract_ids: tuple[tuple[str, str], ...]
+    array_domain: str                        # host-numpy/cuda-cupy/...
+    admission_tier: str                      # developer_hidden/public_selective/public_auto_candidate
+    validated_environment_policy_id: str     # OS/Python/runtime/library ranges
     parameter_policy_id: str                # exact range/mode validator
     parity_policy_id: str
     progress_granularity: str               # segment/kernel/iteration
@@ -383,6 +491,21 @@ class OperationComputeSpec:
     limitations: tuple[str, ...] = ()
 ```
 
+Each referenced `ComputePortContract` declares the port name and value kind
+(`array`, `scalar`, `table`, or another typed state), accepted public dtypes/
+schema, value-domain facts, internal and accumulation dtype, output dtype/schema
+rule, conversion/rounding/overflow policy, and non-finite policy. This per-port
+model is mandatory for multi-input, dtype-changing, and table-producing nodes;
+a coarse operation-wide dtype tuple is prohibited.
+
+Admission is an explicit lifecycle. `developer_hidden` is available only to an
+explicit headless developer request and is excluded from ordinary UI, workflow,
+Auto, and Selective discovery. `public_selective` has passed scientific and
+operational gates. `public_auto_candidate` may additionally be considered by
+Auto, but only inside its validated environment/workload policy. An internal
+`allow_experimental=True` test/developer flag is never serialized into workflow
+JSON or exposed as a normal user setting.
+
 Parameter support is resolved by a named pure validator in the policy layer,
 not an arbitrary callable stored in `pipeline.py`. The validator returns a
 typed support result with a stable reason code. Examples include odd median
@@ -390,66 +513,91 @@ sizes within the validated range, exact Gaussian sigma handling, RL spatial
 rank, PSF rank, iteration range, normalization/clipping modes, and RL-TV
 regularization parameters.
 
-The initial declarations must be narrower than provider API availability:
+Declarations are narrower than library API availability but the contract is
+not float32-specific:
 
-- median: finite `float32`, slice-wise YX semantics, odd validated kernel
-  sizes, explicit/scalar channel behavior, reflect boundary;
-- Gaussian: finite `float32`, separate 2D slice-wise and 3D declarations, exact
-  sigma tuples, reflect boundary;
-- RL/RL-TV: `float32` working/output semantics, 2D and 3D spatial blocks,
-  matching PSF rank/grid, all current public parameter modes only after each is
-  tested.
+- Subtract Background/Rolling-Ball Background: preserve current smoothing,
+  light-background inversion, 2D/3D block/channel semantics, clipping, and
+  public dtype restoration. Target `uint8`, `uint16`, `float32`, and `float64`
+  independently; bool and non-finite cases remain CPU until proved.
+- Median: current slice-wise YX semantics, odd validated kernel sizes,
+  explicit/scalar channel behavior, reflect boundary, and separate declarations
+  for each validated integer/float dtype region.
+- Gaussian: separate 2D slice-wise and 3D declarations, exact sigma tuples,
+  reflect boundary, zero-sigma behavior, excluded channel axes, and explicit
+  native/public dtype behavior.
+- RL/RL-TV: current float32 working/output semantics, 2D and 3D spatial blocks,
+  matching PSF rank/grid, and all current public parameter modes only after each
+  is tested.
 
-Integer, float64, non-finite filter inputs, new boundary modes, fast math, and
-dynamic/multi-output provider implementations stay unsupported until promoted.
-An implementation may not advertise a dtype or parameter merely because CuPy
-accepts it.
+Bool, additional integer/float regions, non-finite behavior, new boundary modes,
+fast math, and dynamic/multi-output device implementations stay unsupported
+until separately promoted. Architecture, registry, benchmark, memory, cache,
+and provenance tests must nevertheless exercise declarations for all dtype
+classes so later coverage does not require a redesign. An implementation may
+not advertise a dtype or parameter merely because an optional library accepts
+it.
 
 ### 3.2 Lazy implementation registry
 
-`core/compute_registry.py` contains descriptors such as provider ID, display
-name, import string, supported OS family, and optional entry-point origin. It
-does not import the implementation module at registry construction. The
-built-in implementation mapping uses import strings:
+`core/compute_registry.py` contains separate runtime and implementation-library
+descriptors: stable ID, display name, import string, supported OS family,
+array/device domain, interoperability claims, and optional entry-point origin.
+It does not import an implementation module at registry construction. Built-in
+implementation mappings use import strings:
 
 ```text
 vipp.cupy.median_filter -> napari_vipp.core.gpu.cupy_median:median_filter
+vipp.cucim.subtract_background -> napari_vipp.core.gpu.cucim_background:subtract_background
 ```
 
-The registry loads the provider only after request resolution says it may be
-used. A CPU request never calls provider discovery or `importlib.import_module`
-for CuPy. Third-party discovery uses an entry-point group such as
-`napari_vipp.compute_providers`; discovery failures become diagnostic records,
-not plugin-import failures. Provider IDs and implementation IDs are stable cache
-and provenance identifiers; display names are not.
+The registry loads a runtime/library only after request resolution says it may
+be used. A CPU request never calls accelerator discovery or
+`importlib.import_module` for CuPy/cuCIM. Third-party discovery uses separate
+entry-point groups such as `napari_vipp.compute_runtimes` and
+`napari_vipp.compute_implementations`; discovery failures become diagnostic records,
+not plugin-import failures. Runtime, library, and implementation IDs are stable
+cache/provenance identifiers; display names are not. cuCIM may participate in a
+CUDA/CuPy-resident segment without a transfer only after tests prove it accepts
+the runtime-owned array on the same device/stream and obeys allocator/lifetime
+rules; a library name alone never authorizes zero-copy sharing.
 
-Registry startup validates these invariants without loading providers:
+Registry startup validates these invariants without loading optional runtimes or
+implementations:
 
 1. every declaration references an existing operation ID;
-2. `(provider_id, implementation_id, implementation_version)` is unique;
+2. `(runtime_id, implementation_id, implementation_version)` is unique;
 3. every named parity, parameter, memory, boundary, precision, and workload
    policy exists;
 4. no production declaration exists without its promotion tests and policy
    record;
-5. no provider module is imported while `napari_vipp` or the npe2 manifest is
+5. no accelerator module is imported while `napari_vipp` or the npe2 manifest is
    imported.
 
 ### 3.3 Capability detection lifecycle
 
 Detection has two phases. Descriptor discovery lists built-in and entry-point
-providers without importing them. A probe runs only when the UI asks for GPU
-status or a GPU/Auto request needs it. The CuPy probe records every visible
+runtimes/libraries without importing them. A probe runs only when the UI asks
+for accelerator status or an Auto/Selective request needs it. The CuPy probe records every visible
 device, then for the selected device creates a context, checks driver/runtime
 identity and free/total memory, imports each required CuPyX submodule, executes
 and synchronizes a real one-element kernel, and tears down the probe allocation.
 Import success alone is never availability.
 
-Reports distinguish provider availability from operation promotion. A usable
+Reports distinguish runtime/library availability from operation promotion. A usable
 CuPy installation can report zero supported VIPP operations. Supported IDs are
 derived from validated `OperationComputeSpec` records, not supplied by the UI.
-Probe results are cached by process/environment fingerprint and can be refreshed
+Probe results are cached by process/environment fingerprint, including Python
+implementation/minor/ABI, and can be refreshed
 after installation or a provider failure. A CPU request neither discovers entry
 points nor probes/imports CuPy during execution.
+
+Implementation-library health is probed separately and lazily. The developer
+cuCIM probe verifies the pinned build digest, required submodules, one real
+operation kernel, same-device/stream behavior, allocator/lifetime compatibility,
+and zero-copy exchange with runtime-owned CuPy arrays. A healthy CuPy runtime
+does not imply healthy cuCIM, and a failed library probe cannot poison CuPyX
+implementations.
 
 ## 4. Device-resident graph execution
 
@@ -461,23 +609,28 @@ Each output port is the unit of storage and liveness.
 
 A GPU segment is the maximal connected sub-DAG of scheduled nodes that:
 
-- resolved to the same provider and device;
+- resolved to the same runtime, array/device domain, and device;
 - have compatible validated implementations and precision policies;
 - can exchange resident arrays;
 - fit as a unit under the memory policy; and
-- contain no source, writer, table, manual-skip, or other declared host/side-
-  effect boundary.
+- contain no source, writer, manual-skip, or other declared host/side-effect
+  boundary. Host table inputs are boundaries. A validated device-side
+  measurement may terminate a segment by converting its private device result
+  through a typed host-table finalizer; public `TableState` never resides on the
+  accelerator.
 
 "Maximal" is topological, not merely a consecutive list. A segment can contain
-a branch and later join. A CPU node splits GPU regions. Different providers or
-devices always split regions.
+a branch and later join. A CPU node or different runtime/device splits GPU
+regions. Different implementation libraries do not split a region when their
+declared and tested array-domain interoperability allows zero-copy sharing;
+otherwise the planner inserts and costs the required boundary.
 
 ### 4.2 Internal array ownership
 
 `DeviceValue` is an internal, non-public record owned by the segment executor:
 
 ```text
-(provider instance, device id, opaque provider array, shape, dtype,
+(runtime instance, device id, opaque runtime array, shape, dtype,
  output-port key, remaining device consumers)
 ```
 
@@ -512,7 +665,11 @@ output is transferred once if it enters a new GPU segment.
   GPU-to-GPU fork creates one host copy and one continuing resident reference.
 - **Multiple outputs:** plan, count, transfer, retain, and release each output
   port independently. Initial promoted operations are single-output; generic
-  multi-output support is nevertheless tested with a fake provider.
+  multi-output support is nevertheless tested with a fake runtime.
+- **Scalar/table output:** a device implementation may compute these values but
+  must terminate or materialize at a typed host finalizer that restores the
+  declared scalar/table schema, units, ordering, and overflow policy before
+  public commit. Downstream host consumers see only the existing host state.
 - **Cached upstream output:** it is a host entry boundary. Its cache record is
   validated before transfer. Device identity from an older run is irrelevant.
 - **Skipped manual node:** its valid/stale cached host output is a boundary. A
@@ -525,9 +682,9 @@ output is transferred once if it enters a new GPU segment.
 - **Across batch items:** per-item sources, intermediates, and outputs are never
   retained. A fixed immutable source such as a shared PSF may remain resident in
   a batch-scope constant cache only when its exact source revision/cache key,
-  provider/device, dtype/shape, and read-only contract are unchanged, its bytes
+  runtime/device, dtype/shape, and read-only contract are unchanged, its bytes
   are reserved in every item's memory estimate, and no implementation mutates
-  inputs. Release all such constants on cancel, provider error, source refresh,
+  inputs. Release all such constants on cancel, runtime/library error, source refresh,
   or batch end.
 - **Cancellation:** stop launching new work, synchronize already submitted work,
   release all private values, and return only after cleanup. Never commit a
@@ -550,23 +707,24 @@ def plan_run(pipeline, run_scope, compute_request, environment, cached_records):
             decisions[node_id] = host_boundary("declared_host_boundary")
             continue
 
-        support = validate_declared_implementation(
+        candidates = validate_declared_candidates(
             node, descriptors[node_id], environment, compute_request
         )
-        decisions[node_id] = resolve_backend(
-            compute_request, support, descriptors[node_id]
+        decisions[node_id] = candidate_decision_set(
+            compute_request.mode,
+            compute_request.preference_for(node_id),
+            candidates,
         )
 
-    if compute_request.backend == GPU and not compute_request.allow_fallback:
-        failures = unsupported_scheduled_scientific_nodes(decisions)
-        if failures:
-            raise ComputePreflightError(all_failures=failures)
-
-    # Auto depends on transfer topology. Start conservatively, form candidate
-    # regions, recalculate transfer counts/costs, and demote until stable.
-    decisions = stabilize_auto_decisions(
+    # Auto and Selective are graph-global: include transfers, residency,
+    # branches/joins, host materialization, memory, and authored constraints.
+    decisions = solve_graph_assignment(
         pipeline, scheduled, descriptors, decisions, environment
     )
+
+    failures = unhonored_strict_selective_preferences(decisions, compute_request)
+    if failures:
+        raise ComputePreflightError(all_failures=failures)
 
     regions = maximal_connected_gpu_subdags(pipeline, scheduled, decisions)
     segments = split_regions_until_memory_estimates_fit(regions, descriptors)
@@ -576,8 +734,18 @@ def plan_run(pipeline, run_scope, compute_request, environment, cached_records):
 
 `infer_workloads_without_executing_nodes` uses source/cached shapes and pure
 shape/dtype propagation. If an output shape cannot be known until execution,
-Auto resolves that node to CPU. Explicit GPU reports an unsupported-dynamic-
-shape reason unless the declaration provides a safe upper-bound model.
+Auto resolves that node to CPU. A Selective GPU requirement reports an
+unsupported-dynamic-shape reason unless the declaration provides a safe
+upper-bound model.
+
+Support policies may also require complete `ArrayFacts`. Compute them lazily
+from revision-keyed source/cached host arrays, or propagate a guarantee from a
+validated upstream implementation. Their scan/transfer cost enters Auto and
+benchmark estimates. A sampled scan may tune a cost model but never proves a
+scientific value-domain restriction. If a required complete fact for an
+intermediate cannot be known safely before execution, Auto chooses CPU and a
+forced Selective choice reports the typed unsupported reason; it does not launch
+speculatively and silently fall back after observing the values.
 
 ### 4.5 Execution pseudocode
 
@@ -599,8 +767,8 @@ def execute_plan(plan, pipeline, host_cache, cancel):
                 provisional = execute_gpu_segment_transaction(
                     unit, pipeline, store, cancel, provenance
                 )
-            except ProviderOutOfMemory as oom:
-                cleanup_and_synchronize_provider(unit.provider)
+            except RuntimeOutOfMemory as oom:
+                cleanup_and_synchronize_runtime(unit.runtime)
                 if not may_retry_once(plan.request, unit, oom, provenance):
                     raise
                 provisional = execute_segment_on_cpu_transaction(
@@ -616,26 +784,27 @@ def execute_plan(plan, pipeline, host_cache, cancel):
 
 def execute_gpu_segment_transaction(segment, pipeline, committed_store, cancel, prov):
     private = SegmentStore()
-    with provider.execution_scope(segment.device, segment.memory_policy):
-        preflight_live_memory(segment, provider.memory_snapshot())
+    runtime = registry.runtime(segment.runtime_id)
+    with runtime.execution_scope(segment.device, segment.memory_policy):
+        preflight_live_memory(segment, runtime.memory_snapshot())
         for entry_port in segment.host_entries:
             cancel.check()
-            private.put_device(entry_port, provider.to_device(committed_store.host(entry_port)))
+            private.put_device(entry_port, runtime.to_device(committed_store.host(entry_port)))
             prov.transfer(entry_port, "host_to_device")
 
         for node_id in segment.topological_nodes:
             cancel.check()
             prepared = prepare_node_call(pipeline, node_id, private.inputs(node_id))
-            device_output = provider.call(segment.implementation(node_id), prepared)
-            provider.operation_checkpoint(segment.progress_granularity(node_id), cancel)
+            device_output = registry.call(segment.implementation(node_id), prepared)
+            runtime.operation_checkpoint(segment.progress_granularity(node_id), cancel)
             private.put_outputs(node_id, device_output)
             private.release_dead_values()
 
         for port in segment.host_outputs | segment.retained_outputs:
             cancel.check()
-            private.put_provisional_host(port, provider.to_host(private.device(port)))
+            private.put_provisional_host(port, runtime.to_host(private.device(port)))
             prov.transfer(port, "device_to_host")
-        provider.synchronize()
+        runtime.synchronize()
         cancel.check()
         return private.finalize_host_results_and_states()
 ```
@@ -649,16 +818,21 @@ Every Auto decision uses a `WorkloadDescriptor` containing at least:
 - operation and implementation ID/version;
 - resolved 2D/3D spatial mode and complete array rank;
 - input/output shape, element count, and dtype;
+- strides/contiguity plus complete or explicitly sampled finite fraction,
+  min/max/range, foreground density, and label count/maximum where the
+  operation's support or cost depends on them;
 - kernel size, sigma tuple, PSF shape, and iterations where relevant;
 - all parameters that change work or memory;
 - number and identity of resident GPU predecessors/successors;
 - distinct H2D and D2H boundaries predicted for the candidate segment;
 - whether an output must be retained, previewed, pinned, or saved;
 - selected device tier and exact available memory snapshot;
-- provider, provider version, CUDA-major/runtime family, OS mode, and driver;
+- runtime, implementation-library/version, CUDA-major family, OS mode, Python
+  implementation/minor/ABI tag, and driver;
 - host tier or local host calibration, because CPU speed changes crossover;
 - policy record ID/version and whether the descriptor is inside its validated
-  interpolation bounds.
+  interpolation bounds; and
+- the measured/predicted cost of required host/device fact scans.
 
 ### 5.2 Threshold generation and storage
 
@@ -677,20 +851,89 @@ peak live/pool memory, and parity over a factorial or space-filling matrix of:
 
 Use held-out workloads to fit and validate a simple explainable model or
 piecewise threshold. Store reviewed records as versioned package data, not in
-Python conditionals. A record includes provider/implementation version ranges,
-OS/runtime class, host/device tier, feature bounds, predicted CPU/GPU/transfer
-cost coefficients or breakpoints, required minimum speedup, confidence, and
+Python conditionals. A record includes runtime/library/implementation version
+ranges, admitted Python implementation/minor/ABI, OS/runtime class, host/device
+tier, feature bounds, predicted CPU/GPU/transfer cost coefficients or
+breakpoints, required minimum speedup, confidence, and
 benchmark artifact digests. Raw results remain in `docs/benchmarks/`; shipped
 policy records are the reviewed derivative.
 
 Device tiers should be based on a short, deterministic startup/transfer/compute
 microprofile plus compute capability and VRAM class, not model-name matching.
 The microprofile contains no user image data and its local result is cached by
-provider/runtime/device fingerprint. If the profile is missing, stale, or
-outside a shipped policy's validated bounds, Auto chooses CPU. Exact timings do
-not enter scientific cache identity, but tier, policy ID, and decision do.
+runtime/device fingerprint. If the profile is missing, stale, or
+outside a shipped policy's validated bounds, Auto chooses CPU. Timing, tier,
+policy ID, and decision enter benchmark identity/provenance, not scientific
+result identity.
 
-### 5.3 Deterministic conservative algorithm
+### 5.3 On-demand node and pipeline benchmarking
+
+Selective mode exposes `Benchmark node` only when the selected node has at
+least two validated candidates for its resolved inputs and parameters. The
+main-toolbar `Optimize pipeline` action is visible only in Selective mode and
+only after enough source/cached metadata exists to construct workload
+descriptors.
+
+Benchmarking follows these rules:
+
+1. Use the exact current parameters and resolved input shape/dtype/axis/grid
+   contract. Benchmarking a representative crop is allowed only as an explicitly
+   labelled quick estimate and never silently replaces an exact full-workload
+   record.
+2. Run the existing CPU implementation once outside timed rounds as the
+   scientific reference, then validate each admissible implementation in an
+   isolated transaction. A failed candidate is quarantined for that fingerprint
+   and cannot be timed/selected. Benchmarking may only evaluate an already
+   promoted dtype/parameter support region; passing on one user's input never
+   expands a declaration.
+3. Record cold-start/JIT time separately. After warmup, randomize paired CPU and
+   candidate order for at least seven synchronized rounds; extend adaptively to
+   15 or 21 rounds near a decision threshold or under high variance. Report the
+   paired median ratio and a versioned 95% paired-bootstrap lower confidence
+   bound, plus end-to-end, resident, transfer, fact-scan, and peak-memory
+   measures. The bootstrap method/seed and outlier policy are benchmark-policy
+   data, not ad hoc UI behavior.
+4. Do not execute source readers twice unnecessarily, writers, `Batch Output`,
+   publication, or any other side effect. Do not replace live caches/history or
+   node preferences until the user accepts the result. Support cancellation, a
+   visible/configurable time budget, and
+   release every device value on all exits. Before presenting or applying a
+   result, recheck the detached graph/source/compute-intent fingerprint and
+   discard it if the live state changed.
+5. Cache the local record by workflow/node/workload, source revision or safe
+   descriptor, parameters, VIPP/implementation/runtime versions, Python
+   implementation/minor/ABI tag, driver, device, and memory-topology
+   fingerprint. Mark it stale after any relevant change.
+6. `Use fastest` writes only a stable node preference. The UI retains the full
+   local evidence for explanation but workflow JSON never stores raw timings,
+   exact hardware, or an automatically resolved implementation.
+
+Staleness has two scopes. A node record is invalidated by its operation,
+parameters, resolved input revision/shape/dtype/axes/content facts, relevant
+layout, implementation/dependency/runtime versions, Python implementation/
+minor/ABI, driver/device, or memory-topology changes. A pipeline proposal also
+invalidates on graph topology,
+scheduled/manual scope, retained/selected/pinned/preview host materializations,
+memory cap/reserve, global mode/fallback, or authored node constraints. An
+accepted implementation preference remains authored when evidence becomes
+stale, but loses every `fastest`/`optimal` claim and offers `Rebenchmark`.
+
+Whole-pipeline optimization is not a loop that independently chooses the
+fastest implementation for each node. It reuses or collects candidate timings,
+then solves a constrained graph assignment that includes H2D/D2H transfers,
+same-runtime residency, CuPyX/cuCIM interoperability, branches/joins, required
+host materializations, memory/liveness, and side-effect boundaries. It may
+therefore choose a slightly slower implementation for one node to make the
+complete pipeline faster. The proposed assignment and expected total are shown
+before `Apply choices`; an optional final end-to-end validation can confirm the
+winner without publishing outputs.
+
+When measured candidates are within the noise floor (initially the greater of
+5% or 10 ms for the measured unit), prefer the current valid choice; otherwise
+prefer CPU for an isolated node or the choice that preserves a faster resident
+pipeline segment. These thresholds are versioned policy, not UI literals.
+
+### 5.4 Deterministic conservative algorithm
 
 1. Reject GPU for unsupported dimension, dtype, parameter, precision, provider,
    boundary, or finite-value requirement.
@@ -698,46 +941,81 @@ not enter scientific cache identity, but tier, policy ID, and decision do.
    descriptor.
 3. Predict total segment cost, including distinct transfers and required host
    materializations—not only kernel time.
-4. Require predicted speedup of at least 1.5x by default and enough margin to
-   cover model uncertainty.
+4. For automatic, non-benchmarked selection, require the lower confidence bound
+   to predict at least 1.20x end-to-end speedup and at least 20 ms absolute
+   savings for the complete candidate segment. These conservative defaults are
+   versioned and may change only with reviewed cross-device evidence.
 5. Form maximal candidate segments, recompute transfer counts, and demote
    segments whose end-to-end prediction no longer meets the gate. Repeat until
    stable; ties resolve to CPU.
 6. Run memory preflight. Auto may demote a segment or split it at the least
    costly boundary; it must record that memory caused the CPU decision.
 
-Explicit GPU ignores the performance threshold but never ignores support,
-scientific parity, or memory constraints.
+Selective provider/implementation pins ignore the Auto performance threshold
+but never ignore support, scientific parity, or memory constraints. An accepted
+local benchmark may choose a smaller but statistically clear win because it
+measured the actual workload and environment.
 
 ## 6. GPU memory management
 
-### 6.1 Separate policy from host RAM
+### 6.1 Discrete and unified memory topology
 
-The existing host-RAM cache guard continues to own host arrays. GPU policy is a
-separate `GpuMemoryPolicy` shown beside it in UI, never folded into
-`_pipeline_cache_nbytes`. Host output materialization still counts toward the
-existing guard. A run can pass one guard and fail the other.
+The existing host-RAM cache guard continues to own host arrays. On a discrete
+CUDA device, accelerator policy is a separate `AcceleratorMemoryPolicy` shown
+as VRAM beside RAM in the UI and never folded into `_pipeline_cache_nbytes`.
+Host output materialization still counts toward the RAM guard; a run can pass
+one guard and fail the other.
 
-Recommended initial defaults, subject to approval, are:
+A future Apple Metal/MPS or MLX runtime must declare `memory_topology=unified`.
+CPU and GPU then share one physical pool: VIPP must not display RAM plus VRAM as
+if they were additive, and must not apply two independent caps. The accelerator
+runtime reports its allocations/working-set recommendation while the platform
+memory service reports system pressure; the
+planner coordinates host cache, device working set, and safety reserve under a
+single budget. Until an Apple provider passes its own gates, macOS shows RAM and
+`Apple GPU acceleration not enabled`, not invented VRAM.
 
-- cap provider allocations at 80% of device memory;
-- reserve `max(512 MiB, 10% of total device memory)` from the run cap;
+Recommended initial defaults, subject to empirical tuning before public release, are:
+
+- set the configured runtime-managed allocation cap to 80% of device memory;
+- keep `max(512 MiB, 10% of total device memory)` free as a device-wide safety
+  reserve;
 - also honor current device-wide free bytes, which accounts for other
   processes; and
-- refuse preflight unless the conservative peak estimate fits both the cap and
-  `free - reserve`.
+- refuse preflight unless the conservative incremental peak fits both the
+  runtime-pool headroom and device-wide headroom.
 
-The UI permits a percentage or absolute cap but not less than the provider's
-documented minimum. The effective cap and reserve are provenance fields.
+For discrete memory, take one synchronized snapshot immediately before
+preflight and compute two independent headrooms:
+
+```text
+pool_headroom = max(0, configured_pool_cap - current_runtime_managed_bytes)
+device_headroom = max(0, device_wide_free - safety_reserve)
+```
+
+The candidate's **incremental runtime-managed peak** must fit `pool_headroom`;
+its **incremental total-device peak**, including new out-of-pool library/context
+workspace and transfer staging, must fit `device_headroom`. Already-live VIPP
+pool bytes and already-live out-of-pool bytes are already reflected in the
+current counters/free snapshot and must not be subtracted a second time. A
+total-at-peak model is acceptable only if it is first converted to these
+incremental quantities against the same snapshot.
+
+The UI permits a percentage or absolute cap but not less than the runtime's
+documented minimum. The effective cap, reserve, topology, and pressure snapshot
+are provenance fields. Discrete and unified defaults are separate reviewed
+policies; the CUDA values above must not be copied blindly to unified memory.
 
 ### 6.2 Estimation and liveness
 
 `MemoryEstimate` includes unique entry inputs, each live output, retained
 device values at branches, operation temporaries, library workspace, transfer
-staging, and a calibrated uncertainty/fragmentation margin. The segment planner
-computes port-level last use and a peak over the topological schedule.
+staging, host materializations, and a calibrated uncertainty/fragmentation
+margin. The segment planner computes port-level last use and a peak over the
+topological schedule. Unified estimates additionally count host/device aliases
+and copy-on-write behavior without double-counting a proven shared allocation.
 
-Named provider models implement at least:
+Named implementation memory models cover at least:
 
 - median/Gaussian: input, output, CuPyX workspace upper bound by rank/dtype/
   kernel, and branch-retained values;
@@ -746,37 +1024,45 @@ Named provider models implement at least:
 - RL-TV: all RL buffers plus per-axis gradients, norm, normalized components,
   divergence, denominator, and stack/workspace behavior.
 
-Unknown provider workspace is measured across the declared support matrix and
-stored with a safety multiplier. A model that cannot establish a safe upper
-bound cannot be promoted for explicit GPU and causes Auto to choose CPU.
+Unknown implementation workspace is measured across the declared support matrix
+and stored with a safety multiplier. A model that cannot establish a safe upper
+bound cannot be offered as a Selective GPU choice and causes Auto to choose CPU.
 
 ### 6.3 CuPy pool policy
 
-Use a VIPP-owned CuPy `MemoryPool` within the provider execution scope and
-restore the prior allocator on exit. Set its hard limit to the effective cap.
-Do not mutate or empty a process-global pool used by unrelated code. Initial
+Use a VIPP-owned CuPy `MemoryPool` within the CUDA runtime execution scope,
+prefer a thread-local `cupy.cuda.using_allocator(...)` scope where supported,
+and restore prior allocator state on exit. Set its hard limit to the effective
+pool cap. Do not empty a process-global pool used by unrelated code. Initial
 transfers are synchronous and do not introduce a long-lived pinned-host pool;
 an optimized pinned pool requires separate host-memory accounting later.
+
+The CuPy pool limit is not a complete VRAM limit. CUDA contexts, cuFFT/cuDNN or
+other library handles, JIT modules, staging buffers, and native cuCIM allocations
+may be outside it. Capture device-wide free/total before and after probe/run,
+record VIPP pool live/reserved bytes, estimate a calibrated out-of-pool delta,
+and include that delta plus margin in preflight and post-run leak checks.
 
 Within a successful batch, free arrays at each item's liveness boundaries but
 allow the VIPP pool to retain free blocks for reuse while it remains below the
 cap. At item end, synchronize and prove that no live per-item device values
 remain. Only the explicitly accounted immutable batch constants described above
 may survive. Free cached pool blocks and batch constants on classified OOM,
-when the cap is exceeded or reduced, on provider teardown, and at batch end—not
+when the cap is exceeded or reduced, on runtime teardown, and at batch end—not
 after every node.
 
 ### 6.4 OOM and cleanup
 
-- Catch only provider-classified allocation OOM. Do not substring-match every
+- Catch only runtime-classified allocation OOM. Do not substring-match every
   CUDA error.
 - Best-effort synchronize, drop all segment references, free VIPP-pool blocks,
   and capture estimate/free/cap/pool state.
-- `Auto` retries the failed segment once on CPU. Explicit GPU retries only when
-  fallback was enabled. Mark the segment as already retried to prevent loops.
+- `Auto` retries the failed segment once on CPU. A Selective GPU requirement
+  retries only under visible fallback; strict selection fails. Mark the segment
+  as already retried to prevent loops.
 - Retry uses committed host boundary inputs and commits no failed GPU output.
-- If cleanup or synchronization reports a second provider error, fail the run
-  and mark the provider unhealthy until capability refresh.
+- If cleanup or synchronization reports a second runtime error, fail the run
+  and mark the runtime unhealthy until capability refresh.
 - Batch `finally` cleanup runs before staging/publication status is finalized.
   One failed item cannot leave device references reachable by the next item.
 
@@ -785,44 +1071,75 @@ after every node.
 ### 7.1 Cache records
 
 The current cache is structural and host-only. Add a record beside every cached
-output port so dirty-run hydration can prove compatibility. A cache key is a
-canonical digest of:
+output port so dirty-run hydration can prove scientific identity and request
+admissibility. Keep three concepts separate:
+
+1. `ScientificResultKey`: what actually produced these values;
+2. `CacheAdmissibility`: whether the current request may reuse that actual
+   implementation; and
+3. `BenchmarkRecordKey`: machine/workload timing evidence from section 5.3.
+
+The scientific result key is a canonical digest of:
 
 - upstream source revision or upstream output-port cache keys;
 - operation ID and canonical public parameters;
-- requested backend and resolved backend;
-- fallback state and stable fallback reason code;
-- provider ID/version and implementation ID/version;
-- exact device session identity and normalized device class;
-- CUDA driver/runtime identity and OS execution mode;
-- precision-policy ID;
-- workload-policy record ID, descriptor digest, decision, and predicted transfer
-  count;
+- actual runtime/library and implementation ID/version;
+- normalized result-affecting dependency fingerprint, including relevant
+  NumPy/SciPy/scikit-image/CuPy/cuCIM versions and any patched-wheel build
+  digest; alternatively an implementation contract must bump its version for
+  every supported dependency-range change;
+- public/internal dtype, conversion, non-finite, precision, and accumulation
+  policy IDs;
 - parity-policy ID and any authorized equivalence group;
+- only runtime/device properties declared scientifically result-affecting by the
+  implementation contract; and
 - relevant axis/grid metadata and existing operation/cache identity inputs.
 
-Human reason text is not hashed; stable codes and structured values are. Cached
-host arrays from the current pre-GPU runtime receive CPU records when hydrated,
-or are conservatively invalidated if their source/parameter identity cannot be
-reconstructed.
+Global mode, node preference, fallback reason, workload policy, benchmark
+timings, transfer count, exact device, and driver normally belong to decision
+provenance and the separate benchmark key—not result identity. Thus an Auto→CPU
+result and explicit-CPU result may reuse the same scientific cache entry. A
+current exact implementation pin rejects a cache produced by another
+implementation even when both passed tolerance parity; Auto/Selective `auto`
+may reuse only an implementation its current plan independently admits.
+
+`CacheAdmissibility` is evaluated after current planning, never inferred from
+the old cache entry: a `cpu` preference accepts CPU; `best_gpu` accepts a GPU
+implementation chosen by the current graph plan and cannot consume CPU merely
+because it is cached; a library pin accepts that library only; and an exact pin
+accepts only that implementation or an authorized equivalence group. A cached
+CPU fallback becomes reusable only after the current run independently reaches
+the same valid visible-fallback decision. Strict selection never consumes it.
+
+Human reason text is never hashed. Cached host arrays from the current pre-GPU
+runtime receive CPU records when hydrated, or are conservatively invalidated if
+their source/parameter identity cannot be reconstructed. Duplicate nodes copy
+authored preferences but never copy local benchmark evidence.
 
 CPU and GPU cache entries are separate by default, including median. A parity
 policy may later publish a `cache_equivalence_group`, but only after bitwise
 equivalence is proved over every supported dtype/parameter/boundary region and
-approved explicitly. Tolerance-based parity never authorizes cache sharing.
+reviewed explicitly. Tolerance-based parity never authorizes cache sharing.
 
 ### 7.2 Provenance schema
 
 `ExecutionProvenance` records:
 
 - request intent, effective session override, and fallback permission;
-- capability/environment snapshot, provider/runtime/driver, device class,
+- capability/environment snapshot, runtime/library/driver, Python
+  implementation/minor/ABI tag, device class, discrete/unified memory topology,
   memory policy, and policy IDs;
 - per node: implementation, precision, support/policy decision, reason,
-  transfers, estimate, actual backend, fallback, progress granularity, cache
-  hit/miss/key digest, and parity-policy ID;
+  transfers, estimate, actual runtime/library/implementation, fallback,
+  progress granularity, cache hit/miss/key digest, and parity-policy ID;
+- per-port public/internal/output dtype or table schema, conversion/rounding/
+  overflow and non-finite policies, and observed/propagated `ArrayFacts`;
+- result-affecting dependency/build fingerprint, estimated versus measured peak
+  memory (pool and out-of-pool), and candidate quarantine details;
+- benchmark source (`shipped-policy`, `local-node`, `local-pipeline`, or none),
+  fingerprint/digest, staleness state, and whether the user accepted the choice;
 - segment boundaries and materializations;
-- OOM/provider errors, retry count, cancellation point, and cleanup result;
+- OOM/runtime/library errors, retry count, cancellation point, and cleanup result;
 - VIPP and CPU scientific dependency versions.
 
 Integration behavior is exact:
@@ -893,6 +1210,20 @@ gpu-cuda13 = [
 ]
 ```
 
+VIPP's base package metadata accepts Python 3.12 and newer, but the initial
+**admitted GPU matrix is CPython 3.12 only**. The setup scripts default to 3.12
+and refuse another minor unless a developer explicitly opts into an unsupported
+probe. Diagnostics report that state, and no public GPU implementation appears
+as available in Auto or Selective—including library or exact pins—on an
+unvalidated Python implementation/minor/ABI. Visible fallback uses CPU with the
+specific matrix reason; strict selection fails preflight. Only the explicit
+headless developer-experimental path may probe such an environment, and it
+cannot create public admission evidence by itself. Expand the advertised GPU
+matrix one Python minor at a time only after clean resolution, import, kernel,
+parity, memory, and cleanup tests on each claimed OS/CUDA pair. The extras may
+remain mechanically resolvable on another base-compatible Python, but
+resolution alone is not a support claim.
+
 Documentation must say never to install both CuPy CUDA-major distributions in
 one environment. The supported path uses `[ctk]` CUDA component wheels and
 still requires a compatible NVIDIA driver. A driver-only wheel can work for a
@@ -901,22 +1232,57 @@ shared libraries can surface only when another CuPyX module loads.
 
 The environment markers keep CUDA distributions out of macOS resolution. They
 do not imply that `pip install napari-vipp[gpu-cuda12]` enables a GPU on macOS;
-the UI and user guide must identify macOS as CPU-only and must not offer a CUDA
-install/repair command there. Before each release, build an isolated environment
+the UI and user guide must identify CUDA as unavailable and use CPU until a
+separate Apple provider is admitted, without offering a CUDA install/repair
+command there. Before each release, build an isolated environment
 for every supported OS/Python pair, resolve the base package, and prove that the
 macOS dependency graph contains no `cupy`, `cupyx`, or NVIDIA CUDA component.
 For advertised Windows/Linux GPU targets, resolve the selected extra from a
 clean environment rather than relying on a developer machine's CUDA state.
 
-### 9.2 Platform behavior
+### 9.2 Reproducible development and user installation
+
+Phase 1 adds supported setup scripts rather than a single cross-platform
+`requirements.txt`, because CUDA-major and OS packages are intentionally
+different:
+
+- `scripts/setup_gpu_dev.ps1 -CudaMajor 13` for the primary native-Windows RTX
+  5090 development environment;
+- `scripts/setup_gpu_dev.ps1 -CudaMajor 12` and a shell equivalent for the
+  compatibility tracks;
+- `scripts/setup_gpu_dev.sh --cuda-major 13` and `--cuda-major 12` for each
+  validated native-Linux track, using distinct environments;
+- versioned constraint/lock inputs for each tested CUDA major plus the project
+  `dev` dependencies; and
+- a real-kernel/provider diagnostic command that exits nonzero when the
+  environment is incomplete.
+
+The scripts create a dedicated Python 3.12 virtual environment, never modify the
+global interpreter, never install both CuPy CUDA-major distributions, and print
+the exact environment and probe result. CUDA 13 is the first local development
+track; CUDA 12 compatibility is required before public release. README commands
+remain available for users who prefer manual setup.
+
+For nontechnical users, the first public UX is guided installation: diagnostics
+select exactly one compatible extra and present a copy button, short explanation,
+restart requirement, and a verification action. A future `Install acceleration`
+button may automate this only in a VIPP-owned/managed environment with explicit
+confirmation, progress/logging, rollback guidance, and application restart. It
+must not run `pip` silently inside an arbitrary active napari environment.
+
+No Apple accelerator extra is named until an MPS/Metal or MLX provider passes
+operation-level parity, packaging, memory, and performance gates on the M1 Max.
+
+### 9.3 Platform behavior
 
 - **CPU-only Windows/Linux/macOS:** base install, plugin import, workflow load,
   generated Python, and CPU execution work. Capability says GPU unavailable
   without an import exception.
 - **macOS:** always reports `platform_unsupported` for the NVIDIA provider.
-  `Auto` selects CPU as a normal policy decision. Explicit `GPU` fails before
-  execution with a concise explanation and a CPU override action; it does not
-  show a CUDA install command or attempt a source build.
+  `Auto` selects CPU as a normal policy decision. An unavailable CUDA choice in
+  Selective mode follows visible/strict fallback policy; diagnostics do not show
+  a CUDA install command or attempt a source build. Apple acceleration remains a
+  separately labelled research path, not an implied CUDA replacement.
 - **Native Windows x86-64:** supported for CuPy after import, device enumeration,
   context creation, one real kernel, and required CuPyX module probes pass.
   Diagnostics distinguish missing package, incompatible wheel, driver failure,
@@ -936,65 +1302,95 @@ clean environment rather than relying on a developer machine's CUDA state.
 - **CI without GPUs:** do not install GPU extras for required CPU jobs. Mock
   provider tests exercise selection, segmentation, cleanup, and import safety.
 - **Plugin discovery:** npe2 validation and `import napari_vipp` must prove that
-  `cupy`, `cupyx`, and provider implementation modules are absent from
+  `cupy`, `cupyx`, and optional implementation modules are absent from
   `sys.modules`.
 
-Do not add a cuCIM extra or provider before Pass 9. The
+Phase 1 may register and exercise a hidden/developer-only cuCIM implementation
+against the pinned source build so Subtract Background can prove the
+multi-library architecture. Do not publish a cuCIM user extra or advertise its
+operations before the packaging/admission pass. The
 [native-Windows source evaluation](cucim-windows-source-evaluation.md) now
 provides a reproducible `v26.06.00` CPython 3.12 `win_amd64` skimage wheel,
-selected upstream tests, and operation benchmarks. Rolling ball, Canny,
-labeling, Otsu, and region properties cleared the single-host performance gate;
-Gaussian, ordinary median, Sobel, binary morphology, and cuCIM Richardson-Lucy
-did not justify replacing their CuPy paths. The build required small downstream
-packaging/NumPy adaptations and excludes native Clara I/O. Pass 9 must still
+selected upstream tests, and primitive-level operation benchmarks. Rolling ball,
+Canny, labeling, Otsu, and region properties showed promising primitive speed;
+the measurements did not reproduce every VIPP wrapper behavior and therefore do
+not constitute production-node parity or promotion. Gaussian, ordinary median,
+Sobel, binary morphology, and cuCIM Richardson-Lucy did not justify replacing
+their CuPy paths in the measured fixtures. The build required small downstream
+packaging/NumPy adaptations and excludes native Clara I/O. The admission pass
+must still
 validate supported Linux targets, another Windows tier, memory, cancellation,
 clean-install/JIT cost, packaging/CI maintenance, and region-table schema
-adaptation. If promoted, cuCIM uses its own optional extra/provider and CuPy
-delivery remains independent. macOS remains ineligible because source
-compilation cannot supply the missing CUDA runtime.
+adaptation. cuCIM implementations use the CUDA/CuPy runtime array domain when
+verified; their optional package lifecycle remains independently removable.
+macOS remains ineligible for cuCIM CUDA because source compilation cannot supply
+the missing runtime.
 
 The [cuCIM Windows port plan](cucim-windows-port-plan.md) is the delivery plan
 for making those Windows artifacts maintainable and for attempting native
 Clara/`CuImage` support. It deliberately runs alongside this provider-admission
 plan: successful packaging does not waive operation parity, memory,
-cancellation, provenance, or benefit gates.
+cancellation, provenance, or benefit gates. A feature-completeness/Clara review
+starts soon after the first headless compute slice and records continue/defer/
+stop evidence; implementation remains outside Phase 1 unless it becomes a
+prerequisite for a VIPP I/O requirement.
 
 ## 10. UI/UX plan
 
 ### 10.1 Global controls
 
-Add one global `Compute` selector (`CPU`, `Auto`, `GPU`) in Settings and the
-batch setup summary. Default is CPU. Add an adjacent compact status such as
-`CPU`, `Auto · RTX 4050`, or `GPU unavailable`; do not add a backend control to
-every node. If multiple usable devices exist, an advanced device selector may
-choose the run device, but its index is session state rather than workflow
-intent.
+Add one global `Compute` selector (`CPU`, `Auto (best available)`, `Selective`)
+to the main toolbar/settings and batch setup summary. New sessions default to
+Auto; v3 workflows initially restore their historical CPU intent until the user
+chooses otherwise. Add adjacent compact status such as `Auto · RTX 5090`,
+`Auto · CPU (GPU not installed)`, or `Selective · 3 choices`. If multiple usable
+devices exist, an advanced device selector may choose the run device, but its
+index is session state rather than portable workflow intent.
 
-Selecting GPU when unavailable is allowed as authored intent but run is
-disabled/fails preflight with a repair action. A separate checkbox, hidden under
-advanced execution settings, is `Allow explicit GPU fallback to CPU`; it is off
-by default and worded as a reproducibility choice.
+In the current responsive toolbar the compact selector belongs immediately
+before Settings and is mirrored in the Settings overflow menu so it remains
+reachable at narrow widths. Compute controls must not displace the existing
+preview/zoom state or make the main toolbar wrap unpredictably.
+
+`Optimize pipeline` appears beside the selector only in Selective mode. It is
+disabled with an explanation until the scheduled graph and workload descriptors
+are known. An advanced `Strict selected implementations` switch changes visible
+fallback into fail-closed preflight. The ordinary interactive default keeps
+fallback enabled and conspicuous.
 
 ### 10.2 Node and run explanations
 
-The inspector has a read-only Compute section:
+The inspector Compute section is read-only in CPU/Auto mode. In Selective mode,
+implemented nodes gain a preference dropdown and eligible nodes gain `Benchmark
+node`. Unimplemented scientific nodes show CPU without a fake selector;
+source/writer infrastructure is marked `Host` or left unbadged.
+The dropdown offers `Auto`, `CPU`, `Best GPU`, and each validated library/exact
+implementation relevant to that node.
+The section can report:
 
-- `Will run on GPU` with provider/device and predicted benefit;
+- `Will run with CuPy (GPU)` or `cuCIM (GPU)` with runtime/device and predicted
+  benefit;
 - `Will run on CPU` with one primary reason such as small workload, unsupported
   dtype, no validated threshold, memory cap, unsupported operation, or missing
   dependency;
-- `GPU eligible; input not available yet` before shape/dtype are known;
-- `GPU unsupported` with the exact unsupported mode/parameter;
+- `Choice pending; input not available yet` before shape/dtype are known;
+- `Selected implementation unavailable` with exact dtype/parameter/package/
+  platform reason and fallback/repair action;
 - `Fallback used` with reason and a link to run details.
 
-Graph cards may use a small neutral `GPU` eligibility/decision badge after
-preflight, but must not imply that mere capability means the last run used GPU.
-Unsupported graph regions can be highlighted in a preflight explanation view;
-the default graph remains uncluttered.
+Every calculated graph card may use one small header pill beside its title:
+`CPU`, `GPU · CuPy`, `GPU · cuCIM`, or `Fallback · CPU`. The existing preview
+corner remains available for processing state. Before calculation the pill is visually
+distinct and says `Planned`; after an accepted run it says/represents `Used`.
+Tooltips expose the device, implementation version, policy/benchmark source,
+and reason. Eligibility alone must never look like actual execution. Unsupported
+graph regions can be highlighted in a preflight explanation view; the default
+graph remains uncluttered.
 
 The run summary must let a user answer directly:
 
-- **Will this node use my GPU?** Show the predicted decision and segment.
+- **Which implementation will this node use?** Show CPU/CuPy/cuCIM, runtime,
+  device, preference source, and segment.
 - **Why did it run on CPU?** Show the stable reason translated to plain text.
 - **Was fallback used?** Show a persistent run-level warning and affected nodes.
 - **Is the result still valid?** State the promoted parity policy and that CPU
@@ -1003,16 +1399,38 @@ The run summary must let a user answer directly:
 - **What should I install?** Recommend exactly one matching extra and explain
   that a supported NVIDIA driver is still required.
 
-### 10.3 Errors, memory, and progress
+### 10.3 Benchmark presentation
+
+`Benchmark node` shows candidates, validation status, cold time, warm robust
+median/range, peak accelerator memory, and whether transfers were included. The
+result has `Use fastest`, `Keep current`, and `View details`; it never changes a
+preference merely because the benchmark finished. `Use fastest` is one undoable
+authored-preference edit. If its local evidence later becomes stale, the choice
+remains active but the `fastest` label is removed and `Rebenchmark` is offered.
+
+`Optimize pipeline` shows the current and proposed implementation assignment,
+estimated/measured total, transfer/runtime boundaries, peak memory, stale or
+estimated nodes, and any excluded candidate. `Apply choices` is a separate
+confirmation and one undoable action. Forced CPU/Best GPU/library/exact choices
+are constraints; the optimizer never replaces them unless the user explicitly
+selects and confirms an override scope. If the globally optimal plan chooses a slower isolated node to
+preserve residency, the explanation states that plainly. Benchmark progress is
+cancellable and never publishes a writer/batch output.
+
+### 10.4 Errors, memory, and progress
 
 - Preflight OOM: show estimate, usable memory under cap/reserve, and options to
   reduce workload, lower retained outputs, adjust cap, use Auto/CPU, or enable
-  explicit fallback.
+  visible fallback.
 - Runtime OOM with fallback: show `GPU ran out of memory; this segment was
   recomputed on CPU` and record it. Without fallback, no partial result is
   presented as current.
-- Host cache and GPU memory appear as separate rows in one Execution/Memory
-  panel. Avoid CUDA vocabulary until installation troubleshooting is expanded.
+- On discrete CUDA hardware, host cache/RAM and accelerator pool/VRAM appear as
+  separate rows in one Execution/Memory panel. Show device-wide free/total,
+  VIPP live and pool-reserved bytes, effective cap/reserve, predicted peak, and
+  measured out-of-pool delta. On unified-memory hardware,
+  show one shared/unified-memory row plus the provider allocation/working-set
+  budget; never add RAM and nominal VRAM together.
 - During monolithic kernels, progress remains indeterminate and cancellation
   wording is honest. RL/RL-TV show iteration progress.
 - Batch workspace shows requested mode, device, current item/node, fallback
@@ -1058,33 +1476,104 @@ The only initial precision policy is `scientific-default-v1`: no TF32, reduced
 precision, mixed precision, fast-math algorithm switch, or changed accumulation
 policy. RL/RL-TV retain their current float32 working/output and float64 PSF-sum
 normalization behavior. Additional precision modes require separate visible
-intent, cache identity, parity policy, and approval.
+intent, cache identity, parity policy, and reviewed scientific evidence.
+
+Every implementation declares scientific dtype/value contracts per input and
+output port, not one coarse `supported_dtypes` tuple. The declaration includes
+accepted public dtypes, value-domain constraints, internal/accumulation dtype,
+output-dtype rule, conversion/rounding/overflow policy, and a non-finite policy
+(`preserve`, `clean exactly`, `reject`, or `CPU decision`). This is required for
+multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
 
 ### 11.2 Operation policies
 
-#### Median — `median-cupy-finite-f32-v1`
+#### Rolling-Ball/Subtract Background — `background-*-v1`
 
-- Initial support: finite float32, current slice-wise YX semantics, odd declared
-  sizes in the validated range, current channel-axis handling, and current
-  reflect boundary convention.
-- Required parity: identical dtype/shape and `np.array_equal` for every promoted
-  case. Do not treat the spike's two exact results as proof for all cases.
+- Implement and test both nodes because they share the expensive background
+  estimator. The production adapter—not raw `skimage.restoration.rolling_ball`
+  or a benchmark-only approximation—is the CPU reference.
+- Preserve the default 3× smoothing and `disable_smoothing`, light-background
+  inversion, `clip_negative`, 2D/3D spatial blocks, leading/channel axes, bool
+  identity/zero behavior, non-finite behavior, and `_restore_numeric_dtype`
+  rounding/clipping exactly.
+- Target `uint8`, `uint16`, `float32`, and `float64` independently. Integer
+  promoted regions require exact public output. Float policies require exact
+  non-finite masks plus versioned local/aggregate tolerances.
+- The existing cuCIM results are primitive feasibility/performance evidence
+  only: they omit important VIPP wrapper semantics. Promotion requires the
+  prepared production-node path and complete adapter benchmark/parity matrix.
+- Prefer a cuCIM implementation when admitted; retain an extension point for a
+  custom CuPy implementation if it is easier to package or wins on a validated
+  workload. The CUDA/CuPy array runtime remains common to both.
+
+#### Median — dtype-specific `median-cupy-*-v1`
+
+- Initial targets: `uint8`, `uint16`, finite `float32`, and `float64`, current
+  slice-wise YX semantics, odd declared sizes in the validated range, current
+  channel-axis handling, and current reflect boundary convention. Promote each
+  dtype independently.
+- Required parity: identical dtype/shape and exact finite values for every
+  promoted integer or float case because median selects existing samples; a
+  tolerance may not hide a different rank/boundary result. Check signed-zero
+  bits explicitly. Do not treat the spike's two exact results as proof for all
+  cases.
 - Explicitly test repeated values/ties, signed zero, extrema, each boundary,
-  leading stack axes, channels, and kernel size 1 through the promoted maximum.
-- Float non-finite inputs resolve to CPU until exact behavior is validated.
-  Integer/bool types are later declaration extensions, not implicit support.
+  leading stack axes, channels, and every promoted odd kernel size.
+- Float non-finite inputs and bool resolve to CPU until exact behavior is
+  validated.
 
-#### Gaussian — `gaussian-cupy-finite-f32-v1`
+#### Gaussian — dtype-specific `gaussian-cupy-*-v1`
 
 - Preserve `scipy.ndimage.gaussian_filter` default reflect boundary, sigma=0
   copy behavior, slice-wise YX axes, 3D active-axis selection, excluded channel
   axis, output dtype, and current bool conversion (bool is not initially
   promoted).
-- Initial gates: NRMSE `<= 2e-6` and
+- The float32 gates are NRMSE `<= 2e-6` and
   `max_abs <= 1e-6 + 5e-6 * max(abs(reference))`, plus exact shape/dtype/state.
+- Target `uint8`, `uint16`, `float32`, and `float64` independently. Integer/bool
+  promotion requires exact public output after the current dtype behavior;
+  float64 gets its own tighter evidence-based tolerance and never inherits the
+  float32 gate by default.
 - Test zero/anisotropic/maximum sigma, narrow axes, impulses at every boundary,
   leading blocks, explicit channel axes, and scalar trailing 3/4 axes.
-- Non-finite and non-float32 inputs remain CPU until separately validated.
+- Non-finite and unpromoted dtype regions remain CPU until separately validated.
+
+#### Otsu — `otsu-*-v1`
+
+- Reproduce VIPP's complete finite-value histogram, bin/count policy, integer
+  offset/range preservation, bool identity, slice/stack scope, and final mask;
+  raw `cucim.skimage.filters.threshold_otsu` scalar parity is insufficient.
+- Compare the final public dtype/mask exactly and record the threshold only as
+  intermediate provenance. Empty/all-non-finite and constant regions follow the
+  CPU error/result contract exactly.
+
+#### Canny — `canny-*-v1`
+
+- Preserve VIPP's BT.601 channel reduction, plane-wise spatial semantics,
+  ordered low/high quantile thresholds with `use_quantiles=True`, sigma/boundary
+  behavior, leading blocks/channels, and exact boolean output. Adding an
+  absolute-threshold mode would be separate scientific and schema work.
+- Promote only complete parameter regions whose final edge mask is exactly
+  equal; a raw default cuCIM Canny fixture cannot establish this contract.
+
+#### Connected components — `connected-components-*-v1`
+
+- Preserve the current SciPy connectivity structure, independent leading-block
+  labeling, foreground rules, `int32` public output, and overflow/error policy.
+- Require identical public label IDs/order. If a provider emits an equivalent
+  partition with different IDs, apply and time a deterministic canonicalizer;
+  partition equivalence alone is not sufficient for downstream measurements.
+
+#### Measurements — `measurements-*-v1`
+
+- A GPU implementation may terminate a device segment at a typed host-table
+  finalizer. It must reproduce exact `TableData` column names/order, public
+  scalar/storage types, row ordering, calibration/units, selected intensity and
+  extended-property modes, missing-value policy, and label/count overflow
+  behavior.
+- Value parity for a small `regionprops_table` subset is feasibility evidence
+  only. Production promotion covers every advertised schema and downstream
+  table contract.
 
 #### Ordinary Richardson–Lucy — `rl-cupy-f32-v1`
 
@@ -1092,10 +1581,11 @@ intent, cache identity, parity policy, and approval.
   zero-extension `same` convolution, PSF cleaning and optional float64-sum
   normalization, `filter_epsilon`, input/output clipping, input-scale
   preservation, per-block 2D/3D behavior, and float32 output.
-- Resolve the current direct-call distinction (skimage when `progress is None`,
-  native loop when a pipeline `ProgressContext` exists) in contract tests before
-  promotion. GPU parity targets the pipeline/native path; Pass 6 must not
-  silently change either CPU path.
+- Freeze the prepared pipeline/native loop as the authoritative reference for
+  UI, headless workflow, batch, generated Python, and GPU parity. Preserve the
+  legacy direct helper's scikit-image behavior when `progress is None` as a
+  separately tested API until a versioned migration deliberately unifies it;
+  Pass 6 must not silently move a caller between the two semantics.
 - Initial numerical gates: NRMSE `<= 5e-6` and
   `max_abs <= 2e-5 * max(input_finite_peak, 1.0)` for deterministic arrays;
   MSE, flux, and point/line/dim-feature recovery must differ by no more than
@@ -1142,24 +1632,38 @@ change requiring evidence and review, not a test-maintenance edit.
   components. Windows/Linux GPU-extra resolution is checked in isolated
   scheduled environments for every supported Python/CUDA-major pair.
 - `test_plugin_contract.py`, npe2 validation, generated script import, and a
-  subprocess assertion that CuPy/CuPyX/provider modules were not imported.
-- Compute-contract parsing/JSON round trips and stable reason-code tests.
-- Mock capability/provider tests for absent package, failed import, no device,
+  subprocess assertion that CuPy/CuPyX/optional modules were not imported.
+- Compute-contract parsing/JSON round trips for CPU/Auto/Selective, retained
+  per-node preferences, visible/strict fallback, benchmark fingerprints, and
+  stable reason-code tests.
+- Mock capability/runtime/library tests for absent package, failed import, no device,
   driver/runtime mismatch, failed real-kernel probe, multiple devices, and
   unhealthy provider refresh.
 - Fake-device planner tests for linear, mixed, branch, fan-out, join,
   multi-input, multi-output, cached boundary, skipped/manual, retained/pinned,
-  dirty-subgraph, and unsupported explicit-GPU graphs.
+  dirty-subgraph, same-runtime CuPyX/cuCIM residency, cross-runtime boundaries,
+  and unavailable strict Selective choices. The fake array is opaque and raises
+  if ordinary NumPy code coerces it outside the runtime.
+- Revision-keyed `ArrayFacts` tests cover complete versus sampled facts,
+  propagation, invalidation, scan-cost accounting, non-finite exclusion,
+  content-sensitive policies, and conservative CPU decisions when facts cannot
+  be proven before execution.
+- Benchmark tests use an injected deterministic clock/cost model, not sleeps.
+  Cover parity-failing candidate quarantine, randomized paired samples and the
+  versioned confidence calculation, node/pipeline staleness scopes,
+  cancellation/time budget, no writer/cache mutation, local node choice, and a
+  whole-graph case where independent node winners lose to a resident plan.
 - Deterministic memory/liveness estimates, cap/reserve failures, classified OOM,
   one-time retry, no retry loop, unclassified-error failure, and cleanup in
-  success/error/cancel paths.
+  success/error/cancel paths, for discrete and simulated unified memory.
 - CPU regression tests proving the prepared-node/executor refactor produces the
   same arrays, metadata, progress, cache pruning, manual state, and errors.
 - Workflow/generated-code/batch tests appropriate to the active pass, including
-  migration and provenance hashes once Pass 8 lands.
+  workflow-v4 migration in Pass 4 and generated/batch provenance hashes in
+  Pass 8.
 - Ruff and architecture-boundary checks.
 
-These tests use a fake provider or NumPy-backed device adapter. They validate
+These tests use a fake runtime or NumPy-backed device adapter. They validate
 control flow, not scientific CuPy parity.
 
 ### 12.2 Scheduled/manual real-GPU validation
@@ -1169,11 +1673,12 @@ control flow, not scientific CuPy parity.
 | CPU/package OS | Native Windows, macOS, and Linux required on every PR; include the supported macOS architectures in release CI. |
 | Real NVIDIA GPU OS | Native Windows and supported Linux scheduled; WSL2 manual/release candidate until a stable runner exists; macOS explicitly excluded because current CUDA has no macOS target. |
 | CUDA major | Separate CUDA 12 and CUDA 13 environments; never both CuPy wheels together. |
-| Provider | Supported CuPy major and at least the oldest/newest supported minor or lockfile endpoints. |
+| Runtime/library | Supported CuPy major and lockfile endpoints; every advertised cuCIM build digest and required module/interoperability probe. |
 | Packaging | Clean base and wheel install on all three OS families; clean platform-marked extra resolution on all three; real CuPy import/kernel/submodule probe on every advertised Windows/Linux target. |
 | Device tier | Minimum supported VRAM/tier, a mid-tier device, and a higher-tier device; include one laptop/WDDM system. |
+| Initial available hosts | Native Windows/CUDA 13 RTX 5090 primary; at least one Windows RTX 40-series laptop secondary; Ubuntu 22.04/24.04 x86-64 native before Linux advertisement; WSL2 secondary; M1 Max CPU/package and later Metal feasibility. |
 | Scientific parity | Every promoted operation, dtype, dimension, parameter boundary, deterministic fixture, and real-data gate. |
-| Performance | Cold diagnostic separately; warm synchronized end-to-end and resident-chain runs with robust medians/confidence. |
+| Performance | Cold diagnostic separately; randomized warm synchronized end-to-end and resident-chain runs with robust medians/confidence; production-node adapters rather than raw optional-library primitives. |
 | Memory | Peak measurements, near-cap runs, branch/fan-out, intentional preflight failure, real OOM recovery, and post-item leak checks. |
 | Cancellation | RL/RL-TV iteration stop, monolithic wait-and-cleanup, transfer boundary, segment, and batch item. |
 
@@ -1186,9 +1691,78 @@ always block.
 
 ## 13. Implementation passes
 
-Each pass is a separately reviewable PR and has a rollback that leaves the CPU
-path usable. File lists are ownership boundaries, not blanket permission to
-rewrite adjacent code.
+Each pass is a separately reviewable integration unit made from the coherent
+commits in section 14; a PR is optional when requested. Every pass has a rollback
+that leaves the CPU path usable. File lists are ownership boundaries, not blanket
+permission to rewrite adjacent code.
+
+### Delivery phase map
+
+- **Phase 1 — headless foundation and first vertical slice:** Passes 0-3.
+  Freeze CPU/Auto/Selective and benchmark contracts; unify headless/device
+  execution behind one Qt-free service; build the fake-tested device-resident
+  runtime; create the
+  reproducible CUDA 13 development environment/doctor path; and implement
+  Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. No toolbar,
+  workflow-schema, batch, or generated-Python behavior changes yet.
+- **Phase 2 — interactive use and deconvolution:** Pass 4 plus the RL/RL-TV
+  operation work in Passes 6-7. Add toolbar mode, Selective node choices,
+  badges, benchmark UI, diagnostics/install guidance, RAM/VRAM presentation,
+  the minimal workflow v4 compute-intent block plus canonical hash and atomic
+  reader/writer preservation so accepted choices persist, and
+  a small explicitly scoped wave of inexpensive residency-bridge nodes in
+  parallel where file ownership is disjoint.
+- **Phase 3 — segmentation/measurement wave and cuCIM completeness review:**
+  Otsu, Canny, connected components, then production-schema measurements;
+  time-box the full cuCIM/Clara Windows investigation and Apple M1 Max provider
+  feasibility.
+- **Phase 4 — remaining durable execution surfaces:** Passes 5 and 8 add batch,
+  generated Python/CLI overrides, effective-config/artifact hash and provenance
+  integration, and export sidecars using the already frozen workflow v4 compute
+  block and canonical hash.
+- **Phase 5 — broad reasonable-node coverage and release hardening:** Passes
+  9-10 promote remaining filtering, pointwise operations, morphology,
+  segmentation, label cleanup, colocalization, and other families where a
+  runtime/library implementation is scientifically faithful and operationally useful.
+
+Phase 1 is complete only when all of these are true:
+
+- headless contracts support CPU/Auto/Selective, `best_gpu`, library/exact
+  per-node preferences, visible/strict fallback, multiple implementation
+  candidates, and same-runtime CuPyX/cuCIM interoperability;
+- old callers remain CPU-compatible and CPU execution imports no accelerator;
+- every real headless/device run uses one Qt-free execution service, and the
+  existing synchronous and worker application paths have explicit CPU
+  behavioral-parity coverage; Pass 4, not Phase 1, routes those interactive
+  application paths through the service;
+- an opaque fake runtime executes transactional segments across linear,
+  branching, joining, cached/manual, cancel, OOM, and fallback cases without a
+  device value escaping;
+- initial production adapters have explicit per-port dtype/parameter policies,
+  with `uint8`, `uint16`, and float32 treated as first-class microscopy targets
+  and float64 promoted only under its own evidence;
+- every advertised region passes production-CPU parity, read-only input,
+  memory, cleanup, cancellation, and provenance tests; unsupported regions make
+  typed CPU decisions with no silent lossy cast;
+- real RTX 5090 execution passes at least one finite-float32 region for each of
+  `rolling_ball_background`, `subtract_background`, `median_filter`,
+  `gaussian_blur`, and `gaussian_blur_3d`; Phase 1 cannot complete by advertising
+  zero regions, while integer/float64 promotion remains independently gated;
+- headless node benchmarking validates parity before timing, and the pipeline
+  optimizer demonstrates one H2D and one D2H transfer for a compatible
+  Background → Gaussian → Median CUDA/CuPy chain under the explicit Phase 1
+  developer-experimental flag;
+- result-cache identity and benchmark-profile identity are separate, and
+  benchmarking mutates neither live output nor scientific caches;
+- a dedicated CUDA 13/Python 3.12 environment can be recreated and passes the
+  doctor/probe plus RTX 5090 parity/smoke/benchmark suite, including measured
+  peak/pool/out-of-pool memory, post-run live-allocation checks, and one real
+  classified-OOM cleanup/recovery smoke; the checksum-recorded cuCIM wheel is
+  installed/probed in this same VIPP environment; at least one RTX
+  40-series laptop supplies secondary evidence before Phase 2 Auto policy is
+  presented as broadly calibrated; and
+- cuCIM background remains explicitly experimental/unavailable wherever its
+  package is not validated; no capability is falsely advertised.
 
 ### Pass 0 — Contract stabilization
 
@@ -1202,14 +1776,19 @@ active unrelated edits.
 
 **Public contracts:** `ComputeRequest`, `ComputeEnvironment`, support/decision
 reason enums, `OperationComputeSpec`, `WorkloadDescriptor`, `MemoryEstimate`,
-`NodeExecutionDecision`, `ExecutionPlan` data shells, JSON serialization, and
-CPU/Auto/GPU semantics. Add no provider callables and advertise zero production
-GPU operations.
+`NodeComputePreference`, `BenchmarkRecord`, `NodeExecutionDecision`,
+`ExecutionPlan`, `ScientificResultKey`, `CacheAdmissibility`,
+`BenchmarkRecordKey`, and transient `ExecutionReport` data shells, JSON
+serialization, and CPU/Auto/Selective semantics. Separate runtime/array domain
+from implementation library and model per-port public/internal dtype/non-finite
+policies. Add no accelerator callables and advertise zero production GPU
+operations.
 
-**Tests/documentation:** strict parsing, immutable/JSON-safe values, Auto CPU is
-not fallback, explicit GPU fail-closed, optional fallback record, declaration
-validation, and import safety. Update architecture docs to point to the new
-contracts.
+**Tests/documentation:** strict parsing, immutable/JSON-safe values, retained
+node preferences, Auto CPU is not fallback, visible/strict Selective behavior,
+stale benchmark fingerprints, declaration validation, and import safety. Fix
+the spike so CPU resolves before capability detection and imports no optional
+package. Update architecture docs to point to the new contracts.
 
 **Migration:** preserve compatibility helpers around the spike's
 `BackendCapability`/`select_compute_backend` only if callers/tests need them;
@@ -1220,134 +1799,220 @@ capability list remains empty. Rollback removes new unused contracts without
 affecting execution. **Still disabled:** all GPU execution and UI controls.
 
 **Parallelism:** after its contracts are merged/frozen, Pass 1 substrate, Pass
-2 median science fixtures/provider function, and Pass 9 platform validation can
+2 background science fixtures/adapter work, and Pass 9 platform validation can
 start in parallel with disjoint files.
 
-### Pass 1 — Execution substrate
+### Pass 1 — Headless execution, benchmarking, and development substrate
 
 **Depends on:** Pass 0.
 **Owns:** new `core/compute_registry.py`, `core/device_execution.py`,
-`core/node_execution.py`, `core/gpu/__init__.py`,
-`core/gpu/cupy_provider.py`; new `_tests/test_compute_registry.py`,
-`_tests/test_device_execution.py`, and `_tests/test_node_execution.py`;
-`_tests/test_execution.py`; minimal coordinated changes in `core/pipeline.py`
-and `core/execution.py`.
+`core/node_execution.py`, `core/compute_benchmark.py`,
+`core/compute_diagnostics.py`, `core/gpu/__init__.py`, and
+`core/gpu/cupy_runtime.py`; new focused registry/device/node/benchmark/
+diagnostic tests; minimal coordinated changes in `core/pipeline.py` and
+`core/execution.py`; and reproducible developer setup/doctor scripts plus
+Python-3.12 CUDA-13/CUDA-12 constraint files. No production operation is owned
+by this pass.
 
-**Public contracts:** provider protocol, opaque device values, segment/liveness
-plan, private pool scope, transfer/sync/cleanup interface, and prepared-node
-call/finalization seam. Make `PrototypePipeline.run()` use or prove parity with
-the new CPU engine before enabling device execution.
+**Public contracts:** a runtime/array-domain protocol distinct from
+implementation-library adapters; lazy CUDA/CuPy discovery; opaque device
+values; segment/liveness and memory plans; private pool scope; transfer,
+synchronization, cleanup, and prepared-node call/finalization seams; a Qt-free
+node benchmark service; a graph-global assignment optimizer; transient per-node
+decision/fallback/provenance reports; and headless result-cache admissibility.
+Make every real device execution use this service in Pass 1 and prove
+`PrototypePipeline.run()` CPU behavioral parity; Pass 4 then routes every
+interactive path through it. The setup tool
+has an explicit developer-only option to install a locally built, checksum-
+recorded cuCIM wheel into the same VIPP environment; it never mistakes the
+build script's temporary environment for the application environment.
 
-**Tests/documentation:** fake provider covers every topology and lifecycle case;
-CPU regression covers output arrays/states, dirty cache hydration, manual nodes,
-progress/cancellation, and pruning. Architecture boundary and no-CuPy-import
-tests are mandatory.
+**Tests/documentation:** an opaque fake runtime covers linear graphs, branches,
+joins, multi-input/output nodes, cached/manual/retained values, cancellation,
+OOM, one-retry fallback, and cleanup. Deterministic injected clocks and cost
+models test node and pipeline selection without sleeps. Benchmark transactions
+cannot publish output, mutate scientific caches, execute writers, or retain
+device values. CPU regression covers arrays, metadata, dirty-cache hydration,
+progress, pruning, and import without any optional accelerator package.
 
-**Migration:** `PipelineRunRequest.compute_request` defaults to CPU and old
-callers behave identically. No workflow/batch schema change.
+**Migration:** `PipelineRunRequest.compute_request` defaults to CPU so existing
+headless callers behave identically. Auto is the default only for new
+interactive sessions once Pass 4 supplies the UI. No workflow or batch schema
+changes in this pass.
 
-**Acceptance/rollback:** hidden tests can execute a fake GPU segment and no
-device object reaches public caches. Real CuPy probe may be exercised manually,
-but no operation declaration is promoted and no UI can request it. Rollback
-selects the established CPU executor. **Still disabled:** production
-implementations and Auto.
+**Acceptance/rollback:** fake-runtime execution and benchmark/optimizer tests
+pass, no device object reaches a public cache, and the dedicated CUDA 13/Python
+3.12 environment can run a real CuPy kernel and diagnostic probe on the RTX
+5090. The setup refuses mixed CuPy CUDA-major packages and provides exact repair
+commands. Rollback selects the established CPU executor. **Still disabled:**
+production GPU operations, toolbar controls, workflow/batch persistence, and
+managed package installation.
 
-**Parallelism:** can run alongside Pass 2 implementation/fixture work after
-Pass 0, but the Pass 2 integration cannot merge first. Do not run concurrently
-with another agent editing `pipeline.py` or `execution.py`.
+**Parallelism:** setup/diagnostic work and fake-runtime work may overlap Pass 2
+science-fixture work after Pass 0 with disjoint ownership. Only one agent edits
+`pipeline.py` or `execution.py`.
 
-### Pass 2 — Median filter
+### Pass 2 — Rolling-Ball and Subtract Background
 
 **Depends on:** Pass 0 contracts; integration depends on Pass 1.
-**Owns:** `core/gpu/cupy_median.py`; median declaration block in
-`core/compute_specs.py`; median parameter/memory/parity policies; new
-`test_gpu_median.py`; median additions to the benchmark harness and benchmark
-docs; `pyproject.toml` only for the `gpu-cuda12`/`gpu-cuda13` optional extras.
-Do not change the CPU `median_filter` implementation or base dependencies.
+**Owns:** new `core/gpu/cucim_background.py`; background declarations in
+`core/compute_specs.py`; operation-specific dtype, value, memory, and parity
+policies; new `test_gpu_background.py`; and production-adapter benchmark
+evidence. The CPU operations and base dependencies remain unchanged. The cuCIM
+adapter stays developer-only until its packaging gate passes. This pass owns the
+integration between the pinned builder's emitted wheel and Pass 1's explicit
+experimental-wheel setup/doctor path.
 
-**Public contracts:** implementation `vipp.cupy.median_filter` version 1 and
-`median-cupy-finite-f32-v1` parity policy. Explicit support remains finite
-float32/current YX semantics and the tested odd kernel range.
+**Public contracts:** separately versioned implementations for
+`rolling_ball_background` and `subtract_background`, both using the pinned
+cuCIM primitive through the common CuPy array domain. The adapter must preserve
+VIPP's complete public behavior: optional 3x smoothing, light-background
+inversion, clipping/subtraction, block and channel iteration, non-finite policy,
+progress, dtype restoration, and metadata—not merely match a raw cuCIM call.
+The support contract is per input/output port and initially targets validated
+`uint8`, `uint16`, and float32 regions; float64 is admitted only under separate
+evidence.
 
-**Tests/documentation:** exact parity matrix, channel/axis/boundary fixtures,
-read-only input, memory estimate, monolithic cancellation wording, resident
-chain, missing-provider behavior, and real-GPU promotion report.
+**Tests/documentation:** production CPU parity across dark/light background,
+smoothing on/off, 2D/3D leading blocks, RGB/channel handling, radius boundaries,
+non-finite values, read-only input, public dtype/shape, cancellation boundaries,
+memory estimates, missing-cuCIM decisions, and one wider real microscopy set.
+Raw primitive benchmark results are labelled feasibility evidence and cannot
+stand in for these adapter tests.
 
-**Migration:** none. Existing workflows still request CPU by default.
+**Migration:** none. Existing workflows remain CPU by default. Only an explicit
+headless developer request with `allow_experimental=True` may exercise the
+`developer_hidden` cuCIM implementation; ordinary Auto/Selective requests do
+not discover it.
 
-**Acceptance/rollback:** all exact parity gates, at least 1.5x validated
-end-to-end speedup in the promoted region, bounded memory, and no CPU regression.
-Rollback removes the median declaration; the provider/substrate remains. **Still
-disabled:** user-facing Auto and every other GPU operation. Median can be
-available only through an internal/experimental explicit request until Pass 4.
+**Acceptance/rollback:** every advertised dtype/parameter region clears the
+scientific, memory, cleanup, cancellation, and provenance gates. The results may
+qualify it for later `public_selective` and `public_auto_candidate` promotion,
+but the developer-hidden tier remains decisive until the packaging gate passes;
+Auto-performance evidence never bypasses exposure. Rollback removes only the
+background declarations/adapter. The production-adapter tests must run from the
+same dedicated VIPP environment into which the recorded wheel was installed,
+not only the builder's temporary venv. **Still disabled:** public GPU controls
+and a public cuCIM installation extra.
 
-**Parallelism:** fixture and provider-function work can overlap Pass 1 with
-disjoint files; declaration/integration waits for Pass 1. Do not overlap another
-agent editing `compute_specs.py`.
+**Parallelism:** fixtures and adapter code can overlap Pass 1 in new files;
+declaration/integration waits for Pass 1. One owner edits `compute_specs.py`.
 
-### Pass 3 — Gaussian filters and first Auto policy
+### Pass 3 — Median, Gaussian, and the first headless optimizer
 
-**Depends on:** Passes 1 and 2.
-**Owns:** `core/gpu/cupy_gaussian.py`; Gaussian declaration/policy blocks;
-`core/compute_policy.py`; packaged policy JSON under
-`src/napari_vipp/compute_policies/`; `pyproject.toml` only for packaging those
-JSON resources; generalized benchmark matrix; new `test_gpu_gaussian.py` and
-Auto policy tests in `_tests/test_compute_policy.py`.
+**Depends on:** Pass 1. Median/Gaussian implementation proceeds independently
+of experimental cuCIM packaging; only the combined resident-chain test waits for
+Pass 2.
+**Owns:** new `core/gpu/cupy_median.py` and `core/gpu/cupy_gaussian.py`;
+median/Gaussian declaration and policy blocks; `core/compute_policy.py`;
+versioned packaged policy records; generalized benchmark matrices; and focused
+GPU filter and optimizer tests.
 
-**Public contracts:** separate 2D slice-wise and 3D implementation IDs,
-`gaussian-cupy-finite-f32-v1`, device/host tier profile, shipped threshold
-record format, and deterministic topology-aware Auto selection.
+**Public contracts:** CuPyX implementations for `median_filter`,
+`gaussian_blur`, and `gaussian_blur_3d`; distinct 2D slice-wise and true-3D
+Gaussian IDs; per-port dtype/value policies; versioned host/device tier records;
+and deterministic Auto/Selective planning. `uint8`, `uint16`, and float32 are
+first-class validation targets. Median requires exact production parity in each
+advertised region; Gaussian uses its reviewed operation-specific tolerances.
+Float64 and non-finite behavior remain explicit per-operation regions, never an
+implicit cast.
 
-**Tests/documentation:** Gaussian tolerance matrix; zero/anisotropic sigma;
-channel/axis/boundary cases; small workload CPU selection; resident-neighbor
-GPU selection; unknown tier/policy CPU selection; policy-record validation and
-artifact digests.
+**Tests/documentation:** median kernel/footprint, channel/axis/boundary and dtype
+matrices; Gaussian zero/anisotropic sigma, 2D/3D axes, dtype and tolerance
+matrices; small-workload CPU selection; resident-neighbor GPU selection;
+unknown-policy CPU selection; stale local benchmark handling; policy artifact
+digests; and real-device cold, warm, transfer, resident, and peak-memory data.
+The pipeline optimizer must prefer a single-transfer
+Background → Gaussian → Median CUDA segment when that is globally fastest, even
+when an isolated-node winner differs.
 
-**Migration:** none. No workflow schema change; Auto can be passed only as a
-runtime request until Pass 8.
+**Migration:** none. Auto/Selective can be passed only as headless runtime
+requests until Pass 4; raw benchmark evidence is local and no workflow schema
+changes.
 
-**Acceptance/rollback:** Auto is enabled only for records validated on the
-hardware matrix and remains CPU elsewhere. Standard representative Gaussian
-regions meet the 1.5x gate; small smoke regions choose CPU. Rollback removes
-Gaussian declarations/policies and leaves median explicit. **Still disabled:**
-public UI selection until Pass 4, batch GPU, RL, and RL-TV.
+**Acceptance/rollback:** scientifically valid implementations appear as
+Selective candidates within the explicit Phase 1 developer request regardless
+of the Auto threshold; their public exposure still requires the packaging tier.
+Developer Auto calibration considers only validated regions whose complete
+segment clears the lower-confidence 1.20x and 20-ms gate, or a valid local
+benchmark shows a statistically clear win. Small,
+unknown, or out-of-domain work remains CPU. Rollback removes filter declarations
+and policy records while leaving the substrate/background adapter intact.
+**Still disabled:** public toolbar/node controls, batch GPU, RL, and RL-TV.
 
-**Parallelism:** benchmark collection on independent hardware can run in
-parallel. Core policy code should have one owner.
+**Parallelism:** median and Gaussian science/adapter work can proceed in
+parallel in separate modules; one integrator owns shared declarations/policy and
+benchmark collection can run independently on named hardware.
 
-### Pass 4 — Single-run UI, cache separation, and provenance
+### Pass 4 — Interactive compute controls, cache identity, and provenance
 
 **Depends on:** Passes 1-3.
-**Owns:** `core/execution.py`, new `core/compute_diagnostics.py`, cache/provenance
-records in the execution layer, new `ui/compute.py`, composition-only edits in
-`_widget.py`, `ui/workers.py`, new `_tests/test_compute_diagnostics.py` and
-`_tests/test_ui_compute.py`, plus focused changes in `_tests/test_execution.py`
-and `_tests/test_widget.py`. Coordinate carefully with current `_widget.py`
-edits.
+**Owns:** `core/execution.py`, persistent interactive cache/provenance mappings
+on top of the transient headless records from Passes 0-1,
+`ui/compute.py`, `ui/workers.py`, composition-only edits in `_widget.py` and
+`_graph.py`; the compute-intent-only workflow v4 change in `core/workflow.py`
+and its canonical workflow-hash/goldens/tests; minimal compatibility edits in
+every existing workflow reader/writer (including batch, generated Python, and
+export paths) so they parse and preserve the v4 block while still forcing CPU;
+and focused execution/diagnostic/widget/graph tests. Coordinate carefully with
+unrelated UI work and give each large composition file one owner.
 
-**Public contracts:** `PipelineRunResult.execution_report`, host cache-record
-maps, diagnostic report, UI session `ComputeRequest`, visible fallback state,
-and one single-run execution service for both formerly synchronous and
-background paths. Small runs may execute inline through the service but may not
-bypass planning/provenance.
+**Public contracts and UI:** `PipelineRunResult.execution_report`, actual-
+implementation host cache records, a session `ComputeRequest`, and one execution
+service for formerly synchronous and background paths. Add a compact toolbar
+selector immediately before Settings with `CPU`, `Auto`, and `Selective`; new
+interactive sessions default to Auto, and the selector is mirrored in Settings
+when the toolbar collapses. `Optimize pipeline…` exists only in Selective mode.
+The inspector Compute group offers `Auto`, `CPU`, `Best GPU`, library-level, and
+exact-implementation preferences where implemented, plus `Benchmark node…`.
+`Use fastest` and `Apply choices` each create one undoable authored-intent edit.
+Forced CPU/Best GPU/library/exact preferences are optimizer constraints and are
+never silently replaced; an explicit user-approved override scope is required.
 
-**Tests/documentation:** CPU/GPU cache separation; stale-result rejection;
-selected/pinned/preview host materialization; fallback/OOM validity messages;
-install guidance; Auto explanations; honest monolithic cancellation; CPU-only
-UI behavior; no per-node selector.
+**Presentation:** each processing-node header has a compact planned/used pill
+such as `CPU`, `GPU · CuPy`, `GPU · cuCIM`, or amber `CPU fallback`; host-only
+infrastructure is labelled `Host` or left unbadged. Planned and actual states
+are visually distinct and become stale on relevant edits. Run details explain
+the selected runtime/library/device, benchmark source, fallback, and repair
+action. Diagnostics provide safe copyable install commands, never silently run
+pip, and show system RAM plus dedicated VRAM on discrete devices or one shared
+memory budget on unified-memory devices.
 
-**Migration:** new request/result fields have CPU defaults. No workflow schema
-change; UI preference is session-only. Existing host caches without records are
-invalidated once or assigned reconstructable CPU records.
+**Tests/documentation:** scientific result identity is based on the actual
+implementation/version and scientific semantics, not global mode, fallback
+policy, device index, or raw benchmark timing. Benchmark-profile identity is
+separate. Test Auto ↔ Selective reuse of identical actual CPU results, stale-run
+rejection after preference changes; CPU, `best_gpu`, library, exact-pin, and
+independently re-resolved fallback cache admissibility; node deletion/
+duplication; one-step optimizer
+and node-benchmark undo, workflow v4 round trips/migration, canonical workflow
+hash changes when authored compute intent changes, preservation through every
+existing reader/writer while external execution remains CPU-only, narrow-toolbar
+behavior, selected/pinned/preview host materialization,
+visible unavailable/OOM fallback, strict preflight, install guidance, CPU-only
+UI, and honest cancellation.
 
-**Acceptance/rollback:** users can answer all five UX questions, every fallback
-is persistent in run details, and no CuPy value reaches napari. Rollback hides
-the UI and forces CPU through the same service. **Still disabled:** batch GPU,
-workflow persistence, generated-code backend intent, RL/RL-TV.
+**Migration:** bump workflow to v4 here. Missing/v3 execution intent becomes CPU
+to preserve historical behavior; newly authored workflows/sessions default to
+Auto. Store only global intent, fallback, and accepted stable node preferences;
+local benchmark evidence and resolved hardware remain local. Existing headless
+callers retain CPU defaults and host caches without reconstructable records are
+invalidated once. Land the v4 parser, serializer, canonical hash, and round-trip
+preservation in all existing consumers atomically. Until their later integration
+passes, batch/generated/export consumers preserve the block but explicitly force
+CPU and do not reinterpret or discard the authored intent.
 
-**Parallelism:** UI presentation tests can begin against fake reports while the
-core provenance code is built, with separate file owners. Do not have multiple
-agents edit `_widget.py`.
+**Acceptance/rollback:** the user can see what was planned, what actually ran,
+why, what was benchmarked, whether evidence is stale, and how to repair a missing
+dependency; accepted choices survive save/reopen while raw evidence does not
+enter the workflow. No device value reaches napari. Rollback hides controls and
+forces CPU through the same execution service, but retains the v4 parser,
+canonical hash, and cross-consumer round-trip so already-saved workflows remain
+readable. **Still disabled:** batch GPU, generated/CLI compute overrides, export
+sidecars, and unimplemented node families.
+
+**Parallelism:** UI tests can begin against fake reports while provenance is
+built. Only one agent edits `_widget.py`; only one edits `_graph.py`.
 
 ### Pass 5 — Batch execution
 
@@ -1358,23 +2023,31 @@ changes in `_tests/test_batch.py`, `_tests/test_batch_setup.py`,
 `_tests/test_batch_controller.py`, and `_tests/test_batch_navigator.py`, plus
 batch docs. It calls `core/execution.py` but does not redesign it.
 
-**Public contracts:** effective compute request in `BatchConfig`; run/item
-compute provenance in `BatchManifest`; cancel token; nested progress; provider
-batch scope and item cleanup.
+**Public contracts:** effective global mode, fallback policy, and authored
+per-node preferences in `BatchConfig`; run/item/node actual compute provenance
+in `BatchManifest`; cancel token; nested progress; runtime batch scope and item
+cleanup.
 
 **Tests/documentation:** multi-item residency/pool reuse without cross-item
-arrays, item cleanup on success/error/cancel/OOM, one-time CPU retry, manifest
-fallback records, source reverification before publication, partial-output
-behavior, continue-on-error, and CPU-only replay.
+arrays; item cleanup on success/error/cancel/OOM; one-time visible CPU retry;
+manifest fallback records; source identity re-verification immediately before
+atomic publication; attached batch-config/hash replay; partial-output and
+continue-on-error behavior; and CPU-only replay. A fully skipped item must not
+discover, import, initialize, or probe an accelerator. Representative benchmark
+choices are labelled estimates because per-item shape/dtype may differ; every
+item still preflights its actual workload.
 
 **Migration:** bump batch config/manifest schema deliberately. Old configs map
 to CPU because that preserves their only former behavior; old manifests remain
-read-only artifacts. Do not change workflow schema.
+read-only artifacts. Authored compute intent participates in the attached
+configuration/history hash, but local timings and resolved hardware do not. Do
+not change workflow schema.
 
 **Acceptance/rollback:** every item has zero live device values after cleanup;
-existing staged-write/source-identity guarantees still pass; batch runner
-replays its recorded request. Rollback forces CPU and continues producing the
-new manifest fields. **Still disabled:** RL/RL-TV and workflow/generated intent.
+all v0.12 staged-write, source-identity, skip, attached-config/hash, and atomic
+promotion guarantees still pass; and the runner replays its recorded request.
+Rollback forces CPU and continues producing the new manifest fields. **Still
+disabled:** generated/CLI/export integration until Pass 8.
 
 **Parallelism:** batch UI can be developed against fake core records with
 separate owners, but `core/batch.py` has one owner. Can overlap Pass 6's CuPy RL
@@ -1386,8 +2059,8 @@ algorithm tests after Pass 4 if no shared files are edited.
 included.
 **Owns:** new `core/gpu/cupy_rl.py`; RL declaration/policy blocks; RL-specific
 memory model; new `_tests/test_gpu_rl.py`; focused additions to
-`_tests/test_operations.py`, `_tests/test_execution.py`, and
-`_tests/test_batch.py`; benchmark artifacts. CPU algorithm edits are prohibited
+`_tests/test_operations.py` and `_tests/test_execution.py`, plus
+`_tests/test_batch.py` only after Pass 5; benchmark artifacts. CPU algorithm edits are prohibited
 unless a separate reviewed contract test exposes an existing inconsistency.
 
 **Public contracts:** `vipp.cupy.richardson_lucy` version 1, iteration checkpoint
@@ -1395,15 +2068,16 @@ protocol, RL memory estimate, and `rl-cupy-f32-v1` parity policy.
 
 **Tests/documentation:** exact current parameters, PSF/grid checks, 2D/3D and
 leading blocks, iteration extremes, negative/non-finite behavior, scale
-preservation, per-iteration progress/cancel/sync, OOM retry, batch cleanup, and
-real-data parity/performance.
+preservation, per-iteration progress/cancel/sync, OOM retry, real-data parity/
+performance, and batch cleanup when batch exposure is enabled.
 
 **Migration:** none; declarations only widen runtime capability.
 
-**Acceptance/rollback:** scientific and 1.5x performance gates pass for each
-advertised region, iteration progress is truthful, and no parameter is
-hard-coded from the spike. Rollback removes the RL declaration. **Still
-disabled:** RL-TV and any new RL initialization/boundary/default.
+**Acceptance/rollback:** every advertised Selective region passes scientific,
+memory, cleanup, and iteration-progress gates; Auto regions additionally clear
+the section 5.4 end-to-end benefit rule using the production adapter. No
+parameter is hard-coded from the spike. Rollback removes the RL declaration.
+**Still disabled:** RL-TV and any new RL initialization/boundary/default.
 
 **Parallelism:** algorithm/parity work can overlap Pass 5 batch work after Pass
 4 with disjoint files; final batch tests wait for Pass 5. One owner controls
@@ -1425,61 +2099,65 @@ checkpoint protocol.
 **Tests/documentation:** lambda-zero equivalence, current TV sign/stencil/
 epsilon/floor semantics, phantom feature retention, PSF/grid behavior,
 2D/3D/iteration extremes, real calibrated datasets, progress/cancel, memory,
-OOM, and batch cleanup.
+OOM, and batch cleanup when batch exposure is enabled.
 
 **Migration:** none. Do not change shipped examples, defaults, formula,
 initialization, padding, PSF preparation, or TV spacing.
 
-**Acceptance/rollback:** all numerical/feature gates and at least 1.5x
-end-to-end speedup hold in every advertised region; real-data review is signed
-off. Rollback removes only RL-TV capability. **Still disabled:** alternative TV
-stencils, observed initialization, reflect padding, and fast precision.
+**Acceptance/rollback:** all numerical/feature, memory, cleanup, and truthful
+iteration gates hold in every Selective region; Auto regions also clear the
+section 5.4 end-to-end benefit rule. Real-data review is signed off. Rollback
+removes only RL-TV capability. **Still disabled:** alternative TV stencils,
+observed initialization, reflect padding, and fast precision.
 
 **Parallelism:** dataset preparation and blinded review can begin earlier; code
 integration waits for Pass 6 and has one owner for shared RL files.
 
-### Pass 8 — Workflow and generated Python
+### Pass 8 — Generated Python and cross-surface persistence
 
 **Depends on:** Passes 4-7 and stable batch request/provenance contracts.
-**Owns:** `core/workflow.py`, workflow goldens, `core/export.py`, export tests,
-focused changes in `_tests/test_workflow.py`,
-`_tests/test_workflow_schema_v3_goldens.py` (renamed or supplemented with v4
-goldens), `_tests/test_export.py`, and `_tests/test_batch.py`; workflow/batch
-hash integration; examples/docs that explicitly choose intent. Do not combine
-unrelated graph schema changes.
+**Owns:** integration-only changes around the frozen Pass 4 workflow-v4 compute
+block in `core/workflow.py`; `core/export.py`; export/generated tests; focused
+workflow and batch tests; effective batch-config/generated-artifact hash and
+provenance integration; and examples/docs that explicitly choose intent. Do not
+add unrelated graph schema changes.
 
-**Public contracts:** workflow v4 `execution.compute`, safe v3-to-v4 CPU
-migration, `run_pipeline(..., compute_request=None)`, CLI backend/fallback
-override, `PipelineResults.execution_report`, and provenance sidecar helper.
+**Public contracts:** `run_pipeline(..., compute_request=None)`; CLI
+mode/fallback/node-preference
+overrides; `PipelineResults.execution_report`; and a provenance-sidecar helper.
 
-**Tests/documentation:** v3 migration; v1/v2 rejection unchanged; CPU/Auto/GPU
-round trip; GPU-authored CPU-only failure; Auto CPU portability; explicit
-session override without mutation; scientific hash sensitivity to intent;
-generated version lock; CPU-only generated import; cache/provenance parity
-between UI/headless/generated runs.
+**Tests/documentation:** reuse Pass 4's v4 round-trip/migration goldens;
+unavailable implementation IDs remain import-safe; Auto remains portable on
+CPU-only hosts; strict versus visible fallback is identical across surfaces;
+session/CLI overrides do not mutate embedded JSON; Pass 4's canonical workflow
+hash remains authoritative while batch-config/generated-artifact hashes respond
+deliberately to effective overrides; generated version lock;
+CPU-only generated import; and cache/provenance parity between UI, headless,
+batch, and generated runs.
 
-**Migration:** bump workflow to v4 only here. Missing/v3 execution intent becomes
-CPU. Resolved device/backend never enters workflow JSON. Batch config continues
-to record effective override.
+**Migration:** no new workflow-schema bump. Pass 4 already migrates v3 to v4 and
+stores accepted stable preferences only. Batch config records its effective
+override and own config hash; generated Python embeds the same portable v4 block.
 
-**Acceptance/rollback:** exported and batch runs reproduce request semantics and
-record actual resolution; old v3 CPU workflows execute unchanged after explicit
-migration. Rollback can keep a v4 parser that forces CPU, but must not emit v3
-documents with lost intent. **Still disabled:** per-node overrides.
+**Acceptance/rollback:** exported and batch runs reproduce authored request
+semantics and record actual resolution; old migrated CPU workflows execute
+unchanged; and a stale benchmark never remains labelled optimal. Rollback keeps
+the Pass 4 v4 parser/UI persistence and forces CPU only in the disabled external
+surfaces.
 
-**Parallelism:** generated-Python work can begin against a frozen v4 fixture,
-but one owner must coordinate `workflow.py`, schema goldens, and hash behavior.
+**Parallelism:** generated-Python work can begin against the frozen Pass 4 v4
+fixture, but one owner coordinates integration-only `workflow.py` and hash edits.
 
-### Pass 9 — Cross-platform packaging and cuCIM source-build gate
+### Pass 9 — Cross-platform packaging and provider-completeness gates
 
-**Progress evidence:** the native-Windows cuCIM skimage sub-gate now has a
-reproducible build, selected upstream tests, and first operation benchmarks in
-[the source evaluation](cucim-windows-source-evaluation.md). Pass 9 remains open
-for the Linux/multi-device matrix and all other acceptance items below. The
-separate [Windows port plan](cucim-windows-port-plan.md) owns the fork,
-Python/CUDA wheel matrix, native C++/Clara work, release engineering, and
-upstream PR sequence; Pass 9 owns whether any resulting package is admitted to
-VIPP.
+**Progress evidence:** the native-Windows cuCIM skimage sub-gate has a
+reproducible build, selected upstream tests, and primitive benchmarks in
+[the source evaluation](cucim-windows-source-evaluation.md). Those results prove
+feasibility, not VIPP-node parity. Pass 9 remains open for production adapters,
+Linux/multi-device evidence, distribution, and feature completeness. The
+separate [Windows port plan](cucim-windows-port-plan.md) owns the upstream-
+tracking fork and eventual native C++/Clara work; this pass decides what VIPP
+can honestly install and advertise.
 
 **Depends on:** Pass 0 contracts and the proposed optional-extra metadata;
 otherwise independent of production operation promotion.
@@ -1489,52 +2167,68 @@ isolated cuCIM build/benchmark artifacts, and machine-readable clean-environment
 resolution/probe evidence. It does not own workflow schemas or enable a
 scientific operation merely because cuCIM builds.
 
-**Public contracts:** the Windows/Linux CUDA and macOS CPU-only support matrix,
-stable `platform_unsupported` diagnostics, named Linux distribution/
-architecture coverage, the rule that no CUDA package resolves on macOS, and a
-promote/defer/reject result for cuCIM as a separately packaged provider.
+**Public contracts:** Python 3.12/CUDA 13 as the primary native-Windows
+development track; a separately validated CUDA 12 track before public release;
+named native-Linux distribution/architecture coverage; WSL2 documented as a
+separate Linux deployment rather than a repair path for native napari; no CUDA
+dependency resolution on macOS; provider-neutral diagnostics; and explicit
+promote/defer/reject results for each CuPyX/cuCIM implementation region.
 
-**Tests/documentation:** clean wheel build/install/import/npe2/generated-Python
-and CPU suite on native Windows, macOS, and Linux; macOS base/extra dependency
-inspection; native Windows and supported-Linux CuPy extra installation plus
-real kernel and required-CuPyX-module probes; WSL2 secondary evidence; an
-explicit unsupported result for unvalidated Linux/musl targets. Clone cuCIM at
-a pinned revision and follow/adapt its documented source build on native
-Windows and each supported Linux target; build installable artifacts, run the
-relevant unit tests and real-device module probes, and benchmark only operations
-where cuCIM may materially outperform or avoid maintaining a custom CuPy kernel.
+**Tests/documentation:** clean base-wheel build/install/import/npe2/generated-
+Python and CPU suites on native Windows, macOS, and Linux; CUDA-13 RTX 5090 and
+RTX 40-series laptop probes; CUDA-12 native Windows/Linux probes; Ubuntu
+22.04/24.04 x86-64 evidence before Linux advertisement; and WSL2 secondary
+evidence. Each CUDA track installs exactly one compatible CuPy distribution and
+runs required CuPyX modules. macOS packaging resolves no CUDA packages. A
+time-boxed M1 Max Metal/MPS/MLX feasibility study reports candidate operations,
+array bridges, unified-memory accounting, packaging, and parity requirements;
+until a provider passes them, macOS uses the CPU path without being described as
+intrinsically GPU-incapable.
+
+Clone cuCIM at a pinned revision on every advertised target, build installable
+artifacts, run relevant upstream and VIPP-adapter tests, and benchmark only
+justified candidates. Soon after Phase 1, perform a named full-feature review of
+`cucim.clara/libcucim` rather than treating a skimage-only build as the desired
+end state. Prefer a feature-complete, maintainable cuCIM integration; keep the
+Clara work outside Phase 1 while its scope and upstream path are established.
 
 **Migration:** none; packaging metadata changes only optional dependency
 resolution.
 
-**Acceptance/rollback:** all three base OS jobs pass, macOS resolves no CUDA
-components, and each advertised Windows/Linux GPU environment installs and
-passes the provider probe from a clean environment. A CUDA target without a
-wheel or reproducible validated source build is removed from the published
-matrix. cuCIM is promoted only if reproducible package builds pass on every
-target where it is advertised and at least one operation clears the common
-parity, memory, cancellation, maintenance, and >=1.5x end-to-end benefit gates
-relative to the best admitted implementation. A Linux-only success remains
-research evidence unless the product explicitly approves a narrower provider
-matrix. Rollback removes cuCIM artifacts/extra independently and removes CuPy
-GPU extras/installation UX while retaining the base CPU matrix. **Still
-disabled:** NVIDIA GPU execution on macOS and every unvalidated OS/
-distribution/architecture.
+**Acceptance/rollback:** all three base OS jobs pass and every advertised CUDA
+environment installs from a clean environment and passes its doctor. A CUDA
+target without a wheel or reproducible supported build is removed from the
+published matrix. Each cuCIM operation requires a reproducible package plus the
+common scientific, memory, cancellation, maintenance, and Selective/Auto gates;
+one fast primitive cannot admit the whole library. A narrower OS/provider matrix
+must be explicit. Rollback removes cuCIM independently and can remove CUDA
+extras/install UX while retaining the portable CPU base. **Still disabled:**
+every unvalidated OS/distribution/architecture/provider, including Apple GPU
+execution until its own provider gate passes.
 
 **Parallelism:** CI and packaging files have one owner. cuCIM build/benchmark
 evidence and other clean-environment probes can run in parallel with Passes 1-8
 after Pass 0 when they use disjoint artifacts.
 
-### Pass 10 — Broader node promotion
+### Pass 10 — Segmentation, measurement, and broad node promotion
 
-**Depends on:** stable passes 1-9 and operation-specific benchmark evidence.
+**Depends on:** Passes 1-4 plus operation-specific scientific evidence for
+implementation work. A family may be researched and validated before Pass 9 is
+complete, but public advertisement requires its relevant Pass 9 runtime/library/
+platform packaging gate. Batch/workflow/generated integration waits for Passes
+5 and 8 rather than blocking the core operation adapter.
 **Owns:** one operation family per sub-pass/PR, with its own provider module,
 declaration, memory/workload/parity policy, tests, benchmark artifacts, and docs.
 
 **Public contracts:** no new generic contract unless an operation proves the
-existing one insufficient. Candidate order is benchmark-driven; rolling-ball/
-background work may use an admitted cuCIM implementation, a CuPy implementation,
-or remain CPU-only. No family is promoted by provider API match alone.
+existing one insufficient. A small Phase 2 bridge wave covers only inexpensive
+pointwise/arithmetic/mask operations needed to preserve useful residency. The
+Phase 3 scientific wave is Otsu, Canny, connected components, and production-
+schema measurements. Phase 5 then adds remaining filters, morphology,
+segmentation, label cleanup, colocalization, and other reasonable nodes. For
+each node, benchmark all scientifically admitted CuPyX, cuCIM, and future
+runtime/library implementations rather than assuming one library is universally best.
+No family is promoted by provider API similarity alone.
 
 **Tests/documentation:** full common promotion gate plus operation-specific
 scientific fixtures, mixed-graph/batch/export integration, performance,
@@ -1543,10 +2237,13 @@ cancellation granularity, and memory.
 **Migration:** normally none. A new parameter, algorithm, or precision mode is
 separate scientific/schema work.
 
-**Acceptance/rollback:** each family meets parity, >=1.5x Auto benefit in its
-advertised region, bounded memory, cleanup, provenance, packaging, and CI
-coverage. Rollback deletes only that declaration/policy. **Still disabled:** all
-unpromoted regions and operations.
+**Acceptance/rollback:** each Selective candidate meets parity, bounded-memory,
+cleanup, provenance, packaging, and CI requirements. Auto additionally requires
+section 5.4 evidence for the complete segment. A GPU residency bridge may remain
+a Selective candidate even when its isolated kernel is slower, because the
+whole-pipeline optimizer may prove that avoiding transfers is globally faster.
+Rollback deletes only that declaration/policy. **Still disabled:** all
+unpromoted dtype/parameter regions and operations.
 
 **Parallelism:** multiple operation-family agents may work concurrently only
 after declaration/policy files are split into family-owned modules or a single
@@ -1556,18 +2253,20 @@ registry integrator serializes their small shared-map edits.
 
 ```text
 Pass 0 contracts
-  -> Pass 1 substrate
-      -> Pass 2 median
-          -> Pass 3 Gaussian/Auto
-              -> Pass 4 single-run UI/provenance
-                  -> Pass 5 batch
+  -> Pass 1 headless execution/benchmark/dev substrate
+      -> Pass 2 Background/Subtract Background
+          -> Pass 3 Median/Gaussian/headless optimizer
+              -> Pass 4 toolbar + Selective node/pipeline UX
                   -> Pass 6 RL -> Pass 7 RL-TV
-                       -> Pass 8 workflow/generated Python
-                           -> Pass 10 broader promotions
+                  -> Pass 10 Otsu/Canny/labels/measurements and bridges
+                  -> Pass 5 batch
+                      -> Pass 8 generated Python/cross-surface persistence
+                          -> Pass 10 remaining reasonable-node families
 
-Pass 9 cross-platform packaging and cuCIM source-build validation may start
-after Pass 0. Its platform gate must pass before the first public GPU release;
-its cuCIM result may independently promote, defer, or reject that provider.
+Pass 9 packaging/provider validation starts after Pass 0 and runs alongside the
+feature passes. Its CUDA matrix must pass before public CUDA extras ship. Its
+cuCIM completeness and Apple-provider investigations independently promote,
+defer, or reject those surfaces without blocking the portable CPU application.
 ```
 
 Safe parallelism is evidence/UI-fixture work with disjoint files. Shared core
@@ -1576,249 +2275,94 @@ registries, `pipeline.py`, `execution.py`, `_widget.py`, `batch.py`, and
 family declarations after parallel agents finish rather than allowing several
 agents to edit the same tuple/map.
 
-## 14. Ready-to-send agent prompts
+## 14. Implementation execution rules
 
-Every prompt below assumes the preceding dependency passes are present. Agents
-must inspect `git status` and relevant diffs before editing, preserve unrelated
-working-tree changes, and stop rather than overwrite overlapping work.
+The numbered passes above are the authoritative work orders. Generate a fresh,
+pass-specific task from those contracts when implementation starts; do not reuse
+the pre-2026-07-27 global-only prompts because they predate Selective mode,
+per-node choices, and the runtime/library split.
 
-### Prompt — Pass 0
+For every implementation pass:
 
-> Implement Pass 0 (GPU compute contract stabilization) from
-> `docs/gpu-production-implementation-plan.md`. Own only
-> `src/napari_vipp/core/compute.py`, new
-> `src/napari_vipp/core/compute_specs.py`, the contract-only portion of new
-> `src/napari_vipp/core/compute_policy.py`,
-> `src/napari_vipp/_tests/test_compute.py`, new
-> `src/napari_vipp/_tests/test_compute_specs.py`, new
-> `src/napari_vipp/_tests/test_compute_policy.py`, and directly related compute
-> docs. Inspect all uncommitted changes first; do not overwrite or
-> reformat unrelated work, especially `core/pipeline.py` and `_widget.py`.
-> Define immutable JSON-safe request/environment/spec/decision/memory/plan
-> contracts and exact CPU/Auto/GPU reason semantics. Auto choosing CPU is not a
-> fallback; explicit GPU fails closed unless fallback is explicit. Advertise no
-> production GPU operations, import no provider at package import, and make no
-> workflow/batch schema change. Preserve all CPU behavior. Run focused tests,
-> architecture/import checks, and the full feasible CPU suite. Hand off changed
-> files, contract decisions, tests/results, and remaining risks. Do not commit
-> or push.
+1. Inspect the branch status, current diffs, architecture tests, and directly
+   affected CPU functions before editing. Preserve unrelated user work.
+2. Assign one owner to each shared registry and each large composition file.
+   Parallel agents may own disjoint implementation modules, fixtures, benchmarks, and
+   platform evidence; the designated integrator serializes shared-map edits.
+3. Preserve the CPU function's parameters, defaults, axes, boundaries, dtype,
+   scaling, metadata, progress, and errors. A matching optional-library primitive
+   is evidence only until the complete VIPP adapter passes parity.
+4. Keep optional accelerator discovery lazy. CPU mode and fully skipped batch
+   work must not import or initialize an accelerator.
+5. Admit a candidate to Selective only after scientific, memory, cleanup, and
+   cancellation gates. Admit it to Auto only after the separate end-to-end
+   policy gate or valid local evidence.
+6. Use deterministic fake runtimes/clocks for required tests and named real GPU
+   hosts for promotion evidence. Report unsupported dtype/parameter regions
+   explicitly.
+7. Benchmark transactionally: no writer, publication, history, live cache, or
+   preference mutation before user acceptance. Store stable choices in authored
+   configuration; keep raw timings and hardware fingerprints local.
+8. Run focused tests, CPU-only import/architecture checks, Ruff, and the feasible
+   full suite before integration. Run real-device parity/benchmark jobs whenever
+   the pass advertises hardware support.
+9. Commit each coherent reviewed feature on
+   `codex/gpu-cross-platform-support` with a narrow message, then push the branch
+   after checks pass. The designated integrator alone commits/pushes shared
+   multi-agent work; never force-push or mix unrelated changes.
 
-### Prompt — Pass 1
+### Phase 1 integration sequence
 
-> Implement Pass 1 (device execution substrate) from the production GPU plan
-> after Pass 0 is merged. Own new `core/compute_registry.py`,
-> `core/device_execution.py`, `core/node_execution.py`, `core/gpu/__init__.py`,
-> `core/gpu/cupy_provider.py`, new `_tests/test_compute_registry.py`,
-> `_tests/test_device_execution.py`, `_tests/test_node_execution.py`, focused
-> changes in `_tests/test_execution.py`, and only the minimal coordinated seams
-> in `core/pipeline.py` and `core/execution.py`. Check the
-> dirty tree/diffs before editing and do not collide with concurrent graph/UI
-> work. Build a lazy provider protocol, opaque device values, maximal segment
-> planner, port liveness, transactional commit, transfer/sync/cleanup, private
-> memory-pool scope, and CPU-default request path. Use a fake provider to test
-> branches, joins, multi-input/output, cached/manual/retained nodes, dirty runs,
-> cancellation, OOM one-retry limits, and leak prevention. Prove existing CPU
-> arrays, metadata, progress, manual states, cache pruning, and errors are
-> unchanged. Do not enable a production GPU operation, UI, Auto, or any schema
-> change. Run tests/Ruff/import checks and provide handoff notes. Do not commit
-> or push.
+- **Commit A — contracts:** CPU/Auto/Selective, node preferences, fallback,
+  runtime/library/implementation, dtype/value, decision, and benchmark records.
+- **Commit B — CPU execution seam:** unified Qt-free prepared-node/execution
+  service with byte/state-for-state CPU compatibility.
+- **Commit C — fake runtime/planner:** opaque device values, segmentation,
+  liveness, memory, cancellation, OOM/fallback, the generic transactional node-
+  benchmark and graph-optimizer services, and deterministic fake tests.
+- **Commit D — CUDA development runtime:** lazy CuPy runtime, diagnostics/doctor,
+  private-pool/out-of-pool accounting, and reproducible CUDA 13/12 setup.
+- **Commit E — background:** production-faithful Rolling-Ball and Subtract
+  Background adapter with experimental cuCIM admission.
+- **Commit F — median:** CuPyX median declarations, exact parity matrix, memory,
+  and real-device evidence.
+- **Commit G — Gaussian:** CuPyX 2D/3D Gaussian declarations, tolerance matrix,
+  memory, and real-device evidence.
+- **Commit H — operation-candidate benchmarking:** wire the production adapters
+  into the already fake-tested parity-before-timing service, then collect local
+  fingerprints/staleness and real-candidate evidence.
+- **Commit I — pipeline optimizer/integration:** graph-global assignment,
+  one-transfer Background → Gaussian → Median acceptance, and complete Phase 1
+  headless provenance/cache-admissibility tests.
 
-### Prompt — Pass 2
+Stop after each commit if CPU behavior changes, a device value escapes, parity
+is unexplained, cleanup is incomplete, or the environment cannot be reproduced.
 
-> Implement Pass 2 (first production median GPU implementation) against the
-> frozen Pass 0/1 contracts. Own new `core/gpu/cupy_median.py`, the median-only
-> declaration/policy block, new `test_gpu_median.py`, median benchmark-matrix
-> additions, median GPU documentation/evidence, and `pyproject.toml` only for
-> the two optional CUDA-major extras. Preserve the CPU
-> `core.operations.median_filter` byte-for-byte unless an explicitly approved
-> test-only seam is required. Initial support must be no broader than validated
-> finite float32, current slice-wise YX/channel semantics, reflect boundary, and
-> tested odd kernel sizes. Require exact array parity, dtype/shape/state parity,
-> bounded memory, honest before/after-kernel cancellation, and >=1.5x
-> end-to-end benefit in the advertised region. Inspect concurrent changes and
-> coordinate any shared `compute_specs.py` edit through one owner. Do not change
-> workflow/batch schemas or expose public Auto/UI yet. Run CPU-only tests, fake
-> provider tests, real-GPU tests where available, Ruff, and report exact results
-> and unsupported regions. Do not commit or push.
+## 15. Recorded product decisions and remaining gates
 
-### Prompt — Pass 3
+The 2026-07-27 product direction resolves the interaction model. The remaining
+items below are empirical release gates or deliberately deferred product choices,
+not reasons to redesign Phase 1.
 
-> Implement Pass 3 (Gaussian GPU implementations and first conservative Auto
-> policy). Own new `core/gpu/cupy_gaussian.py`, Gaussian-only declarations and
-> parity/memory policies, `core/compute_policy.py`, versioned packaged policy
-> JSON under `src/napari_vipp/compute_policies/`, `pyproject.toml` only for
-> packaging those JSON files, benchmark-matrix changes, new
-> `_tests/test_gpu_gaussian.py`, and Auto additions in
-> `_tests/test_compute_policy.py`. Preserve
-> current CPU Gaussian functions, reflect boundaries, sigma=0 behavior, output
-> dtype, channel exclusions, and 2D-versus-3D axis semantics. Do not turn the RTX
-> 4050 numbers into universal thresholds. Auto must include transfers,
-> residency, host/device tiers, provider/runtime, memory, and confidence; small,
-> unknown, or out-of-domain workloads choose CPU. Meet the documented NRMSE and
-> max-absolute gates and >=1.5x end-to-end threshold in advertised regions.
-> Inspect/avoid concurrent working-tree changes, make no workflow schema/UI/
-> batch changes, run all focused and feasible full checks, and hand off policy
-> artifacts and evidence. Do not commit or push.
-
-### Prompt — Pass 4
-
-> Implement Pass 4 (single-run UI, host cache separation, and provenance).
-> Own `core/execution.py`, new `core/compute_diagnostics.py`, new
-> `ui/compute.py`, `ui/workers.py`, new
-> `_tests/test_compute_diagnostics.py`, new `_tests/test_ui_compute.py`, focused
-> edits in `_tests/test_execution.py` and `_tests/test_widget.py`, and narrowly
-> scoped composition edits in `_widget.py`. Inspect the existing `_widget.py`
-> diff and
-> preserve all unrelated toolbar/parameter/graph work; only one agent may edit
-> that file. Route synchronous and background application runs through the same
-> Qt-free execution service. Add CPU/GPU-separated host cache records,
-> `PipelineRunResult.execution_report`, stale-safe provenance, global CPU/Auto/
-> GPU controls, device/install status, node decision reasons, visible fallback/
-> OOM/validity reporting, and honest cancellation. Never expose a CuPy array to
-> the widget/napari and do not add per-node selectors. Keep UI intent session-
-> only: no workflow/batch schema change. Preserve CPU behavior and test CPU-only
-> import/UI, stale runs, pinned/preview materialization, cache identity, and all
-> fallback messages. Run focused/full tests and Ruff; hand off changes and
-> screenshots/text behavior where useful. Do not commit or push.
-
-### Prompt — Pass 5
-
-> Implement Pass 5 (batch GPU integration) using the stable execution service.
-> Own `core/batch.py`, `core/batch_setup.py`, batch schema constants and tests,
-> and the existing `ui/batch.py`, `ui/batch_controller.py`, and
-> `ui/batch_navigator.py` integration, with focused edits in
-> `_tests/test_batch.py`, `_tests/test_batch_setup.py`,
-> `_tests/test_batch_controller.py`, and `_tests/test_batch_navigator.py`.
-> Inspect and preserve concurrent changes;
-> do not redesign `core/execution.py` without coordination. Persist the effective
-> compute request in BatchConfig, add run/item/node compute provenance and output
-> digests to manifests, provide nested progress/cancellation, reuse free pool
-> blocks, and retain across items only explicitly accounted immutable fixed
-> inputs with unchanged source/cache identities. Prove zero live per-item device
-> values at every item end and release fixed constants at run end.
-> Preserve staged writes, source identity re-verification, atomic promotion,
-> partial-item and continue-on-error behavior. Old batch configs must migrate to
-> CPU; do not change workflow schema. Test success/error/cancel/OOM/fallback,
-> cleanup, replay, source changes, and CPU-only environments. Run tests/Ruff and
-> hand off schema/version notes and results. Do not commit or push.
-
-### Prompt — Pass 6
-
-> Implement Pass 6 (ordinary Richardson–Lucy GPU) after the execution and
-> provenance contracts are stable. Own new `core/gpu/cupy_rl.py`, RL-only
-> declarations/parity/workload/memory policies, new `_tests/test_gpu_rl.py`,
-> focused edits in `_tests/test_operations.py`, `_tests/test_execution.py`, and
-> `_tests/test_batch.py`, and RL GPU benchmark/docs additions. Preserve the CPU
-> algorithm and every current
-> parameter/default: constant initialization, zero-extension convolution, PSF
-> cleaning/normalization, filter epsilon, clipping, scale preservation,
-> block-wise 2D/3D, and float32 output. Target the production pipeline/native
-> path and document/test the existing direct-call distinction without silently
-> changing it. Synchronize and report once per completed iteration; cancellation
-> launches no next iteration and cleans before return. Cover PSF/grid validation,
-> iterations 1/2/25/500, non-finite/negative inputs, OOM/fallback, batch cleanup,
-> documented numerical/feature gates, and >=1.5x advertised benefit. Inspect
-> concurrent changes, avoid workflow/schema/default edits, run focused/full/
-> real-GPU checks, and hand off evidence. Do not commit or push.
-
-### Prompt — Pass 7
-
-> Implement Pass 7 (RL-TV GPU) only after Pass 6 and against the existing
-> RL-TV validation baseline. Own new `core/gpu/cupy_rl_tv.py` or the explicitly
-> assigned RL-TV section of the shared RL provider, RL-TV-only declarations and
-> policies, new `_tests/test_gpu_rl_tv.py`, focused edits in
-> `_tests/test_rl_tv_validation.py`, `scripts/validate_rl_tv_phantoms.py`, and
-> its result artifacts/docs. Preserve the
-> exact production formula, sign, denominator/floor, central-difference stencil,
-> constant initialization, zero boundary, epsilons, clipping, PSF/grid rules,
-> defaults, and example parameters. Do not introduce observed initialization,
-> reflect padding, physical-spacing TV, implicit PSF preparation, or fast math.
-> Require lambda=0 compatibility, documented NRMSE/max-absolute and feature-
-> retention gates, denominator diagnostics, 2D/3D/iteration extremes, truthful
-> iteration cancel/progress, bounded memory/OOM cleanup, batch behavior, >=1.5x
-> benefit, and real calibrated dataset review. Inspect/preserve concurrent work,
-> run all required checks, and hand off evidence and limitations. Do not commit
-> or push.
-
-### Prompt — Pass 8
-
-> Implement Pass 8 (portable workflow intent and generated Python) after
-> compute/batch contracts are frozen. Own `core/workflow.py`, workflow schema
-> goldens, `core/export.py`, focused edits in `_tests/test_workflow.py`,
-> `_tests/test_workflow_schema_v3_goldens.py` (or its v4 replacement),
-> `_tests/test_export.py`, and `_tests/test_batch.py`, scientific workflow-hash
-> integration, and directly affected examples/docs. Inspect the dirty tree and
-> do not combine unrelated graph/schema edits. Add workflow v4
-> `execution.compute` with CPU default, exact CPU/Auto/GPU/fallback/precision/
-> policy intent, and a narrowly safe v3-to-v4 CPU migration; keep v1/v2
-> rejection. Never persist resolved device/backend or memory snapshots. Update
-> generated `run_pipeline`/CLI overrides and `PipelineResults` provenance while
-> preserving version lock, shared executor, source bindings, metadata, and CPU-
-> only import. Batch config remains the effective run override. Test GPU-authored
-> CPU-only failure, Auto portability, non-mutating overrides, hashes, migration,
-> generated execution/provenance, and no per-node overrides. Run focused/full
-> tests and Ruff; provide schema/migration handoff notes. Do not commit or push.
-
-### Prompt — Pass 9
-
-> Execute Pass 9 as the cross-platform packaging and cuCIM source-build gate.
-> Own only GPU-extra environment markers in `pyproject.toml`, cross-platform CI,
-> provider/package probes, supported-platform docs, isolated cuCIM build/
-> benchmark artifacts, and uniquely named clean-environment evidence. Do not
-> edit workflow schemas, base dependency versions, or enable an operation merely
-> because a provider builds. Build/install/import/test the base wheel on native
-> Windows, macOS, and Linux. Prove that macOS base and GPU-extra resolution
-> installs no CUDA package and returns the CPU-only platform diagnostic. On
-> native Windows and each advertised Linux target, install every selected CuPy
-> extra and run a real kernel plus required CuPyX probes. Separately pin a cuCIM
-> revision, adapt its documented Ubuntu source-build procedure for each target,
-> produce installable artifacts, run relevant tests/device probes, and benchmark
-> only justified operation candidates. Apply the common parity, memory,
-> cancellation, packaging, maintenance, and >=1.5x benefit gates. A Linux-only
-> build remains research evidence unless a narrower provider matrix is approved.
-> Finish with a promote/defer/reject result for cuCIM and remove unsupported
-> targets from the matrix. Hand off exact commands, versions, evidence, and
-> limitations. Do not commit or push.
-
-### Prompt — Pass 10 family
-
-> Implement one explicitly assigned Pass 10 operation family only. Before
-> editing, confirm the operation has benchmark evidence and receive exact
-> ownership of its provider module, declaration/policy module, tests, benchmark
-> artifacts, and docs. Inspect/preserve all concurrent working-tree changes;
-> coordinate shared registry edits through the designated integrator. Preserve
-> the CPU function, parameters, defaults, axes, boundaries, dtype/scaling, and
-> metadata. Add a narrow immutable capability, lazy provider callable,
-> operation-specific parity and memory/workload policy, mixed-graph/batch/
-> export/provenance tests, truthful cancellation, and real-GPU evidence. Auto
-> support requires >=1.5x end-to-end benefit in a validated region; unknown
-> regions stay CPU. Make no workflow/schema or scientific algorithm change
-> unless separately approved. Run focused/full/real-GPU checks, hand off exact
-> files/results/disabled regions, and do not commit or push.
-
-## 15. Risks and decisions requiring approval
-
-The architecture can be implemented with the recommended defaults below, but
-the marked product choices should be approved before the named pass exposes
-them.
-
-| ID | Decision | Recommended default | Why approval matters / latest decision point |
+| ID | Decision | Recorded direction | Remaining gate |
 | --- | --- | --- | --- |
-| D1 | Global or per-node authored backend | Global per-run/workflow only; no per-node UI in passes 0-10. | Per-node intent expands schema, batch/export APIs, cache identity, and user complexity. Approve before Pass 0 publishes extension seams. |
-| D2 | Explicit GPU fallback default | Off; explicit GPU fails closed. One checkbox enables enumerated CPU fallback. | Silent fallback weakens intent and reproducibility. Approve before Pass 4 UI. |
-| D3 | Auto OOM behavior | Clean and retry the affected transactional segment once on CPU, visibly. | Improves completion but changes backend after launch. Approve before Pass 1 retry contract. |
-| D4 | Workflow persistence | Add global intent in workflow v4; migrate v3 to CPU; never store resolved hardware. | Affects portability and scientific workflow hashes. Approve before Pass 8. |
-| D5 | GPU installation UX | Two explicit CUDA-major extras with `[ctk]` and Windows/Linux environment markers; guided copyable command only on eligible platforms; never auto-install and never include in base. | Dependency size, platform resolution, and driver/runtime support. Approve before packaging changes. |
-| D6 | Cache sharing | Separate CPU/GPU always at launch; no median exception. Future sharing requires an approved bitwise parity equivalence group. | Prevents tolerance-equivalent results from aliasing. Approve before Pass 4. |
-| D7 | Supported hardware | NVIDIA CUDA through validated native-Windows and supported-Linux CuPy environments; macOS is CPU-only. Auto only for validated tiers. Recommend >=6 GiB for the supported initial UX, while smaller devices may use explicit GPU only if per-run memory preflight fits. | A hard minimum or broader OS claim changes support burden and messaging. Approve before public GPU release. |
-| D8 | Minimum Auto speedup | 1.5x predicted end-to-end including transfers, with uncertainty margin. | Lower values may not justify complexity/power/memory; higher values may exclude Gaussian. Approve before Pass 3. |
-| D9 | Cross-platform and real-GPU CI cost | Native Windows/macOS/Linux CPU/package jobs required per PR; scheduled Windows CUDA 13 and Linux CUDA 12, expanded matrix for release/promotion. | macOS plus dedicated GPU runners and maintenance have recurring cost. Approve before first promotion. |
-| D10 | Device identity in artifacts | Cache uses exact session device ID; portable provenance stores vendor/model, compute capability, VRAM/tier, driver/runtime, and a salted/hash identifier—not raw serial/UUID. | Balances reproducibility and privacy. Approve before Pass 4 provenance. |
-| D11 | GPU memory defaults | 80% cap and `max(512 MiB, 10%)` reserve, separately configurable from host RAM. | Determines OOM rate and coexistence with napari/other GPU users. Approve before Pass 1 public contract/Pass 4 UI. |
-| D12 | Provenance sidecars | Write atomic `.vipp-provenance.json` beside standalone exports by default; batch uses its manifest and output digest. | Creates additional files but supplies format-independent reproducibility. Approve before Pass 8. |
-| D13 | Precision policy | Ship only strict scientific-default behavior; no fast/mixed-precision UI. | A fast mode creates new scientific and cache semantics. Revisit only with operation-specific evidence. |
-| D14 | Meaning of cross-platform GPU support | Base/CPU support on Windows, macOS, and Linux; NVIDIA CUDA support on validated Windows/Linux only; macOS fails explicit GPU preflight with a platform reason. If NVIDIA GPU execution on macOS is required, stop the plan. | Current CUDA has no macOS target, so no Python library or source build can satisfy an all-three-OS NVIDIA requirement. Approve before Pass 0 wording and Pass 9 packaging work. |
-| D15 | cuCIM source-build option | Keep cuCIM as a separate narrow evaluation candidate. Native-Windows skimage feasibility is demonstrated for pinned `v26.06.00`; maintain it through a thin upstream-tracking fork, attempt the bounded native Clara port in the [separate plan](cucim-windows-port-plan.md), promote only individual high-value operations after advertised-Linux builds and all remaining gates, and keep CuPy independent. | The current Windows wheel omits Clara I/O. Full support adds MSVC/C++/Python-ABI, file-I/O, plugin, CI, packaging, and maintenance obligations; wider hardware, schemas, memory, cancellation, and Linux evidence remain approval conditions. |
+| D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Auto/CPU/Best GPU/library/exact choices. | Freeze JSON-safe contracts in Pass 0. |
+| D2 | Fallback | Auto choosing CPU normally is not fallback. Selective uses visible CPU fallback by default; a strict option fails closed. | Finalize which typed reasons are retryable before Pass 1. |
+| D3 | OOM | Auto may clean and retry one affected transactional segment once on CPU and must report it. Selective follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
+| D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Pass 4 atomically updates the canonical workflow hash and every existing reader/writer preserves the block while unsupported surfaces force CPU. Resolved hardware and timings stay local. | Complete GPU activation, effective override hashes, and provenance for generated/batch/export surfaces in Passes 5 and 8. |
+| D5 | Installation UX | Start with provider-aware diagnostics and a safe copyable command. A later in-app installer requires explicit consent, an isolated supported environment, progress, verification, and restart; never mutate an arbitrary napari environment silently. | Validate CUDA-13 and CUDA-12 packages before publishing extras or commands. |
+| D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Selective; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
+| D7 | Initial hardware | CUDA acceleration targets validated native Windows and Linux first, including RTX 5090 and RTX 40-series laptops. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Name public OS/Python/CUDA/device tiers only after clean-host evidence. |
+| D8 | Performance | Selective admission is scientific/operational. Non-benchmarked Auto requires a lower-confidence 1.20x end-to-end prediction and 20-ms saving; local winners need a clear result beyond the greater of 5% or 10 ms. | Recalibrate only from reviewed multi-device production-adapter evidence. |
+| D9 | CI | Every PR keeps CPU/package checks on Windows, macOS, and Linux. Scheduled real-GPU jobs cover Windows CUDA 13 and native Linux CUDA 12/13; releases expand the matrix. | Secure stable GPU hosts and define maintenance ownership before public promotion. |
+| D10 | Device identity | Exact device/driver/runtime belongs in local benchmark identity and run provenance, not scientific result identity unless it changes semantics. Portable artifacts use descriptive tiers and privacy-preserving identifiers. | Review the provenance schema in Pass 4. |
+| D11 | Memory | Discrete CUDA starts with an 80% cap and `max(512 MiB, 10%)` reserve, separate from host RAM. Unified-memory providers use one shared budget and never add RAM plus nominal VRAM. | Tune on the 5090, laptop GPUs, and M1 Max before broad defaults ship. |
+| D12 | Sidecars | Recommended: atomic `.vipp-provenance.json` beside standalone exports; batch keeps equivalent data in its manifest. | Confirm the default before Pass 8 because it creates an additional file. |
+| D13 | Precision | Ship strict scientific-default behavior only; no global fast/mixed-precision control. | Add any relaxed precision only as operation-specific, versioned evidence-backed work. |
+| D14 | Cross-platform meaning | VIPP remains supported on Windows, macOS, and Linux. CUDA is only one provider; lack of CUDA on macOS does not preclude a later Apple GPU provider. | Apple feasibility and packaging have their own gate; never imply NVIDIA code runs on macOS. |
+| D15 | cuCIM/Clara | Use cuCIM operation-by-operation and keep CuPy independent. Clara is outside Phase 1 but must receive a named near-term feature-completeness/upstream review; the desired end state is not a permanently hobbled skimage-only fork. | Reproducible target packages, VIPP-adapter parity, Linux evidence, and a maintainable Clara decision. |
+| D16 | Benchmark persistence | Benchmarking proposes choices transactionally. Workflows store only user-accepted stable preferences; raw timings/hardware remain local and visibly become stale. | Finalize invalidation fingerprints and local record migration in Passes 0-4. |
+| D17 | Phase 1 scope | Headless contracts/substrate/setup plus Background, Subtract Background, median, and 2D/3D Gaussian; no production toolbar, batch, workflow, or managed installer yet. | User go-ahead starts implementation. |
 
 ### Principal risks and mitigations
 
@@ -1833,6 +2377,16 @@ them.
 - **Auto decisions vary across machines.** Ship versioned validated records,
   use conservative out-of-domain CPU behavior, and record every descriptor and
   policy decision.
+- **An isolated-node winner makes the pipeline slower.** Optimize the whole
+  graph with transfer, residency, branch, host-materialization, and memory costs;
+  never greedily concatenate node winners.
+- **Benchmarking perturbs results or measures thermal noise.** Run candidates in
+  side-effect-free transactions, synchronize timed boundaries, separate cold and
+  warm samples, randomize order, expose variance, and keep the current choice
+  inside the versioned noise floor.
+- **Accepted evidence becomes stale.** Retain the authored preference but stop
+  claiming it is optimal after graph, parameter, input, device, driver, runtime,
+  or implementation changes; offer a clear rebenchmark action.
 - **Fallback masks defects.** Retry only classified unavailable/support/OOM
   cases; unclassified provider or scientific errors fail.
 - **Device arrays leak through branching or stale workers.** Keep them in a
@@ -1841,34 +2395,42 @@ them.
 - **Tolerance drift hides scientific changes.** Version parity policies, require
   local and aggregate gates, preserve real-data fixtures, and review any relaxed
   threshold as a scientific change.
+- **A fast library primitive is not the VIPP node.** Benchmark the complete
+  adapter, including dtype restoration, non-finite handling, blocks/channels,
+  metadata, smoothing, clipping, and transfers.
+- **Installation guidance damages an existing environment.** Detect the current
+  platform/runtime first, prefer a dedicated environment, never install two CuPy
+  CUDA-major distributions together, and reserve future managed installs for
+  explicit consent plus verification/restart.
 - **Concurrent agents collide in large files.** Assign one owner to shared core
   registries and each of `pipeline.py`, `_widget.py`, `batch.py`, and
   `workflow.py`; split operation-family declarations before parallel promotion.
 
 ## Handoff summary
 
-1. **Recommended architecture:** one Qt-free execution service plans immutable
-   per-run decisions, executes transactional host/GPU segments through a lazy
-   provider registry, keeps only host arrays in public caches, and returns
-   structured provenance.
-2. **Critical path:** contracts -> substrate -> median -> Gaussian/Auto ->
-   single-run UI/provenance -> batch and RL -> RL-TV -> workflow/generated
-   Python -> cross-platform release gate -> broader promotions.
-3. **Safe parallel work:** median provider fixtures can overlap substrate after
-   Pass 0; batch and RL science work can overlap after Pass 4; platform/package
-   evidence can be collected independently after Pass 0. Shared registries,
-   large composition files, CI, and packaging metadata remain single-owner.
-4. **First production operation:** finite-float32 median filtering with current
-   slice-wise YX semantics and exact parity in a deliberately narrow validated
-   region.
-5. **Decisions needing approval:** D1-D15 above, especially fallback default,
-   workflow v4 intent, cache separation, memory defaults, CI hardware cost, and
-   the Windows/Linux CUDA plus macOS CPU-only platform contract.
-6. **Estimated implementation passes:** eleven numbered passes (0-10), with
-   Pass 10 split into additional operation-family PRs.
-7. **Platform conclusion:** the base application can be supported on Windows,
-   macOS, and Linux. NVIDIA acceleration can be supported on validated Windows
-   and Linux targets only. cuCIM's Windows skimage source build and material
-   operation-level benefit are now demonstrated on one RTX 5090; Pass 9 still
-   owns the remaining portability/production gates. No current NVIDIA-only
-   implementation can provide GPU execution on macOS.
+1. **Product model:** CPU, Auto, and Selective are distinct global modes. Auto is
+   the default; Selective adds per-node preferences, node benchmarking, and a
+   graph-global `Optimize pipeline…` action.
+2. **Architecture:** one Qt-free execution service plans immutable decisions,
+   executes transactional host/device segments through lazy runtimes and
+   implementation libraries, keeps public caches host-only, and returns actual
+   implementation provenance.
+3. **Phase 1:** contracts -> fake/lazy-CUDA substrate and reproducible dev setup
+   -> production-faithful Background/Subtract Background -> CuPyX median and
+   Gaussian -> headless node benchmark and whole-pipeline optimizer. Stop for the
+   user's go-ahead before implementation.
+4. **Next wave:** toolbar/inspector/badges/install guidance and RAM/VRAM display;
+   minimal workflow-v4 persistence for accepted choices; RL then RL-TV; Otsu,
+   Canny, connected components, measurements, residency bridges, and broad
+   reasonable-node promotion; batch/generated/CLI/export integration follows.
+5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and
+   packaging admit a Selective candidate. Auto additionally needs conservative
+   whole-segment performance evidence. Primitive benchmarks alone admit nothing.
+6. **Platform direction:** portable CPU support remains Windows/macOS/Linux;
+   CUDA targets validated Windows/Linux first. M1 Max Metal/MPS/MLX feasibility
+   is a named near-term investigation with unified-memory semantics. cuCIM's
+   skimage work continues, while Clara/full feature completeness is reviewed
+   soon after Phase 1.
+7. **Delivery discipline:** implement reviewable coherent commits on
+   `codex/gpu-cross-platform-support`, validate before each push, and keep the
+   remote development branch current without mixing unrelated work.

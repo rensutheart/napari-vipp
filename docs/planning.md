@@ -1,6 +1,6 @@
 # napari-vipp Planning And Roadmap
 
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-27
 
 This is the concise planning source of truth. It records the current public
 baseline, the work that is still genuinely open, and the intended order for the
@@ -28,7 +28,9 @@ The core workflow families are:
 PSF generation, deconvolution foundations, and optional microscope-reader
 routing are part of the 0.11 baseline; explicit batch configuration and
 provenance are part of 0.12. Near-term work is validation on real data,
-scalable OME-Zarr previews, and safe graph/parameter copy and paste.
+scalable OME-Zarr previews, safe graph/parameter copy and paste, and a separate
+headless GPU-development track for CPU/Auto/Selective execution plus the first
+background/median/Gaussian adapters.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
 authoring remain later milestones.
 
@@ -45,9 +47,12 @@ authoring remain later milestones.
 - [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
   generation, deconvolution, and microscope metadata requirements.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
-  optional NVIDIA acceleration architecture, platform support matrix, packaging,
-  validation gates, and delivery order. VIPP remains CPU-capable on Windows,
-  macOS, and Linux; the CUDA path targets validated Windows/Linux systems only.
+  CPU/Auto/Selective architecture, per-node and whole-pipeline benchmarking,
+  implementation-library selection, fallbacks, memory/provenance, packaging,
+  validation gates, and delivery order. The first headless slice targets
+  Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. VIPP remains
+  CPU-capable on Windows, macOS, and Linux; CUDA targets validated Windows/Linux
+  systems first, while an M1 Max Metal/MPS/MLX provider is investigated.
 - [cucim-windows-port-plan.md](cucim-windows-port-plan.md): upstream-tracking
   fork, native Windows `libcucim`/Clara port, Python/CUDA artifact matrix,
   validation, distribution, installation support, and upstreaming strategy.
@@ -66,10 +71,12 @@ authoring remain later milestones.
   publication-facing evidence.
 - [mitomorph-feature-parity.md](mitomorph-feature-parity.md): MitoMorph-inspired
   feature parity tracking.
-- Future GPU backend research is kept off main on the
+- GPU implementation work is kept off main on the
   [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
-  branch. Main remains the CPU production baseline until that work passes its
-  scientific-parity, packaging, memory, and cross-platform promotion gates.
+  branch. It has absorbed the current main commits so development starts from
+  the 0.12 baseline, while main remains the CPU production branch until GPU work
+  passes its scientific-parity, packaging, memory, usability, and cross-platform
+  promotion gates.
 
 ## Current Public Baseline
 
@@ -134,6 +141,17 @@ Known constraints:
 These are the items that should guide near-term work. Items not listed here are
 either already implemented enough to build on or intentionally deferred.
 
+### Parallel GPU Development Track
+
+Keep implementation on `codex/gpu-cross-platform-support`, synchronized with
+main but separate until promotion gates pass. Phase 1 is headless: freeze
+CPU/Auto/Selective and per-node/benchmark contracts, unify execution, create the
+dedicated CUDA development/doctor path, and implement Rolling-Ball/Subtract
+Background, median, and 2D/3D Gaussian with production CPU parity. The toolbar,
+durable accepted choices, RL/RL-TV, segmentation/measurement wave, batch, and
+generated-Python integration follow in the ordered phases of the
+[GPU production plan](gpu-production-implementation-plan.md).
+
 ### 1. PSF Generation And Deconvolution
 
 Already implemented for the first 0.11 alpha: normalized objective/channel metadata from
@@ -151,8 +169,8 @@ Still needed before positioning restoration as publication-ready:
   crop-margin guidance;
 - release-facing tutorial screenshots or walkthroughs for measured PSF,
   generated PSF, baseline RL, and RL-TV comparison workflows;
-- performance profiling on larger 3D volumes before considering chunking,
-  vector acceleration, or optional GPU work;
+- performance profiling on larger 3D volumes to calibrate chunking, CPU vector
+  work, GPU memory estimates, and Auto/Selective admission policies;
 - continued documentation of wavelength, numerical aperture, refractive index,
   pixel size, z step, channel selection, and when metadata is being used versus
   manually overridden.
@@ -270,9 +288,11 @@ Interaction contract:
   viewport centre when the pointer is outside the canvas. An empty-canvas
   context menu exposes `Paste here` at the clicked graph position.
 - Pasting creates new node ids, preserves operation ids, current serialized
-  parameters, relative positions, and connections whose two endpoints are both
-  in the copied selection. Connections to nodes outside the selection, named
+  parameters, authored per-node compute preferences (remapped to the new ids),
+  relative positions, and connections whose two endpoints are both in the
+  copied selection. Connections to nodes outside the selection, named
   tunnel subscriptions/definitions, cached results, runtime/error state, pin
+  state, local benchmark evidence, planned/used compute decisions, hardware
   state, and transient inspector state are not copied in the first iteration.
   This keeps the pasted group self-contained and prevents hidden dependencies
   or large data copies.
@@ -287,7 +307,8 @@ Interaction contract:
   parameter validation, dirty/stale propagation, dynamic-port refresh, and
   recalculation rules. It does not change the target's id, position,
   connections, tunnels, note, pin/cache state, or output data. The parameter
-  replacement is one undo/redo action.
+  replacement is one undo/redo action. It does not change the authored compute
+  preference; that remains a separate Compute setting.
 - `Paste parameters` is hidden or disabled with an explanatory reason for a
   different operation type, malformed/outdated data, or a multi-node clipboard.
   Compatibility is exact by operation id for this release; superficially
@@ -565,7 +586,9 @@ Release gate:
 - users can copy one node and paste its complete validated parameter set onto
   another node with the exact same operation id;
 - graph paste and parameter paste are atomic, undoable, and do not copy cached
-  arrays, runtime state, or external graph dependencies;
+  arrays, local benchmark evidence, planned/used compute state, hardware state,
+  runtime state, or external graph dependencies; graph paste does preserve and
+  remap authored per-node compute preferences, while parameter paste does not;
 - previews remain explicitly separate from analysis-resolution scientific
   arrays and do not change saved numerical results.
 
