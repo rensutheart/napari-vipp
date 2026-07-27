@@ -322,6 +322,101 @@ def test_record_keys_separate_workload_and_environment():
     assert request.key.digest != other_workload.key.digest
 
 
+def test_nonadaptive_requests_preserve_legacy_warm_round_counts_above_21():
+    clock = ManualClock()
+    events: list[str] = []
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        warm_rounds=30,
+    )
+
+    record = NodeBenchmarkService(clock=clock).benchmark(request)
+
+    assert all(len(result.warm_seconds) == 30 for result in record.candidates)
+
+
+def test_key_includes_effective_profile_and_exact_implementation_versions():
+    clock = ManualClock()
+    events: list[str] = []
+    request = _request(
+        clock=clock,
+        events=events,
+        live_input={"value": 3},
+        bad=False,
+    )
+    versioned_reference = replace(
+        request.reference,
+        implementation_version="2",
+    )
+
+    keys = {
+        request.key.digest,
+        replace(request, warm_rounds=15).key.digest,
+        replace(request, adaptive_rounds=True).key.digest,
+        replace(request, paired_bootstrap_samples=200).key.digest,
+        replace(request, reference=versioned_reference).key.digest,
+    }
+
+    assert len(keys) == 5
+    assert request.key.implementation_ids == (
+        "cpu-reference@unspecified",
+        "cuda-cupy@unspecified",
+    )
+    assert request.key.policy_id.startswith("paired-warm-v1@")
+
+
+def test_bootstrap_lower_bound_must_exclude_one_for_candidate_selection():
+    def run(*, bootstrap_samples: int):
+        clock = ManualClock()
+        candidate_calls = 0
+
+        def reference(private):
+            clock.advance(0.100)
+            return private["value"]
+
+        warm_durations = (0.040, 0.040, 0.040, 0.040, 0.200, 0.200, 0.200)
+
+        def candidate(private):
+            nonlocal candidate_calls
+            # Untimed parity + measured cold precede the seven warm calls.
+            duration = (
+                0.040
+                if candidate_calls < 2
+                else warm_durations[candidate_calls - 2]
+            )
+            candidate_calls += 1
+            clock.advance(duration)
+            return private["value"]
+
+        request = NodeBenchmarkRequest(
+            workload=_workload(),
+            environment_fingerprint="environment-confidence",
+            reference=BenchmarkImplementation("cpu", reference),
+            candidates=(BenchmarkImplementation("gpu", candidate),),
+            private_input_factory=lambda: {"value": 3},
+            parity=lambda expected, actual: expected == actual,
+            paired_bootstrap_samples=bootstrap_samples,
+            paired_bootstrap_seed=123,
+        )
+        return NodeBenchmarkService(clock=clock).benchmark(request)
+
+    guarded = run(bootstrap_samples=2_000)
+    legacy = run(bootstrap_samples=0)
+    candidate = next(
+        result for result in guarded.candidates if result.implementation_id == "gpu"
+    )
+
+    assert candidate.paired_speedup_median == pytest.approx(2.5)
+    assert candidate.paired_speedup_lower_confidence_bound <= 1.0
+    assert guarded.accepted_implementation_id == "cpu"
+    assert legacy.accepted_implementation_id == "gpu"
+
+
 def _transition_pair(seconds: float = 3.0):
     return (
         RuntimeTransitionCost("cpu-numpy", "cuda-cupy", fixed_seconds=seconds),

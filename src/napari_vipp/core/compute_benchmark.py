@@ -10,15 +10,20 @@ an optional runtime.
 from __future__ import annotations
 
 import itertools
+import json
 import math
+import os
 import random
 import statistics
+import tempfile
 import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -27,10 +32,15 @@ from .compute import (
     BenchmarkRecord,
     BenchmarkRecordKey,
     WorkloadDescriptor,
+    canonical_digest,
 )
 from .compute_policy import PerformanceEvidence, evaluate_auto_performance
 
 MINIMUM_WARM_ROUNDS = 7
+ADAPTIVE_WARM_ROUNDS = (15, 21)
+DEFAULT_BOOTSTRAP_SAMPLES = 2_000
+DEFAULT_BOOTSTRAP_SEED = 17_029
+DEFAULT_CONFIDENCE_LEVEL = 0.95
 HOST_RUNTIME_ID = "cpu-numpy"
 
 
@@ -40,6 +50,10 @@ def _noop() -> None:
 
 def _zero_memory() -> int:
     return 0
+
+
+def _no_observation() -> BenchmarkInvocationObservation | None:
+    return None
 
 
 class RandomSource(Protocol):
@@ -88,6 +102,65 @@ ParityComparator = Callable[[object, object], bool | ParityResult]
 
 
 @dataclass(frozen=True, slots=True)
+class BenchmarkInvocationObservation:
+    """Optional measurements emitted by one implementation invocation.
+
+    The generic service never infers these values.  A provider adapter may
+    report only measurements it actually observed; ``None`` therefore means
+    unavailable rather than zero.  Total end-to-end duration remains measured
+    by :class:`NodeBenchmarkService` around input creation, execution, and the
+    implementation synchronization callback.
+    """
+
+    timing_scope: str = "implementation-only"
+    synchronized: bool = False
+    transfers_included: bool = False
+    transfer_seconds: float | None = None
+    resident_seconds: float | None = None
+    runtime_live_bytes: int = 0
+    runtime_reserved_bytes: int = 0
+    out_of_pool_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        scope = str(self.timing_scope).strip()
+        if not scope:
+            raise ValueError("timing_scope must not be empty.")
+        for name in ("synchronized", "transfers_included"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean.")
+        for name in ("transfer_seconds", "resident_seconds"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and non-negative or None.")
+            if value is not None:
+                object.__setattr__(self, name, float(value))
+        for name in (
+            "runtime_live_bytes",
+            "runtime_reserved_bytes",
+            "out_of_pool_bytes",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer.")
+        if self.runtime_live_bytes > self.runtime_reserved_bytes:
+            raise ValueError(
+                "runtime_live_bytes must not exceed runtime_reserved_bytes."
+            )
+        object.__setattr__(self, "timing_scope", scope)
+
+    @property
+    def peak_memory_bytes(self) -> int:
+        """Conservative observed device use without double-counting live pool."""
+
+        return self.runtime_reserved_bytes + self.out_of_pool_bytes
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkImplementation:
     """One benchmarkable implementation adapter.
 
@@ -101,17 +174,30 @@ class BenchmarkImplementation:
     synchronize: Callable[[], None] = _noop
     peak_memory_bytes: Callable[[], int] = _zero_memory
     is_writer: bool = False
+    observation: Callable[[], BenchmarkInvocationObservation | None] = (
+        _no_observation
+    )
+    implementation_version: str = "unspecified"
 
     def __post_init__(self) -> None:
         implementation_id = str(self.implementation_id).strip()
         if not implementation_id:
             raise ValueError("implementation_id must not be empty.")
-        for name in ("execute", "synchronize", "peak_memory_bytes"):
+        for name in (
+            "execute",
+            "synchronize",
+            "peak_memory_bytes",
+            "observation",
+        ):
             if not callable(getattr(self, name)):
                 raise TypeError(f"{name} must be callable.")
         if not isinstance(self.is_writer, bool):
             raise TypeError("is_writer must be a boolean.")
+        version = str(self.implementation_version).strip()
+        if not version:
+            raise ValueError("implementation_version must not be empty.")
         object.__setattr__(self, "implementation_id", implementation_id)
+        object.__setattr__(self, "implementation_version", version)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +213,16 @@ class NodeBenchmarkRequest:
     benchmark_policy_id: str = "paired-warm-v1"
     warm_rounds: int = MINIMUM_WARM_ROUNDS
     time_budget_seconds: float | None = None
+    time_parity_as_cold: bool = False
+    warmup_rounds: int = 0
+    adaptive_rounds: bool = False
+    max_warm_rounds: int = ADAPTIVE_WARM_ROUNDS[-1]
+    paired_bootstrap_samples: int = 0
+    paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED
+    paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL
+    device_id: str = ""
+    memory_limit_bytes: int | None = None
+    safety_reserve_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.workload, WorkloadDescriptor):
@@ -148,6 +244,29 @@ class NodeBenchmarkRequest:
             raise ValueError(
                 f"warm_rounds must be an integer >= {MINIMUM_WARM_ROUNDS}."
             )
+        if not isinstance(self.time_parity_as_cold, bool):
+            raise TypeError("time_parity_as_cold must be a boolean.")
+        if not isinstance(self.adaptive_rounds, bool):
+            raise TypeError("adaptive_rounds must be a boolean.")
+        for name in (
+            "warmup_rounds",
+            "max_warm_rounds",
+            "paired_bootstrap_samples",
+            "paired_bootstrap_seed",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer.")
+        if self.adaptive_rounds and self.max_warm_rounds < self.warm_rounds:
+            raise ValueError("max_warm_rounds must be at least warm_rounds.")
+        confidence = self.paired_confidence_level
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(float(confidence))
+            or not 0 < float(confidence) < 1
+        ):
+            raise ValueError("paired_confidence_level must be between zero and one.")
         budget = self.time_budget_seconds
         if budget is not None and (
             isinstance(budget, bool)
@@ -156,6 +275,23 @@ class NodeBenchmarkRequest:
             or budget <= 0
         ):
             raise ValueError("time_budget_seconds must be finite and positive.")
+        device_id = str(self.device_id).strip()
+        memory_limit = self.memory_limit_bytes
+        safety_reserve = self.safety_reserve_bytes
+        if memory_limit is not None and (
+            isinstance(memory_limit, bool)
+            or not isinstance(memory_limit, int)
+            or memory_limit <= 0
+        ):
+            raise ValueError("memory_limit_bytes must be positive or None.")
+        if safety_reserve is not None and (
+            isinstance(safety_reserve, bool)
+            or not isinstance(safety_reserve, int)
+            or safety_reserve < 0
+        ):
+            raise ValueError(
+                "safety_reserve_bytes must be non-negative or None."
+            )
         identifiers = [self.reference.implementation_id]
         identifiers.extend(candidate.implementation_id for candidate in candidates)
         if len(set(identifiers)) != len(identifiers):
@@ -163,22 +299,56 @@ class NodeBenchmarkRequest:
         object.__setattr__(self, "environment_fingerprint", environment)
         object.__setattr__(self, "benchmark_policy_id", policy)
         object.__setattr__(self, "candidates", candidates)
+        object.__setattr__(self, "device_id", device_id)
         if budget is not None:
             object.__setattr__(self, "time_budget_seconds", float(budget))
+        object.__setattr__(self, "paired_confidence_level", float(confidence))
 
     @property
     def key(self) -> BenchmarkRecordKey:
         identifiers = tuple(
             sorted(
-                (self.reference.implementation_id,)
-                + tuple(candidate.implementation_id for candidate in self.candidates)
+                (_implementation_token(self.reference),)
+                + tuple(
+                    _implementation_token(candidate)
+                    for candidate in self.candidates
+                )
             )
+        )
+        effective_profile = {
+            "base_policy_id": self.benchmark_policy_id,
+            "warm_rounds": self.warm_rounds,
+            "time_parity_as_cold": self.time_parity_as_cold,
+            "warmup_rounds": self.warmup_rounds,
+            "adaptive_rounds": self.adaptive_rounds,
+            "max_warm_rounds": (
+                self.max_warm_rounds if self.adaptive_rounds else None
+            ),
+            "paired_bootstrap_samples": self.paired_bootstrap_samples,
+            "paired_bootstrap_seed": (
+                self.paired_bootstrap_seed
+                if self.paired_bootstrap_samples
+                else None
+            ),
+            "paired_confidence_level": (
+                self.paired_confidence_level
+                if self.paired_bootstrap_samples
+                else None
+            ),
+            "time_budget_seconds": self.time_budget_seconds,
+        }
+        effective_policy_id = (
+            f"{self.benchmark_policy_id}@"
+            f"{canonical_digest(effective_profile)}"
         )
         return BenchmarkRecordKey(
             workload_fingerprint=self.workload.fingerprint,
             environment_fingerprint=self.environment_fingerprint,
             implementation_ids=identifiers,
-            policy_id=self.benchmark_policy_id,
+            policy_id=effective_policy_id,
+            device_id=self.device_id,
+            memory_limit_bytes=self.memory_limit_bytes,
+            safety_reserve_bytes=self.safety_reserve_bytes,
         )
 
 
@@ -212,19 +382,233 @@ class InMemoryBenchmarkStore:
             return len(self._records)
 
 
+class BenchmarkStore(Protocol):
+    """Minimal local benchmark-record store used by the service."""
+
+    def get(self, key: BenchmarkRecordKey) -> BenchmarkRecord | None: ...
+
+    def put(self, record: BenchmarkRecord) -> None: ...
+
+
+class BenchmarkStoreError(BenchmarkError):
+    """Raised when durable local benchmark evidence cannot be read or written."""
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkStaleness:
+    """Exact-key comparison result for previously collected local evidence."""
+
+    stale: bool
+    reasons: tuple[str, ...] = ()
+
+
+_BENCHMARK_STORE_LOCKS_GUARD = threading.Lock()
+_BENCHMARK_STORE_LOCKS: dict[str, Any] = {}
+
+
+def _benchmark_store_lock(path: Path):
+    key = os.path.normcase(str(path.resolve(strict=False)))
+    with _BENCHMARK_STORE_LOCKS_GUARD:
+        return _BENCHMARK_STORE_LOCKS.setdefault(key, threading.RLock())
+
+
+def benchmark_record_staleness(
+    record: BenchmarkRecord,
+    current_key: BenchmarkRecordKey,
+) -> BenchmarkStaleness:
+    """Compare every benchmark identity component without fuzzy reuse."""
+
+    if not isinstance(record, BenchmarkRecord):
+        raise TypeError("record must be a BenchmarkRecord.")
+    if not isinstance(current_key, BenchmarkRecordKey):
+        raise TypeError("current_key must be a BenchmarkRecordKey.")
+    reasons = []
+    if record.key.workload_fingerprint != current_key.workload_fingerprint:
+        reasons.append("workload fingerprint changed")
+    if record.key.environment_fingerprint != current_key.environment_fingerprint:
+        reasons.append("environment fingerprint changed")
+    if record.key.implementation_ids != current_key.implementation_ids:
+        reasons.append("implementation set changed")
+    if record.key.policy_id != current_key.policy_id:
+        reasons.append("benchmark policy changed")
+    if record.key.device_id != current_key.device_id:
+        reasons.append("device target changed")
+    if record.key.memory_limit_bytes != current_key.memory_limit_bytes:
+        reasons.append("memory limit changed")
+    if record.key.safety_reserve_bytes != current_key.safety_reserve_bytes:
+        reasons.append("safety reserve changed")
+    return BenchmarkStaleness(bool(reasons), tuple(reasons))
+
+
+class JsonBenchmarkStore:
+    """Durable machine-local JSON store keyed only by exact benchmark identity.
+
+    The caller chooses the local path.  This store is deliberately independent
+    of workflow JSON and scientific result caches, and each update replaces the
+    complete small index atomically. Instances in this Python process share a
+    per-path lock and reload before mutation, preventing stale-instance lost
+    updates. Unique same-directory temporary files make replacement collision
+    safe. This class does not claim cross-process serialization; callers that
+    share a path across processes must provide an external file lock.
+    """
+
+    SCHEMA_VERSION = 1
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = Path(path).expanduser().resolve(strict=False)
+        if not self.path.name:
+            raise ValueError("path must name a benchmark JSON file.")
+        self._records: dict[str, BenchmarkRecord] = {}
+        self._lock = _benchmark_store_lock(self.path)
+        with self._lock:
+            self._records = self._read_records()
+
+    def get(self, key: BenchmarkRecordKey) -> BenchmarkRecord | None:
+        if not isinstance(key, BenchmarkRecordKey):
+            raise TypeError("key must be a BenchmarkRecordKey.")
+        with self._lock:
+            self._records = self._read_records()
+            return self._records.get(key.digest)
+
+    def put(self, record: BenchmarkRecord) -> None:
+        if not isinstance(record, BenchmarkRecord):
+            raise TypeError("record must be a BenchmarkRecord.")
+        with self._lock:
+            updated = self._read_records()
+            updated[record.key.digest] = record
+            self._write(updated)
+            self._records = updated
+
+    def records(self) -> tuple[BenchmarkRecord, ...]:
+        with self._lock:
+            self._records = self._read_records()
+            return tuple(self._records[key] for key in sorted(self._records))
+
+    def clear(self) -> None:
+        with self._lock:
+            self._write({})
+            self._records.clear()
+
+    def __len__(self) -> int:
+        with self._lock:
+            self._records = self._read_records()
+            return len(self._records)
+
+    def _read_records(self) -> dict[str, BenchmarkRecord]:
+        if not self.path.exists():
+            return {}
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, Mapping):
+                raise TypeError("root must be an object")
+            if payload.get("schema_version") != self.SCHEMA_VERSION:
+                raise ValueError("unsupported schema_version")
+            raw_records = payload.get("records", ())
+            if not isinstance(raw_records, list):
+                raise TypeError("records must be an array")
+            records = tuple(_benchmark_record_from_dict(item) for item in raw_records)
+            indexed = {record.key.digest: record for record in records}
+            if len(indexed) != len(records):
+                raise ValueError("records contain duplicate exact keys")
+            return indexed
+        except Exception as exc:
+            raise BenchmarkStoreError(
+                f"Could not read local benchmark store {self.path}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+    def _write(self, records: Mapping[str, BenchmarkRecord]) -> None:
+        payload = {
+            "schema_version": self.SCHEMA_VERSION,
+            "records": [
+                _benchmark_record_as_dict(records[key]) for key in sorted(records)
+            ],
+        }
+        temporary: Path | None = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            encoded = json.dumps(
+                payload,
+                sort_keys=True,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="\n",
+                prefix=f".{self.path.name}.tmp-",
+                suffix=".json",
+                dir=self.path.parent,
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(encoded + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        except Exception as exc:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise BenchmarkStoreError(
+                f"Could not write local benchmark store {self.path}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+
+def _benchmark_record_as_dict(record: BenchmarkRecord) -> dict[str, object]:
+    return asdict(record)
+
+
+def _benchmark_record_from_dict(payload: object) -> BenchmarkRecord:
+    if not isinstance(payload, Mapping):
+        raise TypeError("benchmark record must be an object")
+    values = dict(payload)
+    key_payload = values.pop("key", None)
+    candidate_payloads = values.pop("candidates", None)
+    if not isinstance(key_payload, Mapping):
+        raise TypeError("benchmark record key must be an object")
+    if not isinstance(candidate_payloads, list):
+        raise TypeError("benchmark candidates must be an array")
+    key_values = dict(key_payload)
+    key_values["implementation_ids"] = tuple(
+        key_values.get("implementation_ids", ())
+    )
+    key = BenchmarkRecordKey(**key_values)
+    candidates = []
+    for item in candidate_payloads:
+        if not isinstance(item, Mapping):
+            raise TypeError("benchmark candidate must be an object")
+        candidate = dict(item)
+        for name in (
+            "warm_seconds",
+            "warm_transfer_seconds",
+            "warm_resident_seconds",
+        ):
+            if name in candidate:
+                candidate[name] = tuple(candidate[name])
+        candidates.append(BenchmarkCandidateResult(**candidate))
+    return BenchmarkRecord(key=key, candidates=tuple(candidates), **values)
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateQuarantineEntry:
     workload_fingerprint: str
     environment_fingerprint: str
     implementation_id: str
     reason: str
+    benchmark_key_digest: str = ""
 
 
 class CandidateQuarantine:
     """Workload- and environment-local quarantine for invalid candidates."""
 
     def __init__(self) -> None:
-        self._entries: dict[tuple[str, str, str], CandidateQuarantineEntry] = {}
+        self._entries: dict[tuple[str, str, str, str], CandidateQuarantineEntry] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -232,11 +616,13 @@ class CandidateQuarantine:
         workload_fingerprint: str,
         environment_fingerprint: str,
         implementation_id: str,
-    ) -> tuple[str, str, str]:
+        benchmark_key_digest: str = "",
+    ) -> tuple[str, str, str, str]:
         return (
             str(workload_fingerprint),
             str(environment_fingerprint),
             str(implementation_id),
+            str(benchmark_key_digest),
         )
 
     def get(
@@ -244,11 +630,13 @@ class CandidateQuarantine:
         workload_fingerprint: str,
         environment_fingerprint: str,
         implementation_id: str,
+        benchmark_key_digest: str = "",
     ) -> CandidateQuarantineEntry | None:
         key = self._key(
             workload_fingerprint,
             environment_fingerprint,
             implementation_id,
+            benchmark_key_digest,
         )
         with self._lock:
             return self._entries.get(key)
@@ -259,17 +647,20 @@ class CandidateQuarantine:
         environment_fingerprint: str,
         implementation_id: str,
         reason: str,
+        benchmark_key_digest: str = "",
     ) -> CandidateQuarantineEntry:
         entry = CandidateQuarantineEntry(
             workload_fingerprint=str(workload_fingerprint),
             environment_fingerprint=str(environment_fingerprint),
             implementation_id=str(implementation_id),
             reason=str(reason).strip() or "candidate failed validation",
+            benchmark_key_digest=str(benchmark_key_digest),
         )
         key = self._key(
             entry.workload_fingerprint,
             entry.environment_fingerprint,
             entry.implementation_id,
+            entry.benchmark_key_digest,
         )
         with self._lock:
             self._entries[key] = entry
@@ -290,8 +681,104 @@ class _CandidateState:
     parity_passed: bool = False
     cold_seconds: float | None = None
     warm_seconds: list[float] = field(default_factory=list)
+    cold_transfer_seconds: float | None = None
+    warm_transfer_seconds: list[float | None] = field(default_factory=list)
+    cold_resident_seconds: float | None = None
+    warm_resident_seconds: list[float | None] = field(default_factory=list)
     peak_memory_bytes: int = 0
+    peak_runtime_live_bytes: int = 0
+    peak_runtime_reserved_bytes: int = 0
+    peak_out_of_pool_bytes: int = 0
+    timing_scopes: set[str] = field(default_factory=set)
+    synchronized_observations: list[bool] = field(default_factory=list)
+    transfer_inclusion_observations: list[bool] = field(default_factory=list)
     error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PairedBootstrapResult:
+    """Deterministic paired speedup summary for one candidate."""
+
+    median_speedup: float
+    lower_confidence_bound: float
+    confidence_level: float
+    sample_count: int
+    seed: int
+
+
+def paired_bootstrap_speedup(
+    reference_seconds: Sequence[float],
+    candidate_seconds: Sequence[float],
+    *,
+    sample_count: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+) -> PairedBootstrapResult:
+    """Return a deterministic one-sided lower bound from paired warm rounds."""
+
+    reference = tuple(_validated_duration(value) for value in reference_seconds)
+    candidate = tuple(_validated_duration(value) for value in candidate_seconds)
+    if not reference or len(reference) != len(candidate):
+        raise ValueError("paired timings must be non-empty and have equal length.")
+    if isinstance(sample_count, bool) or not isinstance(sample_count, int):
+        raise ValueError("sample_count must be a positive integer.")
+    if sample_count < 1:
+        raise ValueError("sample_count must be a positive integer.")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("seed must be a non-negative integer.")
+    if (
+        isinstance(confidence_level, bool)
+        or not isinstance(confidence_level, (int, float))
+        or not math.isfinite(float(confidence_level))
+        or not 0 < float(confidence_level) < 1
+    ):
+        raise ValueError("confidence_level must be between zero and one.")
+
+    ratios = tuple(
+        _finite_speedup(reference_value, candidate_value)
+        for reference_value, candidate_value in zip(
+            reference,
+            candidate,
+            strict=True,
+        )
+    )
+    median_speedup = float(statistics.median(ratios))
+    rng = random.Random(seed)
+    length = len(ratios)
+    bootstrap = []
+    for _index in range(sample_count):
+        sample = [ratios[rng.randrange(length)] for _item in range(length)]
+        bootstrap.append(float(statistics.median(sample)))
+    bootstrap.sort()
+    # A 95% one-sided lower confidence bound uses the fifth percentile.
+    tail = 1.0 - float(confidence_level)
+    lower_index = min(sample_count - 1, max(0, math.floor(tail * sample_count)))
+    return PairedBootstrapResult(
+        median_speedup=median_speedup,
+        lower_confidence_bound=bootstrap[lower_index],
+        confidence_level=float(confidence_level),
+        sample_count=sample_count,
+        seed=seed,
+    )
+
+
+def _validated_duration(value: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        raise ValueError("benchmark durations must be finite and non-negative.")
+    return float(value)
+
+
+def _finite_speedup(reference_seconds: float, candidate_seconds: float) -> float:
+    if candidate_seconds == 0:
+        if reference_seconds == 0:
+            return 1.0
+        return float.fromhex("0x1.fffffffffffffp+1023")
+    return reference_seconds / candidate_seconds
 
 
 def _default_orderer(
@@ -302,13 +789,20 @@ def _default_orderer(
     return values
 
 
+def _implementation_token(implementation: BenchmarkImplementation) -> str:
+    return (
+        f"{implementation.implementation_id}@"
+        f"{implementation.implementation_version}"
+    )
+
+
 class NodeBenchmarkService:
     """Run parity-gated, paired node benchmarks as an atomic transaction."""
 
     def __init__(
         self,
         *,
-        store: InMemoryBenchmarkStore | None = None,
+        store: BenchmarkStore | None = None,
         quarantine: CandidateQuarantine | None = None,
         clock: Callable[[], float] = time.perf_counter,
         rng: RandomSource | None = None,
@@ -354,22 +848,53 @@ class NodeBenchmarkService:
         }
 
         self._check_abort(request, started, cancelled)
-        expected = self._invoke_reference(request, started, cancelled)
-        states[request.reference.implementation_id].parity_passed = True
+        reference_state = states[request.reference.implementation_id]
+        if request.time_parity_as_cold:
+            try:
+                expected, reference_state.cold_seconds = (
+                    self._timed_invoke_with_result(
+                        reference_state,
+                        request.private_input_factory,
+                        request,
+                        started,
+                        cancelled,
+                        phase="cold",
+                    )
+                )
+            except (BenchmarkCancelled, BenchmarkBudgetExceeded):
+                raise
+            except Exception as exc:
+                raise BenchmarkReferenceError(
+                    f"Reference parity/cold call failed: {self._error_text(exc)}"
+                ) from exc
+        else:
+            expected = self._invoke_reference(request, started, cancelled)
+        reference_state.parity_passed = True
 
         for candidate in request.candidates:
             state = states[candidate.implementation_id]
             quarantine = self.quarantine.get(
                 request.workload.fingerprint,
                 request.environment_fingerprint,
-                candidate.implementation_id,
+                _implementation_token(candidate),
+                request.key.digest,
             )
             if quarantine is not None:
                 state.error = f"quarantined: {quarantine.reason}"
                 continue
             self._check_abort(request, started, cancelled)
             try:
-                actual = self._invoke(candidate, request.private_input_factory)
+                if request.time_parity_as_cold:
+                    actual, candidate_cold = self._timed_invoke_with_result(
+                        state,
+                        request.private_input_factory,
+                        request,
+                        started,
+                        cancelled,
+                        phase="cold",
+                    )
+                else:
+                    actual = self._invoke(candidate, request.private_input_factory)
                 parity = request.parity(expected, actual)
                 result = (
                     parity
@@ -377,7 +902,10 @@ class NodeBenchmarkService:
                     else ParityResult(parity)
                 )
                 if result.passed:
-                    self._sample_peak(state)
+                    if request.time_parity_as_cold:
+                        state.cold_seconds = candidate_cold
+                    else:
+                        self._sample_observation(state)
             except Exception as exc:
                 self._quarantine_state(request, state, self._error_text(exc))
                 continue
@@ -398,15 +926,17 @@ class NodeBenchmarkService:
         # first measured calls after all candidates pass parity qualification.
         for implementation_id in tuple(active):
             state = states[implementation_id]
+            if state.cold_seconds is not None:
+                continue
             try:
                 state.cold_seconds = self._timed_invoke(
-                    state.implementation,
+                    state,
                     request.private_input_factory,
                     request,
                     started,
                     cancelled,
+                    phase="cold",
                 )
-                self._sample_peak(state)
             except (BenchmarkCancelled, BenchmarkBudgetExceeded):
                 raise
             except Exception as exc:
@@ -417,7 +947,30 @@ class NodeBenchmarkService:
                 self._quarantine_state(request, state, self._error_text(exc))
                 active.remove(implementation_id)
 
-        for _round_index in range(request.warm_rounds):
+        # Production requests may ask for untimed warmup after the first/JIT
+        # diagnostic and before randomized paired rounds.  Legacy requests keep
+        # the historical zero-warmup behavior.
+        for _warmup_index in range(request.warmup_rounds):
+            for implementation_id in tuple(active):
+                state = states[implementation_id]
+                try:
+                    self._check_abort(request, started, cancelled)
+                    self._invoke(state.implementation, request.private_input_factory)
+                    self._sample_observation(state)
+                    self._check_abort(request, started, cancelled)
+                except (BenchmarkCancelled, BenchmarkBudgetExceeded):
+                    raise
+                except Exception as exc:
+                    if implementation_id == request.reference.implementation_id:
+                        raise BenchmarkReferenceError(
+                            f"Reference warmup failed: {self._error_text(exc)}"
+                        ) from exc
+                    self._quarantine_state(request, state, self._error_text(exc))
+                    active.remove(implementation_id)
+
+        target_rounds = request.warm_rounds
+        round_index = 0
+        while round_index < target_rounds:
             ordered = tuple(self._orderer(tuple(active), self._rng))
             if len(ordered) != len(active) or set(ordered) != set(active):
                 raise BenchmarkRejected(
@@ -429,14 +982,14 @@ class NodeBenchmarkService:
                 state = states[implementation_id]
                 try:
                     elapsed = self._timed_invoke(
-                        state.implementation,
+                        state,
                         request.private_input_factory,
                         request,
                         started,
                         cancelled,
+                        phase="warm",
                     )
                     state.warm_seconds.append(elapsed)
-                    self._sample_peak(state)
                 except (BenchmarkCancelled, BenchmarkBudgetExceeded):
                     raise
                 except Exception as exc:
@@ -446,15 +999,27 @@ class NodeBenchmarkService:
                         ) from exc
                     self._quarantine_state(request, state, self._error_text(exc))
                     active.remove(implementation_id)
+            round_index += 1
+            if (
+                request.adaptive_rounds
+                and round_index == target_rounds
+                and target_rounds < request.max_warm_rounds
+                and self._needs_more_rounds(
+                    states,
+                    reference_id=request.reference.implementation_id,
+                    active_ids=tuple(active),
+                )
+            ):
+                target_rounds = _next_adaptive_round_target(
+                    target_rounds,
+                    request.max_warm_rounds,
+                )
 
         results = tuple(
-            BenchmarkCandidateResult(
-                implementation_id=state.implementation.implementation_id,
-                parity_passed=state.parity_passed,
-                cold_seconds=state.cold_seconds,
-                warm_seconds=tuple(state.warm_seconds),
-                peak_memory_bytes=state.peak_memory_bytes,
-                error=state.error,
+            self._candidate_result(
+                request,
+                state,
+                reference_state=reference_state,
             )
             for state in states.values()
         )
@@ -465,9 +1030,132 @@ class NodeBenchmarkService:
             created_utc=self._created_utc(),
             benchmark_policy_id=request.benchmark_policy_id,
             accepted_implementation_id=accepted.implementation_id,
+            paired_confidence_level=(
+                request.paired_confidence_level
+                if request.paired_bootstrap_samples
+                else None
+            ),
+            paired_bootstrap_samples=request.paired_bootstrap_samples,
+            paired_bootstrap_seed=request.paired_bootstrap_seed,
         )
         self.store.put(record)
         return record
+
+    @staticmethod
+    def _candidate_result(
+        request: NodeBenchmarkRequest,
+        state: _CandidateState,
+        *,
+        reference_state: _CandidateState,
+    ) -> BenchmarkCandidateResult:
+        paired = None
+        candidate_seed = _candidate_bootstrap_seed(
+            request.paired_bootstrap_seed,
+            state.implementation.implementation_id,
+        )
+        if (
+            request.paired_bootstrap_samples
+            and state.parity_passed
+            and not state.error
+            and len(state.warm_seconds) == len(reference_state.warm_seconds)
+            and state.warm_seconds
+        ):
+            paired = paired_bootstrap_speedup(
+                reference_state.warm_seconds,
+                state.warm_seconds,
+                sample_count=request.paired_bootstrap_samples,
+                seed=candidate_seed,
+                confidence_level=request.paired_confidence_level,
+            )
+        scopes = state.timing_scopes
+        timing_scope = (
+            next(iter(scopes))
+            if len(scopes) == 1
+            else "mixed" if scopes else "implementation-only"
+        )
+        warm_transfer = _complete_measurement_series(
+            state.warm_transfer_seconds,
+            len(state.warm_seconds),
+        )
+        warm_resident = _complete_measurement_series(
+            state.warm_resident_seconds,
+            len(state.warm_seconds),
+        )
+        return BenchmarkCandidateResult(
+            implementation_id=state.implementation.implementation_id,
+            parity_passed=state.parity_passed,
+            cold_seconds=state.cold_seconds,
+            warm_seconds=tuple(state.warm_seconds),
+            peak_memory_bytes=state.peak_memory_bytes,
+            error=state.error,
+            timing_scope=timing_scope,
+            synchronized=(
+                bool(state.synchronized_observations)
+                and all(state.synchronized_observations)
+            ),
+            transfers_included=(
+                bool(state.transfer_inclusion_observations)
+                and all(state.transfer_inclusion_observations)
+            ),
+            cold_transfer_seconds=state.cold_transfer_seconds,
+            warm_transfer_seconds=warm_transfer,
+            cold_resident_seconds=state.cold_resident_seconds,
+            warm_resident_seconds=warm_resident,
+            peak_runtime_live_bytes=state.peak_runtime_live_bytes,
+            peak_runtime_reserved_bytes=state.peak_runtime_reserved_bytes,
+            peak_out_of_pool_bytes=state.peak_out_of_pool_bytes,
+            paired_speedup_median=(
+                paired.median_speedup if paired is not None else None
+            ),
+            paired_speedup_lower_confidence_bound=(
+                paired.lower_confidence_bound if paired is not None else None
+            ),
+            paired_bootstrap_samples=(
+                paired.sample_count if paired is not None else 0
+            ),
+            paired_bootstrap_seed=(paired.seed if paired is not None else 0),
+        )
+
+    @staticmethod
+    def _needs_more_rounds(
+        states: Mapping[str, _CandidateState],
+        *,
+        reference_id: str,
+        active_ids: tuple[str, ...],
+    ) -> bool:
+        reference = states[reference_id]
+        if not reference.warm_seconds:
+            return False
+        for implementation_id in active_ids:
+            if implementation_id == reference_id:
+                continue
+            candidate = states[implementation_id]
+            if len(candidate.warm_seconds) != len(reference.warm_seconds):
+                continue
+            paired_speedups = tuple(
+                _finite_speedup(cpu, accelerated)
+                for cpu, accelerated in zip(
+                    reference.warm_seconds,
+                    candidate.warm_seconds,
+                    strict=True,
+                )
+            )
+            median_cpu = float(statistics.median(reference.warm_seconds))
+            median_candidate = float(statistics.median(candidate.warm_seconds))
+            local_noise = max(0.010, 0.05 * median_cpu)
+            saving = median_cpu - median_candidate
+            near_band = max(0.005, 0.05 * median_cpu)
+            near_threshold = abs(saving - local_noise) <= near_band
+            ratio_median = float(statistics.median(paired_speedups))
+            ratio_mad = float(
+                statistics.median(
+                    abs(value - ratio_median) for value in paired_speedups
+                )
+            )
+            high_variance = ratio_mad / max(abs(ratio_median), 1e-12) > 0.05
+            if near_threshold or high_variance:
+                return True
+        return False
 
     @staticmethod
     def _accepted_result(
@@ -481,7 +1169,15 @@ class NodeBenchmarkService:
         for result in results:
             if result is reference or result.error or not result.parity_passed:
                 continue
-            if len(result.warm_seconds) != request.warm_rounds:
+            if (
+                len(result.warm_seconds) != len(reference.warm_seconds)
+                or len(result.warm_seconds) < request.warm_rounds
+            ):
+                continue
+            if request.paired_bootstrap_samples and (
+                result.paired_speedup_lower_confidence_bound is None
+                or result.paired_speedup_lower_confidence_bound <= 1.0
+            ):
                 continue
             decision = evaluate_auto_performance(
                 PerformanceEvidence(
@@ -529,28 +1225,89 @@ class NodeBenchmarkService:
 
     def _timed_invoke(
         self,
-        implementation: BenchmarkImplementation,
+        state: _CandidateState,
         private_input_factory: Callable[[], object],
         request: NodeBenchmarkRequest,
         started: float,
         cancelled: Callable[[], bool] | None,
+        *,
+        phase: str,
     ) -> float:
+        _result, elapsed = self._timed_invoke_with_result(
+            state,
+            private_input_factory,
+            request,
+            started,
+            cancelled,
+            phase=phase,
+        )
+        return elapsed
+
+    def _timed_invoke_with_result(
+        self,
+        state: _CandidateState,
+        private_input_factory: Callable[[], object],
+        request: NodeBenchmarkRequest,
+        started: float,
+        cancelled: Callable[[], bool] | None,
+        *,
+        phase: str,
+    ) -> tuple[object, float]:
         self._check_abort(request, started, cancelled)
         call_started = self._read_clock()
-        self._invoke(implementation, private_input_factory)
+        result = self._invoke(state.implementation, private_input_factory)
         call_finished = self._read_clock()
         elapsed = call_finished - call_started
         if elapsed < 0 or not math.isfinite(elapsed):
             raise BenchmarkError("clock returned a non-monotonic or invalid duration.")
+        self._sample_observation(state, phase=phase)
         self._check_abort(request, started, cancelled)
-        return elapsed
+        return result, elapsed
 
     @staticmethod
-    def _sample_peak(state: _CandidateState) -> None:
+    def _sample_observation(
+        state: _CandidateState,
+        *,
+        phase: str | None = None,
+    ) -> None:
         value = state.implementation.peak_memory_bytes()
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError("peak_memory_bytes must return a non-negative integer.")
         state.peak_memory_bytes = max(state.peak_memory_bytes, value)
+        observation = state.implementation.observation()
+        if observation is None:
+            return
+        if not isinstance(observation, BenchmarkInvocationObservation):
+            raise TypeError(
+                "observation must return BenchmarkInvocationObservation or None."
+            )
+        state.timing_scopes.add(observation.timing_scope)
+        state.synchronized_observations.append(observation.synchronized)
+        state.transfer_inclusion_observations.append(
+            observation.transfers_included
+        )
+        state.peak_memory_bytes = max(
+            state.peak_memory_bytes,
+            observation.peak_memory_bytes,
+        )
+        state.peak_runtime_live_bytes = max(
+            state.peak_runtime_live_bytes,
+            observation.runtime_live_bytes,
+        )
+        state.peak_runtime_reserved_bytes = max(
+            state.peak_runtime_reserved_bytes,
+            observation.runtime_reserved_bytes,
+        )
+        state.peak_out_of_pool_bytes = max(
+            state.peak_out_of_pool_bytes,
+            observation.out_of_pool_bytes,
+        )
+        if phase == "cold":
+            state.cold_transfer_seconds = observation.transfer_seconds
+            state.cold_resident_seconds = observation.resident_seconds
+        elif phase == "warm":
+            state.warm_transfer_seconds.append(observation.transfer_seconds)
+            state.warm_resident_seconds.append(observation.resident_seconds)
 
     def _quarantine_state(
         self,
@@ -562,8 +1319,9 @@ class NodeBenchmarkService:
         self.quarantine.add(
             request.workload.fingerprint,
             request.environment_fingerprint,
-            state.implementation.implementation_id,
+            _implementation_token(state.implementation),
             reason,
+            request.key.digest,
         )
 
     def _check_abort(
@@ -603,6 +1361,27 @@ class NodeBenchmarkService:
     @staticmethod
     def _error_text(exc: Exception) -> str:
         return f"{type(exc).__name__}: {exc}"
+
+
+def _complete_measurement_series(
+    values: Sequence[float | None],
+    expected_length: int,
+) -> tuple[float, ...]:
+    if len(values) != expected_length or any(value is None for value in values):
+        return ()
+    return tuple(float(value) for value in values if value is not None)
+
+
+def _candidate_bootstrap_seed(base_seed: int, implementation_id: str) -> int:
+    digest = sha256(str(implementation_id).encode("utf-8")).digest()
+    return base_seed ^ int.from_bytes(digest[:8], "big")
+
+
+def _next_adaptive_round_target(current: int, maximum: int) -> int:
+    for target in ADAPTIVE_WARM_ROUNDS:
+        if target > current:
+            return min(target, maximum)
+    return maximum
 
 
 class GraphOptimizationError(RuntimeError):
@@ -1146,14 +1925,22 @@ def _validate_nonnegative_int(value: Any, name: str) -> None:
 
 
 __all__ = [
+    "ADAPTIVE_WARM_ROUNDS",
+    "DEFAULT_BOOTSTRAP_SAMPLES",
+    "DEFAULT_BOOTSTRAP_SEED",
+    "DEFAULT_CONFIDENCE_LEVEL",
     "HOST_RUNTIME_ID",
     "MINIMUM_WARM_ROUNDS",
     "BenchmarkBudgetExceeded",
     "BenchmarkCancelled",
     "BenchmarkError",
     "BenchmarkImplementation",
+    "BenchmarkInvocationObservation",
     "BenchmarkReferenceError",
     "BenchmarkRejected",
+    "BenchmarkStaleness",
+    "BenchmarkStore",
+    "BenchmarkStoreError",
     "CandidateQuarantine",
     "CandidateQuarantineEntry",
     "GraphCostEdge",
@@ -1165,11 +1952,15 @@ __all__ = [
     "GraphOptimizationResult",
     "GraphTransfer",
     "InMemoryBenchmarkStore",
+    "JsonBenchmarkStore",
     "NoFeasibleGraphAssignment",
     "NodeBenchmarkRequest",
     "NodeBenchmarkService",
     "ParityResult",
+    "PairedBootstrapResult",
     "RandomSource",
     "RuntimeTransitionCost",
+    "benchmark_record_staleness",
     "optimize_graph_assignment",
+    "paired_bootstrap_speedup",
 ]

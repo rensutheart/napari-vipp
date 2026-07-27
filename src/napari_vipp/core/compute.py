@@ -451,6 +451,29 @@ class BenchmarkRecordKey:
     environment_fingerprint: str
     implementation_ids: tuple[str, ...]
     policy_id: str
+    device_id: str = ""
+    memory_limit_bytes: int | None = None
+    safety_reserve_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        device_id = str(self.device_id).strip()
+        memory_limit = self.memory_limit_bytes
+        safety_reserve = self.safety_reserve_bytes
+        if memory_limit is not None and (
+            isinstance(memory_limit, bool)
+            or not isinstance(memory_limit, int)
+            or memory_limit <= 0
+        ):
+            raise ValueError("memory_limit_bytes must be positive or None.")
+        if safety_reserve is not None and (
+            isinstance(safety_reserve, bool)
+            or not isinstance(safety_reserve, int)
+            or safety_reserve < 0
+        ):
+            raise ValueError(
+                "safety_reserve_bytes must be non-negative or None."
+            )
+        object.__setattr__(self, "device_id", device_id)
 
     @property
     def digest(self) -> str:
@@ -465,13 +488,40 @@ class BenchmarkCandidateResult:
     warm_seconds: tuple[float, ...]
     peak_memory_bytes: int = 0
     error: str = ""
+    timing_scope: str = "implementation-only"
+    synchronized: bool = False
+    transfers_included: bool = False
+    cold_transfer_seconds: float | None = None
+    warm_transfer_seconds: tuple[float, ...] = ()
+    cold_resident_seconds: float | None = None
+    warm_resident_seconds: tuple[float, ...] = ()
+    peak_runtime_live_bytes: int = 0
+    peak_runtime_reserved_bytes: int = 0
+    peak_out_of_pool_bytes: int = 0
+    paired_speedup_median: float | None = None
+    paired_speedup_lower_confidence_bound: float | None = None
+    paired_bootstrap_samples: int = 0
+    paired_bootstrap_seed: int = 0
 
     def __post_init__(self) -> None:
         implementation_id = str(self.implementation_id).strip()
         if not implementation_id:
             raise ValueError("implementation_id must not be empty.")
-        times = (() if self.cold_seconds is None else (self.cold_seconds,)) + tuple(
-            self.warm_seconds
+        times = (
+            (() if self.cold_seconds is None else (self.cold_seconds,))
+            + tuple(self.warm_seconds)
+            + (
+                ()
+                if self.cold_transfer_seconds is None
+                else (self.cold_transfer_seconds,)
+            )
+            + tuple(self.warm_transfer_seconds)
+            + (
+                ()
+                if self.cold_resident_seconds is None
+                else (self.cold_resident_seconds,)
+            )
+            + tuple(self.warm_resident_seconds)
         )
         if any(
             isinstance(value, bool)
@@ -481,18 +531,61 @@ class BenchmarkCandidateResult:
             for value in times
         ):
             raise ValueError("benchmark times must be finite and non-negative.")
-        if (
-            isinstance(self.peak_memory_bytes, bool)
-            or not isinstance(self.peak_memory_bytes, int)
-            or self.peak_memory_bytes < 0
+        for name in (
+            "peak_memory_bytes",
+            "peak_runtime_live_bytes",
+            "peak_runtime_reserved_bytes",
+            "peak_out_of_pool_bytes",
+            "paired_bootstrap_samples",
+            "paired_bootstrap_seed",
         ):
-            raise ValueError("peak_memory_bytes must be a non-negative integer.")
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer.")
+        for name in (
+            "paired_speedup_median",
+            "paired_speedup_lower_confidence_bound",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be finite and non-negative or None.")
+        timing_scope = str(self.timing_scope).strip()
+        if not timing_scope:
+            raise ValueError("timing_scope must not be empty.")
+        if not isinstance(self.synchronized, bool):
+            raise TypeError("synchronized must be a boolean.")
+        if not isinstance(self.transfers_included, bool):
+            raise TypeError("transfers_included must be a boolean.")
+        for name in ("warm_transfer_seconds", "warm_resident_seconds"):
+            values = tuple(getattr(self, name))
+            if values and len(values) != len(self.warm_seconds):
+                raise ValueError(
+                    f"{name} must be empty or describe every warm round."
+                )
+            object.__setattr__(self, name, tuple(float(value) for value in values))
         object.__setattr__(self, "implementation_id", implementation_id)
+        object.__setattr__(self, "timing_scope", timing_scope)
         object.__setattr__(
             self, "warm_seconds", tuple(float(value) for value in self.warm_seconds)
         )
         if self.cold_seconds is not None:
             object.__setattr__(self, "cold_seconds", float(self.cold_seconds))
+        for name in ("cold_transfer_seconds", "cold_resident_seconds"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, float(value))
+        for name in (
+            "paired_speedup_median",
+            "paired_speedup_lower_confidence_bound",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, float(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +595,27 @@ class BenchmarkRecord:
     created_utc: str
     benchmark_policy_id: str
     accepted_implementation_id: str = ""
+    paired_confidence_level: float | None = None
+    paired_bootstrap_samples: int = 0
+    paired_bootstrap_seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.paired_confidence_level is not None and (
+            isinstance(self.paired_confidence_level, bool)
+            or not isinstance(self.paired_confidence_level, (int, float))
+            or not 0 < float(self.paired_confidence_level) < 1
+        ):
+            raise ValueError("paired_confidence_level must be between zero and one.")
+        for name in ("paired_bootstrap_samples", "paired_bootstrap_seed"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer.")
+        if self.paired_confidence_level is not None:
+            object.__setattr__(
+                self,
+                "paired_confidence_level",
+                float(self.paired_confidence_level),
+            )
 
 
 @dataclass(frozen=True, slots=True)
