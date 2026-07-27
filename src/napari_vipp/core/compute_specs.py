@@ -8,6 +8,7 @@ an admitted implementation.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -188,7 +189,230 @@ class OperationComputeSpec:
         )
 
 
-_BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = ()
+def _normalized_nonempty(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
+    normalized = tuple(str(value).strip() for value in values if str(value).strip())
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one value.")
+    return normalized
+
+
+def _validate_port_indexes(
+    ports: tuple[ComputePortContract, ...],
+    description: str,
+) -> None:
+    indexes = tuple(port.port_index for port in ports)
+    if indexes != tuple(range(len(ports))):
+        raise ValueError(
+            f"{description} port indexes must be contiguous and zero-based."
+        )
+
+
+_MICROSCOPY_DTYPES = ("uint8", "uint16", "float32")
+
+
+def _gpu_image_port(
+    port_index: int,
+    *,
+    name: str,
+    public_dtypes: tuple[str, ...],
+    internal_dtypes: tuple[str, ...],
+    conversion_policy_id: str,
+    nonfinite_policy_id: str,
+    rounding_policy_id: str,
+    overflow_policy_id: str,
+    boundary_policy_id: str,
+    precision_policy_id: str,
+    output: bool = False,
+) -> ComputePortContract:
+    return ComputePortContract(
+        port_index,
+        ValueKind.IMAGE if output else ValueKind.ARRAY,
+        port_name=name,
+        public_dtypes=public_dtypes,
+        internal_dtypes=internal_dtypes,
+        accumulation_dtype=internal_dtypes[-1],
+        value_domain="microscopy-intensity-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id=conversion_policy_id,
+        nonfinite_policy_id=nonfinite_policy_id,
+        rounding_policy_id=rounding_policy_id,
+        overflow_policy_id=overflow_policy_id,
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+
+
+def _background_spec(operation_id: str) -> OperationComputeSpec:
+    port_values = {
+        "public_dtypes": _MICROSCOPY_DTYPES,
+        "internal_dtypes": ("float32",),
+        "conversion_policy_id": "background-float-workspace-restore-v1",
+        "nonfinite_policy_id": "background-cpu-parity-v1",
+        "rounding_policy_id": "background-bankers-round-clip-v1",
+        "overflow_policy_id": "background-clip-public-dtype-v1",
+        "boundary_policy_id": "background-nearest-rolling-ball-v1",
+        "precision_policy_id": "background-public-dtype-v1",
+    }
+    return OperationComputeSpec(
+        operation_id=operation_id,
+        implementation_id=f"cucim-{operation_id}-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cucim",
+        callable_ref=(
+            "napari_vipp.core.gpu.cucim_background:"
+            f"{operation_id}"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        validated_environment_policy_id=(
+            "cuda-cupy-cucim-py312-windows-linux-v1"
+        ),
+        input_ports=(
+            _gpu_image_port(0, name="image", **port_values),
+        ),
+        output_ports=(
+            _gpu_image_port(0, name="image", output=True, **port_values),
+        ),
+        parameter_policy_id="background-parameters-v1",
+        workload_policy_id="background-u8-u16-f32-v1",
+        parity_policy_id="background-production-exact-v1",
+        memory_model_id="cucim-background-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id="background-nearest-rolling-ball-v1",
+        precision_policy_id="background-public-dtype-v1",
+        progress_policy_id="background-block-progress-v1",
+        cancellation_policy_id="background-block-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=("experimental-cucim-wheel-v1",),
+    )
+
+
+def _median_spec() -> OperationComputeSpec:
+    port_values = {
+        "public_dtypes": _MICROSCOPY_DTYPES,
+        "internal_dtypes": ("same",),
+        "conversion_policy_id": "cupyx-median-identity-v1",
+        "nonfinite_policy_id": "finite-no-negative-zero-v1",
+        "rounding_policy_id": "median-bitwise-v1",
+        "overflow_policy_id": "preserve-public-dtype-v1",
+        "boundary_policy_id": "scipy-reflect-v1",
+        "precision_policy_id": "median-bitwise-v1",
+    }
+    return OperationComputeSpec(
+        operation_id="median_filter",
+        implementation_id="cupyx-median-filter-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref="napari_vipp.core.gpu.cupy_median:median_filter",
+        host_boundary=False,
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        validated_environment_policy_id="cuda-cupy-py312-windows-linux-v1",
+        input_ports=(
+            _gpu_image_port(0, name="image", **port_values),
+        ),
+        output_ports=(
+            _gpu_image_port(0, name="image", output=True, **port_values),
+        ),
+        parameter_policy_id="median-parameters-v1",
+        workload_policy_id="median-exact-u8-u16-f32-v1",
+        parity_policy_id="median-production-bitwise-v1",
+        memory_model_id="cupyx-median-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id="scipy-reflect-v1",
+        precision_policy_id="median-bitwise-v1",
+        progress_policy_id="monolithic-sync-progress-v1",
+        cancellation_policy_id="monolithic-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2,),
+        supports_device_residency=True,
+        limitations=(
+            "float32-requires-complete-finite-no-negative-zero-v1",
+        ),
+    )
+
+
+def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
+    operation_id = "gaussian_blur_3d" if three_dimensional else "gaussian_blur"
+    implementation_id = (
+        "cupyx-gaussian-blur-3d-v1"
+        if three_dimensional
+        else "cupyx-gaussian-blur-v1"
+    )
+    port_values = {
+        # Integer execution is deliberately not advertised.  The reviewed RTX
+        # matrix found content-dependent one-unit disagreements, so uint8 and
+        # uint16 remain explicit, first-class CPU regions in policy.
+        "public_dtypes": ("float32",),
+        "internal_dtypes": ("float32",),
+        "conversion_policy_id": "cupyx-gaussian-float32-v1",
+        "nonfinite_policy_id": "finite-only-v1",
+        "rounding_policy_id": "gaussian-float32-tolerance-v1",
+        "overflow_policy_id": "preserve-public-dtype-v1",
+        "boundary_policy_id": "scipy-reflect-v1",
+        "precision_policy_id": "gaussian-float32-v1",
+    }
+    return OperationComputeSpec(
+        operation_id=operation_id,
+        implementation_id=implementation_id,
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_gaussian:"
+            f"{operation_id}"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        validated_environment_policy_id="cuda-cupy-py312-windows-linux-v1",
+        input_ports=(
+            _gpu_image_port(0, name="image", **port_values),
+        ),
+        output_ports=(
+            _gpu_image_port(0, name="image", output=True, **port_values),
+        ),
+        parameter_policy_id=(
+            "gaussian-3d-parameters-v1"
+            if three_dimensional
+            else "gaussian-2d-parameters-v1"
+        ),
+        workload_policy_id="gaussian-finite-f32-v1",
+        parity_policy_id="gaussian-float32-tolerance-v1",
+        memory_model_id=(
+            "cupyx-gaussian-3d-memory-v1"
+            if three_dimensional
+            else "cupyx-gaussian-2d-memory-v1"
+        ),
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id="scipy-reflect-v1",
+        precision_policy_id="gaussian-float32-v1",
+        progress_policy_id="monolithic-sync-progress-v1",
+        cancellation_policy_id="monolithic-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=((3,) if three_dimensional else (2,)),
+        supports_device_residency=True,
+        limitations=(
+            "finite-only",
+            "uint8-uint16-evaluated-cpu-v1",
+            "float64-unvalidated-v1",
+        ),
+    )
+
+
+_BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
+    _background_spec("rolling_ball_background"),
+    _background_spec("subtract_background"),
+    _median_spec(),
+    _gaussian_spec(three_dimensional=False),
+    _gaussian_spec(three_dimensional=True),
+)
 
 
 def accelerator_compute_specs() -> tuple[OperationComputeSpec, ...]:
@@ -225,16 +449,28 @@ def compute_specs_for(
 
 def validate_compute_specs(
     specs: tuple[OperationComputeSpec, ...] | None = None,
+    *,
+    known_operation_ids: Collection[str] | None = None,
 ) -> None:
-    """Validate uniqueness and operation/callable references."""
+    """Validate declaration uniqueness without importing the pipeline.
+
+    A caller that already owns the authoritative operation catalog may supply
+    ``known_operation_ids`` for the optional cross-check.  Registry construction
+    deliberately omits that check: importing the full pipeline there can make
+    storage plugins discover optional accelerator packages before a GPU request.
+    """
 
     declarations = _BUILTIN_ACCELERATOR_SPECS if specs is None else tuple(specs)
     implementation_ids: set[str] = set()
     identities: set[tuple[str, str]] = set()
-    from napari_vipp.core.pipeline import NODE_LIBRARY_BY_ID
+    known = (
+        None
+        if known_operation_ids is None
+        else frozenset(str(value).strip() for value in known_operation_ids)
+    )
 
     for spec in declarations:
-        if spec.operation_id not in NODE_LIBRARY_BY_ID:
+        if known is not None and spec.operation_id not in known:
             raise ValueError(
                 f"Compute spec {spec.implementation_id!r} references unknown "
                 f"operation {spec.operation_id!r}."
@@ -343,24 +579,6 @@ def _value_kind(value: str) -> ValueKind:
         "scalar": ValueKind.SCALAR,
     }
     return aliases.get(normalized, ValueKind.ANY)
-
-
-def _normalized_nonempty(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
-    normalized = tuple(str(value).strip() for value in values if str(value).strip())
-    if not normalized:
-        raise ValueError(f"{field_name} must contain at least one value.")
-    return normalized
-
-
-def _validate_port_indexes(
-    ports: tuple[ComputePortContract, ...],
-    description: str,
-) -> None:
-    indexes = tuple(port.port_index for port in ports)
-    if indexes != tuple(range(len(ports))):
-        raise ValueError(
-            f"{description} port indexes must be contiguous and zero-based."
-        )
 
 
 __all__ = [

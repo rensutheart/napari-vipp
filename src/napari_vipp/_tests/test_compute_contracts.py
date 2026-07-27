@@ -71,8 +71,12 @@ def test_contract_import_does_not_import_optional_accelerators():
             (
                 "import sys; import napari_vipp.core.compute; "
                 "import napari_vipp.core.compute_specs; "
+                "import napari_vipp.core.compute_planning; "
+                "from napari_vipp.core.compute_registry import ComputeRegistry; "
+                "ComputeRegistry(); "
                 "assert 'cupy' not in sys.modules; "
-                "assert 'cucim' not in sys.modules"
+                "assert 'cucim' not in sys.modules; "
+                "assert 'napari_vipp.core.pipeline' not in sys.modules"
             ),
         ],
         check=False,
@@ -200,18 +204,49 @@ def _candidate_spec(**updates) -> OperationComputeSpec:
     return OperationComputeSpec(**values)
 
 
-def test_compute_spec_registry_starts_cpu_only_and_validates_declarations():
-    assert accelerator_compute_specs() == ()
+def test_compute_spec_registry_declares_only_lazy_phase_one_candidates():
+    accelerator_specs = accelerator_compute_specs()
+    assert {spec.operation_id for spec in accelerator_specs} == {
+        "rolling_ball_background",
+        "subtract_background",
+        "median_filter",
+        "gaussian_blur",
+        "gaussian_blur_3d",
+    }
+    assert all(
+        spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
+        for spec in accelerator_specs
+    )
+    assert all(spec.runtime_id == "cuda-cupy" for spec in accelerator_specs)
+    assert all(spec.array_domain == "cuda-cupy" for spec in accelerator_specs)
+    assert compute_specs_for("gaussian_blur", include_cpu=False) == ()
+    assert len(
+        compute_specs_for(
+            "gaussian_blur",
+            include_cpu=False,
+            allow_experimental=True,
+        )
+    ) == 1
+
+
+def test_compute_spec_validation_can_cross_check_a_lightweight_catalog():
     cpu_spec = compute_specs_for("gaussian_blur")[0]
     assert cpu_spec.runtime_id == "cpu-numpy"
     assert cpu_spec.implementation_library_id == "cpu"
     assert not cpu_spec.is_gpu
 
-    validate_compute_specs((_candidate_spec(),))
+    known = {"gaussian_blur"}
+    validate_compute_specs((_candidate_spec(),), known_operation_ids=known)
     with pytest.raises(ValueError, match="Duplicate implementation ID"):
-        validate_compute_specs((_candidate_spec(), _candidate_spec()))
+        validate_compute_specs(
+            (_candidate_spec(), _candidate_spec()),
+            known_operation_ids=known,
+        )
     with pytest.raises(ValueError, match="unknown operation"):
-        validate_compute_specs((_candidate_spec(operation_id="missing"),))
+        validate_compute_specs(
+            (_candidate_spec(operation_id="missing"),),
+            known_operation_ids=known,
+        )
 
 
 def test_cpu_source_writer_and_dynamic_output_boundaries_are_explicit():

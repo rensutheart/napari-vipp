@@ -15,6 +15,7 @@ from napari_vipp.core.compute_registry import (
     ComputeRegistryClosed,
     ComputeRegistryLoadError,
     ImplementationLibraryDescriptor,
+    ImplementationLibraryProbeResult,
     RuntimeDescriptor,
     RuntimeDevice,
     RuntimeExceptionInfo,
@@ -77,6 +78,11 @@ class FakeRuntime:
 
     def is_device_value(self, value: object) -> bool:
         return isinstance(value, OpaqueDeviceValue)
+
+    def allocation_identity(self, value: object):
+        if not self.is_device_value(value):
+            raise TypeError("not an opaque device allocation")
+        return id(value)
 
     def to_device(self, value: object, *, device_id: str = "") -> object:
         self.events.append(("to_device", device_id))
@@ -191,6 +197,8 @@ def test_registry_import_and_descriptor_listing_do_not_import_accelerators():
                 "from napari_vipp.core.compute_registry import ComputeRegistry; "
                 "registry = ComputeRegistry(); "
                 "assert registry.runtime_descriptors[0].runtime_id == 'cuda-cupy'; "
+                "assert {item.library_id for item in registry.library_descriptors} "
+                "== {'cupyx', 'cucim'}; "
                 "assert 'cupy' not in sys.modules; "
                 "assert 'cupyx' not in sys.modules; "
                 "assert 'cucim' not in sys.modules"
@@ -202,6 +210,45 @@ def test_registry_import_and_descriptor_listing_do_not_import_accelerators():
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_builtin_libraries_declare_common_zero_copy_interoperability():
+    registry = ComputeRegistry()
+
+    assert registry.interoperability_contract(
+        "cuda-cupy", ("cupyx", "cucim")
+    ) == ("cupy-array-stream-device-lifetime-v1",)
+    registry.close()
+
+
+def test_library_probe_is_explicit_cached_and_refreshable():
+    calls = []
+
+    def probe():
+        calls.append("probe")
+        return ImplementationLibraryProbeResult(
+            "fake-library",
+            True,
+            version="2.0",
+            message="ready",
+        )
+
+    registry = ComputeRegistry(
+        runtime_descriptors=(_runtime_descriptor(),),
+        library_descriptors=(_library_descriptor(),),
+        implementation_specs=(),
+        runtime_factories={"fake-device": FakeRuntime},
+        library_probes={"fake-library": probe},
+    )
+
+    first = registry.probe_library("fake-library")
+    second = registry.probe_library("fake-library")
+    refreshed = registry.probe_library("fake-library", refresh=True)
+
+    assert first is second
+    assert refreshed.available
+    assert calls == ["probe", "probe"]
+    registry.close()
 
 
 def test_runtime_factory_is_lazy_and_one_instance_is_reused():
@@ -411,3 +458,84 @@ def test_probe_and_memory_shells_reject_inconsistent_values():
             runtime_live_bytes=2,
             runtime_reserved_bytes=1,
         )
+
+
+def test_builtin_library_probes_execute_synchronize_and_release_pool(monkeypatch):
+    events = []
+
+    class Pool:
+        def free_all_blocks(self):
+            events.append("free")
+
+    class Stream:
+        def synchronize(self):
+            events.append("sync")
+
+    class Cuda:
+        @staticmethod
+        def get_current_stream():
+            return Stream()
+
+    class Cupy:
+        __version__ = "test-cupy"
+        float32 = np.float32
+        cuda = Cuda()
+
+        @staticmethod
+        def arange(*args, **kwargs):
+            return np.arange(*args, **kwargs)
+
+        @staticmethod
+        def get_default_memory_pool():
+            return Pool()
+
+    class Ndimage:
+        @staticmethod
+        def gaussian_filter(values, **_kwargs):
+            events.append("gaussian")
+            return values.copy()
+
+        @staticmethod
+        def median_filter(values, **_kwargs):
+            events.append("median")
+            return values.copy()
+
+    class Cucim:
+        __version__ = "test-cucim"
+
+        @staticmethod
+        def is_available(component):
+            return component == "skimage"
+
+    class Restoration:
+        @staticmethod
+        def rolling_ball(values, **_kwargs):
+            events.append("rolling-ball")
+            return values.copy()
+
+    modules = {
+        "cupy": Cupy(),
+        "cupyx.scipy.ndimage": Ndimage(),
+        "cucim": Cucim(),
+        "cucim.skimage.restoration": Restoration(),
+    }
+    monkeypatch.setattr(
+        registry_module.importlib,
+        "import_module",
+        modules.__getitem__,
+    )
+
+    cupyx = registry_module._probe_cupyx_library()
+    cucim = registry_module._probe_cucim_skimage_library()
+
+    assert cupyx.available
+    assert cucim.available
+    assert events == [
+        "gaussian",
+        "median",
+        "sync",
+        "free",
+        "rolling-ball",
+        "sync",
+        "free",
+    ]

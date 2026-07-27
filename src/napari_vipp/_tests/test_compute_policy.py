@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from napari_vipp.core.compute import (
@@ -17,16 +18,26 @@ from napari_vipp.core.compute_policy import (
     FactCompleteness,
     PerformanceEvidence,
     ValueDescriptor,
+    estimate_candidate_memory,
     evaluate_auto_performance,
     evaluate_candidate_support,
     propagate_output_descriptors,
     validate_spec_policy_references,
 )
-from napari_vipp.core.compute_specs import AdmissionTier, compute_specs_for
+from napari_vipp.core.compute_specs import (
+    AdmissionTier,
+    accelerator_compute_specs,
+    compute_specs_for,
+)
 
 
 def test_synthesized_cpu_spec_uses_registered_policies():
     validate_spec_policy_references(compute_specs_for("gaussian_blur")[0])
+
+
+def test_all_builtin_accelerator_specs_use_versioned_registered_policies():
+    for spec in accelerator_compute_specs():
+        validate_spec_policy_references(spec)
 
 
 def test_unknown_policy_reference_fails_declaration_validation():
@@ -235,3 +246,209 @@ def test_local_performance_uses_the_greater_of_five_percent_or_ten_ms():
     assert not within_noise.select_candidate
     assert clear_short_win.select_candidate
     assert clear_long_win.select_candidate
+
+
+def _builtin_spec(operation_id: str):
+    return compute_specs_for(
+        operation_id,
+        include_cpu=False,
+        allow_experimental=True,
+    )[0]
+
+
+def _operation_workload(
+    operation_id: str,
+    *,
+    shape=(64, 64),
+    dtype="float32",
+    parameters=(),
+    spatial_ndim=None,
+):
+    return WorkloadDescriptor(
+        "node",
+        operation_id,
+        (shape,),
+        (dtype,),
+        parameters=parameters,
+        resolved_spatial_ndim=spatial_ndim,
+    )
+
+
+def _operation_facts(
+    *,
+    shape=(64, 64),
+    dtype="float32",
+    guarantees=(),
+):
+    return (
+        ArrayFacts(
+            shape,
+            dtype,
+            int(np.prod(shape)),
+            "revision",
+            completeness=FactCompleteness.COMPLETE,
+            finite_count=int(np.prod(shape)),
+            guarantees=guarantees,
+        ),
+    )
+
+
+def test_background_policy_uses_public_2d_and_conservative_3d_radius_bounds():
+    spec = _builtin_spec("rolling_ball_background")
+    environment = _cuda_environment(
+        implementation_libraries=("cpu", "cupyx", "cucim")
+    )
+
+    two_dimensional = evaluate_candidate_support(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            parameters=(("radius", 500.0), ("spatial_mode", "2D YX")),
+            spatial_ndim=2,
+        ),
+        environment,
+        allow_experimental=True,
+    )
+    three_dimensional = evaluate_candidate_support(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            shape=(8, 16, 16),
+            parameters=(("radius", 50.0), ("spatial_mode", "3D ZYX")),
+            spatial_ndim=3,
+        ),
+        environment,
+        allow_experimental=True,
+    )
+    too_large_3d = evaluate_candidate_support(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            shape=(8, 16, 16),
+            parameters=(("radius", 51.0), ("spatial_mode", "3D ZYX")),
+            spatial_ndim=3,
+        ),
+        environment,
+        allow_experimental=True,
+    )
+
+    assert two_dimensional.supported
+    assert three_dimensional.supported
+    assert not too_large_3d.supported
+    assert "1..50" in too_large_3d.reason_text
+
+
+def test_median_float32_requires_complete_no_negative_zero_proof():
+    spec = _builtin_spec("median_filter")
+    workload = _operation_workload(
+        "median_filter",
+        shape=(51, 53),
+        parameters=(("size", 51),),
+        spatial_ndim=2,
+    )
+
+    missing = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+    proven = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_operation_facts(
+            shape=(51, 53),
+            guarantees=("no-negative-zero",),
+        ),
+    )
+
+    assert not missing.supported
+    assert missing.requires_complete_facts
+    assert proven.supported
+
+
+@pytest.mark.parametrize("dtype", ("uint8", "uint16"))
+def test_median_integer_exact_matrix_is_admitted_without_value_scan(dtype):
+    decision = evaluate_candidate_support(
+        _builtin_spec("median_filter"),
+        _operation_workload(
+            "median_filter",
+            shape=(51, 53),
+            dtype=dtype,
+            parameters=(("size", 51),),
+            spatial_ndim=2,
+        ),
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+
+    assert decision.supported
+
+
+def test_gaussian_advertises_full_public_float32_sigma_but_not_integer_or_float64():
+    spec = _builtin_spec("gaussian_blur_3d")
+    environment = _cuda_environment()
+    float_workload = _operation_workload(
+        "gaussian_blur_3d",
+        shape=(5, 17, 19),
+        parameters=(("sigma_z", 12.0), ("sigma_y", 0.0), ("sigma_x", 12.0)),
+        spatial_ndim=3,
+    )
+    accepted = evaluate_candidate_support(
+        spec,
+        float_workload,
+        environment,
+        allow_experimental=True,
+        array_facts=_operation_facts(shape=(5, 17, 19)),
+    )
+
+    assert accepted.supported
+    for dtype in ("uint8", "uint16", "float64"):
+        rejected = evaluate_candidate_support(
+            spec,
+            replace(float_workload, input_dtypes=(dtype,)),
+            environment,
+            allow_experimental=True,
+        )
+        assert not rejected.supported
+        assert "CPU" in rejected.reason_text or "proven" in rejected.reason_text
+
+
+def test_background_memory_model_scales_with_radius_and_spatial_rank():
+    spec = _builtin_spec("rolling_ball_background")
+    small = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            shape=(16, 16),
+            dtype="uint16",
+            parameters=(("radius", 2.0), ("spatial_mode", "2D YX")),
+            spatial_ndim=2,
+        ),
+    )
+    wide = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            shape=(16, 16),
+            dtype="uint16",
+            parameters=(("radius", 500.0), ("spatial_mode", "2D YX")),
+            spatial_ndim=2,
+        ),
+    )
+    volumetric = estimate_candidate_memory(
+        spec,
+        _operation_workload(
+            "rolling_ball_background",
+            shape=(4, 16, 16),
+            dtype="uint16",
+            parameters=(("radius", 50.0), ("spatial_mode", "3D ZYX")),
+            spatial_ndim=3,
+        ),
+    )
+
+    assert small.model_id == "cucim-background-memory-v1"
+    assert wide.total_device_peak_bytes > small.total_device_peak_bytes
+    assert volumetric.total_device_peak_bytes > small.total_device_peak_bytes

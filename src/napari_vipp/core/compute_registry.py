@@ -172,6 +172,40 @@ class RuntimeProbeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ImplementationLibraryProbeResult:
+    """JSON-safe result of an explicitly requested implementation probe."""
+
+    library_id: str
+    available: bool
+    version: str = ""
+    reason_code: str = ""
+    message: str = ""
+    metadata: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "library_id",
+            _required_text(self.library_id, "library_id"),
+        )
+        if not isinstance(self.available, bool):
+            raise TypeError("available must be a boolean.")
+        for name in ("version", "reason_code", "message"):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        object.__setattr__(self, "metadata", _normalized_metadata(self.metadata))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "library_id": self.library_id,
+            "available": self.available,
+            "version": self.version,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeMemorySnapshot:
     """Device-wide and runtime-owned memory observed at one checkpoint."""
 
@@ -310,6 +344,7 @@ class RuntimeProtocol(Protocol):
 
 
 RuntimeFactory = Callable[[], RuntimeProtocol]
+ImplementationLibraryProbe = Callable[[], ImplementationLibraryProbeResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,8 +433,28 @@ CUDA_CUPY_RUNTIME = RuntimeDescriptor(
     interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
 )
 
+CUPYX_LIBRARY = ImplementationLibraryDescriptor(
+    library_id="cupyx",
+    display_name="CuPyX SciPy-compatible ndimage",
+    runtime_ids=("cuda-cupy",),
+    array_domain="cuda-cupy",
+    supported_os_families=("Windows", "Linux"),
+    probe_ref="napari_vipp.core.compute_registry:_probe_cupyx_library",
+    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+)
+
+CUCIM_SKIMAGE_LIBRARY = ImplementationLibraryDescriptor(
+    library_id="cucim",
+    display_name="cuCIM scikit-image",
+    runtime_ids=("cuda-cupy",),
+    array_domain="cuda-cupy",
+    supported_os_families=("Windows", "Linux"),
+    probe_ref="napari_vipp.core.compute_registry:_probe_cucim_skimage_library",
+    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+)
+
 DEFAULT_RUNTIME_DESCRIPTORS = (CUDA_CUPY_RUNTIME,)
-DEFAULT_LIBRARY_DESCRIPTORS: tuple[ImplementationLibraryDescriptor, ...] = ()
+DEFAULT_LIBRARY_DESCRIPTORS = (CUPYX_LIBRARY, CUCIM_SKIMAGE_LIBRARY)
 
 
 class ComputeRegistryError(RuntimeError):
@@ -488,6 +543,7 @@ class ComputeRegistry:
         ),
         implementation_specs: Sequence[OperationComputeSpec] | None = None,
         runtime_factories: Mapping[str, RuntimeFactory] | None = None,
+        library_probes: Mapping[str, ImplementationLibraryProbe] | None = None,
     ) -> None:
         runtimes = tuple(runtime_descriptors)
         libraries = tuple(library_descriptors)
@@ -508,13 +564,26 @@ class ComputeRegistry:
             )
         if any(not callable(factory) for factory in factories.values()):
             raise TypeError("runtime_factories values must be callable.")
+        probes = dict(library_probes or {})
+        unknown_probes = set(probes) - set(library_map)
+        if unknown_probes:
+            names = ", ".join(sorted(unknown_probes))
+            raise ValueError(
+                f"Library probes reference unknown implementation libraries: {names}."
+            )
+        if any(not callable(probe) for probe in probes.values()):
+            raise TypeError("library_probes values must be callable.")
 
         self._runtime_descriptors = MappingProxyType(runtime_map)
         self._library_descriptors = MappingProxyType(library_map)
         self._implementation_specs = specs
         self._runtime_factories = MappingProxyType(factories)
+        self._library_probes = MappingProxyType(probes)
         self._runtime_instances: dict[str, RuntimeProtocol] = {}
         self._probe_results: dict[str, RuntimeProbeResult] = {}
+        self._library_probe_results: dict[
+            str, ImplementationLibraryProbeResult
+        ] = {}
         self._implementation_callables: dict[tuple[str, str, str], Callable] = {}
         self._lock = threading.RLock()
         self._closed = False
@@ -665,6 +734,93 @@ class ComputeRegistry:
             self._probe_results[runtime_id] = result
             return result
 
+    def probe_library(
+        self,
+        library_id: str,
+        *,
+        refresh: bool = False,
+    ) -> ImplementationLibraryProbeResult:
+        """Probe one optional implementation library only when requested."""
+
+        library_id = str(library_id).strip()
+        with self._lock:
+            self._ensure_open()
+            descriptor = self.library_descriptor(library_id)
+            if not refresh and library_id in self._library_probe_results:
+                return self._library_probe_results[library_id]
+            probe = self._library_probes.get(library_id)
+            if probe is None and descriptor.probe_ref:
+                try:
+                    probe = _load_ref(descriptor.probe_ref)
+                except Exception as exc:
+                    result = ImplementationLibraryProbeResult(
+                        library_id,
+                        False,
+                        reason_code="library_probe_load_failed",
+                        message=f"{type(exc).__name__}: {exc}",
+                    )
+                    self._library_probe_results[library_id] = result
+                    return result
+            if probe is None:
+                result = ImplementationLibraryProbeResult(
+                    library_id,
+                    False,
+                    reason_code="library_probe_missing",
+                    message="No implementation-library probe is declared.",
+                )
+                self._library_probe_results[library_id] = result
+                return result
+            if not callable(probe):
+                result = ImplementationLibraryProbeResult(
+                    library_id,
+                    False,
+                    reason_code="library_probe_invalid",
+                    message="The implementation-library probe is not callable.",
+                )
+                self._library_probe_results[library_id] = result
+                return result
+            try:
+                result = probe()
+            except Exception as exc:
+                result = ImplementationLibraryProbeResult(
+                    library_id,
+                    False,
+                    reason_code="library_probe_failed",
+                    message=f"{type(exc).__name__}: {exc}",
+                )
+            if not isinstance(result, ImplementationLibraryProbeResult):
+                raise TypeError(
+                    "Implementation-library probes must return "
+                    "ImplementationLibraryProbeResult."
+                )
+            if result.library_id != library_id:
+                raise ValueError(
+                    "Implementation-library probe result belongs to a different "
+                    "library."
+                )
+            self._library_probe_results[library_id] = result
+            return result
+
+    def interoperability_contract(
+        self,
+        runtime_id: str,
+        library_ids: Sequence[str],
+    ) -> tuple[str, ...]:
+        """Return common zero-copy claims without importing any provider."""
+
+        runtime = self.runtime_descriptor(runtime_id)
+        claims = set(runtime.interoperability_claims)
+        normalized_ids = _normalized_nonempty(library_ids, "library_ids")
+        for library_id in normalized_ids:
+            library = self.library_descriptor(library_id)
+            if (
+                runtime.runtime_id not in library.runtime_ids
+                or runtime.array_domain != library.array_domain
+            ):
+                return ()
+            claims.intersection_update(library.interoperability_claims)
+        return tuple(sorted(claims))
+
     def implementation_callable(
         self,
         implementation: OperationComputeSpec | str,
@@ -735,6 +891,9 @@ class ComputeRegistry:
             self._ensure_open()
             instance = self._runtime_instances.pop(runtime_id, None)
             self._probe_results.pop(runtime_id, None)
+            for library in self._library_descriptors.values():
+                if runtime_id in library.runtime_ids:
+                    self._library_probe_results.pop(library.library_id, None)
         if instance is None:
             return False
         instance.close()
@@ -750,6 +909,7 @@ class ComputeRegistry:
             instances = tuple(reversed(tuple(self._runtime_instances.values())))
             self._runtime_instances.clear()
             self._probe_results.clear()
+            self._library_probe_results.clear()
             self._implementation_callables.clear()
         failures = []
         for instance in instances:
@@ -781,6 +941,85 @@ class ComputeRegistry:
             return mapping[identifier]
         except KeyError as exc:
             raise KeyError(f"Unknown {description} {identifier!r}.") from exc
+
+
+def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
+    """Import and exercise the CuPyX ndimage layer after CUDA admission."""
+
+    cupy = importlib.import_module("cupy")
+    ndimage = importlib.import_module("cupyx.scipy.ndimage")
+    if not callable(getattr(ndimage, "gaussian_filter", None)) or not callable(
+        getattr(ndimage, "median_filter", None)
+    ):
+        return ImplementationLibraryProbeResult(
+            "cupyx",
+            False,
+            version=str(getattr(cupy, "__version__", "")),
+            reason_code="cupyx_ndimage_incomplete",
+            message="CuPyX ndimage does not expose Gaussian and median filters.",
+        )
+    values = gaussian = median = None
+    try:
+        values = cupy.arange(49, dtype=cupy.float32).reshape(7, 7)
+        gaussian = ndimage.gaussian_filter(values, sigma=0.8, mode="reflect")
+        median = ndimage.median_filter(values, size=3, mode="reflect")
+        float((gaussian + median).sum().item())
+        cupy.cuda.get_current_stream().synchronize()
+        return ImplementationLibraryProbeResult(
+            "cupyx",
+            True,
+            version=str(getattr(cupy, "__version__", "")),
+            message="CuPyX completed synchronized Gaussian and median probes.",
+        )
+    finally:
+        values = gaussian = median = None
+        try:
+            cupy.get_default_memory_pool().free_all_blocks()
+        except Exception:
+            pass
+
+
+def _probe_cucim_skimage_library() -> ImplementationLibraryProbeResult:
+    """Import the checksum-installed cuCIM restoration layer lazily."""
+
+    cucim = importlib.import_module("cucim")
+    restoration = importlib.import_module("cucim.skimage.restoration")
+    is_available = getattr(cucim, "is_available", None)
+    if callable(is_available) and not bool(is_available("skimage")):
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            version=str(getattr(cucim, "__version__", "")),
+            reason_code="cucim_skimage_unavailable",
+            message="cuCIM reports that its skimage component is unavailable.",
+        )
+    if not callable(getattr(restoration, "rolling_ball", None)):
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            False,
+            version=str(getattr(cucim, "__version__", "")),
+            reason_code="cucim_rolling_ball_missing",
+            message="cuCIM restoration does not expose rolling_ball.",
+        )
+    cupy = importlib.import_module("cupy")
+    values = background = None
+    try:
+        values = cupy.arange(81, dtype=cupy.float32).reshape(9, 9)
+        background = restoration.rolling_ball(values, radius=2)
+        float(background.sum().item())
+        cupy.cuda.get_current_stream().synchronize()
+        return ImplementationLibraryProbeResult(
+            "cucim",
+            True,
+            version=str(getattr(cucim, "__version__", "")),
+            message="cuCIM completed a synchronized rolling-ball probe.",
+        )
+    finally:
+        values = background = None
+        try:
+            cupy.get_default_memory_pool().free_all_blocks()
+        except Exception:
+            pass
 
 
 def _load_ref(reference: str):
@@ -827,7 +1066,9 @@ def _close_quietly(instance: object) -> None:
 
 
 __all__ = [
+    "CUCIM_SKIMAGE_LIBRARY",
     "CUDA_CUPY_RUNTIME",
+    "CUPYX_LIBRARY",
     "ComputeRegistry",
     "ComputeRegistryClosed",
     "ComputeRegistryError",
@@ -835,6 +1076,8 @@ __all__ = [
     "DEFAULT_LIBRARY_DESCRIPTORS",
     "DEFAULT_RUNTIME_DESCRIPTORS",
     "ImplementationLibraryDescriptor",
+    "ImplementationLibraryProbe",
+    "ImplementationLibraryProbeResult",
     "RuntimeDescriptor",
     "RuntimeDevice",
     "RuntimeExceptionInfo",
