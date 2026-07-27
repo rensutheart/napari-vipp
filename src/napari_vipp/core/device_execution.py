@@ -15,7 +15,7 @@ No optional accelerator package is imported here.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Protocol
@@ -182,11 +182,25 @@ class PrepareNodeCall(Protocol):
     ) -> PreparedNodeCall: ...
 
 
+class NodeOutputsCallback(Protocol):
+    """Observe normalized transaction-local outputs before a downstream call."""
+
+    def __call__(
+        self,
+        node_id: str,
+        call: PreparedNodeCall,
+        outputs: tuple[object, ...],
+        runtime_id: str,
+        /,
+    ) -> None: ...
+
+
 @dataclass(slots=True)
 class _DeviceValue:
     runtime_id: str
     device_id: str
     opaque_value: object = field(repr=False)
+    allocation_identity: Hashable = field(repr=False)
     port: OutputPortKey
     remaining_consumers: int
     persistent: bool = False
@@ -198,19 +212,22 @@ class _CleanupStatus:
 
 
 class _SegmentStore:
-    """Own runtime values by output port and release aliases exactly once."""
+    """Own runtime values by output port and release allocations exactly once."""
 
     def __init__(self, runtime: RuntimeProtocol, device_id: str) -> None:
         self.runtime = runtime
         self.device_id = device_id
         self._ports: dict[OutputPortKey, _DeviceValue] = {}
-        self._object_refcounts: dict[int, int] = {}
-        self._objects: dict[int, object] = {}
+        self._allocation_refcounts: dict[Hashable, int] = {}
+        self._allocations: dict[Hashable, object] = {}
         self.cleanup_succeeded = True
 
     def owns(self, value: object) -> bool:
-        identity = id(value)
-        return identity in self._objects and self._objects[identity] is value
+        try:
+            identity = self.runtime.allocation_identity(value)
+        except (TypeError, ValueError, RuntimeError):
+            return False
+        return identity in self._allocations
 
     def add(
         self,
@@ -227,21 +244,28 @@ class _SegmentStore:
                 f"Runtime {self.runtime.runtime_id!r} returned a non-device value "
                 f"for {port.node_id!r} output {port.port_index}."
             )
+        allocation_identity = self.runtime.allocation_identity(value)
+        try:
+            hash(allocation_identity)
+        except TypeError as exc:
+            raise TypeError(
+                f"Runtime {self.runtime.runtime_id!r} returned an unhashable "
+                "allocation identity."
+            ) from exc
         wrapped = _DeviceValue(
             self.runtime.runtime_id,
             self.device_id,
             value,
+            allocation_identity,
             port,
             remaining_consumers,
             persistent,
         )
         self._ports[port] = wrapped
-        identity = id(value)
-        existing = self._objects.get(identity)
-        if existing is not None and existing is not value:
-            raise RuntimeError("A live runtime value reused an object identity.")
-        self._objects[identity] = value
-        self._object_refcounts[identity] = self._object_refcounts.get(identity, 0) + 1
+        self._allocations.setdefault(allocation_identity, value)
+        self._allocation_refcounts[allocation_identity] = (
+            self._allocation_refcounts.get(allocation_identity, 0) + 1
+        )
 
     def value(self, port: OutputPortKey) -> object:
         try:
@@ -285,16 +309,15 @@ class _SegmentStore:
         wrapped = self._ports.pop(port, None)
         if wrapped is None:
             return
-        value = wrapped.opaque_value
-        identity = id(value)
-        remaining = self._object_refcounts[identity] - 1
+        identity = wrapped.allocation_identity
+        remaining = self._allocation_refcounts[identity] - 1
         if remaining:
-            self._object_refcounts[identity] = remaining
+            self._allocation_refcounts[identity] = remaining
             return
-        self._object_refcounts.pop(identity, None)
-        self._objects.pop(identity, None)
+        self._allocation_refcounts.pop(identity, None)
+        representative = self._allocations.pop(identity)
         try:
-            self.runtime.release(value)
+            self.runtime.release(representative)
         except Exception:
             self.cleanup_succeeded = False
 
@@ -571,6 +594,7 @@ def execute_device_plan(
     host_values: Mapping[OutputPortKey, object],
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None = None,
+    node_outputs_callback: NodeOutputsCallback | None = None,
 ) -> DeviceExecutionResult:
     """Execute ``plan`` and return an atomic host-only result mapping.
 
@@ -609,6 +633,7 @@ def execute_device_plan(
                 committed,
                 prepare_call,
                 cancel_callback,
+                node_outputs_callback,
             )
             _ensure_host_only(committed, tuple(runtimes.values()))
             continue
@@ -626,6 +651,7 @@ def execute_device_plan(
                 prepare_call,
                 cancel_callback,
                 segment_cleanup,
+                node_outputs_callback,
             )
         except OperationCancelled:
             raise
@@ -644,6 +670,7 @@ def execute_device_plan(
                     committed,
                     prepare_call,
                     cancel_callback,
+                    node_outputs_callback,
                 )
                 fallback_segments.append(unit.segment.segment_id)
             else:
@@ -668,6 +695,7 @@ def _execute_host_unit(
     committed: dict[OutputPortKey, object],
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None,
+    node_outputs_callback: NodeOutputsCallback | None,
 ) -> None:
     node_id = unit.node_id
     output_count = len(pipeline.output_ports(node_id))
@@ -696,6 +724,8 @@ def _execute_host_unit(
     raw = DEFAULT_CPU_NODE_EXECUTOR.execute(call)
     outputs = _normalized_outputs(raw, call.output_port_count)
     _check_cancelled(cancel_callback)
+    if node_outputs_callback is not None:
+        node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
     provisional = {
         OutputPortKey(node_id, index): value
         for index, value in enumerate(outputs)
@@ -713,18 +743,19 @@ def _execute_device_segment(
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None,
     cleanup_status: _CleanupStatus,
+    node_outputs_callback: NodeOutputsCallback | None,
 ) -> dict[OutputPortKey, object]:
     segment = unit.segment
     counts = dict(segment.remaining_consumers)
     persistent = set(segment.exit_ports) | set(segment.retained_ports)
     store = _SegmentStore(runtime, request.device_id)
     provisional: dict[OutputPortKey, object] = {}
-    try:
-        with runtime.execution_scope(
-            device_id=request.device_id,
-            memory_limit_bytes=request.accelerator_memory_cap_bytes,
-            safety_reserve_bytes=request.accelerator_safety_reserve_bytes,
-        ):
+    with runtime.execution_scope(
+        device_id=request.device_id,
+        memory_limit_bytes=request.accelerator_memory_cap_bytes,
+        safety_reserve_bytes=request.accelerator_safety_reserve_bytes,
+    ):
+        try:
             for port in segment.entry_ports:
                 _check_cancelled(cancel_callback)
                 try:
@@ -811,6 +842,13 @@ def _execute_device_segment(
                     # block owns cleanup of every successfully registered one.
                     _release_orphan_outputs(runtime, outputs, store)
                     raise
+                if node_outputs_callback is not None:
+                    node_outputs_callback(
+                        node_id,
+                        call,
+                        outputs,
+                        segment.runtime_id,
+                    )
                 for port in input_ports:
                     store.consume(port)
                 for index in range(len(outputs)):
@@ -821,11 +859,27 @@ def _execute_device_segment(
                 provisional[port] = runtime.to_host(store.value(port))
             _check_cancelled(cancel_callback)
             runtime.synchronize(device_id=request.device_id)
-        return provisional
-    finally:
-        cleanup_status.succeeded = (
-            cleanup_status.succeeded and store.release_all()
-        )
+            return provisional
+        finally:
+            # Release while the runtime's private allocator/device scope still
+            # owns these arrays.  Releasing after ``__exit__`` can strand pool
+            # allocations and violates runtimes that enforce scoped ownership.
+            cleanup_status.succeeded = (
+                cleanup_status.succeeded and store.release_all()
+            )
+            # ``release`` relinquishes VIPP's ownership; it must not forcibly
+            # recycle storage while a Python alias can still reach it.  Clear
+            # this frame's transient references before the runtime validates
+            # that no private allocation escaped the scope.  Assignments are
+            # intentionally unconditional because any preceding step may have
+            # raised before all of these locals were bound.
+            device_value = None
+            inputs = ()
+            call = None
+            raw = None
+            outputs = ()
+            invalid = ()
+            value = None
 
 
 def _execute_cpu_segment_fallback(
@@ -835,6 +889,7 @@ def _execute_cpu_segment_fallback(
     committed: Mapping[OutputPortKey, object],
     prepare_call: PrepareNodeCall,
     cancel_callback: Callable[[], bool] | None,
+    node_outputs_callback: NodeOutputsCallback | None,
 ) -> dict[OutputPortKey, object]:
     """Retry one complete failed segment once with authoritative CPU calls."""
 
@@ -859,6 +914,8 @@ def _execute_cpu_segment_fallback(
                 raise DevicePlanningError(
                     "CPU fallback returned a device-owned value."
                 )
+        if node_outputs_callback is not None:
+            node_outputs_callback(node_id, call, outputs, CPU_RUNTIME_ID)
         for index, value in enumerate(outputs):
             local[OutputPortKey(node_id, index)] = value
     _check_cancelled(cancel_callback)
@@ -1145,6 +1202,7 @@ __all__ = [
     "DeviceSegmentUnit",
     "ExecutionUnit",
     "HostExecutionUnit",
+    "NodeOutputsCallback",
     "PrepareNodeCall",
     "execute_device_plan",
     "plan_device_execution",

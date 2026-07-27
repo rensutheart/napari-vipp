@@ -157,16 +157,23 @@ will be headless and will cover Rolling-Ball/Subtract Background, median, and
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules.
 
-Until the planned setup scripts and `GPU doctor` command land, use a dedicated
-Python 3.12 environment for native-Windows CUDA 13 development:
+Use the checked-in setup helper to create a dedicated Python 3.12 environment.
+It pins one CUDA major, refuses mixed CuPy distributions, installs only into the
+named virtual environment, runs `pip check`, and finishes with real Gaussian and
+median kernels. Inspect the exact commands without writing first if desired:
 
 ```powershell
-py -3.12 -m venv .venv-gpu-cu13
-.\.venv-gpu-cu13\Scripts\python.exe -m pip install --upgrade pip
-.\.venv-gpu-cu13\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv-gpu-cu13\Scripts\python.exe -m pip install "cupy-cuda13x[ctk]>=14,<15"
-.\.venv-gpu-cu13\Scripts\python.exe -m pip check
-.\.venv-gpu-cu13\Scripts\python.exe -c "import cupy as cp; from cupyx.scipy import ndimage; x = cp.arange(16, dtype=cp.float32).reshape(4, 4); y = ndimage.gaussian_filter(x, 1.0); z = ndimage.median_filter(x, size=3); cp.cuda.get_current_stream().synchronize(); print(cp.cuda.runtime.getDeviceProperties(0)['name']); print(float(cp.asnumpy((y + z).sum())))"
+powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13 --plan-only
+powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13
+.\.venv-gpu-cu13\Scripts\python.exe -m napari_vipp.core.compute_diagnostics --track cuda13
+```
+
+On Linux, use the same implementation through the shell wrapper:
+
+```bash
+bash scripts/setup_gpu_dev.sh --track cuda13 --plan-only
+bash scripts/setup_gpu_dev.sh --track cuda13
+./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
 
 The base package accepts Python 3.12 and newer, but the initial GPU development
@@ -175,12 +182,14 @@ resolving the base package or CuPy is not yet a VIPP GPU support claim; each
 Python minor must pass the clean-install, real-kernel, scientific-parity, memory,
 and cleanup gates first.
 
-The `[ctk]` extra installs the CUDA components supported by CuPy, but the machine
-still needs a compatible NVIDIA driver. For CUDA 12, create a separate
-`.venv-gpu-cu12` and install `cupy-cuda12x[ctk]>=14,<15` instead. Never install
-the CUDA 12 and CUDA 13 CuPy distributions into the same environment; consult
-the [official CuPy installation matrix](https://docs.cupy.dev/en/stable/install.html)
-when selecting a track.
+The machine still needs a compatible NVIDIA driver. Select `--track cuda12` for
+the separate `.venv-gpu-cu12` compatibility environment. The project also
+publishes platform-marked `gpu-cuda12` and `gpu-cuda13` extras, but the setup
+helper is the reproducible development route because it applies the matching
+constraint file and verifies the installation. Never install the CUDA 12 and
+CUDA 13 CuPy distributions into the same environment. If diagnostics report an
+unavailable runtime, they print a copyable setup command; VIPP's CPU path remains
+usable.
 
 The pinned native-Windows cuCIM skimage build remains experimental. Its current
 reproduction path is documented in the
@@ -188,8 +197,9 @@ reproduction path is documented in the
 [`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1); it omits
 Clara I/O and is not yet a user-facing install route. The builder uses its own
 temporary environment and reports the wheel path/hash; it does not install
-cuCIM into `.venv-gpu-cu13`. Phase 1 will add an explicit, verified developer-
-only wheel option to the setup/doctor path. CUDA acceleration targets
+cuCIM into `.venv-gpu-cu13`. Install a reviewed local build explicitly with
+`--cucim-wheel <path> --cucim-sha256 <digest>`; both values are required and the
+helper verifies the file immediately before installing it. CUDA acceleration targets
 validated Windows/Linux systems first. macOS continues to use VIPP's CPU path
 while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
 must be reported as one shared budget, not RAM plus VRAM.

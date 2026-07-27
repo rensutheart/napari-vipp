@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import importlib
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -283,11 +283,22 @@ class RuntimeProtocol(Protocol):
 
     def is_device_value(self, value: object) -> bool: ...
 
+    def allocation_identity(self, value: object) -> Hashable:
+        """Return the runtime-owned allocation backing ``value``.
+
+        Distinct array objects (for example a base array and a view) must
+        return the same identity when they share one allocation.  The method
+        also serves as the ownership check for the active execution scope.
+        """
+        ...
+
     def to_device(self, value: object, *, device_id: str = "") -> object: ...
 
     def to_host(self, value: object) -> object: ...
 
-    def release(self, value: object) -> None: ...
+    def release(self, value: object) -> None:
+        """Relinquish runtime ownership; callers must then drop all aliases."""
+        ...
 
     def synchronize(self, *, device_id: str = "") -> None: ...
 

@@ -57,6 +57,10 @@ class _FakeKernelFailure(RuntimeError):
     pass
 
 
+class _FakeCleanupFailure(RuntimeError):
+    pass
+
+
 class _FakeDeviceArray:
     """Opaque test value which host/NumPy code is forbidden to coerce."""
 
@@ -86,6 +90,8 @@ class _FakeRuntime:
         self.registration_failure_id: int | None = None
         self.registration_checks: dict[int, int] = {}
         self.closed = False
+        self.scope_active = False
+        self.cleanup_fails_after_oom = False
 
     def allocate(self, payload: object) -> _FakeDeviceArray:
         value = _FakeDeviceArray(self, payload)
@@ -114,9 +120,18 @@ class _FakeRuntime:
         self.events.append(
             ("scope-enter", device_id, memory_limit_bytes, safety_reserve_bytes)
         )
+        assert not self.scope_active
+        self.scope_active = True
         try:
             yield
+        except _FakeOOM as exc:
+            if self.cleanup_fails_after_oom:
+                raise _FakeCleanupFailure(
+                    "private allocation remained live after OOM"
+                ) from exc
+            raise
         finally:
+            self.scope_active = False
             self.events.append(("scope-exit", device_id))
 
     def is_device_value(self, value: object) -> bool:
@@ -126,6 +141,11 @@ class _FakeRuntime:
             if checks == 2:
                 raise _FakeKernelFailure("synthetic output registration failure")
         return isinstance(value, _FakeDeviceArray)
+
+    def allocation_identity(self, value: object):
+        if not self.is_device_value(value):
+            raise TypeError("not a fake device allocation")
+        return id(value)
 
     def to_device(self, value: object, *, device_id: str = "") -> object:
         self.host_to_device_count += 1
@@ -140,6 +160,7 @@ class _FakeRuntime:
         return np.array(value.payload, copy=True)
 
     def release(self, value: object) -> None:
+        assert self.scope_active, "Device values must be released inside their scope."
         assert isinstance(value, _FakeDeviceArray)
         assert not value.released, "A device allocation was released twice."
         value.released = True
@@ -160,6 +181,14 @@ class _FakeRuntime:
         )
 
     def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo:
+        if isinstance(exc, _FakeCleanupFailure):
+            return RuntimeExceptionInfo(
+                RuntimeExceptionKind.KERNEL_FAILURE,
+                "fake_cleanup_incomplete",
+                str(exc),
+                exception_type=type(exc).__name__,
+                retryable=False,
+            )
         if isinstance(exc, _FakeOOM):
             return RuntimeExceptionInfo(
                 RuntimeExceptionKind.OUT_OF_MEMORY,
@@ -721,5 +750,43 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
     assert runtime.operation_count == 1
     assert runtime.host_to_device_count == 1
     assert runtime.device_to_host_count == 0
+    assert runtime.live == {}
+    registry.close()
+
+
+def test_cleanup_failure_overrides_oom_and_prevents_visible_cpu_fallback():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    runtime.oom_remaining = 1
+    runtime.cleanup_fails_after_oom = True
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_oom_once),))
+    request = _request(FallbackPolicy.VISIBLE)
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    with pytest.raises(DeviceExecutionError) as error:
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={
+                OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)
+            },
+            prepare_call=_prepare_call(pipeline),
+        )
+
+    assert error.value.failure.kind is RuntimeExceptionKind.KERNEL_FAILURE
+    assert error.value.failure.reason_code == "fake_cleanup_incomplete"
+    assert not error.value.failure.retryable
+    assert runtime.operation_count == 1
     assert runtime.live == {}
     registry.close()
