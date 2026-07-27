@@ -1,0 +1,1205 @@
+"""Production-node adapters for the generic transactional benchmark service.
+
+This module is provider-neutral and import-safe: importing it does not import
+CuPy, CuPyX, cuCIM, or initialize a device.  A registered runtime and callable
+are not touched at module import. The explicit builder probes the runtime once
+to resolve the exact device identity; the implementation callable remains lazy
+until a candidate executes. Every invocation owns a fresh detached host call
+and a private runtime scope; only host values cross back into the generic
+parity/timing service.
+"""
+
+from __future__ import annotations
+
+import copy
+import math
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from hashlib import sha256
+
+import numpy as np
+
+from napari_vipp.core.compute import WorkloadDescriptor
+from napari_vipp.core.compute_benchmark import (
+    ADAPTIVE_WARM_ROUNDS,
+    DEFAULT_BOOTSTRAP_SAMPLES,
+    DEFAULT_BOOTSTRAP_SEED,
+    DEFAULT_CONFIDENCE_LEVEL,
+    MINIMUM_WARM_ROUNDS,
+    BenchmarkImplementation,
+    BenchmarkInvocationObservation,
+    NodeBenchmarkRequest,
+    ParityResult,
+)
+from napari_vipp.core.compute_registry import (
+    ComputeRegistry,
+    RuntimeExceptionInfo,
+    RuntimeExceptionKind,
+    RuntimeMemorySnapshot,
+    RuntimeProtocol,
+)
+from napari_vipp.core.compute_specs import AdmissionTier, OperationComputeSpec
+from napari_vipp.core.node_execution import PreparedNodeCall
+
+PRODUCTION_BENCHMARK_POLICY_ID = "production-node-paired-adaptive-bootstrap-v1"
+CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v1"
+EXACT_PARITY_OPERATION_IDS = frozenset(
+    {
+        "median_filter",
+    }
+)
+BACKGROUND_PARITY_OPERATION_IDS = frozenset(
+    {"rolling_ball_background", "subtract_background"}
+)
+GAUSSIAN_PARITY_OPERATION_IDS = frozenset({"gaussian_blur", "gaussian_blur_3d"})
+GAUSSIAN_FLOAT32_NRMSE_LIMIT = 2e-6
+GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR = 1e-12
+BACKGROUND_FLOAT32_NRMSE_LIMIT = 2e-6
+BACKGROUND_FLOAT32_MAX_ABS_BASE = 1e-6
+BACKGROUND_FLOAT32_SCALE_ULPS = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionInvocationObservation:
+    """Rich sidecar evidence retained outside scientific/workflow caches."""
+
+    implementation_id: str
+    invocation_index: int
+    measurement: BenchmarkInvocationObservation
+    snapshots: tuple[tuple[str, RuntimeMemorySnapshot], ...]
+    terminal_snapshot: RuntimeMemorySnapshot
+    cleanup_succeeded: bool
+
+
+class ProductionBenchmarkObservationLog:
+    """Thread-safe machine-local observation log for one benchmark request."""
+
+    def __init__(self) -> None:
+        self._runs: dict[str, list[ProductionInvocationObservation]] = {}
+        self._lock = threading.RLock()
+
+    def record(
+        self,
+        implementation_id: str,
+        measurement: BenchmarkInvocationObservation,
+        snapshots: Sequence[tuple[str, RuntimeMemorySnapshot]],
+        terminal_snapshot: RuntimeMemorySnapshot,
+        *,
+        cleanup_succeeded: bool,
+    ) -> ProductionInvocationObservation:
+        with self._lock:
+            runs = self._runs.setdefault(str(implementation_id), [])
+            observation = ProductionInvocationObservation(
+                implementation_id=str(implementation_id),
+                invocation_index=len(runs),
+                measurement=measurement,
+                snapshots=tuple(snapshots),
+                terminal_snapshot=terminal_snapshot,
+                cleanup_succeeded=bool(cleanup_succeeded),
+            )
+            runs.append(observation)
+            return observation
+
+    def latest_measurement(
+        self,
+        implementation_id: str,
+    ) -> BenchmarkInvocationObservation | None:
+        with self._lock:
+            runs = self._runs.get(str(implementation_id), ())
+            return runs[-1].measurement if runs else None
+
+    def runs(
+        self,
+        implementation_id: str | None = None,
+    ) -> tuple[ProductionInvocationObservation, ...]:
+        with self._lock:
+            if implementation_id is not None:
+                return tuple(self._runs.get(str(implementation_id), ()))
+            return tuple(
+                observation
+                for key in sorted(self._runs)
+                for observation in self._runs[key]
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredNodeBenchmark:
+    """A generic request plus its detached call and rich local observations."""
+
+    request: NodeBenchmarkRequest
+    detached_call: PreparedNodeCall = field(repr=False, compare=False)
+    observations: ProductionBenchmarkObservationLog = field(
+        repr=False,
+        compare=False,
+    )
+
+
+def build_registered_node_benchmark(
+    call: PreparedNodeCall,
+    *,
+    admitted_specs: Sequence[OperationComputeSpec],
+    registry: ComputeRegistry,
+    environment_fingerprint: str,
+    device_id: str = "",
+    memory_limit_bytes: int | None = None,
+    safety_reserve_bytes: int | None = None,
+    warm_rounds: int = MINIMUM_WARM_ROUNDS,
+    max_warm_rounds: int = ADAPTIVE_WARM_ROUNDS[-1],
+    time_budget_seconds: float | None = None,
+    allow_experimental: bool = False,
+    clock: Callable[[], float] = time.perf_counter,
+    paired_bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+    paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+) -> RegisteredNodeBenchmark:
+    """Build a production-faithful request from an already prepared node call.
+
+    ``admitted_specs`` is deliberately explicit.  This adapter does not expand
+    scientific support from a successful one-off benchmark; planning must first
+    admit each exact implementation for the call's dtype/shape/parameters.
+    """
+
+    if not isinstance(call, PreparedNodeCall):
+        raise TypeError("call must be a PreparedNodeCall.")
+    if not callable(clock):
+        raise TypeError("clock must be callable.")
+    environment = str(environment_fingerprint).strip()
+    if not environment:
+        raise ValueError("environment_fingerprint must not be empty.")
+    specs = tuple(admitted_specs)
+    if not specs:
+        raise ValueError("admitted_specs must contain at least one GPU candidate.")
+    if any(not isinstance(spec, OperationComputeSpec) for spec in specs):
+        raise TypeError("admitted_specs must contain OperationComputeSpec values.")
+    if len({spec.implementation_id for spec in specs}) != len(specs):
+        raise ValueError("admitted_specs implementation IDs must be unique.")
+    if call.multiple_inputs or len(call.inputs) != 1 or call.output_port_count != 1:
+        raise ValueError(
+            "Phase-1 registered node benchmarking requires one input and one output."
+        )
+
+    for spec in specs:
+        _validate_admitted_spec(
+            call,
+            spec,
+            registry,
+            allow_experimental=allow_experimental,
+        )
+
+    resolved_device_id = _resolve_device_id(registry, specs, device_id)
+    _validate_memory_scope(
+        memory_limit_bytes=memory_limit_bytes,
+        safety_reserve_bytes=safety_reserve_bytes,
+    )
+
+    detached = detach_prepared_node_call(call)
+    workload = _workload_from_call(detached)
+    observations = ProductionBenchmarkObservationLog()
+    candidates = tuple(
+        _candidate_implementation(
+            detached,
+            spec,
+            registry,
+            observations,
+            device_id=resolved_device_id,
+            memory_limit_bytes=memory_limit_bytes,
+            safety_reserve_bytes=safety_reserve_bytes,
+            allow_experimental=allow_experimental,
+            clock=clock,
+        )
+        for spec in specs
+    )
+    reference = BenchmarkImplementation(
+        implementation_id=f"cpu-{call.operation_id}-v1",
+        execute=_execute_cpu_reference,
+        implementation_version="1",
+    )
+    request = NodeBenchmarkRequest(
+        workload=workload,
+        environment_fingerprint=environment,
+        reference=reference,
+        candidates=candidates,
+        private_input_factory=lambda: _clone_detached_call(detached),
+        parity=lambda expected, actual: operation_parity(
+            call.operation_id,
+            expected,
+            actual,
+            input_peak=_finite_input_peak(detached.inputs[0]),
+        ),
+        benchmark_policy_id=_benchmark_policy_id(
+            warm_rounds=warm_rounds,
+            max_warm_rounds=max_warm_rounds,
+            paired_bootstrap_samples=paired_bootstrap_samples,
+            paired_bootstrap_seed=paired_bootstrap_seed,
+            paired_confidence_level=paired_confidence_level,
+        ),
+        warm_rounds=warm_rounds,
+        time_budget_seconds=time_budget_seconds,
+        time_parity_as_cold=True,
+        warmup_rounds=1,
+        adaptive_rounds=True,
+        max_warm_rounds=max_warm_rounds,
+        paired_bootstrap_samples=paired_bootstrap_samples,
+        paired_bootstrap_seed=paired_bootstrap_seed,
+        paired_confidence_level=paired_confidence_level,
+        device_id=resolved_device_id,
+        memory_limit_bytes=memory_limit_bytes,
+        safety_reserve_bytes=safety_reserve_bytes,
+    )
+    return RegisteredNodeBenchmark(request, detached, observations)
+
+
+def detach_prepared_node_call(call: PreparedNodeCall) -> PreparedNodeCall:
+    """Copy runtime data and remove live progress state from a prepared call."""
+
+    if not isinstance(call, PreparedNodeCall):
+        raise TypeError("call must be a PreparedNodeCall.")
+    kwargs = call.keyword_arguments()
+    if "progress" in kwargs:
+        kwargs["progress"] = None
+    kwargs = copy.deepcopy(kwargs)
+    return PreparedNodeCall(
+        node_id=call.node_id,
+        operation_id=call.operation_id,
+        cpu_function=call.cpu_function,
+        inputs=tuple(_detached_host_value(value) for value in call.inputs),
+        input_states=copy.deepcopy(call.input_states),
+        kwargs=kwargs,
+        multiple_inputs=call.multiple_inputs,
+        output_port_count=call.output_port_count,
+    )
+
+
+def operation_parity(
+    operation_id: str,
+    reference: object,
+    candidate: object,
+    *,
+    input_peak: float | None = None,
+) -> ParityResult:
+    """Apply the registered operation's production scientific parity gate."""
+
+    operation = str(operation_id).strip()
+    if operation in BACKGROUND_PARITY_OPERATION_IDS:
+        return _background_dtype_parity(
+            reference,
+            candidate,
+            input_peak=input_peak,
+        )
+    if operation in EXACT_PARITY_OPERATION_IDS:
+        return _exact_array_parity(reference, candidate)
+    if operation in GAUSSIAN_PARITY_OPERATION_IDS:
+        return _gaussian_float32_parity(reference, candidate)
+    raise ValueError(f"No production benchmark parity policy for {operation!r}.")
+
+
+def _resolve_device_id(
+    registry: ComputeRegistry,
+    specs: Sequence[OperationComputeSpec],
+    requested_device_id: str,
+) -> str:
+    runtime_ids = {spec.runtime_id for spec in specs}
+    if len(runtime_ids) != 1:
+        raise ValueError(
+            "One node benchmark request must use one resolved array runtime."
+        )
+    runtime_id = next(iter(runtime_ids))
+    probe = registry.probe_runtime(runtime_id)
+    if not probe.available:
+        raise ValueError(
+            probe.message or f"Runtime {runtime_id!r} is unavailable for benchmarking."
+        )
+    requested = str(requested_device_id).strip()
+    known_ids = {device.device_id for device in probe.devices}
+    if requested:
+        if requested not in known_ids:
+            raise ValueError(
+                f"Device {requested!r} is not reported by runtime {runtime_id!r}."
+            )
+        return requested
+    selected = probe.selected_device_id
+    if not selected:
+        raise ValueError(f"Runtime {runtime_id!r} did not resolve a benchmark device.")
+    return selected
+
+
+def _validate_memory_scope(
+    *,
+    memory_limit_bytes: int | None,
+    safety_reserve_bytes: int | None,
+) -> None:
+    if memory_limit_bytes is not None and (
+        isinstance(memory_limit_bytes, bool)
+        or not isinstance(memory_limit_bytes, int)
+        or memory_limit_bytes <= 0
+    ):
+        raise ValueError("memory_limit_bytes must be positive or None.")
+    if safety_reserve_bytes is not None and (
+        isinstance(safety_reserve_bytes, bool)
+        or not isinstance(safety_reserve_bytes, int)
+        or safety_reserve_bytes < 0
+    ):
+        raise ValueError("safety_reserve_bytes must be non-negative or None.")
+
+
+def _benchmark_policy_id(
+    *,
+    warm_rounds: int,
+    max_warm_rounds: int,
+    paired_bootstrap_samples: int,
+    paired_bootstrap_seed: int,
+    paired_confidence_level: float,
+) -> str:
+    production_profile = (
+        warm_rounds == MINIMUM_WARM_ROUNDS
+        and max_warm_rounds == ADAPTIVE_WARM_ROUNDS[-1]
+        and paired_bootstrap_samples == DEFAULT_BOOTSTRAP_SAMPLES
+        and paired_bootstrap_seed == DEFAULT_BOOTSTRAP_SEED
+        and paired_confidence_level == DEFAULT_CONFIDENCE_LEVEL
+    )
+    return (
+        PRODUCTION_BENCHMARK_POLICY_ID
+        if production_profile
+        else CUSTOM_BENCHMARK_POLICY_ID
+    )
+
+
+def _validate_admitted_spec(
+    call: PreparedNodeCall,
+    spec: OperationComputeSpec,
+    registry: ComputeRegistry,
+    *,
+    allow_experimental: bool,
+) -> None:
+    if spec.operation_id != call.operation_id:
+        raise ValueError(
+            f"Implementation {spec.implementation_id!r} belongs to "
+            f"{spec.operation_id!r}, not {call.operation_id!r}."
+        )
+    if not spec.is_gpu or spec.host_boundary or not spec.supports_device_residency:
+        raise ValueError(
+            f"Implementation {spec.implementation_id!r} is not a resident GPU "
+            "operation candidate."
+        )
+    if spec.side_effect_policy_id != "pure-v1":
+        raise ValueError("Only declared pure operations may be benchmarked.")
+    if len(spec.input_ports) != len(call.inputs):
+        raise ValueError("Implementation input contracts do not match the call.")
+    if len(spec.output_ports) != call.output_port_count:
+        raise ValueError("Implementation output contracts do not match the call.")
+    if spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN and not allow_experimental:
+        raise ValueError(
+            f"Implementation {spec.implementation_id!r} is developer-hidden."
+        )
+    registered = registry.implementation_spec(
+        spec.implementation_id,
+        spec.implementation_version,
+        allow_experimental=allow_experimental,
+    )
+    if registered != spec:
+        raise ValueError(
+            f"Implementation {spec.implementation_id!r} does not match its "
+            "registered declaration."
+        )
+    expected_parity = (
+        "gaussian-float32-tolerance-v1"
+        if call.operation_id in GAUSSIAN_PARITY_OPERATION_IDS
+        else None
+    )
+    if call.operation_id in EXACT_PARITY_OPERATION_IDS:
+        expected_parity = "median-production-bitwise-v1"
+    elif call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
+        expected_parity = "background-dtype-parity-v2"
+    if expected_parity is None or spec.parity_policy_id != expected_parity:
+        raise ValueError(
+            f"Implementation {spec.implementation_id!r} has unsupported parity "
+            f"policy {spec.parity_policy_id!r}."
+        )
+
+
+def _candidate_implementation(
+    call: PreparedNodeCall,
+    spec: OperationComputeSpec,
+    registry: ComputeRegistry,
+    observations: ProductionBenchmarkObservationLog,
+    *,
+    device_id: str,
+    memory_limit_bytes: int | None,
+    safety_reserve_bytes: int | None,
+    allow_experimental: bool,
+    clock: Callable[[], float],
+) -> BenchmarkImplementation:
+    runner = _RegisteredCandidateRunner(
+        call,
+        spec,
+        registry,
+        observations,
+        device_id=str(device_id).strip(),
+        memory_limit_bytes=memory_limit_bytes,
+        safety_reserve_bytes=safety_reserve_bytes,
+        allow_experimental=allow_experimental,
+        clock=clock,
+    )
+    return BenchmarkImplementation(
+        implementation_id=spec.implementation_id,
+        execute=runner.execute,
+        # execute returns only after kernel, D2H, cleanup, and terminal memory
+        # synchronization; a second callback would be redundant and untimed.
+        synchronize=lambda: None,
+        peak_memory_bytes=runner.latest_peak_memory_bytes,
+        observation=runner.latest_measurement,
+        implementation_version=spec.implementation_version,
+    )
+
+
+class _DetachedBenchmarkCandidateFailure(RuntimeError):
+    """Provider-neutral failure raised only after private-scope cleanup."""
+
+    def __init__(self, failure: RuntimeExceptionInfo) -> None:
+        self.failure = failure
+        detail = failure.message or failure.reason_code
+        super().__init__(f"{failure.kind.value}: {failure.reason_code}: {detail}")
+
+
+@dataclass(slots=True)
+class _RegisteredCandidateRunner:
+    call: PreparedNodeCall
+    spec: OperationComputeSpec
+    registry: ComputeRegistry
+    observations: ProductionBenchmarkObservationLog
+    device_id: str
+    memory_limit_bytes: int | None
+    safety_reserve_bytes: int | None
+    allow_experimental: bool
+    clock: Callable[[], float] = field(repr=False)
+
+    def latest_measurement(self) -> BenchmarkInvocationObservation | None:
+        return self.observations.latest_measurement(self.spec.implementation_id)
+
+    def latest_peak_memory_bytes(self) -> int:
+        measurement = self.latest_measurement()
+        return measurement.peak_memory_bytes if measurement is not None else 0
+
+    def execute(self, private_call: object) -> object:
+        if not isinstance(private_call, PreparedNodeCall):
+            raise TypeError("private benchmark input must be a PreparedNodeCall.")
+        if (
+            private_call.node_id != self.call.node_id
+            or private_call.operation_id != self.call.operation_id
+        ):
+            raise ValueError("private benchmark call does not match its template.")
+        runtime = self.registry.runtime(self.spec.runtime_id)
+        implementation = self.registry.implementation_callable(
+            self.spec,
+            allow_experimental=self.allow_experimental,
+        )
+        return self._execute_in_scope(private_call, runtime, implementation)
+
+    def _execute_in_scope(
+        self,
+        private_call: PreparedNodeCall,
+        runtime: RuntimeProtocol,
+        implementation: Callable[..., object],
+    ) -> object:
+        tracker = _AllocationTracker(runtime)
+        snapshots: list[tuple[str, RuntimeMemorySnapshot]] = []
+        transfer_seconds = 0.0
+        resident_seconds = 0.0
+        host_result: object | None = None
+        raw: object | None = None
+        outputs: tuple[object, ...] = ()
+        device_inputs: tuple[object, ...] = ()
+        positional: object | None = None
+        output: object | None = None
+        device_value: object | None = None
+        transferred: list[object] = []
+        detached_failure: RuntimeExceptionInfo | None = None
+        cleanup_failure: RuntimeExceptionInfo | None = None
+        scope_failure: RuntimeExceptionInfo | None = None
+        terminal_failure: RuntimeExceptionInfo | None = None
+        terminal: RuntimeMemorySnapshot | None = None
+
+        try:
+            with runtime.execution_scope(
+                device_id=self.device_id,
+                memory_limit_bytes=self.memory_limit_bytes,
+                safety_reserve_bytes=self.safety_reserve_bytes,
+            ):
+                try:
+                    try:
+                        snapshots.append(("scope_enter", self._snapshot(runtime)))
+
+                        transfer_started = _read_clock(self.clock)
+                        for host_value in private_call.inputs:
+                            device_value = runtime.to_device(
+                                host_value,
+                                device_id=self.device_id,
+                            )
+                            try:
+                                tracker.add(device_value)
+                            except Exception:
+                                _release_untracked(runtime, device_value, tracker)
+                                raise
+                            transferred.append(device_value)
+                        device_inputs = tuple(transferred)
+                        transferred = []
+                        device_value = None
+                        runtime.synchronize(device_id=self.device_id)
+                        transfer_seconds += _elapsed(self.clock, transfer_started)
+                        snapshots.append(("post_h2d", self._snapshot(runtime)))
+
+                        resident_started = _read_clock(self.clock)
+                        positional = (
+                            list(device_inputs)
+                            if private_call.multiple_inputs
+                            else device_inputs[0]
+                        )
+                        raw = implementation(
+                            positional,
+                            **private_call.keyword_arguments(),
+                        )
+                        try:
+                            outputs = _normalized_outputs(
+                                raw,
+                                private_call.output_port_count,
+                            )
+                        except Exception:
+                            _release_orphan_outputs(runtime, raw, tracker)
+                            raise
+                        try:
+                            invalid = tuple(
+                                value
+                                for value in outputs
+                                if not runtime.is_device_value(value)
+                            )
+                        except Exception:
+                            _release_orphan_outputs(runtime, outputs, tracker)
+                            raise
+                        if invalid:
+                            _release_orphan_outputs(runtime, outputs, tracker)
+                            raise TypeError(
+                                f"Implementation {self.spec.implementation_id!r} "
+                                "returned a host value inside its device scope."
+                            )
+                        try:
+                            for output in outputs:
+                                tracker.add(output)
+                        except Exception:
+                            _release_orphan_outputs(runtime, outputs, tracker)
+                            raise
+                        output = None
+                        runtime.synchronize(device_id=self.device_id)
+                        resident_seconds = _elapsed(self.clock, resident_started)
+                        snapshots.append(("post_kernel", self._snapshot(runtime)))
+
+                        transfer_started = _read_clock(self.clock)
+                        host_outputs = tuple(
+                            runtime.to_host(output) for output in outputs
+                        )
+                        runtime.synchronize(device_id=self.device_id)
+                        transfer_seconds += _elapsed(self.clock, transfer_started)
+                        snapshots.append(("post_d2h", self._snapshot(runtime)))
+                        host_result = (
+                            host_outputs[0]
+                            if private_call.output_port_count == 1
+                            else host_outputs
+                        )
+                        _ensure_host_only(host_result, runtime)
+                    except Exception as exc:
+                        # Provider exceptions may retain traceback-local device
+                        # arrays. Classify and suppress them before the private
+                        # allocator validates cleanup on scope exit.
+                        detached_failure = _classify_runtime_exception(
+                            runtime,
+                            exc,
+                        )
+                finally:
+                    release_error = tracker.release_all()
+                    if release_error is not None:
+                        cleanup_failure = _classify_runtime_exception(
+                            runtime,
+                            release_error,
+                        )
+                    release_error = None
+                    raw = None
+                    outputs = ()
+                    device_inputs = ()
+                    positional = None
+                    output = None
+                    device_value = None
+                    transferred = []
+                    invalid = ()
+                    host_outputs = ()
+                    try:
+                        runtime.synchronize(device_id=self.device_id)
+                        snapshots.append(("post_release", self._snapshot(runtime)))
+                    except Exception as exc:
+                        cleanup_failure = _combine_runtime_failures(
+                            cleanup_failure,
+                            _classify_runtime_exception(runtime, exc),
+                        )
+        except Exception as exc:
+            # Scope-exit failures are already outside the provider allocator,
+            # but are still sanitized before crossing the adapter boundary.
+            scope_failure = _classify_runtime_exception(runtime, exc)
+
+        try:
+            terminal = self._snapshot(runtime)
+        except Exception as exc:
+            terminal_failure = _classify_runtime_exception(runtime, exc)
+
+        cleanup_succeeded = (
+            cleanup_failure is None
+            and scope_failure is None
+            and terminal_failure is None
+            and terminal is not None
+            and terminal.runtime_live_bytes == 0
+            and terminal.runtime_reserved_bytes == 0
+        )
+        if terminal is not None and not cleanup_succeeded:
+            cleanup_failure = _combine_runtime_failures(
+                cleanup_failure,
+                RuntimeExceptionInfo(
+                    RuntimeExceptionKind.KERNEL_FAILURE,
+                    "benchmark_cleanup_incomplete",
+                    "Benchmark candidate left runtime-managed allocations or "
+                    "its private runtime scope failed cleanup.",
+                    retryable=False,
+                ),
+            )
+        failures = tuple(
+            failure
+            for failure in (
+                detached_failure,
+                cleanup_failure,
+                scope_failure,
+                terminal_failure,
+            )
+            if failure is not None
+        )
+        final_failure = _combined_runtime_failure(failures)
+
+        if terminal is None:
+            if final_failure is None:
+                raise RuntimeError("Benchmark terminal memory state is unavailable.")
+            raise _DetachedBenchmarkCandidateFailure(final_failure) from None
+        observed = tuple(snapshot for _stage, snapshot in snapshots) + (terminal,)
+        measurement = BenchmarkInvocationObservation(
+            timing_scope="synchronized-end-to-end-v1",
+            synchronized=True,
+            transfers_included=True,
+            transfer_seconds=transfer_seconds,
+            resident_seconds=resident_seconds,
+            runtime_live_bytes=max(
+                (snapshot.runtime_live_bytes for snapshot in observed),
+                default=0,
+            ),
+            runtime_reserved_bytes=max(
+                (snapshot.runtime_reserved_bytes for snapshot in observed),
+                default=0,
+            ),
+            out_of_pool_bytes=max(
+                (snapshot.out_of_pool_bytes for snapshot in observed),
+                default=0,
+            ),
+        )
+        self.observations.record(
+            self.spec.implementation_id,
+            measurement,
+            snapshots,
+            terminal,
+            cleanup_succeeded=cleanup_succeeded,
+        )
+        if final_failure is not None:
+            raise _DetachedBenchmarkCandidateFailure(final_failure) from None
+        return host_result
+
+    def _snapshot(self, runtime: RuntimeProtocol) -> RuntimeMemorySnapshot:
+        snapshot = runtime.memory_snapshot(device_id=self.device_id)
+        if not isinstance(snapshot, RuntimeMemorySnapshot):
+            raise TypeError("runtime memory_snapshot returned an invalid value.")
+        return snapshot
+
+
+class _AllocationTracker:
+    """Release one representative of each private allocation exactly once."""
+
+    def __init__(self, runtime: RuntimeProtocol) -> None:
+        self.runtime = runtime
+        self._values: dict[object, object] = {}
+
+    def add(self, value: object) -> None:
+        identity = self.runtime.allocation_identity(value)
+        try:
+            hash(identity)
+        except TypeError as exc:
+            raise TypeError("runtime allocation identity must be hashable.") from exc
+        self._values.setdefault(identity, value)
+
+    def owns(self, value: object) -> bool:
+        try:
+            identity = self.runtime.allocation_identity(value)
+        except Exception:
+            return False
+        return identity in self._values
+
+    def release_all(self) -> Exception | None:
+        first_error = None
+        values = tuple(self._values.values())
+        self._values.clear()
+        for value in reversed(values):
+            try:
+                self.runtime.release(value)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        value = None
+        values = ()
+        return first_error
+
+
+def _release_untracked(
+    runtime: RuntimeProtocol,
+    value: object,
+    tracker: _AllocationTracker,
+) -> None:
+    if tracker.owns(value):
+        return
+    try:
+        if runtime.is_device_value(value):
+            runtime.release(value)
+    except Exception:
+        pass
+
+
+def _release_orphan_outputs(
+    runtime: RuntimeProtocol,
+    raw: object,
+    tracker: _AllocationTracker,
+) -> None:
+    values = tuple(raw) if isinstance(raw, (tuple, list)) else (raw,)
+    released: set[object] = set()
+    for value in values:
+        if tracker.owns(value):
+            continue
+        try:
+            if not runtime.is_device_value(value):
+                continue
+            try:
+                identity = runtime.allocation_identity(value)
+            except Exception:
+                identity = ("python-object", id(value))
+            if identity in released:
+                continue
+            released.add(identity)
+            runtime.release(value)
+        except Exception:
+            pass
+
+
+def _classify_runtime_exception(
+    runtime: RuntimeProtocol,
+    exc: BaseException,
+) -> RuntimeExceptionInfo:
+    try:
+        return runtime.classify_exception(exc)
+    except Exception as classification_error:
+        return RuntimeExceptionInfo(
+            RuntimeExceptionKind.UNKNOWN,
+            "benchmark_runtime_exception_classification_failed",
+            f"{type(exc).__name__}: {exc}; classifier failed with "
+            f"{type(classification_error).__name__}: {classification_error}",
+            exception_type=type(exc).__name__,
+            retryable=False,
+        )
+
+
+def _combine_runtime_failures(
+    first: RuntimeExceptionInfo | None,
+    second: RuntimeExceptionInfo,
+) -> RuntimeExceptionInfo:
+    if first is None:
+        return second
+    return _combined_runtime_failure((first, second))
+
+
+def _combined_runtime_failure(
+    failures: Sequence[RuntimeExceptionInfo],
+) -> RuntimeExceptionInfo | None:
+    values = tuple(failures)
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    detail = "; ".join(
+        f"{failure.kind.value}/{failure.reason_code}: "
+        f"{failure.message or failure.reason_code}"
+        for failure in values
+    )
+    return RuntimeExceptionInfo(
+        RuntimeExceptionKind.KERNEL_FAILURE,
+        "benchmark_candidate_multiple_failures",
+        detail,
+        exception_type="",
+        retryable=False,
+    )
+
+
+def _execute_cpu_reference(private_call: object) -> object:
+    if not isinstance(private_call, PreparedNodeCall):
+        raise TypeError("private benchmark input must be a PreparedNodeCall.")
+    raw = private_call.cpu_function(
+        private_call.positional_input(),
+        **private_call.keyword_arguments(),
+    )
+    outputs = _normalized_outputs(raw, private_call.output_port_count)
+    return outputs[0] if private_call.output_port_count == 1 else outputs
+
+
+def _normalized_outputs(raw: object, output_count: int) -> tuple[object, ...]:
+    if output_count == 1:
+        return (raw,)
+    if not isinstance(raw, (tuple, list)):
+        raise TypeError("multi-output operations must return a tuple or list.")
+    outputs = tuple(raw)
+    if len(outputs) != output_count:
+        raise ValueError(
+            f"Operation returned {len(outputs)} outputs; expected {output_count}."
+        )
+    return outputs
+
+
+def _ensure_host_only(value: object, runtime: RuntimeProtocol) -> None:
+    if runtime.is_device_value(value):
+        raise TypeError("A device value escaped a benchmark candidate scope.")
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _ensure_host_only(item, runtime)
+    elif isinstance(value, (tuple, list)):
+        for item in value:
+            _ensure_host_only(item, runtime)
+
+
+def _workload_from_call(call: PreparedNodeCall) -> WorkloadDescriptor:
+    arrays = tuple(np.asarray(value) for value in call.inputs)
+    parameters = tuple(
+        (name, _json_parameter(value))
+        for name, value in call.kwargs.items()
+        if name != "progress"
+    )
+    resolved = call.kwargs.get("resolved_spatial_ndim")
+    if isinstance(resolved, bool) or resolved not in {1, 2, 3}:
+        resolved = None
+    return WorkloadDescriptor(
+        node_id=call.node_id,
+        operation_id=call.operation_id,
+        input_shapes=tuple(
+            tuple(int(size) for size in array.shape) for array in arrays
+        ),
+        input_dtypes=tuple(array.dtype.name for array in arrays),
+        parameters=parameters,
+        resolved_spatial_ndim=resolved,
+        facts_fingerprint=_call_facts_fingerprint(call),
+    )
+
+
+def _call_facts_fingerprint(call: PreparedNodeCall) -> str:
+    digest = sha256()
+    digest.update(call.operation_id.encode("utf-8"))
+    digest.update(str(call.output_port_count).encode("ascii"))
+    for value in call.inputs:
+        array = np.asarray(value)
+        digest.update(array.dtype.str.encode("ascii"))
+        digest.update(repr(tuple(array.shape)).encode("ascii"))
+        digest.update(repr(tuple(array.strides)).encode("ascii"))
+        digest.update(b"C" if array.flags.c_contiguous else b"-")
+        digest.update(b"F" if array.flags.f_contiguous else b"-")
+        digest.update(np.ascontiguousarray(array).tobytes(order="C"))
+    return digest.hexdigest()
+
+
+def _json_parameter(value: object) -> object:
+    if isinstance(value, np.generic):
+        return _json_parameter(value.item())
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("benchmark parameters must not contain NaN or infinity.")
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _json_parameter(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return tuple(_json_parameter(item) for item in value)
+    raise TypeError(
+        "benchmark parameters must be JSON-safe after progress is detached; "
+        f"received {type(value).__name__}."
+    )
+
+
+def _clone_detached_call(call: PreparedNodeCall) -> PreparedNodeCall:
+    return PreparedNodeCall(
+        node_id=call.node_id,
+        operation_id=call.operation_id,
+        cpu_function=call.cpu_function,
+        inputs=tuple(_detached_host_value(value) for value in call.inputs),
+        input_states=copy.deepcopy(call.input_states),
+        kwargs=copy.deepcopy(call.keyword_arguments()),
+        multiple_inputs=call.multiple_inputs,
+        output_port_count=call.output_port_count,
+    )
+
+
+def _detached_host_value(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        detached = np.array(value, copy=True, order="K", subok=False)
+        detached.setflags(write=False)
+        return detached
+    return copy.deepcopy(value)
+
+
+def _exact_array_parity(reference: object, candidate: object) -> ParityResult:
+    try:
+        expected = np.asarray(reference)
+        actual = np.asarray(candidate)
+    except Exception as exc:
+        return ParityResult(False, f"outputs are not host arrays: {exc}")
+    mismatch = _array_contract_mismatch(expected, actual)
+    if mismatch:
+        return ParityResult(False, mismatch)
+    expected_bytes = np.ascontiguousarray(expected).view(np.uint8).reshape(-1)
+    actual_bytes = np.ascontiguousarray(actual).view(np.uint8).reshape(-1)
+    byte_mismatches = int(np.count_nonzero(expected_bytes != actual_bytes))
+    if byte_mismatches:
+        signed_zero_mismatches = 0
+        if np.issubdtype(expected.dtype, np.floating):
+            both_zero = (expected == 0) & (actual == 0)
+            signed_zero_mismatches = int(
+                np.count_nonzero(
+                    both_zero & (np.signbit(expected) != np.signbit(actual))
+                )
+            )
+        return ParityResult(
+            False,
+            f"bitwise mismatch: {byte_mismatches} bytes differ; "
+            f"signed_zero_mismatches={signed_zero_mismatches}",
+        )
+    return ParityResult(True, "bitwise exact, including signed-zero bits")
+
+
+def _background_dtype_parity(
+    reference: object,
+    candidate: object,
+    *,
+    input_peak: float | None,
+) -> ParityResult:
+    try:
+        expected = np.asarray(reference)
+        actual = np.asarray(candidate)
+    except Exception as exc:
+        return ParityResult(False, f"outputs are not host arrays: {exc}")
+    mismatch = _array_contract_mismatch(expected, actual)
+    if mismatch:
+        return ParityResult(False, mismatch)
+    if np.issubdtype(expected.dtype, np.integer):
+        return _exact_array_parity(expected, actual)
+    if expected.dtype != np.dtype(np.float32):
+        return ParityResult(
+            False,
+            f"Background GPU parity has no policy for {expected.dtype}",
+        )
+
+    expected_finite = np.isfinite(expected)
+    actual_finite = np.isfinite(actual)
+    if not np.array_equal(expected_finite, actual_finite):
+        return ParityResult(False, "finite/non-finite masks differ")
+    if not np.array_equal(np.isnan(expected), np.isnan(actual)):
+        return ParityResult(False, "NaN masks differ")
+    if not np.array_equal(np.isposinf(expected), np.isposinf(actual)):
+        return ParityResult(False, "positive-infinity masks differ")
+    if not np.array_equal(np.isneginf(expected), np.isneginf(actual)):
+        return ParityResult(False, "negative-infinity masks differ")
+    expected_zero = expected == 0
+    actual_zero = actual == 0
+    if not np.array_equal(expected_zero, actual_zero):
+        return ParityResult(False, "zero masks differ")
+    both_zero = expected_zero & actual_zero
+    signed_zero_mismatches = int(
+        np.count_nonzero(both_zero & (np.signbit(expected) != np.signbit(actual)))
+    )
+    if signed_zero_mismatches:
+        return ParityResult(
+            False,
+            f"signed-zero bits differ at {signed_zero_mismatches} values",
+        )
+
+    expected_values = expected[expected_finite].astype(np.float64)
+    actual_values = actual[actual_finite].astype(np.float64)
+    difference = actual_values - expected_values
+    max_abs = float(np.max(np.abs(difference))) if difference.size else 0.0
+    reference_peak = (
+        float(np.max(np.abs(expected_values))) if expected_values.size else 0.0
+    )
+    normalized_input_peak = _validated_optional_peak(input_peak)
+    scale = max(1.0, normalized_input_peak, reference_peak)
+    max_abs_limit = (
+        BACKGROUND_FLOAT32_MAX_ABS_BASE
+        + BACKGROUND_FLOAT32_SCALE_ULPS * np.finfo(np.float32).eps * scale
+    )
+    denominator = max(
+        float(np.linalg.norm(expected_values)),
+        math.sqrt(expected_values.size) * GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR,
+    )
+    numerator = float(np.linalg.norm(difference))
+    nrmse = numerator / denominator if denominator else 0.0
+    max_ulp = _maximum_float32_ulp_distance(
+        expected[expected_finite],
+        actual[actual_finite],
+    )
+    passed = bool(nrmse <= BACKGROUND_FLOAT32_NRMSE_LIMIT and max_abs <= max_abs_limit)
+    return ParityResult(
+        passed,
+        f"nrmse={nrmse:.9g} (limit={BACKGROUND_FLOAT32_NRMSE_LIMIT:.9g}); "
+        f"max_abs={max_abs:.9g} (limit={max_abs_limit:.9g}); "
+        f"max_ulp={max_ulp} (diagnostic; near-zero cancellation is "
+        "absolute-error gated)",
+    )
+
+
+def _gaussian_float32_parity(
+    reference: object,
+    candidate: object,
+) -> ParityResult:
+    try:
+        expected = np.asarray(reference)
+        actual = np.asarray(candidate)
+    except Exception as exc:
+        return ParityResult(False, f"outputs are not host arrays: {exc}")
+    mismatch = _array_contract_mismatch(expected, actual)
+    if mismatch:
+        return ParityResult(False, mismatch)
+    if expected.dtype != np.dtype(np.float32):
+        return ParityResult(
+            False,
+            f"Gaussian production benchmark requires float32, got {expected.dtype}",
+        )
+    expected_finite = np.isfinite(expected)
+    actual_finite = np.isfinite(actual)
+    if not np.array_equal(expected_finite, actual_finite):
+        return ParityResult(False, "finite/non-finite masks differ")
+    if not bool(np.all(expected_finite)):
+        return ParityResult(False, "Gaussian admitted region must be completely finite")
+    expected64 = expected.astype(np.float64)
+    actual64 = actual.astype(np.float64)
+    difference = actual64 - expected64
+    max_abs = float(np.max(np.abs(difference))) if difference.size else 0.0
+    peak = float(np.max(np.abs(expected64))) if expected64.size else 0.0
+    max_abs_limit = 1e-6 + 5e-6 * peak
+    denominator = max(
+        float(np.linalg.norm(expected64.ravel())),
+        float(math.sqrt(expected64.size) * GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR),
+    )
+    numerator = float(np.linalg.norm(difference.ravel()))
+    nrmse = numerator / denominator if denominator else 0.0
+    passed = bool(nrmse <= GAUSSIAN_FLOAT32_NRMSE_LIMIT and max_abs <= max_abs_limit)
+    return ParityResult(
+        passed,
+        f"nrmse={nrmse:.9g} (limit={GAUSSIAN_FLOAT32_NRMSE_LIMIT:.9g}); "
+        f"max_abs={max_abs:.9g} (limit={max_abs_limit:.9g})",
+    )
+
+
+def _array_contract_mismatch(expected: np.ndarray, actual: np.ndarray) -> str:
+    if expected.shape != actual.shape:
+        return f"shape differs: CPU {expected.shape}, candidate {actual.shape}"
+    if expected.dtype != actual.dtype:
+        return f"dtype differs: CPU {expected.dtype}, candidate {actual.dtype}"
+    return ""
+
+
+def _finite_input_peak(value: object) -> float:
+    array = np.asarray(value)
+    if not np.issubdtype(array.dtype, np.number) or not array.size:
+        return 0.0
+    finite = np.isfinite(array)
+    if not bool(np.any(finite)):
+        return 0.0
+    return float(np.max(np.abs(array[finite].astype(np.float64))))
+
+
+def _validated_optional_peak(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value < 0
+    ):
+        raise ValueError("input_peak must be finite and non-negative or None.")
+    return float(value)
+
+
+def _maximum_float32_ulp_distance(
+    expected: np.ndarray,
+    actual: np.ndarray,
+) -> int:
+    if not expected.size:
+        return 0
+
+    def ordered(values: np.ndarray) -> np.ndarray:
+        bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
+        negative = (bits & np.uint32(0x80000000)) != 0
+        return np.where(
+            negative,
+            np.uint64(0xFFFFFFFF) - bits.astype(np.uint64),
+            np.uint64(0x80000000) + bits.astype(np.uint64),
+        )
+
+    expected_ordered = ordered(expected)
+    actual_ordered = ordered(actual)
+    distance = np.maximum(expected_ordered, actual_ordered) - np.minimum(
+        expected_ordered,
+        actual_ordered,
+    )
+    return int(np.max(distance))
+
+
+def _read_clock(clock: Callable[[], float]) -> float:
+    value = clock()
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError("benchmark adapter clock must return a finite number.")
+    return float(value)
+
+
+def _elapsed(clock: Callable[[], float], started: float) -> float:
+    elapsed = _read_clock(clock) - started
+    if elapsed < 0 or not math.isfinite(elapsed):
+        raise ValueError("benchmark adapter clock must be monotonic.")
+    return elapsed
+
+
+__all__ = [
+    "BACKGROUND_FLOAT32_MAX_ABS_BASE",
+    "BACKGROUND_FLOAT32_NRMSE_LIMIT",
+    "BACKGROUND_FLOAT32_SCALE_ULPS",
+    "BACKGROUND_PARITY_OPERATION_IDS",
+    "CUSTOM_BENCHMARK_POLICY_ID",
+    "EXACT_PARITY_OPERATION_IDS",
+    "GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR",
+    "GAUSSIAN_FLOAT32_NRMSE_LIMIT",
+    "GAUSSIAN_PARITY_OPERATION_IDS",
+    "PRODUCTION_BENCHMARK_POLICY_ID",
+    "ProductionBenchmarkObservationLog",
+    "ProductionInvocationObservation",
+    "RegisteredNodeBenchmark",
+    "build_registered_node_benchmark",
+    "detach_prepared_node_call",
+    "operation_parity",
+]
