@@ -39,6 +39,13 @@ VIPP must not wait for Clara before evaluating the high-value operations already
 shown to benefit from cuCIM. Conversely, a preview skimage wheel must not be
 described as full cuCIM.
 
+The 2026-07-27 Phase 1 refresh rebuilt the skimage preview with CUDA 13.2-aligned
+compiler components, checksum-installed the exact wheel into VIPP's dedicated
+CUDA environment, and passed `pip check` plus all 70 background-adapter tests
+(18 real RTX cases). That is evidence for the experimental skimage provider; it
+does not complete this port plan. Clara remains deferred from Phase 1 and the
+feature-completeness/upstream investigation remains a near-term named task.
+
 ## 1. Upstream stability and maintenance contract
 
 cuCIM is active and suitable for pinned use, but it is not an API- or

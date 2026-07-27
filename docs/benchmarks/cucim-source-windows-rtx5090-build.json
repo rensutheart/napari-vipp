@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
-  "created_at": "2026-07-15T21:43:27Z",
-  "status": "completed",
+  "schema_version": 2,
+  "created_at": "2026-07-27T21:48:47Z",
+  "status": "completed_experimental",
   "source": {
     "repository": "https://github.com/rapidsai/cucim.git",
     "tag": "v26.06.00",
@@ -10,7 +10,10 @@
   "artifact": {
     "filename": "cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl",
     "size_bytes": 8654879,
-    "clean_reproduction_sha256": "C3CE5859DF8D2A2264AC6E1DE756B798B8786B6CD763DE82884B281A9E0A382F",
+    "sha256": "586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8",
+    "checksum_scope": "Exact artifact built and installed into .venv-gpu-cu13 on 2026-07-27",
+    "byte_for_byte_reproducible": false,
+    "reproducibility_note": "A prior successful build from the same pinned source had the same size but a different wheel digest. Treat SHA-256 as an artifact identity, not proof of deterministic wheel bytes, until archive normalization is implemented.",
     "committed_to_repository": false
   },
   "environment": {
@@ -20,8 +23,11 @@
     "compute_capability": "120",
     "driver_api": 13030,
     "cupy": "14.1.1",
-    "cuda_runtime": 13020,
-    "cuda_nvcc": "13.3.73",
+    "cuda_runtime_api": 13020,
+    "cuda_toolkit_package": "13.2.2",
+    "cuda_nvcc": "13.2.86",
+    "cuda_nvjitlink": "13.2.86",
+    "nvimgcodec": "0.8.0.22",
     "numpy": "2.5.1",
     "scipy": "1.18.0",
     "scikit_image": "0.26.0"
@@ -29,26 +35,53 @@
   "windows_adaptations": [
     "Put Git for Windows usr/bin on PATH because rapids-build-backend 0.4.1 invokes the Unix which command.",
     "Replace the materialized python/cucim/src/cucim/VERSION symlink text with the root VERSION contents and include that file in MANIFEST.in.",
-    "Replace deprecated assignment to ndarray.shape in cucim.skimage._vendored.pad with reshape for strict NumPy 2.5 compatibility."
+    "Replace deprecated assignment to ndarray.shape in cucim.skimage._vendored.pad with reshape for strict NumPy 2.5 compatibility.",
+    "Pin the CUDA compiler, runtime, CRT, NVVM, and nvJitLink build components to 13.2.86 and install nvidia-nvimgcodec-cu13 0.8.0.22 before the no-deps wheel install."
   ],
   "availability": {
     "cucim_skimage": true,
     "cucim_core": true,
     "cucim_clara": false,
-    "reason_clara_unavailable": "The native libcucim/_cucim image-I/O shared library was not built or packaged."
+    "reason_clara_unavailable": "The native libcucim/_cucim image-I/O shared library was not built or packaged.",
+    "clara_plan": "Deferred from Phase 1; investigate feature-complete native Windows support soon through the dedicated port plan."
   },
   "verification": {
-    "clean_reproduction_script": "scripts/build_cucim_windows.ps1",
-    "real_gpu_probe": "passed: Gaussian, rolling ball, and connected-component labeling",
-    "median_tests": {
-      "passed": 707,
-      "skipped": 4,
-      "warnings": 2
+    "build_script": "scripts/build_cucim_windows.ps1",
+    "build_command": ".\\scripts\\build_cucim_windows.ps1 -Python C:\\Users\\rensu\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "isolated_build_environment": {
+      "real_gpu_probe": "passed: Gaussian, rolling ball, and connected-component labeling",
+      "pip_check": "passed: No broken requirements found",
+      "cucim_skimage": true,
+      "cucim_clara": false
     },
-    "selected_operation_tests": {
-      "passed": 172,
-      "skipped": 8,
-      "deselected": 6
+    "application_environment": {
+      "path": ".venv-gpu-cu13",
+      "setup_helper": "scripts/setup_gpu_dev.py --track cuda13 --venv .venv-gpu-cu13 --cucim-wheel <wheel> --cucim-sha256 586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8",
+      "checksum_verified_install": true,
+      "cuda_probe": "passed",
+      "cucim_rolling_ball_probe": "passed",
+      "pip_check": "passed: No broken requirements found",
+      "background_test_file": {
+        "passed": 70,
+        "failed": 0
+      },
+      "real_rtx_background_subset": {
+        "passed": 18,
+        "failed": 0,
+        "coverage": "uint8/uint16/float32, 2D/3D/leading blocks/channel axis, background/subtract, non-finite policy, private allocator and common array domain"
+      }
+    },
+    "historical_upstream_tests_2026_07_15": {
+      "median_tests": {
+        "passed": 707,
+        "skipped": 4,
+        "warnings": 2
+      },
+      "selected_operation_tests": {
+        "passed": 172,
+        "skipped": 8,
+        "deselected": 6
+      }
     }
   }
 }

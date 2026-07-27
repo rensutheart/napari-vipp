@@ -1,6 +1,7 @@
 # cuCIM native-Windows source-build and benchmark evaluation
 
-Date: 2026-07-15
+Initial evaluation: 2026-07-15
+Phase 1 checksum/install refresh: 2026-07-27
 Status: successful research build; primitive-level implementation candidate, not a
 supported dependency yet
 
@@ -17,6 +18,13 @@ The useful part of cuCIM **can** be built for native Windows. The pinned
 ```text
 cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl
 ```
+
+On 2026-07-27 the builder was rerun with every compiler-side CUDA component
+aligned to 13.2.86. The exact emitted wheel was checksum-verified and installed
+through VIPP's setup helper into `.venv-gpu-cu13`; `pip check`, the CuPy/cuCIM
+probes, all 70 background-adapter tests, and all 18 real RTX background cases
+passed there. This closes the Phase 1 local packaging/evidence slice, not the
+public distribution or multi-platform admission gate.
 
 This build provides `cucim.skimage` and `cucim.core`, including rolling ball,
 filters, feature detection, labeling, measurements, morphology, restoration,
@@ -65,7 +73,7 @@ repository searches, and current forks.
 The [RAPIDS platform requirements](https://docs.rapids.ai/install/) continue to
 direct Windows users to WSL. The absence of a third-party binary should be
 rechecked before each pinned upgrade, but it is not a reason to defer the
-source-built `skimage` experiment now that the build is reproducible.
+source-built `skimage` experiment now that the pinned procedure is repeatable.
 
 ## What was built
 
@@ -75,20 +83,27 @@ source-built `skimage` experiment now that the build is reproducible.
 | cuCIM commit | `3c15781c207eab93a317dd9803a6e726fe01f7c4` |
 | Python | 3.12.9 |
 | CuPy | `cupy-cuda13x[ctk] == 14.1.1` |
-| CUDA compiler wheel | `nvidia-cuda-nvcc == 13.3.73` |
+| CUDA toolkit package | `cuda-toolkit == 13.2.2` |
+| CUDA compiler/runtime/CRT/NVVM/nvJitLink build components | `13.2.86` |
+| nvImageCodec package | `nvidia-nvimgcodec-cu13 == 0.8.0.22` |
 | CUDA driver/runtime APIs | 13.3 / 13.2 |
 | GPU | NVIDIA GeForce RTX 5090, compute capability 12.0, 32 GiB |
 | NumPy / SciPy / scikit-image | 2.5.1 / 1.18.0 / 0.26.0 |
 | Wheel size | 8,654,879 bytes |
-| Clean reproduction SHA-256 | `C3CE5859DF8D2A2264AC6E1DE756B798B8786B6CD763DE82884B281A9E0A382F` |
+| Exact installed-artifact SHA-256 | `586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8` |
 
 The wheel is intentionally not committed. It is a locally built research
 artifact without upstream Windows support. The machine-readable build record is
 [`benchmarks/cucim-source-windows-rtx5090-build.json`](benchmarks/cucim-source-windows-rtx5090-build.json).
 
+The digest identifies this exact artifact; it is not yet a deterministic-build
+claim. The earlier July build had the same 8,654,879-byte size but a different
+digest. Wheel archive normalization and a byte-for-byte two-build comparison
+remain packaging work before publication.
+
 ### Required adaptations
 
-The Python/skimage wheel required three small adaptations:
+The Python/skimage wheel required three small source adaptations:
 
 1. `rapids-build-backend 0.4.1` invokes Unix `which`. Put Git for Windows'
    `usr/bin` directory on `PATH` during the build.
@@ -109,14 +124,17 @@ passed Gaussian, rolling-ball, and labeling kernels:
 .\scripts\build_cucim_windows.ps1
 ```
 
-The script installs the wheel into its own temp virtual environment with
-`--no-deps`. That is deliberate: the upstream metadata includes nvImageCodec,
-while this evaluation targets the independently usable `cucim.skimage` layer
-and makes the absent native `cucim.clara` boundary explicit.
+The refreshed builder also pins CUDA compiler, runtime, CRT, NVVM, and
+nvJitLink build components to 13.2.86 and installs nvImageCodec 0.8.0.22. It
+then installs the exact local wheel with `--no-deps` so pip cannot silently
+re-resolve the admitted CUDA stack, and finishes with a real-GPU probe and
+`pip check`. Installing nvImageCodec satisfies the upstream wheel metadata; it
+does not create the absent native `cucim.clara/libcucim` extension.
 
 ## Verification
 
-The rebuilt Windows wheel produced these upstream test results:
+The initial July evaluation of the Windows wheel produced these upstream test
+results (they were not rerun during the 2026-07-27 checksum/install refresh):
 
 - complete `filters/tests/test_median.py`: **707 passed, 4 skipped**, with two
   expected warnings from tests that intentionally request an impossible CUDA
@@ -130,6 +148,17 @@ Before the NumPy compatibility patch, the broader run was 641 passed, 12
 skipped, and 252 strict-warning failures. This result is retained as a
 maintenance warning: pinned cuCIM upgrades must be tested against the exact
 NumPy version that VIPP will ship.
+
+The 2026-07-27 Phase 1 application-environment verification additionally
+produced:
+
+- checksum-aware setup-helper install into `.venv-gpu-cu13`: **passed**;
+- CuPy Gaussian/median and cuCIM rolling-ball setup probes: **passed**;
+- final application-environment `pip check`: **passed**;
+- complete `test_gpu_background.py`: **70 passed**; and
+- real RTX subset: **18 passed**, covering `uint8`/`uint16`/`float32`, 2D/3D,
+  leading blocks and channel axes, background/subtract operations, non-finite
+  handling, and common private-pool array-domain behavior.
 
 ## Benchmark method
 
@@ -230,11 +259,28 @@ $python = Join-Path $env:TEMP "napari-vipp-cucim-windows\venv\Scripts\python.exe
 & $python scripts\benchmark_cucim.py --profile standard --output docs\benchmarks\cucim-source-windows-rtx5090-standard.json
 ```
 
+Install that exact local artifact into the dedicated application environment
+through the checksum-verifying helper (substitute the digest printed by the
+builder for every new artifact):
+
+```powershell
+$wheel = Join-Path $env:TEMP "napari-vipp-cucim-windows\cucim-v26.06.00\python\cucim\dist\cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl"
+python scripts\setup_gpu_dev.py --track cuda13 --venv .venv-gpu-cu13 `
+  --cucim-wheel $wheel `
+  --cucim-sha256 586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8
+```
+
 That temporary interpreter validates the standalone build; it is not VIPP's
-dedicated GPU development environment. Phase 1 must also install the emitted,
-checksum-recorded wheel through an explicit experimental option into
-`.venv-gpu-cu13` and run every production-adapter parity/benchmark test there.
-The builder must never silently mutate the application environment.
+dedicated GPU development environment. The 2026-07-27 refresh separately used
+the explicit setup-helper option to install the checksum-recorded wheel into
+`.venv-gpu-cu13` and run the background-adapter suite there. Every replacement
+artifact must repeat that separation and verification. The builder must never
+silently mutate the application environment.
+
+Clara remains explicitly outside Phase 1. The dedicated Windows port plan owns
+the investigate-soon feature-completeness/upstream review; the desired end state
+remains maintainable full cuCIM where feasible, not a permanently hobbled
+skimage-only fork.
 
 The source procedure is adapted from the upstream
 [cuCIM contributor guide](https://github.com/rapidsai/cucim/blob/main/CONTRIBUTING.md#setting-up-your-build-environment),

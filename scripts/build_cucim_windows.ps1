@@ -4,7 +4,8 @@ param(
     [string]$WorkRoot = (Join-Path $env:TEMP "napari-vipp-cucim-windows"),
     [string]$CucimTag = "v26.06.00",
     [string]$CupyVersion = "14.1.1",
-    [string]$NvccVersion = "13.3.73"
+    [string]$NvccVersion = "13.2.86",
+    [string]$NvimgcodecVersion = "0.8.0.22"
 )
 
 $ErrorActionPreference = "Stop"
@@ -102,6 +103,11 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 & $venvPython -m pip install `
     "cupy-cuda13x[ctk]==$CupyVersion" `
     "nvidia-cuda-nvcc==$NvccVersion" `
+    "nvidia-cuda-crt==$NvccVersion" `
+    "nvidia-cuda-runtime==$NvccVersion" `
+    "nvidia-nvjitlink==$NvccVersion" `
+    "nvidia-nvvm==$NvccVersion" `
+    "nvidia-nvimgcodec-cu13==$NvimgcodecVersion" `
     "numpy<3" `
     "scipy>=1.11.2" `
     "scikit-image>=0.23.2,<0.27" `
@@ -127,9 +133,13 @@ if (-not (Test-Path -LiteralPath $whichPath)) {
 $cudaBin = Join-Path $venvRoot "Lib\site-packages\nvidia\cu13\bin"
 $env:PATH = "$cudaBin;$([System.IO.Path]::GetDirectoryName($whichPath));$env:PATH"
 
+$expectedNvccMinor = ($NvccVersion -split "\.")[0..1] -join "\."
 $nvccVersionText = (& nvcc --version) -join "`n"
-if ($LASTEXITCODE -ne 0 -or $nvccVersionText -notmatch "release 13\.") {
-    throw "The isolated CUDA 13 nvcc was not selected.`n$nvccVersionText"
+if (
+    $LASTEXITCODE -ne 0 -or
+    $nvccVersionText -notmatch "release $expectedNvccMinor"
+) {
+    throw "The isolated CUDA $NvccVersion nvcc was not selected.`n$nvccVersionText"
 }
 
 # Clean only generated paths underneath the pinned disposable package checkout.
@@ -161,9 +171,9 @@ if ($wheels.Count -ne 1) {
 }
 $wheel = $wheels[0]
 
-# nvidia-nvimgcodec is part of the upstream package metadata but is not needed
-# by cucim.skimage. Installing without dependencies makes the intentionally
-# absent native cucim.clara/libcucim boundary explicit.
+# Dependencies declared by the upstream metadata were installed and pinned
+# above.  Install this exact locally built artifact without asking pip to
+# re-resolve or reinstall the CUDA runtime.
 & $venvPython -m pip install --no-deps --force-reinstall $wheel.FullName
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install the source-built wheel."
@@ -190,6 +200,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "The installed wheel failed its real-GPU operation probe."
 }
 
+& $venvPython -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "The isolated cuCIM build environment has broken dependencies."
+}
+
 $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $wheel.FullName
 [pscustomobject]@{
     source_tag = $CucimTag
@@ -198,6 +213,9 @@ $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $wheel.FullName
     wheel_size_bytes = $wheel.Length
     wheel_sha256 = $hash.Hash
     python = $venvPython
+    nvcc_version = $NvccVersion
+    nvjitlink_version = $NvccVersion
+    nvimgcodec_version = $NvimgcodecVersion
     cucim_skimage = $true
     cucim_clara = $false
 } | ConvertTo-Json

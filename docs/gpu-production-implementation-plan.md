@@ -138,7 +138,9 @@ and [MLX unified-memory model](https://ml-explore.github.io/mlx/build/html/usage
 
 ### Native-Windows cuCIM evidence snapshot
 
-The 2026-07-15/16 follow-up completed the first native-Windows cuCIM sub-gate.
+The 2026-07-15/16 follow-up completed the first native-Windows cuCIM sub-gate;
+the 2026-07-27 Phase 1 refresh rebuilt and checksum-installed the artifact in
+the dedicated VIPP CUDA environment.
 The full procedure, package audit, output schemas, timing ranges, and artifacts
 are in the
 [cuCIM Windows source evaluation](cucim-windows-source-evaluation.md).
@@ -155,18 +157,21 @@ The pinned source result was:
 | Build item | Evidence |
 | --- | --- |
 | Source | cuCIM `v26.06.00`, commit `3c15781c207eab93a317dd9803a6e726fe01f7c4` |
-| Artifact | `cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl`, 8,654,879 bytes |
-| Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA 13.3 compiler / 13.2 runtime |
+| Artifact | `cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl`, 8,654,879 bytes, SHA-256 `586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8` |
+| Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA toolkit package 13.2.2, NVCC/nvJitLink 13.2.86, runtime API 13.2 |
 | Available surface | `cucim.skimage` and `cucim.core` |
 | Unavailable surface in this artifact | Native `cucim.clara/libcucim` whole-slide image I/O; feasibility and delivery are owned by the [Windows port plan](cucim-windows-port-plan.md) |
-| Clean reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
+| Clean procedural reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
 | Selected upstream tests | Complete median file: 707 passed, 4 skipped; other selected operation tests: 172 passed, 8 skipped, 6 deselected |
+| VIPP application environment | Checksum-aware install into `.venv-gpu-cu13`, CuPy/cuCIM probes and `pip check` passed; background adapter 70 passed, including 18 real RTX cases |
 
-The successful build used an NVCC 13.3 compiler with a 13.2 runtime. Keep that
-as experimental evidence; before advertising the track, reproduce it with a
-toolkit minor documented as supported by the selected CuPy release (currently
-13.2 for the pinned CuPy 14.1.1 evidence) or obtain reviewed newer-version
-support evidence.
+The refreshed build removed the earlier NVCC 13.3/13.2-runtime mismatch: CUDA
+compiler, runtime, CRT, NVVM, and nvJitLink build components are now pinned to
+13.2.86, matching the admitted CuPy 14.1.1 CUDA-minor evidence. nvImageCodec
+0.8.0.22 is installed explicitly so the source wheel's declared dependencies
+pass `pip check`. The artifact checksum is an exact wheel identity, not yet a
+byte-for-byte reproducibility claim; archive normalization remains a packaging
+gate because an earlier same-size build produced a different digest.
 
 The clean build required three downstream adaptations: put Git for Windows'
 `which.exe` on `PATH` for `rapids-build-backend`; replace the materialized
@@ -2151,10 +2156,14 @@ fixture, but one owner coordinates integration-only `workflow.py` and hash edits
 ### Pass 9 — Cross-platform packaging and provider-completeness gates
 
 **Progress evidence:** the native-Windows cuCIM skimage sub-gate has a
-reproducible build, selected upstream tests, and primitive benchmarks in
-[the source evaluation](cucim-windows-source-evaluation.md). Those results prove
-feasibility, not VIPP-node parity. Pass 9 remains open for production adapters,
-Linux/multi-device evidence, distribution, and feature completeness. The
+repeatable pinned build procedure, selected upstream tests, primitive
+benchmarks, and a checksum-aware application-environment install in
+[the source evaluation](cucim-windows-source-evaluation.md). The dedicated
+CUDA-13 environment passed its probes, `pip check`, and all 70 background tests,
+including 18 real RTX cases. This is strong Phase 1 local evidence, not public
+distribution or cross-platform admission. Pass 9 remains open for
+Linux/multi-device evidence, deterministic artifact production, distribution,
+and feature completeness. The
 separate [Windows port plan](cucim-windows-port-plan.md) owns the upstream-
 tracking fork and eventual native C++/Clara work; this pass decides what VIPP
 can honestly install and advertise.

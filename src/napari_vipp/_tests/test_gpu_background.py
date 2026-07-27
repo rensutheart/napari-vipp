@@ -1,0 +1,752 @@
+from __future__ import annotations
+
+import importlib
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from scipy import ndimage as scipy_ndimage
+from skimage import restoration as skimage_restoration
+
+from napari_vipp.core.gpu import cucim_background as gpu_background
+from napari_vipp.core.operations import (
+    rolling_ball_background as cpu_rolling_ball_background,
+)
+from napari_vipp.core.operations import subtract_background as cpu_subtract_background
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
+
+
+class _FakeStream:
+    def __init__(self) -> None:
+        self.synchronizations = 0
+
+    def synchronize(self) -> None:
+        self.synchronizations += 1
+
+
+class _FakeCupy:
+    bool_ = np.bool_
+    float32 = np.float32
+    float64 = np.float64
+    inf = np.inf
+
+    def __init__(self) -> None:
+        self.stream = _FakeStream()
+        self.cuda = SimpleNamespace(get_current_stream=lambda: self.stream)
+
+    asarray = staticmethod(np.asarray)
+    zeros_like = staticmethod(np.zeros_like)
+    moveaxis = staticmethod(np.moveaxis)
+    stack = staticmethod(np.stack)
+    empty = staticmethod(np.empty)
+    isfinite = staticmethod(np.isfinite)
+    isposinf = staticmethod(np.isposinf)
+    any = staticmethod(np.any)
+    min = staticmethod(np.min)
+    max = staticmethod(np.max)
+    where = staticmethod(np.where)
+    maximum = staticmethod(np.maximum)
+    nan_to_num = staticmethod(np.nan_to_num)
+    rint = staticmethod(np.rint)
+    clip = staticmethod(np.clip)
+
+
+class _FakeNdimage:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def uniform_filter1d(self, values, *, size, axis, output, mode):
+        self.calls.append(
+            {
+                "shape": values.shape,
+                "size": size,
+                "axis": axis,
+                "output": output,
+                "mode": mode,
+            }
+        )
+        return scipy_ndimage.uniform_filter1d(
+            values,
+            size=size,
+            axis=axis,
+            output=output,
+            mode=mode,
+        )
+
+
+class _FakeRestoration:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def rolling_ball(self, values, *, radius):
+        copied = np.array(values, copy=True)
+        self.calls.append(
+            {
+                "values": copied,
+                "shape": copied.shape,
+                "radius": radius,
+            }
+        )
+        return skimage_restoration.rolling_ball(copied, radius=radius)
+
+
+@pytest.fixture
+def fake_stack(monkeypatch):
+    cupy = _FakeCupy()
+    ndimage = _FakeNdimage()
+    restoration = _FakeRestoration()
+    real_import = importlib.import_module
+    modules = {
+        "cupy": cupy,
+        "cupyx.scipy.ndimage": ndimage,
+        "cucim.skimage.restoration": restoration,
+    }
+
+    def load(name: str):
+        return modules[name] if name in modules else real_import(name)
+
+    gpu_background._gpu_modules.cache_clear()
+    monkeypatch.setattr(gpu_background.importlib, "import_module", load)
+    yield cupy, ndimage, restoration
+    gpu_background._gpu_modules.cache_clear()
+
+
+def test_import_is_safe_without_cupy_cupyx_or_cucim():
+    source_root = Path(__file__).resolve().parents[2]
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(source_root), environment.get("PYTHONPATH", "")))
+    )
+    code = r"""
+import builtins
+import importlib
+import sys
+
+real_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "cupy" or name.startswith("cupyx") or name.startswith("cucim"):
+        raise AssertionError(f"optional GPU import attempted: {name}")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+module = importlib.import_module("napari_vipp.core.gpu.cucim_background")
+assert callable(module.rolling_ball_background)
+assert callable(module.subtract_background)
+assert "cupy" not in sys.modules
+assert not any(name.startswith("cupyx") for name in sys.modules)
+assert not any(name.startswith("cucim") for name in sys.modules)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_missing_cucim_is_raised_only_when_adapter_is_called(monkeypatch):
+    cupy = _FakeCupy()
+    ndimage = _FakeNdimage()
+    imports = []
+
+    def load(name: str):
+        imports.append(name)
+        if name == "cupy":
+            return cupy
+        if name == "cupyx.scipy.ndimage":
+            return ndimage
+        raise ModuleNotFoundError(name)
+
+    gpu_background._gpu_modules.cache_clear()
+    monkeypatch.setattr(gpu_background.importlib, "import_module", load)
+
+    with pytest.raises(ModuleNotFoundError, match="cucim.skimage.restoration"):
+        gpu_background.rolling_ball_background(np.ones((3, 3), dtype=np.uint8))
+    assert imports == [
+        "cupy",
+        "cupyx.scipy.ndimage",
+        "cucim.skimage.restoration",
+    ]
+    gpu_background._gpu_modules.cache_clear()
+
+
+@pytest.mark.parametrize("dtype", (np.uint8, np.uint16, np.float32))
+@pytest.mark.parametrize("light_background", (False, True))
+@pytest.mark.parametrize("disable_smoothing", (False, True))
+@pytest.mark.parametrize("operation", ("background", "subtract"))
+def test_fake_adapter_matches_complete_cpu_value_and_dtype_contract(
+    fake_stack,
+    dtype,
+    light_background,
+    disable_smoothing,
+    operation,
+):
+    host = _fixture(dtype, (7, 9))
+    common = {
+        "radius": 2.0,
+        "light_background": light_background,
+        "disable_smoothing": disable_smoothing,
+        "spatial_mode": "2D YX",
+    }
+    if operation == "background":
+        expected = cpu_rolling_ball_background(host, **common)
+        actual = gpu_background.rolling_ball_background(host, **common)
+    else:
+        expected = cpu_subtract_background(host, clip_negative=True, **common)
+        actual = gpu_background.subtract_background(
+            host,
+            clip_negative=True,
+            **common,
+        )
+
+    _assert_exact(expected, actual)
+
+
+@pytest.mark.parametrize(
+    ("shape", "spatial_mode", "channel_axis", "expected_blocks"),
+    [
+        ((2, 5, 7), "2D YX", None, [(5, 7)] * 2),
+        ((2, 3, 5, 7), "3D ZYX", None, [(3, 5, 7)] * 2),
+        ((2, 3, 5, 7), "2D YX", 1, [(5, 7)] * 6),
+        ((2, 3, 4, 5, 7), "3D ZYX", 2, [(3, 5, 7)] * 8),
+    ],
+)
+def test_fake_adapter_resolves_leading_spatial_and_channel_blocks(
+    fake_stack,
+    shape,
+    spatial_mode,
+    channel_axis,
+    expected_blocks,
+):
+    _cupy, _ndimage, restoration = fake_stack
+    host = _fixture(np.float32, shape)
+
+    expected = cpu_rolling_ball_background(
+        host,
+        radius=2,
+        disable_smoothing=True,
+        spatial_mode=spatial_mode,
+        channel_axis=channel_axis,
+    )
+    actual = gpu_background.rolling_ball_background(
+        host,
+        radius=2,
+        disable_smoothing=True,
+        spatial_mode=spatial_mode,
+        channel_axis=channel_axis,
+    )
+
+    assert [call["shape"] for call in restoration.calls] == expected_blocks
+    _assert_exact(expected, actual)
+
+
+@pytest.mark.parametrize(
+    ("resolved_spatial_ndim", "expected_blocks"),
+    [
+        (2, [(5, 7)] * 6),
+        (3, [(3, 5, 7)] * 2),
+    ],
+)
+def test_auto_mode_uses_explicit_resolved_spatial_dimension(
+    fake_stack,
+    resolved_spatial_ndim,
+    expected_blocks,
+):
+    _cupy, _ndimage, restoration = fake_stack
+    host = _fixture(np.float32, (2, 3, 5, 7))
+    kwargs = {
+        "radius": 2,
+        "disable_smoothing": True,
+        "spatial_mode": "Auto from axes",
+        "resolved_spatial_ndim": resolved_spatial_ndim,
+    }
+
+    expected = cpu_rolling_ball_background(host, **kwargs)
+    actual = gpu_background.rolling_ball_background(host, **kwargs)
+
+    assert [call["shape"] for call in restoration.calls] == expected_blocks
+    _assert_exact(expected, actual)
+
+
+@pytest.mark.parametrize(
+    ("requested", "canonical"),
+    [(-5, 1), (0, 1), (1, 1), (1.5, 2), (2.5, 2), (2.6, 3)],
+)
+def test_radius_uses_cpu_rounding_and_lower_bound(fake_stack, requested, canonical):
+    _cupy, _ndimage, restoration = fake_stack
+
+    gpu_background.rolling_ball_background(
+        np.arange(35, dtype=np.uint8).reshape(5, 7),
+        radius=requested,
+        disable_smoothing=True,
+    )
+
+    assert [call["radius"] for call in restoration.calls] == [canonical]
+
+
+def test_finite_replacement_and_float_nonfinite_output_match_cpu(fake_stack):
+    _cupy, _ndimage, restoration = fake_stack
+    host = _fixture(np.float32, (7, 9))
+    host.flat[:3] = (np.nan, np.inf, -np.inf)
+
+    expected_background = cpu_rolling_ball_background(
+        host,
+        radius=2,
+        light_background=True,
+    )
+    actual_background = gpu_background.rolling_ball_background(
+        host,
+        radius=2,
+        light_background=True,
+    )
+    expected_subtracted = cpu_subtract_background(
+        host,
+        radius=2,
+        light_background=False,
+        clip_negative=True,
+    )
+    actual_subtracted = gpu_background.subtract_background(
+        host,
+        radius=2,
+        light_background=False,
+        clip_negative=True,
+    )
+
+    assert restoration.calls
+    assert all(np.isfinite(call["values"]).all() for call in restoration.calls)
+    _assert_exact(expected_background, actual_background)
+    _assert_exact(expected_subtracted, actual_subtracted)
+
+
+@pytest.mark.parametrize("clip_negative", (False, True))
+def test_subtraction_clipping_and_light_inversion_match_cpu(
+    fake_stack,
+    clip_negative,
+):
+    host = _fixture(np.float32, (2, 7, 9))
+    kwargs = {
+        "radius": 2,
+        "light_background": True,
+        "disable_smoothing": False,
+        "clip_negative": clip_negative,
+        "spatial_mode": "2D per XY slice (advanced)",
+    }
+    expected = cpu_subtract_background(host, **kwargs)
+    actual = gpu_background.subtract_background(host, **kwargs)
+    _assert_exact(expected, actual)
+
+
+def test_progress_reports_identical_completed_blocks(fake_stack):
+    host = _fixture(np.uint16, (2, 3, 5, 7))
+    cpu_updates = []
+    gpu_updates = []
+    kwargs = {
+        "radius": 2,
+        "disable_smoothing": True,
+        "spatial_mode": "2D YX",
+        "channel_axis": 1,
+    }
+
+    cpu_rolling_ball_background(
+        host,
+        progress=ProgressContext(reporter=cpu_updates.append),
+        **kwargs,
+    )
+    gpu_background.rolling_ball_background(
+        host,
+        progress=ProgressContext(reporter=gpu_updates.append),
+        **kwargs,
+    )
+
+    assert gpu_updates == cpu_updates
+
+
+def test_cancellation_is_checked_before_and_after_synchronized_block(fake_stack):
+    cupy, _ndimage, restoration = fake_stack
+    host = _fixture(np.float32, (5, 7))
+
+    with pytest.raises(OperationCancelled):
+        gpu_background.rolling_ball_background(
+            host,
+            radius=2,
+            progress=ProgressContext(cancelled=lambda: True),
+        )
+    assert restoration.calls == []
+
+    class CancelAfterKernel:
+        def __init__(self) -> None:
+            self.updates = []
+
+        def check_cancelled(self) -> None:
+            if cupy.stream.synchronizations:
+                raise OperationCancelled("Operation cancelled.")
+
+        def report(self, current, total, message="") -> None:
+            self.check_cancelled()
+            self.updates.append((current, total, message))
+
+    progress = CancelAfterKernel()
+    with pytest.raises(OperationCancelled):
+        gpu_background.rolling_ball_background(
+            host,
+            radius=2,
+            progress=progress,
+        )
+    assert len(restoration.calls) == 1
+    assert progress.updates == [(0, 1, "Rolling-ball background")]
+
+
+def test_bool_and_scalar_shortcuts_match_cpu_even_with_irrelevant_parameters(
+    fake_stack,
+):
+    bool_image = np.array([[False, True], [True, False]])
+    scalar = np.asarray(7, dtype=np.uint16)
+
+    _assert_exact(
+        cpu_rolling_ball_background(bool_image, radius="invalid"),
+        gpu_background.rolling_ball_background(bool_image, radius="invalid"),
+    )
+    _assert_exact(
+        cpu_subtract_background(bool_image, spatial_mode="invalid"),
+        gpu_background.subtract_background(bool_image, spatial_mode="invalid"),
+    )
+    _assert_exact(
+        cpu_rolling_ball_background(scalar, radius="invalid"),
+        gpu_background.rolling_ball_background(scalar, radius="invalid"),
+    )
+    _assert_exact(
+        cpu_subtract_background(scalar, spatial_mode="invalid"),
+        gpu_background.subtract_background(scalar, spatial_mode="invalid"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "kwargs"),
+    [
+        ((5, 7, 3), {"channel_axis": True}),
+        ((5, 7), {"channel_axis": 0}),
+        ((5, 7, 3), {"channel_axis": 3}),
+        ((2, 5, 7), {"spatial_mode": "Auto from axes"}),
+        (
+            (2, 5, 7),
+            {"spatial_mode": "Auto from axes", "resolved_spatial_ndim": 4},
+        ),
+        ((5, 7), {"spatial_mode": "3D ZYX"}),
+        ((5, 7), {"spatial_mode": "invalid"}),
+    ],
+)
+def test_parameter_validation_messages_match_cpu(fake_stack, shape, kwargs):
+    host = np.zeros(shape, dtype=np.uint8)
+    with pytest.raises(ValueError) as cpu_error:
+        cpu_rolling_ball_background(host, **kwargs)
+    with pytest.raises(ValueError) as gpu_error:
+        gpu_background.rolling_ball_background(host, **kwargs)
+    assert str(gpu_error.value) == str(cpu_error.value)
+
+
+def test_input_is_not_mutated_and_smoothing_is_size_three_nearest(fake_stack):
+    _cupy, ndimage, _restoration = fake_stack
+    host = _fixture(np.float32, (2, 7, 9)).swapaxes(1, 2)
+    original = host.copy()
+    host.setflags(write=False)
+
+    output = gpu_background.subtract_background(host, radius=2)
+
+    np.testing.assert_array_equal(host, original)
+    assert output.shape == host.shape
+    assert ndimage.calls
+    assert all(call["size"] == 3 for call in ndimage.calls)
+    assert all(call["mode"] == "nearest" for call in ndimage.calls)
+
+
+@pytest.fixture(scope="module")
+def real_gpu_stack():
+    gpu_background._gpu_modules.cache_clear()
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    if importlib.util.find_spec("cucim") is None:
+        pytest.skip("The optional cuCIM wheel is not installed.")
+    try:
+        cupy = importlib.import_module("cupy")
+        cucim = importlib.import_module("cucim")
+        importlib.import_module("cucim.skimage.restoration")
+    except Exception as exc:
+        pytest.fail(f"The installed CuPy/cuCIM stack could not import: {exc}")
+    try:
+        if int(cupy.cuda.runtime.getDeviceCount()) < 1:
+            pytest.skip("No CUDA device is available.")
+        cupy.zeros(1, dtype=cupy.float32).sum().item()
+    except Exception as exc:
+        pytest.skip(f"A working CUDA device is unavailable: {exc}")
+    if not bool(cucim.is_available("skimage")):
+        pytest.fail("The installed cuCIM wheel has no skimage provider.")
+    return cupy
+
+
+_REAL_CASES = (
+    (
+        "background_dark_smoothed_2d",
+        "background",
+        (7, 9),
+        {
+            "radius": 2,
+            "light_background": False,
+            "disable_smoothing": False,
+            "spatial_mode": "2D YX",
+        },
+    ),
+    (
+        "background_light_unsmoothed_3d",
+        "background",
+        (2, 5, 7),
+        {
+            "radius": 2,
+            "light_background": True,
+            "disable_smoothing": True,
+            "spatial_mode": "3D ZYX",
+        },
+    ),
+    (
+        "background_dark_smoothed_leading_3d",
+        "background",
+        (2, 3, 5, 7),
+        {
+            "radius": 2,
+            "light_background": False,
+            "disable_smoothing": False,
+            "spatial_mode": "3D ZYX",
+        },
+    ),
+    (
+        "subtract_dark_leading_2d",
+        "subtract",
+        (2, 5, 7),
+        {
+            "radius": 2,
+            "light_background": False,
+            "disable_smoothing": False,
+            "clip_negative": True,
+            "spatial_mode": "2D YX",
+        },
+    ),
+    (
+        "subtract_light_channel_axis",
+        "subtract",
+        (2, 3, 5, 7),
+        {
+            "radius": 2,
+            "light_background": True,
+            "disable_smoothing": True,
+            "clip_negative": False,
+            "spatial_mode": "2D YX",
+            "channel_axis": 1,
+        },
+    ),
+)
+
+
+@pytest.mark.parametrize("dtype", (np.uint8, np.uint16, np.float32))
+@pytest.mark.parametrize(
+    ("region", "operation", "shape", "kwargs"),
+    _REAL_CASES,
+    ids=[case[0] for case in _REAL_CASES],
+)
+def test_real_rtx_cucim_exact_cpu_parity_for_advertised_regions(
+    real_gpu_stack,
+    dtype,
+    region,
+    operation,
+    shape,
+    kwargs,
+):
+    cupy = real_gpu_stack
+    host = _fixture(dtype, shape)
+    device = cupy.asarray(host)
+    original = device.copy()
+
+    if operation == "background":
+        expected = cpu_rolling_ball_background(host, **kwargs)
+        output = gpu_background.rolling_ball_background(device, **kwargs)
+    else:
+        expected = cpu_subtract_background(host, **kwargs)
+        output = gpu_background.subtract_background(device, **kwargs)
+    cupy.cuda.get_current_stream().synchronize()
+    actual = cupy.asnumpy(output)
+
+    assert isinstance(output, cupy.ndarray)
+    assert output.data.ptr != device.data.ptr
+    cupy.testing.assert_array_equal(device, original)
+    _assert_exact_with_region(expected, actual, region=region, dtype=dtype)
+
+
+@pytest.mark.parametrize("operation", ("background", "subtract"))
+def test_real_rtx_cucim_exact_nonfinite_policy_parity(real_gpu_stack, operation):
+    cupy = real_gpu_stack
+    host = _fixture(np.float32, (7, 9))
+    host.flat[:3] = (np.nan, np.inf, -np.inf)
+    device = cupy.asarray(host)
+    kwargs = {
+        "radius": 2,
+        "light_background": True,
+        "disable_smoothing": False,
+    }
+
+    if operation == "background":
+        expected = cpu_rolling_ball_background(host, **kwargs)
+        output = gpu_background.rolling_ball_background(device, **kwargs)
+    else:
+        expected = cpu_subtract_background(
+            host,
+            clip_negative=True,
+            **kwargs,
+        )
+        output = gpu_background.subtract_background(
+            device,
+            clip_negative=True,
+            **kwargs,
+        )
+    actual = cupy.asnumpy(output)
+
+    _assert_exact_with_region(
+        expected,
+        actual,
+        region=f"nonfinite_{operation}",
+        dtype=np.float32,
+    )
+
+
+@pytest.mark.parametrize("operation", ("background", "subtract"))
+@pytest.mark.parametrize(
+    ("region", "shape", "kwargs"),
+    (
+        (
+            "public_radius_500_2d",
+            (17, 19),
+            {"radius": 500, "spatial_mode": "2D YX"},
+        ),
+        (
+            "admitted_radius_50_3d",
+            (2, 3, 4),
+            {"radius": 50, "spatial_mode": "3D ZYX"},
+        ),
+    ),
+)
+def test_real_rtx_cucim_exact_radius_boundaries(
+    real_gpu_stack,
+    operation,
+    region,
+    shape,
+    kwargs,
+):
+    """Exercise the public 2D maximum and memory-safe admitted 3D maximum.
+
+    A radius-500 3D footprint contains more than one billion elements and is
+    intentionally rejected by policy; radius 50 is the reviewed 3D cap.
+    """
+    cupy = real_gpu_stack
+    host = _fixture(np.uint16, shape)
+    device = cupy.asarray(host)
+    if operation == "background":
+        expected = cpu_rolling_ball_background(host, **kwargs)
+        output = gpu_background.rolling_ball_background(device, **kwargs)
+    else:
+        expected = cpu_subtract_background(host, **kwargs)
+        output = gpu_background.subtract_background(device, **kwargs)
+    actual = cupy.asnumpy(output)
+
+    _assert_exact_with_region(
+        expected,
+        actual,
+        region=f"{region}_{operation}",
+        dtype=np.uint16,
+    )
+
+
+def test_real_cucim_uses_runtime_private_allocator_and_common_array_domain(
+    real_gpu_stack,
+):
+    from napari_vipp.core.gpu.cupy_runtime import create_runtime
+
+    cupy = real_gpu_stack
+    host = _fixture(np.uint16, (7, 9))
+    expected = cpu_subtract_background(host, radius=2)
+    runtime = create_runtime()
+    try:
+        assert runtime.probe().available
+        with runtime.execution_scope(
+            memory_limit_bytes=512 * 1024**2,
+            safety_reserve_bytes=64 * 1024**2,
+        ):
+            device = runtime.to_device(host)
+            output = gpu_background.subtract_background(device, radius=2)
+            actual = runtime.to_host(output)
+            snapshot = runtime.memory_snapshot()
+            assert isinstance(output, cupy.ndarray)
+            assert snapshot.runtime_live_bytes >= device.nbytes + output.nbytes
+            runtime.release(output)
+            runtime.release(device)
+            # ``release`` relinquishes VIPP ownership but never force-frees a
+            # CuPy allocation while Python aliases are still live.  Dropping
+            # the final references returns both allocations to the private pool.
+            del output, device
+            assert runtime.memory_snapshot().runtime_live_bytes == 0
+    finally:
+        runtime.close()
+
+    _assert_exact_with_region(
+        expected,
+        actual,
+        region="private_allocator_subtract",
+        dtype=np.uint16,
+    )
+
+
+def _fixture(dtype, shape):
+    seed = sum((axis + 1) * extent for axis, extent in enumerate(shape))
+    seed += np.dtype(dtype).itemsize * 1009
+    rng = np.random.default_rng(seed)
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        values = rng.integers(0, info.max + 1, size=shape, dtype=dtype)
+        values.flat[:5] = (0, info.max, info.max // 2, 7, 7)
+        return values
+    values = rng.normal(loc=120.0, scale=35.0, size=shape).astype(dtype)
+    values.flat[:5] = (-20.5, 0.0, 255.25, 7.0, 7.0)
+    return values
+
+
+def _assert_exact(expected, actual):
+    assert actual.shape == expected.shape
+    assert actual.dtype == expected.dtype
+    np.testing.assert_array_equal(actual, expected)
+    if np.issubdtype(expected.dtype, np.floating):
+        finite = np.isfinite(expected) & np.isfinite(actual)
+        unsigned = np.dtype(f"u{expected.dtype.itemsize}")
+        np.testing.assert_array_equal(
+            np.ascontiguousarray(actual[finite]).view(unsigned),
+            np.ascontiguousarray(expected[finite]).view(unsigned),
+        )
+
+
+def _assert_exact_with_region(expected, actual, *, region: str, dtype) -> None:
+    try:
+        _assert_exact(expected, actual)
+    except AssertionError as exc:
+        finite = np.isfinite(expected) & np.isfinite(actual)
+        maximum = (
+            float(np.max(np.abs(expected[finite] - actual[finite])))
+            if np.any(finite)
+            else float("nan")
+        )
+        pytest.fail(
+            f"Exact CPU/cuCIM parity failed in {region} for {np.dtype(dtype)}; "
+            f"max finite absolute error={maximum}.\n{exc}",
+            pytrace=False,
+        )
