@@ -45,9 +45,7 @@ def test_compute_backend_parse_is_strict_and_case_insensitive():
 
 
 def test_auto_uses_gpu_only_for_a_validated_operation():
-    supported = select_compute_backend(
-        "auto", "gaussian_blur", capabilities=_report()
-    )
+    supported = select_compute_backend("auto", "gaussian_blur", capabilities=_report())
     unsupported = select_compute_backend(
         "auto", "median_filter", capabilities=_report()
     )
@@ -55,7 +53,7 @@ def test_auto_uses_gpu_only_for_a_validated_operation():
     assert supported.resolved is ComputeBackend.GPU
     assert not supported.fell_back
     assert unsupported.resolved is ComputeBackend.CPU
-    assert unsupported.fell_back
+    assert not unsupported.fell_back
     assert "no validated GPU implementation" in unsupported.reason
 
 
@@ -81,6 +79,17 @@ def test_cpu_selection_does_not_require_gpu_availability():
     )
     assert selection.resolved is ComputeBackend.CPU
     assert not selection.fell_back
+
+
+def test_cpu_selection_does_not_trigger_capability_detection(monkeypatch):
+    monkeypatch.setattr(
+        "napari_vipp.core.compute.detect_compute_capabilities",
+        lambda: (_ for _ in ()).throw(AssertionError("must not probe GPU")),
+    )
+
+    selection = select_compute_backend("cpu", "anything")
+
+    assert selection.resolved is ComputeBackend.CPU
 
 
 def test_detection_handles_missing_cupy_without_import_time_failure(
@@ -149,9 +158,7 @@ def test_importable_cupy_with_failed_probe_is_unavailable(monkeypatch):
         "napari_vipp.core.compute.importlib.import_module", lambda _name: fake_cupy
     )
 
-    report = detect_compute_capabilities(
-        supported_gpu_operation_ids=("gaussian_blur",)
-    )
+    report = detect_compute_capabilities(supported_gpu_operation_ids=("gaussian_blur",))
 
     assert not report.gpu.available
     assert report.gpu.supported_operation_ids == ()
