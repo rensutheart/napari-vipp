@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -26,6 +28,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationNotBeneficial,
     PipelineOptimizationProposal,
+    PipelineOptimizationTimeoutReport,
     PipelineValidationWinner,
 )
 
@@ -37,6 +40,14 @@ class PipelineOptimizerProgress:
     completed: int
     total: int
     message: str
+    phase: str = ""
+    operation_completed: int = 0
+    operation_total: int = 0
+    operation_message: str = ""
+    node_id: str = ""
+    node_title: str = ""
+    implementation_id: str = ""
+    measurement_phase: str = ""
 
     def __post_init__(self) -> None:
         if any(
@@ -46,10 +57,28 @@ class PipelineOptimizerProgress:
             raise ValueError("optimizer progress values must be non-negative integers")
         if self.total < 1 or self.completed > self.total:
             raise ValueError("optimizer progress must fit inside its declared total")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.operation_completed, self.operation_total)
+        ):
+            raise ValueError("operation progress values must be non-negative integers")
+        if self.operation_completed > self.operation_total:
+            raise ValueError("operation progress must fit inside its declared total")
         message = str(self.message).strip()
         if not message:
             raise ValueError("optimizer progress message must not be empty")
         object.__setattr__(self, "message", message)
+        for name in (
+            "phase",
+            "operation_message",
+            "node_id",
+            "node_title",
+            "implementation_id",
+            "measurement_phase",
+        ):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        if self.operation_total and not self.operation_message:
+            raise ValueError("operation progress requires a message")
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +89,7 @@ class PipelineOptimizerWorkerOutcome:
     error: str = ""
     reason_code: str = ""
     cancelled: bool = False
+    timeout_report: PipelineOptimizationTimeoutReport | None = None
 
 
 class _PipelineOptimizerWorkerSignals(QObject):
@@ -114,6 +144,7 @@ class PipelineOptimizerWorker(QRunnable):
             outcome = PipelineOptimizerWorkerOutcome(
                 error=str(exc),
                 reason_code="deadline_exceeded",
+                timeout_report=exc.report,
             )
         except Exception as exc:
             outcome = PipelineOptimizerWorkerOutcome(
@@ -162,14 +193,57 @@ class PipelineOptimizerDialog(QDialog):
         self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
         locked_node_label = "node" if locked_node_count == 1 else "nodes"
-        self.progress_label = QLabel(
+        self.time_limit_combo = QComboBox()
+        self.time_limit_combo.setAccessibleName("Pipeline optimization time limit")
+        for label, seconds in (
+            ("5 minutes", 300.0),
+            ("15 minutes", 900.0),
+            ("30 minutes", 1_800.0),
+            ("60 minutes", 3_600.0),
+        ):
+            self.time_limit_combo.addItem(label, seconds)
+        self.time_limit_combo.setToolTip(
+            "Maximum wall-clock analysis time. This is not a RAM or VRAM "
+            "limit. Completed exact node evidence is reused on a later retry."
+        )
+        time_limit_label = QLabel("Time limit")
+        time_limit_label.setBuddy(self.time_limit_combo)
+        time_limit_note = QLabel(
+            "Completed exact node results are reused if you retry."
+        )
+        time_limit_note.setWordWrap(True)
+        time_limit_row = QHBoxLayout()
+        time_limit_row.addWidget(time_limit_label)
+        time_limit_row.addWidget(self.time_limit_combo)
+        time_limit_row.addWidget(time_limit_note, 1)
+
+        self.overall_progress_label = QLabel(
             f"Ready. {locked_node_count} explicitly locked {locked_node_label} "
             "will be preserved."
         )
-        self.progress_label.setWordWrap(True)
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 1)
-        self.progress_bar.setValue(0)
+        self.overall_progress_label.setWordWrap(True)
+        self.overall_progress_bar = QProgressBar()
+        self.overall_progress_bar.setAccessibleName(
+            "Overall pipeline optimization progress"
+        )
+        self.overall_progress_bar.setRange(0, 1)
+        self.overall_progress_bar.setValue(0)
+        self.overall_progress_bar.setFormat("Overall %p%")
+        self.operation_progress_label = QLabel(
+            "Current operation: waiting for analysis."
+        )
+        self.operation_progress_label.setWordWrap(True)
+        self.operation_progress_bar = QProgressBar()
+        self.operation_progress_bar.setAccessibleName(
+            "Current operation benchmark progress"
+        )
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("Waiting")
+        # Compatibility aliases for callers written against the original
+        # single-progress dialog surface.
+        self.progress_label = self.overall_progress_label
+        self.progress_bar = self.overall_progress_bar
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
         self.result_table = QTableWidget(0, 7)
@@ -204,8 +278,11 @@ class PipelineOptimizerDialog(QDialog):
         buttons.addWidget(self.close_button)
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
-        layout.addWidget(self.progress_label)
-        layout.addWidget(self.progress_bar)
+        layout.addLayout(time_limit_row)
+        layout.addWidget(self.overall_progress_label)
+        layout.addWidget(self.overall_progress_bar)
+        layout.addWidget(self.operation_progress_label)
+        layout.addWidget(self.operation_progress_bar)
         layout.addWidget(self.result_label)
         layout.addWidget(self.result_table, 1)
         layout.addLayout(buttons)
@@ -223,6 +300,17 @@ class PipelineOptimizerDialog(QDialog):
     def outcome(self) -> PipelineOptimizerWorkerOutcome | None:
         return self._outcome
 
+    @property
+    def time_budget_seconds(self) -> float:
+        value = self.time_limit_combo.currentData()
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Pipeline optimizer time limit is invalid") from exc
+        if seconds <= 0:
+            raise RuntimeError("Pipeline optimizer time limit must be positive")
+        return seconds
+
     def start(
         self,
         worker: PipelineOptimizerWorker,
@@ -238,13 +326,21 @@ class PipelineOptimizerDialog(QDialog):
         self.analyze_button.setEnabled(False)
         self.apply_button.setEnabled(False)
         self.close_button.setEnabled(False)
+        self.time_limit_combo.setEnabled(False)
         self.cancel_button.setVisible(True)
         self.cancel_button.setEnabled(True)
         self.result_table.setVisible(False)
         self.result_label.setText("")
-        self.progress_bar.setRange(0, 0)
-        self.progress_label.setText(
-            "Capturing exact pipeline evidence. You can cancel at any time."
+        self.overall_progress_bar.setRange(0, 0)
+        self.overall_progress_label.setText(
+            "Overall pipeline: capturing exact evidence. You can cancel at any "
+            "time."
+        )
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("Waiting")
+        self.operation_progress_label.setText(
+            "Current operation: waiting for the first benchmark stage."
         )
         worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(self._on_finished)
@@ -263,11 +359,20 @@ class PipelineOptimizerDialog(QDialog):
             self._running = False
             self.analyze_button.setEnabled(True)
             self.close_button.setEnabled(True)
+            self.time_limit_combo.setEnabled(True)
             self.cancel_button.setEnabled(False)
             self.cancel_button.setVisible(False)
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(0)
-            self.progress_label.setText("Analysis could not be dispatched.")
+            self.overall_progress_bar.setRange(0, 1)
+            self.overall_progress_bar.setValue(0)
+            self.overall_progress_label.setText(
+                "Overall pipeline: analysis could not be dispatched."
+            )
+            self.operation_progress_bar.setRange(0, 1)
+            self.operation_progress_bar.setValue(0)
+            self.operation_progress_bar.setFormat("Not started")
+            self.operation_progress_label.setText(
+                "Current operation: no benchmark was started."
+            )
             raise
 
     def cancel(self) -> None:
@@ -275,8 +380,12 @@ class PipelineOptimizerDialog(QDialog):
             return
         self._worker.cancel()
         self.cancel_button.setEnabled(False)
-        self.progress_label.setText(
-            "Cancel requested; finishing the current synchronized call…"
+        self.overall_progress_label.setText(
+            "Overall pipeline: cancel requested."
+        )
+        self.operation_progress_label.setText(
+            "Current operation: finishing the current synchronized call before "
+            "cancelling…"
         )
 
     def shutdown(self) -> None:
@@ -302,6 +411,7 @@ class PipelineOptimizerDialog(QDialog):
         self.apply_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self.close_button.setEnabled(False)
+        self.time_limit_combo.setEnabled(False)
         self.setWindowModality(Qt.NonModal)
         self.close()
 
@@ -326,9 +436,26 @@ class PipelineOptimizerDialog(QDialog):
     def _on_progress(self, progress: PipelineOptimizerProgress) -> None:
         if self._shutdown:
             return
-        self.progress_bar.setRange(0, progress.total)
-        self.progress_bar.setValue(progress.completed)
-        self.progress_label.setText(progress.message)
+        self.overall_progress_bar.setRange(0, progress.total)
+        self.overall_progress_bar.setValue(progress.completed)
+        self.overall_progress_bar.setFormat("Overall %p%")
+        self.overall_progress_label.setText(
+            f"Overall pipeline: {progress.message}"
+        )
+        if progress.operation_total:
+            self.operation_progress_bar.setRange(0, progress.operation_total)
+            self.operation_progress_bar.setValue(progress.operation_completed)
+            self.operation_progress_bar.setFormat("Current %p%")
+            self.operation_progress_label.setText(
+                f"Current operation: {progress.operation_message}"
+            )
+        else:
+            self.operation_progress_bar.setRange(0, 1)
+            self.operation_progress_bar.setValue(0)
+            self.operation_progress_bar.setFormat("Waiting")
+            self.operation_progress_label.setText(
+                "Current operation: waiting for a node or validation stage."
+            )
 
     def _on_finished(self, outcome: PipelineOptimizerWorkerOutcome) -> None:
         if self._shutdown:
@@ -338,10 +465,22 @@ class PipelineOptimizerDialog(QDialog):
         self._worker = None
         self.analyze_button.setEnabled(True)
         self.close_button.setEnabled(True)
+        self.time_limit_combo.setEnabled(True)
         self.cancel_button.setVisible(False)
         if outcome.result is not None:
-            self.progress_bar.setValue(self.progress_bar.maximum())
-            self.progress_label.setText("Pipeline analysis complete.")
+            self.overall_progress_bar.setValue(
+                self.overall_progress_bar.maximum()
+            )
+            self.overall_progress_bar.setFormat("Overall 100%")
+            self.overall_progress_label.setText(
+                "Overall pipeline: analysis complete."
+            )
+            self.operation_progress_bar.setRange(0, 1)
+            self.operation_progress_bar.setValue(1)
+            self.operation_progress_bar.setFormat("Current 100%")
+            self.operation_progress_label.setText(
+                "Current operation: final validation complete."
+            )
             self._render_result(outcome.result)
             proposal = _proposal_from_result(outcome.result)
             self.apply_button.setEnabled(
@@ -352,26 +491,50 @@ class PipelineOptimizerDialog(QDialog):
             )
         else:
             self.apply_button.setEnabled(False)
-            self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(0)
             if outcome.cancelled:
-                self.progress_label.setText(
-                    "Analysis cancelled. No node preference changed."
+                self.overall_progress_label.setText(
+                    "Overall pipeline: analysis cancelled. No node preference "
+                    "changed."
                 )
+                self.overall_progress_bar.setFormat("Cancelled at %p%")
+                self.operation_progress_bar.setFormat("Cancelled at %p%")
                 self.result_label.setStyleSheet("")
+                self.result_label.setTextFormat(Qt.PlainText)
+                self.result_label.setText(outcome.error)
+            elif outcome.reason_code == "deadline_exceeded":
+                self.overall_progress_label.setText(
+                    "Overall pipeline: analysis stopped before a winner could "
+                    "be determined."
+                )
+                self.overall_progress_bar.setFormat("Stopped at %p%")
+                self.operation_progress_bar.setFormat("Stopped at %p%")
+                self.result_label.setStyleSheet("color: #fcd34d;")
+                self.result_label.setTextFormat(Qt.RichText)
+                self.result_label.setText(
+                    _timeout_result_html(
+                        outcome.error,
+                        outcome.timeout_report,
+                        selected_budget_seconds=self.time_budget_seconds,
+                    )
+                )
             elif outcome.reason_code in {
                 "evidence_incomplete",
                 "not_beneficial",
-                "deadline_exceeded",
             }:
-                self.progress_label.setText(
-                    "No safe pipeline-wide change is recommended."
+                self.overall_progress_label.setText(
+                    "Overall pipeline: no safe pipeline-wide change is "
+                    "recommended."
                 )
                 self.result_label.setStyleSheet("color: #fcd34d;")
+                self.result_label.setTextFormat(Qt.PlainText)
+                self.result_label.setText(outcome.error)
             else:
-                self.progress_label.setText("Pipeline analysis failed.")
+                self.overall_progress_label.setText(
+                    "Overall pipeline: analysis failed."
+                )
                 self.result_label.setStyleSheet("color: #fca5a5;")
-            self.result_label.setText(outcome.error)
+                self.result_label.setTextFormat(Qt.PlainText)
+                self.result_label.setText(outcome.error)
         self.optimizer_finished.emit(outcome)
 
     def _render_result(self, result: object) -> None:
@@ -478,6 +641,109 @@ def _format_seconds(value: float) -> str:
     if value < 1.0:
         return f"{value * 1_000:.1f} ms"
     return f"{value:.3f} s"
+
+
+def _format_duration(value: float) -> str:
+    seconds = max(0.0, float(value))
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    minutes = seconds / 60
+    if minutes.is_integer():
+        return f"{int(minutes)} minutes"
+    return f"{minutes:.1f} minutes"
+
+
+def _timeout_result_html(
+    error: str,
+    report: PipelineOptimizationTimeoutReport | None,
+    *,
+    selected_budget_seconds: float,
+) -> str:
+    """Render an actionable timeout without implying an optimal result."""
+
+    def escaped(value: object) -> str:
+        return html.escape(str(value), quote=True)
+
+    budget = selected_budget_seconds
+    elapsed: float | None = None
+    stage = "The selected analysis time limit was reached."
+    progress_text = "The analysis stopped before all required evidence was collected."
+    evidence_text = (
+        "Any complete exact node benchmarks remain reusable; incomplete timings "
+        "from the interrupted operation are not used."
+    )
+    if report is not None:
+        if report.budget_seconds is not None:
+            budget = report.budget_seconds
+        elapsed = report.elapsed_seconds
+        stage_detail = report.stage_message or report.stage.replace("-", " ")
+        if report.node_title:
+            stage = f"{report.node_title} — {stage_detail}"
+        else:
+            stage = stage_detail
+        progress_parts: list[str] = []
+        if report.node_total:
+            progress_parts.append(
+                f"node {report.node_index} of {report.node_total}"
+            )
+        progress_parts.append(
+            f"overall step {report.overall_completed} of {report.overall_total}"
+        )
+        if report.operation_total:
+            progress_parts.append(
+                "current operation "
+                f"{report.operation_completed} of {report.operation_total}"
+            )
+        progress_text = "; ".join(progress_parts) + "."
+        completed_count = len(report.completed_node_ids)
+        reused_count = len(report.reused_node_ids)
+        evidence_parts = [
+            f"{completed_count} complete exact node benchmark"
+            f"{'s' if completed_count != 1 else ''} retained"
+        ]
+        if reused_count:
+            evidence_parts.append(f"{reused_count} reused from an earlier run")
+        if report.partial_node_discarded:
+            evidence_parts.append(
+                "partial timings for the interrupted node were discarded"
+            )
+        evidence_text = "; ".join(evidence_parts) + "."
+
+    if elapsed is None:
+        time_text = f"Selected wall-clock limit: {_format_duration(budget)}."
+    else:
+        time_text = (
+            f"Stopped after {_format_duration(elapsed)} of the "
+            f"{_format_duration(budget)} wall-clock limit."
+        )
+    error_text = str(error).strip()
+    if error_text:
+        stage = stage or error_text
+
+    items = (
+        ("Stopped stage", stage),
+        ("Progress", progress_text),
+        ("Time", f"{time_text} This is a time limit, not a RAM or VRAM limit."),
+        ("Saved evidence", evidence_text),
+        (
+            "Conclusion",
+            "No fastest assignment was determined. The current pipeline was "
+            "not proven fastest, and no settings changed.",
+        ),
+        (
+            "Next step",
+            "Retry with a longer time limit. Complete exact node benchmarks "
+            "will be reused when the workload and environment are unchanged.",
+        ),
+    )
+    rendered = "".join(
+        f"<li><b>{escaped(label)}:</b> {escaped(value)}</li>"
+        for label, value in items
+    )
+    return (
+        "<p><b>Analysis timed out before a winner was determined.</b></p>"
+        f"<ul>{rendered}</ul>"
+    )
 
 
 def _proposal_from_result(result: object) -> PipelineOptimizationProposal:

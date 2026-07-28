@@ -62,6 +62,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationIdentity,
     PipelineOptimizationNode,
     PipelineOptimizationProposal,
+    PipelineOptimizationTimeoutReport,
     PipelineValidationRequest,
 )
 from napari_vipp.core.compute_planning import (
@@ -107,6 +108,13 @@ class PipelineOptimizerProgress:
     completed: int
     total: int
     message: str
+    operation_completed: int = 0
+    operation_total: int = 0
+    operation_message: str = ""
+    node_id: str = ""
+    node_title: str = ""
+    implementation_id: str = ""
+    measurement_phase: str = ""
 
     def __post_init__(self) -> None:
         phase = (
@@ -121,11 +129,28 @@ class PipelineOptimizerProgress:
             raise ValueError("optimizer progress values must be non-negative")
         if self.total < 1 or self.completed > self.total:
             raise ValueError("optimizer progress must fit inside its total")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.operation_completed, self.operation_total)
+        ):
+            raise ValueError("operation progress values must be non-negative")
+        if self.operation_completed > self.operation_total:
+            raise ValueError("operation progress must fit inside its total")
         message = str(self.message).strip()
         if not message:
             raise ValueError("optimizer progress message must not be empty")
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "message", message)
+        for name in (
+            "operation_message",
+            "node_id",
+            "node_title",
+            "implementation_id",
+            "measurement_phase",
+        ):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        if self.operation_total and not self.operation_message:
+            raise ValueError("operation progress requires a message")
 
 
 @dataclass(frozen=True, slots=True)
@@ -388,20 +413,99 @@ class ApplicationPipelineOptimizerCoordinator:
         reused_node_ids: set[str] = set()
         measured_node_ids: set[str] = set()
         cpu_only: set[str] = set(safe_ids) - set(eligible_ids) - set(optimizer_locks)
+
+        def make_node_progress_forwarder(
+            *,
+            operation_state: dict[str, object],
+            node_id: str,
+            node_title: str,
+            node_index: int,
+            overall_completed: int,
+        ):
+            def forward(update) -> None:
+                measurement_total = int(
+                    getattr(update, "measurement_total", 0) or 0
+                )
+                if measurement_total:
+                    operation_state.update(
+                        completed=int(update.measurement_completed),
+                        total=measurement_total,
+                        message=str(update.measurement_message),
+                        implementation_id=str(update.implementation_id),
+                        measurement_phase=str(update.measurement_phase),
+                    )
+                else:
+                    raw_phase = getattr(update, "phase", "")
+                    operation_state.update(
+                        completed=int(update.completed),
+                        total=int(update.total),
+                        message=f"{node_title}: {update.message}",
+                        implementation_id="",
+                        measurement_phase=str(
+                            getattr(raw_phase, "value", raw_phase)
+                        ),
+                    )
+                _emit(
+                    progress,
+                    PipelineOptimizerPhase.BENCHMARKING,
+                    overall_completed,
+                    total_steps,
+                    f"Benchmarking {node_title} "
+                    f"({node_index}/{len(eligible_ids)}).",
+                    operation_completed=int(operation_state["completed"]),
+                    operation_total=int(operation_state["total"]),
+                    operation_message=str(operation_state["message"]),
+                    node_id=node_id,
+                    node_title=node_title,
+                    implementation_id=str(
+                        operation_state["implementation_id"]
+                    ),
+                    measurement_phase=str(
+                        operation_state["measurement_phase"]
+                    ),
+                )
+
+            return forward
+
         for index, node_id in enumerate(eligible_ids, start=1):
             check_abort()
+            node = baseline_pipeline.nodes[node_id]
+            overall_completed = 1 + index
+            operation_state = {
+                "completed": 0,
+                "total": 4,
+                "message": f"Preparing {node.title} benchmark inputs.",
+                "implementation_id": "",
+                "measurement_phase": "preparing",
+            }
+
+            forward_node_progress = make_node_progress_forwarder(
+                operation_state=operation_state,
+                node_id=node_id,
+                node_title=node.title,
+                node_index=index,
+                overall_completed=overall_completed,
+            )
+
             _emit(
                 progress,
                 PipelineOptimizerPhase.BENCHMARKING,
-                1 + index,
+                overall_completed,
                 total_steps,
-                f"Benchmarking {baseline_pipeline.nodes[node_id].title} "
+                f"Benchmarking {node.title} "
                 f"({index}/{len(eligible_ids)}).",
+                operation_completed=0,
+                operation_total=4,
+                operation_message=str(operation_state["message"]),
+                node_id=node_id,
+                node_title=node.title,
+                measurement_phase="preparing",
             )
             remaining = deadline - _read_clock(self.clock)
-            # Keep a bounded share for transfer measurement, solving, and paired
-            # validation.  The selected-node service enforces this share itself.
-            node_budget = remaining / max(2, len(eligible_ids) - index + 2)
+            # Use the real remaining end-to-end allowance. Equal per-node hard
+            # shares prematurely rejected legitimate full-volume operations even
+            # while most of the user-selected pipeline limit remained unused.
+            node_budget = remaining
             if node_budget <= 0:
                 check_abort()
             try:
@@ -420,7 +524,8 @@ class ApplicationPipelineOptimizerCoordinator:
                     allow_experimental=compute_request.allow_experimental,
                     paired_bootstrap_samples=DEFAULT_BOOTSTRAP_SAMPLES,
                     paired_bootstrap_seed=DEFAULT_BOOTSTRAP_SEED,
-                    cancelled=is_cancelled_or_expired,
+                    cancelled=cancelled,
+                    progress=forward_node_progress,
                 )
                 cached_lookup = getattr(
                     self.node_benchmarker,
@@ -431,7 +536,8 @@ class ApplicationPipelineOptimizerCoordinator:
                 if result is None:
                     result = self.node_benchmarker.run(
                         plan,
-                        cancelled=is_cancelled_or_expired,
+                        cancelled=cancelled,
+                        progress=forward_node_progress,
                     )
                     measured_node_ids.add(node_id)
                 else:
@@ -439,20 +545,68 @@ class ApplicationPipelineOptimizerCoordinator:
                     _emit(
                         progress,
                         PipelineOptimizerPhase.BENCHMARKING,
-                        1 + index,
+                        2 + index,
                         total_steps,
                         "Reused exact saved evidence for "
-                        f"{baseline_pipeline.nodes[node_id].title}.",
+                        f"{node.title}.",
+                        operation_completed=1,
+                        operation_total=1,
+                        operation_message=(
+                            f"{node.title}: reused complete exact benchmark "
+                            "evidence."
+                        ),
+                        node_id=node_id,
+                        node_title=node.title,
+                        measurement_phase="cache-reuse",
                     )
             except NodeBenchmarkUnavailable:
                 cpu_only.add(node_id)
+                _emit(
+                    progress,
+                    PipelineOptimizerPhase.BENCHMARKING,
+                    2 + index,
+                    total_steps,
+                    f"Skipped {node.title}; no GPU implementation is eligible.",
+                    operation_completed=1,
+                    operation_total=1,
+                    operation_message=(
+                        f"{node.title}: CPU-only for the exact current workload."
+                    ),
+                    node_id=node_id,
+                    node_title=node.title,
+                    measurement_phase="ineligible",
+                )
                 continue
             except BenchmarkCancelled as exc:
                 check_abort()
                 raise PipelineOptimizationCancelled(str(exc)) from exc
             except BenchmarkBudgetExceeded as exc:
+                elapsed = _nonnegative_elapsed(started, _read_clock(self.clock))
+                report = PipelineOptimizationTimeoutReport(
+                    stage="node-benchmark",
+                    stage_message=str(operation_state["message"]) or str(exc),
+                    elapsed_seconds=elapsed,
+                    budget_seconds=budget,
+                    overall_completed=overall_completed,
+                    overall_total=total_steps,
+                    node_id=node_id,
+                    node_title=node.title,
+                    node_index=index,
+                    node_total=len(eligible_ids),
+                    operation_completed=int(operation_state["completed"]),
+                    operation_total=int(operation_state["total"]),
+                    operation_message=str(operation_state["message"]),
+                    completed_node_ids=tuple(sorted(evidence_records)),
+                    reused_node_ids=tuple(sorted(reused_node_ids)),
+                    baseline_completed=True,
+                    partial_node_discarded=True,
+                )
                 raise PipelineOptimizationDeadlineExceeded(
-                    "Pipeline optimization exhausted its node benchmark budget."
+                    f"Analysis timed out while benchmarking {node.title}; no "
+                    "fastest assignment was determined. The baseline completed, "
+                    "but the current pipeline was not proven fastest. No settings "
+                    "changed, and partial timings for this node were discarded.",
+                    report=report,
                 ) from exc
             if result.plan.environment.fingerprint != environment.fingerprint:
                 _refuse(
@@ -462,6 +616,22 @@ class ApplicationPipelineOptimizerCoordinator:
                 )
             evidence_records[node_id] = result.record
             benchmark_plans[node_id] = result.plan
+            if node_id not in reused_node_ids:
+                _emit(
+                    progress,
+                    PipelineOptimizerPhase.BENCHMARKING,
+                    2 + index,
+                    total_steps,
+                    f"Completed benchmark evidence for {node.title}.",
+                    operation_completed=1,
+                    operation_total=1,
+                    operation_message=(
+                        f"{node.title}: benchmark evidence completed and saved."
+                    ),
+                    node_id=node_id,
+                    node_title=node.title,
+                    measurement_phase="complete",
+                )
 
         check_abort()
         graph_nodes, graph_edges, workload_fingerprints = _build_optimizer_graph(
@@ -520,18 +690,41 @@ class ApplicationPipelineOptimizerCoordinator:
             total_steps,
             "Measuring synchronized host-to-GPU and GPU-to-host transfers.",
         )
-        transfer_profile = _measure_directional_transfers(
-            self.registry,
-            accelerator_runtime_id,
-            compute_request.device_id or environment.device_id,
-            environment,
-            identity,
-            baseline_pipeline,
-            tuple(evidence),
-            compute_request,
-            clock=self.clock,
-            check_abort=check_abort,
-        )
+        try:
+            transfer_profile = _measure_directional_transfers(
+                self.registry,
+                accelerator_runtime_id,
+                compute_request.device_id or environment.device_id,
+                environment,
+                identity,
+                baseline_pipeline,
+                tuple(evidence),
+                compute_request,
+                clock=self.clock,
+                check_abort=check_abort,
+            )
+        except PipelineOptimizationDeadlineExceeded as exc:
+            if exc.report is not None:
+                raise
+            elapsed = _nonnegative_elapsed(started, _read_clock(self.clock))
+            raise PipelineOptimizationDeadlineExceeded(
+                "Analysis timed out while measuring CPU/GPU transfers; no "
+                "fastest assignment was determined. No settings changed.",
+                report=PipelineOptimizationTimeoutReport(
+                    stage="transfers",
+                    stage_message=(
+                        "Measuring synchronized host-to-GPU and GPU-to-host "
+                        "transfers."
+                    ),
+                    elapsed_seconds=elapsed,
+                    budget_seconds=budget,
+                    overall_completed=total_steps - 3,
+                    overall_total=total_steps,
+                    completed_node_ids=tuple(sorted(evidence_records)),
+                    reused_node_ids=tuple(sorted(reused_node_ids)),
+                    baseline_completed=True,
+                ),
+            ) from exc
 
         _emit(
             progress,
@@ -541,15 +734,53 @@ class ApplicationPipelineOptimizerCoordinator:
             "Solving the bounded whole-pipeline assignment.",
         )
 
+        validation_started = False
+        validation_state = {
+            "completed": 0,
+            "total": 1,
+            "message": "Waiting for whole-pipeline validation.",
+        }
+
         def validate(
             validation_request: PipelineValidationRequest,
         ) -> PipelineAssignmentValidation:
+            nonlocal validation_started
+            validation_started = True
+
+            def forward_validation(
+                completed: int,
+                total: int,
+                message: str,
+            ) -> None:
+                validation_state.update(
+                    completed=completed,
+                    total=total,
+                    message=message,
+                )
+                _emit(
+                    progress,
+                    PipelineOptimizerPhase.VALIDATING,
+                    total_steps - 1,
+                    total_steps,
+                    "Validating the fastest modeled whole-pipeline assignment.",
+                    operation_completed=completed,
+                    operation_total=total,
+                    operation_message=message,
+                    node_title="Whole pipeline",
+                    measurement_phase="validation",
+                )
+
             _emit(
                 progress,
                 PipelineOptimizerPhase.VALIDATING,
                 total_steps - 1,
                 total_steps,
                 "Validating parity, synchronization, and paired pipeline timing.",
+                operation_completed=0,
+                operation_total=2,
+                operation_message="Comparing current and proposed pipeline parity.",
+                node_title="Whole pipeline",
+                measurement_phase="validation-parity",
             )
             return self._validate_assignments(
                 document,
@@ -562,20 +793,61 @@ class ApplicationPipelineOptimizerCoordinator:
                 validation_request,
                 deadline=deadline,
                 cancelled=cancelled,
+                progress=forward_validation,
             )
 
-        proposal = self.optimizer.optimize(
-            compute_request,
-            identity,
-            graph_nodes,
-            graph_edges,
-            evidence,
-            transfer_profile,
-            validate,
-            deadline=deadline,
-            max_assignments=max_assignments,
-            cancelled=cancelled,
-        )
+        try:
+            proposal = self.optimizer.optimize(
+                compute_request,
+                identity,
+                graph_nodes,
+                graph_edges,
+                evidence,
+                transfer_profile,
+                validate,
+                deadline=deadline,
+                max_assignments=max_assignments,
+                cancelled=cancelled,
+            )
+        except PipelineOptimizationDeadlineExceeded as exc:
+            if exc.report is not None:
+                raise
+            elapsed = _nonnegative_elapsed(started, _read_clock(self.clock))
+            stage = "validation" if validation_started else "solving"
+            stage_message = (
+                str(validation_state["message"])
+                if validation_started
+                else "Solving the bounded whole-pipeline assignment."
+            )
+            raise PipelineOptimizationDeadlineExceeded(
+                f"Analysis timed out during pipeline {stage}; no fastest "
+                "assignment was determined. No settings changed.",
+                report=PipelineOptimizationTimeoutReport(
+                    stage=stage,
+                    stage_message=stage_message,
+                    elapsed_seconds=elapsed,
+                    budget_seconds=budget,
+                    overall_completed=(
+                        total_steps - 1 if validation_started else total_steps - 2
+                    ),
+                    overall_total=total_steps,
+                    operation_completed=(
+                        int(validation_state["completed"])
+                        if validation_started
+                        else 0
+                    ),
+                    operation_total=(
+                        int(validation_state["total"])
+                        if validation_started
+                        else 0
+                    ),
+                    operation_message=(stage_message if validation_started else ""),
+                    completed_node_ids=tuple(sorted(evidence_records)),
+                    reused_node_ids=tuple(sorted(reused_node_ids)),
+                    baseline_completed=True,
+                    validation_started=validation_started,
+                ),
+            ) from exc
         check_abort()
         _emit(
             progress,
@@ -653,6 +925,7 @@ class ApplicationPipelineOptimizerCoordinator:
         *,
         deadline: float,
         cancelled: CancelCallback | None,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> PipelineAssignmentValidation:
         def check_abort() -> None:
             _check_abort(self.clock, deadline, cancelled)
@@ -696,6 +969,8 @@ class ApplicationPipelineOptimizerCoordinator:
             baseline_pipeline,
             proposed_map,
         )
+        if progress is not None:
+            progress(0, 2, "Checking current pipeline parity (1/2).")
         current_parity = self._execute(
             workflow,
             source_payloads,
@@ -707,6 +982,8 @@ class ApplicationPipelineOptimizerCoordinator:
             cancel_callback=cancel_or_expired,
         )
         check_abort()
+        if progress is not None:
+            progress(1, 2, "Checking proposed pipeline parity (2/2).")
         proposed_parity = self._execute(
             workflow,
             source_payloads,
@@ -718,6 +995,8 @@ class ApplicationPipelineOptimizerCoordinator:
             cancel_callback=cancel_or_expired,
         )
         check_abort()
+        if progress is not None:
+            progress(2, 2, "Current and proposed pipeline parity runs completed.")
         current_pipeline = _successful_exact_pipeline(
             current_parity,
             "current parity",
@@ -781,6 +1060,13 @@ class ApplicationPipelineOptimizerCoordinator:
         timing_retain = observable_boundaries
         for round_index in range(_VALIDATION_ROUND_TARGETS[-1]):
             check_abort()
+            if progress is not None:
+                progress(
+                    round_index,
+                    _VALIDATION_ROUND_TARGETS[-1],
+                    "Paired whole-pipeline timing round "
+                    f"{round_index + 1} of up to {_VALIDATION_ROUND_TARGETS[-1]}.",
+                )
             order = (
                 (("current", current_request), ("proposed", proposed_request))
                 if round_index % 2 == 0
@@ -817,6 +1103,13 @@ class ApplicationPipelineOptimizerCoordinator:
             current_times.append(measured["current"])
             proposed_times.append(measured["proposed"])
             completed_rounds = len(current_times)
+            if progress is not None:
+                progress(
+                    completed_rounds,
+                    _VALIDATION_ROUND_TARGETS[-1],
+                    "Completed paired whole-pipeline timing round "
+                    f"{completed_rounds} of up to {_VALIDATION_ROUND_TARGETS[-1]}.",
+                )
             if completed_rounds not in _VALIDATION_ROUND_TARGETS:
                 continue
             paired_checkpoint = paired_bootstrap_speedup(
@@ -1862,9 +2155,31 @@ def _emit(
     completed: int,
     total: int,
     message: str,
+    *,
+    operation_completed: int = 0,
+    operation_total: int = 0,
+    operation_message: str = "",
+    node_id: str = "",
+    node_title: str = "",
+    implementation_id: str = "",
+    measurement_phase: str = "",
 ) -> None:
     if callback is not None:
-        callback(PipelineOptimizerProgress(phase, completed, total, message))
+        callback(
+            PipelineOptimizerProgress(
+                phase,
+                completed,
+                total,
+                message,
+                operation_completed,
+                operation_total,
+                operation_message,
+                node_id,
+                node_title,
+                implementation_id,
+                measurement_phase,
+            )
+        )
 
 
 def _refuse(code: str, message: str, node_id: str = "") -> None:

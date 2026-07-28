@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -13,6 +13,8 @@ from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
     BenchmarkImplementation,
+    BenchmarkMeasurementPhase,
+    BenchmarkMeasurementProgress,
     BenchmarkRejected,
     GraphCostEdge,
     GraphCostNode,
@@ -146,6 +148,261 @@ def _request(
         warm_rounds=7,
         time_budget_seconds=time_budget_seconds,
     )
+
+
+def test_measurement_progress_is_frozen_normalized_and_validated():
+    progress = BenchmarkMeasurementProgress(
+        phase="paired-warm",
+        implementation_id="  cuda-cupy  ",
+        implementation_version="  13.0  ",
+        completed=2,
+        total=7,
+        message="  Measuring round 3 of 7.  ",
+    )
+
+    assert progress.phase is BenchmarkMeasurementPhase.PAIRED_WARM
+    assert progress.implementation_id == "cuda-cupy"
+    assert progress.implementation_version == "13.0"
+    assert progress.message == "Measuring round 3 of 7."
+    with pytest.raises(FrozenInstanceError):
+        progress.completed = 3
+
+    with pytest.raises(ValueError, match="fit inside"):
+        replace(progress, completed=8)
+    with pytest.raises(ValueError, match="implementation_id"):
+        replace(progress, implementation_id=" ")
+    with pytest.raises(ValueError, match="message"):
+        replace(progress, message=" ")
+
+
+def test_progress_callback_is_validated_before_benchmark_work_starts():
+    clock = ManualClock()
+    events: list[str] = []
+    request = _request(
+        clock=clock,
+        events=events,
+        live_input={"value": 3},
+        bad=False,
+    )
+
+    with pytest.raises(TypeError, match="progress must be callable"):
+        NodeBenchmarkService(clock=clock).benchmark(request, progress=object())
+
+    assert events == []
+
+
+def test_progress_wraps_every_measurement_without_changing_durations():
+    clock = ManualClock()
+    events: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        warm_rounds=3,
+        warmup_rounds=2,
+    )
+
+    def report(item: BenchmarkMeasurementProgress) -> None:
+        progress_events.append(item)
+        # UI work may take arbitrary wall time, but it is outside every
+        # implementation timing boundary.
+        clock.advance(5.0)
+
+    record = NodeBenchmarkService(clock=clock).benchmark(
+        request,
+        progress=report,
+    )
+
+    results = {item.implementation_id: item for item in record.candidates}
+    assert results["cpu-reference"].cold_seconds == pytest.approx(0.10)
+    assert results["cpu-reference"].warm_seconds == pytest.approx((0.10,) * 3)
+    assert results["cuda-cupy"].cold_seconds == pytest.approx(0.04)
+    assert results["cuda-cupy"].warm_seconds == pytest.approx((0.04,) * 3)
+
+    for implementation_id in ("cpu-reference", "cuda-cupy"):
+        implementation_events = [
+            item
+            for item in progress_events
+            if item.implementation_id == implementation_id
+        ]
+        by_phase = {
+            phase: [
+                (item.completed, item.total)
+                for item in implementation_events
+                if item.phase is phase
+            ]
+            for phase in BenchmarkMeasurementPhase
+        }
+        assert by_phase[BenchmarkMeasurementPhase.PARITY] == [(0, 1), (1, 1)]
+        assert by_phase[BenchmarkMeasurementPhase.COLD] == [(0, 1), (1, 1)]
+        assert by_phase[BenchmarkMeasurementPhase.WARMUP] == [
+            (0, 2),
+            (1, 2),
+            (1, 2),
+            (2, 2),
+        ]
+        assert by_phase[BenchmarkMeasurementPhase.PAIRED_WARM] == [
+            (0, 3),
+            (1, 3),
+            (1, 3),
+            (2, 3),
+            (2, 3),
+            (3, 3),
+        ]
+        assert all(
+            item.implementation_version == "unspecified" and item.message.strip()
+            for item in implementation_events
+        )
+
+
+def test_timed_parity_reports_combined_phase_and_replaces_cold_diagnostic():
+    clock = ManualClock()
+    events: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        warm_rounds=3,
+        time_parity_as_cold=True,
+    )
+
+    NodeBenchmarkService(clock=clock).benchmark(
+        request,
+        progress=progress_events.append,
+    )
+
+    for implementation_id in ("cpu-reference", "cuda-cupy"):
+        phases = [
+            item.phase
+            for item in progress_events
+            if item.implementation_id == implementation_id
+        ]
+        assert phases.count(BenchmarkMeasurementPhase.PARITY_COLD) == 2
+        assert BenchmarkMeasurementPhase.PARITY not in phases
+        assert BenchmarkMeasurementPhase.COLD not in phases
+
+
+def test_adaptive_progress_updates_three_to_seven_to_fifteen_truthfully():
+    clock = ManualClock()
+    events: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+            gpu_duration=0.095,
+        ),
+        warm_rounds=3,
+        adaptive_rounds=True,
+        max_warm_rounds=15,
+    )
+
+    NodeBenchmarkService(clock=clock).benchmark(
+        request,
+        progress=progress_events.append,
+    )
+
+    before_calls = [
+        item
+        for item in progress_events
+        if item.phase is BenchmarkMeasurementPhase.PAIRED_WARM
+        and item.implementation_id == "cuda-cupy"
+        and not item.message.startswith("Finished")
+    ]
+    assert [(item.completed, item.total) for item in before_calls] == [
+        *((index, 3) for index in range(3)),
+        *((index, 7) for index in range(3, 7)),
+        *((index, 15) for index in range(7, 15)),
+    ]
+    assert "needed after 3 rounds" in before_calls[3].message
+    assert "round 4 of 7" in before_calls[3].message
+    assert "needed after 7 rounds" in before_calls[7].message
+    assert "round 8 of 15" in before_calls[7].message
+
+
+def test_progress_failure_keeps_benchmark_publication_atomic():
+    clock = ManualClock()
+    events: list[str] = []
+    store = InMemoryBenchmarkStore()
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        warm_rounds=3,
+    )
+
+    def report(item: BenchmarkMeasurementProgress) -> None:
+        if (
+            item.phase is BenchmarkMeasurementPhase.COLD
+            and item.completed == item.total
+        ):
+            raise RuntimeError("progress consumer stopped")
+
+    with pytest.raises(RuntimeError, match="progress consumer stopped"):
+        NodeBenchmarkService(store=store, clock=clock).benchmark(
+            request,
+            progress=report,
+        )
+
+    assert len(store) == 0
+
+
+def test_failed_provider_call_still_reports_its_after_event():
+    clock = ManualClock()
+    events: list[str] = []
+    progress_events: list[BenchmarkMeasurementProgress] = []
+
+    def fail(_private_input):
+        raise RuntimeError("provider failed")
+
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+        ),
+        candidates=(
+            BenchmarkImplementation(
+                "cuda-fail",
+                fail,
+                implementation_version="1.2.3",
+            ),
+        ),
+        warm_rounds=3,
+    )
+
+    record = NodeBenchmarkService(clock=clock).benchmark(
+        request,
+        progress=progress_events.append,
+    )
+
+    failed_progress = [
+        item for item in progress_events if item.implementation_id == "cuda-fail"
+    ]
+    assert [item.completed for item in failed_progress] == [0, 1]
+    assert all(
+        item.phase is BenchmarkMeasurementPhase.PARITY
+        and item.implementation_version == "1.2.3"
+        for item in failed_progress
+    )
+    failed_result = next(
+        item for item in record.candidates if item.implementation_id == "cuda-fail"
+    )
+    assert "provider failed" in failed_result.error
 
 
 def test_benchmark_checks_all_parity_before_cold_and_paired_warm_timing():

@@ -84,6 +84,23 @@ transfer/topology context as a full pipeline plan. The portable
 CPU/library/exact preference you explicitly accept in `Selective` is used going
 forward and saved in workflow schema 4.
 
+`Find fastest pipeline…` shows two levels of progress. The overall bar tracks
+the complete analysis across nodes and validation stages. The current-operation
+bar identifies the node, CPU/CuPy/cuCIM implementation, measurement phase, and
+round in progress. Some NumPy, SciPy, CuPy, and cuCIM operations run as one
+synchronized call, so VIPP can report immediately before and after the call but
+cannot update a percentage from inside it. An unchanged current-operation bar
+therefore does not by itself mean that the worker is stuck.
+
+The dialog's time limit is a wall-clock limit for the whole analysis; it is not
+a RAM or VRAM allocation. If the limit is reached, VIPP has **not** established
+that the current pipeline is fastest and it changes no settings. The result
+names the stage and node where analysis stopped. Complete records from earlier
+nodes can be reused when the next run has the exact same workload, software,
+device, and measurement identity. Incomplete timings for the interrupted node
+are discarded. Choose a longer time limit and retry when the unfinished
+comparison is worth waiting for.
+
 Use `Settings > Compute setup and memory…` to verify optional GPU packages and
 hardware without freezing the interface. VIPP shows separate system RAM and
 VRAM for discrete GPUs, and one shared CPU/GPU memory budget on unified-memory

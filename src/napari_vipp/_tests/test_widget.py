@@ -1055,6 +1055,53 @@ def test_pipeline_optimizer_dispatch_failure_clears_review_baseline(
     assert "could not start" in widget.status_label.text()
 
 
+def test_pipeline_optimizer_uses_dialog_time_limit(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.SELECTIVE
+    monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
+    captured = {}
+
+    class Registry:
+        @staticmethod
+        def close():
+            return None
+
+    class Coordinator:
+        def __init__(self, _registry, _store_path):
+            pass
+
+        @staticmethod
+        def optimize(*_args, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+    class SynchronousDialog:
+        running = False
+        time_budget_seconds = 1_800.0
+
+        @staticmethod
+        def start(worker, _pool):
+            worker.run()
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        Registry,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "ApplicationPipelineOptimizerCoordinator",
+        Coordinator,
+    )
+    widget._pipeline_optimizer_dialog = SynchronousDialog()
+
+    widget._start_pipeline_optimizer_analysis()
+
+    assert captured["time_budget_seconds"] == pytest.approx(1_800.0)
+
+
 def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
     qtbot,
     monkeypatch,

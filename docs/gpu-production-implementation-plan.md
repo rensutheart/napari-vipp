@@ -1108,6 +1108,13 @@ Benchmarking follows these rules:
    release every device value on all exits. Before presenting or applying a
    result, recheck the detached graph/source/compute-intent fingerprint and
    discard it if the live state changed.
+   The budget is one absolute elapsed wall-clock deadline for the complete
+   analysis, not a host- or device-memory limit. A deadline expiry is
+   inconclusive: no fastest assignment was determined, the current assignment
+   was not proven optimal, and no preference may change. The result must name
+   the active stage/node, elapsed time, completed evidence, and the action to
+   retry with a longer limit. Preserve complete exact-key records for reuse,
+   but discard every partial timing set for the node active at expiry.
    The current single-widget surface queues normal calculation while optimizer
    evidence owns the GPU window. Before headless or multi-window concurrency is
    promoted, replace that UI-only exclusion with a process-wide lease keyed by
@@ -1665,6 +1672,12 @@ unlocked, locked, or have only one scientifically eligible implementation. If
 the globally optimal plan chooses a slower isolated node to preserve residency,
 the explanation states that plainly.
 Benchmark progress is cancellable and never publishes a writer/batch output.
+The analysis dialog has two determinate levels where the provider permits it:
+an overall bar across pipeline stages/nodes and a current-operation bar naming
+the node, implementation, measurement phase, and round. A monolithic
+synchronized CPU/GPU library call can only emit progress before and after the
+call; the UI must describe that limitation rather than imply that an unchanged
+percentage is a hang.
 
 The current experimental update replaces the ambiguous whole-analysis override
 with explicit per-node optimizer locks. It provides current/proposed rows with
@@ -1700,6 +1713,12 @@ imply that conversion is scientifically neutral or silently edit the graph.
   budget; never add RAM and nominal VRAM together.
 - During monolithic kernels, progress remains indeterminate and cancellation
   wording is honest. RL/RL-TV show iteration progress.
+- Pipeline-optimizer timeout messages say that the analysis is inconclusive,
+  identify the active stage/node and elapsed wall-clock limit, and state that no
+  settings changed. They distinguish reusable complete exact records from the
+  discarded partial timings of the interrupted node and recommend a longer
+  limit when the user wants to finish the comparison. They never describe
+  budget exhaustion as an optimal result.
 - Batch workspace shows requested mode, device, current item/node, fallback
   count, and manifest link. One item fallback does not silently change later
   items; each is planned from the same request and current memory snapshot.

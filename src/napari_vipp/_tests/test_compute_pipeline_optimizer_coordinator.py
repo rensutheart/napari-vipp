@@ -23,10 +23,16 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
     NodePreferenceKind,
 )
+from napari_vipp.core.compute_benchmark import BenchmarkBudgetExceeded
 from napari_vipp.core.compute_benchmark_adapter import (
     workload_from_prepared_node_call,
 )
+from napari_vipp.core.compute_benchmark_coordinator import (
+    NodeBenchmarkPhase,
+    NodeBenchmarkProgress,
+)
 from napari_vipp.core.compute_pipeline_optimizer import (
+    PipelineOptimizationDeadlineExceeded,
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationNotBeneficial,
     PipelineValidationRequest,
@@ -124,8 +130,20 @@ class _NodeBenchmarker:
     def __init__(self, environment: ComputeEnvironment, registry: ComputeRegistry):
         self.environment = environment
         self.registry = registry
+        self.observed_budgets: list[float] = []
 
-    def prepare(self, pipeline, node_id, **_kwargs):
+    def prepare(self, pipeline, node_id, **kwargs):
+        self.observed_budgets.append(float(kwargs["time_budget_seconds"]))
+        progress = kwargs.get("progress")
+        if progress is not None:
+            progress(
+                NodeBenchmarkProgress(
+                    NodeBenchmarkPhase.PREPARING,
+                    1,
+                    4,
+                    "Detached the exact node workload for testing.",
+                )
+            )
         call = pipeline.prepare_node_call(node_id)
         assert call is not None
         workload = workload_from_prepared_node_call(call)
@@ -150,8 +168,27 @@ class _NodeBenchmarker:
             key=key,
         )
 
-    def run(self, plan, **_kwargs):
+    def run(self, plan, **kwargs):
         cpu_id, gpu_id = plan.key.implementation_ids
+        progress = kwargs.get("progress")
+        if progress is not None:
+            gpu_spec = plan.admitted_specs[0]
+            progress(
+                NodeBenchmarkProgress(
+                    NodeBenchmarkPhase.BENCHMARKING,
+                    3,
+                    4,
+                    "Running parity checks and paired benchmark rounds.",
+                    measurement_completed=2,
+                    measurement_total=3,
+                    measurement_message=(
+                        "Measuring paired warm round 3 of 3 for the GPU."
+                    ),
+                    implementation_id=gpu_spec.implementation_id,
+                    implementation_version=gpu_spec.implementation_version,
+                    measurement_phase="paired_warm",
+                )
+            )
         record = BenchmarkRecord(
             plan.key,
             (
@@ -178,6 +215,41 @@ class _NodeBenchmarker:
             accepted_implementation_id=gpu_id,
         )
         return SimpleNamespace(plan=plan, record=record)
+
+
+class _TimeoutNodeBenchmarker(_NodeBenchmarker):
+    def __init__(
+        self,
+        environment: ComputeEnvironment,
+        registry: ComputeRegistry,
+        clock: _ManualClock,
+    ) -> None:
+        super().__init__(environment, registry)
+        self.clock = clock
+
+    def prepare(self, pipeline, node_id, **kwargs):
+        plan = super().prepare(pipeline, node_id, **kwargs)
+        progress = kwargs.get("progress")
+        if progress is not None:
+            gpu_spec = plan.admitted_specs[0]
+            progress(
+                NodeBenchmarkProgress(
+                    NodeBenchmarkPhase.BENCHMARKING,
+                    3,
+                    4,
+                    "Running parity checks and paired benchmark rounds.",
+                    measurement_completed=1,
+                    measurement_total=3,
+                    measurement_message=(
+                        "Measuring paired warm round 2 of 3 for the GPU."
+                    ),
+                    implementation_id=gpu_spec.implementation_id,
+                    implementation_version=gpu_spec.implementation_version,
+                    measurement_phase="paired_warm",
+                )
+            )
+        self.clock.advance(float(kwargs["time_budget_seconds"]))
+        raise BenchmarkBudgetExceeded("node benchmark time budget exhausted")
 
 
 class _PrivateExecutor:
@@ -309,13 +381,14 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
         writer_id,
         gpu_spec.implementation_id,
     )
+    node_benchmarker = _NodeBenchmarker(environment, registry)
     progress = []
     coordinator = ApplicationPipelineOptimizerCoordinator(
         registry,
         tmp_path / "benchmarks.json",
         clock=clock,
         executor=executor,
-        node_benchmarker=_NodeBenchmarker(environment, registry),
+        node_benchmarker=node_benchmarker,
     )
 
     result = coordinator.optimize(
@@ -338,6 +411,19 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     assert runtime.released == 3
     assert progress[0].phase is PipelineOptimizerPhase.PREPARING
     assert progress[-1].phase is PipelineOptimizerPhase.COMPLETE
+    assert node_benchmarker.observed_budgets == [pytest.approx(19.9)]
+    operation = next(
+        item for item in progress if item.measurement_phase == "paired_warm"
+    )
+    assert operation.phase is PipelineOptimizerPhase.BENCHMARKING
+    assert (operation.completed, operation.total) == (2, 7)
+    assert (operation.operation_completed, operation.operation_total) == (2, 3)
+    assert operation.node_id == median_id
+    assert operation.node_title == pipeline.nodes[median_id].title
+    assert operation.implementation_id == gpu_spec.implementation_id
+    assert operation.operation_message == (
+        "Measuring paired warm round 3 of 3 for the GPU."
+    )
     np.testing.assert_array_equal(values, original)
     assert all(
         not np.shares_memory(item, values)
@@ -352,6 +438,88 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
         document,
         {source_id: SourcePayload(values, name="private-source")},
     ) != result.identity.source_fingerprint
+
+
+def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline, source_id, median_id, writer_id = _writer_workflow()
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    executor = _PrivateExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+    )
+    node_benchmarker = _TimeoutNodeBenchmarker(environment, registry, clock)
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=node_benchmarker,
+    )
+    request = ComputeRequest("selective", allow_experimental=True)
+    progress = []
+
+    with pytest.raises(PipelineOptimizationDeadlineExceeded) as caught:
+        coordinator.optimize(
+            document,
+            {
+                source_id: SourcePayload(
+                    np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+                )
+            },
+            request,
+            time_budget_seconds=20.0,
+            progress=progress.append,
+        )
+
+    error = caught.value
+    report = error.report
+    assert report is not None
+    assert report.stage == "node-benchmark"
+    assert report.stage_message == ("Measuring paired warm round 2 of 3 for the GPU.")
+    assert report.elapsed_seconds == pytest.approx(20.0)
+    assert report.budget_seconds == pytest.approx(20.0)
+    assert (report.overall_completed, report.overall_total) == (2, 7)
+    assert report.node_id == median_id
+    assert report.node_title == pipeline.nodes[median_id].title
+    assert (report.node_index, report.node_total) == (1, 1)
+    assert (report.operation_completed, report.operation_total) == (1, 3)
+    assert report.operation_message == report.stage_message
+    assert report.completed_node_ids == ()
+    assert report.reused_node_ids == ()
+    assert report.baseline_completed
+    assert not report.validation_started
+    assert not report.validation_completed
+    assert report.partial_node_discarded
+    message = str(error).lower()
+    assert "no fastest assignment was determined" in message
+    assert "current pipeline was not proven fastest" in message
+    assert "no settings changed" in message
+    assert "partial timings" in message
+    assert request.preference_for(median_id).kind is NodePreferenceKind.AUTO
+    assert node_benchmarker.observed_budgets == [pytest.approx(19.9)]
+    nested = next(item for item in progress if item.measurement_phase == "paired_warm")
+    assert (nested.operation_completed, nested.operation_total) == (1, 3)
+    assert nested.node_id == median_id
 
 
 def test_close_pipeline_validation_uses_full_fifteen_rounds(

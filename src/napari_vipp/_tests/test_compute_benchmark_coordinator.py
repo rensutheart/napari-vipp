@@ -20,6 +20,7 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
+    BenchmarkMeasurementPhase,
     JsonBenchmarkStore,
 )
 from napari_vipp.core.compute_benchmark_adapter import (
@@ -192,13 +193,33 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     assert result.winner_preference.value == "cupyx"
     assert JsonBenchmarkStore(plan.store_path).get(result.record.key) == result.record
     assert runtime.live == {}
-    assert [item.phase for item in progress] == [
+    assert [item.phase for item in progress[:4]] == [
         NodeBenchmarkPhase.PREPARING,
         NodeBenchmarkPhase.ELIGIBILITY,
         NodeBenchmarkPhase.READY,
         NodeBenchmarkPhase.BENCHMARKING,
-        NodeBenchmarkPhase.COMPLETE,
     ]
+    assert all(item.phase is NodeBenchmarkPhase.BENCHMARKING for item in progress[3:-1])
+    assert progress[-1].phase is NodeBenchmarkPhase.COMPLETE
+    measurements = [item for item in progress if item.measurement_total]
+    assert measurements
+    assert {item.measurement_phase for item in measurements} >= {
+        BenchmarkMeasurementPhase.PARITY_COLD.value,
+        BenchmarkMeasurementPhase.WARMUP.value,
+        BenchmarkMeasurementPhase.PAIRED_WARM.value,
+    }
+    assert all(
+        0 <= item.measurement_completed <= item.measurement_total
+        and item.measurement_message
+        and item.implementation_id
+        and item.implementation_version
+        for item in measurements
+    )
+    assert any(
+        item.measurement_phase == BenchmarkMeasurementPhase.PAIRED_WARM.value
+        and item.measurement_completed == item.measurement_total
+        for item in measurements
+    )
     assert pipeline.nodes[node_id].params == params_before
     assert pipeline.completed_node_ids == completed_before
     np.testing.assert_array_equal(pipeline.outputs[source_id], source_before)

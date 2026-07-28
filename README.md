@@ -219,6 +219,22 @@ timing never
 replaces fresh whole-pipeline parity before a changed assignment can be offered.
 If the current assignment wins, VIPP reports that as a successful result rather
 than an optimization failure.
+The analysis dialog separates **overall progress** from the **current
+operation**. Overall progress follows the complete analysis, while the second
+bar names the node, implementation, phase, and timing round currently being
+measured. The selectable time limit is elapsed wall-clock time, not a RAM or
+VRAM budget. A synchronized NumPy, SciPy, CuPy, or cuCIM call cannot always
+report progress from inside the call, so the current-operation bar may remain
+unchanged until that call returns even though work is continuing.
+
+Reaching the time limit does **not** mean the current pipeline is optimal: it
+means that no fastest assignment was determined within the selected time. VIPP
+does not change any node settings in that case. Complete exact-workload node
+records remain available for a later identical analysis, but partial timings
+from the node that was interrupted are discarded. Retry with a longer time
+limit; the timeout result identifies the stage and node that consumed the
+remaining time and reports which completed evidence can be reused.
+
 The analysis measures synchronized transfer costs and usable
 VRAM, solves one graph-wide CPU/GPU assignment, and then validates the complete
 current and proposed assignments for changed-node plus affected

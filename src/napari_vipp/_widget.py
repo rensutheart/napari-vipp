@@ -3243,6 +3243,9 @@ class VippWidget(QWidget):
         optimizer_locked_node_ids = frozenset(
             self._compute_optimizer_locked_node_ids & set(self.pipeline.nodes)
         )
+        optimizer_time_budget_seconds = float(
+            getattr(dialog, "time_budget_seconds", 300.0)
+        )
 
         def optimize(cancelled, emit_progress):
             from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
@@ -3258,11 +3261,33 @@ class VippWidget(QWidget):
                 )
 
                 def forward(progress) -> None:
+                    raw_phase = getattr(progress, "phase", "")
+                    phase = str(getattr(raw_phase, "value", raw_phase))
                     emit_progress(
                         PipelineOptimizerProgress(
                             int(progress.completed),
                             int(progress.total),
                             str(progress.message),
+                            phase=phase,
+                            operation_completed=int(
+                                getattr(progress, "operation_completed", 0)
+                            ),
+                            operation_total=int(
+                                getattr(progress, "operation_total", 0)
+                            ),
+                            operation_message=str(
+                                getattr(progress, "operation_message", "")
+                            ),
+                            node_id=str(getattr(progress, "node_id", "")),
+                            node_title=str(
+                                getattr(progress, "node_title", "")
+                            ),
+                            implementation_id=str(
+                                getattr(progress, "implementation_id", "")
+                            ),
+                            measurement_phase=str(
+                                getattr(progress, "measurement_phase", "")
+                            ),
                         )
                     )
 
@@ -3272,7 +3297,7 @@ class VippWidget(QWidget):
                     compute_request,
                     retain_node_ids,
                     optimizer_locked_node_ids=optimizer_locked_node_ids,
-                    time_budget_seconds=300.0,
+                    time_budget_seconds=optimizer_time_budget_seconds,
                     cancelled=cancelled,
                     progress=forward,
                 )
@@ -3348,10 +3373,18 @@ class VippWidget(QWidget):
             return
         if outcome.reason_code == "not_beneficial":
             severity = MessageSeverity.INFO
-        elif outcome.reason_code in {
-            "evidence_incomplete",
-            "deadline_exceeded",
-        }:
+        elif outcome.reason_code == "deadline_exceeded":
+            self._set_status(
+                "Find fastest reached its time limit before determining a "
+                "winner. The current pipeline was not proven fastest and no "
+                "preference changed; review the stopped stage or retry with "
+                "more time.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            self._resume_pipeline_after_optimizer_if_pending()
+            return
+        elif outcome.reason_code == "evidence_incomplete":
             severity = MessageSeverity.WARNING
         else:
             severity = MessageSeverity.ERROR

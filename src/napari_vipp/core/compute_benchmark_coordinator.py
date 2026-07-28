@@ -37,6 +37,7 @@ from napari_vipp.core.compute_benchmark import (
     MINIMUM_WARM_ROUNDS,
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
+    BenchmarkMeasurementProgress,
     BenchmarkRejected,
     JsonBenchmarkStore,
     NodeBenchmarkService,
@@ -111,6 +112,12 @@ class NodeBenchmarkProgress:
     completed: int
     total: int
     message: str
+    measurement_completed: int = 0
+    measurement_total: int = 0
+    measurement_message: str = ""
+    implementation_id: str = ""
+    implementation_version: str = ""
+    measurement_phase: str = ""
 
     def __post_init__(self) -> None:
         phase = (
@@ -125,11 +132,27 @@ class NodeBenchmarkProgress:
             raise ValueError("benchmark progress values must be non-negative integers.")
         if self.total < 1 or self.completed > self.total:
             raise ValueError("benchmark progress must fit inside its declared total.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.measurement_completed, self.measurement_total)
+        ):
+            raise ValueError("measurement progress values must be non-negative.")
+        if self.measurement_completed > self.measurement_total:
+            raise ValueError("measurement progress must fit inside its declared total.")
         message = str(self.message).strip()
         if not message:
             raise ValueError("benchmark progress message must not be empty.")
         object.__setattr__(self, "phase", phase)
         object.__setattr__(self, "message", message)
+        for name in (
+            "measurement_message",
+            "implementation_id",
+            "implementation_version",
+            "measurement_phase",
+        ):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        if self.measurement_total and not self.measurement_message:
+            raise ValueError("measurement progress requires a message.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -549,9 +572,27 @@ class ApplicationNodeBenchmarkCoordinator:
             self._PROGRESS_TOTAL,
             "Running parity checks and paired benchmark rounds.",
         )
+
+        def forward_measurement(update: BenchmarkMeasurementProgress) -> None:
+            phase = str(getattr(update.phase, "value", update.phase))
+            _emit_progress(
+                progress,
+                NodeBenchmarkPhase.BENCHMARKING,
+                3,
+                self._PROGRESS_TOTAL,
+                "Running parity checks and paired benchmark rounds.",
+                measurement_completed=update.completed,
+                measurement_total=update.total,
+                measurement_message=update.message,
+                implementation_id=update.implementation_id,
+                implementation_version=update.implementation_version,
+                measurement_phase=phase,
+            )
+
         record = self.service.benchmark(
             plan.registered.request,
             cancelled=cancelled,
+            progress=forward_measurement,
         )
         preference = plan.preference_for(record)
         _emit_progress(
@@ -906,9 +947,29 @@ def _emit_progress(
     completed: int,
     total: int,
     message: str,
+    *,
+    measurement_completed: int = 0,
+    measurement_total: int = 0,
+    measurement_message: str = "",
+    implementation_id: str = "",
+    implementation_version: str = "",
+    measurement_phase: str = "",
 ) -> None:
     if callback is not None:
-        callback(NodeBenchmarkProgress(phase, completed, total, message))
+        callback(
+            NodeBenchmarkProgress(
+                phase,
+                completed,
+                total,
+                message,
+                measurement_completed,
+                measurement_total,
+                measurement_message,
+                implementation_id,
+                implementation_version,
+                measurement_phase,
+            )
+        )
 
 
 def _validated_budget(value: float | None) -> float | None:

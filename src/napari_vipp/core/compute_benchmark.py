@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
@@ -102,6 +103,76 @@ class ParityResult:
 
 
 ParityComparator = Callable[[object, object], bool | ParityResult]
+
+
+class BenchmarkMeasurementPhase(StrEnum):
+    """Fine-grained phases within one implementation benchmark."""
+
+    PARITY = "parity"
+    PARITY_COLD = "parity_cold"
+    COLD = "cold"
+    WARMUP = "warmup"
+    PAIRED_WARM = "paired_warm"
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkMeasurementProgress:
+    """Immutable progress for one implementation within one measurement phase.
+
+    ``completed`` and ``total`` are local to the named implementation and
+    phase.  In particular, adaptive paired measurements may first report a
+    total of three rounds and later increase that total to seven or fifteen.
+    """
+
+    phase: BenchmarkMeasurementPhase | str
+    implementation_id: str
+    implementation_version: str
+    completed: int
+    total: int
+    message: str
+
+    def __post_init__(self) -> None:
+        phase = (
+            self.phase
+            if isinstance(self.phase, BenchmarkMeasurementPhase)
+            else BenchmarkMeasurementPhase(
+                str(self.phase)
+                .strip()
+                .lower()
+                .replace("-", "_")
+                .replace("+", "_")
+                .replace(" ", "_")
+            )
+        )
+        implementation_id = str(self.implementation_id).strip()
+        implementation_version = str(self.implementation_version).strip()
+        if not implementation_id:
+            raise ValueError("implementation_id must not be empty.")
+        if not implementation_version:
+            raise ValueError("implementation_version must not be empty.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.completed, self.total)
+        ):
+            raise ValueError(
+                "benchmark measurement progress must use non-negative integers."
+            )
+        if self.total < 1 or self.completed > self.total:
+            raise ValueError(
+                "benchmark measurement progress must fit inside its total."
+            )
+        message = str(self.message).strip()
+        if not message:
+            raise ValueError(
+                "benchmark measurement progress message must not be empty."
+            )
+        object.__setattr__(self, "phase", phase)
+        object.__setattr__(self, "implementation_id", implementation_id)
+        object.__setattr__(self, "implementation_version", implementation_version)
+        object.__setattr__(self, "message", message)
+
+
+BenchmarkMeasurementProgressCallback = Callable[[BenchmarkMeasurementProgress], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -917,12 +988,15 @@ class NodeBenchmarkService:
         request: NodeBenchmarkRequest,
         *,
         cancelled: Callable[[], bool] | None = None,
+        progress: BenchmarkMeasurementProgressCallback | None = None,
     ) -> BenchmarkRecord:
         """Benchmark a node and publish only a complete immutable record.
 
         Candidate parity is established for every runnable implementation before
         the first duration is recorded.  A failed candidate is quarantined while
-        the reference implementation remains mandatory.
+        the reference implementation remains mandatory.  Optional progress
+        callbacks bracket provider calls but remain outside all recorded timing
+        boundaries.
         """
 
         if not isinstance(request, NodeBenchmarkRequest):
@@ -932,6 +1006,8 @@ class NodeBenchmarkService:
             raise BenchmarkRejected("writer nodes cannot be benchmarked.")
         if cancelled is not None and not callable(cancelled):
             raise TypeError("cancelled must be callable or None.")
+        if progress is not None and not callable(progress):
+            raise TypeError("progress must be callable or None.")
 
         started = self._read_clock()
         states = {
@@ -941,26 +1017,66 @@ class NodeBenchmarkService:
 
         self._check_abort(request, started, cancelled)
         reference_state = states[request.reference.implementation_id]
+        reference_label = self._implementation_label(request.reference)
         if request.time_parity_as_cold:
-            try:
-                expected, reference_state.cold_seconds = (
-                    self._timed_invoke_with_result(
-                        reference_state,
-                        request.private_input_factory,
-                        request,
-                        started,
-                        cancelled,
-                        phase="cold",
-                    )
-                )
-            except (BenchmarkCancelled, BenchmarkBudgetExceeded):
-                raise
-            except Exception as exc:
+            measured, call_error = self._progressed_call(
+                progress,
+                phase=BenchmarkMeasurementPhase.PARITY_COLD,
+                implementation=request.reference,
+                completed=0,
+                total=1,
+                before_message=(
+                    "Checking scientific parity and measuring the cold call "
+                    f"for reference {reference_label}."
+                ),
+                after_message=(
+                    "Finished the parity and cold-call attempt for reference "
+                    f"{reference_label}."
+                ),
+                call=lambda: self._timed_invoke_with_result(
+                    reference_state,
+                    request.private_input_factory,
+                    request,
+                    started,
+                    cancelled,
+                    phase="cold",
+                ),
+            )
+            if call_error is not None:
+                if isinstance(
+                    call_error, (BenchmarkCancelled, BenchmarkBudgetExceeded)
+                ):
+                    raise call_error
                 raise BenchmarkReferenceError(
-                    f"Reference parity/cold call failed: {self._error_text(exc)}"
-                ) from exc
+                    "Reference parity/cold call failed: "
+                    f"{self._error_text(call_error)}"
+                ) from call_error
+            if not isinstance(measured, tuple) or len(measured) != 2:
+                raise BenchmarkError(
+                    "reference parity/cold call returned an invalid measurement."
+                )
+            expected, reference_state.cold_seconds = measured
         else:
-            expected = self._invoke_reference(request, started, cancelled)
+            expected, call_error = self._progressed_call(
+                progress,
+                phase=BenchmarkMeasurementPhase.PARITY,
+                implementation=request.reference,
+                completed=0,
+                total=1,
+                before_message=(
+                    f"Checking scientific parity for reference {reference_label}."
+                ),
+                after_message=(
+                    f"Finished the parity attempt for reference {reference_label}."
+                ),
+                call=lambda: self._invoke_reference(
+                    request,
+                    started,
+                    cancelled,
+                ),
+            )
+            if call_error is not None:
+                raise call_error
         reference_state.parity_passed = True
 
         for candidate in request.candidates:
@@ -976,18 +1092,62 @@ class NodeBenchmarkService:
                 state.failure_kind = quarantine.failure_kind
                 continue
             self._check_abort(request, started, cancelled)
+            candidate_label = self._implementation_label(candidate)
+            parity_phase = (
+                BenchmarkMeasurementPhase.PARITY_COLD
+                if request.time_parity_as_cold
+                else BenchmarkMeasurementPhase.PARITY
+            )
+            parity_action = (
+                "scientific parity and the cold call"
+                if request.time_parity_as_cold
+                else "scientific parity"
+            )
+            measured, call_error = self._progressed_call(
+                progress,
+                phase=parity_phase,
+                implementation=candidate,
+                completed=0,
+                total=1,
+                before_message=f"Checking {parity_action} for {candidate_label}.",
+                after_message=(
+                    f"Finished the {parity_action} attempt for {candidate_label}."
+                ),
+                call=(
+                    lambda state=state, candidate=candidate: (
+                        self._timed_invoke_with_result(
+                            state,
+                            request.private_input_factory,
+                            request,
+                            started,
+                            cancelled,
+                            phase="cold",
+                        )
+                        if request.time_parity_as_cold
+                        else self._invoke(
+                            candidate,
+                            request.private_input_factory,
+                        )
+                    )
+                ),
+            )
+            if call_error is not None:
+                self._quarantine_state(
+                    request,
+                    state,
+                    self._error_text(call_error),
+                )
+                continue
             try:
                 if request.time_parity_as_cold:
-                    actual, candidate_cold = self._timed_invoke_with_result(
-                        state,
-                        request.private_input_factory,
-                        request,
-                        started,
-                        cancelled,
-                        phase="cold",
-                    )
+                    if not isinstance(measured, tuple) or len(measured) != 2:
+                        raise BenchmarkError(
+                            "candidate parity/cold call returned an invalid "
+                            "measurement."
+                        )
+                    actual, candidate_cold = measured
                 else:
-                    actual = self._invoke(candidate, request.private_input_factory)
+                    actual = measured
                 parity = request.parity(expected, actual)
                 result = (
                     parity
@@ -1028,34 +1188,94 @@ class NodeBenchmarkService:
             state = states[implementation_id]
             if state.cold_seconds is not None:
                 continue
-            try:
-                state.cold_seconds = self._timed_invoke(
+            implementation_label = self._implementation_label(state.implementation)
+            cold_seconds, call_error = self._progressed_call(
+                progress,
+                phase=BenchmarkMeasurementPhase.COLD,
+                implementation=state.implementation,
+                completed=0,
+                total=1,
+                before_message=(
+                    f"Measuring the cold diagnostic for {implementation_label}."
+                ),
+                after_message=(
+                    f"Finished the cold diagnostic attempt for "
+                    f"{implementation_label}."
+                ),
+                call=lambda state=state: self._timed_invoke(
                     state,
                     request.private_input_factory,
                     request,
                     started,
                     cancelled,
                     phase="cold",
-                )
-            except (BenchmarkCancelled, BenchmarkBudgetExceeded):
-                raise
-            except Exception as exc:
+                ),
+            )
+            if call_error is not None:
+                if isinstance(
+                    call_error, (BenchmarkCancelled, BenchmarkBudgetExceeded)
+                ):
+                    raise call_error
                 if implementation_id == request.reference.implementation_id:
                     raise BenchmarkReferenceError(
-                        f"Reference cold call failed: {self._error_text(exc)}"
-                    ) from exc
-                self._quarantine_state(request, state, self._error_text(exc))
+                        "Reference cold call failed: "
+                        f"{self._error_text(call_error)}"
+                    ) from call_error
+                self._quarantine_state(
+                    request,
+                    state,
+                    self._error_text(call_error),
+                )
                 active.remove(implementation_id)
+                continue
+            state.cold_seconds = cold_seconds
 
         # Production requests may ask for untimed warmup after the first/JIT
         # diagnostic and before randomized paired rounds.  Legacy requests keep
         # the historical zero-warmup behavior.
-        for _warmup_index in range(request.warmup_rounds):
+        for warmup_index in range(request.warmup_rounds):
             for implementation_id in tuple(active):
                 state = states[implementation_id]
+                self._check_abort(request, started, cancelled)
+                implementation_label = self._implementation_label(state.implementation)
+                _unused, call_error = self._progressed_call(
+                    progress,
+                    phase=BenchmarkMeasurementPhase.WARMUP,
+                    implementation=state.implementation,
+                    completed=warmup_index,
+                    total=request.warmup_rounds,
+                    before_message=(
+                        f"Running warmup {warmup_index + 1} of "
+                        f"{request.warmup_rounds} for {implementation_label}."
+                    ),
+                    after_message=(
+                        f"Finished warmup {warmup_index + 1} of "
+                        f"{request.warmup_rounds} for {implementation_label}."
+                    ),
+                    call=lambda implementation=state.implementation: self._invoke(
+                        implementation,
+                        request.private_input_factory,
+                    ),
+                )
+                if call_error is not None:
+                    if isinstance(
+                        call_error,
+                        (BenchmarkCancelled, BenchmarkBudgetExceeded),
+                    ):
+                        raise call_error
+                    if implementation_id == request.reference.implementation_id:
+                        raise BenchmarkReferenceError(
+                            "Reference warmup failed: "
+                            f"{self._error_text(call_error)}"
+                        ) from call_error
+                    self._quarantine_state(
+                        request,
+                        state,
+                        self._error_text(call_error),
+                    )
+                    active.remove(implementation_id)
+                    continue
                 try:
-                    self._check_abort(request, started, cancelled)
-                    self._invoke(state.implementation, request.private_input_factory)
                     self._sample_observation(state)
                     self._check_abort(request, started, cancelled)
                 except (BenchmarkCancelled, BenchmarkBudgetExceeded):
@@ -1070,6 +1290,7 @@ class NodeBenchmarkService:
 
         target_rounds = request.warm_rounds
         round_index = 0
+        extended_from: int | None = None
         while round_index < target_rounds:
             ordered = tuple(self._orderer(tuple(active), self._rng))
             if len(ordered) != len(active) or set(ordered) != set(active):
@@ -1080,26 +1301,60 @@ class NodeBenchmarkService:
                 if implementation_id not in active:
                     continue
                 state = states[implementation_id]
-                try:
-                    elapsed = self._timed_invoke(
+                implementation_label = self._implementation_label(state.implementation)
+                if extended_from is None:
+                    before_message = (
+                        f"Measuring paired warm round {round_index + 1} of "
+                        f"{target_rounds} for {implementation_label}."
+                    )
+                else:
+                    before_message = (
+                        f"Additional evidence was needed after {extended_from} "
+                        f"rounds; measuring paired warm round "
+                        f"{round_index + 1} of {target_rounds} for "
+                        f"{implementation_label}."
+                    )
+                elapsed, call_error = self._progressed_call(
+                    progress,
+                    phase=BenchmarkMeasurementPhase.PAIRED_WARM,
+                    implementation=state.implementation,
+                    completed=round_index,
+                    total=target_rounds,
+                    before_message=before_message,
+                    after_message=(
+                        f"Finished paired warm round {round_index + 1} of "
+                        f"{target_rounds} for {implementation_label}."
+                    ),
+                    call=lambda state=state: self._timed_invoke(
                         state,
                         request.private_input_factory,
                         request,
                         started,
                         cancelled,
                         phase="warm",
-                    )
-                    state.warm_seconds.append(elapsed)
-                except (BenchmarkCancelled, BenchmarkBudgetExceeded):
-                    raise
-                except Exception as exc:
+                    ),
+                )
+                if call_error is not None:
+                    if isinstance(
+                        call_error,
+                        (BenchmarkCancelled, BenchmarkBudgetExceeded),
+                    ):
+                        raise call_error
                     if implementation_id == request.reference.implementation_id:
                         raise BenchmarkReferenceError(
-                            f"Reference warm call failed: {self._error_text(exc)}"
-                        ) from exc
-                    self._quarantine_state(request, state, self._error_text(exc))
+                            "Reference warm call failed: "
+                            f"{self._error_text(call_error)}"
+                        ) from call_error
+                    self._quarantine_state(
+                        request,
+                        state,
+                        self._error_text(call_error),
+                    )
                     active.remove(implementation_id)
+                    continue
+                state.warm_seconds.append(elapsed)
             round_index += 1
+            extended_from = None
             if (
                 request.adaptive_rounds
                 and round_index == target_rounds
@@ -1110,6 +1365,7 @@ class NodeBenchmarkService:
                     active_ids=tuple(active),
                 )
             ):
+                extended_from = target_rounds
                 target_rounds = _next_adaptive_round_target(
                     target_rounds,
                     request.max_warm_rounds,
@@ -1140,6 +1396,74 @@ class NodeBenchmarkService:
         )
         self.store.put(record)
         return record
+
+    @staticmethod
+    def _progressed_call(
+        progress: BenchmarkMeasurementProgressCallback | None,
+        *,
+        phase: BenchmarkMeasurementPhase,
+        implementation: BenchmarkImplementation,
+        completed: int,
+        total: int,
+        before_message: str,
+        after_message: str,
+        call: Callable[[], Any],
+    ) -> tuple[Any | None, Exception | None]:
+        """Invoke one provider call between unmeasured progress callbacks."""
+
+        NodeBenchmarkService._emit_measurement_progress(
+            progress,
+            phase=phase,
+            implementation=implementation,
+            completed=completed,
+            total=total,
+            message=before_message,
+        )
+        result: Any | None = None
+        call_error: Exception | None = None
+        try:
+            result = call()
+        except Exception as exc:
+            call_error = exc
+        NodeBenchmarkService._emit_measurement_progress(
+            progress,
+            phase=phase,
+            implementation=implementation,
+            completed=completed + 1,
+            total=total,
+            message=after_message,
+        )
+        return result, call_error
+
+    @staticmethod
+    def _emit_measurement_progress(
+        progress: BenchmarkMeasurementProgressCallback | None,
+        *,
+        phase: BenchmarkMeasurementPhase,
+        implementation: BenchmarkImplementation,
+        completed: int,
+        total: int,
+        message: str,
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            BenchmarkMeasurementProgress(
+                phase=phase,
+                implementation_id=implementation.implementation_id,
+                implementation_version=implementation.implementation_version,
+                completed=completed,
+                total=total,
+                message=message,
+            )
+        )
+
+    @staticmethod
+    def _implementation_label(implementation: BenchmarkImplementation) -> str:
+        return (
+            f"{implementation.implementation_id} "
+            f"(version {implementation.implementation_version})"
+        )
 
     @staticmethod
     def _candidate_result(
@@ -2042,6 +2366,9 @@ __all__ = [
     "BenchmarkError",
     "BenchmarkImplementation",
     "BenchmarkInvocationObservation",
+    "BenchmarkMeasurementPhase",
+    "BenchmarkMeasurementProgress",
+    "BenchmarkMeasurementProgressCallback",
     "BenchmarkReferenceError",
     "BenchmarkRejected",
     "BenchmarkStaleness",

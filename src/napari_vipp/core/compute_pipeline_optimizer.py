@@ -51,8 +51,104 @@ class PipelineOptimizationCancelled(PipelineOptimizationError):
     """Cooperative cancellation stopped analysis without publishing a proposal."""
 
 
+@dataclass(frozen=True, slots=True)
+class PipelineOptimizationTimeoutReport:
+    """Structured context explaining where an optimization deadline expired."""
+
+    stage: str = "unknown"
+    stage_message: str = ""
+    elapsed_seconds: float | None = None
+    budget_seconds: float | None = None
+    overall_completed: int = 0
+    overall_total: int = 1
+    node_id: str = ""
+    node_title: str = ""
+    node_index: int = 0
+    node_total: int = 0
+    operation_completed: int = 0
+    operation_total: int = 0
+    operation_message: str = ""
+    completed_node_ids: tuple[str, ...] = ()
+    reused_node_ids: tuple[str, ...] = ()
+    baseline_completed: bool = False
+    validation_started: bool = False
+    validation_completed: bool = False
+    partial_node_discarded: bool = False
+
+    def __post_init__(self) -> None:
+        stage = str(self.stage).strip().lower() or "unknown"
+        object.__setattr__(self, "stage", stage)
+        for name in ("stage_message", "node_id", "node_title", "operation_message"):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        for name in ("elapsed_seconds", "budget_seconds"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
+            object.__setattr__(self, name, value)
+        for name in (
+            "overall_completed",
+            "overall_total",
+            "node_index",
+            "node_total",
+            "operation_completed",
+            "operation_total",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.overall_total < 1 or self.overall_completed > self.overall_total:
+            raise ValueError("overall timeout progress is out of range")
+        if self.node_index > self.node_total:
+            raise ValueError("node timeout progress is out of range")
+        if self.operation_completed > self.operation_total:
+            raise ValueError("operation timeout progress is out of range")
+        for name in (
+            "baseline_completed",
+            "validation_started",
+            "validation_completed",
+            "partial_node_discarded",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean")
+        object.__setattr__(
+            self,
+            "completed_node_ids",
+            tuple(
+                str(item).strip()
+                for item in self.completed_node_ids
+                if str(item).strip()
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reused_node_ids",
+            tuple(
+                str(item).strip()
+                for item in self.reused_node_ids
+                if str(item).strip()
+            ),
+        )
+
+
 class PipelineOptimizationDeadlineExceeded(PipelineOptimizationError):
     """The absolute optimizer deadline expired."""
+
+    def __init__(
+        self,
+        message: str = "Pipeline optimization exceeded its deadline.",
+        *,
+        report: PipelineOptimizationTimeoutReport | None = None,
+    ) -> None:
+        if report is not None and not isinstance(
+            report,
+            PipelineOptimizationTimeoutReport,
+        ):
+            raise TypeError("report must be a PipelineOptimizationTimeoutReport")
+        self.report = report
+        super().__init__(str(message).strip() or "Pipeline optimization timed out.")
 
 
 class PipelineOptimizationNotBeneficial(PipelineOptimizationError):
@@ -1140,6 +1236,7 @@ __all__ = [
     "PipelineOptimizationProposal",
     "PipelineOptimizationRow",
     "PipelineOptimizationStale",
+    "PipelineOptimizationTimeoutReport",
     "PipelineValidationRequest",
     "PipelineValidationWinner",
 ]
