@@ -2,8 +2,9 @@
 
 Date: 2026-07-15
 Product-direction revision: 2026-07-27
-Status: implementation-ready architecture and delivery plan; no production GPU
-operation is enabled by this document.
+Status: Phase 1 implemented headlessly on
+`codex/gpu-cross-platform-support`; all GPU implementations remain
+developer-hidden pending Phase 2 UI and the named release/platform gates.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -70,6 +71,38 @@ headless contracts, execution/benchmark substrate, reproducible developer
 environments, and the first three operation families. Later phases add the
 interactive controls, persistence/batch/export surfaces, deconvolution and
 segmentation waves, broader node coverage, and release-grade platform gates.
+
+### Phase 1 implementation status (2026-07-28)
+
+The development branch now contains the Phase 1 headless vertical slice:
+
+- immutable CPU/Auto/Selective, per-node preference, typed fallback, operation,
+  policy, benchmark, scientific-cache, and execution-report contracts;
+- a lazy provider registry, graph/device planner, transactional executor,
+  private CuPy allocation scope, cleanup/OOM recovery, and host-only public
+  result boundaries;
+- developer-hidden production adapters for cuCIM Rolling-Ball/Subtract
+  Background and CuPyX median plus 2D/3D Gaussian, each with explicit admitted
+  dtype/parameter regions and conservative CPU decisions outside them;
+- parity-before-timing node benchmarking, exact local benchmark fingerprints,
+  a transfer-aware graph optimizer, and separate scientific-result identity;
+  and
+- reproducible CUDA 12/13 setup/doctor paths, including checksum-controlled
+  installation of the pinned native-Windows cuCIM research wheel.
+
+On the named native-Windows RTX 5090 host, every initial operation has passed a
+real finite-float32 execution region, the compatible Background → Gaussian →
+Median graph runs as one device-resident segment with one H2D and one D2H
+boundary, and a deliberately constrained allocation proves classified OOM
+cleanup followed by successful reuse. These results complete the local Phase 1
+implementation gate; they do not publish a toolbar feature or claim broadly
+calibrated Auto selection. A second Windows RTX 40-series tier, supported Linux
+hosts, clean packaging/JIT evidence, and the M1 Max provider study remain named
+promotion or Phase 2+ gates. The concise implementation and validation handoff
+is the [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md).
+The final branch-wide validation completed with 2,375 passes and two expected,
+documented integer-Gaussian xfails; the post-record real-device-focused run
+completed with 167 passes and no skips.
 
 ### Cross-platform support contract
 
@@ -163,7 +196,7 @@ The pinned source result was:
 | Unavailable surface in this artifact | Native `cucim.clara/libcucim` whole-slide image I/O; feasibility and delivery are owned by the [Windows port plan](cucim-windows-port-plan.md) |
 | Clean procedural reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
 | Selected upstream tests | Complete median file: 707 passed, 4 skipped; other selected operation tests: 172 passed, 8 skipped, 6 deselected |
-| VIPP application environment | Checksum-aware install into `.venv-gpu-cu13`, CuPy/cuCIM probes and `pip check` passed; background adapter 70 passed, including 18 real RTX cases |
+| VIPP application environment | Checksum-aware install into `.venv-gpu-cu13`, CuPy/cuCIM probes and `pip check` passed; background adapter 98 passed, including 45 real RTX cases (integer exact, float32 bounded v2) |
 
 The refreshed build removed the earlier NVCC 13.3/13.2-runtime mismatch: CUDA
 compiler, runtime, CRT, NVVM, and nvJitLink build components are now pinned to
@@ -1492,7 +1525,7 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
 
 ### 11.2 Operation policies
 
-#### Rolling-Ball/Subtract Background — `background-*-v1`
+#### Rolling-Ball/Subtract Background — `background-dtype-parity-v2`
 
 - Implement and test both nodes because they share the expensive background
   estimator. The production adapter—not raw `skimage.restoration.rolling_ball`
@@ -1501,9 +1534,16 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   inversion, `clip_negative`, 2D/3D spatial blocks, leading/channel axes, bool
   identity/zero behavior, non-finite behavior, and `_restore_numeric_dtype`
   rounding/clipping exactly.
-- Target `uint8`, `uint16`, `float32`, and `float64` independently. Integer
-  promoted regions require exact public output. Float policies require exact
-  non-finite masks plus versioned local/aggregate tolerances.
+- Target `uint8`, `uint16`, `float32`, and `float64` independently. The current
+  v2 admission requires bitwise-exact public output for `uint8`/`uint16`.
+  `float32` requires exact dtype/shape, finite/NaN/+Inf/-Inf masks, the zero
+  mask, and sign bits at zero, with NRMSE `<= 2e-6` and
+  `max_abs <= 1e-6 + 2 * eps(float32) * max(1, input_peak, reference_peak)`.
+  Float64 remains CPU-only until a separately versioned policy is evidenced.
+- The bounded float32 policy is explicit because SciPy and CuPyX use different
+  accumulator order in the smoothing stage; a few-ULP intermediate difference
+  can become a large ULP count near zero after subtraction. Global ULP remains
+  diagnostic, while the aggregate and maximum-absolute gates are normative.
 - The existing cuCIM results are primitive feasibility/performance evidence
   only: they omit important VIPP wrapper semantics. Promotion requires the
   prepared production-node path and complete adapter benchmark/parity matrix.
@@ -2159,8 +2199,9 @@ fixture, but one owner coordinates integration-only `workflow.py` and hash edits
 repeatable pinned build procedure, selected upstream tests, primitive
 benchmarks, and a checksum-aware application-environment install in
 [the source evaluation](cucim-windows-source-evaluation.md). The dedicated
-CUDA-13 environment passed its probes, `pip check`, and all 70 background tests,
-including 18 real RTX cases. This is strong Phase 1 local evidence, not public
+CUDA-13 environment passed its probes, `pip check`, and all 98 background tests,
+including 45 real RTX cases (integer exact, float32 bounded v2). This is strong
+Phase 1 local evidence, not public
 distribution or cross-platform admission. Pass 9 remains open for
 Linux/multi-device evidence, deterministic artifact production, distribution,
 and feature completeness. The
@@ -2371,7 +2412,7 @@ not reasons to redesign Phase 1.
 | D14 | Cross-platform meaning | VIPP remains supported on Windows, macOS, and Linux. CUDA is only one provider; lack of CUDA on macOS does not preclude a later Apple GPU provider. | Apple feasibility and packaging have their own gate; never imply NVIDIA code runs on macOS. |
 | D15 | cuCIM/Clara | Use cuCIM operation-by-operation and keep CuPy independent. Clara is outside Phase 1 but must receive a named near-term feature-completeness/upstream review; the desired end state is not a permanently hobbled skimage-only fork. | Reproducible target packages, VIPP-adapter parity, Linux evidence, and a maintainable Clara decision. |
 | D16 | Benchmark persistence | Benchmarking proposes choices transactionally. Workflows store only user-accepted stable preferences; raw timings/hardware remain local and visibly become stale. | Finalize invalidation fingerprints and local record migration in Passes 0-4. |
-| D17 | Phase 1 scope | Headless contracts/substrate/setup plus Background, Subtract Background, median, and 2D/3D Gaussian; no production toolbar, batch, workflow, or managed installer yet. | User go-ahead starts implementation. |
+| D17 | Phase 1 scope | Headless contracts/substrate/setup plus Background, Subtract Background, median, and 2D/3D Gaussian; no production toolbar, batch, workflow, or managed installer yet. | Implemented on the GPU development branch; Phase 2 owns interactive exposure and persistence. |
 
 ### Principal risks and mitigations
 
@@ -2424,10 +2465,10 @@ not reasons to redesign Phase 1.
    executes transactional host/device segments through lazy runtimes and
    implementation libraries, keeps public caches host-only, and returns actual
    implementation provenance.
-3. **Phase 1:** contracts -> fake/lazy-CUDA substrate and reproducible dev setup
-   -> production-faithful Background/Subtract Background -> CuPyX median and
-   Gaussian -> headless node benchmark and whole-pipeline optimizer. Stop for the
-   user's go-ahead before implementation.
+3. **Phase 1:** implemented on the GPU development branch: contracts ->
+   fake/lazy-CUDA substrate and reproducible dev setup -> production-faithful
+   Background/Subtract Background -> CuPyX median and Gaussian -> headless node
+   benchmark, scientific cache identity, and whole-pipeline optimizer.
 4. **Next wave:** toolbar/inspector/badges/install guidance and RAM/VRAM display;
    minimal workflow-v4 persistence for accepted choices; RL then RL-TV; Otsu,
    Canny, connected components, measurements, residency bridges, and broad

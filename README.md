@@ -150,17 +150,26 @@ python -m pip install -e ".[dev]"
 
 GPU execution is currently design/development work on
 [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
-not a supported feature in the released plugin. The first implementation phase
-will be headless and will cover Rolling-Ball/Subtract Background, median, and
-2D/3D Gaussian before the toolbar controls are exposed. See the
+not a supported feature in the released plugin. Phase 1 is implemented as a
+headless, developer-hidden vertical slice for Rolling-Ball/Subtract Background,
+median, and 2D/3D Gaussian. It includes CPU/Auto/Selective execution contracts,
+visible or strict fallback, transactional device execution, scientific cache
+identity, and per-node/whole-pipeline benchmark services. The toolbar controls
+and public GPU admission intentionally begin in Phase 2. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
-memory, and promotion rules.
+memory, and promotion rules. The
+[Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
+summarizes the code, exact admitted matrix, validation evidence, and deferred
+gates.
 
 Use the checked-in setup helper to create a dedicated Python 3.12 environment.
 It pins one CUDA major, refuses mixed CuPy distributions, installs only into the
 named virtual environment, runs `pip check`, and finishes with real Gaussian and
-median kernels. Inspect the exact commands without writing first if desired:
+median kernels. A successful run writes a strict provenance record inside that
+environment; cuCIM remains unavailable if the record is missing, malformed, or
+no longer matches the installed wheel. Inspect the exact commands without
+writing first if desired:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13 --plan-only
@@ -168,13 +177,19 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda1
 .\.venv-gpu-cu13\Scripts\python.exe -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
 
-On Linux, use the same implementation through the shell wrapper:
+On Linux, the same helper can prepare an evidence environment through the shell
+wrapper:
 
 ```bash
 bash scripts/setup_gpu_dev.sh --track cuda13 --plan-only
 bash scripts/setup_gpu_dev.sh --track cuda13
 ./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
+
+The current executable Phase 1 policy admits only the validated native-Windows
+matrix. Linux preparation is available for the pending clean-host validation,
+but GPU execution intentionally fails closed there until that evidence is
+reviewed.
 
 The base package accepts Python 3.12 and newer, but the initial GPU development
 and validation matrix is deliberately CPython 3.12 only. A newer interpreter
@@ -199,8 +214,9 @@ Clara I/O and is not yet a user-facing install route. The builder uses its own
 temporary environment and reports the wheel path/hash; it does not install
 cuCIM into `.venv-gpu-cu13`. Install a reviewed local build explicitly with
 `--cucim-wheel <path> --cucim-sha256 <digest>`; both values are required and the
-helper verifies the file immediately before installing it. CUDA acceleration targets
-validated Windows/Linux systems first. macOS continues to use VIPP's CPU path
+helper verifies the file immediately before installing it. CUDA acceleration
+targets validated Windows systems first, with native Linux next. macOS
+continues to use VIPP's CPU path
 while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
 must be reported as one shared budget, not RAM plus VRAM.
 

@@ -2,8 +2,8 @@
 
 Initial evaluation: 2026-07-15
 Phase 1 checksum/install refresh: 2026-07-27
-Status: successful research build; primitive-level implementation candidate, not a
-supported dependency yet
+Status: successful research build and developer-hidden background adapter;
+cuCIM remains an unsupported dependency pending packaging/platform gates
 
 ## Bottom line
 
@@ -22,9 +22,11 @@ cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl
 On 2026-07-27 the builder was rerun with every compiler-side CUDA component
 aligned to 13.2.86. The exact emitted wheel was checksum-verified and installed
 through VIPP's setup helper into `.venv-gpu-cu13`; `pip check`, the CuPy/cuCIM
-probes, all 70 background-adapter tests, and all 18 real RTX background cases
-passed there. This closes the Phase 1 local packaging/evidence slice, not the
-public distribution or multi-platform admission gate.
+probes, all 98 background-adapter tests, and all 45 real RTX background cases
+passed there. Integer public outputs are bitwise exact; float32 uses the
+versioned bounded-error policy with exact shape, dtype, zero/sign, and
+non-finite masks. This closes the Phase 1 local packaging/evidence slice, not
+the public distribution or multi-platform admission gate.
 
 This build provides `cucim.skimage` and `cucim.core`, including rolling ball,
 filters, feature detection, labeling, measurements, morphology, restoration,
@@ -149,16 +151,17 @@ skipped, and 252 strict-warning failures. This result is retained as a
 maintenance warning: pinned cuCIM upgrades must be tested against the exact
 NumPy version that VIPP will ship.
 
-The 2026-07-27 Phase 1 application-environment verification additionally
-produced:
+The Phase 1 application-environment verification, extended on 2026-07-28,
+additionally produced:
 
 - checksum-aware setup-helper install into `.venv-gpu-cu13`: **passed**;
 - CuPy Gaussian/median and cuCIM rolling-ball setup probes: **passed**;
 - final application-environment `pip check`: **passed**;
-- complete `test_gpu_background.py`: **70 passed**; and
-- real RTX subset: **18 passed**, covering `uint8`/`uint16`/`float32`, 2D/3D,
+- complete `test_gpu_background.py`: **98 passed**; and
+- real RTX subset: **45 passed**, covering `uint8`/`uint16`/`float32`, 2D/3D,
   leading blocks and channel axes, background/subtract operations, non-finite
-  handling, and common private-pool array-domain behavior.
+  handling, exact integer output, bounded float32 parity, and common
+  private-pool array-domain behavior.
 
 ## Benchmark method
 
@@ -228,7 +231,7 @@ provider dependency on their own.
 
 | Operation family | Decision from this host | Reason |
 |---|---|---|
-| Rolling ball/background subtraction | **Advance to VIPP-adapter validation** | Primitive output matched and showed two-to-three orders of magnitude benefit; the full background wrapper is not yet reproduced. |
+| Rolling ball/background subtraction | **Validated as a developer-hidden VIPP adapter** | The complete wrapper now preserves smoothing, inversion, clipping, blocks/channels, non-finite handling, dtype restoration, cancellation boundaries, and metadata across 98 adapter tests and 45 real RTX cases. Integer output is exact and float32 uses bounded v2 parity. Public admission still waits on packaging and wider-platform gates. |
 | Canny | **Advance to VIPP-adapter validation** | Primitive output matched with a 17x benefit; VIPP's full parameter/grayscale contract remains. |
 | Connected components | **Advance to VIPP-adapter validation** | Primitive output/schema matched with 2.8x benefit in both 2D and 3D. |
 | Otsu threshold | **Advance to VIPP-adapter validation** | Primitive scalar dtype/value matched with 2.4x benefit; VIPP's finite-value histogram policy remains. |

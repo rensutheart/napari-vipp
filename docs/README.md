@@ -63,8 +63,8 @@ reviewing VIPP itself.
   [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
   branch, which has absorbed current `main` while development remains separate.
   Main remains the CPU production baseline; the GPU branch contains feasibility
-  evidence and an implementation-ready headless Phase 1 plan, not a supported
-  GPU execution mode yet.
+  evidence plus the implemented developer-hidden headless Phase 1 vertical
+  slice, not a supported user-facing GPU execution mode yet.
 
 ## Implementation Records
 
@@ -75,6 +75,7 @@ override the current planning documents above.
 - [OME import and export](ome-io-plan.md)
 - [PSF and deconvolution](psf-and-deconvolution-plan.md)
 - [GPU feasibility spike](gpu-acceleration-spike.md)
+- [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md)
 - [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)

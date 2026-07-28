@@ -29,8 +29,9 @@ PSF generation, deconvolution foundations, and optional microscope-reader
 routing are part of the 0.11 baseline; explicit batch configuration and
 provenance are part of 0.12. Near-term work is validation on real data,
 scalable OME-Zarr previews, safe graph/parameter copy and paste, and a separate
-headless GPU-development track for CPU/Auto/Selective execution plus the first
-background/median/Gaussian adapters.
+headless GPU-development track, whose first CPU/Auto/Selective execution slice
+and background/median/Gaussian adapters are now implemented on the separate GPU
+branch.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
 authoring remain later milestones.
 
@@ -49,10 +50,11 @@ authoring remain later milestones.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
   CPU/Auto/Selective architecture, per-node and whole-pipeline benchmarking,
   implementation-library selection, fallbacks, memory/provenance, packaging,
-  validation gates, and delivery order. The first headless slice targets
-  Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. VIPP remains
-  CPU-capable on Windows, macOS, and Linux; CUDA targets validated Windows/Linux
-  systems first, while an M1 Max Metal/MPS/MLX provider is investigated.
+  validation gates, and delivery order. The implemented first headless slice
+  covers Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. VIPP remains
+  CPU-capable on Windows, macOS, and Linux. The executable Phase 1 CUDA policy
+  currently admits native Windows; native-Linux evidence is the next platform
+  gate, while an M1 Max Metal/MPS/MLX provider is investigated.
 - [cucim-windows-port-plan.md](cucim-windows-port-plan.md): upstream-tracking
   fork, native Windows `libcucim`/Clara port, Python/CUDA artifact matrix,
   validation, distribution, installation support, and upstreaming strategy.
@@ -144,10 +146,10 @@ either already implemented enough to build on or intentionally deferred.
 ### Parallel GPU Development Track
 
 Keep implementation on `codex/gpu-cross-platform-support`, synchronized with
-main but separate until promotion gates pass. Phase 1 is headless: freeze
-CPU/Auto/Selective and per-node/benchmark contracts, unify execution, create the
-dedicated CUDA development/doctor path, and implement Rolling-Ball/Subtract
-Background, median, and 2D/3D Gaussian with production CPU parity. The toolbar,
+main but separate until promotion gates pass. Phase 1 is now implemented
+headlessly: CPU/Auto/Selective and per-node/benchmark contracts, unified
+execution, the dedicated CUDA development/doctor path, and production-parity
+Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. The toolbar,
 durable accepted choices, RL/RL-TV, segmentation/measurement wave, batch, and
 generated-Python integration follow in the ordered phases of the
 [GPU production plan](gpu-production-implementation-plan.md).
