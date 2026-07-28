@@ -840,6 +840,9 @@ def test_workflow_preserves_vipp_metadata(tmp_path):
             "thumbnails": {
                 "disabled_node_ids": ["median_filter_1"],
             },
+            "compute_optimizer": {
+                "locked_node_ids": ["gaussian"],
+            },
         }
     }
 
@@ -905,6 +908,40 @@ def test_workflow_loads_without_thumbnail_metadata():
     workflow = deserialize_workflow(document)
 
     assert workflow["metadata"] == metadata
+
+
+def test_workflow_loads_without_optimizer_lock_metadata_as_unlocked():
+    document = serialize_workflow(_build_pipeline())
+
+    workflow = deserialize_workflow(document)
+
+    assert "metadata" not in document
+    assert workflow["metadata"] == {}
+
+
+@pytest.mark.parametrize(
+    ("locked_node_ids", "message"),
+    [
+        (["ghost"], "references missing node"),
+        (["gaussian", "gaussian"], "must be unique"),
+        ([1], "non-empty strings"),
+    ],
+)
+def test_workflow_optimizer_lock_metadata_is_strict(
+    locked_node_ids,
+    message,
+):
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "compute_optimizer": {
+                "locked_node_ids": locked_node_ids,
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match=message):
+        deserialize_workflow(document)
 
 
 def test_workflow_metadata_node_references_must_exist():

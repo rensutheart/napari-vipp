@@ -17,7 +17,9 @@ from napari_vipp.core.compute import (
     DecisionKind,
     DecisionReason,
     ExecutionReport,
+    MemoryEstimate,
     MemoryTopology,
+    NodeComputePreference,
     NodeExecutionDecision,
     NodePreferenceKind,
 )
@@ -26,11 +28,14 @@ from napari_vipp.core.compute_benchmark_adapter import (
 )
 from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationEvidenceIncomplete,
+    PipelineOptimizationNotBeneficial,
     PipelineValidationRequest,
+    PipelineValidationWinner,
 )
 from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
     ApplicationPipelineOptimizerCoordinator,
     PipelineOptimizerPhase,
+    _build_optimizer_graph,
     _pipeline_output_parity,
     fingerprint_pipeline_optimizer_sources,
     probe_pipeline_optimizer_environment,
@@ -183,12 +188,17 @@ class _PrivateExecutor:
         operation_node_id: str,
         writer_node_id: str,
         gpu_implementation_id: str,
+        *,
+        cpu_seconds: float = 0.1,
+        gpu_seconds: float = 0.02,
     ) -> None:
         self.clock = clock
         self.environment = environment
         self.operation_node_id = operation_node_id
         self.writer_node_id = writer_node_id
         self.gpu_implementation_id = gpu_implementation_id
+        self.cpu_seconds = cpu_seconds
+        self.gpu_seconds = gpu_seconds
         self.target_sets: list[frozenset[str]] = []
         self.detached_source_arrays: list[np.ndarray] = []
 
@@ -245,7 +255,7 @@ class _PrivateExecutor:
             ),
             "Private test assignment.",
         )
-        self.clock.advance(0.02 if gpu else 0.1)
+        self.clock.advance(self.gpu_seconds if gpu else self.cpu_seconds)
         report = ExecutionReport(
             request.compute_request,
             self.environment,
@@ -321,6 +331,8 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     proposed = next(row for row in result.proposal.rows if row.node_id == median_id)
     assert proposed.changed
     assert proposed.proposed_implementation_id == gpu_spec.implementation_id
+    assert result.proposal.validation_measurement_rounds == 5
+    assert len(executor.target_sets) == 13
     assert writer_id not in {row.node_id for row in result.proposal.rows}
     assert all(writer_id not in targets for targets in executor.target_sets)
     assert runtime.released == 3
@@ -340,6 +352,167 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
         document,
         {source_id: SourcePayload(values, name="private-source")},
     ) != result.identity.source_fingerprint
+
+
+def test_close_pipeline_validation_uses_full_fifteen_rounds(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline, source_id, median_id, writer_id = _writer_workflow()
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    executor = _PrivateExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+        cpu_seconds=0.1,
+        gpu_seconds=0.096,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    with pytest.raises(PipelineOptimizationNotBeneficial):
+        coordinator.optimize(
+            document,
+            {
+                source_id: SourcePayload(
+                    np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+                )
+            },
+            ComputeRequest("selective", allow_experimental=True),
+            time_budget_seconds=20.0,
+        )
+
+    assert len(executor.target_sets) == 33
+
+
+def test_decisive_current_pipeline_win_stops_after_five_rounds(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline, source_id, median_id, writer_id = _writer_workflow()
+    document = serialize_workflow(pipeline, compute_request=ComputeRequest("selective"))
+    environment = _environment()
+    clock = _ManualClock()
+    registry = ComputeRegistry()
+    runtime = _TransferRuntime(clock)
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_compute_environment",
+        lambda *_args, **_kwargs: (environment, ()),
+    )
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    executor = _PrivateExecutor(
+        clock,
+        environment,
+        median_id,
+        writer_id,
+        gpu_spec.implementation_id,
+        cpu_seconds=0.02,
+        gpu_seconds=0.10,
+    )
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+        node_benchmarker=_NodeBenchmarker(environment, registry),
+    )
+
+    result = coordinator.optimize(
+        document,
+        {
+            source_id: SourcePayload(
+                np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
+            )
+        },
+        ComputeRequest("selective", allow_experimental=True),
+        time_budget_seconds=20.0,
+    )
+
+    proposal = result.proposal
+    median_row = next(row for row in proposal.rows if row.node_id == median_id)
+    assert proposal.validation_winner is PipelineValidationWinner.CURRENT
+    assert proposal.validation_measurement_rounds == 5
+    assert proposal.validated_current_speedup_lower_confidence_bound > 1.0
+    assert dict(proposal.tested_assignment)[median_id] == gpu_spec.implementation_id
+    assert median_row.current_implementation_id == median_row.proposed_implementation_id
+    assert len(executor.target_sets) == 13
+
+
+def test_locked_gpu_graph_node_needs_no_comparative_benchmark_record():
+    pipeline, _source_id, median_id, _writer_id = _writer_workflow()
+    pipeline.run(np.arange(64, dtype=np.uint16).reshape(8, 8))
+    registry = ComputeRegistry()
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    request = ComputeRequest(
+        "selective",
+        {
+            median_id: NodeComputePreference(
+                "implementation",
+                gpu_spec.implementation_id,
+            )
+        },
+        allow_experimental=True,
+    )
+
+    nodes, _edges, _workloads = _build_optimizer_graph(
+        registry,
+        pipeline,
+        frozenset({next(iter(pipeline.nodes)), median_id}),
+        frozenset(),
+        request,
+        {
+            median_id: SimpleNamespace(
+                implementation_id=gpu_spec.implementation_id,
+                memory_estimate=MemoryEstimate(
+                    runtime_managed_peak_bytes=1_024,
+                    total_device_peak_bytes=2_048,
+                    uncertainty_bytes=512,
+                    model_id="locked-test-v1",
+                ),
+            )
+        },
+        {},
+        {},
+        frozenset({median_id}),
+        check_abort=lambda: None,
+    )
+
+    median = next(node for node in nodes if node.node_id == median_id)
+    assert median.optimizer_locked
+    assert median.current_implementation_id == gpu_spec.implementation_id
+    assert [candidate.implementation_id for candidate in median.candidates] == [
+        gpu_spec.implementation_id
+    ]
+    assert median.candidates[0].minimum_workspace_bytes == 2_560
 
 
 def test_application_optimizer_refuses_non_selective_and_missing_sources(tmp_path):

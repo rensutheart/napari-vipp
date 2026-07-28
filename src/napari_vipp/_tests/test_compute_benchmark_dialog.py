@@ -143,6 +143,43 @@ def test_worker_emits_progress_and_success_then_closes_registry(tmp_path):
     assert registry.close_calls == 1
 
 
+def test_worker_cleanup_failure_withdraws_saved_result(tmp_path):
+    discarded = []
+    result = SimpleNamespace(record=SimpleNamespace(key="exact-key"))
+
+    class FailingRegistry:
+        @staticmethod
+        def close():
+            raise RuntimeError("device cleanup failed")
+
+    class Store:
+        @staticmethod
+        def discard(key):
+            discarded.append(key)
+
+    class Coordinator:
+        store = Store()
+
+        @staticmethod
+        def benchmark(*_args, **_kwargs):
+            return result
+
+    worker = _worker(
+        tmp_path,
+        registry_factory=FailingRegistry,
+        coordinator_factory=lambda _registry, _path: Coordinator(),
+    )
+    outcomes = []
+    worker.signals.finished.connect(outcomes.append)
+
+    worker.run()
+
+    assert discarded == ["exact-key"]
+    assert outcomes[0].result is None
+    assert outcomes[0].reason_code == "benchmark_failed"
+    assert "cleanup failed" in outcomes[0].error
+
+
 @pytest.mark.parametrize(
     ("failure", "reason_code", "cancelled", "expected_error"),
     [

@@ -35,7 +35,7 @@ from napari_vipp.core.compute_benchmark import (
     ADAPTIVE_WARM_ROUNDS,
     DEFAULT_BOOTSTRAP_SAMPLES,
     DEFAULT_BOOTSTRAP_SEED,
-    MINIMUM_WARM_ROUNDS,
+    SCREENING_MINIMUM_WARM_ROUNDS,
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
     paired_bootstrap_speedup,
@@ -84,7 +84,7 @@ PipelineExecutor = Callable[..., PipelineRunResult]
 
 _CPU_RUNTIME_ID = "cpu-numpy"
 _TRANSFER_ROUNDS = 3
-_VALIDATION_ROUNDS = 7
+_VALIDATION_ROUND_TARGETS = (5, 7, 15)
 _TRANSFER_SMALL_BYTES = 256 * 1024
 _TRANSFER_LARGE_BYTES = 16 * 1024**2
 _SOURCE_HASH_CHUNK_BYTES = 8 * 1024**2
@@ -139,6 +139,8 @@ class ApplicationPipelineOptimizationResult:
     evidence: Mapping[str, PipelineNodeBenchmarkEvidence]
     benchmarked_node_ids: tuple[str, ...]
     cpu_only_node_ids: tuple[str, ...]
+    reused_node_ids: tuple[str, ...] = ()
+    measured_node_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.proposal.identity_digest != self.identity.digest:
@@ -152,6 +154,8 @@ class ApplicationPipelineOptimizationResult:
             self, "benchmarked_node_ids", tuple(self.benchmarked_node_ids)
         )
         object.__setattr__(self, "cpu_only_node_ids", tuple(self.cpu_only_node_ids))
+        object.__setattr__(self, "reused_node_ids", tuple(self.reused_node_ids))
+        object.__setattr__(self, "measured_node_ids", tuple(self.measured_node_ids))
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,9 +212,9 @@ class ApplicationPipelineOptimizerCoordinator:
         compute_request: ComputeRequest,
         retain_node_ids: Sequence[str] | frozenset[str] = (),
         *,
+        optimizer_locked_node_ids: Sequence[str] | frozenset[str] = (),
         time_budget_seconds: float = 120.0,
         max_assignments: int = 100_000,
-        override_authored: bool = False,
         cancelled: CancelCallback | None = None,
         progress: ProgressCallback | None = None,
     ) -> ApplicationPipelineOptimizationResult:
@@ -267,6 +271,29 @@ class ApplicationPipelineOptimizerCoordinator:
             restored.get("output_tunnels", ()),
         )
         safe_ids, unsafe_ids = _writer_free_node_ids(pipeline)
+        raw_locks = tuple(
+            str(node_id).strip() for node_id in optimizer_locked_node_ids
+        )
+        if any(not node_id for node_id in raw_locks) or len(set(raw_locks)) != len(
+            raw_locks
+        ):
+            raise ValueError("optimizer lock IDs must be unique and non-empty")
+        optimizer_locks = frozenset(raw_locks)
+        unknown_locks = optimizer_locks - safe_ids
+        if unknown_locks:
+            names = ", ".join(sorted(unknown_locks))
+            raise ValueError(f"optimizer locks reference unavailable nodes: {names}")
+        auto_locks = tuple(
+            node_id
+            for node_id in optimizer_locks
+            if compute_request.preference_for(node_id).kind is NodePreferenceKind.AUTO
+        )
+        if auto_locks:
+            names = ", ".join(sorted(auto_locks))
+            raise ValueError(
+                "optimizer locks require an explicit per-node compute choice: "
+                f"{names}"
+            )
         retained = _normalized_node_ids(retain_node_ids)
         unknown_retained = retained - set(pipeline.nodes)
         if unknown_retained:
@@ -348,6 +375,7 @@ class ApplicationPipelineOptimizerCoordinator:
             node_id
             for node_id in baseline_pipeline.topological_order()
             if node_id in safe_ids
+            and node_id not in optimizer_locks
             and baseline_pipeline.nodes[node_id].has_input
             and self.registry.implementations_for_operation(
                 baseline_pipeline.nodes[node_id].operation_id,
@@ -357,7 +385,9 @@ class ApplicationPipelineOptimizerCoordinator:
         total_steps = len(eligible_ids) + 6
         evidence_records: dict[str, object] = {}
         benchmark_plans: dict[str, object] = {}
-        cpu_only: set[str] = set(safe_ids) - set(eligible_ids)
+        reused_node_ids: set[str] = set()
+        measured_node_ids: set[str] = set()
+        cpu_only: set[str] = set(safe_ids) - set(eligible_ids) - set(optimizer_locks)
         for index, node_id in enumerate(eligible_ids, start=1):
             check_abort()
             _emit(
@@ -384,18 +414,36 @@ class ApplicationPipelineOptimizerCoordinator:
                     safety_reserve_bytes=(
                         compute_request.accelerator_safety_reserve_bytes
                     ),
-                    warm_rounds=MINIMUM_WARM_ROUNDS,
-                    max_warm_rounds=ADAPTIVE_WARM_ROUNDS[0],
+                    warm_rounds=SCREENING_MINIMUM_WARM_ROUNDS,
+                    max_warm_rounds=ADAPTIVE_WARM_ROUNDS[1],
                     time_budget_seconds=node_budget,
                     allow_experimental=compute_request.allow_experimental,
                     paired_bootstrap_samples=DEFAULT_BOOTSTRAP_SAMPLES,
                     paired_bootstrap_seed=DEFAULT_BOOTSTRAP_SEED,
                     cancelled=is_cancelled_or_expired,
                 )
-                result = self.node_benchmarker.run(
-                    plan,
-                    cancelled=is_cancelled_or_expired,
+                cached_lookup = getattr(
+                    self.node_benchmarker,
+                    "cached_result",
+                    None,
                 )
+                result = cached_lookup(plan) if callable(cached_lookup) else None
+                if result is None:
+                    result = self.node_benchmarker.run(
+                        plan,
+                        cancelled=is_cancelled_or_expired,
+                    )
+                    measured_node_ids.add(node_id)
+                else:
+                    reused_node_ids.add(node_id)
+                    _emit(
+                        progress,
+                        PipelineOptimizerPhase.BENCHMARKING,
+                        1 + index,
+                        total_steps,
+                        "Reused exact saved evidence for "
+                        f"{baseline_pipeline.nodes[node_id].title}.",
+                    )
             except NodeBenchmarkUnavailable:
                 cpu_only.add(node_id)
                 continue
@@ -417,6 +465,7 @@ class ApplicationPipelineOptimizerCoordinator:
 
         check_abort()
         graph_nodes, graph_edges, workload_fingerprints = _build_optimizer_graph(
+            self.registry,
             baseline_pipeline,
             safe_ids,
             retained,
@@ -424,13 +473,24 @@ class ApplicationPipelineOptimizerCoordinator:
             decisions,
             evidence_records,
             benchmark_plans,
+            optimizer_locks,
             check_abort=check_abort,
         )
         if not evidence_records:
             _refuse(
-                "no_gpu_workload_eligible",
-                "No node has a parity-testable GPU implementation for the "
-                "current data.",
+                "no_unlocked_gpu_workload_eligible",
+                "No unlocked node has a parity-testable GPU implementation for "
+                "the current data.",
+            )
+        benchmark_environment_fingerprints = {
+            record.key.environment_fingerprint
+            for record in evidence_records.values()
+        }
+        if len(benchmark_environment_fingerprints) != 1:
+            _refuse(
+                "benchmark_environment_inconsistent",
+                "Node benchmark records do not share one exact scientific "
+                "software environment.",
             )
         identity = PipelineOptimizationIdentity(
             pipeline_fingerprint=canonical_digest(document),
@@ -438,6 +498,10 @@ class ApplicationPipelineOptimizerCoordinator:
             topology_fingerprint=_topology_fingerprint(pipeline),
             cache_retention_fingerprint=canonical_digest(sorted(retained)),
             environment_fingerprint=environment.fingerprint,
+            benchmark_environment_fingerprint=next(
+                iter(benchmark_environment_fingerprints)
+            ),
+            optimizer_locked_node_ids=tuple(sorted(optimizer_locks)),
             workload_fingerprints=workload_fingerprints,
         )
         evidence = {
@@ -510,7 +574,6 @@ class ApplicationPipelineOptimizerCoordinator:
             validate,
             deadline=deadline,
             max_assignments=max_assignments,
-            override_authored=override_authored,
             cancelled=cancelled,
         )
         check_abort()
@@ -529,6 +592,8 @@ class ApplicationPipelineOptimizerCoordinator:
             evidence,
             tuple(evidence),
             tuple(sorted(cpu_only)),
+            tuple(sorted(reused_node_ids)),
+            tuple(sorted(measured_node_ids)),
         )
 
     def _execute(
@@ -714,7 +779,7 @@ class ApplicationPipelineOptimizerCoordinator:
         current_times: list[float] = []
         proposed_times: list[float] = []
         timing_retain = observable_boundaries
-        for round_index in range(_VALIDATION_ROUNDS):
+        for round_index in range(_VALIDATION_ROUND_TARGETS[-1]):
             check_abort()
             order = (
                 (("current", current_request), ("proposed", proposed_request))
@@ -751,9 +816,44 @@ class ApplicationPipelineOptimizerCoordinator:
                 measured[label] = _nonnegative_elapsed(began, ended)
             current_times.append(measured["current"])
             proposed_times.append(measured["proposed"])
+            completed_rounds = len(current_times)
+            if completed_rounds not in _VALIDATION_ROUND_TARGETS:
+                continue
+            paired_checkpoint = paired_bootstrap_speedup(
+                current_times,
+                proposed_times,
+                sample_count=DEFAULT_BOOTSTRAP_SAMPLES,
+                seed=DEFAULT_BOOTSTRAP_SEED,
+            )
+            current_median = float(statistics.median(current_times))
+            proposed_median = float(statistics.median(proposed_times))
+            required = max(0.010, 0.05 * current_median)
+            if (
+                current_median - proposed_median > required
+                and paired_checkpoint.lower_confidence_bound > 1.0
+            ):
+                break
+            reverse_checkpoint = paired_bootstrap_speedup(
+                proposed_times,
+                current_times,
+                sample_count=DEFAULT_BOOTSTRAP_SAMPLES,
+                seed=DEFAULT_BOOTSTRAP_SEED,
+            )
+            current_required = max(0.010, 0.05 * proposed_median)
+            if (
+                proposed_median - current_median > current_required
+                and reverse_checkpoint.lower_confidence_bound > 1.0
+            ):
+                break
         paired = paired_bootstrap_speedup(
             current_times,
             proposed_times,
+            sample_count=DEFAULT_BOOTSTRAP_SAMPLES,
+            seed=DEFAULT_BOOTSTRAP_SEED,
+        )
+        reverse = paired_bootstrap_speedup(
+            proposed_times,
+            current_times,
             sample_count=DEFAULT_BOOTSTRAP_SAMPLES,
             seed=DEFAULT_BOOTSTRAP_SEED,
         )
@@ -768,6 +868,8 @@ class ApplicationPipelineOptimizerCoordinator:
             paired.lower_confidence_bound,
             "Changed-node and observable-boundary parity passed before paired "
             "synchronized timing.",
+            len(current_times),
+            reverse.lower_confidence_bound,
         )
 
 
@@ -1191,6 +1293,7 @@ def _identity_value(value: object) -> object:
 
 
 def _build_optimizer_graph(
+    registry: ComputeRegistry,
     pipeline: PrototypePipeline,
     safe_ids: frozenset[str],
     retained: frozenset[str],
@@ -1198,6 +1301,7 @@ def _build_optimizer_graph(
     decisions: Mapping[str, object],
     records: Mapping[str, object],
     plans: Mapping[str, object],
+    optimizer_locked_node_ids: frozenset[str],
     *,
     check_abort: Callable[[], None],
 ) -> tuple[
@@ -1233,14 +1337,50 @@ def _build_optimizer_graph(
         check_abort()
         node = pipeline.nodes[node_id]
         cpu_spec = compute_specs_for(node.operation_id)[0]
+        decision = decisions.get(node_id)
+        current_id = (
+            getattr(decision, "implementation_id", "")
+            if node.has_input
+            else cpu_spec.implementation_id
+        )
+        if not current_id:
+            current_id = cpu_spec.implementation_id
         record = records.get(node_id)
         plan = plans.get(node_id)
         if record is None:
+            current_spec = cpu_spec
+            if (
+                node_id in optimizer_locked_node_ids
+                and current_id != cpu_spec.implementation_id
+            ):
+                try:
+                    current_spec = registry.implementation_spec(
+                        current_id,
+                        allow_experimental=request.allow_experimental,
+                    )
+                except KeyError:
+                    _refuse(
+                        "current_implementation_identity_missing",
+                        "The captured current implementation declaration is "
+                        "unavailable.",
+                        node_id,
+                    )
+            locked_workspace = 0
+            if current_spec.runtime_id != _CPU_RUNTIME_ID:
+                locked_workspace = _conservative_decision_workspace_bytes(decision)
+                if locked_workspace <= 0:
+                    _refuse(
+                        "locked_gpu_memory_evidence_missing",
+                        "The locked GPU implementation has no conservative "
+                        "current-workload memory estimate.",
+                        node_id,
+                    )
             candidates = (
                 PipelineOptimizationCandidate(
-                    cpu_spec.implementation_id,
-                    cpu_spec.implementation_library_id,
-                    cpu_spec.runtime_id,
+                    current_spec.implementation_id,
+                    current_spec.implementation_library_id,
+                    current_spec.runtime_id,
+                    minimum_workspace_bytes=locked_workspace,
                 ),
             )
         else:
@@ -1266,14 +1406,6 @@ def _build_optimizer_graph(
                     )
                 )
             candidates = tuple(candidates_list)
-        decision = decisions.get(node_id)
-        current_id = (
-            getattr(decision, "implementation_id", "")
-            if node.has_input
-            else cpu_spec.implementation_id
-        )
-        if not current_id:
-            current_id = cpu_spec.implementation_id
         if current_id not in {item.implementation_id for item in candidates}:
             _refuse(
                 "current_assignment_unbenchmarked",
@@ -1318,6 +1450,7 @@ def _build_optimizer_graph(
                 output_bytes=_output_byte_count(pipeline, node_id),
                 requires_host_output=requires_host,
                 cache_retained=node_id in retained,
+                optimizer_locked=node_id in optimizer_locked_node_ids,
             )
         )
     edges = tuple(
@@ -1343,6 +1476,30 @@ def _output_byte_count(pipeline: PrototypePipeline, node_id: str) -> int:
             continue
         total += int(array.nbytes)
     return total
+
+
+def _conservative_decision_workspace_bytes(decision: object) -> int:
+    """Carry locked-device memory into the graph without comparative timing.
+
+    A planning estimate includes public arrays as well as temporary storage, while
+    the graph separately models live inputs and outputs.  Treating the complete
+    estimated device peak plus uncertainty as workspace intentionally errs on the
+    safe side for a locked row; zero would make VRAM feasibility unsound.
+    """
+
+    estimate = getattr(decision, "memory_estimate", None)
+    if estimate is None:
+        return 0
+    runtime_peak = getattr(estimate, "runtime_managed_peak_bytes", 0)
+    total_peak = getattr(estimate, "total_device_peak_bytes", 0)
+    uncertainty = getattr(estimate, "uncertainty_bytes", 0)
+    values = (runtime_peak, total_peak, uncertainty)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in values
+    ):
+        return 0
+    return max(runtime_peak, total_peak) + uncertainty
 
 
 def _measure_directional_transfers(

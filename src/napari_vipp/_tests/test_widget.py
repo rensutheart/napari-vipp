@@ -109,6 +109,7 @@ from napari_vipp.core.compute import (
     FallbackReason,
     NodeComputePreference,
     NodeExecutionDecision,
+    canonical_digest,
 )
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_search import find_graph_matches
@@ -741,7 +742,7 @@ def test_pipeline_optimizer_action_is_selective_only(qtbot):
 
     assert widget.optimize_pipeline_button.isHidden()
     widget._populate_settings_toolbar_menu()
-    assert "Optimize pipeline…" not in {
+    assert "Find fastest pipeline…" not in {
         action.text() for action in widget.settings_menu.actions()
     }
 
@@ -754,9 +755,60 @@ def test_pipeline_optimizer_action_is_selective_only(qtbot):
     widget._populate_settings_toolbar_menu()
 
     assert not widget.optimize_pipeline_button.isHidden()
-    assert "Optimize pipeline…" in {
+    assert "Find fastest pipeline…" in {
         action.text() for action in widget.settings_menu.actions()
     }
+
+
+def test_optimizer_lock_is_separate_undoable_and_does_not_recalculate(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("selective")
+        )
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    widget.graph_view.select_node("gaussian")
+    runs = []
+    widget.run_pipeline = lambda *args, **kwargs: runs.append(None)
+    widget._sync_node_compute_control()
+
+    widget.node_compute_optimizer_lock_checkbox.setChecked(True)
+
+    assert widget._compute_optimizer_locked_node_ids == {"gaussian"}
+    assert runs == []
+    assert "will preserve" in widget.node_compute_note.text()
+
+    widget.undo()
+    assert widget._compute_optimizer_locked_node_ids == set()
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    widget.redo()
+    assert widget._compute_optimizer_locked_node_ids == {"gaussian"}
+
+    auto_index = widget.node_compute_preference_combo.findData("auto")
+    widget.node_compute_preference_combo.setCurrentIndex(auto_index)
+    assert "gaussian" not in widget._compute_optimizer_locked_node_ids
+
+
+def test_integer_gaussian_compute_note_explains_float32_gpu_option(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.uint16)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    widget.graph_view.select_node("gaussian")
+
+    assert "uint16" in widget.node_compute_note.text()
+    assert "Convert Dtype" in widget.node_compute_note.text()
 
 
 def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
@@ -812,10 +864,20 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
         "fingerprint_pipeline_optimizer_sources",
         lambda *_args: "source-a",
     )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_benchmark_coordinator."
+        "benchmark_environment_fingerprint",
+        lambda *_args: "benchmark-a",
+    )
+    retention_fingerprint = canonical_digest(
+        sorted(widget._cache_retention_node_ids())
+    )
     result = SimpleNamespace(
         proposal=_Proposal(),
         identity=SimpleNamespace(
             environment_fingerprint="environment-a",
+            benchmark_environment_fingerprint="benchmark-a",
+            cache_retention_fingerprint=retention_fingerprint,
             source_fingerprint="source-a",
         ),
     )
@@ -840,6 +902,8 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
             proposal=_Proposal(),
             identity=SimpleNamespace(
                 environment_fingerprint="environment-b",
+                benchmark_environment_fingerprint="benchmark-a",
+                cache_retention_fingerprint=retention_fingerprint,
                 source_fingerprint="source-a",
             ),
         )
@@ -853,6 +917,8 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
             proposal=_Proposal(),
             identity=SimpleNamespace(
                 environment_fingerprint="environment-a",
+                benchmark_environment_fingerprint="benchmark-a",
+                cache_retention_fingerprint=retention_fingerprint,
                 source_fingerprint="source-b",
             ),
         )
@@ -860,6 +926,66 @@ def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
 
     assert "gaussian" not in widget._compute_node_preferences
     assert "source bytes" in widget.status_label.text()
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(
+            proposal=_Proposal(),
+            identity=SimpleNamespace(
+                environment_fingerprint="environment-a",
+                benchmark_environment_fingerprint="benchmark-b",
+                cache_retention_fingerprint=retention_fingerprint,
+                source_fingerprint="source-a",
+            ),
+        )
+    )
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "benchmark environment changed" in widget.status_label.text()
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(
+            proposal=_Proposal(),
+            identity=SimpleNamespace(
+                environment_fingerprint="environment-a",
+                benchmark_environment_fingerprint="benchmark-a",
+                cache_retention_fingerprint="stale-retention",
+                source_fingerprint="source-a",
+            ),
+        )
+    )
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "Analyze the pipeline again" in widget.status_label.text()
+
+    class FailingProbeCleanupRegistry:
+        def close(self):
+            raise RuntimeError("probe cleanup failed")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        FailingProbeCleanupRegistry,
+    )
+    widget._apply_pipeline_optimizer_result(result)
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "did not clean up safely" in widget.status_label.text()
+
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_pipeline_optimizer_environment",
+        lambda *_args: SimpleNamespace(fingerprint="environment-a"),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "fingerprint_pipeline_optimizer_sources",
+        lambda *_args: "source-a",
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_benchmark_coordinator."
+        "benchmark_environment_fingerprint",
+        lambda *_args: "benchmark-a",
+    )
 
     def mutate_graph_during_source_verification(*_args):
         widget.pipeline.nodes["gaussian"].params["sigma"] = 3.25
@@ -900,6 +1026,108 @@ def test_pipeline_optimizer_rejects_stale_review_result(qtbot):
 
     assert widget._compute_node_preferences == {}
     assert "Analyze the pipeline again" in widget.status_label.text()
+
+
+def test_pipeline_optimizer_dispatch_failure_clears_review_baseline(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.SELECTIVE
+    monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
+
+    class FailingDialog:
+        running = False
+
+        @staticmethod
+        def start(_worker, _pool):
+            raise RuntimeError("thread pool unavailable")
+
+    widget._pipeline_optimizer_dialog = FailingDialog()
+
+    widget._start_pipeline_optimizer_analysis()
+
+    assert widget._pipeline_optimizer_baseline is None
+    assert widget._pipeline_optimizer_source_signature is None
+    assert "could not start" in widget.status_label.text()
+
+
+def test_pipeline_optimizer_cleanup_failure_cannot_publish_result(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.SELECTIVE
+    monkeypatch.setattr(widget, "_can_optimize_pipeline", lambda: (True, ""))
+    outcomes = []
+
+    class FailingCleanupRegistry:
+        def close(self):
+            raise RuntimeError("GPU cleanup failed")
+
+    class SuccessfulCoordinator:
+        def __init__(self, _registry, _store_path):
+            pass
+
+        @staticmethod
+        def optimize(*_args, **_kwargs):
+            return object()
+
+    class SynchronousDialog:
+        running = False
+
+        @staticmethod
+        def start(worker, _pool):
+            worker.signals.finished.connect(outcomes.append)
+            worker.run()
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_registry.ComputeRegistry",
+        FailingCleanupRegistry,
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "ApplicationPipelineOptimizerCoordinator",
+        SuccessfulCoordinator,
+    )
+    widget._pipeline_optimizer_dialog = SynchronousDialog()
+
+    widget._start_pipeline_optimizer_analysis()
+
+    assert len(outcomes) == 1
+    assert outcomes[0].result is None
+    assert outcomes[0].reason_code == "optimizer_failed"
+    assert "cleanup failed" in outcomes[0].error
+
+
+def test_normal_pipeline_run_waits_for_optimizer_evidence_window(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._pipeline_optimizer_dialog = SimpleNamespace(running=True)
+
+    widget.run_pipeline()
+
+    assert widget._pipeline_run_pending
+    assert "exclusive GPU evidence window" in widget.status_label.text()
+
+    runs = []
+    widget._pipeline_optimizer_dialog.running = False
+    widget.run_pipeline = lambda *args, **kwargs: runs.append(None)
+    monkeypatch.setattr(QTimer, "singleShot", lambda _delay, callback: callback())
+    widget._resume_pipeline_after_optimizer_if_pending()
+
+    assert not widget._pipeline_run_pending
+    assert runs == [None]
 
 
 def test_scoped_compute_invalidation_preserves_clean_upstream_cache(qtbot):
@@ -1159,6 +1387,11 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
         path,
         widget.pipeline,
         {},
+        metadata={
+            "vipp": {
+                "compute_optimizer": {"locked_node_ids": ["gaussian"]}
+            }
+        },
         compute_request=ComputeRequest(
             mode="selective",
             fallback_policy="strict",
@@ -1176,6 +1409,7 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
     assert widget.compute_mode_combo.currentData() == "selective"
     assert widget.strict_compute_checkbox.isChecked()
     assert widget._compute_node_preferences == {"gaussian": preference}
+    assert widget._compute_optimizer_locked_node_ids == {"gaussian"}
     restored_request = widget._current_compute_request()
     assert restored_request.precision_policy_id == "verified-float32-v2"
     assert restored_request.workload_policy_id == "interactive-volume-v2"
@@ -1348,6 +1582,10 @@ def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "library", "cupyx"
+    )
+    widget._compute_optimizer_locked_node_ids.add("gaussian")
     widget.graph_view.select_node("gaussian")
 
     qtbot.keyClick(widget.graph_view, Qt.Key_Delete)
@@ -1359,6 +1597,7 @@ def test_delete_selected_node_removes_pipeline_node_and_connections(qtbot):
         for connection in widget.pipeline.connections
     )
     assert widget._selected_node_id in widget.pipeline.nodes
+    assert "gaussian" not in widget._compute_optimizer_locked_node_ids
 
 
 def test_deleting_all_nodes_leaves_empty_inspector_without_error(qtbot):
@@ -1382,6 +1621,10 @@ def test_duplicate_node_copies_parameters_without_connections(qtbot):
     widget = VippWidget(viewer)
     qtbot.addWidget(widget)
     widget.pipeline.set_param("gaussian", "sigma", 3.5)
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "library", "cupyx"
+    )
+    widget._compute_optimizer_locked_node_ids.add("gaussian")
     before_ids = set(widget.pipeline.nodes)
 
     widget._duplicate_node("gaussian")
@@ -1397,6 +1640,10 @@ def test_duplicate_node_copies_parameters_without_connections(qtbot):
         for connection in widget.pipeline.connections
     )
     assert widget._selected_node_id == clone_id
+    assert widget._compute_node_preferences[clone_id] == NodeComputePreference(
+        "library", "cupyx"
+    )
+    assert clone_id in widget._compute_optimizer_locked_node_ids
 
 
 def test_node_code_text_includes_call_and_source(qtbot):
@@ -1513,6 +1760,32 @@ def test_widget_restores_hidden_source_layer_on_close(qtbot):
     widget.close()
 
     assert viewer.layers["input volume"].visible
+
+
+def test_widget_close_terminates_queued_optimizer_dialog(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    shutdown_calls = []
+
+    class QueuedDialog:
+        running = True
+
+        @staticmethod
+        def shutdown():
+            shutdown_calls.append(None)
+
+    widget._pipeline_optimizer_dialog = QueuedDialog()
+    widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
+    widget._pipeline_optimizer_source_signature = ("captured",)
+
+    widget.close()
+
+    assert widget._pipeline_optimizer_dialog is None
+    assert widget._pipeline_optimizer_baseline is None
+    assert widget._pipeline_optimizer_source_signature is None
+    assert shutdown_calls == [None]
+    assert widget._compute_node_preferences == {}
 
 
 def test_image_source_layer_selection_restores_previous_source(qtbot):

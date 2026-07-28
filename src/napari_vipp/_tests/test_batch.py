@@ -285,6 +285,7 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
                     "right_panel_visible": False,
                 },
                 "thumbnails": {"disabled_node_ids": ["gaussian"]},
+                "compute_optimizer": {"locked_node_ids": ["gaussian"]},
             }
         },
     )

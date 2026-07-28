@@ -128,6 +128,7 @@ from napari_vipp.core.compute import (
     NodeComputePreference,
     NodeExecutionDecision,
     NodePreferenceKind,
+    canonical_digest,
 )
 from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.diagnostics import (
@@ -1129,6 +1130,7 @@ class VippWidget(QWidget):
         self._compute_mode = ComputeMode.AUTO
         self._compute_fallback_policy = FallbackPolicy.VISIBLE
         self._compute_node_preferences: dict[str, NodeComputePreference] = {}
+        self._compute_optimizer_locked_node_ids: set[str] = set()
         self._compute_precision_policy_id = "scientific-default-v1"
         self._compute_workload_policy_id = "vipp-best-available-v1"
         self._compute_allow_experimental = True
@@ -1315,10 +1317,11 @@ class VippWidget(QWidget):
         self.compute_status_label.setToolTip(
             "Actual CPU/GPU decisions appear here after an accepted run."
         )
-        self.optimize_pipeline_button = QPushButton("Optimize pipeline…")
+        self.optimize_pipeline_button = QPushButton("Find fastest pipeline…")
         self.optimize_pipeline_button.setToolTip(
-            "Benchmark the exact current graph and review a globally optimized "
-            "per-node CPU/GPU assignment. Available only in Selective mode."
+            "Compare every scientifically eligible implementation for each "
+            "unlocked node and review the fastest whole-pipeline assignment. "
+            "Available only in Selective mode."
         )
         self.optimize_pipeline_button.setVisible(False)
         self.strict_compute_checkbox = QCheckBox("Strict selective GPU choices")
@@ -1503,6 +1506,16 @@ class VippWidget(QWidget):
         )
         self.node_compute_preference_combo.setToolTip(
             "Choose how this node runs while the toolbar policy is Selective."
+        )
+        self.node_compute_optimizer_lock_checkbox = QCheckBox(
+            "Lock this choice during Find fastest"
+        )
+        self.node_compute_optimizer_lock_checkbox.setAccessibleName(
+            "Lock selected node compute choice during Find fastest"
+        )
+        self.node_compute_optimizer_lock_checkbox.setToolTip(
+            "Preserve this node's captured actual implementation during the next "
+            "Find fastest analysis. Choosing a backend alone does not lock it."
         )
         self.node_compute_note = QLabel("")
         self.node_compute_note.setAccessibleName(
@@ -2165,7 +2178,7 @@ class VippWidget(QWidget):
         compute_setup_action.triggered.connect(self._show_compute_setup_dialog)
         if self._compute_mode is ComputeMode.SELECTIVE:
             optimize_ready, optimize_reason = self._can_optimize_pipeline()
-            optimize_action = menu.addAction("Optimize pipeline…")
+            optimize_action = menu.addAction("Find fastest pipeline…")
             optimize_action.setEnabled(optimize_ready)
             optimize_action.setToolTip(optimize_reason)
             optimize_action.triggered.connect(self._show_pipeline_optimizer)
@@ -2377,6 +2390,7 @@ class VippWidget(QWidget):
         layout.addWidget(self.execution_group)
         compute_layout = QVBoxLayout(self.compute_group)
         compute_layout.addWidget(self.node_compute_preference_combo)
+        compute_layout.addWidget(self.node_compute_optimizer_lock_checkbox)
         compute_layout.addWidget(self.node_compute_note)
         compute_layout.addWidget(self.node_benchmark_button)
         self.compute_group.setHidden(True)
@@ -2497,6 +2511,9 @@ class VippWidget(QWidget):
         )
         self.node_compute_preference_combo.currentIndexChanged.connect(
             self._on_node_compute_preference_changed
+        )
+        self.node_compute_optimizer_lock_checkbox.toggled.connect(
+            self._on_node_compute_optimizer_lock_toggled
         )
         self.node_benchmark_button.clicked.connect(self._benchmark_selected_node)
         self.optimize_pipeline_button.clicked.connect(
@@ -2798,6 +2815,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         if preference.kind is NodePreferenceKind.AUTO:
             self._compute_node_preferences.pop(node_id, None)
+            self._compute_optimizer_locked_node_ids.discard(node_id)
         else:
             self._compute_node_preferences[node_id] = preference
         self._push_undo_if_changed(before)
@@ -2811,6 +2829,38 @@ class VippWidget(QWidget):
             severity=MessageSeverity.INFO,
         )
         self.run_pipeline()
+
+    def _on_node_compute_optimizer_lock_toggled(self, checked: bool) -> None:
+        node_id = self._selected_node_id
+        preference = self._compute_node_preferences.get(
+            node_id,
+            NodeComputePreference(),
+        )
+        if (
+            self._compute_mode is not ComputeMode.SELECTIVE
+            or node_id not in self.pipeline.nodes
+            or preference.kind is NodePreferenceKind.AUTO
+        ):
+            self._sync_node_compute_control()
+            return
+        currently_locked = node_id in self._compute_optimizer_locked_node_ids
+        if bool(checked) is currently_locked:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        if checked:
+            self._compute_optimizer_locked_node_ids.add(node_id)
+        else:
+            self._compute_optimizer_locked_node_ids.discard(node_id)
+        self._push_undo_if_changed(before)
+        self._sync_node_compute_control()
+        self._sync_pipeline_optimizer_action()
+        state = "locked" if checked else "unlocked"
+        self._set_status(
+            f"'{self._node_title(node_id)}' is {state} for Find fastest. "
+            "No pipeline recalculation was needed.",
+            severity=MessageSeverity.INFO,
+        )
 
     def _sync_node_compute_control(self) -> None:
         node_id = self._selected_node_id
@@ -2850,6 +2900,44 @@ class VippWidget(QWidget):
             Qt.ToolTipRole,
         )
         note = str(description or "")
+        lock_available = current_preference.kind is not NodePreferenceKind.AUTO
+        with QSignalBlocker(self.node_compute_optimizer_lock_checkbox):
+            self.node_compute_optimizer_lock_checkbox.setEnabled(lock_available)
+            self.node_compute_optimizer_lock_checkbox.setChecked(
+                lock_available
+                and node_id in self._compute_optimizer_locked_node_ids
+            )
+        if lock_available:
+            if node_id in self._compute_optimizer_locked_node_ids:
+                note += (
+                    " Find fastest will preserve the implementation captured "
+                    "for this node."
+                )
+            else:
+                note += " Find fastest may compare and replace this choice."
+        else:
+            note += (
+                " Choose a concrete CPU or GPU backend before locking this node; "
+                "the current choice alone is not a lock."
+            )
+        if node.operation_id in {"gaussian_blur", "gaussian_blur_3d"}:
+            input_values = self.pipeline.input_data_by_port_for_node(node_id).values()
+            input_dtypes = []
+            for value in input_values:
+                raw_dtype = getattr(value, "dtype", None)
+                if raw_dtype is None:
+                    continue
+                try:
+                    input_dtypes.append(np.dtype(raw_dtype))
+                except (TypeError, ValueError):
+                    continue
+            if any(np.issubdtype(dtype, np.integer) for dtype in input_dtypes):
+                note += (
+                    " Native integer Gaussian (including uint16) is intentionally "
+                    "CPU-only because the GPU result is not scientifically "
+                    "admissible. An explicit Convert Dtype → float32 node can "
+                    "make GPU Gaussian eligible."
+                )
         decision = self._accepted_compute_decisions.get(node_id)
         if decision is not None:
             badge = actual_decision_badge(
@@ -2898,7 +2986,10 @@ class VippWidget(QWidget):
 
     def _can_optimize_pipeline(self) -> tuple[bool, str]:
         if self._compute_mode is not ComputeMode.SELECTIVE:
-            return False, "Choose Selective compute policy to optimize the pipeline."
+            return (
+                False,
+                "Choose Selective compute policy to find the fastest pipeline.",
+            )
         dialog = self._pipeline_optimizer_dialog
         if dialog is not None and dialog.running:
             return False, "A pipeline optimization is already running."
@@ -2917,6 +3008,7 @@ class VippWidget(QWidget):
             return False, "Calculate the current graph before optimizing it."
         has_candidate = any(
             self.pipeline._has_cached_output(node_id)
+            and node_id not in self._compute_optimizer_locked_node_ids
             and len(
                 node_preference_options(
                     node.operation_id,
@@ -2931,10 +3023,15 @@ class VippWidget(QWidget):
             for node_id, node in self.pipeline.nodes.items()
         )
         if not has_candidate:
-            return False, "No calculated node in this graph has a GPU implementation."
+            return (
+                False,
+                "No calculated, unlocked node in this graph has a GPU "
+                "implementation.",
+            )
         return (
             True,
-            "Measure the exact current graph and review a global CPU/GPU assignment.",
+            "Compare all eligible implementations for every unlocked node and "
+            "review the fastest whole-pipeline assignment.",
         )
 
     def _sync_pipeline_optimizer_action(self) -> None:
@@ -2976,7 +3073,18 @@ class VippWidget(QWidget):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
-        dialog.start(worker, self._node_benchmark_thread_pool)
+        try:
+            dialog.start(worker, self._node_benchmark_thread_pool)
+        except Exception as exc:
+            dialog.shutdown()
+            self._node_benchmark_dialog = None
+            self._node_benchmark_baseline = None
+            self._set_status(
+                f"Node benchmark could not start: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            self._sync_node_compute_control()
 
     def _on_node_benchmark_finished(
         self,
@@ -3040,6 +3148,7 @@ class VippWidget(QWidget):
         preference = result.winner_preference
         if preference.kind is NodePreferenceKind.AUTO:
             self._compute_node_preferences.pop(node_id, None)
+            self._compute_optimizer_locked_node_ids.discard(node_id)
         else:
             self._compute_node_preferences[node_id] = preference
         self._push_undo_if_changed(before)
@@ -3077,7 +3186,12 @@ class VippWidget(QWidget):
             existing.raise_()
             existing.activateWindow()
             return
-        dialog = PipelineOptimizerDialog(self)
+        dialog = PipelineOptimizerDialog(
+            self,
+            locked_node_count=len(
+                self._compute_optimizer_locked_node_ids & set(self.pipeline.nodes)
+            ),
+        )
         dialog.analyze_requested.connect(
             self._start_pipeline_optimizer_analysis
         )
@@ -3092,10 +3206,7 @@ class VippWidget(QWidget):
         dialog.raise_()
         dialog.activateWindow()
 
-    def _start_pipeline_optimizer_analysis(
-        self,
-        override_authored: bool,
-    ) -> None:
+    def _start_pipeline_optimizer_analysis(self) -> None:
         dialog = self._pipeline_optimizer_dialog
         if dialog is None or dialog.running:
             return
@@ -3129,6 +3240,9 @@ class VippWidget(QWidget):
             return
 
         retain_node_ids = frozenset(self._cache_retention_node_ids())
+        optimizer_locked_node_ids = frozenset(
+            self._compute_optimizer_locked_node_ids & set(self.pipeline.nodes)
+        )
 
         def optimize(cancelled, emit_progress):
             from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
@@ -3157,26 +3271,37 @@ class VippWidget(QWidget):
                     source_payloads,
                     compute_request,
                     retain_node_ids,
+                    optimizer_locked_node_ids=optimizer_locked_node_ids,
                     time_budget_seconds=300.0,
-                    override_authored=bool(override_authored),
                     cancelled=cancelled,
                     progress=forward,
                 )
             finally:
-                try:
-                    registry.close()
-                except Exception:
-                    pass
+                # A cleanup failure invalidates timings and memory observations;
+                # let the worker convert it into a non-applicable failure outcome.
+                registry.close()
 
         self._pipeline_optimizer_baseline = self._current_history_snapshot()
         self._pipeline_optimizer_source_signature = source_signature
         worker = PipelineOptimizerWorker(optimize)
         self._set_status(
-            "Analyzing the exact current pipeline; no workflow choice will "
-            "change until you review and apply the result.",
+            "Finding the fastest exact current pipeline across all eligible "
+            "implementations for unlocked nodes; nothing changes until you "
+            "review and apply the result.",
             severity=MessageSeverity.INFO,
         )
-        dialog.start(worker, self._pipeline_optimizer_thread_pool)
+        try:
+            dialog.start(worker, self._pipeline_optimizer_thread_pool)
+        except Exception as exc:
+            self._pipeline_optimizer_baseline = None
+            self._pipeline_optimizer_source_signature = None
+            self._set_status(
+                f"Pipeline optimization could not start: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            self._sync_pipeline_optimizer_action()
+            return
         self._sync_pipeline_optimizer_action()
 
     def _on_pipeline_optimizer_finished(
@@ -3186,18 +3311,40 @@ class VippWidget(QWidget):
         self._sync_pipeline_optimizer_action()
         if outcome.result is not None:
             proposal = getattr(outcome.result, "proposal", outcome.result)
-            changed = sum(1 for row in proposal.rows if row.changed)
-            self._set_status(
-                f"Pipeline analysis found a validated faster assignment with "
-                f"{changed} node change(s). Review it before applying.",
-                severity=MessageSeverity.SUCCESS,
+            changed = sum(
+                1
+                for row in proposal.rows
+                if row.current_preference != row.proposed_preference
             )
+            if proposal.pipeline_validation_performed:
+                winner = getattr(proposal.validation_winner, "value", "")
+                if winner == "current":
+                    message = (
+                        "Find fastest tested the model-selected alternative, but "
+                        "the current assignment won paired validation. Review "
+                        f"the measured preferences ({changed} change(s))."
+                    )
+                else:
+                    message = (
+                        "Find fastest found a validated faster assignment with "
+                        f"{changed} measured preference change(s). Review it "
+                        "before applying."
+                    )
+            else:
+                message = (
+                    "Find fastest confirmed that the current exact backend "
+                    "assignment wins the global model. Review the measured "
+                    f"preferences ({changed} change(s)) before applying."
+                )
+            self._set_status(message, severity=MessageSeverity.SUCCESS)
+            self._resume_pipeline_after_optimizer_if_pending()
             return
         if outcome.cancelled:
             self._set_status(
                 "Pipeline analysis cancelled; no preference changed.",
                 severity=MessageSeverity.INFO,
             )
+            self._resume_pipeline_after_optimizer_if_pending()
             return
         if outcome.reason_code == "not_beneficial":
             severity = MessageSeverity.INFO
@@ -3209,10 +3356,17 @@ class VippWidget(QWidget):
         else:
             severity = MessageSeverity.ERROR
         self._set_status(
-            f"Pipeline optimization made no change: {outcome.error}",
+            f"Find fastest made no change: {outcome.error}",
             severity=severity,
             actionable=severity is MessageSeverity.ERROR,
         )
+        self._resume_pipeline_after_optimizer_if_pending()
+
+    def _resume_pipeline_after_optimizer_if_pending(self) -> None:
+        if not self._pipeline_run_pending or self._closing:
+            return
+        self._pipeline_run_pending = False
+        QTimer.singleShot(0, self.run_pipeline)
 
     def _apply_pipeline_optimizer_result(self, result: object) -> None:
         proposal = getattr(result, "proposal", result)
@@ -3230,10 +3384,17 @@ class VippWidget(QWidget):
             source_signature = None
         current_request = self._current_compute_request()
         assignments = self._current_pipeline_optimizer_assignments(proposal)
+        current_retention_fingerprint = canonical_digest(
+            sorted(self._cache_retention_node_ids())
+        )
         if (
             self._compute_mode is not ComputeMode.SELECTIVE
             or baseline is None
             or identity is None
+            or tuple(sorted(self._compute_optimizer_locked_node_ids))
+            != tuple(getattr(identity, "optimizer_locked_node_ids", ()))
+            or current_retention_fingerprint
+            != getattr(identity, "cache_retention_fingerprint", "")
             or self._current_history_snapshot() != baseline
             or source_signature != self._pipeline_optimizer_source_signature
             or not proposal.is_current(
@@ -3250,7 +3411,11 @@ class VippWidget(QWidget):
             )
             return
         registry = None
+        registry_cleanup_error = None
         try:
+            from napari_vipp.core.compute_benchmark_coordinator import (
+                benchmark_environment_fingerprint,
+            )
             from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
                 probe_pipeline_optimizer_environment,
             )
@@ -3268,6 +3433,9 @@ class VippWidget(QWidget):
                 current_workflow,
                 current_request,
             )
+            current_benchmark_environment_fingerprint = (
+                benchmark_environment_fingerprint(current_environment)
+            )
         except Exception as exc:
             self._set_status(
                 "The GPU environment could not be re-verified before apply: "
@@ -3280,12 +3448,34 @@ class VippWidget(QWidget):
             if registry is not None:
                 try:
                     registry.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    registry_cleanup_error = exc
+        if registry_cleanup_error is not None:
+            self._set_status(
+                "The GPU environment probe did not clean up safely before "
+                f"apply: {registry_cleanup_error}. Analyze the pipeline again "
+                "after resolving the setup.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
         if current_environment.fingerprint != identity.environment_fingerprint:
             self._set_status(
                 "The GPU device, driver, or dependency environment changed after "
                 "analysis. Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        if current_benchmark_environment_fingerprint != getattr(
+            identity,
+            "benchmark_environment_fingerprint",
+            "",
+        ):
+            self._set_status(
+                "The VIPP, NumPy, SciPy, or scikit-image benchmark environment "
+                "changed after analysis. Analyze the pipeline again before "
+                "applying.",
                 severity=MessageSeverity.WARNING,
                 actionable=True,
             )
@@ -3344,6 +3534,10 @@ class VippWidget(QWidget):
             final_source_signature = None
         if (
             self._current_history_snapshot() != baseline
+            or tuple(sorted(self._compute_optimizer_locked_node_ids))
+            != tuple(getattr(identity, "optimizer_locked_node_ids", ()))
+            or canonical_digest(sorted(self._cache_retention_node_ids()))
+            != getattr(identity, "cache_retention_fingerprint", "")
             or final_source_signature != verified_source_signature
             or not proposal.is_current(
                 identity,
@@ -3848,6 +4042,9 @@ class VippWidget(QWidget):
                     if node_id in valid_node_ids
                 )
             ),
+            compute_optimizer_locked_node_ids=tuple(
+                sorted(self._compute_optimizer_locked_node_ids & valid_node_ids)
+            ),
         )
 
     def _push_undo_snapshot(
@@ -3936,6 +4133,11 @@ class VippWidget(QWidget):
                 node_id: NodeComputePreference(kind, value)
                 for node_id, kind, value in snapshot.compute_node_preferences
                 if node_id in valid_node_ids
+            }
+            self._compute_optimizer_locked_node_ids = {
+                node_id
+                for node_id in snapshot.compute_optimizer_locked_node_ids
+                if node_id in self._compute_node_preferences
             }
             self._compute_precision_policy_id = (
                 workflow.compute_request.precision_policy_id
@@ -5033,6 +5235,8 @@ class VippWidget(QWidget):
             self._compute_node_preferences[clone.id] = self._compute_node_preferences[
                 node_id
             ]
+        if node_id in self._compute_optimizer_locked_node_ids:
+            self._compute_optimizer_locked_node_ids.add(clone.id)
         source_pos = self.graph_view.node_position(node_id)
         position = (
             source_pos + QPointF(42, 42)
@@ -5198,6 +5402,7 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         self.pipeline.reset_empty_graph()
         self._compute_node_preferences.clear()
+        self._compute_optimizer_locked_node_ids.clear()
         self._reset_compute_decisions()
         self._preview_disabled_node_ids.clear()
         self._rescale_auto_output_ranges.clear()
@@ -5236,6 +5441,11 @@ class VippWidget(QWidget):
             inspector["selected_node_id"] = self._selected_node_id
 
         vipp: dict[str, object] = {"inspector": inspector}
+        vipp["compute_optimizer"] = {
+            "locked_node_ids": sorted(
+                self._compute_optimizer_locked_node_ids & valid_node_ids
+            )
+        }
         if self.save_thumbnail_visibility_checkbox.isChecked():
             vipp["thumbnails"] = {
                 "disabled_node_ids": sorted(
@@ -5454,6 +5664,15 @@ class VippWidget(QWidget):
         self._reset_compute_decisions()
         valid_node_ids = set(self.pipeline.nodes)
         vipp_metadata = self._workflow_vipp_metadata(workflow)
+        optimizer_metadata = vipp_metadata.get("compute_optimizer")
+        if isinstance(optimizer_metadata, dict):
+            self._compute_optimizer_locked_node_ids = {
+                str(node_id)
+                for node_id in optimizer_metadata.get("locked_node_ids", ())
+                if str(node_id) in self._compute_node_preferences
+            }
+        else:
+            self._compute_optimizer_locked_node_ids.clear()
         thumbnail_metadata = vipp_metadata.get("thumbnails")
         if isinstance(thumbnail_metadata, dict):
             self._preview_disabled_node_ids = set(
@@ -8557,6 +8776,7 @@ class VippWidget(QWidget):
         if not self.pipeline.remove_node(node_id):
             return
         self._compute_node_preferences.pop(node_id, None)
+        self._compute_optimizer_locked_node_ids.discard(node_id)
         self._accepted_compute_decisions.pop(node_id, None)
         self._compute_decision_environments.pop(node_id, None)
         self._stale_compute_badge_node_ids.discard(node_id)
@@ -14020,6 +14240,15 @@ class VippWidget(QWidget):
             return
         if self._collection_batch_running:
             self._collection_batch_graph_refresh_pending = True
+            return
+        optimizer_dialog = self._pipeline_optimizer_dialog
+        if optimizer_dialog is not None and optimizer_dialog.running:
+            self._pipeline_run_pending = True
+            self._set_status(
+                "Calculation queued until Find fastest releases its exclusive "
+                "GPU evidence window.",
+                severity=MessageSeverity.INFO,
+            )
             return
         manual_node_ids = {
             node_id

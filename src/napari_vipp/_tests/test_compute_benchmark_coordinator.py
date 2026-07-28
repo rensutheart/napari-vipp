@@ -13,6 +13,7 @@ from napari_vipp._tests.test_compute_benchmark_adapter import (
     _FakeRuntime,
 )
 from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
     ComputeEnvironment,
     NodePreferenceKind,
 )
@@ -28,6 +29,7 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     ApplicationNodeBenchmarkCoordinator,
     NodeBenchmarkPhase,
     NodeBenchmarkUnavailable,
+    benchmark_environment_fingerprint,
     stable_preference_for_benchmark_winner,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
@@ -201,6 +203,127 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     assert pipeline.completed_node_ids == completed_before
     np.testing.assert_array_equal(pipeline.outputs[source_id], source_before)
     np.testing.assert_array_equal(pipeline.outputs[node_id], node_output_before)
+
+
+def test_exact_saved_record_is_reused_across_different_abort_budgets(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    first_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        time_budget_seconds=10.0,
+    )
+    first = coordinator.run(first_plan)
+    second_plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        time_budget_seconds=30.0,
+    )
+    before_lookup = clock.value
+
+    reused = coordinator.cached_result(second_plan)
+
+    assert reused is not None
+    assert reused.record == first.record
+    assert second_plan.key_digest == first_plan.key_digest
+    assert clock.value == before_lookup
+
+
+def test_exact_saved_record_reuses_completed_candidate_rejection(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+    )
+    measured = coordinator.run(plan).record
+    cpu_id = plan.registered.request.reference.implementation_id
+    gpu_id = plan.registered.request.candidates[0].implementation_id
+    rejected = replace(
+        measured,
+        candidates=tuple(
+            replace(
+                candidate,
+                parity_passed=False,
+                error="scientific mismatch",
+                failure_kind=(
+                    BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+                ),
+            )
+            if candidate.implementation_id == gpu_id
+            else candidate
+            for candidate in measured.candidates
+        ),
+        accepted_implementation_id=cpu_id,
+    )
+    coordinator.store.put(rejected)
+    before_lookup = clock.value
+
+    reused = coordinator.cached_result(plan)
+
+    assert reused is not None
+    assert reused.record == rejected
+    assert reused.winner_preference.kind is NodePreferenceKind.CPU
+    assert clock.value == before_lookup
+
+    transient = replace(
+        rejected,
+        candidates=tuple(
+            replace(
+                candidate,
+                error="out_of_memory: retryable",
+                failure_kind=(
+                    BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
+                ),
+            )
+            if candidate.implementation_id == gpu_id
+            else candidate
+            for candidate in rejected.candidates
+        ),
+    )
+    coordinator.store.put(transient)
+
+    assert coordinator.cached_result(plan) is None
+
+
+def test_benchmark_environment_identity_includes_cpu_scientific_stack(
+    monkeypatch,
+):
+    environment = _environment()
+    original = benchmark_environment_fingerprint(environment)
+    monkeypatch.setattr(
+        coordinator_module.importlib.metadata,
+        "version",
+        lambda distribution: f"changed-{distribution}",
+    )
+
+    assert benchmark_environment_fingerprint(environment) != original
 
 
 def test_workload_current_check_covers_parameters_and_input_content(

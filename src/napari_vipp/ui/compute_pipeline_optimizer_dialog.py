@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -27,6 +26,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationEvidenceIncomplete,
     PipelineOptimizationNotBeneficial,
     PipelineOptimizationProposal,
+    PipelineValidationWinner,
 )
 
 
@@ -126,34 +126,37 @@ class PipelineOptimizerWorker(QRunnable):
 class PipelineOptimizerDialog(QDialog):
     """Collect intent, show evidence, and request one explicit atomic apply."""
 
-    analyze_requested = Signal(bool)
+    analyze_requested = Signal()
     apply_requested = Signal(object)
     optimizer_finished = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        locked_node_count: int = 0,
+    ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Optimize pipeline compute")
+        self.setWindowTitle("Find fastest pipeline")
         self.setWindowModality(Qt.WindowModal)
         self.setMinimumSize(860, 480)
         self._worker: PipelineOptimizerWorker | None = None
         self._outcome: PipelineOptimizerWorkerOutcome | None = None
         self._running = False
+        self._shutdown = False
 
         self.summary_label = QLabel(
-            "Measure the exact current pipeline and propose one globally faster "
-            "CPU/GPU assignment. Nothing changes until you review and apply it."
+            "Compare every scientifically eligible CPU and GPU implementation "
+            "for each unlocked node, then validate the fastest whole-pipeline "
+            "assignment. A node's current backend is only the starting choice; "
+            "only an explicit optimizer lock preserves it. Nothing changes until "
+            "you review and apply the result. CPU timings are paired warm medians; "
+            "GPU timings are resident-compute medians, with transfers modeled "
+            "across the whole pipeline."
         )
         self.summary_label.setWordWrap(True)
-        self.override_authored_checkbox = QCheckBox(
-            "Allow optimizer to replace explicit per-node choices"
-        )
-        self.override_authored_checkbox.setChecked(False)
-        self.override_authored_checkbox.setToolTip(
-            "Off preserves CPU, GPU-library, and exact implementation choices. "
-            "Turn this on only when you want the measured proposal to replace them."
-        )
         self.progress_label = QLabel(
-            "Ready. Authored per-node choices will be preserved."
+            f"Ready. {locked_node_count} explicitly locked node(s) will be preserved."
         )
         self.progress_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
@@ -161,16 +164,24 @@ class PipelineOptimizerDialog(QDialog):
         self.progress_bar.setValue(0)
         self.result_label = QLabel("")
         self.result_label.setWordWrap(True)
-        self.result_table = QTableWidget(0, 5)
+        self.result_table = QTableWidget(0, 7)
         self.result_table.setHorizontalHeaderLabels(
-            ("Node", "Current", "Proposed", "Applied preference", "Status")
+            (
+                "Node",
+                "Current",
+                "Tested",
+                "Selected winner",
+                "Saved preference",
+                "Modeled timings",
+                "Status",
+            )
         )
         self.result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.result_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.result_table.setVisible(False)
         self.result_table.horizontalHeader().setStretchLastSection(True)
 
-        self.analyze_button = QPushButton("Analyze pipeline")
+        self.analyze_button = QPushButton("Find fastest")
         self.apply_button = QPushButton("Apply measured assignment")
         self.apply_button.setEnabled(False)
         self.cancel_button = QPushButton("Cancel analysis")
@@ -185,7 +196,6 @@ class PipelineOptimizerDialog(QDialog):
         buttons.addWidget(self.close_button)
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
-        layout.addWidget(self.override_authored_checkbox)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.result_label)
@@ -196,9 +206,6 @@ class PipelineOptimizerDialog(QDialog):
         self.apply_button.clicked.connect(self._apply_result)
         self.cancel_button.clicked.connect(self.cancel)
         self.close_button.clicked.connect(self.accept)
-        self.override_authored_checkbox.toggled.connect(
-            self._on_override_scope_changed
-        )
 
     @property
     def running(self) -> bool:
@@ -213,6 +220,8 @@ class PipelineOptimizerDialog(QDialog):
         worker: PipelineOptimizerWorker,
         thread_pool: QThreadPool,
     ) -> None:
+        if self._shutdown:
+            raise RuntimeError("The pipeline optimizer dialog is shut down")
         if self._running:
             raise RuntimeError("A pipeline optimization is already running")
         self._worker = worker
@@ -223,7 +232,6 @@ class PipelineOptimizerDialog(QDialog):
         self.close_button.setEnabled(False)
         self.cancel_button.setVisible(True)
         self.cancel_button.setEnabled(True)
-        self.override_authored_checkbox.setEnabled(False)
         self.result_table.setVisible(False)
         self.result_label.setText("")
         self.progress_bar.setRange(0, 0)
@@ -232,7 +240,27 @@ class PipelineOptimizerDialog(QDialog):
         )
         worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(self._on_finished)
-        thread_pool.start(worker)
+        try:
+            thread_pool.start(worker)
+        except Exception:
+            for signal, slot in (
+                (worker.signals.progress, self._on_progress),
+                (worker.signals.finished, self._on_finished),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+            self._worker = None
+            self._running = False
+            self.analyze_button.setEnabled(True)
+            self.close_button.setEnabled(True)
+            self.cancel_button.setEnabled(False)
+            self.cancel_button.setVisible(False)
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Analysis could not be dispatched.")
+            raise
 
     def cancel(self) -> None:
         if not self._running or self._worker is None:
@@ -242,6 +270,32 @@ class PipelineOptimizerDialog(QDialog):
         self.progress_label.setText(
             "Cancel requested; finishing the current synchronized call…"
         )
+
+    def shutdown(self) -> None:
+        """Make owner teardown terminal even when a runnable never starts."""
+
+        if self._shutdown:
+            return
+        self._shutdown = True
+        worker = self._worker
+        if worker is not None:
+            worker.cancel()
+            for signal, slot in (
+                (worker.signals.progress, self._on_progress),
+                (worker.signals.finished, self._on_finished),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        self._worker = None
+        self._running = False
+        self.analyze_button.setEnabled(False)
+        self.apply_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+        self.close_button.setEnabled(False)
+        self.setWindowModality(Qt.NonModal)
+        self.close()
 
     def reject(self) -> None:
         if self._running:
@@ -257,45 +311,37 @@ class PipelineOptimizerDialog(QDialog):
         super().closeEvent(event)
 
     def _request_analysis(self) -> None:
-        if self._running:
+        if self._running or self._shutdown:
             return
-        self.analyze_requested.emit(self.override_authored_checkbox.isChecked())
-
-    def _on_override_scope_changed(self, _checked: bool) -> None:
-        """Require fresh evidence when the optimizer's constraint scope changes."""
-
-        if self._running or self._outcome is None or self._outcome.result is None:
-            return
-        self._outcome = None
-        self.apply_button.setEnabled(False)
-        self.result_table.setVisible(False)
-        self.result_label.setStyleSheet("")
-        self.result_label.setText(
-            "The override scope changed. Analyze the pipeline again before "
-            "applying a measured assignment."
-        )
-        self.progress_label.setText("Ready for a fresh pipeline analysis.")
-        self.progress_bar.setRange(0, 1)
-        self.progress_bar.setValue(0)
+        self.analyze_requested.emit()
 
     def _on_progress(self, progress: PipelineOptimizerProgress) -> None:
+        if self._shutdown:
+            return
         self.progress_bar.setRange(0, progress.total)
         self.progress_bar.setValue(progress.completed)
         self.progress_label.setText(progress.message)
 
     def _on_finished(self, outcome: PipelineOptimizerWorkerOutcome) -> None:
+        if self._shutdown:
+            return
         self._running = False
         self._outcome = outcome
         self._worker = None
         self.analyze_button.setEnabled(True)
         self.close_button.setEnabled(True)
         self.cancel_button.setVisible(False)
-        self.override_authored_checkbox.setEnabled(True)
         if outcome.result is not None:
             self.progress_bar.setValue(self.progress_bar.maximum())
             self.progress_label.setText("Pipeline analysis complete.")
-            self._render_result(_proposal_from_result(outcome.result))
-            self.apply_button.setEnabled(True)
+            self._render_result(outcome.result)
+            proposal = _proposal_from_result(outcome.result)
+            self.apply_button.setEnabled(
+                any(
+                    row.current_preference != row.proposed_preference
+                    for row in proposal.rows
+                )
+            )
         else:
             self.apply_button.setEnabled(False)
             self.progress_bar.setRange(0, 1)
@@ -320,21 +366,41 @@ class PipelineOptimizerDialog(QDialog):
             self.result_label.setText(outcome.error)
         self.optimizer_finished.emit(outcome)
 
-    def _render_result(self, proposal: PipelineOptimizationProposal) -> None:
+    def _render_result(self, result: object) -> None:
+        proposal = _proposal_from_result(result)
+        evidence = getattr(result, "evidence", {})
+        reused = set(getattr(result, "reused_node_ids", ()))
+        measured = set(getattr(result, "measured_node_ids", ()))
         rows = tuple(proposal.rows)
+        tested_by_node = dict(proposal.tested_assignment)
         self.result_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             preference = row.proposed_preference.kind.value
             if row.proposed_preference.value:
                 preference += f":{row.proposed_preference.value}"
-            status = "Change" if row.changed else "Keep"
-            if not row.eligible:
+            status = "Switch backend" if row.changed else "Keep measured backend"
+            if row.locked:
+                status = "Locked"
+            elif not row.eligible:
                 status = "Fixed / excluded"
+            elif (
+                proposal.validation_winner is PipelineValidationWinner.CURRENT
+                and tested_by_node.get(row.node_id)
+                != row.current_implementation_id
+            ):
+                status = "Current won final validation"
+            timing = _candidate_timing_text(evidence.get(row.node_id))
+            if row.node_id in reused:
+                timing = f"{timing} [reused]" if timing else "Exact evidence reused"
+            elif row.node_id in measured:
+                timing = f"{timing} [measured]" if timing else "Measured now"
             values = (
                 row.node_id,
                 row.current_implementation_id,
+                tested_by_node.get(row.node_id, row.proposed_implementation_id),
                 row.proposed_implementation_id,
                 preference,
+                timing,
                 status,
             )
             for column, value in enumerate(values):
@@ -345,20 +411,55 @@ class PipelineOptimizerDialog(QDialog):
                 )
         self.result_table.resizeColumnsToContents()
         self.result_table.setVisible(True)
-        current = proposal.validated_current_seconds
-        proposed = proposal.validated_proposed_seconds
-        speedup = current / proposed if proposed > 0 else float("inf")
-        changed = sum(1 for row in rows if row.changed)
-        self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
-        self.result_label.setText(
-            f"Validated proposal: {_format_seconds(current)} → "
-            f"{_format_seconds(proposed)} ({speedup:.2f}×; lower confidence "
-            f"bound {proposal.validated_speedup_lower_confidence_bound:.2f}×). "
-            f"{changed} node preference(s) would change."
+        changed = sum(
+            1
+            for row in rows
+            if row.current_preference != row.proposed_preference
         )
+        self.result_label.setStyleSheet("color: #86efac; font-weight: 650;")
+        if proposal.pipeline_validation_performed:
+            current = proposal.validated_current_seconds
+            tested = proposal.validated_proposed_seconds
+            if proposal.validation_winner is PipelineValidationWinner.CURRENT:
+                speedup = tested / current if current > 0 else float("inf")
+                self.result_label.setText(
+                    "The current assignment won the final paired validation: "
+                    f"{_format_seconds(current)} versus "
+                    f"{_format_seconds(tested)} for the model-selected "
+                    f"alternative ({speedup:.2f}× faster; lower confidence "
+                    "bound "
+                    f"{proposal.validated_current_speedup_lower_confidence_bound:.2f}×;"
+                    " "
+                    f"{proposal.validation_measurement_rounds} paired rounds). "
+                    f"{changed} measured preference(s) can still be saved; "
+                    f"{len(reused)} node benchmark(s) reused exact saved evidence."
+                )
+            else:
+                speedup = current / tested if tested > 0 else float("inf")
+                self.result_label.setText(
+                    f"Validated proposal: {_format_seconds(current)} → "
+                    f"{_format_seconds(tested)} ({speedup:.2f}×; lower confidence "
+                    "bound "
+                    f"{proposal.validated_speedup_lower_confidence_bound:.2f}×; "
+                    f"{proposal.validation_measurement_rounds} paired validation "
+                    "rounds). "
+                    f"{changed} measured node preference(s) would change; "
+                    f"{len(reused)} node benchmark(s) reused exact saved evidence."
+                )
+        else:
+            self.result_label.setText(
+                "The current exact backend assignment won the measured global "
+                "comparison, so no alternative pipeline timing run was needed. "
+                f"{changed} measured preference(s) can still be saved; "
+                f"{len(reused)} node benchmark(s) reused exact saved evidence."
+            )
 
     def _apply_result(self) -> None:
-        if self._outcome is None or self._outcome.result is None:
+        if (
+            self._shutdown
+            or self._outcome is None
+            or self._outcome.result is None
+        ):
             return
         self.apply_requested.emit(self._outcome.result)
 
@@ -376,6 +477,35 @@ def _proposal_from_result(result: object) -> PipelineOptimizationProposal:
     if not isinstance(proposal, PipelineOptimizationProposal):
         raise TypeError("optimizer worker returned no pipeline proposal")
     return proposal
+
+
+def _candidate_timing_text(evidence: object) -> str:
+    record = getattr(evidence, "record", None)
+    candidates = getattr(record, "candidates", ())
+    values: list[str] = []
+    for candidate in candidates:
+        error = str(getattr(candidate, "error", "") or "").strip()
+        if error or not bool(getattr(candidate, "parity_passed", False)):
+            detail = error or "scientific parity failed"
+            values.append(f"{candidate.implementation_id} excluded ({detail})")
+            continue
+        resident = tuple(getattr(candidate, "warm_resident_seconds", ()))
+        warm = tuple(getattr(candidate, "warm_seconds", ()))
+        modeled = resident or warm
+        if not modeled:
+            continue
+        ordered = sorted(float(value) for value in modeled)
+        middle = len(ordered) // 2
+        median = (
+            ordered[middle]
+            if len(ordered) % 2
+            else (ordered[middle - 1] + ordered[middle]) / 2
+        )
+        metric = "GPU resident" if resident else "CPU/warm end-to-end"
+        values.append(
+            f"{candidate.implementation_id} {_format_seconds(median)} ({metric})"
+        )
+    return "; ".join(values)
 
 
 __all__ = [

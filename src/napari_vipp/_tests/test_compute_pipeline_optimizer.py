@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
     BenchmarkCandidateResult,
     BenchmarkRecord,
     BenchmarkRecordKey,
@@ -28,6 +29,7 @@ from napari_vipp.core.compute_pipeline_optimizer import (
     PipelineOptimizationNode,
     PipelineOptimizationNotBeneficial,
     PipelineOptimizationStale,
+    PipelineValidationWinner,
 )
 
 GPU_RUNTIME_ID = "cuda-cupy"
@@ -63,6 +65,7 @@ def _node(
     output_bytes: int = 1,
     host_input_bytes: int = 0,
     requires_host_output: bool = False,
+    optimizer_locked: bool = False,
 ) -> PipelineOptimizationNode:
     return PipelineOptimizationNode(
         node_id,
@@ -73,6 +76,7 @@ def _node(
         output_bytes=output_bytes,
         host_input_bytes=host_input_bytes,
         requires_host_output=requires_host_output,
+        optimizer_locked=optimizer_locked,
     )
 
 
@@ -84,6 +88,9 @@ def _identity(nodes: tuple[PipelineOptimizationNode, ...]):
         "retention-v1",
         ENVIRONMENT_FINGERPRINT,
         {node.node_id: f"workload-{node.node_id}" for node in nodes},
+        optimizer_locked_node_ids=tuple(
+            node.node_id for node in nodes if node.optimizer_locked
+        ),
     )
 
 
@@ -109,6 +116,10 @@ def _result(
     include_resident: bool = True,
     parity_passed: bool = True,
     peak_memory_bytes: int = 0,
+    error: str = "",
+    failure_kind: BenchmarkCandidateFailureKind = (
+        BenchmarkCandidateFailureKind.NONE
+    ),
 ) -> BenchmarkCandidateResult:
     end_to_end = seconds if end_to_end_seconds is None else end_to_end_seconds
     resident = (
@@ -122,8 +133,10 @@ def _result(
         end_to_end,
         (end_to_end, end_to_end, end_to_end),
         peak_memory_bytes=peak_memory_bytes,
+        error=error,
         synchronized=synchronized,
         warm_resident_seconds=resident,
+        failure_kind=failure_kind,
     )
 
 
@@ -207,6 +220,7 @@ def _validator(
     current_seconds: float = 1.0,
     proposed_seconds: float = 0.8,
     lower_bound: float = 1.1,
+    current_lower_bound: float = 0.0,
     parity_passed: bool = True,
     synchronized: bool = True,
 ):
@@ -220,6 +234,7 @@ def _validator(
             current_seconds,
             proposed_seconds,
             lower_bound,
+            current_speedup_lower_confidence_bound=current_lower_bound,
         )
 
     return validate
@@ -235,10 +250,17 @@ def _optimize(
     validate=None,
     request: ComputeRequest | None = None,
     identity: PipelineOptimizationIdentity | None = None,
+    result_overrides: dict[str, dict[str, dict[str, object]]] | None = None,
     **kwargs,
 ):
     identity = identity or _identity(nodes)
-    evidence = evidence or _all_evidence(identity, nodes, timings)
+    if evidence is None:
+        evidence = _all_evidence(
+            identity,
+            nodes,
+            timings,
+            result_overrides=result_overrides,
+        )
     return PipelineOptimizationCoordinator(clock=lambda: 0.0).optimize(
         request or _request(nodes),
         identity,
@@ -295,13 +317,14 @@ def test_directional_device_to_host_cost_can_keep_node_on_cpu():
     identity = _identity(nodes)
     timings = {"a": {"cpu": 10.0, "gpu": 1.0}}
 
-    with pytest.raises(PipelineOptimizationNotBeneficial):
-        _optimize(
-            nodes,
-            timings=timings,
-            transfers=_transfers(identity, host_to_gpu=1.0, gpu_to_host=20.0),
-            identity=identity,
-        )
+    retained = _optimize(
+        nodes,
+        timings=timings,
+        transfers=_transfers(identity, host_to_gpu=1.0, gpu_to_host=20.0),
+        identity=identity,
+    )
+    assert retained.rows[0].proposed_implementation_id == "cpu"
+    assert not retained.pipeline_validation_performed
 
     proposal = _optimize(
         nodes,
@@ -312,15 +335,12 @@ def test_directional_device_to_host_cost_can_keep_node_on_cpu():
     assert proposal.rows[0].proposed_implementation_id == "gpu"
 
 
-def test_authored_cpu_constraint_is_preserved_unless_override_is_explicit():
+def test_authored_cpu_choice_is_a_starting_assignment_not_a_lock():
     cpu_only = NodeComputePreference(NodePreferenceKind.CPU)
     nodes = (_node("a", preference=cpu_only),)
     timings = {"a": {"cpu": 10.0, "gpu": 1.0}}
 
-    with pytest.raises(PipelineOptimizationNotBeneficial):
-        _optimize(nodes, timings=timings)
-
-    proposal = _optimize(nodes, timings=timings, override_authored=True)
+    proposal = _optimize(nodes, timings=timings)
     assert proposal.rows[0].proposed_implementation_id == "gpu"
     assert proposal.rows[0].proposed_preference == NodeComputePreference(
         NodePreferenceKind.LIBRARY,
@@ -328,7 +348,7 @@ def test_authored_cpu_constraint_is_preserved_unless_override_is_explicit():
     )
 
 
-def test_best_gpu_constraint_never_silently_selects_faster_cpu():
+def test_best_gpu_choice_does_not_hide_a_faster_cpu_when_unlocked():
     gpu_slow = _candidate(
         "gpu-slow", library_id="cupy", runtime_id=GPU_RUNTIME_ID
     )
@@ -348,10 +368,9 @@ def test_best_gpu_constraint_never_silently_selects_faster_cpu():
 
     proposal = _optimize(nodes, timings=timings)
 
-    assert proposal.rows[0].proposed_implementation_id == "gpu-fast"
+    assert proposal.rows[0].proposed_implementation_id == "cpu"
     assert proposal.rows[0].proposed_preference == NodeComputePreference(
-        NodePreferenceKind.LIBRARY,
-        "cucim",
+        NodePreferenceKind.CPU
     )
 
 
@@ -370,7 +389,7 @@ def test_request_and_captured_authored_preferences_must_match():
         )
 
 
-def test_current_assignment_outside_preserved_constraint_is_typed_refusal():
+def test_current_assignment_may_differ_from_unlocked_authored_choice():
     nodes = (
         _node(
             "a",
@@ -379,11 +398,102 @@ def test_current_assignment_outside_preserved_constraint_is_typed_refusal():
         ),
     )
 
-    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as error:
-        _optimize(nodes, timings={"a": {"cpu": 10.0, "gpu": 1.0}})
+    proposal = _optimize(nodes, timings={"a": {"cpu": 10.0, "gpu": 1.0}})
 
-    assert {reason.code for reason in error.value.reasons} == {
-        "current_assignment_outside_constraints"
+    assert proposal.rows[0].proposed_implementation_id == "gpu"
+    assert proposal.rows[0].proposed_preference == NodeComputePreference(
+        NodePreferenceKind.LIBRARY,
+        "cupy",
+    )
+
+
+def test_optimizer_lock_preserves_exact_current_choice_without_benchmark_evidence():
+    preference = NodeComputePreference(NodePreferenceKind.CPU)
+    nodes = (_node("a", preference=preference, optimizer_locked=True),)
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        evidence={},
+    )
+
+    row = proposal.rows[0]
+    assert row.locked
+    assert not row.eligible
+    assert row.proposed_implementation_id == "cpu"
+    assert row.proposed_preference == preference
+
+
+def test_optimizer_lock_set_is_part_of_exact_identity():
+    nodes = (_node("a", optimizer_locked=True),)
+    identity = replace(_identity(nodes), optimizer_locked_node_ids=())
+
+    with pytest.raises(PipelineOptimizationStale, match="locks"):
+        _optimize(
+            nodes,
+            timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+            identity=identity,
+        )
+
+
+def test_one_parity_failed_candidate_is_excluded_without_aborting_search():
+    bad_gpu = _candidate(
+        "gpu-bad",
+        library_id="cupy",
+        runtime_id=GPU_RUNTIME_ID,
+    )
+    good_gpu = _candidate(
+        "gpu-good",
+        library_id="cupy",
+        runtime_id=GPU_RUNTIME_ID,
+    )
+    nodes = (_node("a", candidates=(CPU, bad_gpu, good_gpu)),)
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu-bad": 0.5, "gpu-good": 1.0}},
+        result_overrides={
+            "a": {
+                "gpu-bad": {
+                    "parity_passed": False,
+                    "error": "scientific mismatch",
+                    "failure_kind": (
+                        BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+                    ),
+                }
+            }
+        },
+    )
+
+    assert proposal.rows[0].proposed_implementation_id == "gpu-good"
+    assert proposal.rows[0].proposed_preference == NodeComputePreference(
+        NodePreferenceKind.IMPLEMENTATION,
+        "gpu-good",
+    )
+
+
+def test_transient_candidate_failure_refuses_exhaustive_optimum_claim():
+    nodes = (_node("a"),)
+
+    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as error:
+        _optimize(
+            nodes,
+            timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+            result_overrides={
+                "a": {
+                    "gpu": {
+                        "parity_passed": False,
+                        "error": "out_of_memory: retryable",
+                        "failure_kind": (
+                            BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
+                        ),
+                    }
+                }
+            },
+        )
+
+    assert "candidate_runtime_failed" in {
+        reason.code for reason in error.value.reasons
     }
 
 
@@ -624,6 +734,33 @@ def test_validation_accepts_material_confident_speedup():
     )
 
     assert proposal.validated_proposed_seconds == pytest.approx(0.94)
+    assert proposal.validation_winner is PipelineValidationWinner.PROPOSED
+
+
+def test_validation_returns_success_when_current_assignment_decisively_wins():
+    nodes = (_node("a"),)
+
+    proposal = _optimize(
+        nodes,
+        timings={"a": {"cpu": 10.0, "gpu": 1.0}},
+        validate=_validator(
+            current_seconds=1.0,
+            proposed_seconds=1.2,
+            lower_bound=0.8,
+            current_lower_bound=1.1,
+        ),
+    )
+
+    row = proposal.rows[0]
+    assert proposal.pipeline_validation_performed
+    assert proposal.validation_winner is PipelineValidationWinner.CURRENT
+    assert proposal.validated_current_speedup_lower_confidence_bound == pytest.approx(
+        1.1
+    )
+    assert row.current_implementation_id == "cpu"
+    assert row.proposed_implementation_id == "cpu"
+    assert dict(proposal.tested_assignment)["a"] == "gpu"
+    assert not row.changed
 
 
 def test_cancellation_precedes_work_and_validation():

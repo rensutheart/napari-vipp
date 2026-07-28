@@ -13,9 +13,11 @@ import statistics
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from types import MappingProxyType
 
 from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
     BenchmarkCandidateResult,
     BenchmarkRecord,
     ComputeMode,
@@ -61,6 +63,14 @@ class PipelineOptimizationStale(PipelineOptimizationError):
     """Evidence or validation belongs to a different immutable identity."""
 
 
+class PipelineValidationWinner(StrEnum):
+    """Assignment selected by the final whole-pipeline evidence gate."""
+
+    NOT_RUN = "not-run"
+    CURRENT = "current"
+    PROPOSED = "proposed"
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceRefusal:
     code: str
@@ -102,6 +112,8 @@ class PipelineOptimizationIdentity:
     environment_fingerprint: str
     workload_fingerprints: Mapping[str, str] = field(default_factory=dict)
     identity_policy_id: str = "pipeline-optimizer-identity-v1"
+    benchmark_environment_fingerprint: str = ""
+    optimizer_locked_node_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -116,6 +128,22 @@ class PipelineOptimizationIdentity:
             if not value:
                 raise ValueError(f"{name} must not be empty")
             object.__setattr__(self, name, value)
+        benchmark_environment = str(
+            self.benchmark_environment_fingerprint
+        ).strip()
+        if not benchmark_environment:
+            benchmark_environment = self.environment_fingerprint
+        locked = tuple(
+            str(node_id).strip() for node_id in self.optimizer_locked_node_ids
+        )
+        if any(not node_id for node_id in locked) or len(set(locked)) != len(locked):
+            raise ValueError("optimizer lock IDs must be unique and non-empty")
+        object.__setattr__(
+            self,
+            "benchmark_environment_fingerprint",
+            benchmark_environment,
+        )
+        object.__setattr__(self, "optimizer_locked_node_ids", tuple(sorted(locked)))
         normalized: dict[str, str] = {}
         for raw_node_id, raw_fingerprint in self.workload_fingerprints.items():
             node_id = str(raw_node_id).strip()
@@ -138,6 +166,8 @@ class PipelineOptimizationIdentity:
                 "topology": self.topology_fingerprint,
                 "cache_retention": self.cache_retention_fingerprint,
                 "environment": self.environment_fingerprint,
+                "benchmark_environment": self.benchmark_environment_fingerprint,
+                "optimizer_locks": list(self.optimizer_locked_node_ids),
                 "workloads": dict(self.workload_fingerprints),
                 "policy": self.identity_policy_id,
             }
@@ -185,6 +215,7 @@ class PipelineOptimizationNode:
     is_writer: bool = False
     has_side_effects: bool = False
     cache_retained: bool = False
+    optimizer_locked: bool = False
 
     def __post_init__(self) -> None:
         node_id = str(self.node_id).strip()
@@ -207,6 +238,7 @@ class PipelineOptimizationNode:
             "is_writer",
             "has_side_effects",
             "cache_retained",
+            "optimizer_locked",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a boolean")
@@ -334,6 +366,8 @@ class PipelineAssignmentValidation:
     proposed_seconds: float
     speedup_lower_confidence_bound: float
     detail: str = ""
+    measurement_rounds: int = 0
+    current_speedup_lower_confidence_bound: float = 0.0
 
     def __post_init__(self) -> None:
         identity = str(self.identity_digest).strip()
@@ -343,6 +377,7 @@ class PipelineAssignmentValidation:
             "current_seconds",
             "proposed_seconds",
             "speedup_lower_confidence_bound",
+            "current_speedup_lower_confidence_bound",
         ):
             value = getattr(self, name)
             if (
@@ -369,6 +404,12 @@ class PipelineAssignmentValidation:
             _validated_assignment(self.proposed_assignment, "proposed_assignment"),
         )
         object.__setattr__(self, "detail", str(self.detail).strip())
+        if (
+            isinstance(self.measurement_rounds, bool)
+            or not isinstance(self.measurement_rounds, int)
+            or self.measurement_rounds < 0
+        ):
+            raise ValueError("measurement_rounds must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,6 +421,7 @@ class PipelineOptimizationRow:
     proposed_preference: NodeComputePreference
     changed: bool
     eligible: bool
+    locked: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,8 +436,65 @@ class PipelineOptimizationProposal:
     validated_current_seconds: float
     validated_proposed_seconds: float
     validated_speedup_lower_confidence_bound: float
+    pipeline_validation_performed: bool = True
+    validation_measurement_rounds: int = 0
+    validated_current_speedup_lower_confidence_bound: float = 0.0
+    validation_winner: PipelineValidationWinner | str = (
+        PipelineValidationWinner.NOT_RUN
+    )
+    tested_assignment: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.pipeline_validation_performed, bool):
+            raise TypeError("pipeline_validation_performed must be a boolean")
+        if (
+            isinstance(self.validation_measurement_rounds, bool)
+            or not isinstance(self.validation_measurement_rounds, int)
+            or self.validation_measurement_rounds < 0
+        ):
+            raise ValueError(
+                "validation_measurement_rounds must be a non-negative integer"
+            )
+        reverse_bound = self.validated_current_speedup_lower_confidence_bound
+        if (
+            isinstance(reverse_bound, bool)
+            or not isinstance(reverse_bound, (int, float))
+            or not math.isfinite(float(reverse_bound))
+            or reverse_bound < 0
+        ):
+            raise ValueError(
+                "validated_current_speedup_lower_confidence_bound must be "
+                "finite and non-negative"
+            )
+        winner = (
+            self.validation_winner
+            if isinstance(self.validation_winner, PipelineValidationWinner)
+            else PipelineValidationWinner(str(self.validation_winner).strip())
+        )
+        if (
+            self.pipeline_validation_performed
+            and winner is PipelineValidationWinner.NOT_RUN
+        ):
+            raise ValueError("performed validation must identify its winner")
+        if (
+            not self.pipeline_validation_performed
+            and winner is PipelineValidationWinner.PROPOSED
+        ):
+            raise ValueError("an unvalidated proposal cannot select an alternative")
+        object.__setattr__(
+            self,
+            "validated_current_speedup_lower_confidence_bound",
+            float(reverse_bound),
+        )
+        object.__setattr__(self, "validation_winner", winner)
+        tested_assignment = self.tested_assignment or tuple(
+            (row.node_id, row.proposed_implementation_id) for row in self.rows
+        )
+        object.__setattr__(
+            self,
+            "tested_assignment",
+            _validated_assignment(tested_assignment, "tested_assignment"),
+        )
         object.__setattr__(
             self,
             "preference_mapping",
@@ -458,7 +557,6 @@ class PipelineOptimizationCoordinator:
         *,
         deadline: float,
         max_assignments: int = 100_000,
-        override_authored: bool = False,
         cancelled: Callable[[], bool] | None = None,
     ) -> PipelineOptimizationProposal:
         if not isinstance(request, ComputeRequest):
@@ -491,6 +589,13 @@ class PipelineOptimizationCoordinator:
             raise PipelineOptimizationStale(
                 "Captured node preferences do not match the compute request."
             )
+        captured_locks = tuple(
+            sorted(node.node_id for node in node_values if node.optimizer_locked)
+        )
+        if captured_locks != identity.optimizer_locked_node_ids:
+            raise PipelineOptimizationStale(
+                "Captured optimizer locks do not match the optimization identity."
+            )
         if set(identity.workload_fingerprints) != set(node_ids):
             raise PipelineOptimizationEvidenceIncomplete(
                 (
@@ -522,8 +627,6 @@ class PipelineOptimizationCoordinator:
             self._check_abort(deadline, cancelled)
             allowed = _allowed_candidates(
                 node,
-                override_authored=override_authored,
-                host_runtime_id=transfer_profile.host_runtime_id,
             )
             allowed_by_node[node.node_id] = allowed
             allowed_ids = {item.implementation_id for item in allowed}
@@ -559,10 +662,7 @@ class PipelineOptimizationCoordinator:
                 )
                 continue
             costs: list[GraphImplementationCost] = []
-            variable = len(allowed) > 1 or any(
-                item.runtime_id != transfer_profile.host_runtime_id
-                for item in allowed
-            )
+            variable = len(allowed) > 1
             node_evidence = by_evidence.get(node.node_id)
             results = {}
             if variable:
@@ -585,6 +685,8 @@ class PipelineOptimizationCoordinator:
                         host_runtime_id=transfer_profile.host_runtime_id,
                     )
                     if refusal is not None:
+                        if refusal.code == "candidate_parity_failed":
+                            continue
                         refusals.append(refusal)
                         continue
                 else:
@@ -602,6 +704,20 @@ class PipelineOptimizationCoordinator:
                         available=candidate.available,
                     )
                 )
+            qualified_ids = {item.implementation_id for item in costs}
+            allowed_by_node[node.node_id] = tuple(
+                item for item in allowed if item.implementation_id in qualified_ids
+            )
+            if node.current_implementation_id not in qualified_ids:
+                refusals.append(
+                    EvidenceRefusal(
+                        "current_candidate_unqualified",
+                        "The captured current implementation did not produce "
+                        "complete parity-qualified timing evidence.",
+                        node.node_id,
+                    )
+                )
+                continue
             if not costs:
                 refusals.append(
                     EvidenceRefusal(
@@ -622,7 +738,9 @@ class PipelineOptimizationCoordinator:
                     ),
                     forced_implementation_id=(
                         node.current_implementation_id
-                        if node.is_writer or node.has_side_effects
+                        if node.is_writer
+                        or node.has_side_effects
+                        or node.optimizer_locked
                         else ""
                     ),
                 )
@@ -692,52 +810,80 @@ class PipelineOptimizationCoordinator:
             ) from exc
         self._check_abort(deadline, cancelled)
         current_assignment = tuple(current.assignments)
-        proposed_assignment = tuple(proposed.assignments)
-        if proposed_assignment == current_assignment:
-            raise PipelineOptimizationNotBeneficial(
-                "The current assignment is already optimal for the measured model."
+        tested_assignment = tuple(proposed.assignments)
+        proposed_assignment = tested_assignment
+        validation_performed = tested_assignment != current_assignment
+        if validation_performed:
+            validation_request = PipelineValidationRequest(
+                identity.digest,
+                current_assignment,
+                tested_assignment,
             )
-
-        validation_request = PipelineValidationRequest(
-            identity.digest,
-            current_assignment,
-            proposed_assignment,
-        )
-        validation = validate(validation_request)
-        self._check_abort(deadline, cancelled)
-        if not isinstance(validation, PipelineAssignmentValidation):
-            raise TypeError("validate must return PipelineAssignmentValidation")
-        if (
-            validation.identity_digest != identity.digest
-            or validation.current_assignment != current_assignment
-            or validation.proposed_assignment != proposed_assignment
-        ):
-            raise PipelineOptimizationStale(
-                "Whole-pipeline validation did not echo the exact proposal identity."
-            )
-        if not validation.parity_passed or not validation.synchronized:
-            raise PipelineOptimizationEvidenceIncomplete(
-                (
-                    EvidenceRefusal(
-                        "pipeline_validation_failed",
-                        validation.detail
-                        or "The proposed pipeline failed parity or synchronization.",
-                    ),
+            validation = validate(validation_request)
+            self._check_abort(deadline, cancelled)
+            if not isinstance(validation, PipelineAssignmentValidation):
+                raise TypeError("validate must return PipelineAssignmentValidation")
+            if (
+                validation.identity_digest != identity.digest
+                or validation.current_assignment != current_assignment
+                or validation.proposed_assignment != tested_assignment
+            ):
+                raise PipelineOptimizationStale(
+                    "Whole-pipeline validation did not echo the exact proposal "
+                    "identity."
                 )
+            if not validation.parity_passed or not validation.synchronized:
+                raise PipelineOptimizationEvidenceIncomplete(
+                    (
+                        EvidenceRefusal(
+                            "pipeline_validation_failed",
+                            validation.detail
+                            or "The proposed pipeline failed parity or "
+                            "synchronization.",
+                        ),
+                    )
+                )
+            savings = validation.current_seconds - validation.proposed_seconds
+            proposed_required = max(
+                _MINIMUM_ABSOLUTE_IMPROVEMENT_SECONDS,
+                _MINIMUM_RELATIVE_IMPROVEMENT * validation.current_seconds,
             )
-        savings = validation.current_seconds - validation.proposed_seconds
-        required = max(
-            _MINIMUM_ABSOLUTE_IMPROVEMENT_SECONDS,
-            _MINIMUM_RELATIVE_IMPROVEMENT * validation.current_seconds,
-        )
-        if (
-            savings <= required
-            or validation.speedup_lower_confidence_bound <= 1.0
-        ):
-            raise PipelineOptimizationNotBeneficial(
-                "The measured proposal did not exceed the greater of 5% or "
-                "10 ms with a paired lower confidence bound above 1.0."
+            proposed_wins = (
+                savings > proposed_required
+                and validation.speedup_lower_confidence_bound > 1.0
             )
+            current_required = max(
+                _MINIMUM_ABSOLUTE_IMPROVEMENT_SECONDS,
+                _MINIMUM_RELATIVE_IMPROVEMENT * validation.proposed_seconds,
+            )
+            current_wins = (
+                -savings > current_required
+                and validation.current_speedup_lower_confidence_bound > 1.0
+            )
+            if current_wins:
+                proposed_assignment = current_assignment
+                validation_winner = PipelineValidationWinner.CURRENT
+            elif proposed_wins:
+                validation_winner = PipelineValidationWinner.PROPOSED
+            else:
+                raise PipelineOptimizationNotBeneficial(
+                    "Neither assignment decisively exceeded the other by the "
+                    "greater of 5% or 10 ms with a paired lower confidence "
+                    "bound above 1.0."
+                )
+        else:
+            validation = PipelineAssignmentValidation(
+                identity.digest,
+                current_assignment,
+                proposed_assignment,
+                True,
+                True,
+                current.total_seconds,
+                proposed.total_seconds,
+                1.0,
+                "The measured model retained the current exact assignment.",
+            )
+            validation_winner = PipelineValidationWinner.CURRENT
 
         current_map = dict(current_assignment)
         proposed_map = dict(proposed_assignment)
@@ -759,6 +905,7 @@ class PipelineOptimizationCoordinator:
                 proposed_preference,
                 current_map[node.node_id] != proposed_map[node.node_id],
                 len(allowed) > 1 and not node.is_writer and not node.has_side_effects,
+                node.optimizer_locked,
             )
             rows.append(row)
             preferences[node.node_id] = proposed_preference
@@ -773,6 +920,11 @@ class PipelineOptimizationCoordinator:
             validation.current_seconds,
             validation.proposed_seconds,
             validation.speedup_lower_confidence_bound,
+            validation_performed,
+            validation.measurement_rounds,
+            validation.current_speedup_lower_confidence_bound,
+            validation_winner,
+            tested_assignment,
         )
 
     def _cancelled_or_expired(
@@ -802,33 +954,13 @@ class PipelineOptimizationCoordinator:
 
 def _allowed_candidates(
     node: PipelineOptimizationNode,
-    *,
-    override_authored: bool,
-    host_runtime_id: str,
 ) -> tuple[PipelineOptimizationCandidate, ...]:
     available = tuple(item for item in node.candidates if item.available)
-    if node.is_writer or node.has_side_effects:
+    if node.is_writer or node.has_side_effects or node.optimizer_locked:
         return tuple(
             item
             for item in available
             if item.implementation_id == node.current_implementation_id
-        )
-    if override_authored:
-        return available
-    preference = node.authored_preference
-    if preference.kind is NodePreferenceKind.CPU:
-        return tuple(item for item in available if item.runtime_id == host_runtime_id)
-    if preference.kind is NodePreferenceKind.BEST_GPU:
-        return tuple(item for item in available if item.runtime_id != host_runtime_id)
-    if preference.kind is NodePreferenceKind.LIBRARY:
-        return tuple(
-            item
-            for item in available
-            if item.implementation_library_id == preference.value
-        )
-    if preference.kind is NodePreferenceKind.IMPLEMENTATION:
-        return tuple(
-            item for item in available if item.implementation_id == preference.value
         )
     return available
 
@@ -854,7 +986,8 @@ def _evidence_refusal(
     if (
         record.key.workload_fingerprint
         != identity.workload_fingerprints[node.node_id]
-        or record.key.environment_fingerprint != identity.environment_fingerprint
+        or record.key.environment_fingerprint
+        != identity.benchmark_environment_fingerprint
     ):
         return EvidenceRefusal(
             "benchmark_key_mismatch",
@@ -886,10 +1019,20 @@ def _candidate_cost(
             f"Timing for {candidate.implementation_id!r} is missing.",
             node.node_id,
         )
-    if not result.parity_passed or result.error:
+    if (
+        result.failure_kind
+        is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+    ):
         return 0.0, EvidenceRefusal(
             "candidate_parity_failed",
             f"{candidate.implementation_id!r} did not pass scientific parity.",
+            node.node_id,
+        )
+    if not result.parity_passed or result.error:
+        return 0.0, EvidenceRefusal(
+            "candidate_runtime_failed",
+            f"{candidate.implementation_id!r} had a retryable benchmark "
+            "runtime/timing failure.",
             node.node_id,
         )
     if candidate.runtime_id == host_runtime_id:
@@ -926,6 +1069,7 @@ def _proposed_preference(
             len(allowed) <= 1
             or node.is_writer
             or node.has_side_effects
+            or node.optimizer_locked
             or node.authored_preference.kind
             is NodePreferenceKind.IMPLEMENTATION
         )
@@ -941,7 +1085,7 @@ def _proposed_preference(
         return NodeComputePreference(NodePreferenceKind.CPU)
     same_library = tuple(
         item
-        for item in allowed
+        for item in node.candidates
         if item.implementation_library_id == selected.implementation_library_id
     )
     if len(same_library) == 1:
@@ -997,4 +1141,5 @@ __all__ = [
     "PipelineOptimizationRow",
     "PipelineOptimizationStale",
     "PipelineValidationRequest",
+    "PipelineValidationWinner",
 ]

@@ -28,6 +28,7 @@ from napari_vipp.core.compute_benchmark import (
     DEFAULT_BOOTSTRAP_SEED,
     DEFAULT_CONFIDENCE_LEVEL,
     MINIMUM_WARM_ROUNDS,
+    SCREENING_MINIMUM_WARM_ROUNDS,
     BenchmarkImplementation,
     BenchmarkInvocationObservation,
     NodeBenchmarkRequest,
@@ -43,8 +44,11 @@ from napari_vipp.core.compute_registry import (
 from napari_vipp.core.compute_specs import AdmissionTier, OperationComputeSpec
 from napari_vipp.core.node_execution import PreparedNodeCall
 
-PRODUCTION_BENCHMARK_POLICY_ID = "production-node-paired-adaptive-bootstrap-v1"
-CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v1"
+PRODUCTION_BENCHMARK_POLICY_ID = "production-node-paired-adaptive-bootstrap-v2"
+PIPELINE_SCREENING_BENCHMARK_POLICY_ID = (
+    "pipeline-node-progressive-screening-bootstrap-v1"
+)
+CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v2"
 EXACT_PARITY_OPERATION_IDS = frozenset(
     {
         "median_filter",
@@ -398,11 +402,18 @@ def _benchmark_policy_id(
         and paired_bootstrap_seed == DEFAULT_BOOTSTRAP_SEED
         and paired_confidence_level == DEFAULT_CONFIDENCE_LEVEL
     )
-    return (
-        PRODUCTION_BENCHMARK_POLICY_ID
-        if production_profile
-        else CUSTOM_BENCHMARK_POLICY_ID
+    pipeline_screening_profile = (
+        warm_rounds == SCREENING_MINIMUM_WARM_ROUNDS
+        and max_warm_rounds == 15
+        and paired_bootstrap_samples == DEFAULT_BOOTSTRAP_SAMPLES
+        and paired_bootstrap_seed == DEFAULT_BOOTSTRAP_SEED
+        and paired_confidence_level == DEFAULT_CONFIDENCE_LEVEL
     )
+    if production_profile:
+        return PRODUCTION_BENCHMARK_POLICY_ID
+    if pipeline_screening_profile:
+        return PIPELINE_SCREENING_BENCHMARK_POLICY_ID
+    return CUSTOM_BENCHMARK_POLICY_ID
 
 
 def _validate_admitted_spec(
@@ -1312,6 +1323,7 @@ __all__ = [
     "GAUSSIAN_FLOAT32_NRMSE_LIMIT",
     "GAUSSIAN_PARITY_OPERATION_IDS",
     "PRODUCTION_BENCHMARK_POLICY_ID",
+    "PIPELINE_SCREENING_BENCHMARK_POLICY_ID",
     "ProductionBenchmarkObservationLog",
     "ProductionInvocationObservation",
     "RegisteredNodeBenchmark",

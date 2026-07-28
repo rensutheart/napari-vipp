@@ -83,6 +83,8 @@ class NodeBenchmarkWorker(QRunnable):
 
     def run(self) -> None:
         registry: ComputeRegistry | None = None
+        coordinator: ApplicationNodeBenchmarkCoordinator | None = None
+        result: ApplicationNodeBenchmarkResult | None = None
         try:
             registry = self.registry_factory()
             coordinator = self.coordinator_factory(registry, self.store_path)
@@ -124,8 +126,24 @@ class NodeBenchmarkWorker(QRunnable):
             if registry is not None:
                 try:
                     registry.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    discard_error = None
+                    if coordinator is not None and result is not None:
+                        try:
+                            coordinator.store.discard(result.record.key)
+                        except Exception as discard_exc:
+                            discard_error = discard_exc
+                    detail = f"{type(exc).__name__}: {exc}"
+                    if discard_error is not None:
+                        detail += (
+                            "; invalid benchmark evidence could not be removed: "
+                            f"{type(discard_error).__name__}: {discard_error}"
+                        )
+                    outcome = NodeBenchmarkWorkerOutcome(
+                        self.node_id,
+                        error=f"Benchmark cleanup failed: {detail}",
+                        reason_code="benchmark_failed",
+                    )
         self.signals.finished.emit(outcome)
 
 
@@ -143,6 +161,7 @@ class NodeBenchmarkDialog(QDialog):
         self._worker: NodeBenchmarkWorker | None = None
         self._outcome: NodeBenchmarkWorkerOutcome | None = None
         self._running = False
+        self._shutdown = False
 
         self.summary_label = QLabel(
             "VIPP will compare the current node input and parameters on CPU and "
@@ -197,6 +216,8 @@ class NodeBenchmarkDialog(QDialog):
         return self._outcome
 
     def start(self, worker: NodeBenchmarkWorker, thread_pool: QThreadPool) -> None:
+        if self._shutdown:
+            raise RuntimeError("This benchmark dialog is shut down.")
         if self._running or self._worker is not None:
             raise RuntimeError("This benchmark dialog has already been started.")
         self._worker = worker
@@ -206,7 +227,23 @@ class NodeBenchmarkDialog(QDialog):
         )
         worker.signals.progress.connect(self._on_progress)
         worker.signals.finished.connect(self._on_finished)
-        thread_pool.start(worker)
+        try:
+            thread_pool.start(worker)
+        except Exception:
+            for signal, slot in (
+                (worker.signals.progress, self._on_progress),
+                (worker.signals.finished, self._on_finished),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+            self._worker = None
+            self._running = False
+            self.cancel_button.setEnabled(False)
+            self.close_button.setEnabled(True)
+            self.progress_label.setText("Benchmark could not be dispatched.")
+            raise
 
     def cancel(self) -> None:
         if not self._running or self._worker is None:
@@ -214,6 +251,31 @@ class NodeBenchmarkDialog(QDialog):
         self._worker.cancel()
         self.cancel_button.setEnabled(False)
         self.progress_label.setText("Cancel requested; finishing the current call…")
+
+    def shutdown(self) -> None:
+        """Make owner teardown terminal even when a runnable never starts."""
+
+        if self._shutdown:
+            return
+        self._shutdown = True
+        worker = self._worker
+        if worker is not None:
+            worker.cancel()
+            for signal, slot in (
+                (worker.signals.progress, self._on_progress),
+                (worker.signals.finished, self._on_finished),
+            ):
+                try:
+                    signal.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        self._worker = None
+        self._running = False
+        self.apply_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+        self.close_button.setEnabled(False)
+        self.setWindowModality(Qt.NonModal)
+        self.close()
 
     def reject(self) -> None:
         if self._running:
@@ -229,10 +291,14 @@ class NodeBenchmarkDialog(QDialog):
         super().closeEvent(event)
 
     def _on_progress(self, progress: NodeBenchmarkProgress) -> None:
+        if self._shutdown:
+            return
         self.progress_bar.setValue(progress.completed)
         self.progress_label.setText(progress.message)
 
     def _on_finished(self, outcome: NodeBenchmarkWorkerOutcome) -> None:
+        if self._shutdown:
+            return
         self._running = False
         self._outcome = outcome
         self.cancel_button.setVisible(False)
@@ -307,7 +373,11 @@ class NodeBenchmarkDialog(QDialog):
         )
 
     def _apply_result(self) -> None:
-        if self._outcome is None or self._outcome.result is None:
+        if (
+            self._shutdown
+            or self._outcome is None
+            or self._outcome.result is None
+        ):
             return
         self.apply_requested.emit(self._outcome.result)
 

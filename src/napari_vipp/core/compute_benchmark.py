@@ -29,6 +29,7 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from .compute import (
+    BenchmarkCandidateFailureKind,
     BenchmarkCandidateResult,
     BenchmarkRecord,
     BenchmarkRecordKey,
@@ -37,8 +38,9 @@ from .compute import (
 )
 from .compute_policy import PerformanceEvidence, evaluate_auto_performance
 
+SCREENING_MINIMUM_WARM_ROUNDS = 3
 MINIMUM_WARM_ROUNDS = 7
-ADAPTIVE_WARM_ROUNDS = (15, 21)
+ADAPTIVE_WARM_ROUNDS = (7, 15, 21)
 DEFAULT_BOOTSTRAP_SAMPLES = 2_000
 DEFAULT_BOOTSTRAP_SEED = 17_029
 DEFAULT_CONFIDENCE_LEVEL = 0.95
@@ -240,10 +242,11 @@ class NodeBenchmarkRequest:
         if (
             isinstance(self.warm_rounds, bool)
             or not isinstance(self.warm_rounds, int)
-            or self.warm_rounds < MINIMUM_WARM_ROUNDS
+            or self.warm_rounds < SCREENING_MINIMUM_WARM_ROUNDS
         ):
             raise ValueError(
-                f"warm_rounds must be an integer >= {MINIMUM_WARM_ROUNDS}."
+                "warm_rounds must be an integer >= "
+                f"{SCREENING_MINIMUM_WARM_ROUNDS}."
             )
         if not isinstance(self.time_parity_as_cold, bool):
             raise TypeError("time_parity_as_cold must be a boolean.")
@@ -336,7 +339,6 @@ class NodeBenchmarkRequest:
                 if self.paired_bootstrap_samples
                 else None
             ),
-            "time_budget_seconds": self.time_budget_seconds,
         }
         effective_policy_id = (
             f"{self.benchmark_policy_id}@"
@@ -370,6 +372,12 @@ class InMemoryBenchmarkStore:
         with self._lock:
             self._records[record.key.digest] = record
 
+    def discard(self, key: BenchmarkRecordKey) -> None:
+        if not isinstance(key, BenchmarkRecordKey):
+            raise TypeError("key must be a BenchmarkRecordKey.")
+        with self._lock:
+            self._records.pop(key.digest, None)
+
     def records(self) -> tuple[BenchmarkRecord, ...]:
         with self._lock:
             return tuple(self._records[key] for key in sorted(self._records))
@@ -389,6 +397,8 @@ class BenchmarkStore(Protocol):
     def get(self, key: BenchmarkRecordKey) -> BenchmarkRecord | None: ...
 
     def put(self, record: BenchmarkRecord) -> None: ...
+
+    def discard(self, key: BenchmarkRecordKey) -> None: ...
 
 
 class BenchmarkStoreError(BenchmarkError):
@@ -535,6 +545,16 @@ class JsonBenchmarkStore:
                 self._write(updated)
                 self._records = updated
 
+    def discard(self, key: BenchmarkRecordKey) -> None:
+        if not isinstance(key, BenchmarkRecordKey):
+            raise TypeError("key must be a BenchmarkRecordKey.")
+        with self._lock:
+            with _benchmark_store_process_lock(self.path):
+                updated = self._read_records()
+                if updated.pop(key.digest, None) is not None:
+                    self._write(updated)
+                self._records = updated
+
     def records(self) -> tuple[BenchmarkRecord, ...]:
         with self._lock:
             self._records = self._read_records()
@@ -659,6 +679,9 @@ class CandidateQuarantineEntry:
     implementation_id: str
     reason: str
     benchmark_key_digest: str = ""
+    failure_kind: BenchmarkCandidateFailureKind = (
+        BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+    )
 
 
 class CandidateQuarantine:
@@ -705,13 +728,22 @@ class CandidateQuarantine:
         implementation_id: str,
         reason: str,
         benchmark_key_digest: str = "",
+        failure_kind: BenchmarkCandidateFailureKind | str = (
+            BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+        ),
     ) -> CandidateQuarantineEntry:
+        kind = (
+            failure_kind
+            if isinstance(failure_kind, BenchmarkCandidateFailureKind)
+            else BenchmarkCandidateFailureKind(str(failure_kind).strip())
+        )
         entry = CandidateQuarantineEntry(
             workload_fingerprint=str(workload_fingerprint),
             environment_fingerprint=str(environment_fingerprint),
             implementation_id=str(implementation_id),
             reason=str(reason).strip() or "candidate failed validation",
             benchmark_key_digest=str(benchmark_key_digest),
+            failure_kind=kind,
         )
         key = self._key(
             entry.workload_fingerprint,
@@ -750,6 +782,9 @@ class _CandidateState:
     synchronized_observations: list[bool] = field(default_factory=list)
     transfer_inclusion_observations: list[bool] = field(default_factory=list)
     error: str = ""
+    failure_kind: BenchmarkCandidateFailureKind = (
+        BenchmarkCandidateFailureKind.NONE
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,6 +973,7 @@ class NodeBenchmarkService:
             )
             if quarantine is not None:
                 state.error = f"quarantined: {quarantine.reason}"
+                state.failure_kind = quarantine.failure_kind
                 continue
             self._check_abort(request, started, cancelled)
             try:
@@ -968,7 +1004,14 @@ class NodeBenchmarkService:
                 continue
             if not result.passed:
                 detail = result.detail or "scientific parity check failed"
-                self._quarantine_state(request, state, detail)
+                self._quarantine_state(
+                    request,
+                    state,
+                    detail,
+                    failure_kind=(
+                        BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+                    ),
+                )
                 continue
             state.parity_passed = True
             self._check_abort(request, started, cancelled)
@@ -1171,6 +1214,7 @@ class NodeBenchmarkService:
                 paired.sample_count if paired is not None else 0
             ),
             paired_bootstrap_seed=(paired.seed if paired is not None else 0),
+            failure_kind=state.failure_kind,
         )
 
     @staticmethod
@@ -1189,28 +1233,22 @@ class NodeBenchmarkService:
             candidate = states[implementation_id]
             if len(candidate.warm_seconds) != len(reference.warm_seconds):
                 continue
-            paired_speedups = tuple(
-                _finite_speedup(cpu, accelerated)
-                for cpu, accelerated in zip(
-                    reference.warm_seconds,
-                    candidate.warm_seconds,
-                    strict=True,
+            decisions = []
+            for cpu_seconds, candidate_seconds in zip(
+                reference.warm_seconds,
+                candidate.warm_seconds,
+                strict=True,
+            ):
+                material = max(0.010, 0.05 * cpu_seconds)
+                saving = cpu_seconds - candidate_seconds
+                decisions.append(
+                    1 if saving > material else -1 if -saving > material else 0
                 )
-            )
-            median_cpu = float(statistics.median(reference.warm_seconds))
-            median_candidate = float(statistics.median(candidate.warm_seconds))
-            local_noise = max(0.010, 0.05 * median_cpu)
-            saving = median_cpu - median_candidate
-            near_band = max(0.005, 0.05 * median_cpu)
-            near_threshold = abs(saving - local_noise) <= near_band
-            ratio_median = float(statistics.median(paired_speedups))
-            ratio_mad = float(
-                statistics.median(
-                    abs(value - ratio_median) for value in paired_speedups
-                )
-            )
-            high_variance = ratio_mad / max(abs(ratio_median), 1e-12) > 0.05
-            if near_threshold or high_variance:
+            # A unanimous material winner (or loser) is already decisive.  Any
+            # mixed or threshold-sized result receives more paired evidence.
+            if not decisions or decisions[0] == 0 or any(
+                decision != decisions[0] for decision in decisions[1:]
+            ):
                 return True
         return False
 
@@ -1371,15 +1409,25 @@ class NodeBenchmarkService:
         request: NodeBenchmarkRequest,
         state: _CandidateState,
         reason: str,
+        *,
+        failure_kind: BenchmarkCandidateFailureKind = (
+            BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
+        ),
     ) -> None:
         state.error = reason
-        self.quarantine.add(
-            request.workload.fingerprint,
-            request.environment_fingerprint,
-            _implementation_token(state.implementation),
-            reason,
-            request.key.digest,
-        )
+        state.failure_kind = failure_kind
+        # Scientific parity mismatches are deterministic for the exact workload
+        # and implementation identity.  Runtime/OOM/timing failures are not:
+        # exclude them from this transaction, but allow a later retry.
+        if failure_kind is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY:
+            self.quarantine.add(
+                request.workload.fingerprint,
+                request.environment_fingerprint,
+                _implementation_token(state.implementation),
+                reason,
+                request.key.digest,
+                failure_kind,
+            )
 
     def _check_abort(
         self,
@@ -1988,6 +2036,7 @@ __all__ = [
     "DEFAULT_CONFIDENCE_LEVEL",
     "HOST_RUNTIME_ID",
     "MINIMUM_WARM_ROUNDS",
+    "SCREENING_MINIMUM_WARM_ROUNDS",
     "BenchmarkBudgetExceeded",
     "BenchmarkCancelled",
     "BenchmarkError",

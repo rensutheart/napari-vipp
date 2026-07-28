@@ -488,6 +488,11 @@ def _workflow_metadata_to_dict(
             raw_vipp["thumbnails"],
             node_id_set,
         )
+    if "compute_optimizer" in raw_vipp:
+        vipp["compute_optimizer"] = _compute_optimizer_metadata_to_dict(
+            raw_vipp["compute_optimizer"],
+            node_id_set,
+        )
     return {"vipp": vipp} if vipp else {}
 
 
@@ -705,6 +710,41 @@ def _thumbnail_metadata_to_dict(
         seen.add(key)
         disabled_node_ids.append(node_id)
     return {"disabled_node_ids": disabled_node_ids}
+
+
+def _compute_optimizer_metadata_to_dict(
+    raw_optimizer: Any,
+    node_id_set: set[str],
+) -> dict[str, Any]:
+    if not isinstance(raw_optimizer, dict):
+        raise ValueError("Workflow compute optimizer metadata must be an object.")
+    unknown = set(raw_optimizer) - {"locked_node_ids"}
+    if unknown:
+        names = ", ".join(sorted(map(str, unknown)))
+        raise ValueError(
+            f"Unknown workflow compute optimizer metadata field(s): {names}."
+        )
+    raw_locked = raw_optimizer.get("locked_node_ids", [])
+    if not isinstance(raw_locked, list):
+        raise ValueError(
+            "Workflow compute optimizer metadata locked_node_ids must be a list."
+        )
+    locked: list[str] = []
+    for raw_node_id in raw_locked:
+        if not isinstance(raw_node_id, str) or not raw_node_id.strip():
+            raise ValueError(
+                "Workflow compute optimizer lock IDs must be non-empty strings."
+            )
+        node_id = raw_node_id.strip()
+        if node_id not in node_id_set:
+            raise ValueError(
+                "Workflow compute optimizer metadata references missing node "
+                f"{node_id!r}."
+            )
+        locked.append(node_id)
+    if len(set(locked)) != len(locked):
+        raise ValueError("Workflow compute optimizer lock IDs must be unique.")
+    return {"locked_node_ids": sorted(locked)}
 
 
 def _optional_node_id(

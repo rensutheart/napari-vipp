@@ -5,7 +5,10 @@ from dataclasses import replace
 
 import pytest
 
-from napari_vipp.core.compute import WorkloadDescriptor
+from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
+    WorkloadDescriptor,
+)
 from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
@@ -191,6 +194,10 @@ def test_benchmark_checks_all_parity_before_cold_and_paired_warm_timing():
     assert results["cuda-bad"].cold_seconds is None
     assert results["cuda-bad"].warm_seconds == ()
     assert results["cuda-bad"].error == "values differ"
+    assert (
+        results["cuda-bad"].failure_kind
+        is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+    )
     assert record.accepted_implementation_id == "cuda-cupy"
     assert service.store.get(request.key) == record
     assert len(service.store) == 1
@@ -233,6 +240,53 @@ def test_quarantined_candidate_is_not_reexecuted_for_same_workload_environment()
     assert bad.error == "quarantined: values differ"
     assert len(service.quarantine.entries()) == 1
     assert len(service.store) == 1
+
+
+def test_transient_candidate_failure_is_not_durably_quarantined():
+    clock = ManualClock()
+    events: list[str] = []
+    attempts = 0
+
+    def flaky(private_input):
+        nonlocal attempts
+        attempts += 1
+        events.append("cuda-flaky")
+        if attempts == 1:
+            raise RuntimeError("temporary CUDA failure")
+        clock.advance(0.04)
+        return private_input.pop("value") * 2
+
+    request = _request(
+        clock=clock,
+        events=events,
+        live_input={"value": 3},
+        bad=False,
+    )
+    request = replace(
+        request,
+        candidates=(BenchmarkImplementation("cuda-flaky", flaky),),
+    )
+    service = NodeBenchmarkService(clock=clock)
+
+    failed = service.benchmark(request)
+    failed_candidate = next(
+        item for item in failed.candidates if item.implementation_id == "cuda-flaky"
+    )
+    recovered = service.benchmark(request)
+    recovered_candidate = next(
+        item
+        for item in recovered.candidates
+        if item.implementation_id == "cuda-flaky"
+    )
+
+    assert (
+        failed_candidate.failure_kind
+        is BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
+    )
+    assert service.quarantine.entries() == ()
+    assert recovered_candidate.parity_passed
+    assert not recovered_candidate.error
+    assert recovered_candidate.failure_kind is BenchmarkCandidateFailureKind.NONE
 
 
 def test_writer_is_rejected_before_input_or_implementation_is_touched():
@@ -368,6 +422,50 @@ def test_key_includes_effective_profile_and_exact_implementation_versions():
         "cuda-cupy@unspecified",
     )
     assert request.key.policy_id.startswith("paired-warm-v1@")
+
+
+def test_completed_record_identity_does_not_depend_on_abort_budget():
+    clock = ManualClock()
+    events: list[str] = []
+    request = _request(
+        clock=clock,
+        events=events,
+        live_input={"value": 3},
+        bad=False,
+        time_budget_seconds=1.0,
+    )
+
+    assert request.key == replace(request, time_budget_seconds=99.0).key
+
+
+@pytest.mark.parametrize(
+    ("gpu_duration", "expected_rounds"),
+    [(0.04, 3), (0.095, 15)],
+)
+def test_progressive_screening_stops_decisive_results_and_expands_close_ones(
+    gpu_duration,
+    expected_rounds,
+):
+    clock = ManualClock()
+    events: list[str] = []
+    request = replace(
+        _request(
+            clock=clock,
+            events=events,
+            live_input={"value": 3},
+            bad=False,
+            gpu_duration=gpu_duration,
+        ),
+        warm_rounds=3,
+        adaptive_rounds=True,
+        max_warm_rounds=15,
+    )
+
+    record = NodeBenchmarkService(clock=clock).benchmark(request)
+
+    assert {
+        len(candidate.warm_seconds) for candidate in record.candidates
+    } == {expected_rounds}
 
 
 def test_bootstrap_lower_bound_must_exclude_one_for_candidate_selection():

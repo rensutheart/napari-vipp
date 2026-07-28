@@ -20,6 +20,7 @@ class WorkflowHistorySnapshot:
     compute_mode: str = "auto"
     compute_fallback_policy: str = "visible"
     compute_node_preferences: tuple[tuple[str, str, str], ...] = ()
+    compute_optimizer_locked_node_ids: tuple[str, ...] = ()
 
 
 class WorkflowHistory:

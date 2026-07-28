@@ -93,11 +93,22 @@ class WidgetLifecycle:
             "_pipeline_optimizer_dialog",
         ):
             dialog = getattr(widget, dialog_name, None)
-            if dialog is not None and getattr(dialog, "running", False):
+            if dialog is not None:
                 try:
-                    dialog.cancel()
+                    shutdown = getattr(dialog, "shutdown", None)
+                    if callable(shutdown):
+                        shutdown()
+                    else:
+                        if getattr(dialog, "running", False):
+                            dialog.cancel()
+                        dialog.hide()
+                        dialog.deleteLater()
                 except Exception:
                     pass
+            setattr(widget, dialog_name, None)
+        widget._node_benchmark_baseline = None
+        widget._pipeline_optimizer_baseline = None
+        widget._pipeline_optimizer_source_signature = None
         for pool_name in (
             "_node_benchmark_thread_pool",
             "_pipeline_optimizer_thread_pool",

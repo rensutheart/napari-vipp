@@ -9,6 +9,7 @@ complete parity-qualified record is published to a machine-local JSON store.
 
 from __future__ import annotations
 
+import importlib.metadata
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -20,11 +21,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from napari_vipp.core.compute import (
+    BenchmarkCandidateFailureKind,
     BenchmarkRecord,
     ComputeEnvironment,
     ComputeRequest,
     NodeComputePreference,
     NodePreferenceKind,
+    canonical_digest,
 )
 from napari_vipp.core.compute_benchmark import (
     ADAPTIVE_WARM_ROUNDS,
@@ -63,6 +66,33 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[["NodeBenchmarkProgress"], None]
 CancelCallback = Callable[[], bool]
 _DEFAULT_ACCELERATOR_RESERVE_BYTES = 512 * 1024**2
+_BENCHMARK_ENVIRONMENT_POLICY_ID = "node-benchmark-environment-v2"
+_SCIENTIFIC_STACK_DISTRIBUTIONS = (
+    "napari-vipp",
+    "numpy",
+    "scipy",
+    "scikit-image",
+)
+
+
+def benchmark_environment_fingerprint(environment: ComputeEnvironment) -> str:
+    """Bind reusable timings to the exact CPU/GPU scientific software stack."""
+
+    if not isinstance(environment, ComputeEnvironment):
+        raise TypeError("environment must be a ComputeEnvironment.")
+    versions: dict[str, str] = {}
+    for distribution in _SCIENTIFIC_STACK_DISTRIBUTIONS:
+        try:
+            versions[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            versions[distribution] = "not-installed"
+    return canonical_digest(
+        {
+            "policy": _BENCHMARK_ENVIRONMENT_POLICY_ID,
+            "compute_environment": environment.fingerprint,
+            "scientific_stack": versions,
+        }
+    )
 
 
 class NodeBenchmarkPhase(StrEnum):
@@ -218,6 +248,50 @@ class ApplicationNodeBenchmarkResult:
         expected = self.plan.preference_for(self.record)
         if self.winner_preference != expected:
             raise ValueError("winner_preference does not match the benchmark record.")
+
+
+def _record_is_complete_for_plan(
+    record: BenchmarkRecord,
+    plan: ApplicationNodeBenchmarkPlan,
+) -> bool:
+    """Distinguish a completed rejection from incomplete/corrupt evidence."""
+
+    request = plan.registered.request
+    expected_ids = {
+        request.reference.implementation_id,
+        *(candidate.implementation_id for candidate in request.candidates),
+    }
+    by_id = {candidate.implementation_id: candidate for candidate in record.candidates}
+    if len(by_id) != len(record.candidates) or set(by_id) != expected_ids:
+        return False
+
+    def has_complete_timings(implementation_id: str) -> bool:
+        candidate = by_id[implementation_id]
+        return (
+            candidate.parity_passed
+            and not candidate.error
+            and candidate.cold_seconds is not None
+            and len(candidate.warm_seconds) >= request.warm_rounds
+        )
+
+    reference_id = request.reference.implementation_id
+    accepted_id = str(record.accepted_implementation_id).strip()
+    if (
+        accepted_id not in by_id
+        or not has_complete_timings(reference_id)
+        or not has_complete_timings(accepted_id)
+    ):
+        return False
+
+    # Qualified alternatives require complete timings.  Only a typed scientific
+    # parity mismatch is durable rejection evidence.  Runtime, OOM, cleanup, or
+    # timing failures remain retryable and invalidate reuse of the whole record.
+    return all(
+        candidate.failure_kind
+        is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+        or has_complete_timings(candidate.implementation_id)
+        for candidate in record.candidates
+    )
 
 
 class ApplicationNodeBenchmarkCoordinator:
@@ -405,7 +479,9 @@ class ApplicationNodeBenchmarkCoordinator:
             call,
             admitted_specs=tuple(admitted),
             registry=self.registry,
-            environment_fingerprint=selected_environment.fingerprint,
+            environment_fingerprint=benchmark_environment_fingerprint(
+                selected_environment
+            ),
             device_id=resolved_device,
             memory_limit_bytes=effective_memory_limit,
             safety_reserve_bytes=effective_safety_reserve,
@@ -485,6 +561,32 @@ class ApplicationNodeBenchmarkCoordinator:
             self._PROGRESS_TOTAL,
             "Benchmark completed and local evidence was saved.",
         )
+        return ApplicationNodeBenchmarkResult(plan, record, preference)
+
+    def cached_result(
+        self,
+        plan: ApplicationNodeBenchmarkPlan,
+    ) -> ApplicationNodeBenchmarkResult | None:
+        """Return complete exact evidence, including rejected alternatives.
+
+        A typed deterministic scientific-parity failure is a completed result,
+        not a partial benchmark transaction. Keeping that result reusable lets
+        the pipeline optimizer exclude only the rejected implementation without
+        repeatedly timing the CPU and every other qualified alternative. Runtime,
+        OOM, cleanup, and timing failures remain retryable cache misses.
+        """
+
+        if not isinstance(plan, ApplicationNodeBenchmarkPlan):
+            raise TypeError("plan must be an ApplicationNodeBenchmarkPlan.")
+        if plan.store_path != self.store.path:
+            raise ValueError("plan belongs to a different local benchmark store.")
+        record = self.store.get(plan.registered.request.key)
+        if record is None or not _record_is_complete_for_plan(record, plan):
+            return None
+        try:
+            preference = plan.preference_for(record)
+        except (TypeError, ValueError):
+            return None
         return ApplicationNodeBenchmarkResult(plan, record, preference)
 
     def benchmark(
@@ -876,5 +978,6 @@ __all__ = [
     "NodeBenchmarkPhase",
     "NodeBenchmarkProgress",
     "NodeBenchmarkUnavailable",
+    "benchmark_environment_fingerprint",
     "stable_preference_for_benchmark_winner",
 ]

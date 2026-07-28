@@ -543,6 +543,14 @@ class BenchmarkRecordKey:
         return canonical_digest(asdict(self))
 
 
+class BenchmarkCandidateFailureKind(StrEnum):
+    """Typed provenance for a benchmark candidate that was not qualified."""
+
+    NONE = ""
+    SCIENTIFIC_PARITY = "scientific-parity"
+    TRANSIENT_RUNTIME = "transient-runtime"
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkCandidateResult:
     implementation_id: str
@@ -565,6 +573,9 @@ class BenchmarkCandidateResult:
     paired_speedup_lower_confidence_bound: float | None = None
     paired_bootstrap_samples: int = 0
     paired_bootstrap_seed: int = 0
+    failure_kind: BenchmarkCandidateFailureKind | str = (
+        BenchmarkCandidateFailureKind.NONE
+    )
 
     def __post_init__(self) -> None:
         implementation_id = str(self.implementation_id).strip()
@@ -620,6 +631,26 @@ class BenchmarkCandidateResult:
         timing_scope = str(self.timing_scope).strip()
         if not timing_scope:
             raise ValueError("timing_scope must not be empty.")
+        failure_kind = (
+            self.failure_kind
+            if isinstance(self.failure_kind, BenchmarkCandidateFailureKind)
+            else BenchmarkCandidateFailureKind(str(self.failure_kind).strip())
+        )
+        if (
+            failure_kind is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+            and (self.parity_passed or not str(self.error).strip())
+        ):
+            raise ValueError(
+                "scientific-parity failure provenance requires a failed parity "
+                "result with an error detail."
+            )
+        if (
+            failure_kind is BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
+            and not str(self.error).strip()
+        ):
+            raise ValueError(
+                "transient-runtime failure provenance requires an error detail."
+            )
         if not isinstance(self.synchronized, bool):
             raise TypeError("synchronized must be a boolean.")
         if not isinstance(self.transfers_included, bool):
@@ -631,6 +662,7 @@ class BenchmarkCandidateResult:
             object.__setattr__(self, name, tuple(float(value) for value in values))
         object.__setattr__(self, "implementation_id", implementation_id)
         object.__setattr__(self, "timing_scope", timing_scope)
+        object.__setattr__(self, "failure_kind", failure_kind)
         object.__setattr__(
             self, "warm_seconds", tuple(float(value) for value in self.warm_seconds)
         )
