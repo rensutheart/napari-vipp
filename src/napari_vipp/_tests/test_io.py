@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import imageio.v3 as iio
 import numpy as np
@@ -431,9 +431,9 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     path.write_bytes(b"fake nd2")
 
     class FakeND2File:
-        shape = (2, 3, 4, 5)
+        shape = (2, 3, 2, 4, 5)
         dtype = np.dtype("uint16")
-        sizes = {"T": 2, "C": 3, "Y": 4, "X": 5}
+        sizes = MappingProxyType({"T": 2, "Z": 3, "C": 2, "Y": 4, "X": 5})
         attributes = {"bitsPerComponentSignificant": 16}
         experiment = ()
         text_info = {
@@ -476,7 +476,7 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     fake_nd2 = SimpleNamespace(
         ND2File=FakeND2File,
         imread=lambda *_args, **_kwargs: np.zeros(
-            (2, 3, 4, 5),
+            (2, 3, 2, 4, 5),
             dtype=np.uint16,
         ),
     )
@@ -492,9 +492,10 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     loaded = read_image(path)
 
     assert inspection.format == "nikon-nd2"
-    assert inspection.series[0].axes == "TCYX"
-    assert loaded.image_state.axis_order == "TCYX"
+    assert inspection.series[0].axes == "TZCYX"
+    assert loaded.image_state.axis_order == "TZCYX"
     assert [axis.scale for axis in loaded.image_state.axes] == [
+        1.0,
         1.0,
         1.0,
         0.22,
@@ -506,6 +507,23 @@ def test_nd2_microscope_reader_normalizes_metadata(monkeypatch, tmp_path):
     assert loaded.image_state.acquisition.refractive_index == 1.515
     assert loaded.image_state.acquisition.deconvolution_applied is True
     assert loaded.image_state.acquisition.deconvolution_method == "Richardson-Lucy"
+
+
+@pytest.mark.parametrize(
+    "sizes",
+    (
+        {"T": 2, "Z": 3, "C": 2, "Y": 4, "X": 6},
+        {"T": 2, "Z": 3, "CC": 2, "Y": 4, "X": 5},
+        {1: 2, "Z": 3, "C": 2, "Y": 4, "X": 5},
+        {"t": 2, "T": 3, "C": 2, "Y": 4, "X": 5},
+        {"T": True, "Z": 3, "C": 2, "Y": 4, "X": 5},
+        {"T": 2.0, "Z": 3, "C": 2, "Y": 4, "X": 5},
+    ),
+)
+def test_nd2_axis_order_falls_back_for_invalid_size_mappings(sizes):
+    nd_file = SimpleNamespace(sizes=MappingProxyType(sizes))
+
+    assert microscope_io._nd2_axis_order(nd_file, (2, 3, 2, 4, 5)) == "TCZYX"
 
 
 def test_microscope_reader_reports_missing_optional_dependency(

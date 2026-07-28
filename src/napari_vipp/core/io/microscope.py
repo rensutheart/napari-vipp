@@ -607,8 +607,29 @@ def _nd2_array(nd2, path: Path):
 
 def _nd2_axis_order(nd_file, shape: tuple[int, ...]) -> str:
     sizes = getattr(nd_file, "sizes", None)
-    if isinstance(sizes, dict) and len(sizes) == len(shape):
-        labels = [str(label) for label in sizes]
+    if not isinstance(sizes, Mapping) or len(sizes) != len(shape):
+        return _fallback_axis_order(shape)
+
+    labels: list[str] = []
+    declared_shape: list[int] = []
+    for raw_label, raw_size in sizes.items():
+        if not isinstance(raw_label, str):
+            return _fallback_axis_order(shape)
+        label = raw_label.strip().upper()
+        if len(label) != 1 or label in labels:
+            return _fallback_axis_order(shape)
+        if (
+            isinstance(raw_size, (bool, np.bool_))
+            or not isinstance(raw_size, (int, np.integer))
+            or int(raw_size) < 1
+        ):
+            return _fallback_axis_order(shape)
+        labels.append(label)
+        declared_shape.append(int(raw_size))
+
+    if tuple(declared_shape) != tuple(shape):
+        return _fallback_axis_order(shape)
+    if labels:
         return _axis_order_label(labels)
     return _fallback_axis_order(shape)
 
