@@ -29,9 +29,11 @@ from qtpy.QtWidgets import (
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
+    QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -51,6 +53,54 @@ class PortLabelMode(StrEnum):
     HIDE_ALL = "Hide all"
     AMBIGUOUS_ONLY = "Ambiguous only"
     SHOW_ALL = "Show all"
+
+
+class ComputeBadgeKind(StrEnum):
+    """Presentation-only identities for a node's accepted compute result."""
+
+    CPU = "cpu"
+    CUPY = "cupy"
+    CUCIM = "cucim"
+    CPU_FALLBACK = "cpu_fallback"
+
+
+_COMPUTE_BADGE_LABELS = {
+    ComputeBadgeKind.CPU: "CPU",
+    ComputeBadgeKind.CUPY: "GPU · CuPy",
+    ComputeBadgeKind.CUCIM: "GPU · cuCIM",
+    ComputeBadgeKind.CPU_FALLBACK: "CPU fallback",
+}
+
+_COMPUTE_BADGE_COLORS = {
+    ComputeBadgeKind.CPU: ("#334155", "#e2e8f0", "#64748b"),
+    ComputeBadgeKind.CUPY: ("#1e3a5f", "#bfdbfe", "#3b82f6"),
+    ComputeBadgeKind.CUCIM: ("#064e3b", "#bbf7d0", "#10b981"),
+    ComputeBadgeKind.CPU_FALLBACK: ("#78350f", "#fde68a", "#f59e0b"),
+}
+
+
+def _coerce_compute_badge_kind(
+    value: ComputeBadgeKind | str,
+) -> ComputeBadgeKind:
+    if isinstance(value, ComputeBadgeKind):
+        return value
+    normalized = str(value).strip().casefold().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "gpu_·_cupy": ComputeBadgeKind.CUPY,
+        "gpu_cupy": ComputeBadgeKind.CUPY,
+        "gpu_·_cucim": ComputeBadgeKind.CUCIM,
+        "gpu_cucim": ComputeBadgeKind.CUCIM,
+        "fallback_cpu": ComputeBadgeKind.CPU_FALLBACK,
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    try:
+        return ComputeBadgeKind(normalized)
+    except ValueError as exc:
+        choices = ", ".join(kind.value for kind in ComputeBadgeKind)
+        raise ValueError(
+            f"Unknown compute badge kind {value!r}; expected one of: {choices}."
+        ) from exc
 
 
 def _coerce_port_label_mode(value: PortLabelMode | str) -> PortLabelMode:
@@ -158,6 +208,24 @@ class NodeCard(QFrame):
         self.accent_bar.setFixedHeight(4)
         self.title_label = QLabel(title)
         self.title_label.setStyleSheet("font-weight: 650;")
+        self.title_label.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred,
+        )
+        self.compute_badge = QLabel("")
+        self.compute_badge.setObjectName("NodeComputeBadge")
+        self.compute_badge.setAlignment(Qt.AlignCenter)
+        self.compute_badge.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.compute_badge.hide()
+        self._compute_badge_kind: ComputeBadgeKind | None = None
+        self._compute_badge_stale = False
+        self._compute_badge_tooltip = ""
+        self.title_row = QWidget(self)
+        title_layout = QHBoxLayout(self.title_row)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(6)
+        title_layout.addWidget(self.title_label, 1)
+        title_layout.addWidget(self.compute_badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.category_label = QLabel(category)
         self.category_label.setObjectName("NodeCategory")
 
@@ -192,7 +260,7 @@ class NodeCard(QFrame):
         self.card_layout.setContentsMargins(*self.BASE_CONTENT_MARGINS)
         self.card_layout.addWidget(self.accent_bar)
         self.card_layout.addWidget(self.category_label)
-        self.card_layout.addWidget(self.title_label)
+        self.card_layout.addWidget(self.title_row)
         self.card_layout.addWidget(self.preview)
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
@@ -403,6 +471,62 @@ class NodeCard(QFrame):
 
     def set_metadata_summary(self, text: str) -> None:
         self.metadata_label.setText(text)
+
+    def set_compute_badge(
+        self,
+        kind: ComputeBadgeKind | str | None,
+        *,
+        tooltip: str = "",
+        stale: bool = False,
+    ) -> None:
+        """Show one compact, presentation-only accepted-compute badge.
+
+        The graph deliberately does not interpret execution reports. Its owner
+        supplies an already resolved identity and may mark it stale while a
+        replacement result is pending. Passing ``None`` clears the badge.
+        """
+        if kind is None:
+            self._compute_badge_kind = None
+            self._compute_badge_stale = False
+            self._compute_badge_tooltip = ""
+            self.compute_badge.clear()
+            self.compute_badge.setToolTip("")
+            self.title_row.setToolTip("")
+            self.compute_badge.setAccessibleName("")
+            self.compute_badge.hide()
+            return
+
+        resolved = _coerce_compute_badge_kind(kind)
+        is_stale = bool(stale)
+        detail = str(tooltip or "").strip()
+        label = _COMPUTE_BADGE_LABELS[resolved]
+        if is_stale:
+            background, foreground, border = ("#292524", "#a8a29e", "#78716c")
+            visible_tooltip = "Previous result (stale)."
+            if detail:
+                visible_tooltip = f"{visible_tooltip} {detail}"
+        else:
+            background, foreground, border = _COMPUTE_BADGE_COLORS[resolved]
+            visible_tooltip = detail
+
+        self._compute_badge_kind = resolved
+        self._compute_badge_stale = is_stale
+        self._compute_badge_tooltip = detail
+        self.compute_badge.setText(label)
+        self.compute_badge.setToolTip(visible_tooltip)
+        # Mirror the explanation on the row as well, so it remains available
+        # while moving between the compact badge and its title.
+        self.title_row.setToolTip(visible_tooltip)
+        accessible_state = "stale previous result" if is_stale else "used"
+        self.compute_badge.setAccessibleName(f"Compute {accessible_state}: {label}")
+        self.compute_badge.setStyleSheet(
+            "QLabel#NodeComputeBadge {"
+            f" background: {background}; color: {foreground};"
+            f" border: 1px solid {border}; border-radius: 7px;"
+            " font-size: 9px; font-weight: 650; padding: 1px 5px;"
+            "}"
+        )
+        self.compute_badge.show()
 
     def _refresh_style(self) -> None:
         border = "#4b5563"
@@ -2579,6 +2703,42 @@ class PipelineGraphView(QGraphicsView):
             return
         for connection in proxy.connections:
             connection.update_path()
+
+    def set_node_compute_badge(
+        self,
+        node_id: str,
+        kind: ComputeBadgeKind | str | None,
+        *,
+        tooltip: str = "",
+        stale: bool = False,
+    ) -> None:
+        """Set one node's accepted-compute presentation without policy logic."""
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        before = proxy.sceneBoundingRect()
+        card.set_compute_badge(kind, tooltip=tooltip, stale=stale)
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
+        proxy.update()
+        for connection in proxy.connections:
+            connection.update_path()
+
+    def clear_node_compute_badge(self, node_id: str) -> None:
+        """Hide one node's accepted-compute presentation."""
+        self.set_node_compute_badge(node_id, None)
+
+    def clear_node_compute_badges(self, node_ids=None) -> None:
+        """Hide accepted-compute presentation for selected or all graph nodes."""
+        selected = tuple(self._cards) if node_ids is None else tuple(node_ids)
+        for node_id in selected:
+            self.clear_node_compute_badge(str(node_id))
 
     def set_pinned_node(self, node_id: str | None) -> None:
         for card_id, card in self._cards.items():

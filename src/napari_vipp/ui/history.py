@@ -17,6 +17,9 @@ class WorkflowHistorySnapshot:
     selected_node_id: str
     preview_disabled_node_ids: tuple[str, ...] = ()
     active_pinned_node_id: str | None = None
+    compute_mode: str = "auto"
+    compute_fallback_policy: str = "visible"
+    compute_node_preferences: tuple[tuple[str, str, str], ...] = ()
 
 
 class WorkflowHistory:

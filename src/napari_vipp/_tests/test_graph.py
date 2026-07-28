@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from qtpy.QtCore import QPoint, QPointF, QRectF, Qt
 from qtpy.QtGui import QPainterPath
 
 from napari_vipp._graph import (
     STALE_EXECUTION_ACCENT,
+    ComputeBadgeKind,
     PipelineGraphView,
     PortLabelMode,
     _wire_path,
@@ -147,9 +149,7 @@ def test_clicking_node_selects_it_without_inspect_button(qtbot):
 
     card = view._cards["gaussian"]
     preview_center = QPointF(card.preview.geometry().center())
-    start = view.mapFromScene(
-        view._proxies["gaussian"].mapToScene(preview_center)
-    )
+    start = view.mapFromScene(view._proxies["gaussian"].mapToScene(preview_center))
     qtbot.mouseClick(view.viewport(), Qt.LeftButton, pos=start)
 
     assert selected[-1] == "gaussian"
@@ -168,6 +168,117 @@ def test_pin_button_is_not_shown_on_node_cards(qtbot):
     assert view._cards["input"]._can_pin
     assert view._cards["gaussian"]._can_pin
     assert view._cards["threshold"]._can_pin
+
+
+def test_compute_badge_is_hidden_until_an_accepted_identity_is_supplied(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    card = view._cards["gaussian"]
+
+    assert card.compute_badge.isHidden()
+    assert card._compute_badge_kind is None
+    assert card.card_layout.indexOf(card.title_row) >= 0
+    assert card.title_label.parent() is card.title_row
+
+
+def test_compute_badge_renders_supported_cpu_and_gpu_identities(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    cases = (
+        (ComputeBadgeKind.CPU, "CPU"),
+        (ComputeBadgeKind.CUPY, "GPU · CuPy"),
+        (ComputeBadgeKind.CUCIM, "GPU · cuCIM"),
+        (ComputeBadgeKind.CPU_FALLBACK, "CPU fallback"),
+    )
+
+    for kind, label in cases:
+        view.set_node_compute_badge(
+            "gaussian",
+            kind,
+            tooltip=f"Actual implementation for {label}",
+        )
+
+        assert not card.compute_badge.isHidden()
+        assert card.compute_badge.text() == label
+        assert card.compute_badge.toolTip() == f"Actual implementation for {label}"
+        assert card.compute_badge.accessibleName() == f"Compute used: {label}"
+
+    assert "#f59e0b" in card.compute_badge.styleSheet()
+
+
+def test_compute_badge_hover_tooltip_is_reachable(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    view.set_node_compute_badge(
+        "gaussian",
+        "cpu_fallback",
+        tooltip="cuCIM dependency unavailable.",
+    )
+
+    assert not card.compute_badge.testAttribute(Qt.WA_TransparentForMouseEvents)
+    assert "cuCIM dependency unavailable" in card.compute_badge.toolTip()
+    assert card.title_row.toolTip() == card.compute_badge.toolTip()
+
+
+def test_stale_compute_badge_keeps_identity_but_is_visibly_muted(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+
+    view.set_node_compute_badge(
+        "gaussian",
+        "cucim",
+        tooltip="Used cucim-subtract-background-v2 on cuda:0.",
+        stale=True,
+    )
+
+    assert card.compute_badge.text() == "GPU · cuCIM"
+    assert card._compute_badge_stale is True
+    assert "#a8a29e" in card.compute_badge.styleSheet()
+    assert "Previous result (stale)." in card.compute_badge.toolTip()
+    assert "cuda:0" in card.compute_badge.toolTip()
+    assert "stale previous result" in card.compute_badge.accessibleName()
+
+
+def test_compute_badge_clear_api_supports_one_node_or_the_whole_graph(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.set_node_compute_badge("input", "cpu")
+    view.set_node_compute_badge("gaussian", "cupy")
+
+    view.clear_node_compute_badges(("input",))
+
+    assert view._cards["input"].compute_badge.isHidden()
+    assert not view._cards["gaussian"].compute_badge.isHidden()
+
+    view.clear_node_compute_badges()
+
+    assert all(card.compute_badge.isHidden() for card in view._cards.values())
+
+
+def test_compute_badge_does_not_replace_preview_processing_badge(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+
+    view.set_node_compute_badge("gaussian", "cupy")
+    view.set_node_processing("gaussian", True)
+
+    assert not card.compute_badge.isHidden()
+    assert not card.processing_badge.isHidden()
+    assert card.compute_badge.parent() is card.title_row
+    assert card.processing_badge.parent() is card
+
+
+def test_compute_badge_rejects_unknown_presentation_identity(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+
+    with pytest.raises(ValueError, match="Unknown compute badge kind"):
+        view.set_node_compute_badge("gaussian", "mystery-accelerator")
 
 
 def test_automatic_stale_node_is_visibly_amber(qtbot):
@@ -196,9 +307,7 @@ def test_node_context_menu_emits_requested_action(qtbot, monkeypatch):
 
     def fake_exec(menu, _pos):
         labels[:] = [
-            action.text()
-            for action in menu.actions()
-            if not action.isSeparator()
+            action.text() for action in menu.actions() if not action.isSeparator()
         ]
         return next(action for action in menu.actions() if action.text() == "Delete")
 
@@ -317,9 +426,7 @@ def test_connection_context_menu_can_request_insert(qtbot, monkeypatch):
 
     def fake_exec(menu, _pos):
         labels[:] = [
-            action.text()
-            for action in menu.actions()
-            if not action.isSeparator()
+            action.text() for action in menu.actions() if not action.isSeparator()
         ]
         return next(
             action
@@ -371,9 +478,7 @@ def test_releasing_loose_node_on_connection_requests_splice(qtbot):
     assert view._highlighted_connection is connection
     assert view._highlighted_connection_state == "full"
     assert view.release_existing_node_insert(node.id, old_pos, new_pos, scene_pos)
-    assert requests == [
-        (node.id, ("input", "gaussian", 0, 0), old_pos, new_pos)
-    ]
+    assert requests == [(node.id, ("input", "gaussian", 0, 0), old_pos, new_pos)]
     assert view._highlighted_connection is None
 
 
@@ -719,8 +824,7 @@ def test_ports_grow_for_hover_and_pending_connection_feedback(qtbot):
 
 def _path_intersects_rect(path: QPainterPath, rect: QRectF) -> bool:
     return any(
-        rect.contains(path.pointAtPercent(index / 120.0))
-        for index in range(121)
+        rect.contains(path.pointAtPercent(index / 120.0)) for index in range(121)
     )
 
 
@@ -824,9 +928,7 @@ def test_delete_key_prefers_selected_connection_over_selected_node(qtbot):
     removed_connections = []
     view.node_delete_requested.connect(deleted_nodes.append)
     view.connection_removed.connect(
-        lambda source, target, port: removed_connections.append(
-            (source, target, port)
-        )
+        lambda source, target, port: removed_connections.append((source, target, port))
     )
 
     view._proxies["gaussian"].setSelected(True)

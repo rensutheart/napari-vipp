@@ -81,6 +81,7 @@ from qtpy.QtWidgets import (
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp._graph import (
     STALE_EXECUTION_ACCENT,
+    ComputeBadgeKind,
     PipelineGraphView,
     PortLabelMode,
 )
@@ -115,6 +116,18 @@ from napari_vipp.core.channel_colors import (
     CHANNEL_COLOR_HEX,
     channel_color_labels_from_metadata,
     color_value_to_rgb,
+)
+from napari_vipp.core.compute import (
+    ComputeEnvironment,
+    ComputeMode,
+    ComputeRequest,
+    DecisionKind,
+    DecisionReason,
+    ExecutionReport,
+    FallbackPolicy,
+    NodeComputePreference,
+    NodeExecutionDecision,
+    NodePreferenceKind,
 )
 from napari_vipp.core.diagnostics import (
     PSF_EDGE_MASS_WARNING_FRACTION,
@@ -301,6 +314,16 @@ from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
+from napari_vipp.ui.compute import (
+    COMPUTE_MODE_OPTIONS,
+    ComputePresentationTone,
+    ComputeStatusSnapshot,
+    actual_decision_badge,
+    compute_toolbar_summary,
+    node_preference_options,
+    preference_from_value,
+    preference_to_value,
+)
 from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
@@ -426,6 +449,7 @@ from napari_vipp.ui.source_adapter import (
     SourceRevisionToken,
     apply_live_layer_axis_transform,
 )
+from napari_vipp.ui.status import MessageSeverity, StatusMessageStrip
 from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
@@ -497,6 +521,10 @@ class _IsolatedTuningSnapshot:
     execution_states: dict[str, str]
     execution_messages: dict[str, str]
     completed_node_ids: frozenset[str]
+    compute_decisions: dict[str, NodeExecutionDecision]
+    compute_decision_environments: dict[str, ComputeEnvironment]
+    stale_compute_badge_node_ids: frozenset[str]
+    execution_report: ExecutionReport | None
     undo_stack: tuple[WorkflowHistorySnapshot, ...]
     redo_stack: tuple[WorkflowHistorySnapshot, ...]
     batch_workflow_stale: bool
@@ -941,6 +969,8 @@ class VippWidget(QWidget):
     TOOLBAR_HIDE_CHECKBOXES_WIDTH = 1700
     TOOLBAR_HIDE_DROPDOWNS_WIDTH = 1500
     TOOLBAR_HIDE_ZOOM_WIDTH = 1050
+    TOOLBAR_HIDE_COMPUTE_WIDTH = 1350
+    TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
 
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
@@ -1002,7 +1032,7 @@ class VippWidget(QWidget):
         self._isolated_tuning_snapshot: _IsolatedTuningSnapshot | None = None
         self._isolated_tuning_has_changes = False
         self._last_pipeline_source_signature: tuple | None = None
-        self._toolbar_compact_stage: tuple[bool, bool, bool] | None = None
+        self._toolbar_compact_stage: tuple[bool, bool, bool, bool, bool] | None = None
         self._toolbar_checkbox_widgets: list[QWidget] = []
         self._toolbar_dropdown_widgets: list[QWidget] = []
         self._toolbar_zoom_widgets: list[QWidget] = []
@@ -1071,6 +1101,18 @@ class VippWidget(QWidget):
         self._graph_search_matches: tuple[GraphSearchMatch, ...] = ()
         self._graph_search_index = -1
         self._graph_search_highlighted_tunnel = ""
+        # Phase-1 GPU implementations remain deliberately experimental.  The
+        # development branch exposes them honestly while preserving the core
+        # admission tiers; provider packages are still imported only by an
+        # accepted background execution request.
+        self._compute_mode = ComputeMode.AUTO
+        self._compute_fallback_policy = FallbackPolicy.VISIBLE
+        self._compute_node_preferences: dict[str, NodeComputePreference] = {}
+        self._compute_allow_experimental = True
+        self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
+        self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
+        self._stale_compute_badge_node_ids: set[str] = set()
+        self._last_execution_report: ExecutionReport | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -1223,6 +1265,33 @@ class VippWidget(QWidget):
             "Show port names only on ambiguous multi-port nodes, on every node, "
             "or nowhere on the graph."
         )
+        self.compute_mode_combo = QComboBox()
+        for option in COMPUTE_MODE_OPTIONS:
+            self.compute_mode_combo.addItem(option.label, option.mode.value)
+            index = self.compute_mode_combo.count() - 1
+            self.compute_mode_combo.setItemData(
+                index, option.description, Qt.ToolTipRole
+            )
+        self.compute_mode_combo.setCurrentIndex(
+            self.compute_mode_combo.findData(ComputeMode.AUTO.value)
+        )
+        self.compute_mode_combo.setToolTip(
+            "Choose CPU for deterministic host execution, Auto for the best "
+            "validated implementation, or Selective for per-node choices. "
+            "GPU implementations on this development branch are experimental."
+        )
+        _configure_toolbar_combo(self.compute_mode_combo)
+        self.compute_status_label = QLabel("Auto")
+        self.compute_status_label.setObjectName("ComputeStatusPill")
+        self.compute_status_label.setToolTip(
+            "Actual CPU/GPU decisions appear here after an accepted run."
+        )
+        self.strict_compute_checkbox = QCheckBox("Strict selective GPU choices")
+        self.strict_compute_checkbox.setChecked(False)
+        self.strict_compute_checkbox.setToolTip(
+            "When enabled, an unavailable explicitly selected GPU implementation "
+            "fails instead of visibly falling back to CPU."
+        )
         self.cache_mode_combo = QComboBox()
         self.cache_mode_combo.addItems(CACHE_MODE_CHOICES)
         self.cache_mode_combo.setCurrentText(CACHE_MODE_KEEP_ALL)
@@ -1279,10 +1348,9 @@ class VippWidget(QWidget):
             "border-radius: 999px; background: #1f2937;"
         )
         self.version_label.setToolTip(f"napari-vipp {VIPP_VERSION}")
-        self.status_label = QLabel(
+        self.status_label = StatusMessageStrip(
             "Select an Image Source node to choose data for the workflow."
         )
-        self.status_label.setWordWrap(True)
 
         self.palette_search = QLineEdit()
         self.palette_search.setPlaceholderText("Search nodes")
@@ -1387,6 +1455,14 @@ class VippWidget(QWidget):
         )
         self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
         self.calculate_button = QPushButton("Calculate")
+        self.compute_group = QGroupBox("Compute (experimental GPU)")
+        self.node_compute_preference_combo = QComboBox()
+        self.node_compute_preference_combo.setToolTip(
+            "Choose how this node runs while the toolbar policy is Selective."
+        )
+        self.node_compute_note = QLabel("")
+        self.node_compute_note.setWordWrap(True)
+        self.node_compute_note.setStyleSheet("color: #94a3b8; font-size: 10px;")
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_group)
@@ -1492,6 +1568,7 @@ class VippWidget(QWidget):
 
         self._build_layout()
         self._connect_signals()
+        self._sync_compute_toolbar_summary()
         self._sync_toolbar_responsive_mode()
         self._autobind_default_image_sources()
         self._build_graph_from_pipeline()
@@ -1780,6 +1857,28 @@ class VippWidget(QWidget):
         )
         input_row.addWidget(self.graph_actions_toolbar_group)
 
+        self._toolbar_compute_separator = _toolbar_separator(6)
+        input_row.addWidget(self._toolbar_compute_separator)
+        self.compute_toolbar_group = QWidget(self)
+        compute_toolbar_layout = QHBoxLayout(self.compute_toolbar_group)
+        compute_toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        compute_toolbar_layout.setSpacing(5)
+        (
+            self.compute_toolbar_field,
+            self.compute_toolbar_label,
+        ) = _toolbar_field_pair(
+            "Compute",
+            self.compute_mode_combo,
+            parent=self.compute_toolbar_group,
+        )
+        compute_toolbar_layout.addWidget(self.compute_toolbar_field)
+        compute_toolbar_layout.addWidget(self.compute_status_label)
+        self.compute_toolbar_group.setSizePolicy(
+            QSizePolicy.Maximum,
+            QSizePolicy.Preferred,
+        )
+        input_row.addWidget(self.compute_toolbar_group)
+
         self._toolbar_settings_separator = _toolbar_separator(6)
         input_row.addWidget(self._toolbar_settings_separator)
         input_row.addWidget(self.settings_menu_button)
@@ -1792,7 +1891,13 @@ class VippWidget(QWidget):
             self.follow_dims_checkbox,
         ):
             widget.setVisible(False)
-        self._toolbar_dropdown_widgets = [self.thumbnail_toolbar_group]
+        self._toolbar_dropdown_widgets = [
+            self.thumbnail_toolbar_group,
+        ]
+        self._toolbar_compute_widgets = [
+            self._toolbar_compute_separator,
+            self.compute_toolbar_group,
+        ]
         self._toolbar_zoom_widgets = [self.zoom_toolbar_field]
         self._toolbar_settings_widgets = [
             self._toolbar_settings_separator,
@@ -1848,9 +1953,38 @@ class VippWidget(QWidget):
             self._expanded_toolbar_required_width(),
         )
         hide_dropdowns = 0 < width < expanded_width
-        hide_zoom = 0 < width < self.TOOLBAR_HIDE_ZOOM_WIDTH
+        hide_compute = 0 < width < self.TOOLBAR_HIDE_COMPUTE_WIDTH
+        zoom_required_width = self._toolbar_stage_required_width(
+            hide_dropdowns=hide_dropdowns,
+            hide_zoom=False,
+            hide_compute=hide_compute,
+            include_compute_status=False,
+        )
+        hide_zoom = 0 < width and (
+            width <= self.TOOLBAR_HIDE_ZOOM_WIDTH
+            or width < zoom_required_width
+        )
+        status_required_width = self._toolbar_stage_required_width(
+            hide_dropdowns=hide_dropdowns,
+            hide_zoom=hide_zoom,
+            hide_compute=hide_compute,
+            include_compute_status=True,
+        )
+        hide_compute_status = hide_compute or (
+            0 < width
+            and (
+                width < self.TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH
+                or width < status_required_width
+            )
+        )
         hide_checkboxes = True
-        stage = (hide_checkboxes, hide_dropdowns, hide_zoom)
+        stage = (
+            hide_checkboxes,
+            hide_dropdowns,
+            hide_zoom,
+            hide_compute_status,
+            hide_compute,
+        )
         if stage == self._toolbar_compact_stage:
             return
         self._toolbar_compact_stage = stage
@@ -1860,6 +1994,11 @@ class VippWidget(QWidget):
             widget.setVisible(not hide_dropdowns)
         for widget in self._toolbar_zoom_widgets:
             widget.setVisible(not hide_zoom)
+        for widget in self._toolbar_compute_widgets:
+            widget.setVisible(not hide_compute)
+        self.compute_status_label.setVisible(
+            not hide_compute and not hide_compute_status
+        )
         for widget in self._toolbar_settings_widgets:
             widget.setVisible(True)
         self._toolbar_zoom_separator.setVisible(
@@ -1874,37 +2013,90 @@ class VippWidget(QWidget):
 
     def _expanded_toolbar_required_width(self) -> int:
         """Return the width needed to show the complete first toolbar row."""
+        return self._toolbar_stage_required_width(
+            hide_dropdowns=False,
+            hide_zoom=False,
+            hide_compute=False,
+            include_compute_status=True,
+        )
+
+    def _toolbar_stage_required_width(
+        self,
+        *,
+        hide_dropdowns: bool,
+        hide_zoom: bool,
+        hide_compute: bool,
+        include_compute_status: bool,
+    ) -> int:
+        """Return the width that keeps primary toolbar actions uncompressed."""
         original_text = self.auto_structure_button.text()
-        self.auto_structure_button.setText("Auto structure graph")
+        self.auto_structure_button.setText(
+            "Structure" if hide_dropdowns or hide_zoom else "Auto structure graph"
+        )
         actions_layout = self.graph_actions_toolbar_group.layout()
         if actions_layout is not None:
             actions_layout.invalidate()
-        widgets = (
-            self.thumbnail_toolbar_group,
-            self._toolbar_zoom_separator,
-            self.zoom_toolbar_field,
-            self._toolbar_action_separator,
-            self.graph_actions_toolbar_group,
-            self._toolbar_settings_separator,
-            self.settings_menu_button,
+        widths: list[int] = []
+        if not hide_dropdowns:
+            widths.append(self.thumbnail_toolbar_group.sizeHint().width())
+        if not hide_dropdowns and not hide_zoom:
+            widths.append(self._toolbar_zoom_separator.sizeHint().width())
+        if not hide_zoom:
+            widths.append(self.zoom_toolbar_field.sizeHint().width())
+        if not hide_dropdowns or not hide_zoom:
+            widths.append(self._toolbar_action_separator.sizeHint().width())
+        widths.append(self.graph_actions_toolbar_group.sizeHint().width())
+        if not hide_compute:
+            widths.append(self._toolbar_compute_separator.sizeHint().width())
+            widths.append(
+                self._compute_toolbar_required_width(
+                    include_status=include_compute_status
+                )
+            )
+        widths.extend(
+            (
+                self._toolbar_settings_separator.sizeHint().width(),
+                self.settings_menu_button.sizeHint().width(),
+            )
         )
-        required = sum(widget.sizeHint().width() for widget in widgets)
-        required += self.main_toolbar_layout.spacing() * (len(widgets) - 1)
+        required = sum(widths)
+        required += self.main_toolbar_layout.spacing() * max(len(widths) - 1, 0)
         required += 12
         self.auto_structure_button.setText(original_text)
         if actions_layout is not None:
             actions_layout.invalidate()
         return required
 
+    def _compute_toolbar_required_width(self, *, include_status: bool) -> int:
+        layout = self.compute_toolbar_group.layout()
+        margins = layout.contentsMargins()
+        required = (
+            self.compute_toolbar_field.sizeHint().width()
+            + margins.left()
+            + margins.right()
+        )
+        if include_status:
+            required += layout.spacing() + self.compute_status_label.sizeHint().width()
+        return required
+
     def _populate_settings_toolbar_menu(self) -> None:
         menu = self.settings_menu
         menu.clear()
-        hide_checkboxes, hide_dropdowns, hide_zoom = self._toolbar_compact_stage or (
-            False,
-            False,
-            False,
-        )
+        (
+            _hide_checkboxes,
+            hide_dropdowns,
+            hide_zoom,
+            _hide_compute_status,
+            _hide_compute,
+        ) = self._toolbar_compact_stage or (False, False, False, False, False)
         added_section = False
+        self._add_combo_menu(menu, "Compute policy", self.compute_mode_combo)
+        self._add_checkbox_menu_action(
+            menu,
+            "Strict selective GPU choices",
+            self.strict_compute_checkbox,
+        )
+        menu.addSeparator()
         self._add_checkbox_menu_action(
             menu,
             "Save thumbnail visibility in workflows",
@@ -2110,6 +2302,11 @@ class VippWidget(QWidget):
         execution_layout.addWidget(self.auto_recalculate_notice)
         execution_layout.addWidget(self.calculate_button)
         layout.addWidget(self.execution_group)
+        compute_layout = QVBoxLayout(self.compute_group)
+        compute_layout.addWidget(self.node_compute_preference_combo)
+        compute_layout.addWidget(self.node_compute_note)
+        self.compute_group.setHidden(True)
+        layout.addWidget(self.compute_group)
         layout.addWidget(self.parameter_group)
         auto_layout = QVBoxLayout(self.auto_contrast_group)
         auto_form = QFormLayout()
@@ -2221,6 +2418,13 @@ class VippWidget(QWidget):
         self.port_label_mode_combo.currentTextChanged.connect(
             self._on_port_label_mode_changed
         )
+        self.compute_mode_combo.currentIndexChanged.connect(
+            self._on_compute_mode_changed
+        )
+        self.node_compute_preference_combo.currentIndexChanged.connect(
+            self._on_node_compute_preference_changed
+        )
+        self.strict_compute_checkbox.toggled.connect(self._on_strict_compute_toggled)
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
             self._on_memory_guard_setting_changed
@@ -2368,6 +2572,409 @@ class VippWidget(QWidget):
             self.status_label.setText("Centered workflow graph.")
         else:
             self.status_label.setText("Workflow graph is empty; returned to origin.")
+
+    def _set_status(
+        self,
+        text: str,
+        *,
+        severity: MessageSeverity | str = MessageSeverity.NEUTRAL,
+        actionable: bool = False,
+    ) -> None:
+        """Show one app-level VIPP message with explicit visual priority."""
+        self.status_label.show_message(
+            text,
+            severity=severity,
+            actionable=actionable,
+        )
+
+    def _current_compute_request(self) -> ComputeRequest:
+        """Return the immutable compute intent captured by the next run."""
+        valid_node_ids = set(self.pipeline.nodes)
+        preferences = {
+            node_id: preference
+            for node_id, preference in self._compute_node_preferences.items()
+            if node_id in valid_node_ids
+        }
+        return ComputeRequest(
+            mode=self._compute_mode,
+            node_preferences=preferences,
+            fallback_policy=(
+                self._compute_fallback_policy
+                if self._compute_mode is ComputeMode.SELECTIVE
+                else FallbackPolicy.VISIBLE
+            ),
+            allow_experimental=(
+                self._compute_allow_experimental
+                and self._compute_mode is not ComputeMode.CPU
+            ),
+        )
+
+    def _on_compute_mode_changed(self, index: int) -> None:
+        value = self.compute_mode_combo.itemData(int(index))
+        if value is None:
+            return
+        mode = ComputeMode.parse(value)
+        if mode is self._compute_mode:
+            self._sync_node_compute_control()
+            self._sync_compute_toolbar_summary()
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self._compute_mode = mode
+        self._push_undo_if_changed(before)
+        self._invalidate_compute_policy_results()
+        self._sync_node_compute_control()
+        self._sync_compute_toolbar_summary()
+        self._set_status(
+            f"Compute policy changed to {self.compute_mode_combo.currentText()}. "
+            "Recalculating with the new policy...",
+            severity=MessageSeverity.INFO,
+        )
+        self.run_pipeline()
+
+    def _on_strict_compute_toggled(self, checked: bool) -> None:
+        policy = FallbackPolicy.STRICT if checked else FallbackPolicy.VISIBLE
+        if policy is self._compute_fallback_policy:
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self._compute_fallback_policy = policy
+        self._push_undo_if_changed(before)
+        self._sync_compute_toolbar_summary()
+        if self._compute_mode is not ComputeMode.SELECTIVE:
+            return
+        self._invalidate_compute_policy_results()
+        self._set_status(
+            "Strict Selective fallback enabled; recalculating."
+            if checked
+            else "Visible CPU fallback enabled; recalculating.",
+            severity=MessageSeverity.INFO,
+        )
+        self.run_pipeline()
+
+    def _on_node_compute_preference_changed(self, index: int) -> None:
+        node_id = self._selected_node_id
+        if (
+            self._compute_mode is not ComputeMode.SELECTIVE
+            or node_id not in self.pipeline.nodes
+        ):
+            return
+        value = self.node_compute_preference_combo.itemData(int(index))
+        if value is None:
+            return
+        preference = preference_from_value(value)
+        current = self._compute_node_preferences.get(
+            node_id,
+            NodeComputePreference(),
+        )
+        if preference == current:
+            self._sync_node_compute_control()
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        if preference.kind is NodePreferenceKind.AUTO:
+            self._compute_node_preferences.pop(node_id, None)
+        else:
+            self._compute_node_preferences[node_id] = preference
+        self._push_undo_if_changed(before)
+        title = self._node_title(node_id)
+        label = self.node_compute_preference_combo.currentText()
+        self._invalidate_compute_policy_results()
+        self._sync_node_compute_control()
+        self._sync_compute_toolbar_summary()
+        self._set_status(
+            f"'{title}' compute preference changed to {label}. Recalculating...",
+            severity=MessageSeverity.INFO,
+        )
+        self.run_pipeline()
+
+    def _sync_node_compute_control(self) -> None:
+        node_id = self._selected_node_id
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or self._compute_mode is not ComputeMode.SELECTIVE:
+            self.compute_group.setHidden(True)
+            return
+        options = node_preference_options(
+            node.operation_id,
+            allow_experimental=self._compute_allow_experimental,
+        )
+        has_gpu_choice = len(options) > 2
+        self.compute_group.setVisible(has_gpu_choice)
+        if not has_gpu_choice:
+            return
+        selected_value = preference_to_value(
+            self._compute_node_preferences.get(node_id, NodeComputePreference())
+        )
+        with QSignalBlocker(self.node_compute_preference_combo):
+            self.node_compute_preference_combo.clear()
+            for option in options:
+                self.node_compute_preference_combo.addItem(option.label, option.value)
+                option_index = self.node_compute_preference_combo.count() - 1
+                self.node_compute_preference_combo.setItemData(
+                    option_index,
+                    option.description,
+                    Qt.ToolTipRole,
+                )
+            selected_index = self.node_compute_preference_combo.findData(selected_value)
+            self.node_compute_preference_combo.setCurrentIndex(max(selected_index, 0))
+        current_index = self.node_compute_preference_combo.currentIndex()
+        description = self.node_compute_preference_combo.itemData(
+            current_index,
+            Qt.ToolTipRole,
+        )
+        note = str(description or "")
+        decision = self._accepted_compute_decisions.get(node_id)
+        if decision is not None:
+            badge = actual_decision_badge(
+                decision,
+                environment=self._compute_decision_environments.get(node_id),
+            )
+            state = (
+                "Previous result"
+                if node_id in self._stale_compute_badge_node_ids
+                else "Last run"
+            )
+            note = f"{note} {state}: {badge.text}."
+        self.node_compute_note.setText(note)
+
+    def _invalidate_compute_policy_results(self) -> None:
+        """Drop result caches that do not yet carry implementation provenance."""
+        if self._active_pipeline_run_id is not None:
+            self._abandon_background_pipeline_run()
+        self.pipeline.prune_cached_outputs(set())
+        self._invalidate_pipeline_cache()
+
+    def _reset_compute_decisions(self) -> None:
+        self._accepted_compute_decisions.clear()
+        self._compute_decision_environments.clear()
+        self._stale_compute_badge_node_ids.clear()
+        self._last_execution_report = None
+        if hasattr(self, "graph_view"):
+            self.graph_view.clear_node_compute_badges()
+        if hasattr(self, "compute_status_label"):
+            self._sync_compute_toolbar_summary()
+
+    def _mark_compute_badges_stale(self, node_ids: Iterable[str]) -> None:
+        affected = set(node_ids) & set(self._accepted_compute_decisions)
+        if not affected:
+            return
+        self._stale_compute_badge_node_ids.update(affected)
+        for node_id in affected:
+            self._sync_node_compute_badge(node_id)
+        self._sync_compute_toolbar_summary()
+        self._sync_node_compute_control()
+
+    def _sync_node_compute_badge(self, node_id: str) -> None:
+        if not hasattr(self, "graph_view"):
+            return
+        node = self.pipeline.nodes.get(node_id)
+        decision = self._accepted_compute_decisions.get(node_id)
+        if (
+            node is None
+            or decision is None
+            or node.operation_id in {"input", "save_output", "batch_output"}
+        ):
+            self.graph_view.clear_node_compute_badge(node_id)
+            return
+        presentation = actual_decision_badge(
+            decision,
+            environment=self._compute_decision_environments.get(node_id),
+        )
+        if decision.fallback_used:
+            kind = ComputeBadgeKind.CPU_FALLBACK
+        elif decision.runtime_id == "cpu-numpy":
+            kind = ComputeBadgeKind.CPU
+        elif "cucim" in decision.implementation_library_id.casefold():
+            kind = ComputeBadgeKind.CUCIM
+        else:
+            kind = ComputeBadgeKind.CUPY
+        self.graph_view.set_node_compute_badge(
+            node_id,
+            kind,
+            tooltip=presentation.tooltip,
+            stale=node_id in self._stale_compute_badge_node_ids,
+        )
+
+    def _sync_all_compute_badges(self) -> None:
+        if not hasattr(self, "graph_view"):
+            return
+        self.graph_view.clear_node_compute_badges()
+        for node_id in self._accepted_compute_decisions:
+            self._sync_node_compute_badge(node_id)
+
+    def _compute_status_snapshot(
+        self,
+        request: ComputeRequest | None = None,
+    ) -> ComputeStatusSnapshot | None:
+        if not self._accepted_compute_decisions:
+            return None
+        latest = self._last_execution_report
+        order = {node_id: index for index, node_id in enumerate(self.pipeline.nodes)}
+        decisions = tuple(
+            sorted(
+                self._accepted_compute_decisions.values(),
+                key=lambda decision: order.get(decision.node_id, len(order)),
+            )
+        )
+        return ComputeStatusSnapshot(
+            request=request or self._current_compute_request(),
+            actual_decisions=decisions,
+            decision_environments={
+                decision.node_id: environment
+                for decision in decisions
+                if (
+                    environment := self._compute_decision_environments.get(
+                        decision.node_id
+                    )
+                )
+                is not None
+            },
+            warnings=latest.warnings if latest is not None else (),
+            cleanup_succeeded=(
+                latest.cleanup_succeeded if latest is not None else True
+            ),
+        )
+
+    def _sync_compute_toolbar_summary(self) -> None:
+        if not hasattr(self, "compute_status_label"):
+            return
+        request = self._current_compute_request()
+        summary = compute_toolbar_summary(
+            request, self._compute_status_snapshot(request)
+        )
+        if self._stale_compute_badge_node_ids and self._compute_update_in_progress():
+            status_text = f"{self.compute_mode_combo.currentText()} · updating"
+            tooltip = (
+                "Previous backend badges are muted until recalculation finishes. "
+                f"{summary.tooltip}"
+            )
+            tone = ComputePresentationTone.NEUTRAL
+        elif self._stale_compute_badge_node_ids:
+            status_text = f"{summary.text} · previous"
+            tooltip = (
+                "Muted backend badges describe previous outputs; no replacement "
+                f"calculation is active. {summary.tooltip}"
+            )
+            tone = ComputePresentationTone.NEUTRAL
+        else:
+            status_text = summary.text
+            tooltip = summary.tooltip
+            tone = summary.tone
+        self.compute_status_label.setText(status_text)
+        self.compute_status_label.setToolTip(tooltip)
+        colors = {
+            ComputePresentationTone.NEUTRAL: ("#1f2937", "#cbd5e1", "#475569"),
+            ComputePresentationTone.CPU: ("#1f2937", "#e2e8f0", "#64748b"),
+            ComputePresentationTone.GPU: ("#064e3b", "#bbf7d0", "#10b981"),
+            ComputePresentationTone.FALLBACK: ("#78350f", "#fde68a", "#f59e0b"),
+        }
+        background, foreground, border = colors[tone]
+        self.compute_status_label.setStyleSheet(
+            "QLabel#ComputeStatusPill {"
+            f" background: {background}; color: {foreground};"
+            f" border: 1px solid {border}; border-radius: 8px;"
+            " font-size: 10px; font-weight: 650; padding: 2px 6px;"
+            "}"
+        )
+        if hasattr(self, "main_toolbar_layout"):
+            self._sync_toolbar_responsive_mode()
+
+    def _compute_update_in_progress(self) -> bool:
+        debounce_timer = getattr(self, "_debounce_timer", None)
+        return bool(
+            self._active_pipeline_run_id is not None
+            or self._pipeline_run_pending
+            or self._active_source_load_id is not None
+            or self._source_load_pending
+            or (debounce_timer is not None and debounce_timer.isActive())
+        )
+
+    def _accept_execution_report(self, report: ExecutionReport) -> None:
+        for decision in report.actual_decisions:
+            node = self.pipeline.nodes.get(decision.node_id)
+            if (
+                node is None
+                or node.operation_id != decision.operation_id
+                or node.operation_id in {"input", "save_output", "batch_output"}
+            ):
+                continue
+            self._accepted_compute_decisions[decision.node_id] = decision
+            self._compute_decision_environments[decision.node_id] = report.environment
+            self._stale_compute_badge_node_ids.discard(decision.node_id)
+        # Keep the latest real report internally coherent. The toolbar combines
+        # decisions from several accepted runs through ComputeStatusSnapshot.
+        self._last_execution_report = report
+        self._sync_all_compute_badges()
+        self._sync_compute_toolbar_summary()
+        self._sync_node_compute_control()
+
+    def _record_synchronous_cpu_decisions(
+        self,
+        node_ids: Iterable[str],
+        request: ComputeRequest,
+    ) -> None:
+        recorded_decisions: list[NodeExecutionDecision] = []
+        environment = ComputeEnvironment()
+        for node_id in node_ids:
+            node = self.pipeline.nodes.get(node_id)
+            if (
+                node is None
+                or node.operation_id in {"input", "save_output", "batch_output"}
+                or node_id not in self.pipeline.completed_node_ids
+            ):
+                continue
+            preference = request.preference_for(node_id)
+            explicit = (
+                request.mode is ComputeMode.CPU
+                or preference.kind is NodePreferenceKind.CPU
+            )
+            decision = NodeExecutionDecision(
+                node_id,
+                node.operation_id,
+                preference,
+                "cpu-numpy",
+                "cpu",
+                f"cpu-{node.operation_id}-v1",
+                DecisionKind.POLICY_CPU,
+                DecisionReason.EXPLICIT_CPU if explicit else DecisionReason.AUTO_CPU,
+                (
+                    "The CPU policy selected the authoritative host implementation."
+                    if explicit
+                    else "Auto kept this interactive update on CPU; accelerator "
+                    "dispatch is reserved for background-eligible workloads."
+                ),
+            )
+            self._accepted_compute_decisions[node_id] = decision
+            self._compute_decision_environments[node_id] = environment
+            self._stale_compute_badge_node_ids.discard(node_id)
+            recorded_decisions.append(decision)
+        self._last_execution_report = ExecutionReport(
+            request,
+            environment,
+            actual_decisions=tuple(recorded_decisions),
+        )
+        self._sync_all_compute_badges()
+        self._sync_compute_toolbar_summary()
+        self._sync_node_compute_control()
+
+    def _announce_compute_fallbacks(self) -> None:
+        fallbacks = [
+            decision
+            for decision in self._accepted_compute_decisions.values()
+            if decision.fallback_used
+            and decision.node_id not in self._stale_compute_badge_node_ids
+        ]
+        if not fallbacks:
+            return
+        titles = ", ".join(
+            f"'{self._node_title(decision.node_id)}'" for decision in fallbacks[:3]
+        )
+        suffix = "" if len(fallbacks) <= 3 else f" and {len(fallbacks) - 3} more"
+        self._set_status(
+            f"CPU fallback used for {titles}{suffix}. Hover the amber node "
+            "badge for the reason.",
+            severity=MessageSeverity.WARNING,
+        )
 
     def _sync_graph_zoom_controls(self, value: float) -> None:
         percent = int(round(float(value)))
@@ -2535,6 +3142,19 @@ class VippWidget(QWidget):
                 sorted(self._preview_disabled_node_ids & valid_node_ids)
             ),
             active_pinned_node_id=active_pin,
+            compute_mode=self._compute_mode.value,
+            compute_fallback_policy=self._compute_fallback_policy.value,
+            compute_node_preferences=tuple(
+                sorted(
+                    (
+                        node_id,
+                        preference.kind.value,
+                        preference.value,
+                    )
+                    for node_id, preference in self._compute_node_preferences.items()
+                    if node_id in valid_node_ids
+                )
+            ),
         )
 
     def _push_undo_snapshot(
@@ -2615,6 +3235,23 @@ class VippWidget(QWidget):
                 note.to_mapping() for note in workflow.notes
             )
             valid_node_ids = set(self.pipeline.nodes)
+            self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
+            self._compute_fallback_policy = FallbackPolicy.parse(
+                snapshot.compute_fallback_policy
+            )
+            self._compute_node_preferences = {
+                node_id: NodeComputePreference(kind, value)
+                for node_id, kind, value in snapshot.compute_node_preferences
+                if node_id in valid_node_ids
+            }
+            with QSignalBlocker(self.compute_mode_combo):
+                self.compute_mode_combo.setCurrentIndex(
+                    self.compute_mode_combo.findData(self._compute_mode.value)
+                )
+            with QSignalBlocker(self.strict_compute_checkbox):
+                self.strict_compute_checkbox.setChecked(
+                    self._compute_fallback_policy is FallbackPolicy.STRICT
+                )
             self._preview_disabled_node_ids = (
                 set(snapshot.preview_disabled_node_ids) & valid_node_ids
             )
@@ -2861,7 +3498,11 @@ class VippWidget(QWidget):
             self._push_undo_if_changed(before)
         except Exception as exc:
             self._restore_history_snapshot(before)
-            self.status_label.setText(f"Insert failed: {exc}")
+            self._set_status(
+                f"Insert failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return None
 
         if mapping is not None:
@@ -3006,7 +3647,11 @@ class VippWidget(QWidget):
             self._push_undo_if_changed(before)
         except Exception as exc:
             self._restore_history_snapshot(before)
-            self.status_label.setText(f"Insert failed: {exc}")
+            self._set_status(
+                f"Insert failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return None
 
         if mapping is not None:
@@ -3685,6 +4330,10 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         clone = self.pipeline.add_node(original.operation_id)
         clone.params = deepcopy(original.params)
+        if node_id in self._compute_node_preferences:
+            self._compute_node_preferences[clone.id] = self._compute_node_preferences[
+                node_id
+            ]
         source_pos = self.graph_view.node_position(node_id)
         position = (
             source_pos + QPointF(42, 42)
@@ -3849,6 +4498,8 @@ class VippWidget(QWidget):
         self._clear_interactive_collection_batch_session()
         before = self._current_history_snapshot()
         self.pipeline.reset_empty_graph()
+        self._compute_node_preferences.clear()
+        self._reset_compute_decisions()
         self._preview_disabled_node_ids.clear()
         self._rescale_auto_output_ranges.clear()
         self._graph_notes.clear()
@@ -3870,6 +4521,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._sync_all_input_ports()
         self._sync_all_output_ports()
+        self._sync_all_compute_badges()
         self._refresh_graph_search_matches(reset_index=True)
 
     def _workflow_metadata(self) -> dict:
@@ -3981,11 +4633,16 @@ class VippWidget(QWidget):
                     self._workflow_metadata(),
                 )
         except Exception as exc:
-            self.status_label.setText(f"Save failed: {exc}")
+            self._set_status(
+                f"Save failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
         detail = " with its Batch workspace" if include_batch else ""
-        self.status_label.setText(
-            f"Workflow{detail} saved to {saved.name}."
+        self._set_status(
+            f"Workflow{detail} saved to {saved.name}.",
+            severity=MessageSeverity.SUCCESS,
         )
 
     def _load_workflow_dialog(self) -> None:
@@ -4000,15 +4657,20 @@ class VippWidget(QWidget):
         try:
             loaded = self.load_workflow_file(path)
         except Exception as exc:
-            self.status_label.setText(f"Load failed: {exc}")
+            self._set_status(
+                f"Load failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
         detail = (
             f" {self._last_workflow_load_detail}"
             if self._last_workflow_load_detail
             else ""
         )
-        self.status_label.setText(
-            f"Loaded workflow from {loaded.name}.{detail}"
+        self._set_status(
+            f"Loaded workflow from {loaded.name}.{detail}",
+            severity=MessageSeverity.SUCCESS,
         )
 
     def _open_example_workflow_dialog(self) -> None:
@@ -4026,7 +4688,11 @@ class VippWidget(QWidget):
             else:
                 self.load_example_workflow(example.id)
         except Exception as exc:
-            self.status_label.setText(f"Open example failed: {exc}")
+            self._set_status(
+                f"Open example failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
 
     def load_example_workflow(self, example_id: str) -> Path:
         example = _example_workflow_by_id(example_id)
@@ -4034,15 +4700,13 @@ class VippWidget(QWidget):
             raise ValueError(f"Unknown example workflow: {example_id!r}.")
         path = _example_workflow_path(example)
         if not path.exists():
-            raise FileNotFoundError(
-                f"Example workflow file is not available: {path}"
-            )
+            raise FileNotFoundError(f"Example workflow file is not available: {path}")
         loaded = self.load_workflow_file(path, prefer_image_source=True)
-        if (
-            self._active_pipeline_run_id is None
-            and self._active_source_load_id is None
-        ):
-            self.status_label.setText(f"Opened example workflow: {example.title}.")
+        if self._active_pipeline_run_id is None and self._active_source_load_id is None:
+            self._set_status(
+                f"Opened example workflow: {example.title}.",
+                severity=MessageSeverity.SUCCESS,
+            )
         return loaded
 
     def load_workflow_file(
@@ -4073,6 +4737,16 @@ class VippWidget(QWidget):
             workflow["connections"],
             workflow.get("output_tunnels", ()),
         )
+        # Workflow v3 has no compute contract. Preserve its historical CPU
+        # behavior until the user explicitly opts into Auto or Selective; a
+        # future workflow-v4 loader will restore persisted compute intent here.
+        self._compute_mode = ComputeMode.CPU
+        with QSignalBlocker(self.compute_mode_combo):
+            self.compute_mode_combo.setCurrentIndex(
+                self.compute_mode_combo.findData(ComputeMode.CPU.value)
+            )
+        self._compute_node_preferences.clear()
+        self._reset_compute_decisions()
         valid_node_ids = set(self.pipeline.nodes)
         vipp_metadata = self._workflow_vipp_metadata(workflow)
         thumbnail_metadata = vipp_metadata.get("thumbnails")
@@ -4107,6 +4781,7 @@ class VippWidget(QWidget):
         self._sync_pin_ui()
         self._sync_all_input_ports()
         self._sync_all_output_ports()
+        self._sync_all_compute_badges()
         self._refresh_graph_search_matches(reset_index=True)
         self._workflow_load_selection_in_progress = True
         try:
@@ -4203,9 +4878,16 @@ class VippWidget(QWidget):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(code, encoding="utf-8")
         except Exception as exc:
-            self.status_label.setText(f"Export failed: {exc}")
+            self._set_status(
+                f"Export failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
-        self.status_label.setText(f"Pipeline exported to {target.name}.")
+        self._set_status(
+            f"Pipeline exported to {target.name}.",
+            severity=MessageSeverity.SUCCESS,
+        )
 
     def _batch_collection_dialog(
         self,
@@ -4258,7 +4940,11 @@ class VippWidget(QWidget):
                 dialog._preview_batch()
             except Exception as exc:
                 self._discard_collection_batch_dialog(dialog)
-                self.status_label.setText(f"Could not open batch config: {exc}")
+                self._set_status(
+                    f"Could not open batch config: {exc}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
                 return None
         elif config is not None:
             try:
@@ -4267,7 +4953,11 @@ class VippWidget(QWidget):
                     dialog._preview_batch()
             except Exception as exc:
                 self._discard_collection_batch_dialog(dialog)
-                self.status_label.setText(f"Could not open batch workspace: {exc}")
+                self._set_status(
+                    f"Could not open batch workspace: {exc}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
                 return None
         dialog.show()
         dialog.raise_()
@@ -4335,7 +5025,11 @@ class VippWidget(QWidget):
             )
         except Exception as exc:
             dialog.show_run_error(f"Batch preflight failed: {exc}")
-            self.status_label.setText(f"Batch preflight failed: {exc}")
+            self._set_status(
+                f"Batch preflight failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
 
         preview = dialog._preview_result
@@ -4444,7 +5138,11 @@ class VippWidget(QWidget):
             self.batch_navigator.fail_batch_progress(
                 f"Batch failed: {exc}",
             )
-            self.status_label.setText(f"Batch failed: {exc}")
+            self._set_status(
+                f"Batch failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
         finally:
             self._collection_batch_running = False
@@ -4874,7 +5572,11 @@ class VippWidget(QWidget):
                 and self._interactive_collection_batch_failed_index < 0
             )
             dialog.set_representative_pending(not representative_ready)
-        self.status_label.setText(f"Representative preview failed: {message}")
+        self._set_status(
+            f"Representative preview failed: {message}",
+            severity=MessageSeverity.ERROR,
+            actionable=True,
+        )
 
     def _mark_interactive_collection_batch_stale(
         self,
@@ -5259,11 +5961,16 @@ class VippWidget(QWidget):
                 image_state=self.pipeline.output_states.get(reference_id),
             )
         except Exception as exc:
-            self.status_label.setText(f"OME dataset export failed: {exc}")
+            self._set_status(
+                f"OME dataset export failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return
-        self.status_label.setText(
+        self._set_status(
             f"Exported OME analysis dataset with {len(labels)} label output(s) "
-            f"to {output_path.name}."
+            f"to {output_path.name}.",
+            severity=MessageSeverity.SUCCESS,
         )
 
     def _default_analysis_reference_node(self) -> str | None:
@@ -5375,6 +6082,7 @@ class VippWidget(QWidget):
         if active_node_id is not None and valid_node_ids != {active_node_id}:
             self._apply_isolated_tuning(run=False, announce=False)
         affected_node_ids = self.pipeline.descendants_inclusive(valid_node_ids)
+        self._mark_compute_badges_stale(affected_node_ids)
         cleared_overrides = self._discard_background_node_result_overrides(
             affected_node_ids
         )
@@ -5399,6 +6107,7 @@ class VippWidget(QWidget):
             ),
         )
         descendants = self.pipeline.descendants_inclusive({node_id}) - {node_id}
+        self._mark_compute_badges_stale(descendants | {node_id})
         cleared_overrides = self._discard_background_node_result_overrides(
             descendants | {node_id}
         )
@@ -5486,6 +6195,14 @@ class VippWidget(QWidget):
             execution_states=dict(self.pipeline.node_execution_states),
             execution_messages=dict(self.pipeline.node_execution_messages),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+            compute_decisions=dict(self._accepted_compute_decisions),
+            compute_decision_environments=dict(
+                self._compute_decision_environments
+            ),
+            stale_compute_badge_node_ids=frozenset(
+                self._stale_compute_badge_node_ids
+            ),
+            execution_report=self._last_execution_report,
             undo_stack=tuple(self._history.undo_stack),
             redo_stack=tuple(self._history.redo_stack),
             batch_workflow_stale=self._interactive_collection_batch_workflow_stale,
@@ -5587,6 +6304,14 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_states = dict(snapshot.execution_states)
         self.pipeline.node_execution_messages = dict(snapshot.execution_messages)
         self.pipeline.completed_node_ids = set(snapshot.completed_node_ids)
+        self._accepted_compute_decisions = dict(snapshot.compute_decisions)
+        self._compute_decision_environments = dict(
+            snapshot.compute_decision_environments
+        )
+        self._stale_compute_badge_node_ids = set(
+            snapshot.stale_compute_badge_node_ids
+        )
+        self._last_execution_report = snapshot.execution_report
         self._history.undo_stack[:] = snapshot.undo_stack
         self._history.redo_stack[:] = snapshot.redo_stack
         self._history.finish_group()
@@ -5606,6 +6331,9 @@ class VippWidget(QWidget):
         self._update_metadata_panel()
         self._update_histogram()
         self._sync_execution_ui()
+        self._sync_all_compute_badges()
+        self._sync_compute_toolbar_summary()
+        self._sync_node_compute_control()
         self._refresh_cache_status()
         if announce:
             self.status_label.setText(
@@ -5679,6 +6407,7 @@ class VippWidget(QWidget):
     def _invalidate_pipeline_cache(self) -> None:
         if self._isolated_tuning_node_id is not None:
             self._apply_isolated_tuning(run=False, announce=False)
+        self._reset_compute_decisions()
         cleared_overrides = self._discard_background_node_result_overrides()
         self._pending_dirty_node_ids.clear()
         self._pending_manual_node_ids.clear()
@@ -5708,6 +6437,12 @@ class VippWidget(QWidget):
         self._inflight_dirty_node_ids = (
             None if dirty_node_ids is None else set(dirty_node_ids)
         )
+        stale_node_ids = (
+            set(self.pipeline.nodes)
+            if dirty_node_ids is None
+            else self.pipeline.descendants_inclusive(dirty_node_ids)
+        )
+        self._mark_compute_badges_stale(stale_node_ids)
         if dirty_node_ids is not None:
             self._pending_dirty_node_ids.difference_update(dirty_node_ids)
         self._refresh_node_presentation_surfaces(cleared_overrides)
@@ -7107,6 +7842,10 @@ class VippWidget(QWidget):
         }
         if not self.pipeline.remove_node(node_id):
             return
+        self._compute_node_preferences.pop(node_id, None)
+        self._accepted_compute_decisions.pop(node_id, None)
+        self._compute_decision_environments.pop(node_id, None)
+        self._stale_compute_badge_node_ids.discard(node_id)
         if node.operation_id == "input" and (
             self._interactive_collection_batch_items
             or self._active_collection_batch_dialog is not None
@@ -7138,6 +7877,7 @@ class VippWidget(QWidget):
         if self._mark_pipeline_branches_dirty(dirty_targets):
             self.run_pipeline()
         self._sync_execution_ui()
+        self._sync_compute_toolbar_summary()
         self._push_undo_if_changed(before)
         self.status_label.setText(f"Deleted '{title}'.")
 
@@ -7173,6 +7913,7 @@ class VippWidget(QWidget):
 
     def _clear_empty_inspector(self) -> None:
         self.execution_group.setHidden(True)
+        self.compute_group.setHidden(True)
         self.metadata_table.setRowCount(0)
         self.table_group.setHidden(True)
         self.table_preview.setRowCount(0)
@@ -7219,6 +7960,7 @@ class VippWidget(QWidget):
         self._update_histogram()
         self._sync_execution_ui()
         self._sync_isolated_tuning_ui()
+        self._sync_node_compute_control()
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._workflow_load_selection_in_progress:
@@ -7563,21 +8305,29 @@ class VippWidget(QWidget):
                     break
                 QApplication.processEvents()
             if copied:
-                self.status_label.setText(
-                    f"Copied reader install command: {command}"
+                self._set_status(
+                    f"Copied reader install command: {command}",
+                    severity=MessageSeverity.SUCCESS,
                 )
             else:
-                self.status_label.setText(
-                    "Could not access the system clipboard. Install with: "
-                    f"{command}"
+                self._set_status(
+                    f"Could not access the system clipboard. Install with: {command}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
                 )
             return
         if command:
-            self.status_label.setText(
-                f"Optional image reader missing. Install with: {command}"
+            self._set_status(
+                f"Optional image reader missing. Install with: {command}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
             )
         else:
-            self.status_label.setText(f"Image source error: {error}")
+            self._set_status(
+                f"Image source error: {error}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
 
     @staticmethod
     def _execution_status_text(state: str, message: str = "") -> str:
@@ -11479,8 +12229,9 @@ class VippWidget(QWidget):
             ):
                 self._set_pipeline_busy(False)
         if result.error:
-            self.status_label.setText(
-                f"Thumbnail contrast calculation failed: {result.error}"
+            self._set_status(
+                f"Thumbnail contrast calculation failed: {result.error}",
+                severity=MessageSeverity.ERROR,
             )
         else:
             self.status_label.setText("Thumbnail contrast ready.")
@@ -12480,8 +13231,9 @@ class VippWidget(QWidget):
         self._sync_auto_contrast_ui()
 
         if result.error:
-            self.status_label.setText(
-                f"Exact auto-contrast calculation failed: {result.error}"
+            self._set_status(
+                f"Exact auto-contrast calculation failed: {result.error}",
+                severity=MessageSeverity.ERROR,
             )
             return
 
@@ -12586,7 +13338,11 @@ class VippWidget(QWidget):
         except Exception as exc:
             self._abandon_background_pipeline_run()
             self._set_pipeline_busy(False)
-            self.status_label.setText(f"Image source error: {exc}")
+            self._set_status(
+                f"Image source error: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 str(exc),
@@ -12754,6 +13510,14 @@ class VippWidget(QWidget):
         target_node_ids: set[str] | None = None,
     ) -> None:
         self._set_pipeline_busy(False)
+        compute_request = self._current_compute_request()
+        execution_plan = self.pipeline.plan_execution(
+            dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=set(manual_node_ids or set()),
+            target_node_ids=target_node_ids,
+        )
+        synchronous_node_ids = set(execution_plan.runnable_node_ids)
         self._begin_pipeline_dispatch(dirty_node_ids)
         try:
             with self._preserve_interactive_collection_workflow_params():
@@ -12775,7 +13539,12 @@ class VippWidget(QWidget):
             for node_id in manual_node_ids or ():
                 self.pipeline.set_node_execution_error(node_id, str(exc))
             self._sync_execution_ui()
-            self.status_label.setText(f"Pipeline error: {exc}")
+            self._set_status(
+                f"Pipeline error: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            self._sync_compute_toolbar_summary()
             self._show_interactive_collection_batch_preview_error(
                 self._interactive_collection_batch_requested_index,
                 str(exc),
@@ -12799,6 +13568,12 @@ class VippWidget(QWidget):
                 rerun_dirty.add(self._selected_node_id)
             rerun_dirty &= set(self.pipeline.nodes)
             if rerun_dirty:
+                rerun_plan = self.pipeline.plan_execution(
+                    rerun_dirty,
+                    manual_mode=MANUAL_RUN_SKIP,
+                    target_node_ids=target_node_ids,
+                )
+                synchronous_node_ids.update(rerun_plan.runnable_node_ids)
                 with self._preserve_interactive_collection_workflow_params():
                     self.pipeline.run(
                         input_data,
@@ -12810,10 +13585,13 @@ class VippWidget(QWidget):
                         target_node_ids=target_node_ids,
                         retain_node_ids=self._cache_retention_node_ids(),
                         prune_unretained=(
-                            self._cache_pruning_enabled()
-                            and target_node_ids is None
+                            self._cache_pruning_enabled() and target_node_ids is None
                         ),
                     )
+        self._record_synchronous_cpu_decisions(
+            synchronous_node_ids,
+            compute_request,
+        )
         self._complete_pipeline_run(source_signature, dirty_node_ids)
         self._finish_pipeline_update(primary_layer, source_label)
 
@@ -12850,7 +13628,10 @@ class VippWidget(QWidget):
             else ""
         )
         if memory_guard_message:
-            self.status_label.setText(f"{memory_guard_message}{snapshot_note}")
+            self._set_status(
+                f"{memory_guard_message}{snapshot_note}",
+                severity=MessageSeverity.WARNING,
+            )
         elif (
             self._isolated_tuning_node_id in self.pipeline.nodes
             and self._isolated_tuning_has_changes
@@ -12861,9 +13642,10 @@ class VippWidget(QWidget):
                 "remain stale until Apply and continue."
             )
         elif source_label:
-            self.status_label.setText(
+            self._set_status(
                 f"Graph updated from '{source_label}'. "
-                f"Connect ports to build alternate paths.{snapshot_note}"
+                f"Connect ports to build alternate paths.{snapshot_note}",
+                severity=MessageSeverity.SUCCESS,
             )
         else:
             self.status_label.setText("No image source selected.")
@@ -12937,9 +13719,15 @@ class VippWidget(QWidget):
                 self.pipeline.set_node_execution_error(result.node_id, result.error)
             self._sync_execution_ui()
             self._set_pipeline_busy(False)
-            self.status_label.setText(f"Image source error: {result.error}")
-            if self._source_load_pending:
-                self._source_load_pending = False
+            continue_pending = bool(self._source_load_pending)
+            self._source_load_pending = False
+            suffix = "; retrying latest source edit" if continue_pending else ""
+            self._set_status(
+                f"Image source error: {result.error}{suffix}",
+                severity=MessageSeverity.ERROR,
+                actionable=not continue_pending,
+            )
+            if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
                 self._show_interactive_collection_batch_preview_error(
@@ -12953,9 +13741,15 @@ class VippWidget(QWidget):
         except Exception as exc:
             self._sync_execution_ui()
             self._set_pipeline_busy(False)
-            self.status_label.setText(f"Image source error: {exc}")
-            if self._source_load_pending:
-                self._source_load_pending = False
+            continue_pending = bool(self._source_load_pending)
+            self._source_load_pending = False
+            suffix = "; retrying latest source edit" if continue_pending else ""
+            self._set_status(
+                f"Image source error: {exc}{suffix}",
+                severity=MessageSeverity.ERROR,
+                actionable=not continue_pending,
+            )
+            if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
                 self._show_interactive_collection_batch_preview_error(
@@ -12975,6 +13769,24 @@ class VippWidget(QWidget):
         source_payloads: dict[str, SourcePayload] | None = None,
         target_node_ids: set[str] | None = None,
     ) -> bool:
+        compute_request = self._current_compute_request()
+        if compute_request.mode is ComputeMode.SELECTIVE:
+            execution_plan = self.pipeline.plan_execution(
+                dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=set(manual_node_ids or set()),
+                target_node_ids=target_node_ids,
+            )
+            if any(
+                compute_request.preference_for(node_id).kind
+                in {
+                    NodePreferenceKind.BEST_GPU,
+                    NodePreferenceKind.LIBRARY,
+                    NodePreferenceKind.IMPLEMENTATION,
+                }
+                for node_id in execution_plan.runnable_node_ids
+            ):
+                return True
         return (
             self._background_processing_node_id(
                 dirty_node_ids,
@@ -13115,6 +13927,14 @@ class VippWidget(QWidget):
         run_id = self._pipeline_run_serial
         workflow = deepcopy(serialize_workflow(self.pipeline))
         cancel_event = threading.Event()
+        compute_request = self._current_compute_request()
+        execution_plan = self.pipeline.plan_execution(
+            dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=manual_node_ids,
+            target_node_ids=target_node_ids,
+        )
+        runnable_node_ids = frozenset(execution_plan.runnable_node_ids)
         request = PipelineRunRequest(
             run_id=run_id,
             workflow=workflow,
@@ -13122,6 +13942,7 @@ class VippWidget(QWidget):
             input_metadata=input_metadata,
             input_name=input_name,
             source_payloads=dict(source_payloads),
+            compute_request=compute_request,
             dirty_node_ids=(
                 frozenset(dirty_node_ids) if dirty_node_ids is not None else None
             ),
@@ -13181,6 +14002,8 @@ class VippWidget(QWidget):
             processing_node_id,
             source_signature,
             dirty_node_ids,
+            compute_request,
+            runnable_node_ids,
         )
         self._pipeline_run_manual_node_ids[run_id] = frozenset(manual_node_ids)
         self._set_pipeline_busy(True, processing_node_id)
@@ -13300,13 +14123,23 @@ class VippWidget(QWidget):
         inflight_manual_node_ids = set(
             self._pipeline_run_manual_node_ids.pop(result.run_id, frozenset())
         )
+        run_context = self._pipeline_run_context.pop(
+            result.run_id,
+            (None, "", None, None, None, ComputeRequest(), frozenset()),
+        )
         (
             primary_layer,
             source_label,
             processing_node_id,
             source_signature,
             dirty_node_ids,
-        ) = self._pipeline_run_context.pop(result.run_id, (None, "", None, None, None))
+        ) = run_context[:5]
+        compute_request = (
+            run_context[5] if len(run_context) > 5 else ComputeRequest()
+        )
+        runnable_node_ids = (
+            run_context[6] if len(run_context) > 6 else frozenset()
+        )
         if result.source_revisions and not self._live_source_adapter.tokens_are_current(
             result.source_revisions
         ):
@@ -13376,7 +14209,11 @@ class VippWidget(QWidget):
             self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
             suffix = "; continuing queued graph edit" if continue_pending else ""
-            self.status_label.setText(f"Pipeline error: {result.error}{suffix}")
+            self._set_status(
+                f"Pipeline error: {result.error}{suffix}",
+                severity=MessageSeverity.ERROR,
+                actionable=not continue_pending,
+            )
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
@@ -13395,7 +14232,11 @@ class VippWidget(QWidget):
             self._inflight_dirty_node_ids = None
             self._set_pipeline_busy(False)
             suffix = "; continuing queued graph edit" if continue_pending else ""
-            self.status_label.setText(f"Pipeline error: no result returned{suffix}.")
+            self._set_status(
+                f"Pipeline error: no result returned{suffix}.",
+                severity=MessageSeverity.ERROR,
+                actionable=not continue_pending,
+            )
             if continue_pending:
                 QTimer.singleShot(0, self.run_pipeline)
             else:
@@ -13425,6 +14266,13 @@ class VippWidget(QWidget):
                 and not self._interactive_collection_source_paths
             ),
         )
+        if result.execution_report is not None:
+            self._accept_execution_report(result.execution_report)
+        else:
+            self._record_synchronous_cpu_decisions(
+                runnable_node_ids,
+                compute_request,
+            )
         if can_apply_before_pending:
             self._last_pipeline_source_signature = source_signature
             self._inflight_dirty_node_ids = None
@@ -13461,6 +14309,7 @@ class VippWidget(QWidget):
             QTimer.singleShot(0, self.run_pipeline)
             return
         self._finish_pipeline_update(primary_layer, source_label)
+        self._announce_compute_fallbacks()
 
     def _workflow_matches_current_pipeline(self, workflow: dict) -> bool:
         return serialize_workflow(self.pipeline) == workflow
@@ -13592,6 +14441,7 @@ class VippWidget(QWidget):
             self._active_pipeline_node_id = None
             self._sync_execution_ui()
             self._refresh_node_presentation_surfaces(cleared_overrides)
+            self._sync_compute_toolbar_summary()
             return
         if not keep_current_progress:
             self.pipeline_busy_bar.setRange(0, 0)
@@ -15544,10 +16394,15 @@ class VippWidget(QWidget):
                     image_state=state,
                 )
         except Exception as exc:
-            self.status_label.setText(f"Save failed: {exc}")
+            self._set_status(
+                f"Save failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
             return None
-        self.status_label.setText(
-            f"Saved '{self._node_title(node_id)}' to {output_path}."
+        self._set_status(
+            f"Saved '{self._node_title(node_id)}' to {output_path}.",
+            severity=MessageSeverity.SUCCESS,
         )
         return output_path
 
@@ -16271,8 +17126,9 @@ class VippWidget(QWidget):
                     "vipp_display_contrast_pending": False,
                 }
             )
-            self.status_label.setText(
-                f"Display contrast calculation failed: {result.error}"
+            self._set_status(
+                f"Display contrast calculation failed: {result.error}",
+                severity=MessageSeverity.WARNING,
             )
             return
         if result.limits is None:

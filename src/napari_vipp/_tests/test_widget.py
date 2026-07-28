@@ -45,6 +45,7 @@ from napari_vipp._widget import (
     CACHE_MODE_LOW_MEMORY,
     CACHE_MODE_SMART,
     EXAMPLE_WORKFLOWS,
+    AutoContrastResult,
     CollectionBatchDialog,
     ColocalizationScatterRequest,
     ColocalizationScatterResult,
@@ -59,6 +60,8 @@ from napari_vipp._widget import (
     PipelineNodeResult,
     PipelineRunResult,
     SelectTableColumnsControl,
+    SourceFileLoadResult,
+    ThumbnailContrastLimitResult,
     VippWidget,
     _auto_contrast_scale_offset,
     _exact_finite_percentiles,
@@ -91,6 +94,19 @@ from napari_vipp.core.batch_demo import (
     SYNTHETIC_BATCH_DEMO_DIRNAME,
     SyntheticBatchDemo,
     validate_synthetic_batch_demo,
+)
+from napari_vipp.core.compute import (
+    ComputeEnvironment,
+    ComputeMode,
+    ComputeRequest,
+    DecisionKind,
+    DecisionReason,
+    ExecutionPlan,
+    ExecutionReport,
+    FallbackPolicy,
+    FallbackReason,
+    NodeComputePreference,
+    NodeExecutionDecision,
 )
 from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.graph_search import find_graph_matches
@@ -542,6 +558,340 @@ def test_widget_builds_graph_and_inspects_node(qtbot):
     assert inspect_layer.metadata["node_id"] == "gaussian"
     assert inspect_layer.data.shape == viewer.layers["input volume"].data.shape
     assert not viewer.layers["input volume"].visible
+
+
+def test_compute_toolbar_defaults_to_auto_and_shows_actual_cpu_badges(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    assert widget.compute_mode_combo.currentData() == "auto"
+    assert widget.compute_status_label.text() == "Auto · 2 CPU"
+    assert widget.graph_view._cards["input"].compute_badge.isHidden()
+    assert widget.graph_view._cards["gaussian"].compute_badge.text() == "CPU"
+    assert widget.graph_view._cards["threshold"].compute_badge.text() == "CPU"
+    assert widget.compute_group.isHidden()
+
+
+def test_widget_uses_one_severity_aware_message_strip(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    widget._set_status("Fix the source path.", severity="error", actionable=True)
+
+    assert widget.status_label.property("fullWidthAlert") is True
+    assert widget.status_label.property("messageSeverity") == "error"
+
+    widget.graph_view.status_message.emit("Focused workflow node.")
+
+    assert widget.status_label.text() == "Focused workflow node."
+    assert widget.status_label.property("fullWidthAlert") is False
+    assert widget.status_label.property("messageSeverity") == "neutral"
+
+
+def test_diagnostic_failure_callbacks_classify_nonactionable_status(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+
+    widget._active_thumbnail_contrast_run_id = 11
+    widget._on_thumbnail_contrast_limit_finished(
+        ThumbnailContrastLimitResult(11, frozenset(), {}, error="thumbnail boom")
+    )
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("fullWidthAlert") is False
+
+    widget._active_auto_contrast_run_id = 12
+    widget._active_auto_contrast_key = ("auto",)
+    widget._on_auto_contrast_finished(
+        AutoContrastResult(
+            12,
+            ("auto",),
+            "gaussian",
+            0.1,
+            error="auto boom",
+        )
+    )
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("fullWidthAlert") is False
+
+    layer = viewer.layers[0]
+    layer.name = "VIPP Inspect"
+    key = (widget._generated_layer_contrast_generation, "display")
+    layer.metadata["_vipp_display_contrast_key"] = key
+    widget._generated_layer_contrast_keys[layer.name] = key
+    widget._on_generated_layer_contrast_finished(
+        GeneratedLayerContrastResult(
+            key,
+            layer.name,
+            error="display boom",
+        )
+    )
+    assert widget.status_label.property("messageSeverity") == "warning"
+    assert widget.status_label.property("fullWidthAlert") is False
+
+
+@pytest.mark.parametrize("failure_kind", ("worker", "cache"))
+def test_obsolete_source_failure_is_not_actionable_while_retrying_latest_edit(
+    qtbot,
+    monkeypatch,
+    failure_kind,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    queued_runs: list[None] = []
+    widget.run_pipeline = lambda *args, **kwargs: queued_runs.append(None)
+    widget._active_source_load_id = 73
+    widget._source_load_pending = True
+    if failure_kind == "worker":
+        result = SourceFileLoadResult(
+            73,
+            {},
+            error="obsolete source failed",
+            node_id="gaussian",
+        )
+    else:
+        result = SourceFileLoadResult(73, {("source",): object()})
+
+        def fail_to_cache(*_args, **_kwargs):
+            raise RuntimeError("obsolete cache failed")
+
+        monkeypatch.setattr(widget, "_cache_file_source_snapshot", fail_to_cache)
+
+    widget._on_source_file_load_finished(result)
+
+    assert widget._active_source_load_id is None
+    assert not widget._source_load_pending
+    assert widget.status_label.property("messageSeverity") == "error"
+    assert widget.status_label.property("messageActionable") is False
+    assert widget.status_label.property("fullWidthAlert") is False
+    assert "retrying latest source edit" in widget.status_label.text()
+    qtbot.waitUntil(lambda: bool(queued_runs))
+
+
+def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    pool = _QueuedThreadPool()
+    widget._pipeline_thread_pool = pool
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    widget.graph_view.select_node("gaussian")
+
+    assert not widget.compute_group.isHidden()
+    library_index = widget.node_compute_preference_combo.findData("library:cupyx")
+    assert library_index >= 0
+    assert "experimental" in widget.node_compute_preference_combo.itemText(
+        library_index
+    )
+
+    widget.node_compute_preference_combo.setCurrentIndex(library_index)
+
+    assert len(pool.workers) == 1
+    request = pool.workers[0].request.compute_request
+    assert request.mode.value == "selective"
+    assert request.allow_experimental
+    assert request.preference_for("gaussian") == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+
+
+def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    request = ComputeRequest(mode="auto", allow_experimental=True)
+    decision = NodeExecutionDecision(
+        "gaussian",
+        "gaussian_blur",
+        NodeComputePreference(),
+        "cuda-cupy",
+        "cupyx",
+        "cupyx-gaussian-blur-v1",
+        DecisionKind.SELECTED,
+        DecisionReason.SELECTED_IMPLEMENTATION,
+        "Validated CuPy implementation selected.",
+    )
+    gpu_environment = ComputeEnvironment(
+        runtime_ids=("cpu-numpy", "cuda-cupy"),
+        implementation_libraries=("cpu", "cupyx"),
+        device_id="cuda:0",
+        device_name="Test GPU",
+        device_class="nvidia-cuda",
+        memory_topology="discrete",
+    )
+    plan = ExecutionPlan(
+        request.fingerprint,
+        gpu_environment.fingerprint,
+        (),
+        (decision,),
+    )
+    report = ExecutionReport(
+        request,
+        gpu_environment,
+        plan=plan,
+        actual_decisions=(decision,),
+    )
+
+    widget._accept_execution_report(report)
+
+    badge = widget.graph_view._cards["gaussian"].compute_badge
+    assert badge.text() == "GPU · CuPy"
+    assert "Test GPU" in badge.toolTip()
+    assert widget.compute_status_label.text() == "Auto · 1 GPU / 1 CPU"
+    assert "Test GPU" in widget.compute_status_label.toolTip()
+
+    widget._record_synchronous_cpu_decisions({"threshold"}, request)
+
+    assert widget._last_execution_report is not None
+    assert widget._last_execution_report.environment.device_name == "Host CPU"
+    assert widget._last_execution_report.plan is None
+    assert widget._last_execution_report.actual_decisions == (
+        widget._accepted_compute_decisions["threshold"],
+    )
+    assert "Test GPU" in widget.graph_view._cards["gaussian"].compute_badge.toolTip()
+
+    cpu_decision = widget._accepted_compute_decisions["threshold"]
+    cpu_environment = ComputeEnvironment(device_name="Host CPU")
+    cpu_plan = ExecutionPlan(
+        request.fingerprint,
+        cpu_environment.fingerprint,
+        (),
+        (cpu_decision,),
+    )
+    cpu_report = ExecutionReport(
+        request,
+        cpu_environment,
+        plan=cpu_plan,
+        actual_decisions=(cpu_decision,),
+    )
+    widget._accept_execution_report(cpu_report)
+
+    assert widget._last_execution_report is cpu_report
+    assert widget._last_execution_report.environment.device_name == "Host CPU"
+    assert (
+        widget._last_execution_report.environment.fingerprint
+        == widget._last_execution_report.plan.environment_fingerprint
+    )
+    gaussian_tooltip = widget.graph_view._cards["gaussian"].compute_badge.toolTip()
+    assert "Host CPU" not in gaussian_tooltip
+
+
+def test_stale_compute_summary_distinguishes_active_update_from_previous_result(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    widget._mark_compute_badges_stale({"gaussian"})
+
+    assert widget.compute_status_label.text().endswith("· previous")
+
+    widget._active_pipeline_run_id = 99
+    widget._sync_compute_toolbar_summary()
+
+    assert widget.compute_status_label.text() == "Auto · updating"
+    widget._active_pipeline_run_id = None
+
+
+def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    path = tmp_path / "legacy-v3-workflow.json"
+    save_workflow(path, widget.pipeline, {})
+
+    assert widget.compute_mode_combo.currentData() == "auto"
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._compute_fallback_policy = FallbackPolicy.STRICT
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    widget.compute_mode_combo.blockSignals(True)
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    widget.compute_mode_combo.blockSignals(False)
+    widget.strict_compute_checkbox.blockSignals(True)
+    widget.strict_compute_checkbox.setChecked(True)
+    widget.strict_compute_checkbox.blockSignals(False)
+
+    widget.load_workflow_file(path)
+
+    assert widget.compute_mode_combo.currentData() == "cpu"
+    assert widget._compute_mode is ComputeMode.CPU
+    assert widget.compute_status_label.text().startswith("CPU")
+
+    widget.undo()
+
+    assert widget.compute_mode_combo.currentData() == "selective"
+    assert widget._compute_fallback_policy is FallbackPolicy.STRICT
+    assert widget.strict_compute_checkbox.isChecked()
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+
+
+def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    assert widget._compute_mode is ComputeMode.SELECTIVE
+    widget.undo()
+    assert widget._compute_mode is ComputeMode.AUTO
+    assert widget.compute_mode_combo.currentData() == "auto"
+    widget.redo()
+    assert widget._compute_mode is ComputeMode.SELECTIVE
+
+    widget.strict_compute_checkbox.setChecked(True)
+    assert widget._compute_fallback_policy is FallbackPolicy.STRICT
+    widget.undo()
+    assert widget._compute_fallback_policy is FallbackPolicy.VISIBLE
+    assert not widget.strict_compute_checkbox.isChecked()
+    widget.redo()
+    assert widget._compute_fallback_policy is FallbackPolicy.STRICT
+
+    widget.graph_view.select_node("gaussian")
+    cupy_index = widget.node_compute_preference_combo.findData("library:cupyx")
+    assert cupy_index >= 0
+    widget.node_compute_preference_combo.setCurrentIndex(cupy_index)
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    widget.undo()
+    assert "gaussian" not in widget._compute_node_preferences
+    widget.redo()
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+
+
+def test_strict_selective_setting_does_not_leak_into_auto_or_cpu(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+
+    widget.strict_compute_checkbox.setChecked(True)
+
+    assert widget._compute_fallback_policy is FallbackPolicy.STRICT
+    assert widget._current_compute_request().fallback_policy is FallbackPolicy.VISIBLE
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    assert widget._current_compute_request().fallback_policy is FallbackPolicy.STRICT
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("cpu")
+    )
+    assert widget._current_compute_request().fallback_policy is FallbackPolicy.VISIBLE
 
 
 def test_example_workflow_dialog_groups_and_filters_examples(qtbot):
@@ -9814,6 +10164,8 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.thumbnail_contrast_combo.isHidden() is False
     assert widget.thumbnail_scope_combo.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.compute_toolbar_group.isHidden() is False
+    assert widget.compute_status_label.isHidden() is False
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
     assert widget.auto_structure_button.text() == "Auto structure graph"
@@ -9828,6 +10180,8 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.thumbnail_colormap_combo.isHidden() is False
     assert widget.zoom_toolbar_field.isHidden() is False
     assert widget.graph_zoom_slider.isHidden() is False
+    assert widget.compute_toolbar_group.isHidden() is False
+    assert widget.compute_status_label.isHidden()
 
     widget.resize(1200, 600)
     widget._sync_toolbar_responsive_mode()
@@ -9835,6 +10189,8 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.graph_zoom_reset_button.isHidden() is False
     assert widget.graph_zoom_label.isHidden() is False
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
 
     widget.resize(1000, 600)
     widget._sync_toolbar_responsive_mode()
@@ -9843,6 +10199,8 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.graph_zoom_reset_button.isHidden() is False
     assert widget.graph_zoom_label.isHidden() is False
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
 
     widget.resize(expanded_width + 100, 600)
     widget._sync_toolbar_responsive_mode()
@@ -9857,7 +10215,114 @@ def test_toolbar_compacts_in_stages_when_space_runs_out(qtbot):
     assert widget.graph_zoom_slider.isHidden() is False
     assert widget.save_workflow_button.isHidden() is False
     assert widget.export_button.isHidden() is False
+    assert widget.compute_status_label.isHidden() is False
     assert widget.auto_structure_button.text() == "Auto structure graph"
+
+
+@pytest.mark.parametrize(
+    ("width", "compute_visible", "zoom_visible"),
+    (
+        (1400, True, True),
+        (1200, False, True),
+        (1100, False, False),
+        (1051, False, False),
+        (1050, False, False),
+        (1000, False, False),
+    ),
+)
+def test_toolbar_compute_stages_preserve_primary_action_width(
+    qtbot,
+    width,
+    compute_visible,
+    zoom_visible,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.setFixedWidth(width)
+    widget.show()
+    qtbot.waitExposed(widget)
+    widget._sync_toolbar_responsive_mode()
+    QApplication.processEvents()
+
+    assert widget.compute_toolbar_group.isHidden() is (not compute_visible)
+    assert widget.compute_status_label.isHidden()
+    assert widget.zoom_toolbar_field.isHidden() is (not zoom_visible)
+    assert (
+        widget.calculate_all_button.width()
+        >= widget.calculate_all_button.minimumSizeHint().width()
+    )
+    assert widget.settings_menu_button.geometry().right() < widget.width()
+
+
+def test_long_compute_summary_collapses_before_compressing_primary_action(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.setFixedWidth(1600)
+    widget.show()
+    qtbot.waitExposed(widget)
+
+    def decision(node_id, *, gpu=False, fallback=False):
+        return NodeExecutionDecision(
+            node_id,
+            "median_filter",
+            NodeComputePreference(),
+            "cuda-cupy" if gpu else "cpu-numpy",
+            "cupyx" if gpu else "cpu",
+            f"{'cupyx' if gpu else 'cpu'}-{node_id}-v1",
+            DecisionKind.FALLBACK_CPU
+            if fallback
+            else (DecisionKind.SELECTED if gpu else DecisionKind.POLICY_CPU),
+            DecisionReason.VISIBLE_FALLBACK
+            if fallback
+            else (
+                DecisionReason.SELECTED_IMPLEMENTATION
+                if gpu
+                else DecisionReason.AUTO_CPU
+            ),
+            "Synthetic responsive-toolbar decision.",
+            fallback_reason=(
+                FallbackReason.DEPENDENCY_UNAVAILABLE
+                if fallback
+                else FallbackReason.NONE
+            ),
+        )
+
+    decisions = {
+        "gpu": decision("gpu", gpu=True),
+        "cpu-1": decision("cpu-1"),
+        "cpu-2": decision("cpu-2"),
+        "cpu-3": decision("cpu-3"),
+        "fallback": decision("fallback", fallback=True),
+    }
+    widget._accepted_compute_decisions = decisions
+    widget._compute_decision_environments = {
+        "gpu": ComputeEnvironment(
+            runtime_ids=("cpu-numpy", "cuda-cupy"),
+            implementation_libraries=("cpu", "cupyx"),
+            device_id="cuda:0",
+            device_name="Test GPU",
+            device_class="nvidia-cuda",
+        )
+    }
+    widget._sync_compute_toolbar_summary()
+    QApplication.processEvents()
+
+    assert widget.compute_status_label.text() == (
+        "Auto · 1 GPU / 4 CPU · 1 fallback"
+    )
+    assert widget.compute_toolbar_group.isHidden() is False
+    assert widget.compute_status_label.isHidden()
+    assert (
+        widget.calculate_all_button.width()
+        >= widget.calculate_all_button.minimumSizeHint().width()
+    )
+
+    widget._accepted_compute_decisions = {"cpu-1": decisions["cpu-1"]}
+    widget._sync_compute_toolbar_summary()
+    QApplication.processEvents()
+
+    assert widget.compute_status_label.text() == "Auto · 1 CPU"
+    assert widget.compute_status_label.isHidden() is False
 
 
 def test_load_precedes_save_and_batch_is_separated_from_exports(
@@ -9933,6 +10398,10 @@ def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
             widget.zoom_toolbar_label,
             widget.zoom_toolbar_controls,
         ),
+        (
+            widget.compute_toolbar_label,
+            widget.compute_mode_combo,
+        ),
     )
     controls = [control for _label, control in fields]
 
@@ -9968,6 +10437,8 @@ def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
     widget._sync_toolbar_responsive_mode()
     assert widget.thumbnail_toolbar_group.isHidden()
     assert widget.zoom_toolbar_field.isHidden() is False
+    assert widget.compute_toolbar_group.isHidden() is False
+    assert widget.compute_status_label.isHidden()
     assert widget._toolbar_zoom_separator.isHidden()
     assert widget._toolbar_action_separator.isHidden() is False
 
@@ -9975,8 +10446,17 @@ def test_toolbar_field_pairs_stay_adjacent_and_responsive(qtbot):
     widget._sync_toolbar_responsive_mode()
     assert widget.thumbnail_toolbar_group.isHidden()
     assert widget.zoom_toolbar_field.isHidden()
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
     assert widget._toolbar_zoom_separator.isHidden()
     assert widget._toolbar_action_separator.isHidden()
+
+    widget.setFixedWidth(700)
+    widget._sync_toolbar_responsive_mode()
+    assert widget.compute_toolbar_group.isHidden()
+    assert widget.compute_status_label.isHidden()
+    assert widget._toolbar_compute_separator.isHidden()
+    assert widget.settings_menu_button.isHidden() is False
 
 
 def test_toolbar_fields_do_not_clip_with_larger_font(qtbot):
@@ -9999,6 +10479,7 @@ def test_toolbar_fields_do_not_clip_with_larger_font(qtbot):
         widget.contrast_range_toolbar_label,
         widget.mono_toolbar_label,
         widget.zoom_toolbar_label,
+        widget.compute_toolbar_label,
     )
     combos = (
         widget.preview_mode_combo,
@@ -10413,12 +10894,19 @@ def test_cancel_isolated_tuning_restores_parameters_and_cached_results(qtbot):
     original_sigma = widget.pipeline.nodes["gaussian"].params["sigma"]
     original_gaussian = widget.pipeline.outputs["gaussian"]
     original_threshold = widget.pipeline.outputs["threshold"]
+    original_compute_decision = widget._accepted_compute_decisions["gaussian"]
+    original_compute_stale = set(widget._stale_compute_badge_node_ids)
+    original_execution_report = widget._last_execution_report
 
     widget.isolated_tuning_checkbox.setChecked(True)
     widget._on_param_changed("sigma", 0.0)
     widget._debounce_timer.stop()
     widget.run_pipeline(force_sync=True)
     assert widget.pipeline.outputs["gaussian"] is not original_gaussian
+    assert (
+        widget._accepted_compute_decisions["gaussian"]
+        is not original_compute_decision
+    )
 
     widget.cancel_isolated_tuning_button.click()
 
@@ -10428,6 +10916,10 @@ def test_cancel_isolated_tuning_restores_parameters_and_cached_results(qtbot):
     assert widget.pipeline.outputs["threshold"] is original_threshold
     assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
     assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_READY
+    assert widget._accepted_compute_decisions["gaussian"] is original_compute_decision
+    assert widget._stale_compute_badge_node_ids == original_compute_stale
+    assert widget._last_execution_report is original_execution_report
+    assert "updating" not in widget.compute_status_label.text()
 
 
 def test_isolated_tuning_debounce_keeps_session_open(qtbot):
