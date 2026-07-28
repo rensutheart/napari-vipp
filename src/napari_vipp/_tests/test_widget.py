@@ -13,6 +13,7 @@ import imageio.v3 as iio
 import numpy as np
 import pytest
 import tifffile
+from napari.components import ViewerModel
 from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt, QTimer
 from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
@@ -10940,6 +10941,50 @@ def test_isolated_tuning_debounce_keeps_session_open(qtbot):
     assert widget._isolated_tuning_node_id == "gaussian"
     assert widget.pipeline.node_execution_states["gaussian"] == EXECUTION_READY
     assert widget.pipeline.node_execution_states["threshold"] == EXECUTION_BLOCKED
+
+
+def test_isolated_tuning_preserves_napari_camera_slice_and_inspection_layer(qtbot):
+    image = np.arange(2 * 3 * 8 * 9, dtype=np.float32).reshape(2, 3, 8, 9)
+    viewer = ViewerModel()
+    viewer.add_image(
+        image,
+        name="input volume",
+        metadata={"axes": "TZYX"},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node("gaussian")
+    widget.isolated_tuning_checkbox.setChecked(True)
+
+    viewer.dims.ndisplay = 3
+    viewer.dims.set_current_step(0, 1)
+    viewer.camera.center = (1.5, 4.0, 4.5)
+    viewer.camera.zoom = 4.25
+    viewer.camera.angles = (18.0, 27.0, 41.0)
+    viewer.camera.perspective = 12.0
+    camera_before = (
+        viewer.camera.center,
+        viewer.camera.zoom,
+        viewer.camera.angles,
+        viewer.camera.perspective,
+    )
+    step_before = tuple(viewer.dims.current_step)
+    inspect_layer = viewer.layers[widget._inspect_layer_name]
+
+    widget._on_param_changed("sigma", 0.0)
+    widget._debounce_timer.stop()
+    widget.run_pipeline(force_sync=True)
+
+    assert (
+        viewer.camera.center,
+        viewer.camera.zoom,
+        viewer.camera.angles,
+        viewer.camera.perspective,
+    ) == camera_before
+    assert tuple(viewer.dims.current_step) == step_before
+    assert viewer.layers[widget._inspect_layer_name] is inspect_layer
 
 
 def test_isolated_tuning_recalculates_a_manual_root_without_auto_mode(
