@@ -1,11 +1,13 @@
 # Production GPU implementation plan
 
 Date: 2026-07-15
-Product-direction revision: 2026-07-27
-Status: Phase 1 implemented headlessly on
-`codex/gpu-cross-platform-support`; the first experimental Pass 4 UI slice is
-connected, while all GPU implementations remain developer-hidden pending the
-remaining Phase 2 and named release/platform gates.
+Product-direction revision: 2026-07-28
+Status: Phase 1 is implemented headlessly on
+`codex/gpu-cross-platform-support`; the experimental Pass 4 application slice now
+includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
+benchmark review, and a Selective-only review-first whole-pipeline optimizer.
+All GPU implementations remain developer-hidden pending the remaining Phase 2
+and named release/platform gates.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -15,7 +17,7 @@ cuCIM Windows port-plan update: 2026-07-16
 This plan converts the GPU spike into reviewable production work without
 changing current CPU results by accident. It is grounded in the current
 `PrototypePipeline`, detached `PipelineRunRequest`, host-only interactive cache,
-batch manifest, workflow v3, and generated-Python contracts.
+batch manifest, workflow v4, and generated-Python contracts.
 
 The following constraints and approved product directions are non-negotiable:
 
@@ -114,16 +116,92 @@ The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
 Settings-menu mirror, simplified dynamic Selective per-node choices, accepted
 CPU/CuPy/cuCIM node badges with muted stale state, amber CPU fallback, and one
 message-strip component whose major/actionable paths are severity-classified.
-Policy edits participate in in-session undo/redo, per-node badge provenance is
-kept separate from the latest coherent execution report, and the toolbar
-collapses dynamically before primary graph actions can be compressed.
-Small interactive Auto updates remain on CPU;
-background-eligible Auto work and explicit GPU selections use the detached
-compute service. Full-width message treatment is reserved for actionable
-failures. Workflow-v4 persistence, cache provenance, benchmark actions,
-installation actions, and RAM/VRAM presentation remain open Pass 4 work. The
-post-slice full repository run completed with 2,431 passes and the same two
-expected integer-Gaussian xfails.
+Policy edits participate in in-session undo/redo, per-node cache provenance is
+scoped to exact actual implementation and node-local compute intent, and the
+toolbar collapses dynamically before primary graph actions can be compressed.
+Small interactive Auto updates remain on CPU; background-eligible Auto work and
+explicit GPU selections use the detached compute service. Full-width message
+treatment is reserved for actionable failures. Workflow-v4 now persists only
+portable authored compute intent, while batch/generated/export readers preserve
+that block but still execute on CPU. Compute setup runs off the GUI thread and
+reports system RAM plus dedicated or unified accelerator memory. Selected-node
+benchmarking is review-before-apply and stores raw evidence only in a
+machine-local cache.
+
+`Optimize pipeline…` is now implemented as a Selective-only, review-first
+transaction. It requires a calculated coherent graph, detaches source arrays and
+workflow state, excludes writers/side effects from private execution, benchmarks
+each eligible exact workload, measures directional transfers against a current
+free/total VRAM snapshot and active cap/reserve, and solves a bounded graph-global
+assignment including transfer and liveness memory costs. The proposed and current
+assignments are then run privately for operation-specific parity and paired
+end-to-end timing. Validation covers each changed node and every affected
+retained/terminal/tunnel boundary, and every run must prove the exact requested
+decision map and environment, no fallback, and successful accelerator cleanup.
+No proposal is offered unless parity and synchronization pass,
+the measured saving exceeds the greater of 5% or 10 ms, and the paired lower
+confidence speedup bound is above 1.0. Authored CPU/Best GPU/library/exact choices
+remain constraints by default; replacing them requires the dialog's explicit
+whole-analysis override. Analysis does not mutate preferences or live caches.
+The analysis identity binds graph, exact source content/state, retention,
+environment, and per-node workload. Apply rechecks the editor graph, exact
+source bytes/metadata/image state, compute request, current actual assignment,
+and a fresh probe of the exact candidate environment, then writes one undoable
+authored-intent edit and invalidates only branches downstream of changed
+choices.
+
+The optimizer fails closed for missing or stale benchmark identity, incomplete
+candidate/resident timing, unavailable or unknown VRAM, unsupported transfer
+runtimes, unsafe retained writer paths, no feasible assignment, no material
+benefit, cancellation, or deadline expiry. This first application version covers
+one shared accelerator runtime and the one-input/one-output operations supported
+by exact node benchmarking; it does not execute writers, optimize batch/generated
+surfaces, or synthesize estimates for unsupported nodes. Its current dialog shows
+the reviewed assignment, fixed/excluded rows, validated totals, and confidence
+bound; detailed transfer-boundary, peak-VRAM, and per-refusal drill-down remain
+presentation work.
+
+Structural cache reuse is independently chained to exact scientific context:
+source content/state, operation parameters and incoming topology, upstream
+result contexts, and actual versioned implementations. It fails closed on
+missing provenance while preserving exact upstream caches across unrelated
+downstream preference edits.
+
+The earlier post-slice full repository run completed with 2,431 passes. After
+the whole-pipeline optimizer and exact cache-provenance integration, the full
+repository run completed with 2,539 passes and the same two expected
+integer-Gaussian xfails on 2026-07-28. Focused core whole-pipeline optimizer and
+graph optimizer validation completed with 39 passes. A separate focused
+optimizer/coordinator/dialog suite completed with 34 passes. After adversarial
+assignment, parity, cleanup, transfer-lifetime, and cache-provenance hardening,
+the final branch-wide run completed with **2,549 passes and the same two expected
+xfails**; repository Ruff and `git diff --check` were clean.
+
+Immediate hardening before this optimizer can support broader operation and
+platform claims:
+
+- replace the UI's separately captured workflow, source payload, retention set,
+  compute request, and accepted assignment with one immutable application
+  snapshot created under a single coherent capture boundary; the worker must
+  never derive identity from mutable live pipeline containers. The exact
+  candidate environment is now freshly re-probed before apply, but workload and
+  retention identity must also be reconstructed from the same coherent snapshot
+  so the complete comparison has no time-of-check/time-of-use gap;
+- preserve one absolute end-to-end deadline through detachment, byte hashing,
+  fact scans, node sub-benchmarks, transfer profiling, solving, and validation.
+  Cooperative checks now cover chunked work and subtransactions, but tests must
+  continue to prove that no nested service silently receives a fresh full budget;
+  monolithic provider calls remain cancel-after-return by necessity and must be
+  labelled that way;
+- preserve the exact performance-evidence envelope already carried by the
+  optimizer: pipeline/workload/environment/device/memory/policy identity must
+  stay attached through every future consumer. Never reintroduce a flattened
+  `(node, implementation)` view that could clear Auto for a different graph
+  context; Selective authored choices may outlive stale evidence, but every
+  `fastest` or `optimal` claim must not;
+- expand only with explicit evidence for multi-input/output nodes, multiple
+  accelerator runtimes, writer-adjacent graphs, and richer retained/previewed
+  materialization. The current refusal is preferable to an optimistic estimate.
 
 ### Cross-platform support contract
 
@@ -288,7 +366,7 @@ execution policy, and UI presentation separate.
 | CPU/GPU call preparation | a small extraction from `core/pipeline.py` into `core/node_execution.py` | Build validated operation inputs/kwargs and apply existing metadata transforms once, independent of the chosen implementation. The CPU path uses the same extraction. |
 | Built-in CUDA/CuPy runtime | `core/gpu/cupy_runtime.py` | Lazy CuPy import, real device probe, device/context and private-pool scope, transfer/synchronization primitives, OOM classification, cleanup, environment identity, and verified sharing rules for cuCIM implementations. |
 | GPU implementations | one family-owned module per implementation library under `core/gpu/` | Pure CuPyX or cuCIM operations accepting and returning runtime-owned device arrays. They mirror current CPU semantics and expose no UI behavior. |
-| Benchmark and optimizer service | new `core/compute_benchmark.py` | Transactional node benchmarking, local fingerprinted result storage, parity-before-timing checks, cold/warm timing, and whole-pipeline assignment that includes transfers, residency, runtime switches, and memory. |
+| Benchmark and optimizer services | `core/compute_benchmark.py`, `core/compute_benchmark_coordinator.py`, `core/compute_pipeline_optimizer.py`, and `core/compute_pipeline_optimizer_coordinator.py` | Transactional node benchmarking, local fingerprinted result storage, parity-before-timing checks, cold/warm timing, application-safe evidence capture, and whole-pipeline assignment including transfers, residency, runtime switches, and memory. |
 | Capability/policy diagnostics | `core/compute_diagnostics.py` | JSON-safe support report, installation diagnosis, policy explanation, memory snapshot, and recent execution/fallback information. |
 | Single-run service | `core/execution.py` | Introduced as the mandatory headless/device execution entry in Pass 1, then made the only interactive application entry in Pass 4. It validates a detached workflow, plans, executes, and returns host outputs plus provenance. |
 | Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Selective node preferences, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
@@ -1481,14 +1559,29 @@ preference merely because the benchmark finished. `Use fastest` is one undoable
 authored-preference edit. If its local evidence later becomes stale, the choice
 remains active but the `fastest` label is removed and `Rebenchmark` is offered.
 
+The current experimental node dialog shows the candidate implementation, warm
+median, CPU speedup, parity result, peak memory, and explicit `Use fastest`
+action. Cold/range/transfer-resident detail, a dedicated `View details` surface,
+and visible stale-evidence/rebenchmark state remain presentation hardening.
+
 `Optimize pipeline` shows the current and proposed implementation assignment,
 estimated/measured total, transfer/runtime boundaries, peak memory, stale or
 estimated nodes, and any excluded candidate. `Apply choices` is a separate
 confirmation and one undoable action. Forced CPU/Best GPU/library/exact choices
 are constraints; the optimizer never replaces them unless the user explicitly
-selects and confirms an override scope. If the globally optimal plan chooses a slower isolated node to
-preserve residency, the explanation states that plainly. Benchmark progress is
-cancellable and never publishes a writer/batch output.
+selects and confirms an override scope. If the globally optimal plan chooses a
+slower isolated node to preserve residency, the explanation states that plainly.
+Benchmark progress is cancellable and never publishes a writer/batch output.
+
+The current experimental implementation provides the safe core of that design:
+one explicit whole-analysis override checkbox, current/proposed rows with the
+portable preference that would be authored, fixed/excluded status, validated
+end-to-end totals, and the paired lower confidence bound. Transfer direction,
+current free/total VRAM, cap/reserve, peak candidate memory, and graph liveness
+are enforced by the coordinator but are not yet exposed as detailed review-table
+columns. Per-node refusal drill-down, selectable override subsets, saved local
+evidence inspection, and residency-boundary explanations remain Pass 4 UX
+hardening; absence of those explanations does not relax any admission gate.
 
 ### 10.4 Errors, memory, and progress
 
@@ -1787,9 +1880,10 @@ permission to rewrite adjacent code.
   workflow-schema, batch, or generated-Python behavior changes yet.
 - **Phase 2 — interactive use and deconvolution:** Pass 4 plus the RL/RL-TV
   operation work in Passes 6-7. Add toolbar mode, Selective node choices,
-  badges, benchmark UI, diagnostics/install guidance, RAM/VRAM presentation,
-  the minimal workflow v4 compute-intent block plus canonical hash and atomic
-  reader/writer preservation so accepted choices persist, and
+  badges, review-first node and whole-pipeline benchmark UI,
+  diagnostics/install guidance, RAM/VRAM presentation, the minimal workflow v4
+  compute-intent block plus canonical hash and atomic reader/writer preservation
+  so accepted choices persist, and
   a small explicitly scoped wave of inexpensive residency-bridge nodes in
   parallel where file ownership is disjoint.
 - **Phase 3 — segmentation/measurement wave and cuCIM completeness review:**
@@ -2506,11 +2600,13 @@ not reasons to redesign Phase 1.
    fake/lazy-CUDA substrate and reproducible dev setup -> production-faithful
    Background/Subtract Background -> CuPyX median and Gaussian -> headless node
    benchmark, scientific cache identity, and whole-pipeline optimizer.
-4. **Next wave:** the initial toolbar/inspector/badge slice is implemented;
-   benchmark controls, install guidance, RAM/VRAM display, and minimal
-   workflow-v4 persistence remain. Then RL/RL-TV, Otsu,
-   Canny, connected components, measurements, residency bridges, and broad
-   reasonable-node promotion; batch/generated/CLI/export integration follows.
+4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
+   intent, setup/memory diagnostics, selected-node benchmark review, and the
+   conservative Selective whole-pipeline optimizer are implemented. Finish the
+   optimizer evidence/detail UX and the hardening items below, then move to
+   RL/RL-TV, Otsu, Canny, connected components, measurements, residency bridges,
+   and broad reasonable-node promotion; batch/generated/CLI/export integration
+   follows.
 5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and
    packaging admit a Selective candidate. Auto additionally needs conservative
    whole-segment performance evidence. Primitive benchmarks alone admit nothing.

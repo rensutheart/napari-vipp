@@ -2,8 +2,9 @@
 
 Status: implemented on `codex/gpu-cross-platform-support` as a headless,
 developer-hidden vertical slice, with the first experimental Phase 2
-interactive controls now connected to that service. This remains a development
-surface and is not yet a public GPU support promise.
+interactive controls, workflow-v4 intent, node benchmarking, and Selective-only
+whole-pipeline optimizer now connected to that service. This remains a
+development surface and is not yet a public GPU support promise.
 
 This record describes the code that exists, the environment in which it was
 validated, and the gates that intentionally remain closed. The normative
@@ -28,9 +29,21 @@ product sequence and promotion criteria remain in the
 - Scientific result-cache contracts that bind exact implementation, runtime,
   library, dependency, policy, and result semantics. GPU results are detached
   before publication and cannot alias device or mutable producer state.
+- Structural pipeline-cache provenance now binds exact source bytes, dtype,
+  shape, metadata, image state and revision; public node parameters, ports and
+  incoming topology; chained upstream result contexts; and the actual versioned
+  implementation. Missing or mismatched provenance fails closed without
+  needlessly invalidating an exact upstream cache for a downstream-only policy
+  edit.
 - A parity-before-timing per-node benchmark service with adaptive paired rounds,
   confidence bounds, transfer/resident timing, peak memory, quarantine, and a
-  separate benchmark cache identity.
+  separate benchmark cache identity. Its machine-local JSON index publishes only
+  complete records with atomic replacement plus same- and cross-process locking.
+- The first Phase 2 Selective-only whole-pipeline optimizer: detached private
+  source/workflow execution, exact workload/environment evidence, measured
+  directional transfers, VRAM/liveness-constrained graph assignment,
+  operation-specific parity before paired end-to-end validation, review before
+  apply, and one scoped undoable authored-intent edit.
 - A reproducible evidence command, `scripts/benchmark_gpu_phase1.py`, that runs
   fixed production-adapter cases and atomically writes strict JSON.
 
@@ -98,8 +111,10 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 `
 ```
 
 The benchmark document is machine-local evidence, not a portable performance
-promise. Auto requires compatible evidence for the exact workload and hardware;
-without it, or when its confidence/noise gate fails, CPU remains selected.
+promise, and an isolated-node record does not by itself admit Auto. Auto requires
+reviewed whole-segment evidence or policy for the exact graph context, workload,
+and hardware; without it, or when its confidence/noise gate fails, CPU remains
+selected.
 
 ## Local validation target
 
@@ -121,8 +136,24 @@ benchmark adapter; a dependency-free isolated Python 3.12 install loaded the
 packaged policy and its five operation entries successfully.
 
 After the first interactive slice and its production-UI hardening, the full
-repository run completed with **2,431 passed and 2 expected xfails**; the xfails
-are the same documented CuPy integer-Gaussian parity gaps.
+repository run completed with **2,431 passed and 2 expected xfails**. After the
+whole-pipeline optimizer, cache-provenance, and apply-time environment checks
+were integrated, the full repository run completed with **2,539 passed and 2
+expected xfails** on 2026-07-28. The xfails are the same documented CuPy
+integer-Gaussian parity gaps.
+
+After the core whole-pipeline optimizer landed, its focused optimizer and graph
+suite completed with **39 passed**. This focused result supplements rather than
+replaces the last recorded branch-wide and real-device runs above.
+
+A final adversarial hardening pass added exact structural cache provenance,
+observable-boundary parity, exact private decision/environment/cleanup checks,
+bitwise signed-zero handling, benchmark-equivalent background input scaling,
+and fixed-row preference regressions. The focused
+optimizer/coordinator/dialog suite completed with **34 passed** and repository
+Ruff was clean. The final branch-wide run completed with **2,549 passed and 2
+expected xfails** on 2026-07-28; this is the current application-wide validation
+record.
 
 The fixed production benchmark used 21 paired warm rounds for every case. These
 small inputs deliberately demonstrate the conservative Auto gate:
@@ -143,19 +174,43 @@ The generated evidence document is
 
 The [representative real-acquisition ND2 benchmark](benchmarks/representative-nd2-phase1-benchmark.md)
 applies the same registered production-node adapter to two full-resolution
-planes from a 647 MB, two-channel ND2 time series. At native `uint16`, Auto
-selected cuCIM for Subtract Background, CuPyX for Median Filter, and CPU for
-Gaussian Blur. The run also exposed an ND2 Z/channel metadata-order defect;
-the benchmark used direct reader indexing so the timing inputs remained
-scientifically unambiguous.
+planes from a 647 MB, two-channel ND2 time series. At native `uint16`, the
+isolated benchmark winner was cuCIM for Subtract Background, CuPyX for Median
+Filter, and CPU for Gaussian Blur. Those local winners are Selective evidence,
+not graph-global Auto admission. The metadata-order defect exposed by the first
+run is now fixed on both `main` and this GPU branch. A later graph-global check
+on the exact central `CYX` plane validated Median Filter changing from CPU to
+CuPyX in the intentionally mixed CPU/cuCIM/CPU pipeline: paired medians improved
+from 321.365 ms to 100.754 ms with a 2.524x lower confidence bound. The full
+analysis completed in 27.352 seconds and retained every authored constraint.
 
 ## Deliberately deferred gates
 
 - The first toolbar policy, Selective per-node choices, actual CPU/CuPy/cuCIM
   badges, visible fallback, and the single message-strip component are
-  implemented; major/actionable paths are severity-classified.
-  Node/pipeline benchmark actions, durable workflow-v4 choices, install actions,
-  and RAM/VRAM presentation remain deferred within Phase 2.
+  implemented; major/actionable paths are severity-classified. Durable
+  workflow-v4 authored intent, worker-based compute setup, RAM/VRAM presentation,
+  review-first selected-node benchmarking, and the conservative Selective-only
+  whole-pipeline optimizer are also connected. Batch/generated/export consumers
+  preserve workflow-v4 intent but still execute on CPU.
+- The optimizer currently requires a calculated coherent graph, one shared
+  accelerator runtime, exact evidence for every variable candidate, known usable
+  VRAM, and node shapes supported by one-input/one-output node benchmarking. It
+  refuses unsafe retained writer paths, incomplete/stale identity or timings,
+  parity/synchronization failures, infeasible memory, and proposals that do not
+  clear the greater of 5% or 10 ms with a lower confidence bound above 1.0.
+  Authored constraints are preserved unless the user explicitly enables the
+  whole-analysis override. Private parity/timing runs must echo the exact
+  request, environment, implementation map, safe decision scope, no fallback,
+  and successful cleanup. Apply refuses a changed graph, exact source
+  bytes/metadata/image state, compute request, current actual assignment, or
+  candidate environment.
+- Before broader use, capture workflow/source/retention/compute/assignment as one
+  immutable application snapshot, preserve the optimizer's exact evidence
+  envelope through every future consumer, extend the fresh pre-apply environment
+  probe to one coherent workload/retention identity comparison, retain a single
+  end-to-end deadline across all nested benchmark work, and expose
+  transfer/VRAM/refusal details in the review UI.
 - RTX 40-series laptop, native Linux, CUDA 12 clean-host, and M1 Max evidence is
   still required before broader Auto calibration or platform claims.
 - Deconvolution, Otsu, morphology, segmentation, measurement, batch, workflow,

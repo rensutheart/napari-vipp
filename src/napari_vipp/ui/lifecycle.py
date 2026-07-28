@@ -88,6 +88,26 @@ class WidgetLifecycle:
             widget._pipeline_thread_pool.clear()
         except Exception:
             pass
+        for dialog_name in (
+            "_node_benchmark_dialog",
+            "_pipeline_optimizer_dialog",
+        ):
+            dialog = getattr(widget, dialog_name, None)
+            if dialog is not None and getattr(dialog, "running", False):
+                try:
+                    dialog.cancel()
+                except Exception:
+                    pass
+        for pool_name in (
+            "_node_benchmark_thread_pool",
+            "_pipeline_optimizer_thread_pool",
+        ):
+            pool = getattr(widget, pool_name, None)
+            if pool is not None:
+                try:
+                    pool.clear()
+                except Exception:
+                    pass
         widget._set_pipeline_busy(False)
 
     def _disconnect_external_objects(self) -> None:

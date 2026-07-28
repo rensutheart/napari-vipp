@@ -177,18 +177,45 @@ Python exports retain the compute block but execute on CPU in this phase.
 on a worker and presents system RAM plus discrete VRAM, or one shared budget on
 unified-memory machines. In Selective mode, eligible one-input/one-output nodes
 offer `Benchmark node…`: VIPP compares the exact current workload, requires
-scientific parity, saves evidence locally, previews all timings, and changes the
-portable node preference only after explicit acceptance.
+scientific parity, saves evidence locally, previews warm timing/parity/memory
+results, and changes the portable node preference only after explicit
+acceptance.
+Selective mode also exposes `Optimize pipeline…` after the current graph has
+been calculated. This review-first action works from detached source data,
+benchmarks eligible nodes, measures synchronized transfer costs and usable VRAM,
+solves one graph-wide CPU/GPU assignment, and then validates the complete current
+and proposed assignments for changed-node plus affected observable-boundary
+parity and paired end-to-end benefit. Every private validation run must report
+the exact requested implementation map and environment, no fallback, and clean
+accelerator teardown. It refuses to
+make a proposal when evidence or identity is incomplete/stale, memory is not
+admissible, the graph contains an unsafe retained writer path, or the measured
+gain does not exceed the greater of 5% or 10 ms with a lower confidence bound
+above 1.0. Explicit per-node choices are constraints unless the user deliberately
+enables the whole-analysis override. Analysis changes nothing; a reviewed
+proposal is rechecked against graph, source, compute intent, actual assignment,
+exact source bytes/metadata/image state, and a fresh probe of the exact candidate
+environment before one undoable apply,
+after which only affected branches are invalidated.
 GPU candidates remain developer-hidden in the core admission model
 and are explicitly labelled experimental in this development UI, so this is
-not yet a public GPU support claim. Whole-pipeline optimization remains later
-Phase 2 work. See the
+not yet a public GPU support claim. The current optimizer is deliberately limited
+to a calculated, writer-free scientific subgraph, one accelerator runtime, and
+the node shapes supported by exact node benchmarking; it fails closed instead of
+estimating around unsupported multi-runtime, side-effecting, or incomplete
+workloads. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules. The
 [Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
 summarizes the code, exact admitted matrix, validation evidence, and deferred
 gates.
+
+Structural cache reuse also fails closed on exact scientific context: source
+bytes/state and revision, node parameters and incoming topology, chained
+upstream result identity, and the actual versioned implementation must all
+match. Changing a downstream preference does not invalidate an exact upstream
+cache, while in-place source changes and stale upstream parameters do.
 
 Use the checked-in setup helper to create a dedicated Python 3.12 environment.
 It pins one CUDA major, refuses mixed CuPy distributions, installs only into the

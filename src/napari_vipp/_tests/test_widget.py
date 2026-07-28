@@ -734,6 +734,189 @@ def test_node_benchmark_apply_is_atomic_and_undoable(qtbot):
     assert "gaussian" not in widget._compute_node_preferences
 
 
+def test_pipeline_optimizer_action_is_selective_only(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+
+    assert widget.optimize_pipeline_button.isHidden()
+    widget._populate_settings_toolbar_menu()
+    assert "Optimize pipeline…" not in {
+        action.text() for action in widget.settings_menu.actions()
+    }
+
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("selective")
+        )
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._sync_compute_toolbar_summary()
+    widget._populate_settings_toolbar_menu()
+
+    assert not widget.optimize_pipeline_button.isHidden()
+    assert "Optimize pipeline…" in {
+        action.text() for action in widget.settings_menu.actions()
+    }
+
+
+def test_pipeline_optimizer_apply_is_atomic_undoable_and_review_only(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("selective")
+        )
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
+    payloads, _layers = widget._source_payloads_for_pipeline()
+    widget._pipeline_optimizer_source_signature = (
+        widget._pipeline_source_signature(None, None, "", payloads)
+    )
+    row = SimpleNamespace(
+        node_id="gaussian",
+        current_preference=NodeComputePreference(),
+        proposed_preference=NodeComputePreference("library", "cupyx"),
+    )
+
+    class _Proposal:
+        rows = (row,)
+
+        def is_current(self, identity, request, assignments):
+            return bool(
+                identity
+                and request.mode is ComputeMode.SELECTIVE
+                and assignments
+            )
+
+        def updated_request(self, request):
+            return replace(
+                request,
+                node_preferences={
+                    **dict(request.node_preferences),
+                    "gaussian": NodeComputePreference("library", "cupyx"),
+                },
+            )
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "probe_pipeline_optimizer_environment",
+        lambda *_args: SimpleNamespace(fingerprint="environment-a"),
+    )
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "fingerprint_pipeline_optimizer_sources",
+        lambda *_args: "source-a",
+    )
+    result = SimpleNamespace(
+        proposal=_Proposal(),
+        identity=SimpleNamespace(
+            environment_fingerprint="environment-a",
+            source_fingerprint="source-a",
+        ),
+    )
+    undo_count = len(widget._undo_stack)
+
+    # Merely constructing/reviewing a result cannot mutate authored intent.
+    assert "gaussian" not in widget._compute_node_preferences
+    widget._apply_pipeline_optimizer_result(result)
+
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    assert len(widget._undo_stack) == undo_count + 1
+
+    widget.undo()
+
+    assert "gaussian" not in widget._compute_node_preferences
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(
+            proposal=_Proposal(),
+            identity=SimpleNamespace(
+                environment_fingerprint="environment-b",
+                source_fingerprint="source-a",
+            ),
+        )
+    )
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "environment changed" in widget.status_label.text()
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(
+            proposal=_Proposal(),
+            identity=SimpleNamespace(
+                environment_fingerprint="environment-a",
+                source_fingerprint="source-b",
+            ),
+        )
+    )
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "source bytes" in widget.status_label.text()
+
+    def mutate_graph_during_source_verification(*_args):
+        widget.pipeline.nodes["gaussian"].params["sigma"] = 3.25
+        return "source-a"
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute_pipeline_optimizer_coordinator."
+        "fingerprint_pipeline_optimizer_sources",
+        mutate_graph_during_source_verification,
+    )
+    widget._apply_pipeline_optimizer_result(result)
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert "changed during verification" in widget.status_label.text()
+
+
+def test_pipeline_optimizer_rejects_stale_review_result(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget._pipeline_optimizer_baseline = widget._current_history_snapshot()
+    payloads, _layers = widget._source_payloads_for_pipeline()
+    widget._pipeline_optimizer_source_signature = (
+        widget._pipeline_source_signature(None, None, "", payloads)
+    )
+    widget.pipeline.nodes["gaussian"].params["sigma"] = 3.25
+    proposal = SimpleNamespace(
+        rows=(),
+        is_current=lambda *_args: True,
+        updated_request=lambda request: request,
+    )
+
+    widget._apply_pipeline_optimizer_result(
+        SimpleNamespace(proposal=proposal, identity=object())
+    )
+
+    assert widget._compute_node_preferences == {}
+    assert "Analyze the pipeline again" in widget.status_label.text()
+
+
+def test_scoped_compute_invalidation_preserves_clean_upstream_cache(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    upstream = widget.pipeline.outputs["gaussian"]
+    completed = set(widget.pipeline.completed_node_ids)
+
+    widget._invalidate_compute_policy_results({"threshold"})
+
+    assert widget.pipeline.outputs["gaussian"] is upstream
+    assert "gaussian" in widget.pipeline.completed_node_ids
+    assert completed - {"threshold"} <= widget.pipeline.completed_node_ids
+    assert widget._pending_dirty_node_ids == {"threshold"}
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_background"),
     (

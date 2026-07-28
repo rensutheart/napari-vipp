@@ -129,6 +129,7 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
     NodePreferenceKind,
 )
+from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.diagnostics import (
     PSF_EDGE_MASS_WARNING_FRACTION,
     PsfPreflightResult,
@@ -329,6 +330,12 @@ from napari_vipp.ui.compute_benchmark_dialog import (
     NodeBenchmarkDialog,
     NodeBenchmarkWorker,
     NodeBenchmarkWorkerOutcome,
+)
+from napari_vipp.ui.compute_pipeline_optimizer_dialog import (
+    PipelineOptimizerDialog,
+    PipelineOptimizerProgress,
+    PipelineOptimizerWorker,
+    PipelineOptimizerWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import (
     ComputeSetupPresentation,
@@ -534,6 +541,7 @@ class _IsolatedTuningSnapshot:
     execution_states: dict[str, str]
     execution_messages: dict[str, str]
     completed_node_ids: frozenset[str]
+    compute_provenance: dict[str, CachedNodeComputeProvenance]
     compute_decisions: dict[str, NodeExecutionDecision]
     compute_decision_environments: dict[str, ComputeEnvironment]
     stale_compute_badge_node_ids: frozenset[str]
@@ -1131,6 +1139,9 @@ class VippWidget(QWidget):
         self._compute_setup_dialog: ComputeSetupDialog | None = None
         self._node_benchmark_dialog: NodeBenchmarkDialog | None = None
         self._node_benchmark_baseline: WorkflowHistorySnapshot | None = None
+        self._pipeline_optimizer_dialog: PipelineOptimizerDialog | None = None
+        self._pipeline_optimizer_baseline: WorkflowHistorySnapshot | None = None
+        self._pipeline_optimizer_source_signature: tuple | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -1304,6 +1315,12 @@ class VippWidget(QWidget):
         self.compute_status_label.setToolTip(
             "Actual CPU/GPU decisions appear here after an accepted run."
         )
+        self.optimize_pipeline_button = QPushButton("Optimize pipeline…")
+        self.optimize_pipeline_button.setToolTip(
+            "Benchmark the exact current graph and review a globally optimized "
+            "per-node CPU/GPU assignment. Available only in Selective mode."
+        )
+        self.optimize_pipeline_button.setVisible(False)
         self.strict_compute_checkbox = QCheckBox("Strict selective GPU choices")
         self.strict_compute_checkbox.setChecked(False)
         self.strict_compute_checkbox.setToolTip(
@@ -1411,6 +1428,8 @@ class VippWidget(QWidget):
         self._compute_setup_thread_pool.setMaxThreadCount(1)
         self._node_benchmark_thread_pool = QThreadPool(self)
         self._node_benchmark_thread_pool.setMaxThreadCount(1)
+        self._pipeline_optimizer_thread_pool = QThreadPool(self)
+        self._pipeline_optimizer_thread_pool.setMaxThreadCount(1)
         self._pipeline_run_serial = 0
         self._active_pipeline_run_id: int | None = None
         self._active_pipeline_node_id: str | None = None
@@ -1905,6 +1924,7 @@ class VippWidget(QWidget):
             parent=self.compute_toolbar_group,
         )
         compute_toolbar_layout.addWidget(self.compute_toolbar_field)
+        compute_toolbar_layout.addWidget(self.optimize_pipeline_button)
         compute_toolbar_layout.addWidget(self.compute_status_label)
         self.compute_toolbar_group.setSizePolicy(
             QSizePolicy.Maximum,
@@ -2111,6 +2131,11 @@ class VippWidget(QWidget):
             + margins.left()
             + margins.right()
         )
+        if not self.optimize_pipeline_button.isHidden():
+            required += (
+                layout.spacing()
+                + self.optimize_pipeline_button.sizeHint().width()
+            )
         if include_status:
             required += layout.spacing() + self.compute_status_label.sizeHint().width()
         return required
@@ -2138,6 +2163,12 @@ class VippWidget(QWidget):
             "blocking VIPP."
         )
         compute_setup_action.triggered.connect(self._show_compute_setup_dialog)
+        if self._compute_mode is ComputeMode.SELECTIVE:
+            optimize_ready, optimize_reason = self._can_optimize_pipeline()
+            optimize_action = menu.addAction("Optimize pipeline…")
+            optimize_action.setEnabled(optimize_ready)
+            optimize_action.setToolTip(optimize_reason)
+            optimize_action.triggered.connect(self._show_pipeline_optimizer)
         menu.addSeparator()
         self._add_checkbox_menu_action(
             menu,
@@ -2468,6 +2499,9 @@ class VippWidget(QWidget):
             self._on_node_compute_preference_changed
         )
         self.node_benchmark_button.clicked.connect(self._benchmark_selected_node)
+        self.optimize_pipeline_button.clicked.connect(
+            self._show_pipeline_optimizer
+        )
         self.strict_compute_checkbox.toggled.connect(self._on_strict_compute_toggled)
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
@@ -2769,7 +2803,7 @@ class VippWidget(QWidget):
         self._push_undo_if_changed(before)
         title = self._node_title(node_id)
         label = self.node_compute_preference_combo.currentText()
-        self._invalidate_compute_policy_results()
+        self._invalidate_compute_policy_results({node_id})
         self._sync_node_compute_control()
         self._sync_compute_toolbar_summary()
         self._set_status(
@@ -2861,6 +2895,56 @@ class VippWidget(QWidget):
             "Compare CPU and eligible GPU implementations using this node's "
             "exact current input and parameters.",
         )
+
+    def _can_optimize_pipeline(self) -> tuple[bool, str]:
+        if self._compute_mode is not ComputeMode.SELECTIVE:
+            return False, "Choose Selective compute policy to optimize the pipeline."
+        dialog = self._pipeline_optimizer_dialog
+        if dialog is not None and dialog.running:
+            return False, "A pipeline optimization is already running."
+        if (
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+            or self._pipeline_run_pending
+        ):
+            return False, "Wait for the current calculation or source load to finish."
+        if (
+            self._last_pipeline_source_signature is None
+            or self._pending_dirty_node_ids
+            or self._inflight_dirty_node_ids is not None
+            or self._stale_compute_badge_node_ids
+        ):
+            return False, "Calculate the current graph before optimizing it."
+        has_candidate = any(
+            self.pipeline._has_cached_output(node_id)
+            and len(
+                node_preference_options(
+                    node.operation_id,
+                    allow_experimental=self._compute_allow_experimental,
+                    current_preference=self._compute_node_preferences.get(
+                        node_id,
+                        NodeComputePreference(),
+                    ),
+                )
+            )
+            > 2
+            for node_id, node in self.pipeline.nodes.items()
+        )
+        if not has_candidate:
+            return False, "No calculated node in this graph has a GPU implementation."
+        return (
+            True,
+            "Measure the exact current graph and review a global CPU/GPU assignment.",
+        )
+
+    def _sync_pipeline_optimizer_action(self) -> None:
+        if not hasattr(self, "optimize_pipeline_button"):
+            return
+        selective = self._compute_mode is ComputeMode.SELECTIVE
+        self.optimize_pipeline_button.setVisible(selective)
+        ready, reason = self._can_optimize_pipeline()
+        self.optimize_pipeline_button.setEnabled(selective and ready)
+        self.optimize_pipeline_button.setToolTip(reason)
 
     def _benchmark_selected_node(self) -> None:
         ready, reason = self._can_benchmark_selected_node()
@@ -2959,7 +3043,7 @@ class VippWidget(QWidget):
         else:
             self._compute_node_preferences[node_id] = preference
         self._push_undo_if_changed(before)
-        self._invalidate_compute_policy_results()
+        self._invalidate_compute_policy_results({node_id})
         self._sync_node_compute_control()
         self._sync_compute_toolbar_summary()
         preference_label = preference.kind.value
@@ -2982,12 +3066,373 @@ class VippWidget(QWidget):
             self._node_benchmark_baseline = None
         self._sync_node_compute_control()
 
-    def _invalidate_compute_policy_results(self) -> None:
-        """Drop result caches that do not yet carry implementation provenance."""
+    def _show_pipeline_optimizer(self) -> None:
+        ready, reason = self._can_optimize_pipeline()
+        if not ready:
+            self._set_status(reason, severity=MessageSeverity.WARNING)
+            return
+        existing = self._pipeline_optimizer_dialog
+        if existing is not None:
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = PipelineOptimizerDialog(self)
+        dialog.analyze_requested.connect(
+            self._start_pipeline_optimizer_analysis
+        )
+        dialog.apply_requested.connect(self._apply_pipeline_optimizer_result)
+        dialog.optimizer_finished.connect(
+            self._on_pipeline_optimizer_finished
+        )
+        dialog.finished.connect(self._on_pipeline_optimizer_dialog_finished)
+        self._pipeline_optimizer_dialog = dialog
+        self._sync_pipeline_optimizer_action()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _start_pipeline_optimizer_analysis(
+        self,
+        override_authored: bool,
+    ) -> None:
+        dialog = self._pipeline_optimizer_dialog
+        if dialog is None or dialog.running:
+            return
+        ready, reason = self._can_optimize_pipeline()
+        if not ready:
+            self._set_status(reason, severity=MessageSeverity.WARNING)
+            return
+        try:
+            source_payloads, _source_layers = self._source_payloads_for_pipeline()
+            if not source_payloads:
+                raise ValueError("No Image Source has a resolved payload.")
+            compute_request = self._current_compute_request()
+            workflow = deepcopy(
+                serialize_workflow(
+                    self.pipeline,
+                    compute_request=compute_request,
+                )
+            )
+            source_signature = self._pipeline_source_signature(
+                None,
+                None,
+                "",
+                source_payloads,
+            )
+        except Exception as exc:
+            self._set_status(
+                f"Pipeline optimization could not capture its source: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return
+
+        retain_node_ids = frozenset(self._cache_retention_node_ids())
+
+        def optimize(cancelled, emit_progress):
+            from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
+                ApplicationPipelineOptimizerCoordinator,
+            )
+            from napari_vipp.core.compute_registry import ComputeRegistry
+
+            registry = ComputeRegistry()
+            try:
+                coordinator = ApplicationPipelineOptimizerCoordinator(
+                    registry,
+                    _default_compute_benchmark_store_path(),
+                )
+
+                def forward(progress) -> None:
+                    emit_progress(
+                        PipelineOptimizerProgress(
+                            int(progress.completed),
+                            int(progress.total),
+                            str(progress.message),
+                        )
+                    )
+
+                return coordinator.optimize(
+                    workflow,
+                    source_payloads,
+                    compute_request,
+                    retain_node_ids,
+                    time_budget_seconds=300.0,
+                    override_authored=bool(override_authored),
+                    cancelled=cancelled,
+                    progress=forward,
+                )
+            finally:
+                try:
+                    registry.close()
+                except Exception:
+                    pass
+
+        self._pipeline_optimizer_baseline = self._current_history_snapshot()
+        self._pipeline_optimizer_source_signature = source_signature
+        worker = PipelineOptimizerWorker(optimize)
+        self._set_status(
+            "Analyzing the exact current pipeline; no workflow choice will "
+            "change until you review and apply the result.",
+            severity=MessageSeverity.INFO,
+        )
+        dialog.start(worker, self._pipeline_optimizer_thread_pool)
+        self._sync_pipeline_optimizer_action()
+
+    def _on_pipeline_optimizer_finished(
+        self,
+        outcome: PipelineOptimizerWorkerOutcome,
+    ) -> None:
+        self._sync_pipeline_optimizer_action()
+        if outcome.result is not None:
+            proposal = getattr(outcome.result, "proposal", outcome.result)
+            changed = sum(1 for row in proposal.rows if row.changed)
+            self._set_status(
+                f"Pipeline analysis found a validated faster assignment with "
+                f"{changed} node change(s). Review it before applying.",
+                severity=MessageSeverity.SUCCESS,
+            )
+            return
+        if outcome.cancelled:
+            self._set_status(
+                "Pipeline analysis cancelled; no preference changed.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if outcome.reason_code == "not_beneficial":
+            severity = MessageSeverity.INFO
+        elif outcome.reason_code in {
+            "evidence_incomplete",
+            "deadline_exceeded",
+        }:
+            severity = MessageSeverity.WARNING
+        else:
+            severity = MessageSeverity.ERROR
+        self._set_status(
+            f"Pipeline optimization made no change: {outcome.error}",
+            severity=severity,
+            actionable=severity is MessageSeverity.ERROR,
+        )
+
+    def _apply_pipeline_optimizer_result(self, result: object) -> None:
+        proposal = getattr(result, "proposal", result)
+        identity = getattr(result, "identity", None)
+        baseline = self._pipeline_optimizer_baseline
+        try:
+            source_payloads, _source_layers = self._source_payloads_for_pipeline()
+            source_signature = self._pipeline_source_signature(
+                None,
+                None,
+                "",
+                source_payloads,
+            )
+        except Exception:
+            source_signature = None
+        current_request = self._current_compute_request()
+        assignments = self._current_pipeline_optimizer_assignments(proposal)
+        if (
+            self._compute_mode is not ComputeMode.SELECTIVE
+            or baseline is None
+            or identity is None
+            or self._current_history_snapshot() != baseline
+            or source_signature != self._pipeline_optimizer_source_signature
+            or not proposal.is_current(
+                identity,
+                current_request,
+                assignments,
+            )
+        ):
+            self._set_status(
+                "The graph, source revision, compute intent, or actual assignment "
+                "changed after analysis. Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        registry = None
+        try:
+            from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
+                probe_pipeline_optimizer_environment,
+            )
+            from napari_vipp.core.compute_registry import ComputeRegistry
+
+            current_workflow = deepcopy(
+                serialize_workflow(
+                    self.pipeline,
+                    compute_request=current_request,
+                )
+            )
+            registry = ComputeRegistry()
+            current_environment = probe_pipeline_optimizer_environment(
+                registry,
+                current_workflow,
+                current_request,
+            )
+        except Exception as exc:
+            self._set_status(
+                "The GPU environment could not be re-verified before apply: "
+                f"{exc}. Analyze the pipeline again after resolving the setup.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        finally:
+            if registry is not None:
+                try:
+                    registry.close()
+                except Exception:
+                    pass
+        if current_environment.fingerprint != identity.environment_fingerprint:
+            self._set_status(
+                "The GPU device, driver, or dependency environment changed after "
+                "analysis. Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        try:
+            from napari_vipp.core.compute_pipeline_optimizer_coordinator import (
+                fingerprint_pipeline_optimizer_sources,
+            )
+
+            verified_source_payloads, _source_layers = (
+                self._source_payloads_for_pipeline()
+            )
+            verified_source_signature = self._pipeline_source_signature(
+                None,
+                None,
+                "",
+                verified_source_payloads,
+            )
+            current_source_fingerprint = fingerprint_pipeline_optimizer_sources(
+                current_workflow,
+                verified_source_payloads,
+            )
+        except Exception as exc:
+            self._set_status(
+                "The exact source data could not be re-verified before apply: "
+                f"{exc}. Analyze the pipeline again after resolving the source.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        if (
+            verified_source_signature != self._pipeline_optimizer_source_signature
+            or current_source_fingerprint != identity.source_fingerprint
+        ):
+            self._set_status(
+                "The source bytes, metadata, or image state changed after analysis. "
+                "Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+
+        # Provider probing and byte hashing can take time. Repeat the cheap
+        # editor/intent/assignment guards immediately before the atomic edit.
+        final_request = self._current_compute_request()
+        final_assignments = self._current_pipeline_optimizer_assignments(proposal)
+        try:
+            final_source_payloads, _source_layers = self._source_payloads_for_pipeline()
+            final_source_signature = self._pipeline_source_signature(
+                None,
+                None,
+                "",
+                final_source_payloads,
+            )
+        except Exception:
+            final_source_signature = None
+        if (
+            self._current_history_snapshot() != baseline
+            or final_source_signature != verified_source_signature
+            or not proposal.is_current(
+                identity,
+                final_request,
+                final_assignments,
+            )
+        ):
+            self._set_status(
+                "The graph, compute intent, or actual assignment changed during "
+                "verification. Analyze the pipeline again before applying.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        current_request = final_request
+        updated_request = proposal.updated_request(current_request)
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        self._compute_node_preferences = {
+            node_id: preference
+            for node_id, preference in updated_request.node_preferences.items()
+            if node_id in self.pipeline.nodes
+            and preference.kind is not NodePreferenceKind.AUTO
+        }
+        self._push_undo_if_changed(before)
+        changed_node_ids = {
+            row.node_id
+            for row in proposal.rows
+            if row.current_preference != row.proposed_preference
+        }
+        self._invalidate_compute_policy_results(changed_node_ids)
+        self._sync_node_compute_control()
+        self._sync_compute_toolbar_summary()
+        dialog = self._pipeline_optimizer_dialog
+        if dialog is not None:
+            dialog.accept()
+        self._set_status(
+            f"Applied {len(changed_node_ids)} measured pipeline compute choice(s) "
+            "as one undoable edit. Recalculating…",
+            severity=MessageSeverity.SUCCESS,
+        )
+        self.run_pipeline()
+
+    def _current_pipeline_optimizer_assignments(self, proposal) -> dict[str, str]:
+        assignments: dict[str, str] = {}
+        for row in proposal.rows:
+            node = self.pipeline.nodes.get(row.node_id)
+            decision = self._accepted_compute_decisions.get(row.node_id)
+            if (
+                node is not None
+                and decision is not None
+                and decision.operation_id == node.operation_id
+                and row.node_id not in self._stale_compute_badge_node_ids
+            ):
+                assignments[row.node_id] = decision.implementation_id
+            elif node is not None:
+                assignments[row.node_id] = f"cpu-{node.operation_id}-v1"
+        return assignments
+
+    def _on_pipeline_optimizer_dialog_finished(self, _result: int) -> None:
+        dialog = self.sender()
+        if dialog is self._pipeline_optimizer_dialog:
+            self._pipeline_optimizer_dialog = None
+            self._pipeline_optimizer_baseline = None
+            self._pipeline_optimizer_source_signature = None
+        self._sync_pipeline_optimizer_action()
+
+    def _invalidate_compute_policy_results(
+        self,
+        node_ids: Iterable[str] | None = None,
+    ) -> None:
+        """Invalidate only policy-affected branches; provenance gates reuse."""
         if self._active_pipeline_run_id is not None:
             self._abandon_background_pipeline_run()
-        self.pipeline.prune_cached_outputs(set())
-        self._invalidate_pipeline_cache()
+        seeds = (
+            {
+                node_id
+                for node_id, node in self.pipeline.nodes.items()
+                if self.pipeline.operation_spec(node.operation_id).has_input
+            }
+            if node_ids is None
+            else {
+                str(node_id)
+                for node_id in node_ids
+                if str(node_id) in self.pipeline.nodes
+            }
+        )
+        if seeds:
+            self._mark_pipeline_branches_dirty(seeds)
 
     def _reset_compute_decisions(self) -> None:
         self._accepted_compute_decisions.clear()
@@ -3084,6 +3529,7 @@ class VippWidget(QWidget):
     def _sync_compute_toolbar_summary(self) -> None:
         if not hasattr(self, "compute_status_label"):
             return
+        self._sync_pipeline_optimizer_action()
         request = self._current_compute_request()
         summary = compute_toolbar_summary(
             request, self._compute_status_snapshot(request)
@@ -6459,6 +6905,7 @@ class VippWidget(QWidget):
             execution_states=dict(self.pipeline.node_execution_states),
             execution_messages=dict(self.pipeline.node_execution_messages),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
+            compute_provenance=dict(self.pipeline.node_compute_provenance),
             compute_decisions=dict(self._accepted_compute_decisions),
             compute_decision_environments=dict(
                 self._compute_decision_environments
@@ -6568,6 +7015,9 @@ class VippWidget(QWidget):
         self.pipeline.node_execution_states = dict(snapshot.execution_states)
         self.pipeline.node_execution_messages = dict(snapshot.execution_messages)
         self.pipeline.completed_node_ids = set(snapshot.completed_node_ids)
+        self.pipeline.node_compute_provenance = dict(
+            snapshot.compute_provenance
+        )
         self._accepted_compute_decisions = dict(snapshot.compute_decisions)
         self._compute_decision_environments = dict(
             snapshot.compute_decision_environments
@@ -14249,6 +14699,9 @@ class VippWidget(QWidget):
             cached_execution_messages=(
                 dict(self.pipeline.node_execution_messages)
             ),
+            cached_compute_provenance=(
+                dict(self.pipeline.node_compute_provenance)
+            ),
             completed_node_ids=frozenset(self.pipeline.completed_node_ids),
             manual_node_ids=(
                 frozenset(manual_node_ids) if manual_node_ids else None
@@ -14674,6 +15127,19 @@ class VippWidget(QWidget):
             set(result_pipeline.completed_node_ids)
             | (self.pipeline.completed_node_ids - result_node_ids)
         ) & live_node_id_set
+        self.pipeline.node_compute_provenance = {
+            node_id: provenance
+            for node_id in live_node_ids
+            if (
+                provenance := (
+                    result_pipeline.node_compute_provenance.get(node_id)
+                    if node_id in result_node_ids
+                    else self.pipeline.node_compute_provenance.get(node_id)
+                )
+            )
+            is not None
+            and node_id in self.pipeline.completed_node_ids
+        }
         self.pipeline.node_execution_states = {
             node_id: (
                 result_pipeline.node_execution_states.get(
@@ -14734,6 +15200,7 @@ class VippWidget(QWidget):
         cancelable: bool = True,
         preserve_progress: bool = False,
     ) -> None:
+        self._sync_pipeline_optimizer_action()
         keep_current_progress = bool(
             busy and preserve_progress and not self.pipeline_busy_bar.isHidden()
         )
