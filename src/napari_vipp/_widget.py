@@ -13779,23 +13779,13 @@ class VippWidget(QWidget):
         target_node_ids: set[str] | None = None,
     ) -> bool:
         compute_request = self._current_compute_request()
-        if compute_request.mode is ComputeMode.SELECTIVE:
-            execution_plan = self.pipeline.plan_execution(
-                dirty_node_ids,
-                manual_mode=MANUAL_RUN_SKIP,
-                manual_node_ids=set(manual_node_ids or set()),
-                target_node_ids=target_node_ids,
-            )
-            if any(
-                compute_request.preference_for(node_id).kind
-                in {
-                    NodePreferenceKind.BEST_GPU,
-                    NodePreferenceKind.LIBRARY,
-                    NodePreferenceKind.IMPLEMENTATION,
-                }
-                for node_id in execution_plan.runnable_node_ids
-            ):
-                return True
+        if compute_request.mode is not ComputeMode.CPU:
+            # Auto and every form of Selective intent must pass through the
+            # detached compute service.  The ordinary size/operation heuristic
+            # is only a responsiveness decision for authoritative CPU runs; it
+            # must never bypass planning, environment probes, fallback, or
+            # actual-implementation provenance for non-CPU requests.
+            return True
         return (
             self._background_processing_node_id(
                 dirty_node_ids,

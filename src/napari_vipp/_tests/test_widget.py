@@ -689,14 +689,33 @@ def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
 
     widget.node_compute_preference_combo.setCurrentIndex(library_index)
 
-    assert len(pool.workers) == 1
-    request = pool.workers[0].request.compute_request
+    assert pool.workers
+    request = pool.workers[-1].request.compute_request
     assert request.mode.value == "selective"
     assert request.allow_experimental
     assert request.preference_for("gaussian") == NodeComputePreference(
         "library",
         "cupyx",
     )
+
+
+@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.SELECTIVE))
+def test_non_cpu_compute_modes_always_use_detached_compute_service(qtbot, mode):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._compute_mode = mode
+
+    assert widget._background_processing_node_id({"gaussian"}) is None
+    assert widget._should_run_pipeline_in_background({"gaussian"}) is True
+
+
+def test_small_cpu_run_keeps_existing_responsiveness_heuristic(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._compute_mode = ComputeMode.CPU
+
+    assert widget._background_processing_node_id({"gaussian"}) is None
+    assert widget._should_run_pipeline_in_background({"gaussian"}) is False
 
 
 def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
