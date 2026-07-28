@@ -24,6 +24,25 @@ def _input_only_workflow() -> dict:
     return serialize_workflow(pipeline)
 
 
+def _pipeline_cache_kwargs(pipeline: PrototypePipeline) -> dict[str, object]:
+    return {
+        "cached_outputs": dict(pipeline.outputs),
+        "cached_output_states": dict(pipeline.output_states),
+        "cached_node_outputs": {
+            node_id: list(outputs)
+            for node_id, outputs in pipeline.node_outputs.items()
+        },
+        "cached_node_output_states": {
+            node_id: list(states)
+            for node_id, states in pipeline.node_output_states.items()
+        },
+        "completed_node_ids": frozenset(pipeline.completed_node_ids),
+        "cached_execution_states": dict(pipeline.node_execution_states),
+        "cached_execution_messages": dict(pipeline.node_execution_messages),
+        "cached_compute_provenance": dict(pipeline.node_compute_provenance),
+    }
+
+
 def test_execute_pipeline_request_materializes_a_detached_graph():
     data = np.arange(12, dtype=np.uint16).reshape(3, 4)
     request = PipelineRunRequest(
@@ -150,6 +169,270 @@ def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():
     np.testing.assert_array_equal(result.pipeline.outputs["gaussian"], data)
 
 
+def test_successful_cpu_request_publishes_processing_node_provenance():
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    request = PipelineRunRequest(
+        run_id=131,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata={"axes": "YX"},
+        input_name="source",
+        source_payloads={},
+        compute_request=ComputeRequest(mode=ComputeMode.CPU),
+    )
+
+    result = execute_pipeline_request(request)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert set(result.pipeline.node_compute_provenance) == {
+        "input",
+        "gaussian",
+        "threshold",
+    }
+    gaussian = result.pipeline.node_compute_provenance["gaussian"]
+    assert gaussian.actual_implementation.implementation_id == (
+        "cpu-gaussian_blur-v1"
+    )
+    assert not gaussian.produced_by_fallback
+
+
+def test_dirty_cpu_request_reuses_only_provenance_admitted_upstream_cache():
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    compute_request = ComputeRequest(mode=ComputeMode.CPU)
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=132,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    ).pipeline
+    assert initial is not None
+    cached_gaussian = initial.outputs["gaussian"]
+    started: list[str] = []
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=133,
+            workflow=serialize_workflow(initial),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+            dirty_node_ids=frozenset({"threshold"}),
+            **_pipeline_cache_kwargs(initial),
+        ),
+        node_started_callback=started.append,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert started == ["threshold"]
+    assert result.pipeline.outputs["gaussian"] is cached_gaussian
+
+    initial.node_compute_provenance.pop("gaussian")
+    started.clear()
+    rejected = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=134,
+            workflow=serialize_workflow(initial),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+            dirty_node_ids=frozenset({"threshold"}),
+            **_pipeline_cache_kwargs(initial),
+        ),
+        node_started_callback=started.append,
+    )
+
+    assert rejected.error == ""
+    assert started == ["gaussian", "threshold"]
+
+
+def test_dirty_request_rejects_cached_chain_when_source_bytes_change_in_place():
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    compute_request = ComputeRequest(mode=ComputeMode.CPU)
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=136,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="same-object",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    ).pipeline
+    assert initial is not None
+    old_gaussian = np.array(initial.outputs["gaussian"], copy=True)
+
+    # The object and its absent revision token are unchanged. Exact bytes must
+    # still prevent admission of the old source and every dependent result.
+    data[...] += 100.0
+    started: list[str] = []
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=137,
+            workflow=serialize_workflow(initial),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="same-object",
+            source_payloads={},
+            compute_request=compute_request,
+            dirty_node_ids=frozenset({"threshold"}),
+            **_pipeline_cache_kwargs(initial),
+        ),
+        node_started_callback=started.append,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert started == ["input", "gaussian", "threshold"]
+    np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
+    assert not np.array_equal(result.pipeline.outputs["gaussian"], old_gaussian)
+
+
+def test_dirty_request_rejects_upstream_cache_when_node_parameters_change():
+    data = np.zeros((9, 9), dtype=np.float32)
+    data[4, 4] = 100.0
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    compute_request = ComputeRequest(mode=ComputeMode.CPU)
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=138,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    ).pipeline
+    assert initial is not None
+    old_gaussian = np.array(initial.outputs["gaussian"], copy=True)
+    initial.nodes["gaussian"].params["sigma"] = 4.0
+    changed_workflow = serialize_workflow(initial)
+    started: list[str] = []
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=139,
+            workflow=changed_workflow,
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+            dirty_node_ids=frozenset({"threshold"}),
+            **_pipeline_cache_kwargs(initial),
+        ),
+        node_started_callback=started.append,
+    )
+    fresh = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=140,
+            workflow=changed_workflow,
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=compute_request,
+        )
+    )
+
+    assert result.error == fresh.error == ""
+    assert result.pipeline is not None and fresh.pipeline is not None
+    assert started == ["gaussian", "threshold"]
+    assert not np.allclose(result.pipeline.outputs["gaussian"], old_gaussian)
+    np.testing.assert_array_equal(
+        result.pipeline.outputs["gaussian"],
+        fresh.pipeline.outputs["gaussian"],
+    )
+
+
+def test_downstream_compute_preference_change_reuses_exact_upstream_cache():
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    initial_request = ComputeRequest(mode=ComputeMode.CPU)
+    initial = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=141,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=initial_request,
+        )
+    ).pipeline
+    assert initial is not None
+    cached_gaussian = initial.outputs["gaussian"]
+    downstream_changed = ComputeRequest(
+        mode=ComputeMode.CPU,
+        node_preferences={"threshold": "best_gpu"},
+    )
+    started: list[str] = []
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=142,
+            workflow=serialize_workflow(initial),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            compute_request=downstream_changed,
+            dirty_node_ids=frozenset({"threshold"}),
+            **_pipeline_cache_kwargs(initial),
+        ),
+        node_started_callback=started.append,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert started == ["threshold"]
+    assert result.pipeline.outputs["gaussian"] is cached_gaussian
+
+
+def test_pipeline_cache_lifecycle_removes_compute_provenance_with_outputs():
+    data = np.arange(25, dtype=np.float32).reshape(5, 5)
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=135,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+        )
+    ).pipeline
+    assert result is not None
+
+    result.prune_cached_outputs({"gaussian"})
+    assert set(result.node_compute_provenance) == {"gaussian"}
+    assert result.remove_node("gaussian")
+    assert result.node_compute_provenance == {}
+    result.reset_empty_graph()
+    assert result.node_compute_provenance == {}
+
+
 def test_background_request_honors_isolated_tuning_target():
     data = np.arange(81, dtype=np.float32).reshape(9, 9)
     pipeline = PrototypePipeline()
@@ -195,7 +478,7 @@ def test_background_request_honors_isolated_tuning_target():
 
     assert result.error == ""
     assert result.pipeline is not None
-    assert started == [gaussian.id]
+    assert started == ["input", gaussian.id]
     np.testing.assert_array_equal(result.pipeline.outputs[gaussian.id], data)
     assert result.pipeline.outputs[threshold.id] is cached_threshold
     assert result.pipeline.node_execution_states[threshold.id] == EXECUTION_STALE
@@ -252,7 +535,7 @@ def test_background_request_holds_descendants_behind_stale_manual_node():
 
     assert result.error == ""
     assert result.pipeline is not None
-    assert started == [psf.id]
+    assert started == ["input", psf.id]
     assert result.pipeline.node_execution_states[deconvolution.id] == EXECUTION_STALE
     assert result.pipeline.node_execution_states[rescale.id] == EXECUTION_BLOCKED
     assert result.pipeline.node_execution_states[otsu.id] == EXECUTION_BLOCKED

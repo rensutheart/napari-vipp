@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from napari_vipp.core import metadata as _metadata
+from napari_vipp.core.compute_cache import CachedNodeComputeProvenance
 from napari_vipp.core.grid import (
     validate_aligned_image_states,
     validate_mask_broadcast_image_states,
@@ -4961,6 +4962,9 @@ class PrototypePipeline:
         self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
+        self.node_compute_provenance: dict[
+            str, CachedNodeComputeProvenance
+        ] = {}
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
         self._counters: Counter[str] = Counter()
@@ -4975,6 +4979,7 @@ class PrototypePipeline:
         self.node_output_states = {}
         self.output_tunnels = {}
         self.completed_node_ids = set()
+        self.node_compute_provenance = {}
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
@@ -5005,6 +5010,7 @@ class PrototypePipeline:
         self.node_output_states = {}
         self.output_tunnels = {}
         self.completed_node_ids = set()
+        self.node_compute_provenance = {}
         self.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
         }
@@ -5041,6 +5047,7 @@ class PrototypePipeline:
         restored.node_output_states = {node_id: [] for node_id in restored.nodes}
         restored.output_tunnels = {}
         restored.completed_node_ids = set()
+        restored.node_compute_provenance = {}
         restored.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in restored.nodes
         }
@@ -5118,6 +5125,7 @@ class PrototypePipeline:
         self.node_output_states = restored.node_output_states
         self.output_tunnels = restored.output_tunnels
         self.completed_node_ids = restored.completed_node_ids
+        self.node_compute_provenance = restored.node_compute_provenance
         self.node_execution_states = restored.node_execution_states
         self.node_execution_messages = restored.node_execution_messages
         self._counters = restored._counters
@@ -5187,6 +5195,7 @@ class PrototypePipeline:
         self.output_states.pop(node_id, None)
         self.node_outputs.pop(node_id, None)
         self.node_output_states.pop(node_id, None)
+        self.node_compute_provenance.pop(node_id, None)
         self.node_execution_states.pop(node_id, None)
         self.node_execution_messages.pop(node_id, None)
         for tunnel_name in removed_tunnels:
@@ -6472,6 +6481,7 @@ class PrototypePipeline:
             }
             prior_execution_states = dict(self.node_execution_states)
             prior_execution_messages = dict(self.node_execution_messages)
+            prior_compute_provenance = dict(self.node_compute_provenance)
             self.outputs = {node_id: None for node_id in self.nodes}
             self.output_states = {node_id: None for node_id in self.nodes}
             self.node_outputs = {node_id: [] for node_id in self.nodes}
@@ -6480,6 +6490,7 @@ class PrototypePipeline:
                 node_id: EXECUTION_NOT_CALCULATED for node_id in self.nodes
             }
             self.node_execution_messages = {node_id: "" for node_id in self.nodes}
+            self.node_compute_provenance = {}
             preserved = barriers | blocked
             remaining = candidates - preserved
             completed: set[str] = set()
@@ -6503,6 +6514,9 @@ class PrototypePipeline:
                     node_id,
                     "",
                 )
+                provenance = prior_compute_provenance.get(node_id)
+                if provenance is not None:
+                    self.node_compute_provenance[node_id] = provenance
             for node_id in blocked:
                 if self._has_cached_output(node_id) and not self.is_manual_node(
                     node_id
@@ -6529,6 +6543,7 @@ class PrototypePipeline:
                 self.node_output_states[node_id] = []
                 self.node_execution_states[node_id] = EXECUTION_NOT_CALCULATED
                 self.node_execution_messages[node_id] = ""
+                self.node_compute_provenance.pop(node_id, None)
             for node_id in barriers:
                 self._mark_skipped_manual_node(node_id, dirty=True)
             self._mark_nodes_blocked_by_manual_barrier(blocked)
@@ -6566,6 +6581,7 @@ class PrototypePipeline:
             else EXECUTION_NOT_CALCULATED
         )
         self.node_execution_messages[node_id] = ""
+        self.node_compute_provenance.pop(node_id, None)
         execution.remaining_node_ids.remove(node_id)
         execution.completed_node_ids.add(node_id)
         self.completed_node_ids.add(node_id)
@@ -6591,6 +6607,7 @@ class PrototypePipeline:
         self.node_output_states[node_id] = [None] * output_count
         self.node_execution_states[node_id] = EXECUTION_READY
         self.node_execution_messages[node_id] = ""
+        self.node_compute_provenance.pop(node_id, None)
         execution.remaining_node_ids.remove(node_id)
         # An unmaterialized device value is no longer a reusable host result.
         self.completed_node_ids.discard(node_id)
@@ -6699,6 +6716,7 @@ class PrototypePipeline:
         self.node_outputs[node_id] = [None] * output_count
         self.node_output_states[node_id] = [None] * state_count
         self.completed_node_ids.discard(node_id)
+        self.node_compute_provenance.pop(node_id, None)
 
     def descendants_inclusive(self, node_ids: Iterable[str]) -> set[str]:
         targets = {node_id for node_id in node_ids if node_id in self.nodes}

@@ -37,6 +37,7 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_specs import (
     ComputePortContract,
     OperationComputeSpec,
+    compute_specs_for,
 )
 
 _CPU_RUNTIME_ID = "cpu-numpy"
@@ -122,6 +123,325 @@ class ScientificImplementationIdentity:
             self.implementation_version,
             self.parity_policy_id,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CachedNodeComputeProvenance:
+    """Process-local proof attached to one node's structural output cache.
+
+    This deliberately small record is stricter than the scientific cache
+    equivalence machinery below.  It permits reuse only while the exact
+    node-local compute request and exact versioned implementation still match.
+    Fallback results remain recorded for presentation, but are rejected by
+    :func:`cached_node_provenance_matches` so every fallback is independently
+    resolved by a later run.
+    """
+
+    node_id: str
+    actual_implementation: ScientificImplementationIdentity
+    compute_context_fingerprint: str
+    scientific_context_fingerprint: str
+    fallback_reason: FallbackReason | str = FallbackReason.NONE
+    fallback_preference: NodeComputePreference | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.actual_implementation,
+            ScientificImplementationIdentity,
+        ):
+            raise TypeError(
+                "actual_implementation must be a ScientificImplementationIdentity."
+            )
+        node_id = str(self.node_id).strip()
+        context = str(self.compute_context_fingerprint).strip()
+        scientific_context = str(self.scientific_context_fingerprint).strip()
+        if not node_id or not context or not scientific_context:
+            raise ValueError(
+                "node_id, compute_context_fingerprint, and "
+                "scientific_context_fingerprint must not be empty."
+            )
+        fallback = (
+            self.fallback_reason
+            if isinstance(self.fallback_reason, FallbackReason)
+            else FallbackReason(str(self.fallback_reason).strip().lower())
+        )
+        preference = self.fallback_preference
+        if preference is not None and not isinstance(preference, NodeComputePreference):
+            preference = NodeComputePreference.parse(preference)
+        if fallback is FallbackReason.NONE and preference is not None:
+            raise ValueError(
+                "fallback_preference is valid only for fallback provenance."
+            )
+        if fallback is not FallbackReason.NONE:
+            if preference is None:
+                raise ValueError("Fallback provenance requires fallback_preference.")
+            if not self.actual_implementation.is_cpu:
+                raise ValueError("Fallback provenance must name a CPU implementation.")
+        object.__setattr__(self, "node_id", node_id)
+        object.__setattr__(self, "compute_context_fingerprint", context)
+        object.__setattr__(
+            self,
+            "scientific_context_fingerprint",
+            scientific_context,
+        )
+        object.__setattr__(self, "fallback_reason", fallback)
+        object.__setattr__(self, "fallback_preference", preference)
+
+    @property
+    def produced_by_fallback(self) -> bool:
+        return self.fallback_reason is not FallbackReason.NONE
+
+    @property
+    def result_context_fingerprint(self) -> str:
+        """Exact upstream identity consumed by a downstream cached node."""
+
+        return canonical_digest(
+            {
+                "schema_id": "vipp-cached-result-context-v1",
+                "scientific_context": self.scientific_context_fingerprint,
+                "actual_implementation": asdict(self.actual_implementation),
+            }
+        )
+
+
+def node_compute_context_fingerprint(
+    request: ComputeRequest,
+    node_id: str,
+) -> str:
+    """Return a provider-free fingerprint of one node's effective run intent.
+
+    Only the selected node's preference is included.  Preferences authored for
+    sibling nodes therefore cannot invalidate an otherwise reusable upstream
+    cache entry.
+    """
+
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    normalized_node_id = str(node_id).strip()
+    if not normalized_node_id:
+        raise ValueError("node_id must not be empty.")
+    return canonical_digest(
+        {
+            "schema_id": "vipp-node-compute-context-v1",
+            "mode": request.mode.value,
+            "preference": request.preference_for(normalized_node_id).as_dict(),
+            "fallback_policy": request.fallback_policy.value,
+            "runtime_id": request.runtime_id,
+            "device_id": request.device_id,
+            "precision_policy_id": request.precision_policy_id,
+            "workload_policy_id": request.workload_policy_id,
+            "accelerator_memory_cap_bytes": request.accelerator_memory_cap_bytes,
+            "accelerator_safety_reserve_bytes": (
+                request.accelerator_safety_reserve_bytes
+            ),
+            "allow_experimental": request.allow_experimental,
+        }
+    )
+
+
+def build_cached_node_compute_provenance(
+    decision: NodeExecutionDecision,
+    request: ComputeRequest,
+    *,
+    scientific_context_fingerprint: str,
+    implementation_spec: OperationComputeSpec | None = None,
+) -> CachedNodeComputeProvenance:
+    """Build strict process-local cache provenance from an actual decision."""
+
+    if not isinstance(decision, NodeExecutionDecision):
+        raise TypeError("decision must be a NodeExecutionDecision.")
+    if not isinstance(request, ComputeRequest):
+        raise TypeError("request must be a ComputeRequest.")
+    spec = implementation_spec or _compute_spec_for_decision(decision)
+    _validate_spec_matches_decision(spec, decision)
+    fallback_preference = (
+        decision.requested_preference if decision.fallback_used else None
+    )
+    return CachedNodeComputeProvenance(
+        node_id=decision.node_id,
+        actual_implementation=implementation_identity(spec),
+        compute_context_fingerprint=node_compute_context_fingerprint(
+            request,
+            decision.node_id,
+        ),
+        scientific_context_fingerprint=scientific_context_fingerprint,
+        fallback_reason=decision.fallback_reason,
+        fallback_preference=fallback_preference,
+    )
+
+
+def build_cached_source_provenance(
+    *,
+    node_id: str,
+    operation_id: str,
+    scientific_context_fingerprint: str,
+) -> CachedNodeComputeProvenance:
+    """Build provenance for one exact host source boundary snapshot."""
+
+    normalized_operation_id = str(operation_id).strip()
+    if not normalized_operation_id:
+        raise ValueError("operation_id must not be empty.")
+    return CachedNodeComputeProvenance(
+        node_id=node_id,
+        actual_implementation=ScientificImplementationIdentity(
+            operation_id=normalized_operation_id,
+            runtime_id="source-boundary",
+            array_domain="host",
+            implementation_library_id="vipp-source",
+            implementation_id=f"source-{normalized_operation_id}-v1",
+            implementation_version="1",
+            parity_policy_id="exact-source-snapshot-v1",
+        ),
+        compute_context_fingerprint=canonical_digest(
+            {"schema_id": "vipp-source-compute-context-v1"}
+        ),
+        scientific_context_fingerprint=scientific_context_fingerprint,
+    )
+
+
+def cached_source_provenance_matches(
+    provenance: CachedNodeComputeProvenance,
+    *,
+    node_id: str,
+    operation_id: str,
+    scientific_context_fingerprint: str,
+) -> bool:
+    """Whether a cached source is the exact current source snapshot."""
+
+    try:
+        expected = build_cached_source_provenance(
+            node_id=node_id,
+            operation_id=operation_id,
+            scientific_context_fingerprint=scientific_context_fingerprint,
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(provenance, CachedNodeComputeProvenance)
+        and not provenance.produced_by_fallback
+        and provenance == expected
+    )
+
+
+def cached_node_provenance_matches(
+    provenance: CachedNodeComputeProvenance,
+    *,
+    request: ComputeRequest,
+    node_id: str,
+    operation_id: str,
+    scientific_context_fingerprint: str,
+    implementation_specs: Sequence[OperationComputeSpec] = (),
+) -> bool:
+    """Whether a structural node cache may be reused without replanning.
+
+    The rule intentionally fails closed.  A fallback result is never admitted
+    here because its availability/failure reason must be independently reached
+    by current planning.  More permissive cross-policy reuse belongs in
+    :func:`evaluate_cache_admissibility`, after a current plan exists.
+    """
+
+    if not isinstance(provenance, CachedNodeComputeProvenance):
+        return False
+    normalized_node_id = str(node_id).strip()
+    normalized_operation_id = str(operation_id).strip()
+    if (
+        not normalized_node_id
+        or not normalized_operation_id
+        or provenance.node_id != normalized_node_id
+        or provenance.actual_implementation.operation_id
+        != normalized_operation_id
+        or provenance.scientific_context_fingerprint
+        != str(scientific_context_fingerprint).strip()
+        or provenance.produced_by_fallback
+    ):
+        return False
+    if provenance.compute_context_fingerprint != node_compute_context_fingerprint(
+        request,
+        normalized_node_id,
+    ):
+        return False
+    try:
+        current = _compute_spec_for_identity(
+            provenance.actual_implementation,
+            implementation_specs=implementation_specs,
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return implementation_identity(current) == provenance.actual_implementation
+
+
+def _compute_spec_for_decision(
+    decision: NodeExecutionDecision,
+) -> OperationComputeSpec:
+    matches = tuple(
+        spec
+        for spec in compute_specs_for(
+            decision.operation_id,
+            allow_experimental=True,
+        )
+        if spec.runtime_id == decision.runtime_id
+        and spec.implementation_library_id
+        == decision.implementation_library_id
+        and spec.implementation_id == decision.implementation_id
+    )
+    if len(matches) != 1:
+        raise KeyError(
+            "Actual execution decision does not identify one declared "
+            f"implementation: {decision.implementation_id!r}."
+        )
+    return matches[0]
+
+
+def _validate_spec_matches_decision(
+    spec: OperationComputeSpec,
+    decision: NodeExecutionDecision,
+) -> None:
+    if not isinstance(spec, OperationComputeSpec):
+        raise TypeError("implementation_spec must be an OperationComputeSpec.")
+    if (
+        spec.operation_id != decision.operation_id
+        or spec.runtime_id != decision.runtime_id
+        or spec.implementation_library_id
+        != decision.implementation_library_id
+        or spec.implementation_id != decision.implementation_id
+    ):
+        raise ValueError(
+            "implementation_spec does not match the actual execution decision."
+        )
+
+
+def _compute_spec_for_identity(
+    identity: ScientificImplementationIdentity,
+    *,
+    implementation_specs: Sequence[OperationComputeSpec] = (),
+) -> OperationComputeSpec:
+    registered_matches = tuple(
+        spec
+        for spec in implementation_specs
+        if isinstance(spec, OperationComputeSpec)
+        and implementation_identity(spec).member_key == identity.member_key
+    )
+    if len(registered_matches) == 1:
+        return registered_matches[0]
+    if len(registered_matches) > 1:
+        raise KeyError(
+            "Cached compute provenance matches multiple registered "
+            f"implementations: {identity.implementation_id!r}."
+        )
+    builtin_matches = tuple(
+        spec
+        for spec in compute_specs_for(
+            identity.operation_id,
+            allow_experimental=True,
+        )
+        if implementation_identity(spec).member_key == identity.member_key
+    )
+    if len(builtin_matches) != 1:
+        raise KeyError(
+            "Cached compute provenance does not identify one current declared "
+            f"implementation: {identity.implementation_id!r}."
+        )
+    return builtin_matches[0]
 
 
 def implementation_identity(
@@ -1301,6 +1621,7 @@ def _declared_slot_names(value_type: type) -> tuple[str, ...]:
 
 
 __all__ = [
+    "CachedNodeComputeProvenance",
     "CacheEquivalenceCatalog",
     "CacheTransactionConflict",
     "CacheValueIsolationError",
@@ -1310,9 +1631,14 @@ __all__ = [
     "ScientificCacheTransaction",
     "ScientificImplementationIdentity",
     "TransientScientificCacheStore",
+    "build_cached_node_compute_provenance",
+    "build_cached_source_provenance",
     "build_scientific_result_key",
+    "cached_source_provenance_matches",
     "evaluate_cache_admissibility",
+    "cached_node_provenance_matches",
     "implementation_identity",
+    "node_compute_context_fingerprint",
     "required_scientific_dependency_ids",
     "result_key_matches_implementation",
     "scientific_equivalence_scope_digest",

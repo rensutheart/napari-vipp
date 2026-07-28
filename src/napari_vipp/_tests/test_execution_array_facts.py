@@ -14,7 +14,10 @@ from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
     ComputeRequest,
+    DecisionKind,
+    DecisionReason,
     ExecutionPlan,
+    NodeExecutionDecision,
     OutputPortKey,
 )
 from napari_vipp.core.compute_policy import (
@@ -270,6 +273,42 @@ def _execute_accelerated(request, planner, *, registry=None):
             compute_registry=selected_registry,
             compute_planner=planner,
         )
+
+
+def _cached_cpu_provenance(
+    pipeline: PrototypePipeline,
+    run_request: PipelineRunRequest,
+):
+    decisions = []
+    for node_id in pipeline.completed_node_ids:
+        node = pipeline.nodes[node_id]
+        if not node.has_input or not pipeline._has_cached_output(node_id):
+            continue
+        decision = NodeExecutionDecision(
+            node_id=node_id,
+            operation_id=node.operation_id,
+            requested_preference=run_request.compute_request.preference_for(node_id),
+            runtime_id="cpu-numpy",
+            implementation_library_id="cpu",
+            implementation_id=f"cpu-{node.operation_id}-v1",
+            decision_kind=DecisionKind.POLICY_CPU,
+            reason=DecisionReason.AUTO_CPU,
+            reason_text="Test fixture produced this cached result on CPU.",
+        )
+        decisions.append(decision)
+    source_contexts = execution_module._capture_source_scientific_contexts(
+        pipeline,
+        run_request,
+        cancel_callback=None,
+    )
+    execution_module._publish_actual_compute_provenance(
+        pipeline,
+        run_request.compute_request,
+        decisions,
+        source_scientific_contexts=source_contexts,
+        cancel_callback=None,
+    )
+    return dict(pipeline.node_compute_provenance)
 
 
 def _scan_spy(monkeypatch):
@@ -626,7 +665,9 @@ def test_cancellation_interrupts_chunked_scan_without_cache_publication(
             pipeline,
             data,
             cache=cache,
-            cancel_event=_CancelAfterChecks(4),
+            # Allow exact source-context hashing to finish, then cancel during
+            # the deliberately tiny fact-scan chunks below.
+            cancel_event=_CancelAfterChecks(90),
         ),
         cancelled_planner,
     )
@@ -845,9 +886,13 @@ def test_untokened_cached_boundary_never_reuses_an_unrelated_revision(
                 for node_id, states in pipeline.node_output_states.items()
             },
             cached_execution_states=dict(pipeline.node_execution_states),
-            cached_execution_messages=dict(pipeline.node_execution_messages),
-            completed_node_ids=frozenset(pipeline.completed_node_ids),
-        )
+                cached_execution_messages=dict(pipeline.node_execution_messages),
+                cached_compute_provenance=_cached_cpu_provenance(
+                    pipeline,
+                    base,
+                ),
+                completed_node_ids=frozenset(pipeline.completed_node_ids),
+            )
 
     first_payloads = payloads_for(first)
     pipeline.run(
@@ -919,9 +964,13 @@ def test_dirty_run_scans_cached_boundary_and_keys_it_by_scientific_graph(
                 for node_id, states in pipeline.node_output_states.items()
             },
             cached_execution_states=dict(pipeline.node_execution_states),
-            cached_execution_messages=dict(pipeline.node_execution_messages),
-            completed_node_ids=frozenset(pipeline.completed_node_ids),
-        )
+                cached_execution_messages=dict(pipeline.node_execution_messages),
+                cached_compute_provenance=_cached_cpu_provenance(
+                    pipeline,
+                    request,
+                ),
+                completed_node_ids=frozenset(pipeline.completed_node_ids),
+            )
 
     first_planner = _CapturingPlanner()
     first = _execute_accelerated(dirty_request(1), first_planner)

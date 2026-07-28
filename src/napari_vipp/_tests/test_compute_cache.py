@@ -22,15 +22,21 @@ from napari_vipp.core.compute import (
     ScientificResultKey,
 )
 from napari_vipp.core.compute_cache import (
+    CachedNodeComputeProvenance,
     CacheEquivalenceCatalog,
     CacheTransactionConflict,
     CacheValueIsolationError,
     ReviewedCacheEquivalence,
     ScientificCacheRecord,
     TransientScientificCacheStore,
+    build_cached_node_compute_provenance,
+    build_cached_source_provenance,
     build_scientific_result_key,
+    cached_node_provenance_matches,
+    cached_source_provenance_matches,
     evaluate_cache_admissibility,
     implementation_identity,
+    node_compute_context_fingerprint,
     required_scientific_dependency_ids,
     result_key_matches_implementation,
     scientific_equivalence_scope_digest,
@@ -42,7 +48,147 @@ from napari_vipp.core.compute_specs import (
     ComputePortContract,
     OperationComputeSpec,
     ValueKind,
+    compute_specs_for,
 )
+
+
+def test_node_compute_context_ignores_sibling_preferences_but_not_local_intent():
+    baseline = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={
+            "node": "cpu",
+            "sibling": "library:cupyx",
+        },
+    )
+    sibling_changed = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={
+            "node": "cpu",
+            "sibling": "library:cucim",
+        },
+    )
+    local_changed = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={"node": "best_gpu"},
+    )
+
+    assert node_compute_context_fingerprint(
+        baseline, "node"
+    ) == node_compute_context_fingerprint(sibling_changed, "node")
+    assert node_compute_context_fingerprint(
+        baseline, "node"
+    ) != node_compute_context_fingerprint(local_changed, "node")
+
+
+def test_source_cache_provenance_requires_exact_scientific_context():
+    provenance = build_cached_source_provenance(
+        node_id="input",
+        operation_id="input",
+        scientific_context_fingerprint="source-v1",
+    )
+
+    assert cached_source_provenance_matches(
+        provenance,
+        node_id="input",
+        operation_id="input",
+        scientific_context_fingerprint="source-v1",
+    )
+    assert not cached_source_provenance_matches(
+        provenance,
+        node_id="input",
+        operation_id="input",
+        scientific_context_fingerprint="source-v2",
+    )
+
+
+def test_strict_node_cache_provenance_requires_current_context_and_declaration():
+    cpu = compute_specs_for("median_filter")[0]
+    request = ComputeRequest(mode=ComputeMode.CPU)
+    provenance = build_cached_node_compute_provenance(
+        _decision(cpu),
+        request,
+        scientific_context_fingerprint="science-v1",
+    )
+
+    assert isinstance(provenance, CachedNodeComputeProvenance)
+    assert cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+    )
+    assert not cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v2",
+    )
+    assert not cached_node_provenance_matches(
+        provenance,
+        request=ComputeRequest(mode=ComputeMode.AUTO),
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+    )
+    assert not cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="other",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+    )
+
+
+def test_strict_node_cache_provenance_never_reuses_a_fallback_result():
+    cpu = compute_specs_for("median_filter")[0]
+    request = ComputeRequest(mode=ComputeMode.AUTO)
+    provenance = build_cached_node_compute_provenance(
+        _decision(
+            cpu,
+            "best_gpu",
+            fallback_reason=FallbackReason.WORKLOAD_UNSUPPORTED,
+        ),
+        request,
+        scientific_context_fingerprint="science-v1",
+    )
+
+    assert provenance.produced_by_fallback
+    assert not cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+    )
+
+
+def test_strict_node_cache_provenance_accepts_injected_registry_declaration():
+    gpu = _gpu_spec(implementation_id="plugin-median-v7")
+    request = ComputeRequest(mode=ComputeMode.AUTO, allow_experimental=True)
+    provenance = build_cached_node_compute_provenance(
+        _decision(gpu),
+        request,
+        scientific_context_fingerprint="science-v1",
+        implementation_spec=gpu,
+    )
+
+    assert not cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+    )
+    assert cached_node_provenance_matches(
+        provenance,
+        request=request,
+        node_id="node",
+        operation_id="median_filter",
+        scientific_context_fingerprint="science-v1",
+        implementation_specs=(gpu,),
+    )
 
 
 def _spec(

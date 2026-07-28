@@ -7,12 +7,16 @@ not mutable viewer arrays or live lazy stores.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
+from enum import Enum
+from hashlib import sha256
 from itertools import count
 from numbers import Integral
+from os import PathLike, fspath
 from time import perf_counter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
@@ -34,6 +38,13 @@ from napari_vipp.core.compute import (
     OutputPortKey,
     WorkloadDescriptor,
     canonical_digest,
+)
+from napari_vipp.core.compute_cache import (
+    CachedNodeComputeProvenance,
+    build_cached_node_compute_provenance,
+    build_cached_source_provenance,
+    cached_node_provenance_matches,
+    cached_source_provenance_matches,
 )
 from napari_vipp.core.compute_policy import (
     ArrayFacts,
@@ -65,6 +76,7 @@ _FACT_SCAN_CHUNK_VALUES = 1_048_576
 _FACT_TRANSACTION_IDS = count()
 _FACT_CACHE_WAIT_SECONDS = 0.05
 _FACT_CACHE_COORDINATORS_GUARD = threading.Lock()
+_SCIENTIFIC_CONTEXT_CHUNK_BYTES = 8 * 1_048_576
 _PHASE_ONE_FACT_OPERATIONS = frozenset(
     {
         "rolling_ball_background",
@@ -143,6 +155,9 @@ class PipelineRunRequest:
     completed_node_ids: frozenset[str] = frozenset()
     cached_execution_states: dict[str, str] | None = None
     cached_execution_messages: dict[str, str] | None = None
+    cached_compute_provenance: (
+        Mapping[str, CachedNodeComputeProvenance] | None
+    ) = field(default=None, repr=False, compare=False)
     manual_node_ids: frozenset[str] | None = None
     target_node_ids: frozenset[str] | None = None
     retain_node_ids: frozenset[str] = frozenset()
@@ -163,6 +178,42 @@ class PipelineRunRequest:
     ) = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        raw_provenance = self.cached_compute_provenance
+        if raw_provenance is None:
+            normalized_provenance: dict[str, CachedNodeComputeProvenance] = {}
+        else:
+            if not isinstance(raw_provenance, Mapping):
+                raise TypeError(
+                    "cached_compute_provenance must be a mapping or None."
+                )
+            normalized_provenance = {}
+            for raw_node_id, provenance in raw_provenance.items():
+                node_id = str(raw_node_id).strip()
+                if not node_id:
+                    raise ValueError(
+                        "cached_compute_provenance node IDs must not be empty."
+                    )
+                if not isinstance(provenance, CachedNodeComputeProvenance):
+                    raise TypeError(
+                        "cached_compute_provenance values must be "
+                        "CachedNodeComputeProvenance."
+                    )
+                if provenance.node_id != node_id:
+                    raise ValueError(
+                        "cached_compute_provenance keys must match record node IDs."
+                    )
+                if node_id in normalized_provenance:
+                    raise ValueError(
+                        "cached_compute_provenance contains duplicate normalized "
+                        "node IDs."
+                    )
+                normalized_provenance[node_id] = provenance
+        object.__setattr__(
+            self,
+            "cached_compute_provenance",
+            MappingProxyType(dict(sorted(normalized_provenance.items()))),
+        )
+
         raw_evidence = self.performance_evidence
         if raw_evidence is None:
             normalized: dict[tuple[str, str], PerformanceEvidence] = {}
@@ -251,7 +302,24 @@ def execute_pipeline_request(
             workflow["connections"],
             workflow.get("output_tunnels", ()),
         )
-        _hydrate_cached_pipeline_outputs(pipeline, request)
+        cancel_callback = (
+            request.cancel_event.is_set if request.cancel_event is not None else None
+        )
+        source_scientific_contexts = _capture_source_scientific_contexts(
+            pipeline,
+            request,
+            cancel_callback=cancel_callback,
+        )
+        registered_specs = tuple(
+            getattr(compute_registry, "implementation_specs", ())
+        )
+        _hydrate_cached_pipeline_outputs(
+            pipeline,
+            request,
+            implementation_specs=registered_specs,
+            source_scientific_contexts=source_scientific_contexts,
+            cancel_callback=cancel_callback,
+        )
 
         def publish_node_result(node_id: str) -> None:
             if node_finished_callback is None:
@@ -277,10 +345,13 @@ def execute_pipeline_request(
                 )
             )
 
-        cancel_callback = (
-            request.cancel_event.is_set if request.cancel_event is not None else None
-        )
         if request.compute_request.mode is ComputeMode.CPU:
+            cpu_schedule = pipeline.plan_execution(
+                request.dirty_node_ids,
+                manual_mode=MANUAL_RUN_SKIP,
+                manual_node_ids=request.manual_node_ids,
+                target_node_ids=request.target_node_ids,
+            )
             pipeline.run(
                 request.input_data,
                 input_metadata=request.input_metadata,
@@ -296,6 +367,12 @@ def execute_pipeline_request(
                 target_node_ids=request.target_node_ids,
                 retain_node_ids=request.retain_node_ids,
                 prune_unretained=request.prune_unretained,
+            )
+            _publish_cpu_compute_provenance(
+                pipeline,
+                request,
+                cpu_schedule.runnable_node_ids,
+                source_scientific_contexts=source_scientific_contexts,
             )
             execution_report = None
         else:
@@ -313,6 +390,7 @@ def execute_pipeline_request(
                     if array_facts_cache is None
                     else array_facts_cache
                 ),
+                source_scientific_contexts=source_scientific_contexts,
             )
     except OperationCancelled as exc:
         return PipelineRunResult(
@@ -350,6 +428,7 @@ def _execute_accelerated_pipeline(
     compute_registry: ComputeRegistry | None,
     compute_planner: ComputePlanner | None,
     array_facts_cache: ArrayFactsCache | None,
+    source_scientific_contexts: Mapping[str, str],
 ) -> ExecutionReport:
     """Plan and atomically commit one non-CPU headless execution."""
     # Accelerator modules remain behind this branch so the default CPU path
@@ -367,6 +446,10 @@ def _execute_accelerated_pipeline(
     planner = compute_planner or _default_compute_planner()
     closed_cleanly = True
     try:
+        # A request cancelled before execution starts must not publish even its
+        # source boundary through the incremental-result callback.  Source
+        # publication remains intentionally early for real planning failures.
+        _check_fact_scan_cancelled(cancel_callback)
         schedule = pipeline.plan_execution(
             request.dirty_node_ids,
             manual_mode=MANUAL_RUN_SKIP,
@@ -565,6 +648,14 @@ def _execute_accelerated_pipeline(
             actual_decisions=actual_decisions,
             warnings=tuple(warnings),
             cleanup_succeeded=device_result.cleanup_succeeded,
+        )
+        _publish_actual_compute_provenance(
+            pipeline,
+            request.compute_request,
+            actual_decisions,
+            implementation_specs=registry.implementation_specs,
+            source_scientific_contexts=source_scientific_contexts,
+            cancel_callback=cancel_callback,
         )
     finally:
         if owned_registry:
@@ -1910,9 +2001,449 @@ def _local_actual_cpu_fallback_decision(
     )
 
 
+def _capture_source_scientific_contexts(
+    pipeline: PrototypePipeline,
+    request: PipelineRunRequest,
+    *,
+    cancel_callback: Callable[[], bool] | None,
+) -> dict[str, str]:
+    """Fingerprint the exact source snapshots used by this request."""
+
+    contexts: dict[str, str] = {}
+    for node_id in pipeline.topological_order():
+        node = pipeline.nodes[node_id]
+        if pipeline.operation_spec(node.operation_id).has_input:
+            continue
+        _check_scientific_context_cancelled(cancel_callback)
+        results = pipeline.source_node_results(
+            node_id,
+            request.input_data,
+            request.input_metadata,
+            request.input_name,
+            request.source_payloads,
+        )
+        payload = request.source_payloads.get(node_id)
+        if payload is None:
+            payload = SourcePayload(
+                request.input_data,
+                request.input_metadata,
+                request.input_name,
+            )
+        try:
+            contexts[node_id] = _source_scientific_context_fingerprint(
+                pipeline,
+                node_id,
+                payload,
+                results,
+                cancel_callback=cancel_callback,
+            )
+        except (OverflowError, TypeError, ValueError):
+            # Unsupported or opaque source metadata must disable reuse without
+            # preventing the authoritative operation path from running.
+            continue
+    return contexts
+
+
+def _source_scientific_context_fingerprint(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    payload: SourcePayload,
+    results: Sequence[tuple[object, object]],
+    *,
+    cancel_callback: Callable[[], bool] | None,
+) -> str:
+    normalized_results = []
+    for value, state in results:
+        normalized_results.append(
+            {
+                "array": _scientific_array_identity(
+                    value,
+                    cancel_callback=cancel_callback,
+                ),
+                "state": _scientific_identity_value(
+                    state,
+                    cancel_callback=cancel_callback,
+                ),
+            }
+        )
+    document = {
+        "schema_id": "vipp-source-scientific-context-v1",
+        "node": _node_structural_identity(
+            pipeline,
+            node_id,
+            cancel_callback=cancel_callback,
+        ),
+        "outputs": normalized_results,
+        "payload_metadata": _scientific_identity_value(
+            payload.metadata,
+            cancel_callback=cancel_callback,
+        ),
+        "payload_name": str(payload.name),
+        "payload_image_state": _scientific_identity_value(
+            payload.image_state,
+            cancel_callback=cancel_callback,
+        ),
+        "revision_token": _scientific_identity_value(
+            payload.revision_token,
+            cancel_callback=cancel_callback,
+        ),
+    }
+    _check_scientific_context_cancelled(cancel_callback)
+    return canonical_digest(document)
+
+
+def _processing_scientific_context_fingerprint(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    upstream_provenance: Mapping[str, CachedNodeComputeProvenance],
+    *,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> str:
+    upstream_contexts = []
+    for connection in pipeline._input_connections(node_id):
+        provenance = upstream_provenance[connection.source_id]
+        upstream_contexts.append(
+            {
+                "source_id": connection.source_id,
+                "source_port": connection.source_port,
+                "target_port": connection.target_port,
+                "result_context": provenance.result_context_fingerprint,
+            }
+        )
+    if not upstream_contexts:
+        raise ValueError("Processing-node context requires an upstream result.")
+    return canonical_digest(
+        {
+            "schema_id": "vipp-processing-scientific-context-v1",
+            "node": _node_structural_identity(
+                pipeline,
+                node_id,
+                cancel_callback=cancel_callback,
+            ),
+            "upstream": upstream_contexts,
+        }
+    )
+
+
+def _node_structural_identity(
+    pipeline: PrototypePipeline,
+    node_id: str,
+    *,
+    cancel_callback: Callable[[], bool] | None = None,
+) -> object:
+    node = pipeline.nodes[node_id]
+    connections = pipeline._input_connections(node_id)
+    return {
+        "node_id": node_id,
+        "operation_id": node.operation_id,
+        "input_type": node.input_type,
+        "output_type": node.output_type,
+        "max_inputs": node.max_inputs,
+        "public_params": _scientific_identity_value(
+            pipeline._public_params(node.params),
+            cancel_callback=cancel_callback,
+        ),
+        "input_ports": _scientific_identity_value(
+            pipeline.input_ports(node_id),
+            cancel_callback=cancel_callback,
+        ),
+        "output_ports": _scientific_identity_value(
+            pipeline.output_ports(node_id),
+            cancel_callback=cancel_callback,
+        ),
+        "incoming_topology": [
+            {
+                "source_id": connection.source_id,
+                "source_port": connection.source_port,
+                "target_port": connection.target_port,
+                "tunnel_name": connection.tunnel_name,
+            }
+            for connection in connections
+        ],
+    }
+
+
+def _scientific_array_identity(
+    value: object,
+    *,
+    cancel_callback: Callable[[], bool] | None,
+) -> object:
+    if getattr(type(value), "__cuda_array_interface__", None) is not None:
+        raise TypeError("Scientific source contexts accept host arrays only.")
+    try:
+        shape = tuple(int(size) for size in value.shape)
+        dtype = np.dtype(value.dtype)
+    except (AttributeError, TypeError, ValueError):
+        array = np.asarray(value)
+        shape = tuple(int(size) for size in array.shape)
+        dtype = array.dtype
+        value = array
+    if any(size < 0 for size in shape):
+        raise ValueError("Scientific source array shapes must be non-negative.")
+    if dtype.hasobject:
+        raise TypeError("Scientific source contexts reject object arrays.")
+    digest = sha256()
+    values_per_chunk = max(
+        1,
+        _SCIENTIFIC_CONTEXT_CHUNK_BYTES // max(1, int(dtype.itemsize)),
+    )
+    for raw_chunk in _iter_exact_array_chunks(
+        value,
+        shape=shape,
+        values_per_chunk=values_per_chunk,
+    ):
+        _check_scientific_context_cancelled(cancel_callback)
+        chunk = np.ascontiguousarray(np.asarray(raw_chunk)).view(np.uint8)
+        digest.update(memoryview(chunk.reshape(-1)))
+    _check_scientific_context_cancelled(cancel_callback)
+    return {
+        "schema_id": "vipp-exact-host-array-v1",
+        "shape": list(shape),
+        "dtype": dtype.str,
+        "dtype_descriptor": str(dtype.descr),
+        "bytes_sha256": digest.hexdigest(),
+    }
+
+
+def _iter_exact_array_chunks(
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    values_per_chunk: int,
+):
+    """Yield bounded chunks in canonical C order without eager lazy loading."""
+
+    if isinstance(value, np.ndarray):
+        yield from np.nditer(
+            value,
+            flags=["buffered", "external_loop", "zerosize_ok"],
+            op_flags=(("readonly",),),
+            order="C",
+            buffersize=values_per_chunk,
+        )
+        return
+    total_values = math.prod(shape)
+    if total_values == 0:
+        return
+    if not shape:
+        try:
+            yield value[()]
+        except (IndexError, TypeError):
+            yield np.asarray(value)
+        return
+    reshape = getattr(value, "reshape", None)
+    if callable(reshape):
+        try:
+            flattened = reshape((-1,))
+        except (TypeError, ValueError):
+            flattened = None
+        if flattened is not None:
+            for start in range(0, total_values, values_per_chunk):
+                yield flattened[start : min(total_values, start + values_per_chunk)]
+            return
+
+    trailing_values = 1
+    split_axis = len(shape) - 1
+    for axis in range(len(shape) - 1, -1, -1):
+        candidate = trailing_values * shape[axis]
+        if candidate > values_per_chunk:
+            split_axis = axis
+            break
+        trailing_values = candidate
+        split_axis = axis
+    axis_chunk = max(1, values_per_chunk // max(1, trailing_values))
+    prefix_shape = shape[:split_axis]
+    prefixes = np.ndindex(prefix_shape) if prefix_shape else ((),)
+    for prefix in prefixes:
+        for start in range(0, shape[split_axis], axis_chunk):
+            selector = (
+                *prefix,
+                slice(start, min(shape[split_axis], start + axis_chunk)),
+                *(slice(None),) * (len(shape) - split_axis - 1),
+            )
+            yield value[selector]
+
+
+def _scientific_identity_value(
+    value: object,
+    *,
+    cancel_callback: Callable[[], bool] | None,
+    active: set[int] | None = None,
+) -> object:
+    """Return an exact JSON-safe identity or fail closed for opaque values."""
+
+    _check_scientific_context_cancelled(cancel_callback)
+    if value is None:
+        return {"type": "none"}
+    if isinstance(value, Enum):
+        return {
+            "type": f"enum:{type(value).__module__}.{type(value).__qualname__}",
+            "value": _scientific_identity_value(
+                value.value,
+                cancel_callback=cancel_callback,
+                active=active,
+            ),
+        }
+    if isinstance(value, bool):
+        return {"type": "bool", "value": value}
+    if isinstance(value, int):
+        return {"type": "int", "value": str(value)}
+    if isinstance(value, float):
+        return {"type": "float", "value": value.hex()}
+    if isinstance(value, complex):
+        return {
+            "type": "complex",
+            "real": value.real.hex(),
+            "imag": value.imag.hex(),
+        }
+    if isinstance(value, str):
+        return {"type": "str", "value": value}
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        raw = bytes(value)
+        return {
+            "type": type(value).__name__,
+            "length": len(raw),
+            "sha256": sha256(raw).hexdigest(),
+        }
+    if isinstance(value, np.ndarray):
+        return _scientific_array_identity(
+            value,
+            cancel_callback=cancel_callback,
+        )
+    if isinstance(value, np.generic):
+        return {
+            "type": "numpy-scalar",
+            "array": _scientific_array_identity(
+                np.asarray(value),
+                cancel_callback=cancel_callback,
+            ),
+        }
+    if isinstance(value, np.dtype):
+        return {
+            "type": "numpy-dtype",
+            "dtype": value.str,
+            "descriptor": str(value.descr),
+        }
+    if isinstance(value, PathLike):
+        return {
+            "type": f"path:{type(value).__module__}.{type(value).__qualname__}",
+            "value": str(fspath(value)),
+        }
+    if isinstance(value, slice):
+        return {
+            "type": "slice",
+            "start": _scientific_identity_value(
+                value.start,
+                cancel_callback=cancel_callback,
+                active=active,
+            ),
+            "stop": _scientific_identity_value(
+                value.stop,
+                cancel_callback=cancel_callback,
+                active=active,
+            ),
+            "step": _scientific_identity_value(
+                value.step,
+                cancel_callback=cancel_callback,
+                active=active,
+            ),
+        }
+
+    if active is None:
+        active = set()
+    identity = id(value)
+    if identity in active:
+        raise ValueError("Scientific context values must not contain cycles.")
+    active.add(identity)
+    try:
+        if is_dataclass(value) and not isinstance(value, type):
+            return {
+                "type": (
+                    f"dataclass:{type(value).__module__}."
+                    f"{type(value).__qualname__}"
+                ),
+                "fields": [
+                    {
+                        "name": item.name,
+                        "value": _scientific_identity_value(
+                            getattr(value, item.name),
+                            cancel_callback=cancel_callback,
+                            active=active,
+                        ),
+                    }
+                    for item in fields(value)
+                ],
+            }
+        if isinstance(value, Mapping):
+            entries = [
+                (
+                    _scientific_identity_value(
+                        key,
+                        cancel_callback=cancel_callback,
+                        active=active,
+                    ),
+                    _scientific_identity_value(
+                        item,
+                        cancel_callback=cancel_callback,
+                        active=active,
+                    ),
+                )
+                for key, item in value.items()
+            ]
+            entries.sort(key=lambda pair: canonical_digest(pair[0]))
+            return {
+                "type": f"mapping:{type(value).__module__}.{type(value).__qualname__}",
+                "entries": [
+                    {"key": key, "value": item} for key, item in entries
+                ],
+            }
+        if isinstance(value, (tuple, list)):
+            return {
+                "type": type(value).__name__,
+                "items": [
+                    _scientific_identity_value(
+                        item,
+                        cancel_callback=cancel_callback,
+                        active=active,
+                    )
+                    for item in value
+                ],
+            }
+        if isinstance(value, (set, frozenset)):
+            items = [
+                _scientific_identity_value(
+                    item,
+                    cancel_callback=cancel_callback,
+                    active=active,
+                )
+                for item in value
+            ]
+            items.sort(key=canonical_digest)
+            return {"type": type(value).__name__, "items": items}
+    finally:
+        active.remove(identity)
+    raise TypeError(
+        "Scientific context contains an opaque value of type "
+        f"{type(value).__module__}.{type(value).__qualname__}."
+    )
+
+
+def _check_scientific_context_cancelled(
+    cancel_callback: Callable[[], bool] | None,
+) -> None:
+    if cancel_callback is not None and cancel_callback():
+        raise OperationCancelled(
+            "Operation cancelled while fingerprinting scientific cache context."
+        )
+
+
 def _hydrate_cached_pipeline_outputs(
     pipeline: PrototypePipeline,
     request: PipelineRunRequest,
+    *,
+    implementation_specs: Sequence[OperationComputeSpec] = (),
+    source_scientific_contexts: Mapping[str, str],
+    cancel_callback: Callable[[], bool] | None,
 ) -> None:
     """Restore reusable output state before a dirty-subgraph execution."""
     if request.dirty_node_ids is None:
@@ -1935,7 +2466,190 @@ def _hydrate_cached_pipeline_outputs(
         pipeline.node_execution_states = dict(request.cached_execution_states)
     if request.cached_execution_messages is not None:
         pipeline.node_execution_messages = dict(request.cached_execution_messages)
-    pipeline.completed_node_ids = set(request.completed_node_ids)
+    requested_completed = set(request.completed_node_ids) & set(pipeline.nodes)
+    accepted_completed: set[str] = set()
+    accepted_provenance: dict[str, CachedNodeComputeProvenance] = {}
+    cached_provenance = request.cached_compute_provenance
+    for node_id in pipeline.topological_order():
+        if node_id not in requested_completed or not pipeline._has_cached_output(
+            node_id
+        ):
+            continue
+        node = pipeline.nodes[node_id]
+        operation = pipeline.operation_spec(node.operation_id)
+        if not operation.has_input:
+            source_context = source_scientific_contexts.get(node_id)
+            provenance = cached_provenance.get(node_id)
+            if source_context is None or not cached_source_provenance_matches(
+                provenance,
+                node_id=node_id,
+                operation_id=node.operation_id,
+                scientific_context_fingerprint=source_context,
+            ):
+                continue
+            accepted_completed.add(node_id)
+            accepted_provenance[node_id] = provenance
+            continue
+        if any(
+            connection.source_id not in accepted_completed
+            for connection in pipeline._input_connections(node_id)
+        ):
+            continue
+        try:
+            scientific_context = _processing_scientific_context_fingerprint(
+                pipeline,
+                node_id,
+                accepted_provenance,
+                cancel_callback=cancel_callback,
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        provenance = cached_provenance.get(node_id)
+        if provenance is None or not cached_node_provenance_matches(
+            provenance,
+            request=request.compute_request,
+            node_id=node_id,
+            operation_id=node.operation_id,
+            scientific_context_fingerprint=scientific_context,
+            implementation_specs=implementation_specs,
+        ):
+            continue
+        accepted_completed.add(node_id)
+        accepted_provenance[node_id] = provenance
+    pipeline.completed_node_ids = accepted_completed
+    pipeline.node_compute_provenance = accepted_provenance
+
+
+def _publish_cpu_compute_provenance(
+    pipeline: PrototypePipeline,
+    request: PipelineRunRequest,
+    node_ids: Sequence[str] | frozenset[str],
+    *,
+    source_scientific_contexts: Mapping[str, str],
+) -> None:
+    decisions: list[NodeExecutionDecision] = []
+    for node_id in node_ids:
+        node = pipeline.nodes.get(node_id)
+        if (
+            node is None
+            or not pipeline.operation_spec(node.operation_id).has_input
+            or node_id not in pipeline.completed_node_ids
+            or not pipeline._has_cached_output(node_id)
+        ):
+            continue
+        preference = request.compute_request.preference_for(node_id)
+        decisions.append(
+            NodeExecutionDecision(
+                node_id=node_id,
+                operation_id=node.operation_id,
+                requested_preference=preference,
+                runtime_id="cpu-numpy",
+                implementation_library_id="cpu",
+                implementation_id=f"cpu-{node.operation_id}-v1",
+                decision_kind=DecisionKind.POLICY_CPU,
+                reason=DecisionReason.EXPLICIT_CPU,
+                reason_text=(
+                    "The CPU policy selected the authoritative host implementation."
+                ),
+            )
+        )
+    _publish_actual_compute_provenance(
+        pipeline,
+        request.compute_request,
+        decisions,
+        source_scientific_contexts=source_scientific_contexts,
+        cancel_callback=(
+            request.cancel_event.is_set
+            if request.cancel_event is not None
+            else None
+        ),
+    )
+
+
+def _publish_actual_compute_provenance(
+    pipeline: PrototypePipeline,
+    request: ComputeRequest,
+    decisions: Sequence[NodeExecutionDecision],
+    *,
+    implementation_specs: Sequence[OperationComputeSpec] = (),
+    source_scientific_contexts: Mapping[str, str],
+    cancel_callback: Callable[[], bool] | None,
+) -> None:
+    """Attach exact chained provenance to materialized host node caches."""
+
+    decisions_by_node = {decision.node_id: decision for decision in decisions}
+    prior_provenance = dict(pipeline.node_compute_provenance)
+    resolved_provenance: dict[str, CachedNodeComputeProvenance] = {}
+    published_provenance: dict[str, CachedNodeComputeProvenance] = {}
+    for node_id in pipeline.topological_order():
+        node = pipeline.nodes[node_id]
+        operation = pipeline.operation_spec(node.operation_id)
+        if not operation.has_input:
+            scientific_context = source_scientific_contexts.get(node_id)
+            if scientific_context is None:
+                continue
+            try:
+                provenance = build_cached_source_provenance(
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    scientific_context_fingerprint=scientific_context,
+                )
+            except (TypeError, ValueError):
+                continue
+        else:
+            try:
+                scientific_context = _processing_scientific_context_fingerprint(
+                    pipeline,
+                    node_id,
+                    resolved_provenance,
+                    cancel_callback=cancel_callback,
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            decision = decisions_by_node.get(node_id)
+            if decision is None:
+                provenance = prior_provenance.get(node_id)
+                if provenance is None or not cached_node_provenance_matches(
+                    provenance,
+                    request=request,
+                    node_id=node_id,
+                    operation_id=node.operation_id,
+                    scientific_context_fingerprint=scientific_context,
+                    implementation_specs=implementation_specs,
+                ):
+                    continue
+            else:
+                if node.operation_id != decision.operation_id:
+                    continue
+                try:
+                    implementation_spec = next(
+                        (
+                            spec
+                            for spec in implementation_specs
+                            if spec.implementation_id
+                            == decision.implementation_id
+                            and spec.operation_id == decision.operation_id
+                            and spec.runtime_id == decision.runtime_id
+                            and spec.implementation_library_id
+                            == decision.implementation_library_id
+                        ),
+                        None,
+                    )
+                    provenance = build_cached_node_compute_provenance(
+                        decision,
+                        request,
+                        scientific_context_fingerprint=scientific_context,
+                        implementation_spec=implementation_spec,
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+        resolved_provenance[node_id] = provenance
+        if (
+            node_id in pipeline.completed_node_ids
+            and pipeline._has_cached_output(node_id)
+        ):
+            published_provenance[node_id] = provenance
+    pipeline.node_compute_provenance = published_provenance
 
 
 __all__ = [

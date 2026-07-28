@@ -9,6 +9,7 @@ from types import MappingProxyType
 import numpy as np
 import pytest
 
+import napari_vipp.core.execution as execution_module
 from napari_vipp._tests.test_device_execution import (
     _device_copy,
     _device_oom_once,
@@ -38,7 +39,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeDevice,
     RuntimeProbeResult,
 )
-from napari_vipp.core.compute_specs import OperationComputeSpec
+from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
@@ -304,6 +305,9 @@ def _accelerated_request(
         cached_execution_messages=(
             None if cached is None else dict(cached.node_execution_messages)
         ),
+        cached_compute_provenance=(
+            None if cached is None else dict(cached.node_compute_provenance)
+        ),
         completed_node_ids=(
             frozenset() if cached is None else frozenset(cached.completed_node_ids)
         ),
@@ -372,6 +376,12 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
     assert result.pipeline.outputs[background.id] is None
     assert result.pipeline.outputs[gaussian.id] is None
     np.testing.assert_array_equal(result.pipeline.outputs[median.id], data)
+    assert set(result.pipeline.node_compute_provenance) == {median.id}
+    assert result.pipeline.node_compute_provenance[
+        median.id
+    ].actual_implementation.implementation_id == specs[
+        "median_filter"
+    ].implementation_id
     assert result.pipeline.node_execution_states[background.id] == EXECUTION_READY
     assert result.pipeline.node_execution_states[gaussian.id] == EXECUTION_READY
     assert [item.node_id for item in finished] == [
@@ -632,6 +642,24 @@ def test_dirty_device_run_reuses_clean_cached_upstream_output():
     planner = _StaticPlanner(
         compute_request,
         (_decision(median.id, specs["median_filter"]),),
+    )
+    cpu_gaussian = compute_specs_for("gaussian_blur")[0]
+    provenance_request = _accelerated_request(
+        pipeline,
+        data,
+        compute_request,
+    )
+    source_contexts = execution_module._capture_source_scientific_contexts(
+        pipeline,
+        provenance_request,
+        cancel_callback=None,
+    )
+    execution_module._publish_actual_compute_provenance(
+        pipeline,
+        compute_request,
+        (_decision(gaussian.id, cpu_gaussian),),
+        source_scientific_contexts=source_contexts,
+        cancel_callback=None,
     )
 
     result = execute_pipeline_request(
