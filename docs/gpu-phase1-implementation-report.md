@@ -16,6 +16,9 @@ product sequence and promotion criteria remain in the
 - Provider-neutral CPU, Auto, and Selective requests, including per-node
   `auto`, `cpu`, `best_gpu`, implementation-library, and exact-implementation
   preferences.
+- Distinct optimizer locks persisted as validated, non-scientific workflow UI
+  metadata. Missing lock metadata means every node is unlocked; changing a lock
+  does not alter normal execution or scientific cache identity.
 - Visible or strict fallback decisions with requested, planned, and actual
   execution provenance.
 - A Qt-free execution service shared by headless runs, transactional device
@@ -39,11 +42,20 @@ product sequence and promotion criteria remain in the
   confidence bounds, transfer/resident timing, peak memory, quarantine, and a
   separate benchmark cache identity. Its machine-local JSON index publishes only
   complete records with atomic replacement plus same- and cross-process locking.
+  Pipeline search reuses an exact complete hit; otherwise it screens at 3 paired
+  rounds and extends to 7 or 15 only while the timing remains close or uncertain.
+  The key binds the CPU scientific stack and excludes the cancellation time
+  budget, which does not change the meaning of a completed measurement.
 - The first Phase 2 Selective-only whole-pipeline optimizer: detached private
   source/workflow execution, exact workload/environment evidence, measured
   directional transfers, VRAM/liveness-constrained graph assignment,
   operation-specific parity before paired end-to-end validation, review before
-  apply, and one scoped undoable authored-intent edit.
+  apply, explicit per-node optimizer locks, and one scoped undoable
+  authored-intent edit. The current backend is not itself a lock: `Find fastest`
+  searches every eligible implementation for every unlocked node. Fresh
+  whole-pipeline parity is mandatory before offering a changed assignment even
+  when node evidence is reused, and paired validation advances through 5, 7, or
+  15 rounds only as needed.
 - A reproducible evidence command, `scripts/benchmark_gpu_phase1.py`, that runs
   fixed production-adapter cases and atomically writes strict JSON.
 
@@ -62,6 +74,28 @@ preserves dtype, shape, finite/non-finite masks, exact zero masks, and zero sign
 then applies the documented bounded-error policy. Gaussian uses its separately
 versioned float32 tolerance. Unsupported regions produce typed CPU decisions;
 they are not silently cast.
+
+### Dtype-sensitive GPU eligibility
+
+The current Gaussian GPU admission is deliberately finite-`float32` only.
+Consequently, native `uint16` Gaussian is not yet a scientifically admitted GPU
+region and remains on CPU; this is not evidence that Gaussian is inherently a
+poor GPU workload. A user may add an explicit **Convert Dtype** node to
+`float32` when that conversion is appropriate for the scientific workflow. It
+can make Gaussian eligible and can help a longer sequence remain GPU-resident,
+but VIPP never inserts the conversion on the user's behalf. Use
+`Scaling = Preserve` when numeric values should remain unchanged; the node's
+default `Rescale` intentionally remaps the intensity range.
+
+IEEE-754 `float32` represents every integer whose magnitude is at most 2^24
+exactly under a Preserve conversion, including the complete `uint8` and
+`uint16` ranges. That fact describes only the conversion of individual input
+values; it does not make a
+float32 pipeline semantically interchangeable with an integer one. The public
+dtype, intermediate/output range, later thresholds and rounding, writer
+behavior, cache identity, and memory footprint all change. In particular,
+`float32` uses twice the RAM/VRAM of `uint16`. Users should review those effects
+and benchmark the exact converted pipeline before accepting the tradeoff.
 
 ## Exact Phase 1 environment admission
 
@@ -151,9 +185,14 @@ observable-boundary parity, exact private decision/environment/cleanup checks,
 bitwise signed-zero handling, benchmark-equivalent background input scaling,
 and fixed-row preference regressions. The focused
 optimizer/coordinator/dialog suite completed with **34 passed** and repository
-Ruff was clean. The final branch-wide run completed with **2,549 passed and 2
-expected xfails** on 2026-07-28; this is the current application-wide validation
-record.
+Ruff was clean. That branch-wide run completed with **2,549 passed and 2
+expected xfails** on 2026-07-28.
+
+The exhaustive-search/lock/cache/adaptive-validation update, including terminal
+dialog and cleanup hardening, completed a clean branch-wide run with **2,579
+passed and 2 expected xfails** on 2026-07-28. This is the current
+application-wide validation record; the xfails remain the two deliberately
+CPU-only integer-Gaussian parity regions.
 
 The fixed production benchmark used 21 paired warm rounds for every case. These
 small inputs deliberately demonstrate the conservative Auto gate:
@@ -180,9 +219,21 @@ Filter, and CPU for Gaussian Blur. Those local winners are Selective evidence,
 not graph-global Auto admission. The metadata-order defect exposed by the first
 run is now fixed on both `main` and this GPU branch. A later graph-global check
 on the exact central `CYX` plane validated Median Filter changing from CPU to
-CuPyX in the intentionally mixed CPU/cuCIM/CPU pipeline: paired medians improved
-from 321.365 ms to 100.754 ms with a 2.524x lower confidence bound. The full
-analysis completed in 27.352 seconds and retained every authored constraint.
+CuPyX in an intentionally mixed CPU/cuCIM/CPU pipeline whose background and
+Gaussian choices were deliberately constrained for that historical safety
+test: paired medians improved from 321.365 ms to 100.754 ms with a 2.524x lower
+confidence bound. The full analysis completed in 27.352 seconds. It predates
+the explicit-lock product update and is not an unlocked `Find fastest` timing
+claim. It also predates exact benchmark reuse and the progressive 3/7/15 node
+and 5/7/15 pipeline measurement checkpoints. The updated unlocked run on the
+same central plane took 123.396 seconds from an all-CPU starting assignment:
+Background and Median both stopped at three node rounds, and five fresh
+whole-pipeline rounds validated 10.049 seconds -> 0.162 seconds with a 39.148x
+lower confidence bound. A repeat before apply reused both node records but still
+took 72.248 seconds because fresh validation had to compare the unchanged slow
+all-CPU assignment. In the measured post-apply assignment, an exact repeat took
+0.209 seconds, reused both records, and correctly skipped a redundant
+current-versus-identical pipeline validation.
 
 ## Deliberately deferred gates
 
@@ -199,18 +250,25 @@ analysis completed in 27.352 seconds and retained every authored constraint.
   refuses unsafe retained writer paths, incomplete/stale identity or timings,
   parity/synchronization failures, infeasible memory, and proposals that do not
   clear the greater of 5% or 10 ms with a lower confidence bound above 1.0.
-  Authored constraints are preserved unless the user explicitly enables the
-  whole-analysis override. Private parity/timing runs must echo the exact
-  request, environment, implementation map, safe decision scope, no fallback,
-  and successful cleanup. Apply refuses a changed graph, exact source
-  bytes/metadata/image state, compute request, current actual assignment, or
-  candidate environment.
+  `Find fastest` compares every scientifically eligible implementation for each
+  unlocked node, regardless of which backend that node currently uses. Only an
+  explicit node lock constrains the search; applying the result does not create
+  locks. Private parity/timing runs must echo the exact request, environment,
+  implementation map, safe decision scope, no fallback, and successful cleanup.
+  Apply refuses a changed graph, exact source bytes/metadata/image state,
+  compute request or lock state, cache-retention scope, current actual assignment,
+  candidate environment, or VIPP/NumPy/SciPy/scikit-image benchmark stack.
+  Deterministic typed parity rejections can be reused and explained; transient
+  runtime, OOM, cleanup, and timing failures are retried and cannot support an
+  exhaustive-optimum claim. A final paired-validation win for the current
+  assignment is reported as success with the reverse confidence bound.
 - Before broader use, capture workflow/source/retention/compute/assignment as one
   immutable application snapshot, preserve the optimizer's exact evidence
-  envelope through every future consumer, extend the fresh pre-apply environment
-  probe to one coherent workload/retention identity comparison, retain a single
-  end-to-end deadline across all nested benchmark work, and expose
-  transfer/VRAM/refusal details in the review UI.
+  envelope through every future consumer, retain a single end-to-end deadline
+  across all nested benchmark work, and expose transfer/VRAM/refusal details in
+  the review UI. The current interactive surface queues normal pipeline work
+  during the optimizer's evidence window; a process-wide, device-keyed lease is
+  still required for headless, multi-window, and future concurrent GPU callers.
 - RTX 40-series laptop, native Linux, CUDA 12 clean-host, and M1 Max evidence is
   still required before broader Auto calibration or platform claims.
 - Deconvolution, Otsu, morphology, segmentation, measurement, batch, workflow,

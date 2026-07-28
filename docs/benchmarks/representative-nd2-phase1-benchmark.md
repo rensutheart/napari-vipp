@@ -53,9 +53,12 @@ The paired median speedup is `median(CPU_i / GPU_i)` over randomized paired
 rounds. It is intentionally not the ratio of the independently rounded median
 columns.
 
-Native `uint16` Gaussian is an explicit CPU region in the Phase 1 policy. Its
-CPU value below is the median of seven warm calls; no unsupported GPU result
-was timed or used to expand the admitted scientific region.
+Native `uint16` Gaussian is an explicit CPU region in the Phase 1 policy because
+the current reviewed CuPyX implementation admits only finite `float32`. Its CPU
+value below is the median of seven warm calls; no unsupported GPU result was
+timed or used to expand the admitted scientific region. This should not be read
+as “Gaussian does not benefit from a GPU”: dtype is part of the candidate's
+scientific eligibility.
 
 The original benchmark harness called its isolated-node performance result an
 `Auto choice`. Under the current product contract this is local Selective
@@ -92,8 +95,17 @@ not a measurement of the resident graph executor as a single transaction.
 ## Explicit float32 Gaussian comparison
 
 Converting the same planes explicitly to `float32` creates a different admitted
-workload. The conversion is exact for the source's 12-bit integer values but is
-not implicit VIPP behavior.
+workload. The value-preserving conversion used here is exact for the source's
+12-bit integer values but is not implicit VIPP behavior. More generally,
+`float32` exactly represents every
+integer with magnitude up to 2^24, including all `uint16` values. This exact
+input-value conversion does not make the converted workflow equivalent in every
+respect: its public dtype, later range/threshold/rounding behavior, output
+writers, cache identity, and memory footprint differ. `float32` uses twice the
+RAM/VRAM of `uint16`. Add an explicit **Convert Dtype** node only after reviewing
+those consequences. Select `Scaling = Preserve` if the numeric values must stay
+unchanged; the node's default `Rescale` intentionally remaps the range. VIPP does
+not silently convert an integer image to make a GPU implementation eligible.
 
 | Channel | CPU median | GPU end-to-end median | Paired median speedup | Lower 95% bound | Isolated-node choice |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -102,8 +114,9 @@ not implicit VIPP behavior.
 
 Parity and confidence passed, but the absolute saving was only about 4 ms per
 plane. That is below the local 10 ms noise floor, so the isolated-node gate
-correctly retained CPU. A larger float32 stack requires its own exact workload
-evidence.
+correctly retained CPU. A larger float32 stack can still benefit by avoiding
+transfers across several eligible nodes, but requires its own exact
+whole-pipeline evidence rather than an assumption based on this isolated result.
 
 ## Full-acquisition projection
 
@@ -121,9 +134,13 @@ The review-first whole-pipeline optimizer was subsequently exercised on the
 same acquisition and machine using the exact full-resolution `CYX` workload at
 `T=9, Z=4` (`2 x 1150 x 822`, `uint16`). The test pipeline was Image Source ->
 Extract Channel 0 -> Subtract Background -> Gaussian Blur -> Median Filter.
-The authored constraints deliberately kept Extract Channel on CPU, Subtract
+This was an intentionally constrained safety validation. In the build under
+test, authored choices deliberately kept Extract Channel on CPU, Subtract
 Background on cuCIM, and native-`uint16` Gaussian on CPU; Median Filter remained
-Auto so the optimizer had one measured choice to make.
+Auto so the optimizer had one measured choice to make. Under the current product
+contract, such a constraint is represented by a separate explicit node lock.
+Merely running a node on CPU, CuPy, or cuCIM does not lock it: `Find fastest`
+compares every eligible implementation for every unlocked node.
 
 The complete analysis took 27.352 seconds, including source detachment, three
 node benchmarks, directional transfer profiling, graph solving, scientific
@@ -132,6 +149,18 @@ Filter changing from `cpu-median_filter-v1` to
 `cupyx-median-filter-v1`. Fixed/excluded nodes retained their authored intent;
 in particular, the source remained Auto instead of acquiring an accidental CPU
 pin.
+
+This duration is retained as historical safety evidence, not as a latency target
+for an unlocked comprehensive search. Approximately 17.57 seconds of the run was
+spent benchmarking Subtract Background, mainly through repeated CPU reference
+rounds, even though the old authored-choice constraint prevented that node from
+changing. The current search contract distinguishes an explicit lock from the
+current backend: a locked node has no alternatives to search, while every
+eligible alternative of an unlocked node is considered. The updated design
+reuses an exact complete node record, screens new node timings at 3/7/15
+paired-round checkpoints, and validates the complete pipeline freshly at
+5/7/15 checkpoints. Reuse never skips fresh whole-pipeline parity before a
+changed assignment is offered. Updated timings are reported below.
 
 | Measurement | Current mixed assignment | Proposed mixed assignment |
 | --- | ---: | ---: |
@@ -150,6 +179,45 @@ check, leaving 1,890,816 live/reserved bytes. The profiler now drops that alias
 inside the scope; the successful result above is from the corrected path. This
 is precisely why zero-allocation terminal checks remain part of the admission
 contract.
+
+### Updated unlocked `Find fastest` timing
+
+The implemented unlocked-search contract was then tested on the same central
+`CYX` workload and parameter defaults. ND2 decoding occurred before the analysis
+timer. Starting from a clean all-CPU Selective assignment, both eligible nodes
+were screened across all admitted alternatives and stopped decisively after
+three paired node rounds. Native-`uint16` Gaussian remained scientifically
+ineligible for GPU and therefore remained CPU. The optimizer proposed:
+
+`cuCIM Subtract Background -> CPU Gaussian -> CuPyX Median`
+
+The cold comprehensive analysis took **123.396 seconds**. Its fresh five-round
+whole-pipeline validation measured **10.049 seconds** for the all-CPU starting
+assignment and **0.162 seconds** for the proposal, with a **39.148x** paired
+speedup lower confidence bound. The wall time is dominated by the 9.6-10.2
+second CPU Background reference: a three-round screen still needs its parity/
+cold call, warmup, and three paired calls, while the end-to-end gate needs a
+baseline, full parity, and five current-assignment timing calls.
+
+Repeating the analysis immediately **before applying** took **72.248 seconds**.
+It reused exact complete records for Background and Median, but correctly reran
+fresh pipeline parity and five paired timings against the still-authored slow
+all-CPU assignment. This is why an evidence-cache hit is not equivalent to a
+fast repeat when the user has not yet applied the winner.
+
+The intended post-apply case was tested separately with the measured cuCIM and
+CuPyX preferences authored but still unlocked. With an empty evidence store, the
+analysis took **51.378 seconds** because it still had to compare the expensive
+CPU Background alternative. The current assignment won, so no redundant
+current-versus-identical pipeline validation ran. An immediate exact repeat then
+took **0.209 seconds**, reused both node records, performed zero validation
+rounds, and confirmed the same assignment with no preference change. These
+figures demonstrate the product contract: the first comprehensive search may be
+expensive, especially when a viable CPU reference is intrinsically slow; after
+the measured winner is applied and exact evidence remains current, confirmation
+is fast. Changes to input bytes, dtype, parameters, software stack, candidates,
+device/environment, memory scope, or measurement policy deliberately invalidate
+that reuse.
 
 ## ND2 metadata finding
 

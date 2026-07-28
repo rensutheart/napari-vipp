@@ -168,8 +168,10 @@ accepted runs add compact
 CPU/CuPy/cuCIM badges, and CPU fallback is shown in amber. VIPP uses one
 message-strip component, with major and actionable paths now severity-classified;
 only actionable failures receive the full alert treatment. Workflow-v4
-persistence now records portable authored compute intent; legacy workflow-v3
-files load in CPU mode until the user explicitly opts into Auto or Selective.
+persistence now records portable authored compute intent, while separate
+non-scientific UI metadata preserves explicit optimizer locks without changing
+the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
+with every node unlocked until the user explicitly opts into Auto or Selective.
 Machine-local runtime/device selection, memory limits, experimental admission,
 and benchmark evidence are not copied between machines. Batch and generated
 Python exports retain the compute block but execute on CPU in this phase.
@@ -180,22 +182,56 @@ offer `Benchmark node…`: VIPP compares the exact current workload, requires
 scientific parity, saves evidence locally, previews warm timing/parity/memory
 results, and changes the portable node preference only after explicit
 acceptance.
-Selective mode also exposes `Optimize pipeline…` after the current graph has
-been calculated. This review-first action works from detached source data,
-benchmarks eligible nodes, measures synchronized transfer costs and usable VRAM,
-solves one graph-wide CPU/GPU assignment, and then validates the complete current
-and proposed assignments for changed-node plus affected observable-boundary
-parity and paired end-to-end benefit. Every private validation run must report
-the exact requested implementation map and environment, no fallback, and clean
-accelerator teardown. It refuses to
+GPU eligibility is dtype-sensitive. For example, the currently reviewed CuPyX
+Gaussian implementation accepts finite `float32`; native `uint16` Gaussian is
+intentionally CPU-only until its integer result semantics pass a separate
+scientific admission gate. When it is appropriate for the analysis, an explicit
+**Convert Dtype** node to `float32` before Gaussian can unlock that GPU candidate
+and may improve acceleration across a longer GPU-resident segment. Choose
+`Scaling = Preserve` when the intention is to keep the numeric values; the
+node's default `Rescale` deliberately remaps the intensity range. VIPP never
+inserts this cast merely to win a benchmark. With Preserve, a `float32` value
+exactly represents integer values with magnitude up to 2^24 (including every
+`uint8` and `uint16` value), but conversion still changes the workflow's public
+data representation.
+Review downstream ranges, thresholds, rounding/output semantics, file writers,
+and RAM/VRAM use; `float32` also requires twice the storage of `uint16`. Benchmark
+the exact converted pipeline rather than assuming conversion will be faster.
+
+Selective mode also exposes the review-first `Find fastest pipeline…` analysis
+after the current graph has been calculated. It works from detached source data
+and compares every scientifically eligible CPU/CuPy/cuCIM implementation for
+every **unlocked** node. The implementation currently in use is the starting
+assignment, not an optimizer constraint. Only a separate, explicit node lock
+means “keep this implementation,” and applying a winning assignment does not lock
+it automatically. The lock preserves the actual implementation captured for
+that analysis; it does not silently turn a broad `Best GPU` or library preference
+into a portable machine-specific exact pin. A node following pipeline policy has
+no explicit choice to preserve and therefore cannot be locked until the user
+selects a per-node choice. Exact complete node evidence is reused only when the
+workload bytes/shape/dtype/parameters, scientific software stack, implementations,
+device/environment, memory scope, and measurement policy still match. Otherwise
+the analysis runs parity first, screens timing at three paired rounds, and extends
+to seven or fifteen only for a close or uncertain comparison. Complete-pipeline
+timing starts at five paired rounds and extends to seven or fifteen only until
+the result is decisive or the analysis reports it as inconclusive. Saved node
+timing never
+replaces fresh whole-pipeline parity before a changed assignment can be offered.
+If the current assignment wins, VIPP reports that as a successful result rather
+than an optimization failure.
+The analysis measures synchronized transfer costs and usable
+VRAM, solves one graph-wide CPU/GPU assignment, and then validates the complete
+current and proposed assignments for changed-node plus affected
+observable-boundary parity and paired end-to-end benefit. Every private
+validation run must report the exact requested implementation map and
+environment, no fallback, and clean accelerator teardown. It refuses to
 make a proposal when evidence or identity is incomplete/stale, memory is not
 admissible, the graph contains an unsafe retained writer path, or the measured
 gain does not exceed the greater of 5% or 10 ms with a lower confidence bound
-above 1.0. Explicit per-node choices are constraints unless the user deliberately
-enables the whole-analysis override. Analysis changes nothing; a reviewed
-proposal is rechecked against graph, source, compute intent, actual assignment,
-exact source bytes/metadata/image state, and a fresh probe of the exact candidate
-environment before one undoable apply,
+above 1.0. Analysis changes nothing; a reviewed proposal is rechecked against
+graph, source, compute intent and locks, actual assignment, exact source
+bytes/metadata/image state, and a fresh probe of the exact candidate environment
+before one undoable apply,
 after which only affected branches are invalidated.
 GPU candidates remain developer-hidden in the core admission model
 and are explicitly labelled experimental in this development UI, so this is

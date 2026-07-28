@@ -64,6 +64,16 @@ The following constraints and approved product directions are non-negotiable:
   beginning. A provider may still expose only the dtype/parameter regions that
   have passed parity and memory gates; unsupported regions use a visible CPU
   decision or fallback rather than an implicit conversion.
+- Dtype is therefore part of GPU eligibility, not an incidental implementation
+  detail. VIPP may explain that an explicit, scientifically appropriate
+  conversion can unlock another implementation, but must never insert such a
+  conversion merely to improve a benchmark. For example, the current Gaussian
+  GPU region is finite `float32`; native `uint16` remains CPU-only. Converting
+  integer values of magnitude up to 2^24 to `float32` with the Convert Dtype
+  node's `Scaling = Preserve` option is exact (including all `uint16` values);
+  its default `Rescale` option intentionally remaps the range. The workflow's
+  public dtype, downstream semantics, range, writers, cache identity, and
+  RAM/VRAM use still change and require review.
 - Benchmarking is transactional and scientific: it never runs writers or other
   side effects, never changes live caches until the user accepts a choice, and
   excludes an implementation immediately if the candidate output fails its
@@ -116,6 +126,8 @@ The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
 Settings-menu mirror, simplified dynamic Selective per-node choices, accepted
 CPU/CuPy/cuCIM node badges with muted stale state, amber CPU fallback, and one
 message-strip component whose major/actionable paths are severity-classified.
+The current optimizer update adds a distinct per-node lock and removes the
+ambiguous whole-analysis override.
 Policy edits participate in in-session undo/redo, per-node cache provenance is
 scoped to exact actual implementation and node-local compute intent, and the
 toolbar collapses dynamically before primary graph actions can be compressed.
@@ -128,24 +140,30 @@ reports system RAM plus dedicated or unified accelerator memory. Selected-node
 benchmarking is review-before-apply and stores raw evidence only in a
 machine-local cache.
 
-`Optimize pipeline…` is now implemented as a Selective-only, review-first
-transaction. It requires a calculated coherent graph, detaches source arrays and
-workflow state, excludes writers/side effects from private execution, benchmarks
-each eligible exact workload, measures directional transfers against a current
-free/total VRAM snapshot and active cap/reserve, and solves a bounded graph-global
-assignment including transfer and liveness memory costs. The proposed and current
+The Selective-only, review-first `Find fastest` pipeline analysis is now
+implemented. The current backend is only the starting assignment. Every
+scientifically eligible CPU/CuPy/cuCIM implementation participates for every
+unlocked node; only a separate explicit node lock constrains the search, and
+applying a winning assignment does not lock it. The analysis requires a
+calculated coherent graph, detaches source arrays and
+workflow state, excludes writers/side effects from private execution, reuses or
+measures each eligible unlocked exact workload, measures directional transfers
+against a current free/total VRAM snapshot and active cap/reserve, and solves a
+bounded graph-global assignment including transfer and liveness memory costs.
+The proposed and current
 assignments are then run privately for operation-specific parity and paired
 end-to-end timing. Validation covers each changed node and every affected
 retained/terminal/tunnel boundary, and every run must prove the exact requested
 decision map and environment, no fallback, and successful accelerator cleanup.
-No proposal is offered unless parity and synchronization pass,
+No changed assignment is offered unless parity and synchronization pass,
 the measured saving exceeds the greater of 5% or 10 ms, and the paired lower
-confidence speedup bound is above 1.0. Authored CPU/Best GPU/library/exact choices
-remain constraints by default; replacing them requires the dialog's explicit
-whole-analysis override. Analysis does not mutate preferences or live caches.
+confidence speedup bound is above 1.0. A current or authored CPU/Best
+GPU/library/exact selection is not implicitly a lock. Analysis does not mutate
+preferences, locks, or live caches.
 The analysis identity binds graph, exact source content/state, retention,
 environment, and per-node workload. Apply rechecks the editor graph, exact
-source bytes/metadata/image state, compute request, current actual assignment,
+source bytes/metadata/image state, compute request and lock state, current actual
+assignment,
 and a fresh probe of the exact candidate environment, then writes one undoable
 authored-intent edit and invalidates only branches downstream of changed
 choices.
@@ -369,9 +387,9 @@ execution policy, and UI presentation separate.
 | Benchmark and optimizer services | `core/compute_benchmark.py`, `core/compute_benchmark_coordinator.py`, `core/compute_pipeline_optimizer.py`, and `core/compute_pipeline_optimizer_coordinator.py` | Transactional node benchmarking, local fingerprinted result storage, parity-before-timing checks, cold/warm timing, application-safe evidence capture, and whole-pipeline assignment including transfers, residency, runtime switches, and memory. |
 | Capability/policy diagnostics | `core/compute_diagnostics.py` | JSON-safe support report, installation diagnosis, policy explanation, memory snapshot, and recent execution/fallback information. |
 | Single-run service | `core/execution.py` | Introduced as the mandatory headless/device execution entry in Pass 1, then made the only interactive application entry in Pass 4. It validates a detached workflow, plans, executes, and returns host outputs plus provenance. |
-| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Selective node preferences, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
+| Interactive presentation | a reusable controller under `ui/compute.py`, composed by `_widget.py` | Main-toolbar mode dropdown, Selective node preferences, distinct per-node optimizer locks, node/pipeline benchmark actions, compact CPU/CuPy/cuCIM badges, RAM/accelerator-memory status, fallback display, and copyable install guidance. No provider import or policy logic. |
 | Batch integration | `core/batch.py`, `core/batch_setup.py`, and existing `ui/batch*` adapters | Persist the run request, reuse the core execution service per item, checkpoint decisions in manifests, cancel safely, and clean runtime state at item/run boundaries. |
-| Workflow and generated Python | `core/workflow.py`, `core/export.py` | Persist portable global mode and per-node preferences, not machine timings or resolved hardware; migrate v3 safely, expose explicit runtime overrides, and return/write provenance. |
+| Workflow and generated Python | `core/workflow.py`, `core/export.py` | Persist portable global mode and per-node preferences plus non-scientific optimizer-lock UI metadata, not machine timings or resolved hardware; migrate v3 safely, expose explicit runtime overrides, and return/write provenance. |
 
 `core/pipeline.py` is already large and has active unrelated changes. Accelerator
 callables must not be added there. The preferred association is an immutable
@@ -394,6 +412,10 @@ promoted:
   preference such as `cupyx`/`cucim`, or an advanced stable implementation ID.
   Preferences are retained while another global mode is active but ignored
   outside Selective.
+- Optimizer locks are deliberately not part of `ComputeRequest` or
+  `NodeComputePreference`. They control which alternatives `Find fastest` may
+  investigate; they do not alter normal execution, scientific cache identity,
+  or the meaning of an authored backend preference.
 - `ComputeEnvironment`: detected runtimes and implementation libraries,
   versions, driver/runtime, Python implementation/minor/ABI tag, device
   identity/class, discrete/unified memory topology, OS execution mode, and probe
@@ -523,6 +545,11 @@ Selective `auto` choosing CPU is a normal policy result, not fallback.
   not independent wrappers. Compatible CuPyX and cuCIM implementations may stay
   in one CUDA/CuPy segment only after their zero-copy interoperability contract
   passes; otherwise a runtime/library transition is costed as a boundary.
+- That constraint describes ordinary Selective **execution** after preferences
+  have been authored. During a `Find fastest` analysis, an unlocked node's
+  current preference is only the baseline assignment and every scientifically
+  eligible alternative is considered. The optimizer proposes preference edits;
+  only separate optimizer-lock metadata limits its search.
 - Skipped manual nodes are not scheduled. A cached skipped-manual output is a
   host boundary. A manual node explicitly selected for calculation is included
   in preflight and benchmarking.
@@ -555,6 +582,27 @@ CLI, batch/hash integration, and export sidecars. Workflow v4 adds:
   }
 }
 ```
+
+Optimizer locks are stored separately as non-scientific workflow UI metadata,
+for example:
+
+```json
+"metadata": {
+  "vipp": {
+    "compute_optimizer": {
+      "locked_node_ids": ["background_1"]
+    }
+  }
+}
+```
+
+The list is validated against current node IDs. Its absence means every node is
+unlocked, preserving older workflow behavior. Lock state is portable so the
+user's instruction survives reopening, but it is not copied into
+`ComputeRequest`, normal execution provenance, candidate timing identity, or
+scientific cache keys merely because it changes the optimizer's search space.
+The review/apply transaction does include the exact lock set in its own analysis
+identity so a lock edit makes an unaccepted proposal stale.
 
 Device index, exact device identity, memory cap, driver, and resolved decisions
 are runtime environment, not authored workflow intent, and are not stored here.
@@ -593,8 +641,9 @@ compute preference; a future explicitly named `Paste all node settings` action
 would be required to do that.
 
 The canonical scientific workflow hash includes authored compute intent after
-v4. It never includes a resolved implementation, device, or policy result. Those belong
-to execution provenance.
+v4. Non-scientific optimizer-lock metadata does not change that hash. It never
+includes a resolved implementation, device, or policy result. Those belong to
+execution provenance.
 
 ### 2.5 Consequences across execution surfaces
 
@@ -1017,9 +1066,13 @@ result identity.
 
 Selective mode exposes `Benchmark node` only when the selected node has at
 least two validated candidates for its resolved inputs and parameters. The
-main-toolbar `Optimize pipeline` action is visible only in Selective mode and
+main-toolbar `Find fastest pipeline` action is visible only in Selective mode and
 only after enough source/cached metadata exists to construct workload
-descriptors.
+descriptors and at least one unlocked node has multiple eligible
+implementations. For this analysis, current preferences form the baseline but
+do not narrow any unlocked node's candidate set. A node is excluded from
+comparison only by a separate explicit optimizer lock or by scientific/runtime
+ineligibility.
 
 Benchmarking follows these rules:
 
@@ -1029,17 +1082,25 @@ Benchmarking follows these rules:
    record.
 2. Run the existing CPU implementation once outside timed rounds as the
    scientific reference, then validate each admissible implementation in an
-   isolated transaction. A failed candidate is quarantined for that fingerprint
-   and cannot be timed/selected. Benchmarking may only evaluate an already
-   promoted dtype/parameter support region; passing on one user's input never
-   expands a declaration.
-3. Record cold-start/JIT time separately. After warmup, randomize paired CPU and
-   candidate order for at least seven synchronized rounds; extend adaptively to
-   15 or 21 rounds near a decision threshold or under high variance. Report the
-   paired median ratio and a versioned 95% paired-bootstrap lower confidence
-   bound, plus end-to-end, resident, transfer, fact-scan, and peak-memory
-   measures. The bootstrap method/seed and outlier policy are benchmark-policy
-   data, not ad hoc UI behavior.
+   isolated transaction before accepting any timing. A failed alternative is
+   excluded and explained for that fingerprint; it does not abort comparison of
+   other parity-qualified alternatives. The captured current implementation must
+   remain qualified. Benchmarking may only evaluate an already promoted
+   dtype/parameter support region; passing on one user's input never expands a
+   declaration.
+3. Record cold-start/JIT time separately and randomize paired CPU/candidate
+   order after warmup. The manual `Benchmark node` surface begins with seven
+   synchronized rounds. `Find fastest pipeline` uses progressive 3 -> 7 -> 15
+   screening: a materially and consistently separated result stops early,
+   whereas a close or mixed result receives more evidence. Use absolute paired
+   duration/saving uncertainty for escalation; speedup-ratio variance alone can
+   amplify a small GPU denominator and must not make an obvious winner run 15
+   rounds. All parity-qualified candidates remain available to the graph solver,
+   including a locally slower candidate that may save transfers globally.
+   Report the paired median ratio and a versioned 95% paired-bootstrap lower
+   confidence bound, plus end-to-end, resident, transfer, fact-scan, and
+   peak-memory measures. The bootstrap method/seed and outlier policy are
+   benchmark-policy data, not ad hoc UI behavior.
 4. Do not execute source readers twice unnecessarily, writers, `Batch Output`,
    publication, or any other side effect. Do not replace live caches/history or
    node preferences until the user accepts the result. Support cancellation, a
@@ -1047,10 +1108,26 @@ Benchmarking follows these rules:
    release every device value on all exits. Before presenting or applying a
    result, recheck the detached graph/source/compute-intent fingerprint and
    discard it if the live state changed.
-5. Cache the local record by workflow/node/workload, source revision or safe
-   descriptor, parameters, VIPP/implementation/runtime versions, Python
-   implementation/minor/ABI tag, driver, device, and memory-topology
-   fingerprint. Mark it stale after any relevant change.
+   The current single-widget surface queues normal calculation while optimizer
+   evidence owns the GPU window. Before headless or multi-window concurrency is
+   promoted, replace that UI-only exclusion with a process-wide lease keyed by
+   runtime and physical device. Lease waiting must honor cancellation and the
+   same absolute deadline, permit different devices to proceed independently,
+   and release on every success, error, cancellation, and cleanup path.
+5. Before measuring, look up a complete record by the exact node input
+   bytes/shape/dtype/strides, operation/parameters, VIPP/NumPy/SciPy/scikit-image
+   and implementation/runtime versions, Python implementation/minor/ABI tag,
+   driver, device, memory scope/topology, and measurement-policy fingerprint.
+   Reuse complete timings plus explicitly typed deterministic scientific-parity
+   rejections. Never reuse a transient runtime, OOM, cleanup, or timing failure;
+   retry it and atomically replace the record instead. This prevents one
+   temporary CUDA failure from blacklisting a viable implementation while
+   avoiding repeated work for a reproducible parity mismatch.
+   A cancellation time budget is not part of that scientific/performance key
+   because it does not change a successfully completed measurement. Mark the
+   record stale after any result- or timing-affecting identity change. A hit skips
+   node timing only: fresh whole-pipeline parity remains mandatory before a
+   changed assignment is offered.
 6. `Use fastest` writes only a stable node preference. The UI retains the full
    local evidence for explanation but workflow JSON never stores raw timings,
    exact hardware, or an automatically resolved implementation.
@@ -1061,7 +1138,8 @@ layout, implementation/dependency/runtime versions, Python implementation/
 minor/ABI, driver/device, or memory-topology changes. A pipeline proposal also
 invalidates on graph topology,
 scheduled/manual scope, retained/selected/pinned/preview host materializations,
-memory cap/reserve, global mode/fallback, or authored node constraints. An
+memory cap/reserve, global mode/fallback, current baseline assignment, or
+optimizer-lock set. An
 accepted implementation preference remains authored when evidence becomes
 stale, but loses every `fastest`/`optimal` claim and offers `Rebenchmark`.
 
@@ -1072,8 +1150,17 @@ same-runtime residency, CuPyX/cuCIM interoperability, branches/joins, required
 host materializations, memory/liveness, and side-effect boundaries. It may
 therefore choose a slightly slower implementation for one node to make the
 complete pipeline faster. The proposed assignment and expected total are shown
-before `Apply choices`; an optional final end-to-end validation can confirm the
-winner without publishing outputs.
+before `Apply choices`; mandatory fresh parity and end-to-end timing validate the
+winner without publishing outputs. Timing advances through 5 -> 7 -> 15 paired
+rounds, stopping when the proposed winner or current assignment is decisively
+separated by the versioned 5%/10-ms and confidence gates. A still-close result
+at 15 rounds is inconclusive and cannot be applied. If the current assignment
+wins, the analysis completes successfully and says so rather than presenting
+“not beneficial” as an error.
+The review reports the reverse confidence bound when final validation overturns
+the graph model; it must not label the rejected alternative as validated.
+Locked GPU nodes need no comparative timings, but they still contribute a
+conservative current-workload memory estimate to graph-wide VRAM feasibility.
 
 When measured candidates are within the noise floor (initially the greater of
 5% or 10 ms for the measured unit), prefer the current valid choice; otherwise
@@ -1499,7 +1586,7 @@ before Settings and is mirrored in the Settings overflow menu so it remains
 reachable at narrow widths. Compute controls must not displace the existing
 preview/zoom state or make the main toolbar wrap unpredictably.
 
-`Optimize pipeline` appears beside the selector only in Selective mode. It is
+`Find fastest pipeline` appears beside the selector only in Selective mode. It is
 disabled with an explanation until the scheduled graph and workload descriptors
 are known. An advanced `Strict selected implementations` switch changes visible
 fallback into fail-closed preflight. The ordinary interactive default keeps
@@ -1564,24 +1651,38 @@ median, CPU speedup, parity result, peak memory, and explicit `Use fastest`
 action. Cold/range/transfer-resident detail, a dedicated `View details` surface,
 and visible stale-evidence/rebenchmark state remain presentation hardening.
 
-`Optimize pipeline` shows the current and proposed implementation assignment,
+`Find fastest pipeline` shows the current and proposed implementation assignment,
 estimated/measured total, transfer/runtime boundaries, peak memory, stale or
 estimated nodes, and any excluded candidate. `Apply choices` is a separate
-confirmation and one undoable action. Forced CPU/Best GPU/library/exact choices
-are constraints; the optimizer never replaces them unless the user explicitly
-selects and confirms an override scope. If the globally optimal plan chooses a
-slower isolated node to preserve residency, the explanation states that plainly.
+confirmation and one undoable action. The current CPU/Best GPU/library/exact
+choice is displayed as the starting assignment, not treated as a constraint.
+A separate per-node lock is the sole user-authored instruction to preserve a
+backend during this search, and an applied winner remains unlocked unless the
+user locks it separately. A Follow-pipeline/Auto node has no explicit choice to
+preserve and cannot be locked until the user selects a per-node choice. Before
+analysis, the UI summarizes how many nodes are
+unlocked, locked, or have only one scientifically eligible implementation. If
+the globally optimal plan chooses a slower isolated node to preserve residency,
+the explanation states that plainly.
 Benchmark progress is cancellable and never publishes a writer/batch output.
 
-The current experimental implementation provides the safe core of that design:
-one explicit whole-analysis override checkbox, current/proposed rows with the
-portable preference that would be authored, fixed/excluded status, validated
-end-to-end totals, and the paired lower confidence bound. Transfer direction,
+The current experimental update replaces the ambiguous whole-analysis override
+with explicit per-node optimizer locks. It provides current/proposed rows with
+the portable preference that would be authored, locked/excluded status,
+validated end-to-end totals and the paired lower confidence bound when an
+assignment changes, plus a successful current-assignment result when it already
+wins. Transfer direction,
 current free/total VRAM, cap/reserve, peak candidate memory, and graph liveness
 are enforced by the coordinator but are not yet exposed as detailed review-table
-columns. Per-node refusal drill-down, selectable override subsets, saved local
+columns. Per-node refusal drill-down, saved local
 evidence inspection, and residency-boundary explanations remain Pass 4 UX
 hardening; absence of those explanations does not relax any admission gate.
+
+When a candidate is excluded only because of dtype, the review should name the
+exact unsupported region. For native-`uint16` Gaussian it may suggest reviewing
+an explicit **Convert Dtype** to `float32`, with a link to the dtype warning and
+an explanation of `Preserve` versus the node's default `Rescale`; it must not
+imply that conversion is scientifically neutral or silently edit the graph.
 
 ### 10.4 Errors, memory, and progress
 
@@ -2136,14 +2237,16 @@ implementation host cache records, a session `ComputeRequest`, and one execution
 service for formerly synchronous and background paths. Add a compact toolbar
 selector immediately before Settings with `CPU`, `Auto`, and `Selective`; new
 interactive sessions default to Auto, and the selector is mirrored in Settings
-when the toolbar collapses. `Optimize pipeline…` exists only in Selective mode.
+when the toolbar collapses. `Find fastest pipeline…` exists only in Selective mode.
 The inspector Compute group offers `Follow pipeline policy`, `CPU`, one choice
 per declared GPU library, and `Best GPU` only where multiple libraries compete,
 plus `Benchmark node…`. Exact preferences remain an advanced/developer contract;
 a loaded current pin remains visibly represented until replaced.
 `Use fastest` and `Apply choices` each create one undoable authored-intent edit.
-Forced CPU/Best GPU/library/exact preferences are optimizer constraints and are
-never silently replaced; an explicit user-approved override scope is required.
+The current CPU/Best GPU/library/exact preference is an optimizer starting point,
+not a constraint. Add a distinct portable per-node optimizer lock; only that lock
+prevents `Find fastest` from comparing and replacing an otherwise eligible
+implementation. Applying a winning preference never creates a lock implicitly.
 
 **Presentation:** each processing-node header has a compact planned/used pill
 such as `CPU`, `GPU · CuPy`, `GPU · cuCIM`, or amber `CPU fallback`; host-only
@@ -2527,10 +2630,10 @@ not reasons to redesign Phase 1.
 
 | ID | Decision | Recorded direction | Remaining gate |
 | --- | --- | --- | --- |
-| D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Follow-pipeline/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. | Freeze JSON-safe contracts in Pass 0. |
+| D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Follow-pipeline/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. `Find fastest` treats these as the current assignment and searches all eligible implementations unless a distinct optimizer lock is set. | Keep lock state separate from execution intent and scientific identity. |
 | D2 | Fallback | Auto choosing CPU normally is not fallback. Selective uses visible CPU fallback by default; a strict option fails closed. | Finalize which typed reasons are retryable before Pass 1. |
 | D3 | OOM | Auto may clean and retry one affected transactional segment once on CPU and must report it. Selective follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
-| D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Pass 4 atomically updates the canonical workflow hash and every existing reader/writer preserves the block while unsupported surfaces force CPU. Resolved hardware and timings stay local. | Complete GPU activation, effective override hashes, and provenance for generated/batch/export surfaces in Passes 5 and 8. |
+| D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Separate validated VIPP UI metadata stores optimizer-locked node IDs without changing the scientific workflow hash. Pass 4 atomically updates the canonical workflow hash for compute intent and every existing reader/writer preserves the block while unsupported surfaces force CPU. Resolved hardware and timings stay local. | Complete GPU activation, effective override hashes, and provenance for generated/batch/export surfaces in Passes 5 and 8. |
 | D5 | Installation UX | Start with provider-aware diagnostics and a safe copyable command. A later in-app installer requires explicit consent, an isolated supported environment, progress, verification, and restart; never mutate an arbitrary napari environment silently. | Validate CUDA-13 and CUDA-12 packages before publishing extras or commands. |
 | D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Selective; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
 | D7 | Initial hardware | CUDA acceleration targets validated native Windows and Linux first, including RTX 5090 and RTX 40-series laptops. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Name public OS/Python/CUDA/device tiers only after clean-host evidence. |
@@ -2591,7 +2694,7 @@ not reasons to redesign Phase 1.
 
 1. **Product model:** CPU, Auto, and Selective are distinct global modes. Auto is
    the default; Selective adds per-node preferences, node benchmarking, and a
-   graph-global `Optimize pipeline…` action.
+   graph-global `Find fastest pipeline…` action with distinct per-node locks.
 2. **Architecture:** one Qt-free execution service plans immutable decisions,
    executes transactional host/device segments through lazy runtimes and
    implementation libraries, keeps public caches host-only, and returns actual
