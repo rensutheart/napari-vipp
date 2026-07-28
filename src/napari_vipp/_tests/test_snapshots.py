@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import (
     GraphConnection,
     OutputTunnel,
@@ -156,6 +157,28 @@ def test_workflow_snapshot_isolates_metadata_and_preserves_order():
         "gaussian"
     ]
     assert snapshot.positions[0] == ("threshold", (30.0, 40.0))
+
+
+def test_workflow_snapshot_preserves_detached_compute_intent():
+    pipeline = PrototypePipeline()
+    request = ComputeRequest(
+        mode="selective",
+        node_preferences={"gaussian": "library:cupyx"},
+        fallback_policy="strict",
+    )
+
+    snapshot = workflow_snapshot_from_pipeline(
+        pipeline,
+        compute_request=request,
+    )
+    document = workflow_document_from_snapshot(snapshot)
+    restored = workflow_snapshot_from_document(document)
+
+    assert snapshot.compute_request == request
+    assert restored.compute_request == request
+    assert document["execution"]["compute"]["node_preferences"] == {
+        "gaussian": "library:cupyx"
+    }
 
 
 def test_graph_snapshot_preserves_pipeline_collection_order():

@@ -3,7 +3,7 @@
 This document is a developer handoff map for the current `napari-vipp`
 prototype.
 
-Last reviewed: 2026-07-13
+Last reviewed: 2026-07-28
 
 It reflects the live codebase through current 0.12 development, including
 restoration, optional microscope-reader routing, reproducible collection batch
@@ -352,7 +352,8 @@ documented exceptions are in
 Visibility is excluded from workflow JSON, execution kwargs, cache keys,
 scientific hashes, and undo/redo snapshots. Hidden parameters therefore retain
 their exact stored values and still participate in generated Python and batch
-execution. The workflow schema remains version 3.
+execution. The current workflow schema is version 4; this visibility boundary
+is unchanged.
 
 ## Node Library
 
@@ -1096,31 +1097,42 @@ Workflow persistence:
 - `core/workflow.py` serializes nodes, params, connections including
   `target_port`, `source_port`, optional tunnel names, output tunnel
   definitions, and canvas positions to JSON.
-- Workflow version 3 stores graph notes, VIPP UI metadata, and the required
-  scientific controls for threshold/cutoff behavior, explicit channel
-  semantics, and composite intensity mapping. Versions 1 and 2 are
+- Workflow version 4 retains version 3's graph notes, VIPP UI metadata, and
+  required scientific controls for threshold/cutoff behavior, explicit channel
+  semantics, and composite intensity mapping. It adds the required
+  `execution.compute` object with portable `mode`, `fallback_policy`,
+  `node_preferences`, `precision_policy`, and `workload_policy` fields.
+- Version-3 documents are accepted and decoded as an explicit CPU
+  `ComputeRequest`; a subsequent save emits version 4. Versions 1 and 2 are
   intentionally rejected instead of receiving inferred scientific parameter
   migrations; changing only the JSON version number is not a valid migration.
+- Compute persistence records authored portability intent, not the environment
+  that happened to run or benchmark it. `runtime_id`, `device_id`, accelerator
+  memory cap/reserve, experimental admission, provider probes, device/runtime
+  metadata, and benchmark measurements remain machine-local and are excluded
+  from workflow JSON.
 - Inspector metadata is always written when saving through the widget and
   records the selected node plus right-panel visibility. Per-node thumbnail
   visibility is written only when `Save thumbnail visibility in workflows` is
   enabled.
 - Workflow JSON does not serialize thumbnail pixels, cached arrays, cached
-  tables, environment provenance, or YAML.
+  tables, environment provenance, benchmark evidence, or YAML.
 - Image Source paths and layer names are serialized as literal parameters;
   input files are not embedded and paths are not rebased for portable sharing.
-- The loader requires the current type and version and rejects unknown
-  operations, malformed records, duplicate node ids, invalid positions, and
-  dangling or multiply occupied connections. It also rejects duplicate tunnel
+- The loader requires the workflow type, accepts schema versions 3 and 4, and
+  rejects unknown operations, malformed records, duplicate node ids, invalid
+  positions, and dangling or multiply occupied connections. It also rejects
+  compute preferences that reference missing graph nodes, duplicate tunnel
   names, tunnel connections without a declared source, tunnel connections whose
   stored source/output does not match the named source, and VIPP workflow
   metadata that references missing nodes.
 - `PrototypePipeline.restore_graph()` rebuilds the graph model.
 - `workflow_snapshot_from_pipeline()` and
   `workflow_snapshot_from_document()` produce defensively copied typed runtime
-  snapshots. Document decoding also materializes a temporary pipeline, so port,
-  type, cycle, and duplicate-input validation completes before a snapshot can
-  replace live editor state.
+  snapshots, including the normalized portable `ComputeRequest`. Document
+  decoding also materializes a temporary pipeline, so port, type, cycle, and
+  duplicate-input validation completes before a snapshot can replace live
+  editor state.
 - `save_workflow()` writes through `core.atomic_io.atomic_write_json()`: JSON is
   encoded with non-finite values forbidden, flushed and fsynced to a
   same-directory temporary file, then atomically replaced. A serialization or
@@ -1135,6 +1147,9 @@ Python export:
 - The generated program embeds validated canonical workflow JSON and creates a
   fresh shared headless executor for every call, so it uses the same graph,
   port, parameter, semantic-axis, and scientific-operation contracts as VIPP.
+- The embedded schema-4 document preserves `execution.compute`, but generated
+  Python deliberately executes with the established CPU executor in this
+  phase. Preserving intent does not implicitly activate an available GPU.
 - `ImageDataset` and `SourcePayload` bindings carry explicit source data,
   metadata, names, and `ImageState`; returned `PipelineResults` preserve output
   states for metadata-aware saving.
@@ -1206,17 +1221,23 @@ Collection batch UI:
   warning because terminal membership is less stable than explicit output
   declarations. A terminal with multiple output ports is rejected because the
   fallback cannot represent a port selection.
-- `vipp_batch_config.json` is a versioned schema independent of workflow schema
-  version 3. It persists source bindings and patterns, output location and
+- `vipp_batch_config.json` is a versioned schema independent of the workflow
+  schema. It persists source bindings and patterns, output location and
   default format, existing-file policy, the required workflow companion, the
   optional runner choice, the workflow hash, and resolved output declarations.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
 - An active workspace may attach the exact versioned config as optional
-  top-level `batch_config` in workflow schema 3. The scientific hash explicitly
-  excludes that field, preventing self-reference and calculation drift. Load
-  validates it against the containing graph and path, restores the form without
-  a preview calculation, and leaves standalone config/runner export unchanged.
+  top-level `batch_config` in workflow schema 4. The scientific hash includes
+  canonical portable compute intent but explicitly excludes `batch_config`,
+  preventing self-reference and calculation drift. Canonical version-4 CPU
+  intent remains hash-compatible with version 3's implicit CPU execution. Load
+  validates the config against the containing graph and path, restores the form
+  without a preview calculation, and leaves standalone config/runner export
+  unchanged.
+- Batch artifacts preserve schema-4 compute intent and validate it as part of
+  the workflow, while batch calculation remains on the established CPU path in
+  this phase.
 - The batch-level existing-file choices are `Error`, `Skip`, and `Overwrite`.
   A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
   precedence over the default. Collision state is part of the plan and shown

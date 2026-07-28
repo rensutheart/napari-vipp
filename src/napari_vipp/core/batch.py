@@ -36,6 +36,7 @@ from napari_vipp.core.atomic_io import (
 from napari_vipp.core.atomic_io import (
     atomic_write_text,
 )
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.io import read_image
 from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
@@ -643,7 +644,7 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
     """Return the canonical scientific portion of a workflow document."""
     data = _require_object(workflow, "Workflow")
     # Full deserialization validates operation ids, params, ports, and references.
-    deserialize_workflow(data)
+    restored = deserialize_workflow(data)
     nodes = sorted(
         (_canonical_scientific_node(item) for item in data["nodes"]),
         key=lambda item: str(item.get("id", "")),
@@ -666,13 +667,26 @@ def scientific_workflow_document(workflow: object) -> dict[str, object]:
             int(item.get("source_port", 0)),
         ),
     )
-    return {
+    document: dict[str, object] = {
         "type": data.get("type"),
         "version": data.get("version"),
         "nodes": nodes,
         "connections": connections,
         "tunnels": tunnels,
     }
+    if data.get("version") == 4:
+        # Authored compute intent changes reproducibility and therefore belongs
+        # in the scientific workflow hash. Machine-local benchmark evidence and
+        # resolved devices are excluded by the workflow-v4 schema itself.
+        execution = _canonical_compute_execution(restored["compute_request"])
+        if execution == _implicit_v3_cpu_execution():
+            # v3 already meant this exact CPU request. Preserve its established
+            # scientific hash so attached batch configs remain valid after a
+            # lossless v3 -> v4 save migration.
+            document["version"] = 3
+        else:
+            document["execution"] = execution
+    return document
 
 
 def scientific_workflow_hash(workflow: object) -> str:
@@ -1491,6 +1505,9 @@ def _validated_batch_pipeline(
         )
     restored = deserialize_workflow(workflow)
     pipeline = PrototypePipeline()
+    # Pass 4 preserves workflow-v4 compute intent here, but batch GPU execution
+    # remains disabled until Pass 5. The legacy batch engine therefore restores
+    # only the graph and continues to execute its established CPU path.
     pipeline.restore_graph(
         restored["nodes"],
         restored["connections"],
@@ -2166,6 +2183,38 @@ def _config_path_text(path: Path) -> str:
 def _canonical_mapping(value: object) -> dict[str, object]:
     data = _require_object(value, "Canonical workflow record")
     return {str(key): _json_safe(data[key]) for key in sorted(data)}
+
+
+def _implicit_v3_cpu_execution() -> dict[str, object]:
+    return {
+        "compute": {
+            "fallback_policy": "visible",
+            "mode": "cpu",
+            "node_preferences": {},
+            "precision_policy": "scientific-default-v1",
+            "workload_policy": "vipp-best-available-v1",
+        }
+    }
+
+
+def _canonical_compute_execution(request: ComputeRequest) -> dict[str, object]:
+    """Canonicalize validated authored compute intent for scientific hashing."""
+    return {
+        "compute": {
+            "fallback_policy": request.fallback_policy.value,
+            "mode": request.mode.value,
+            "node_preferences": {
+                node_id: (
+                    f"{preference.kind.value}:{preference.value}"
+                    if preference.value
+                    else preference.kind.value
+                )
+                for node_id, preference in request.node_preferences.items()
+            },
+            "precision_policy": request.precision_policy_id,
+            "workload_policy": request.workload_policy_id,
+        }
+    }
 
 
 def _canonical_scientific_node(value: object) -> dict[str, object]:

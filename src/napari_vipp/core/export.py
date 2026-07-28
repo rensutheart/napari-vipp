@@ -13,9 +13,11 @@ from __future__ import annotations
 import json
 import keyword
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from napari_vipp import __version__ as VIPP_VERSION
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import (
     NODE_LIBRARY_BY_ID,
     PrototypePipeline,
@@ -55,8 +57,13 @@ def export_pipeline_to_python(
     pipeline: PrototypePipeline,
     *,
     function_name: str = "run_pipeline",
+    compute_request: ComputeRequest | Mapping[str, object] | None = None,
 ) -> str:
-    """Return Python source code that reproduces the pipeline headlessly."""
+    """Return Python source code that reproduces the pipeline headlessly.
+
+    Workflow-v4 compute intent is embedded for lossless portability. Generated
+    execution remains on the established CPU path until the Pass 8 integration.
+    """
     if not function_name.isidentifier() or keyword.iskeyword(function_name):
         raise ValueError(f"Invalid exported function name: {function_name!r}.")
     order = pipeline.topological_order()
@@ -80,7 +87,10 @@ def export_pipeline_to_python(
     )
     header = _build_header(pipeline)
     imports = _build_imports()
-    workflow = _build_workflow_constant(pipeline)
+    workflow = _build_workflow_constant(
+        pipeline,
+        compute_request=compute_request,
+    )
     helpers = _build_helpers()
     constants = _build_constants(source_ids, terminal_ids)
     main = _build_main(source_ids, function_name)
@@ -188,14 +198,18 @@ def _build_imports() -> str:
     )
 
 
-def _build_workflow_constant(pipeline: PrototypePipeline) -> str:
+def _build_workflow_constant(
+    pipeline: PrototypePipeline,
+    *,
+    compute_request: ComputeRequest | Mapping[str, object] | None = None,
+) -> str:
     """Embed one immutable, validated workflow snapshot.
 
     A JSON string, rather than a live dict literal, prevents one run (or caller)
     from mutating the graph used by later invocations.  ``pipeline_from_workflow``
     deserializes and validates a fresh document on every call.
     """
-    document = serialize_workflow(pipeline)
+    document = serialize_workflow(pipeline, compute_request=compute_request)
     deserialize_workflow(document)
     encoded = json.dumps(
         document,

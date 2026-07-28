@@ -10,10 +10,16 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from napari_vipp.core.atomic_io import atomic_write_json
+from napari_vipp.core.compute import (
+    ComputeMode,
+    ComputeRequest,
+    NodeComputePreference,
+)
 from napari_vipp.core.pipeline import (
     GraphConnection,
     GraphNode,
@@ -28,7 +34,8 @@ from napari_vipp.core.snapshots import (
     WorkflowSnapshot,
 )
 
-WORKFLOW_VERSION = 3
+WORKFLOW_VERSION = 4
+LEGACY_COMPUTE_WORKFLOW_VERSION = 3
 WORKFLOW_TYPE = "napari-vipp-workflow"
 
 Position = tuple[float, float]
@@ -39,6 +46,7 @@ def serialize_workflow(
     positions: dict[str, Position] | None = None,
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     metadata: dict[str, Any] | None = None,
+    compute_request: ComputeRequest | Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Return a JSON-serializable dict describing the pipeline graph."""
     positions = positions or {}
@@ -77,6 +85,9 @@ def serialize_workflow(
             node_id: [float(x), float(y)] for node_id, (x, y) in positions.items()
         },
         "notes": [_note_to_dict(note) for note in notes or ()],
+        "execution": {
+            "compute": _workflow_compute_to_dict(compute_request, node_id_set),
+        },
     }
     workflow_metadata = _workflow_metadata_to_dict(metadata, node_id_set)
     if workflow_metadata:
@@ -97,10 +108,10 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
     if data.get("type") != WORKFLOW_TYPE:
         raise ValueError("File is not a napari-vipp workflow.")
     document_version = data.get("version")
-    if (
-        type(document_version) is not int
-        or document_version != WORKFLOW_VERSION
-    ):
+    if type(document_version) is not int or document_version not in {
+        LEGACY_COMPUTE_WORKFLOW_VERSION,
+        WORKFLOW_VERSION,
+    }:
         migration_guidance = ""
         if type(document_version) is int and document_version in {1, 2}:
             migration_guidance = (
@@ -223,6 +234,11 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
 
     notes = _notes_from_data(data.get("notes", []), node_id_set)
     metadata = _workflow_metadata_to_dict(data.get("metadata", {}), node_id_set)
+    compute_request = (
+        ComputeRequest(mode=ComputeMode.CPU)
+        if document_version == LEGACY_COMPUTE_WORKFLOW_VERSION
+        else _compute_request_from_execution(data.get("execution"), node_id_set)
+    )
 
     restored = {
         "nodes": nodes,
@@ -231,6 +247,7 @@ def deserialize_workflow(data: Any) -> dict[str, Any]:
         "output_tunnels": output_tunnels,
         "notes": notes,
         "metadata": metadata,
+        "compute_request": compute_request,
     }
     if "batch_config" in data:
         restored["batch_config"] = _batch_config_document_from_data(
@@ -244,9 +261,16 @@ def workflow_snapshot_from_pipeline(
     positions: dict[str, Position] | None = None,
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     metadata: dict[str, Any] | None = None,
+    compute_request: ComputeRequest | Mapping[str, object] | None = None,
 ) -> WorkflowSnapshot:
     """Capture a validated workflow snapshot without exposing live mappings."""
-    document = serialize_workflow(pipeline, positions, notes, metadata)
+    document = serialize_workflow(
+        pipeline,
+        positions,
+        notes,
+        metadata,
+        compute_request,
+    )
     if document["nodes"]:
         return workflow_snapshot_from_document(document)
 
@@ -265,6 +289,7 @@ def workflow_snapshot_from_pipeline(
         positions=document["positions"],
         notes=(WorkflowNoteSnapshot.from_mapping(note) for note in validated_notes),
         metadata=validated_metadata,
+        compute_request=_portable_compute_request(compute_request),
     )
 
 
@@ -288,6 +313,7 @@ def workflow_snapshot_from_document(data: Any) -> WorkflowSnapshot:
         positions=restored["positions"],
         notes=(WorkflowNoteSnapshot.from_mapping(note) for note in restored["notes"]),
         metadata=restored["metadata"],
+        compute_request=restored["compute_request"],
     )
 
 
@@ -299,6 +325,7 @@ def workflow_document_from_snapshot(snapshot: WorkflowSnapshot) -> dict[str, Any
         positions=snapshot.positions_dict(),
         notes=[note.to_mapping() for note in snapshot.notes],
         metadata=snapshot.metadata,
+        compute_request=snapshot.compute_request,
     )
 
 
@@ -308,9 +335,16 @@ def save_workflow(
     positions: dict[str, Position] | None = None,
     notes: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     metadata: dict[str, Any] | None = None,
+    compute_request: ComputeRequest | Mapping[str, object] | None = None,
 ) -> Path:
     """Write the pipeline graph to ``path`` as a JSON workflow file."""
-    document = serialize_workflow(pipeline, positions, notes, metadata)
+    document = serialize_workflow(
+        pipeline,
+        positions,
+        notes,
+        metadata,
+        compute_request,
+    )
     return save_workflow_document(path, document)
 
 
@@ -455,6 +489,140 @@ def _workflow_metadata_to_dict(
             node_id_set,
         )
     return {"vipp": vipp} if vipp else {}
+
+
+def _portable_compute_request(
+    value: ComputeRequest | Mapping[str, object] | None,
+) -> ComputeRequest:
+    """Return authored compute intent without machine-local run settings."""
+    if value is None:
+        request = ComputeRequest(mode=ComputeMode.CPU)
+    elif isinstance(value, ComputeRequest):
+        request = value
+    elif isinstance(value, Mapping):
+        if "precision_policy" in value or "workload_policy" in value:
+            request = _compute_request_from_compute_block(value, None)
+        else:
+            request = ComputeRequest.from_dict(value)
+    else:
+        raise TypeError("Workflow compute intent must be a ComputeRequest or object.")
+    return ComputeRequest(
+        mode=request.mode,
+        node_preferences=request.node_preferences,
+        fallback_policy=request.fallback_policy,
+        precision_policy_id=request.precision_policy_id,
+        workload_policy_id=request.workload_policy_id,
+    )
+
+
+def _workflow_compute_to_dict(
+    value: ComputeRequest | Mapping[str, object] | None,
+    node_id_set: set[str],
+) -> dict[str, object]:
+    request = _portable_compute_request(value)
+    unknown_node_ids = set(request.node_preferences) - node_id_set
+    if unknown_node_ids:
+        unknown = ", ".join(repr(node_id) for node_id in sorted(unknown_node_ids))
+        raise ValueError(
+            f"Workflow compute preferences reference unknown nodes: {unknown}."
+        )
+    return {
+        "mode": request.mode.value,
+        "fallback_policy": request.fallback_policy.value,
+        "node_preferences": {
+            node_id: _node_preference_text(preference)
+            for node_id, preference in request.node_preferences.items()
+        },
+        "precision_policy": request.precision_policy_id,
+        "workload_policy": request.workload_policy_id,
+    }
+
+
+def _compute_request_from_execution(
+    raw_execution: Any,
+    node_id_set: set[str],
+) -> ComputeRequest:
+    if not isinstance(raw_execution, dict):
+        raise ValueError("Workflow execution must be an object.")
+    unknown = set(raw_execution) - {"compute"}
+    if unknown:
+        names = ", ".join(sorted(map(str, unknown)))
+        raise ValueError(f"Unknown workflow execution field(s): {names}.")
+    if "compute" not in raw_execution:
+        raise ValueError("Workflow execution requires a 'compute' object.")
+    return _compute_request_from_compute_block(
+        raw_execution["compute"],
+        node_id_set,
+    )
+
+
+def _compute_request_from_compute_block(
+    raw_compute: Any,
+    node_id_set: set[str] | None,
+) -> ComputeRequest:
+    if not isinstance(raw_compute, Mapping):
+        raise ValueError("Workflow execution compute must be an object.")
+    required = {
+        "mode",
+        "fallback_policy",
+        "node_preferences",
+        "precision_policy",
+        "workload_policy",
+    }
+    unknown = set(raw_compute) - required
+    if unknown:
+        names = ", ".join(sorted(map(str, unknown)))
+        raise ValueError(f"Unknown workflow compute field(s): {names}.")
+    missing = required - set(raw_compute)
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise ValueError(f"Workflow compute is missing required field(s): {names}.")
+    raw_preferences = raw_compute["node_preferences"]
+    if not isinstance(raw_preferences, Mapping):
+        raise ValueError("Workflow compute node_preferences must be an object.")
+    preferences: dict[str, NodeComputePreference] = {}
+    for raw_node_id, raw_preference in raw_preferences.items():
+        if not isinstance(raw_node_id, str) or not raw_node_id.strip():
+            raise ValueError(
+                "Workflow compute preference node ids must be non-empty strings."
+            )
+        node_id = raw_node_id.strip()
+        if node_id_set is not None and node_id not in node_id_set:
+            raise ValueError(
+                f"Workflow compute preference references missing node {node_id!r}."
+            )
+        if node_id in preferences:
+            raise ValueError(
+                "Workflow compute preferences contain duplicate normalized "
+                f"node id {node_id!r}."
+            )
+        if not isinstance(raw_preference, str) or not raw_preference.strip():
+            raise ValueError(
+                f"Workflow compute preference for {node_id!r} must be a "
+                "non-empty string."
+            )
+        preferences[node_id] = NodeComputePreference.parse(raw_preference)
+    policies: dict[str, str] = {}
+    for field_name in ("precision_policy", "workload_policy"):
+        raw_policy = raw_compute[field_name]
+        if not isinstance(raw_policy, str) or not raw_policy.strip():
+            raise ValueError(
+                f"Workflow compute {field_name} must be a non-empty string."
+            )
+        policies[field_name] = raw_policy.strip()
+    return ComputeRequest(
+        mode=raw_compute["mode"],
+        node_preferences=preferences,
+        fallback_policy=raw_compute["fallback_policy"],
+        precision_policy_id=policies["precision_policy"],
+        workload_policy_id=policies["workload_policy"],
+    )
+
+
+def _node_preference_text(preference: NodeComputePreference) -> str:
+    if preference.value:
+        return f"{preference.kind.value}:{preference.value}"
+    return preference.kind.value
 
 
 def _batch_config_document_from_data(raw_config: Any) -> dict[str, Any]:

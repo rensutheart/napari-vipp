@@ -35,6 +35,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
     validate_batch_config,
 )
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.io import write_image
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
@@ -302,6 +303,95 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
     pipeline.set_param("gaussian", "sigma", 3.25)
     changed = serialize_workflow(pipeline)
     assert scientific_workflow_hash(changed) != scientific_workflow_hash(plain)
+
+
+def test_scientific_workflow_hash_includes_authored_compute_intent():
+    pipeline = PrototypePipeline()
+    cpu = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(mode="cpu"),
+    )
+    auto = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(mode="auto"),
+    )
+    selective_cupy = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            mode="selective",
+            node_preferences={"gaussian": "library:cupyx"},
+        ),
+    )
+    selective_unknown = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            mode="selective",
+            node_preferences={
+                "gaussian": "implementation:future.gaussian-v4"
+            },
+        ),
+    )
+    strict = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(mode="cpu", fallback_policy="strict"),
+    )
+    precision = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            mode="cpu",
+            precision_policy_id="scientific-default-v2",
+        ),
+    )
+    workload = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            mode="cpu",
+            workload_policy_id="vipp-best-available-v2",
+        ),
+    )
+
+    hashes = {
+        scientific_workflow_hash(document)
+        for document in (
+            cpu,
+            auto,
+            selective_cupy,
+            selective_unknown,
+            strict,
+            precision,
+            workload,
+        )
+    }
+
+    assert len(hashes) == 7
+
+
+def test_scientific_workflow_hash_canonicalizes_compute_spellings():
+    pipeline = PrototypePipeline()
+    canonical = serialize_workflow(
+        pipeline,
+        compute_request=ComputeRequest(
+            mode="selective",
+            fallback_policy="strict",
+            node_preferences={"gaussian": "cpu"},
+            precision_policy_id="verified-float32-v2",
+            workload_policy_id="interactive-volume-v2",
+        ),
+    )
+    equivalent = deepcopy(canonical)
+    equivalent["execution"]["compute"].update(
+        {
+            "mode": " SELECTIVE ",
+            "fallback_policy": " STRICT ",
+            "node_preferences": {" gaussian ": " CPU "},
+            "precision_policy": " verified-float32-v2 ",
+            "workload_policy": " interactive-volume-v2 ",
+        }
+    )
+
+    assert scientific_workflow_hash(equivalent) == scientific_workflow_hash(
+        canonical
+    )
 
 
 def test_scientific_workflow_hash_ignores_runtime_resolution_and_vipp_state():

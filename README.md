@@ -117,11 +117,16 @@ still needs validation against a broader corpus of real acquisition files.
 Workflow JSON stores the graph and optional VIPP UI state, not cached pixels or
 tables. When Batch workspace is active, Save workflow can optionally attach its
 versioned config so the same workspace reopens from that one JSON file; local
-paths are included, but source pixels are not. `Export Python...` embeds a
-validated immutable workflow and executes it
-through the same headless pipeline engine as VIPP, including normalized
-`ImageState` propagation. See the [user guide](docs/user-guide.md) for source
-binding, runtime-version, and command-line details.
+paths are included, but source pixels are not. Workflow schema 4 also stores
+portable compute intent under `execution.compute`: mode, fallback policy,
+per-node preferences, precision policy, and workload policy. Machine-local
+runtime/device choices, memory limits, experimental admission, and benchmark
+evidence are deliberately excluded. Schema-3 workflows load with an explicit
+CPU policy. `Export Python...` and collection batch preserve this authored
+intent in their workflow artifacts but continue to execute through the
+established CPU headless path in this phase, including normalized `ImageState`
+propagation. See the [user guide](docs/user-guide.md) for source binding,
+runtime-version, and command-line details.
 
 ## Documentation
 
@@ -162,12 +167,16 @@ where implemented. `Best GPU` appears only when multiple libraries compete;
 accepted runs add compact
 CPU/CuPy/cuCIM badges, and CPU fallback is shown in amber. VIPP uses one
 message-strip component, with major and actionable paths now severity-classified;
-only actionable failures receive the full alert treatment. Legacy workflow-v3
+only actionable failures receive the full alert treatment. Workflow-v4
+persistence now records portable authored compute intent; legacy workflow-v3
 files load in CPU mode until the user explicitly opts into Auto or Selective.
+Machine-local runtime/device selection, memory limits, experimental admission,
+and benchmark evidence are not copied between machines. Batch and generated
+Python exports retain the compute block but execute on CPU in this phase.
 GPU candidates remain developer-hidden in the core admission model
 and are explicitly labelled experimental in this development UI, so this is
-not yet a public GPU support claim. Benchmark buttons, workflow-v4 persistence,
-and RAM/VRAM presentation remain later Phase 2 work. See the
+not yet a public GPU support claim. Benchmark buttons and RAM/VRAM presentation
+remain later Phase 2 work. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules. The
@@ -272,8 +281,9 @@ reproducibility baseline with:
 
 The 0.12 foundation also provides:
 
-- workflow schema version 3 records explicit axis, channel, grid, and operation
-  choices instead of restoring ambiguous scientific defaults;
+- workflow schema version 4 retains version 3's explicit axis, channel, grid,
+  and operation choices and adds portable compute intent, while loading version
+  3 with an explicit CPU policy;
 - verified file and live-layer revisions, physical-grid checks, detached viewer
   layers, and atomic artifacts reject stale or silently repaired inputs;
 - generated Python and collection batching now use the same validated headless

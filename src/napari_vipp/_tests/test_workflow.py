@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import napari_vipp.core.atomic_io as atomic_io_module
+from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.metadata import ChannelMetadata, image_state_from_array
 from napari_vipp.core.operations import (
     COMPOSITE_RGB_AUTO,
@@ -27,6 +28,8 @@ from napari_vipp.core.workflow import (
     save_workflow,
     save_workflow_document,
     serialize_workflow,
+    workflow_document_from_snapshot,
+    workflow_snapshot_from_document,
 )
 
 
@@ -73,6 +76,170 @@ def test_serialize_roundtrip_preserves_graph(tmp_path):
     }
     assert ("gaussian", "median_filter_1") in connection_pairs
     assert workflow["positions"]["gaussian"] == (330.0, 20.0)
+
+
+def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
+    pipeline = _build_pipeline()
+    request = ComputeRequest(
+        mode="selective",
+        node_preferences={
+            "gaussian": "implementation:future.provider.gaussian-v9",
+            "median_filter_1": "library:cupyx",
+        },
+        fallback_policy="strict",
+        runtime_id="cuda-cupy",
+        device_id="private-device-serial",
+        precision_policy_id="scientific-default-v2",
+        workload_policy_id="portable-policy-v3",
+        accelerator_memory_cap_bytes=1234,
+        accelerator_safety_reserve_bytes=567,
+        allow_experimental=True,
+    )
+
+    document = serialize_workflow(pipeline, compute_request=request)
+
+    assert document["version"] == 4
+    assert document["execution"] == {
+        "compute": {
+            "mode": "selective",
+            "fallback_policy": "strict",
+            "node_preferences": {
+                "gaussian": "implementation:future.provider.gaussian-v9",
+                "median_filter_1": "library:cupyx",
+            },
+            "precision_policy": "scientific-default-v2",
+            "workload_policy": "portable-policy-v3",
+        }
+    }
+    encoded = json.dumps(document)
+    assert "private-device-serial" not in encoded
+    assert "accelerator_memory_cap_bytes" not in encoded
+    assert "allow_experimental" not in encoded
+
+    path = save_workflow(
+        tmp_path / "compute-workflow.json",
+        pipeline,
+        compute_request=request,
+    )
+    restored = load_workflow(path)["compute_request"]
+
+    assert restored.mode is ComputeMode.SELECTIVE
+    assert restored.fallback_policy.value == "strict"
+    assert restored.preference_for("gaussian").value == (
+        "future.provider.gaussian-v9"
+    )
+    assert restored.runtime_id == ""
+    assert restored.device_id == ""
+    assert restored.accelerator_memory_cap_bytes is None
+    assert restored.allow_experimental is False
+
+
+def test_schema_v3_migrates_to_explicit_cpu_intent():
+    document = serialize_workflow(_build_pipeline())
+    document["version"] = 3
+    document.pop("execution")
+
+    restored = deserialize_workflow(document)
+    migrated = workflow_document_from_snapshot(
+        workflow_snapshot_from_document(document)
+    )
+
+    assert restored["compute_request"] == ComputeRequest(mode="cpu")
+    assert migrated["version"] == 4
+    assert migrated["execution"]["compute"] == {
+        "mode": "cpu",
+        "fallback_policy": "visible",
+        "node_preferences": {},
+        "precision_policy": "scientific-default-v1",
+        "workload_policy": "vipp-best-available-v1",
+    }
+
+
+def test_workflow_preserves_unavailable_exact_preference_without_provider_import(
+    monkeypatch,
+):
+    document = serialize_workflow(_build_pipeline())
+    exact_id = "uninstalled.future.provider.gaussian-v12"
+    document["execution"]["compute"]["mode"] = "selective"
+    document["execution"]["compute"]["node_preferences"] = {
+        "gaussian": f"implementation:{exact_id}",
+    }
+
+    def fail_optional_import(*_args, **_kwargs):
+        raise AssertionError("workflow loading must not probe providers")
+
+    monkeypatch.setattr(
+        "napari_vipp.core.compute.importlib.import_module",
+        fail_optional_import,
+    )
+
+    restored = deserialize_workflow(document)["compute_request"]
+    reserialized = serialize_workflow(
+        _build_pipeline(),
+        compute_request=restored,
+    )
+
+    assert restored.preference_for("gaussian").value == exact_id
+    assert reserialized["execution"] == document["execution"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda document: document.pop("execution"),
+            "execution must be an object",
+        ),
+        (
+            lambda document: document["execution"].update({"device": "gpu0"}),
+            "Unknown workflow execution field",
+        ),
+        (
+            lambda document: document["execution"]["compute"].update(
+                {"runtime_id": "cuda-cupy"}
+            ),
+            "Unknown workflow compute field",
+        ),
+        (
+            lambda document: document["execution"]["compute"][
+                "node_preferences"
+            ].update({"missing-node": "cpu"}),
+            "references missing node",
+        ),
+        (
+            lambda document: document["execution"]["compute"].update(
+                {"precision_policy": None}
+            ),
+            "precision_policy must be a non-empty string",
+        ),
+        (
+            lambda document: document["execution"]["compute"].update(
+                {"workload_policy": 123}
+            ),
+            "workload_policy must be a non-empty string",
+        ),
+    ],
+)
+def test_workflow_v4_rejects_nonportable_or_dangling_compute_intent(
+    mutation,
+    message,
+):
+    document = serialize_workflow(_build_pipeline())
+    mutation(document)
+
+    with pytest.raises(ValueError, match=message):
+        deserialize_workflow(document)
+
+
+def test_workflow_v4_rejects_duplicate_normalized_preference_node_ids():
+    document = serialize_workflow(_build_pipeline())
+    document["execution"]["compute"]["node_preferences"] = {
+        "gaussian": "cpu",
+        " gaussian ": "auto",
+    }
+
+    with pytest.raises(ValueError, match="duplicate normalized node id 'gaussian'"):
+        deserialize_workflow(document)
 
 
 def test_save_workflow_atomically_replaces_existing_file_without_format_drift(

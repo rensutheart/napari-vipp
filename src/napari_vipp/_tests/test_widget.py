@@ -877,7 +877,10 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
     qtbot.addWidget(widget)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
     path = tmp_path / "legacy-v3-workflow.json"
-    save_workflow(path, widget.pipeline, {})
+    legacy_document = serialize_workflow(widget.pipeline, {})
+    legacy_document["version"] = 3
+    legacy_document.pop("execution")
+    path.write_text(json.dumps(legacy_document), encoding="utf-8")
 
     assert widget.compute_mode_combo.currentData() == "auto"
     widget._compute_mode = ComputeMode.SELECTIVE
@@ -910,6 +913,44 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
         "library",
         "cupyx",
     )
+
+
+def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    path = tmp_path / "selective-v4-workflow.json"
+    preference = NodeComputePreference(
+        "implementation",
+        "future-provider.gaussian-v2",
+    )
+    save_workflow(
+        path,
+        widget.pipeline,
+        {},
+        compute_request=ComputeRequest(
+            mode="selective",
+            fallback_policy="strict",
+            node_preferences={"gaussian": preference},
+            runtime_id="machine-local-runtime",
+            device_id="machine-local-device",
+            precision_policy_id="verified-float32-v2",
+            workload_policy_id="interactive-volume-v2",
+            allow_experimental=True,
+        ),
+    )
+
+    widget.load_workflow_file(path)
+
+    assert widget.compute_mode_combo.currentData() == "selective"
+    assert widget.strict_compute_checkbox.isChecked()
+    assert widget._compute_node_preferences == {"gaussian": preference}
+    restored_request = widget._current_compute_request()
+    assert restored_request.precision_policy_id == "verified-float32-v2"
+    assert restored_request.workload_policy_id == "interactive-volume-v2"
+    assert restored_request.runtime_id == ""
+    assert restored_request.device_id == ""
+    assert restored_request.allow_experimental is True
 
 
 def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):

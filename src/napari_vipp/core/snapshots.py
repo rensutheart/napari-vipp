@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import (
     GraphConnection,
     GraphNode,
@@ -176,6 +177,7 @@ class WorkflowSnapshot:
     positions: OrderedPositions
     notes: tuple[WorkflowNoteSnapshot, ...]
     _metadata: dict[str, Any] = field(repr=False)
+    compute_request: ComputeRequest
 
     __hash__ = None
 
@@ -186,6 +188,7 @@ class WorkflowSnapshot:
         | Iterable[tuple[str, Position]] = (),
         notes: Iterable[WorkflowNoteSnapshot] = (),
         metadata: Mapping[str, Any] | None = None,
+        compute_request: ComputeRequest | Mapping[str, object] | None = None,
     ) -> None:
         position_items = (
             positions.items() if isinstance(positions, Mapping) else positions
@@ -216,6 +219,20 @@ class WorkflowSnapshot:
             self,
             "_metadata",
             deepcopy(dict(metadata or {})),
+        )
+        request = (
+            ComputeRequest()
+            if compute_request is None
+            else (
+                compute_request
+                if isinstance(compute_request, ComputeRequest)
+                else ComputeRequest.from_dict(compute_request)
+            )
+        )
+        object.__setattr__(
+            self,
+            "compute_request",
+            ComputeRequest.from_dict(request.as_dict()),
         )
 
     @property

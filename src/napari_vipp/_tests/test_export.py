@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -1020,6 +1022,38 @@ def test_exported_workflow_snapshot_is_revalidated_and_fresh_per_run():
 
     assert namespace["_WORKFLOW_JSON"] == encoded
     assert second.nodes["gaussian"].params["sigma"] == 1.2
+
+
+def test_export_preserves_v4_compute_intent_but_executes_cpu_compatibility_path():
+    pipeline = _starter_pipeline()
+    request = ComputeRequest(
+        mode="selective",
+        node_preferences={
+            "gaussian": "implementation:unavailable.future.gaussian-v1"
+        },
+        fallback_policy="strict",
+    )
+
+    code = export_pipeline_to_python(pipeline, compute_request=request)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(compile(code, "<exported>", "exec"), namespace)
+    embedded = json.loads(namespace["_WORKFLOW_JSON"])
+
+    assert embedded["execution"]["compute"] == {
+        "mode": "selective",
+        "fallback_policy": "strict",
+        "node_preferences": {
+            "gaussian": "implementation:unavailable.future.gaussian-v1"
+        },
+        "precision_policy": "scientific-default-v1",
+        "workload_policy": "vipp-best-available-v1",
+    }
+    result = namespace["run_pipeline"](
+        np.ones((8, 9), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+
+    assert result["gaussian"].shape == (8, 9)
 
 
 def test_exported_load_helper_keeps_the_complete_dataset():

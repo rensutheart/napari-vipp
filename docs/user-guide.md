@@ -1,6 +1,6 @@
 # VIPP User Guide
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-28
 
 This guide is written for people building visual image-processing workflows in
 VIPP. It focuses on how to use the graph, how to choose the right controls, and
@@ -419,7 +419,7 @@ workflow graph.
 ### Save Workflow JSON
 
 `Save workflow...` writes the graph, parameters, connections, positions, named
-tunnels, graph notes, and selected inspector state.
+tunnels, graph notes, selected inspector state, and portable compute intent.
 
 If a Batch workspace is active, Save asks whether its validated batch config
 should be included in the same workflow JSON. `Yes` stores a top-level
@@ -432,13 +432,25 @@ single-file convenience rather than a portable data package.
 Workflow JSON does not embed cached image pixels or tables. When a saved
 workflow is loaded, VIPP rebuilds the graph from sources and node settings.
 
-VIPP `0.12.0a3` writes workflow schema version 3. Versions 1 and 2 are
-intentionally rejected because silently inventing threshold, cutoff, channel
-axis, color, or intensity-mapping choices could change scientific results. Keep
-the VIPP environment that created an older workflow to inspect and run it
+Current saves use workflow schema version 4. Its `execution.compute` object
+stores only portable, authored intent: `mode`, `fallback_policy`,
+`node_preferences`, `precision_policy`, and `workload_policy`. It does not copy
+a machine's selected runtime or device, accelerator memory limits or safety
+reserve, experimental-admission switch, capability probe, or benchmark
+evidence. Those facts must be discovered or measured again on the machine that
+runs the workflow.
+
+Schema-version-3 workflows remain supported. Because version 3 had no compute
+policy, VIPP migrates them to an explicit CPU request; saving the loaded graph
+writes version 4. Select `Auto` or `Selective` deliberately if that workflow
+should use admitted GPU implementations. Versions 1 and 2 are intentionally
+rejected because silently inventing threshold, cutoff, channel axis, color, or
+intensity-mapping choices could change scientific results. Keep the VIPP
+environment that created such an older workflow to inspect and run it
 unchanged, then use its graph and JSON as references while recreating and
 verifying it in the current release. Do not change the JSON version number
-alone; version 3 requires the new scientific parameters.
+alone; version 3 introduced required scientific parameters and version 4 adds
+the required compute-intent block.
 
 Read the categorized [0.12.0a1 compatibility notes](../CHANGELOG.md#0120a1---2026-07-14)
 before recreating an older analysis. They identify the source-revision,
@@ -492,6 +504,11 @@ through the generated function or its `source_payloads` mapping. Missing,
 unknown, and duplicate bindings fail. The simple command-line folder helper
 binds only the primary source; use the callable API or saved-config batch runner
 for multiple varying sources.
+
+The embedded schema-4 workflow retains `execution.compute` so authored intent
+is not lost in review, version control, or later regeneration. Generated Python
+and collection batch execution still use the established CPU executor in this
+phase; they do not silently activate a GPU from the preserved intent.
 
 An export records the exact VIPP version that created it and refuses a different
 runtime. Deliberately regenerate and revalidate the export when upgrading. The

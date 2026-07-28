@@ -53,18 +53,6 @@ EXAMPLE_WORKFLOW_SCIENTIFIC_HASHES = {
     ),
 }
 
-# These documents already use the exact canonical structure emitted by the
-# schema-v3 serializer. Other bundled documents exercise the explicit legacy
-# normalizations in ``_canonical_schema_v3_document`` below.
-EXACT_STRUCTURAL_ROUND_TRIPS = frozenset(
-    {
-        "red-channel-merged-measurement-table.json",
-        "red-channel-object-intensity-measurements.json",
-        "synthetic-advanced-skeleton-network.json",
-        "synthetic-skeleton-qc.json",
-    }
-)
-
 _EXAMPLE_DIR = Path(__file__).resolve().parents[1] / "examples"
 
 
@@ -91,11 +79,12 @@ def _restore_and_reserialize(document: dict[str, Any]) -> dict[str, Any]:
         positions=restored["positions"],
         notes=restored["notes"],
         metadata=restored["metadata"],
+        compute_request=restored["compute_request"],
     )
 
 
-def _canonical_schema_v3_document(document: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the existing deserialize/serialize boundary normalization."""
+def _canonical_schema_v4_migration(document: dict[str, Any]) -> dict[str, Any]:
+    """Mirror v3 normalization plus its explicit CPU-intent migration."""
     canonical = deepcopy(document)
     # ``view`` predates the current core persistence API and is intentionally
     # not part of the deserialized graph parts returned to callers.
@@ -106,6 +95,16 @@ def _canonical_schema_v3_document(document: dict[str, Any]) -> dict[str, Any]:
         canonical.get("tunnels", []),
         key=lambda item: item["name"],
     )
+    canonical["version"] = 4
+    canonical["execution"] = {
+        "compute": {
+            "mode": "cpu",
+            "fallback_policy": "visible",
+            "node_preferences": {},
+            "precision_policy": "scientific-default-v1",
+            "workload_policy": "vipp-best-available-v1",
+        }
+    }
     return canonical
 
 
@@ -118,8 +117,8 @@ def test_bundled_schema_v3_examples_restore_to_canonical_structure(filename):
 
     reserialized = _restore_and_reserialize(document)
 
-    assert reserialized == _canonical_schema_v3_document(document)
-    assert (reserialized == document) is (filename in EXACT_STRUCTURAL_ROUND_TRIPS)
+    assert reserialized == _canonical_schema_v4_migration(document)
+    assert reserialized != document
 
 
 @pytest.mark.parametrize(

@@ -1115,6 +1115,8 @@ class VippWidget(QWidget):
         self._compute_mode = ComputeMode.AUTO
         self._compute_fallback_policy = FallbackPolicy.VISIBLE
         self._compute_node_preferences: dict[str, NodeComputePreference] = {}
+        self._compute_precision_policy_id = "scientific-default-v1"
+        self._compute_workload_policy_id = "vipp-best-available-v1"
         self._compute_allow_experimental = True
         self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
@@ -2673,6 +2675,8 @@ class VippWidget(QWidget):
                 self._compute_allow_experimental
                 and self._compute_mode is not ComputeMode.CPU
             ),
+            precision_policy_id=self._compute_precision_policy_id,
+            workload_policy_id=self._compute_workload_policy_id,
         )
 
     def _on_compute_mode_changed(self, index: int) -> None:
@@ -3201,6 +3205,7 @@ class VippWidget(QWidget):
                 self._graph_note_documents()
                 if notes_override is None
                 else notes_override,
+                compute_request=self._current_compute_request(),
             ),
             selected_node_id=(
                 self._selected_node_id
@@ -3313,6 +3318,12 @@ class VippWidget(QWidget):
                 for node_id, kind, value in snapshot.compute_node_preferences
                 if node_id in valid_node_ids
             }
+            self._compute_precision_policy_id = (
+                workflow.compute_request.precision_policy_id
+            )
+            self._compute_workload_policy_id = (
+                workflow.compute_request.workload_policy_id
+            )
             with QSignalBlocker(self.compute_mode_combo):
                 self.compute_mode_combo.setCurrentIndex(
                     self.compute_mode_combo.findData(self._compute_mode.value)
@@ -4700,6 +4711,7 @@ class VippWidget(QWidget):
                     positions,
                     self._graph_note_documents(),
                     self._workflow_metadata(),
+                    self._current_compute_request(),
                 )
         except Exception as exc:
             self._set_status(
@@ -4806,15 +4818,20 @@ class VippWidget(QWidget):
             workflow["connections"],
             workflow.get("output_tunnels", ()),
         )
-        # Workflow v3 has no compute contract. Preserve its historical CPU
-        # behavior until the user explicitly opts into Auto or Selective; a
-        # future workflow-v4 loader will restore persisted compute intent here.
-        self._compute_mode = ComputeMode.CPU
+        compute_request = workflow["compute_request"]
+        self._compute_mode = compute_request.mode
+        self._compute_fallback_policy = compute_request.fallback_policy
+        self._compute_node_preferences = dict(compute_request.node_preferences)
+        self._compute_precision_policy_id = compute_request.precision_policy_id
+        self._compute_workload_policy_id = compute_request.workload_policy_id
         with QSignalBlocker(self.compute_mode_combo):
             self.compute_mode_combo.setCurrentIndex(
-                self.compute_mode_combo.findData(ComputeMode.CPU.value)
+                self.compute_mode_combo.findData(self._compute_mode.value)
             )
-        self._compute_node_preferences.clear()
+        with QSignalBlocker(self.strict_compute_checkbox):
+            self.strict_compute_checkbox.setChecked(
+                self._compute_fallback_policy is FallbackPolicy.STRICT
+            )
         self._reset_compute_decisions()
         valid_node_ids = set(self.pipeline.nodes)
         vipp_metadata = self._workflow_vipp_metadata(workflow)
@@ -4914,6 +4931,7 @@ class VippWidget(QWidget):
             workflow.get("positions", {}),
             workflow.get("notes", ()),
             workflow.get("metadata", {}),
+            self._current_compute_request(),
         )
         validate_batch_config(
             validation_workflow,
@@ -4942,7 +4960,10 @@ class VippWidget(QWidget):
         if not path.lower().endswith(".py"):
             path += ".py"
         try:
-            code = export_pipeline_to_python(self.pipeline)
+            code = export_pipeline_to_python(
+                self.pipeline,
+                compute_request=self._current_compute_request(),
+            )
             target = Path(path).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(code, encoding="utf-8")
@@ -5910,6 +5931,7 @@ class VippWidget(QWidget):
             positions or self.graph_view.node_positions(),
             self._graph_note_documents(),
             self._workflow_metadata(),
+            self._current_compute_request(),
         )
         for node in workflow.get("nodes", ()):
             if node.get("operation_id") != "input":
@@ -13984,9 +14006,14 @@ class VippWidget(QWidget):
 
         self._pipeline_run_serial += 1
         run_id = self._pipeline_run_serial
-        workflow = deepcopy(serialize_workflow(self.pipeline))
-        cancel_event = threading.Event()
         compute_request = self._current_compute_request()
+        workflow = deepcopy(
+            serialize_workflow(
+                self.pipeline,
+                compute_request=compute_request,
+            )
+        )
+        cancel_event = threading.Event()
         execution_plan = self.pipeline.plan_execution(
             dirty_node_ids,
             manual_mode=MANUAL_RUN_SKIP,
@@ -14371,7 +14398,13 @@ class VippWidget(QWidget):
         self._announce_compute_fallbacks()
 
     def _workflow_matches_current_pipeline(self, workflow: dict) -> bool:
-        return serialize_workflow(self.pipeline) == workflow
+        return (
+            serialize_workflow(
+                self.pipeline,
+                compute_request=self._current_compute_request(),
+            )
+            == workflow
+        )
 
     def _apply_pipeline_run_result(
         self,
