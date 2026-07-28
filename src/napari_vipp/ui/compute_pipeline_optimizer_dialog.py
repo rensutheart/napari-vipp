@@ -146,14 +146,20 @@ class PipelineOptimizerDialog(QDialog):
         self._shutdown = False
 
         self.summary_label = QLabel(
-            "Compare every scientifically eligible CPU and GPU implementation "
-            "for each unlocked node, then validate the fastest whole-pipeline "
-            "assignment. A node's current backend is only the starting choice; "
-            "only an explicit optimizer lock preserves it. Nothing changes until "
-            "you review and apply the result. CPU timings are paired warm medians; "
-            "GPU timings are resident-compute medians, with transfers modeled "
-            "across the whole pipeline."
+            "<b>Find the fastest scientifically valid pipeline.</b>"
+            "<ul>"
+            "<li><b>Search:</b> Compare every scientifically eligible CPU and "
+            "GPU implementation for each unlocked node.</li>"
+            "<li><b>Locks:</b> The current backend is only the starting choice; "
+            "an explicit optimizer lock preserves it.</li>"
+            "<li><b>Control:</b> Nothing changes until you review and apply the "
+            "result.</li>"
+            "<li><b>Timing:</b> CPU uses paired warm medians; GPU uses "
+            "resident-compute medians, with transfers modeled across the whole "
+            "pipeline.</li>"
+            "</ul>"
         )
+        self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
         self.progress_label = QLabel(
             f"Ready. {locked_node_count} explicitly locked node(s) will be preserved."
