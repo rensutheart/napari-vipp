@@ -24,9 +24,11 @@ The following constraints and approved product directions are non-negotiable:
   supported Linux distributions. macOS is CPU-only for the NVIDIA-only phase.
 - The main toolbar exposes three execution modes: `CPU`, `Auto (best
   available)`, and `Selective`. New interactive sessions default to `Auto`.
-  `Selective` exposes an authored per-node preference (`Auto`, `CPU`, `Best
-  GPU`, an implementation library such as `CuPyX`/`cuCIM`, or an exact validated
-  implementation) and the
+  `Selective` exposes concise authored per-node preferences: `Follow pipeline
+  policy`, `CPU`, and one `GPU · <library>` choice per validated library. `Best
+  GPU` appears only when at least two libraries compete. Exact implementation
+  pins remain available to advanced/headless workflows and a loaded pin stays
+  visibly represented until the user replaces it. Selective also exposes the
   node/pipeline benchmark actions described below. Older workflows and callers
   remain CPU until they explicitly adopt the new execution contract.
 - CuPy owns the first CUDA runtime/array substrate. CuPyX and cuCIM are
@@ -109,7 +111,7 @@ completed with 167 passes and no skips.
 ### Phase 2 interactive slice status (2026-07-28)
 
 The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
-Settings-menu mirror, Selective per-node experimental choices, accepted
+Settings-menu mirror, simplified dynamic Selective per-node choices, accepted
 CPU/CuPy/cuCIM node badges with muted stale state, amber CPU fallback, and one
 message-strip component whose major/actionable paths are severity-classified.
 Policy edits participate in in-session undo/redo, per-node badge provenance is
@@ -384,7 +386,7 @@ safe and prevents duplicate side effects.
 | --- | --- |
 | `CPU` | Do not discover, probe, or import an accelerator runtime for execution. Every scientific operation uses the current CPU implementation. This is the compatibility/reproduction mode and the migration result for workflow v3. |
 | `Auto (best available)` | Default for new interactive sessions. Lazily discover usable implementations and choose CPU, CuPyX, cuCIM, or a future validated provider per node while optimizing the complete scheduled graph. The choice includes transfer/runtime-switch cost, device residency, memory, cold-start state, and confidence. CPU is a normal Auto decision, not fallback. |
-| `Selective` | Show a compute preference for every implemented node: `Auto`, `CPU`, `Best GPU`, an implementation-library choice such as `CuPyX` or `cuCIM`, and an advanced exact implementation choice when more than one exists. Unimplemented nodes remain visibly CPU. Preferences are planned together, so the UI may explain that a locally faster node would make the complete pipeline slower by forcing a transfer/runtime boundary. |
+| `Selective` | Show `Follow pipeline policy`, `CPU`, and one library choice such as `GPU · CuPy` or `GPU · cuCIM` for every implemented node. Show `Best GPU` only when at least two distinct libraries compete. Exact pins are advanced-only, although a loaded pin remains visibly represented until replaced. Unimplemented nodes remain visibly CPU. Preferences are planned together, so the UI may explain that a locally faster node would make the complete pipeline slower by forcing a transfer/runtime boundary. |
 
 New sessions default to Auto even when no accelerator package is installed. In
 that environment Auto runs normally on CPU, the toolbar status says that GPU
@@ -404,14 +406,24 @@ during Pass 0.
 stable node ID. It is active only in Selective mode but retained when the user
 temporarily changes global mode. A node preference may be:
 
-- `auto`: use the whole-graph optimizer;
+- `auto`: use the whole-graph optimizer (shown as `Follow pipeline policy` in
+  the node dropdown);
 - `cpu`: require the scientific reference implementation;
-- `best_gpu`: require the fastest validated GPU candidate without forcing the
-  user to know whether CuPyX or cuCIM is preferable;
+- `best_gpu`: require the best supported GPU assignment under whole-graph
+  planning without forcing the user to choose a library;
 - `library:<id>`: choose the best validated implementation from that library,
   for example `cupyx` or `cucim`; or
 - `implementation:<stable-id>`: advanced exact pin used for reproduction or an
   accepted benchmark result.
+
+The ordinary node dropdown deliberately compresses this full contract. It
+shows one option per library and exposes `Best GPU` only when multiple libraries
+are meaningful alternatives. Exact implementation IDs are authored only by
+advanced/developer tooling. If a workflow already contains an exact pin, the
+dropdown shows that current value as an `Advanced pin · <library>` entry. A
+known pin excluded by the active admission setting is marked `unavailable`, as
+is an unknown ID, until the user selects a normal replacement; the control must
+never silently display `Follow pipeline policy` while retaining the pin.
 
 Interactive Selective mode defaults to **visible fallback** for usability. If a
 forced `best_gpu`, library, or exact-implementation choice is unavailable,
@@ -1400,7 +1412,7 @@ Add one global `Compute` selector (`CPU`, `Auto (best available)`, `Selective`)
 to the main toolbar/settings and batch setup summary. New sessions default to
 Auto; v3 workflows initially restore their historical CPU intent until the user
 chooses otherwise. Add adjacent compact status such as `Auto · RTX 5090`,
-`Auto · CPU (GPU not installed)`, or `Selective · 3 choices`. If multiple usable
+`Auto · CPU (GPU not installed)`, or `Selective · 2 GPU / 2 CPU`. If multiple usable
 devices exist, an advanced device selector may choose the run device, but its
 index is session state rather than portable workflow intent.
 
@@ -1421,8 +1433,12 @@ The inspector Compute section is read-only in CPU/Auto mode. In Selective mode,
 implemented nodes gain a preference dropdown and eligible nodes gain `Benchmark
 node`. Unimplemented scientific nodes show CPU without a fake selector;
 source/writer infrastructure is marked `Host` or left unbadged.
-The dropdown offers `Auto`, `CPU`, `Best GPU`, and each validated library/exact
-implementation relevant to that node.
+The dropdown offers `Follow pipeline policy`, `CPU`, and one `GPU · <library>`
+choice per validated library. It adds `Best GPU` only when at least two distinct
+libraries are declared. Exact pins are not normal choices; a loaded current pin
+is shown as a temporary `Advanced pin · <library>` entry. Pins excluded by the
+active admission setting and unknown IDs are visibly marked `unavailable`.
+Selecting a normal choice removes that temporary entry.
 The section can report:
 
 - `Will run with CuPy (GPU)` or `cuCIM (GPU)` with runtime/device and predicted
@@ -2027,8 +2043,10 @@ service for formerly synchronous and background paths. Add a compact toolbar
 selector immediately before Settings with `CPU`, `Auto`, and `Selective`; new
 interactive sessions default to Auto, and the selector is mirrored in Settings
 when the toolbar collapses. `Optimize pipeline…` exists only in Selective mode.
-The inspector Compute group offers `Auto`, `CPU`, `Best GPU`, library-level, and
-exact-implementation preferences where implemented, plus `Benchmark node…`.
+The inspector Compute group offers `Follow pipeline policy`, `CPU`, one choice
+per declared GPU library, and `Best GPU` only where multiple libraries compete,
+plus `Benchmark node…`. Exact preferences remain an advanced/developer contract;
+a loaded current pin remains visibly represented until replaced.
 `Use fastest` and `Apply choices` each create one undoable authored-intent edit.
 Forced CPU/Best GPU/library/exact preferences are optimizer constraints and are
 never silently replaced; an explicit user-approved override scope is required.
@@ -2415,7 +2433,7 @@ not reasons to redesign Phase 1.
 
 | ID | Decision | Recorded direction | Remaining gate |
 | --- | --- | --- | --- |
-| D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Auto/CPU/Best GPU/library/exact choices. | Freeze JSON-safe contracts in Pass 0. |
+| D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Follow-pipeline/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. | Freeze JSON-safe contracts in Pass 0. |
 | D2 | Fallback | Auto choosing CPU normally is not fallback. Selective uses visible CPU fallback by default; a strict option fails closed. | Finalize which typed reasons are retryable before Pass 1. |
 | D3 | OOM | Auto may clean and retry one affected transactional segment once on CPU and must report it. Selective follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
 | D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Pass 4 atomically updates the canonical workflow hash and every existing reader/writer preserves the block while unsupported surfaces force CPU. Resolved hardware and timings stay local. | Complete GPU activation, effective override hashes, and provenance for generated/batch/export surfaces in Passes 5 and 8. |

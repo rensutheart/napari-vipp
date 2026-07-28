@@ -53,7 +53,7 @@ COMPUTE_MODE_OPTIONS = (
     ComputeModeOption(
         ComputeMode.SELECTIVE,
         "Selective",
-        "Choose CPU, GPU, or Auto independently for implemented nodes.",
+        "Choose pipeline policy, CPU, or a GPU library for implemented nodes.",
     ),
 )
 
@@ -111,14 +111,22 @@ def node_preference_options(
     operation_id: str,
     *,
     allow_experimental: bool = True,
+    current_preference: (
+        NodeComputePreference | str | Mapping[str, object] | None
+    ) = None,
 ) -> tuple[NodePreferenceOption, ...]:
     """Return import-free Selective choices for ``operation_id``.
 
-    Auto and CPU are always valid authored intent.  GPU choices are derived
-    only from immutable compute declarations.  The current Phase-1 candidates
-    are developer-hidden, so callers that expose them must pass
-    ``allow_experimental=True`` and the returned labels remain conspicuously
-    marked experimental.
+    Follow-policy and CPU are always valid authored intent.  One GPU library
+    produces one concise library choice.  Best GPU appears only when several
+    libraries can implement the operation.  Exact implementation pins remain
+    an advanced API/workflow feature and are shown only when an existing pin
+    must be represented honestly in the control.
+
+    GPU choices are derived only from immutable compute declarations.  The
+    current Phase-1 candidates are developer-hidden, so callers that expose
+    them must pass ``allow_experimental=True`` and the returned labels remain
+    conspicuously marked experimental.
     """
 
     candidates = compute_specs_for(
@@ -129,8 +137,8 @@ def node_preference_options(
     options = [
         NodePreferenceOption(
             NodeComputePreference(NodePreferenceKind.AUTO),
-            "Auto",
-            "Let the whole-pipeline policy choose for this node.",
+            "Follow pipeline policy",
+            "Let the pipeline policy choose CPU or a validated GPU for this node.",
         ),
         NodePreferenceOption(
             NodeComputePreference(NodePreferenceKind.CPU),
@@ -139,26 +147,32 @@ def node_preference_options(
         ),
     ]
     if not candidates:
-        return tuple(options)
-
-    all_experimental = all(_is_experimental(spec) for spec in candidates)
-    options.append(
-        NodePreferenceOption(
-            NodeComputePreference(NodePreferenceKind.BEST_GPU),
-            _experimental_label("Best GPU", all_experimental),
-            (
-                "Require the fastest supported GPU candidate. Visible fallback "
-                "still follows the global fallback policy."
-            ),
-            experimental=all_experimental,
+        return _with_current_preference(
+            operation_id,
+            options,
+            current_preference,
+            allow_experimental=allow_experimental,
         )
-    )
 
     by_library: dict[str, list[OperationComputeSpec]] = {}
     for spec in candidates:
         by_library.setdefault(spec.implementation_library_id, []).append(spec)
+    if len(by_library) > 1:
+        any_experimental = any(_is_experimental(spec) for spec in candidates)
+        options.append(
+            NodePreferenceOption(
+                NodeComputePreference(NodePreferenceKind.BEST_GPU),
+                _experimental_label("Best GPU", any_experimental),
+                (
+                    "Require a GPU and let VIPP choose the best supported "
+                    "candidate across the declared libraries. Visible fallback "
+                    "still follows the global fallback policy."
+                ),
+                experimental=any_experimental,
+            )
+        )
     for library_id, specs in by_library.items():
-        experimental = all(_is_experimental(spec) for spec in specs)
+        experimental = any(_is_experimental(spec) for spec in specs)
         library_label = _library_label(library_id)
         options.append(
             NodePreferenceOption(
@@ -168,25 +182,117 @@ def node_preference_options(
                 experimental=experimental,
             )
         )
+    return _with_current_preference(
+        operation_id,
+        options,
+        current_preference,
+        allow_experimental=allow_experimental,
+    )
 
-    for spec in candidates:
-        experimental = _is_experimental(spec)
-        label = f"Exact · {_library_label(spec.implementation_library_id)}"
+
+def _with_current_preference(
+    operation_id: str,
+    options: list[NodePreferenceOption],
+    current_preference: NodeComputePreference | str | Mapping[str, object] | None,
+    *,
+    allow_experimental: bool,
+) -> tuple[NodePreferenceOption, ...]:
+    """Append a current advanced/saved choice only when normal options omit it."""
+    if current_preference is None:
+        return tuple(options)
+    current = NodeComputePreference.parse(current_preference)
+    if any(option.preference == current for option in options):
+        return tuple(options)
+
+    all_candidates = compute_specs_for(
+        operation_id,
+        include_cpu=False,
+        allow_experimental=True,
+    )
+    matching_spec = next(
+        (
+            spec
+            for spec in all_candidates
+            if spec.implementation_id == current.value
+        ),
+        None,
+    )
+    if current.kind is NodePreferenceKind.IMPLEMENTATION:
+        options.append(
+            _current_implementation_option(
+                current,
+                matching_spec,
+                allow_experimental=allow_experimental,
+            )
+        )
+    elif current.kind is NodePreferenceKind.BEST_GPU:
         options.append(
             NodePreferenceOption(
-                NodeComputePreference(
-                    NodePreferenceKind.IMPLEMENTATION,
-                    spec.implementation_id,
-                ),
-                _experimental_label(label, experimental),
+                current,
+                "Best GPU (saved preference)",
                 (
-                    f"Pin {spec.implementation_id} version "
-                    f"{spec.implementation_version}."
+                    "This saved preference requires a GPU, but Best GPU is not "
+                    "a distinct normal choice for this node under the current "
+                    "compute settings. Choose another option to replace it."
                 ),
-                experimental=experimental,
+            )
+        )
+    elif current.kind is NodePreferenceKind.LIBRARY:
+        options.append(
+            NodePreferenceOption(
+                current,
+                f"GPU · {_library_label(current.value)} (saved preference)",
+                (
+                    f"The saved {current.value} preference is not currently "
+                    "available. Choose another option to replace it."
+                ),
             )
         )
     return tuple(options)
+
+
+def _current_implementation_option(
+    current: NodeComputePreference,
+    matching_spec: OperationComputeSpec | None,
+    *,
+    allow_experimental: bool,
+) -> NodePreferenceOption:
+    """Describe an existing exact pin without making it a normal menu choice."""
+    if matching_spec is None:
+        return NodePreferenceOption(
+            current,
+            "Advanced pin (unavailable)",
+            (
+                f"Saved exact implementation pin: {current.value}. This "
+                "implementation is not declared in this build; choose another "
+                "option to replace it."
+            ),
+        )
+
+    experimental = _is_experimental(matching_spec)
+    admitted = allow_experimental or not experimental
+    base_label = (
+        "Advanced pin · "
+        + _library_label(matching_spec.implementation_library_id)
+    )
+    if admitted:
+        label = _experimental_label(base_label, experimental)
+        guidance = "Choose another option to replace this advanced preference."
+    else:
+        label = f"{base_label} (unavailable)"
+        guidance = (
+            "This experimental implementation is disabled by the current compute "
+            "settings; choose another option to replace it."
+        )
+    return NodePreferenceOption(
+        current,
+        label,
+        (
+            f"Saved exact implementation pin: {current.value} version "
+            f"{matching_spec.implementation_version}. {guidance}"
+        ),
+        experimental=experimental,
+    )
 
 
 class ComputePresentationTone(StrEnum):

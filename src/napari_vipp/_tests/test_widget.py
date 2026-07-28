@@ -699,6 +699,65 @@ def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
     )
 
 
+def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("selective")
+    )
+    widget.graph_view.select_node("gaussian")
+    exact_value = "implementation:cupyx-gaussian-blur-v1"
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference.parse(
+        exact_value
+    )
+
+    widget._sync_node_compute_control()
+
+    assert widget.node_compute_preference_combo.currentData() == exact_value
+    assert widget.node_compute_preference_combo.currentText().startswith(
+        "Advanced pin · CuPy"
+    )
+
+    follow_index = widget.node_compute_preference_combo.findData("auto")
+    widget.node_compute_preference_combo.setCurrentIndex(follow_index)
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert widget.node_compute_preference_combo.currentText() == (
+        "Follow pipeline policy"
+    )
+    assert all(
+        not str(widget.node_compute_preference_combo.itemData(index)).startswith(
+            "implementation:"
+        )
+        for index in range(widget.node_compute_preference_combo.count())
+    )
+
+    widget.undo()
+
+    assert widget._compute_node_preferences["gaussian"] == (
+        NodeComputePreference.parse(exact_value)
+    )
+    assert widget.node_compute_preference_combo.currentData() == exact_value
+    assert widget.node_compute_preference_combo.currentText().startswith(
+        "Advanced pin · CuPy"
+    )
+
+    widget.redo()
+
+    assert "gaussian" not in widget._compute_node_preferences
+    assert widget.node_compute_preference_combo.currentData() == "auto"
+    assert widget.node_compute_preference_combo.currentText() == (
+        "Follow pipeline policy"
+    )
+    assert all(
+        not str(widget.node_compute_preference_combo.itemData(index)).startswith(
+            "implementation:"
+        )
+        for index in range(widget.node_compute_preference_combo.count())
+    )
+
+
 def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)

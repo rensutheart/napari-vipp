@@ -1457,10 +1457,16 @@ class VippWidget(QWidget):
         self.calculate_button = QPushButton("Calculate")
         self.compute_group = QGroupBox("Compute (experimental GPU)")
         self.node_compute_preference_combo = QComboBox()
+        self.node_compute_preference_combo.setAccessibleName(
+            "Compute preference for selected node"
+        )
         self.node_compute_preference_combo.setToolTip(
             "Choose how this node runs while the toolbar policy is Selective."
         )
         self.node_compute_note = QLabel("")
+        self.node_compute_note.setAccessibleName(
+            "Selected node compute preference details"
+        )
         self.node_compute_note.setWordWrap(True)
         self.node_compute_note.setStyleSheet("color: #94a3b8; font-size: 10px;")
         self.parameter_group = QGroupBox("Parameters")
@@ -2694,17 +2700,20 @@ class VippWidget(QWidget):
         if node is None or self._compute_mode is not ComputeMode.SELECTIVE:
             self.compute_group.setHidden(True)
             return
+        current_preference = self._compute_node_preferences.get(
+            node_id,
+            NodeComputePreference(),
+        )
         options = node_preference_options(
             node.operation_id,
             allow_experimental=self._compute_allow_experimental,
+            current_preference=current_preference,
         )
         has_gpu_choice = len(options) > 2
         self.compute_group.setVisible(has_gpu_choice)
         if not has_gpu_choice:
             return
-        selected_value = preference_to_value(
-            self._compute_node_preferences.get(node_id, NodeComputePreference())
-        )
+        selected_value = preference_to_value(current_preference)
         with QSignalBlocker(self.node_compute_preference_combo):
             self.node_compute_preference_combo.clear()
             for option in options:

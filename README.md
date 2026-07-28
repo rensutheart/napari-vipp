@@ -156,8 +156,10 @@ median, and 2D/3D Gaussian. It includes CPU/Auto/Selective execution contracts,
 visible or strict fallback, transactional device execution, scientific cache
 identity, and per-node/whole-pipeline benchmark services. The toolbar controls
 now provide the first Phase 2 interactive slice: new sessions default to
-`Auto`, the main toolbar exposes `CPU`/`Auto`/`Selective`, Selective mode shows
-experimental per-node choices where implemented, accepted runs add compact
+`Auto`, the main toolbar exposes `CPU`/`Auto`/`Selective`, and Selective mode
+shows `Follow pipeline policy`, `CPU`, and one choice per declared GPU library
+where implemented. `Best GPU` appears only when multiple libraries compete;
+accepted runs add compact
 CPU/CuPy/cuCIM badges, and CPU fallback is shown in amber. VIPP uses one
 message-strip component, with major and actionable paths now severity-classified;
 only actionable failures receive the full alert treatment. Legacy workflow-v3

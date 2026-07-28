@@ -9,6 +9,10 @@
   that declare GPU implementations. Workflow-v3 files deliberately reopen in
   CPU mode until the user opts in; durable workflow-v4 compute intent remains
   future work.
+- Simplified Selective node choices to `Follow pipeline policy`, `CPU`, and one
+  entry per declared GPU library. `Best GPU` appears only when multiple
+  libraries compete, while loaded exact pins remain honestly visible as an
+  advanced compatibility entry until replaced.
 - Accepted execution reports now render compact CPU, CuPy, cuCIM, or amber CPU
   fallback badges on node cards. Stale badges are muted and distinguish an
   active update from an idle previous result.
