@@ -25,11 +25,13 @@ from napari_vipp.core.compute import (
     DecisionKind,
     DecisionReason,
     ExecutionPlan,
+    FallbackPolicy,
     MemoryEstimate,
     NodeComputePreference,
     NodeExecutionDecision,
     WorkloadDescriptor,
 )
+from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ImplementationLibraryProbeResult,
@@ -394,6 +396,101 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
         "median_filter",
     ]
     assert planner.workloads[-1].input_shapes == (data.shape,)
+    registry.close()
+
+
+def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    extract = pipeline.add_node("extract_channel")
+    background = pipeline.add_node("subtract_background")
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.set_param(extract.id, "channel", 1)
+    pipeline.set_param(background.id, "radius", 1.0)
+    pipeline.set_param(background.id, "spatial_mode", "2D YX")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.set_param(median.id, "size", 1)
+    assert pipeline.connect("input", extract.id).success
+    assert pipeline.connect(extract.id, background.id).success
+    assert pipeline.connect(background.id, gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(
+        runtime,
+        (
+            ("subtract_background", _device_copy),
+            ("gaussian_blur", _device_copy),
+            ("median_filter", _device_copy),
+        ),
+    )
+    compute_request = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={
+            extract.id: "cpu",
+            background.id: (
+                f"implementation:{specs['subtract_background'].implementation_id}"
+            ),
+            gaussian.id: "cpu",
+            median.id: (
+                f"implementation:{specs['median_filter'].implementation_id}"
+            ),
+        },
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+        fallback_policy=FallbackPolicy.STRICT,
+    )
+    planned_workloads: list[WorkloadDescriptor] = []
+
+    def planner(request, workloads, **kwargs):
+        planned_workloads.extend(workloads)
+        return plan_compute_decisions(request, workloads, **kwargs)
+
+    data = np.arange(2 * 5 * 7, dtype=np.uint16).reshape(2, 5, 7)
+    request = replace(
+        _accelerated_request(pipeline, data, compute_request),
+        input_metadata={"axes": "CYX"},
+    )
+
+    result = execute_pipeline_request(
+        request,
+        compute_registry=registry,
+        compute_planner=planner,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    np.testing.assert_array_equal(result.pipeline.outputs[median.id], data[1])
+    workloads = {workload.node_id: workload for workload in planned_workloads}
+    assert workloads[extract.id].input_shapes == ((2, 5, 7),)
+    assert workloads[extract.id].input_dtypes == ("uint16",)
+    assert workloads[background.id].input_shapes == ((5, 7),)
+    assert workloads[background.id].input_dtypes == ("uint16",)
+    assert workloads[gaussian.id].input_shapes == ((5, 7),)
+    assert workloads[gaussian.id].input_dtypes == ("uint16",)
+    assert workloads[median.id].input_shapes == ((5, 7),)
+    assert workloads[median.id].input_dtypes == ("uint16",)
+    actual = {
+        decision.node_id: decision
+        for decision in result.execution_report.actual_decisions
+    }
+    assert actual[extract.id].runtime_id == "cpu-numpy"
+    assert actual[extract.id].reason is DecisionReason.EXPLICIT_CPU
+    assert (
+        actual[background.id].implementation_id
+        == specs["subtract_background"].implementation_id
+    )
+    assert actual[gaussian.id].runtime_id == "cpu-numpy"
+    assert actual[gaussian.id].reason is DecisionReason.EXPLICIT_CPU
+    assert (
+        actual[median.id].implementation_id
+        == specs["median_filter"].implementation_id
+    )
+    assert actual[median.id].decision_kind is DecisionKind.SELECTED
+    assert runtime.host_to_device_count == 2
+    assert runtime.device_to_host_count == 2
     registry.close()
 
 

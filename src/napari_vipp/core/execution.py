@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from itertools import count
+from numbers import Integral
 from time import perf_counter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Protocol
@@ -826,10 +827,23 @@ def _assemble_workloads(
         )
         workloads.append(workload)
 
-        if planning_call is not None and _has_shape_preserving_device_implementation(
-            registry,
+        projected_output = _project_host_planning_output(
             node.operation_id,
-            allow_experimental,
+            planning_call,
+            input_shapes,
+            input_dtypes,
+        )
+        if projected_output is not None:
+            projected_value, projected_state = projected_output
+            port = OutputPortKey(node_id, 0)
+            values[port] = projected_value
+            states[port] = projected_state
+        elif planning_call is not None and (
+            _has_shape_preserving_device_implementation(
+                registry,
+                node.operation_id,
+                allow_experimental,
+            )
         ):
             predicted_states = pipeline.predict_shape_preserving_node_states(
                 planning_call
@@ -865,6 +879,94 @@ def _assemble_workloads(
         MappingProxyType(facts_by_node),
         MappingProxyType(fact_lineage),
     )
+
+
+def _project_host_planning_output(
+    operation_id: str,
+    planning_call: PreparedNodeCall | None,
+    input_shapes: Sequence[tuple[int, ...]],
+    input_dtypes: Sequence[str],
+) -> tuple[_ArrayDescription, object | None] | None:
+    """Describe deterministic host transforms needed by downstream planning.
+
+    Compute planning happens before any runnable CPU node executes.  A host
+    transform that changes rank therefore needs an explicit shape/dtype
+    projection when a later node may run on an accelerator.  Keep this list
+    deliberately narrow: every projection must be exact and independently
+    validated by the authoritative CPU operation at execution time.
+    """
+    if (
+        operation_id != "extract_channel"
+        or planning_call is None
+        or planning_call.multiple_inputs
+        or planning_call.output_port_count != 1
+        or len(input_shapes) != 1
+        or len(input_dtypes) != 1
+    ):
+        return None
+
+    input_shape = tuple(input_shapes[0])
+    if not input_shape:
+        return None
+    axis_types = tuple(planning_call.kwargs.get("axis_types", ()))
+    axis_names = tuple(planning_call.kwargs.get("axis_names", ()))
+    channel_axis = next(
+        (
+            index
+            for index, axis_type in enumerate(axis_types[: len(input_shape)])
+            if str(axis_type).strip().casefold() == "channel"
+        ),
+        None,
+    )
+    if channel_axis is None:
+        channel_axis = next(
+            (
+                index
+                for index, axis_name in enumerate(axis_names[: len(input_shape)])
+                if str(axis_name).strip().casefold()
+                in {"c", "channel", "rgb", "rgba"}
+            ),
+            None,
+        )
+    if channel_axis is None:
+        return None
+
+    raw_channel = planning_call.kwargs.get("channel", 0)
+    if isinstance(raw_channel, (bool, np.bool_)) or not isinstance(
+        raw_channel,
+        Integral,
+    ):
+        return None
+    channel = int(raw_channel)
+    channel_count = int(input_shape[channel_axis])
+    normalized_channel = channel + channel_count if channel < 0 else channel
+    if not 0 <= normalized_channel < channel_count:
+        return None
+
+    output_shape = (
+        input_shape[:channel_axis] + input_shape[channel_axis + 1 :]
+    )
+    description = _ArrayDescription(output_shape, np.dtype(input_dtypes[0]))
+    input_state = planning_call.input_states[0] if planning_call.input_states else None
+    projected_state = input_state
+    axes = tuple(getattr(input_state, "axes", ()))
+    if input_state is not None and len(axes) == len(input_shape):
+        channels = tuple(getattr(input_state, "channels", ()))
+        metadata_channel = channel + len(channels) if channel < 0 else channel
+        selected_channels = (
+            (channels[metadata_channel],)
+            if 0 <= metadata_channel < len(channels)
+            else ()
+        )
+        projected_state = replace(
+            input_state,
+            shape=output_shape,
+            axes=axes[:channel_axis] + axes[channel_axis + 1 :],
+            channels=selected_channels,
+            kind="intensity image",
+            value_pattern="",
+        )
+    return description, projected_state
 
 
 def _required_concrete_fact_ports(
