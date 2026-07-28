@@ -29,7 +29,11 @@ def test_find_fastest_dialog_has_one_unambiguous_search_scope(qtbot):
     assert dialog.summary_label.text().count("<li>") == 4
     for heading in ("Search:", "Locks:", "Control:", "Timing:"):
         assert f"<b>{heading}</b>" in dialog.summary_label.text()
-    assert "2 explicitly locked" in dialog.progress_label.text()
+    assert "2 explicitly locked nodes" in dialog.progress_label.text()
+
+    singular_dialog = PipelineOptimizerDialog(locked_node_count=1)
+    qtbot.addWidget(singular_dialog)
+    assert "1 explicitly locked node will" in singular_dialog.progress_label.text()
 
 
 def test_dialog_rolls_back_running_state_when_worker_dispatch_fails(qtbot):

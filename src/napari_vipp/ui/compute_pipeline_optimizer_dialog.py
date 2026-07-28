@@ -161,8 +161,10 @@ class PipelineOptimizerDialog(QDialog):
         )
         self.summary_label.setTextFormat(Qt.RichText)
         self.summary_label.setWordWrap(True)
+        locked_node_label = "node" if locked_node_count == 1 else "nodes"
         self.progress_label = QLabel(
-            f"Ready. {locked_node_count} explicitly locked node(s) will be preserved."
+            f"Ready. {locked_node_count} explicitly locked {locked_node_label} "
+            "will be preserved."
         )
         self.progress_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
