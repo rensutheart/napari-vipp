@@ -155,7 +155,17 @@ headless, developer-hidden vertical slice for Rolling-Ball/Subtract Background,
 median, and 2D/3D Gaussian. It includes CPU/Auto/Selective execution contracts,
 visible or strict fallback, transactional device execution, scientific cache
 identity, and per-node/whole-pipeline benchmark services. The toolbar controls
-and public GPU admission intentionally begin in Phase 2. See the
+now provide the first Phase 2 interactive slice: new sessions default to
+`Auto`, the main toolbar exposes `CPU`/`Auto`/`Selective`, Selective mode shows
+experimental per-node choices where implemented, accepted runs add compact
+CPU/CuPy/cuCIM badges, and CPU fallback is shown in amber. VIPP uses one
+message-strip component, with major and actionable paths now severity-classified;
+only actionable failures receive the full alert treatment. Legacy workflow-v3
+files load in CPU mode until the user explicitly opts into Auto or Selective.
+GPU candidates remain developer-hidden in the core admission model
+and are explicitly labelled experimental in this development UI, so this is
+not yet a public GPU support claim. Benchmark buttons, workflow-v4 persistence,
+and RAM/VRAM presentation remain later Phase 2 work. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules. The

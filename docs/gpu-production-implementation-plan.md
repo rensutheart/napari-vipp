@@ -3,8 +3,9 @@
 Date: 2026-07-15
 Product-direction revision: 2026-07-27
 Status: Phase 1 implemented headlessly on
-`codex/gpu-cross-platform-support`; all GPU implementations remain
-developer-hidden pending Phase 2 UI and the named release/platform gates.
+`codex/gpu-cross-platform-support`; the first experimental Pass 4 UI slice is
+connected, while all GPU implementations remain developer-hidden pending the
+remaining Phase 2 and named release/platform gates.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -95,14 +96,32 @@ real finite-float32 execution region, the compatible Background → Gaussian →
 Median graph runs as one device-resident segment with one H2D and one D2H
 boundary, and a deliberately constrained allocation proves classified OOM
 cleanup followed by successful reuse. These results complete the local Phase 1
-implementation gate; they do not publish a toolbar feature or claim broadly
-calibrated Auto selection. A second Windows RTX 40-series tier, supported Linux
+implementation gate; the new development toolbar exposes them only through
+explicitly experimental controls and does not claim broadly calibrated Auto
+selection. A second Windows RTX 40-series tier, supported Linux
 hosts, clean packaging/JIT evidence, and the M1 Max provider study remain named
 promotion or Phase 2+ gates. The concise implementation and validation handoff
 is the [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md).
-The final branch-wide validation completed with 2,375 passes and two expected,
-documented integer-Gaussian xfails; the post-record real-device-focused run
+The final Phase 1/pre-UI branch-wide validation completed with 2,375 passes and
+two expected, documented integer-Gaussian xfails; the post-record real-device-focused run
 completed with 167 passes and no skips.
+
+### Phase 2 interactive slice status (2026-07-28)
+
+The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
+Settings-menu mirror, Selective per-node experimental choices, accepted
+CPU/CuPy/cuCIM node badges with muted stale state, amber CPU fallback, and one
+message-strip component whose major/actionable paths are severity-classified.
+Policy edits participate in in-session undo/redo, per-node badge provenance is
+kept separate from the latest coherent execution report, and the toolbar
+collapses dynamically before primary graph actions can be compressed.
+Small interactive Auto updates remain on CPU;
+background-eligible Auto work and explicit GPU selections use the detached
+compute service. Full-width message treatment is reserved for actionable
+failures. Workflow-v4 persistence, cache provenance, benchmark actions,
+installation actions, and RAM/VRAM presentation remain open Pass 4 work. The
+post-slice full repository run completed with 2,431 passes and the same two
+expected integer-Gaussian xfails.
 
 ### Cross-platform support contract
 
@@ -1925,10 +1944,10 @@ memory estimates, missing-cuCIM decisions, and one wider real microscopy set.
 Raw primitive benchmark results are labelled feasibility evidence and cannot
 stand in for these adapter tests.
 
-**Migration:** none. Existing workflows remain CPU by default. Only an explicit
-headless developer request with `allow_experimental=True` may exercise the
-`developer_hidden` cuCIM implementation; ordinary Auto/Selective requests do
-not discover it.
+**Migration:** existing workflow-v3 files load in CPU mode until the user opts
+in. An explicit headless developer request with `allow_experimental=True`, or
+the clearly experimental controls on this development branch, may exercise the
+`developer_hidden` cuCIM implementation; public admission remains closed.
 
 **Acceptance/rollback:** every advertised dtype/parameter region clears the
 scientific, memory, cleanup, cancellation, and provenance gates. The results may
@@ -2469,8 +2488,9 @@ not reasons to redesign Phase 1.
    fake/lazy-CUDA substrate and reproducible dev setup -> production-faithful
    Background/Subtract Background -> CuPyX median and Gaussian -> headless node
    benchmark, scientific cache identity, and whole-pipeline optimizer.
-4. **Next wave:** toolbar/inspector/badges/install guidance and RAM/VRAM display;
-   minimal workflow-v4 persistence for accepted choices; RL then RL-TV; Otsu,
+4. **Next wave:** the initial toolbar/inspector/badge slice is implemented;
+   benchmark controls, install guidance, RAM/VRAM display, and minimal
+   workflow-v4 persistence remain. Then RL/RL-TV, Otsu,
    Canny, connected components, measurements, residency bridges, and broad
    reasonable-node promotion; batch/generated/CLI/export integration follows.
 5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and

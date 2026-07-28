@@ -29,9 +29,9 @@ PSF generation, deconvolution foundations, and optional microscope-reader
 routing are part of the 0.11 baseline; explicit batch configuration and
 provenance are part of 0.12. Near-term work is validation on real data,
 scalable OME-Zarr previews, safe graph/parameter copy and paste, and a separate
-headless GPU-development track, whose first CPU/Auto/Selective execution slice
-and background/median/Gaussian adapters are now implemented on the separate GPU
-branch.
+GPU-development track, whose first CPU/Auto/Selective execution slice,
+experimental interactive controls, and background/median/Gaussian adapters are
+now implemented on the separate GPU branch.
 Registration, model-backed segmentation, stitching, and AI-assisted graph
 authoring remain later milestones.
 
@@ -149,9 +149,12 @@ Keep implementation on `codex/gpu-cross-platform-support`, synchronized with
 main but separate until promotion gates pass. Phase 1 is now implemented
 headlessly: CPU/Auto/Selective and per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
-Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. The toolbar,
-durable accepted choices, RL/RL-TV, segmentation/measurement wave, batch, and
-generated-Python integration follow in the ordered phases of the
+Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. The toolbar
+now has the first experimental CPU/Auto/Selective policy slice, Selective node
+choices, actual backend badges, and a single message-strip component with
+major/actionable paths severity-classified. Durable
+accepted choices, benchmark actions, RL/RL-TV, segmentation/measurement wave,
+batch, and generated-Python integration follow in the ordered phases of the
 [GPU production plan](gpu-production-implementation-plan.md).
 
 ### 1. PSF Generation And Deconvolution

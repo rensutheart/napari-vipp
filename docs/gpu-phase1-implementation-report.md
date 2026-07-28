@@ -1,8 +1,9 @@
 # GPU Phase 1 implementation record
 
 Status: implemented on `codex/gpu-cross-platform-support` as a headless,
-developer-hidden vertical slice. It is not exposed by the production toolbar
-and is not yet a public GPU support promise.
+developer-hidden vertical slice, with the first experimental Phase 2
+interactive controls now connected to that service. This remains a development
+surface and is not yet a public GPU support promise.
 
 This record describes the code that exists, the environment in which it was
 validated, and the gates that intentionally remain closed. The normative
@@ -110,13 +111,18 @@ inputs, one-transfer device chains, cancellation, result/fact cache isolation,
 benchmark identity, memory accounting, terminal zero-allocation checks, and a
 real classified CUDA OOM followed by successful runtime reuse.
 
-The final repository run completed with **2,375 passed and 2 expected xfails**.
+The final Phase 1/pre-UI repository run completed with **2,375 passed and 2
+expected xfails**.
 The xfails document two narrow integer Gaussian parity gaps that remain
 CPU-only; they are not advertised GPU regions. A real-device-focused run
 completed with **167 passed and no skips** after the verified environment record
 was created. A clean wheel build also contained the v2 policy resource and
 benchmark adapter; a dependency-free isolated Python 3.12 install loaded the
 packaged policy and its five operation entries successfully.
+
+After the first interactive slice and its production-UI hardening, the full
+repository run completed with **2,431 passed and 2 expected xfails**; the xfails
+are the same documented CuPy integer-Gaussian parity gaps.
 
 The fixed production benchmark used 21 paired warm rounds for every case. These
 small inputs deliberately demonstrate the conservative Auto gate:
@@ -145,8 +151,11 @@ scientifically unambiguous.
 
 ## Deliberately deferred gates
 
-- Toolbar controls, per-node badges, whole-pipeline benchmark controls, durable
-  user choices, and RAM/VRAM presentation begin in Phase 2.
+- The first toolbar policy, Selective per-node choices, actual CPU/CuPy/cuCIM
+  badges, visible fallback, and the single message-strip component are
+  implemented; major/actionable paths are severity-classified.
+  Node/pipeline benchmark actions, durable workflow-v4 choices, install actions,
+  and RAM/VRAM presentation remain deferred within Phase 2.
 - RTX 40-series laptop, native Linux, CUDA 12 clean-host, and M1 Max evidence is
   still required before broader Auto calibration or platform claims.
 - Deconvolution, Otsu, morphology, segmentation, measurement, batch, workflow,

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Experimental GPU Development UI
+
+- Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
+  summary, a Settings-menu mirror, and experimental per-node choices for nodes
+  that declare GPU implementations. Workflow-v3 files deliberately reopen in
+  CPU mode until the user opts in; durable workflow-v4 compute intent remains
+  future work.
+- Accepted execution reports now render compact CPU, CuPy, cuCIM, or amber CPU
+  fallback badges on node cards. Stale badges are muted and distinguish an
+  active update from an idle previous result.
+- Consolidated VIPP feedback into one severity-aware message-strip component.
+  Routine status remains lightweight, while only actionable errors receive a
+  filled full-width alert.
+
 ## 0.12.0a3 - 2026-07-20
 
 ### Release Overview
