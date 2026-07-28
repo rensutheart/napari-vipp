@@ -135,6 +135,14 @@ extrapolated.
 The generated evidence document is
 [`benchmarks/phase1-production-node-benchmark-windows-rtx5090.json`](benchmarks/phase1-production-node-benchmark-windows-rtx5090.json).
 
+The [representative real-acquisition ND2 benchmark](benchmarks/representative-nd2-phase1-benchmark.md)
+applies the same registered production-node adapter to two full-resolution
+planes from a 647 MB, two-channel ND2 time series. At native `uint16`, Auto
+selected cuCIM for Subtract Background, CuPyX for Median Filter, and CPU for
+Gaussian Blur. The run also exposed an ND2 Z/channel metadata-order defect;
+the benchmark used direct reader indexing so the timing inputs remained
+scientifically unambiguous.
+
 ## Deliberately deferred gates
 
 - Toolbar controls, per-node badges, whole-pipeline benchmark controls, durable

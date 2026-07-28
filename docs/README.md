@@ -76,6 +76,7 @@ override the current planning documents above.
 - [PSF and deconvolution](psf-and-deconvolution-plan.md)
 - [GPU feasibility spike](gpu-acceleration-spike.md)
 - [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md)
+- [Representative real-acquisition ND2 GPU benchmark](benchmarks/representative-nd2-phase1-benchmark.md)
 - [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)
