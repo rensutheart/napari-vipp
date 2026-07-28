@@ -1153,6 +1153,21 @@ Python export:
 - `ImageDataset` and `SourcePayload` bindings carry explicit source data,
   metadata, names, and `ImageState`; returned `PipelineResults` preserve output
   states for metadata-aware saving.
+
+Selected-node benchmarking:
+
+- `core/compute_benchmark_coordinator.py` clones the graph, captures the exact
+  resolved one-input/one-output node call, performs static scientific and
+  memory admission before runtime probing, then delegates parity-qualified
+  paired timing to the benchmark service.
+- `ui/compute_benchmark_dialog.py` owns the cancelable Qt worker and evidence
+  review. It never mutates the live graph. The widget applies the narrowest
+  stable CPU/library/exact preference in one undoable edit only after explicit
+  acceptance.
+- Complete records are atomically stored in a machine-local JSON file. Raw
+  isolated-node measurements are not supplied to `Auto` planning and are not
+  serialized in workflow JSON; only an explicitly accepted portable preference
+  changes execution intent.
 - Workflows with several independent sources require an unambiguous binding for
   every source. Missing, duplicate, and unknown bindings fail before execution.
 - Generated programs are locked to the VIPP version that created them and fail

@@ -4,7 +4,7 @@ import threading
 
 import numpy as np
 
-from napari_vipp.core.compute import ComputeMode
+from napari_vipp.core.compute import ComputeMode, ComputeRequest
 from napari_vipp.core.execution import (
     PipelineNodeResult,
     PipelineRunRequest,
@@ -78,6 +78,38 @@ def test_execute_pipeline_request_reports_invalid_workflow_without_raising():
     assert result.pipeline is None
     assert result.error
     assert not result.cancelled
+
+
+def test_accelerated_planning_error_preserves_only_resolved_source_boundary():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    data = np.zeros((7, 9, 3), dtype=np.uint16)
+    request = PipelineRunRequest(
+        run_id=12,
+        workflow=serialize_workflow(pipeline),
+        input_data=data,
+        input_metadata={"axes": "YXC"},
+        input_name="multichannel source",
+        source_payloads={},
+        compute_request=ComputeRequest(mode="auto"),
+    )
+    started: list[str] = []
+    finished: list[PipelineNodeResult] = []
+
+    result = execute_pipeline_request(
+        request,
+        node_started_callback=started.append,
+        node_finished_callback=finished.append,
+    )
+
+    assert result.error
+    assert "effective axis order is YXC" in result.error
+    assert result.pipeline is not None
+    assert started[0] == "input"
+    assert [item.node_id for item in finished] == ["input"]
+    np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
+    assert result.pipeline.outputs["gaussian"] is None
+    assert result.pipeline.outputs["threshold"] is None
 
 
 def test_dirty_execution_hydrates_and_reuses_clean_cached_outputs():

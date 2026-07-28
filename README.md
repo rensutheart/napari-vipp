@@ -173,10 +173,16 @@ files load in CPU mode until the user explicitly opts into Auto or Selective.
 Machine-local runtime/device selection, memory limits, experimental admission,
 and benchmark evidence are not copied between machines. Batch and generated
 Python exports retain the compute block but execute on CPU in this phase.
+`Settings > Compute setup and memory…` verifies optional packages and hardware
+on a worker and presents system RAM plus discrete VRAM, or one shared budget on
+unified-memory machines. In Selective mode, eligible one-input/one-output nodes
+offer `Benchmark node…`: VIPP compares the exact current workload, requires
+scientific parity, saves evidence locally, previews all timings, and changes the
+portable node preference only after explicit acceptance.
 GPU candidates remain developer-hidden in the core admission model
 and are explicitly labelled experimental in this development UI, so this is
-not yet a public GPU support claim. Benchmark buttons and RAM/VRAM presentation
-remain later Phase 2 work. See the
+not yet a public GPU support claim. Whole-pipeline optimization remains later
+Phase 2 work. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules. The

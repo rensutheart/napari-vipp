@@ -159,6 +159,7 @@ from napari_vipp.core.execution import (
 from napari_vipp.core.execution import (
     PipelineRunResult as PipelineRunResult,
 )
+from napari_vipp.core.execution import execute_pipeline_request
 from napari_vipp.core.export import (
     export_batch_runner_to_python,
     export_pipeline_to_python,
@@ -323,6 +324,11 @@ from napari_vipp.ui.compute import (
     node_preference_options,
     preference_from_value,
     preference_to_value,
+)
+from napari_vipp.ui.compute_benchmark_dialog import (
+    NodeBenchmarkDialog,
+    NodeBenchmarkWorker,
+    NodeBenchmarkWorkerOutcome,
 )
 from napari_vipp.ui.compute_setup import (
     ComputeSetupPresentation,
@@ -975,7 +981,7 @@ class VippWidget(QWidget):
     INSERT_GAP_PADDING_Y = 55.0
     TOOLBAR_HIDE_CHECKBOXES_WIDTH = 1700
     TOOLBAR_HIDE_DROPDOWNS_WIDTH = 1500
-    TOOLBAR_HIDE_ZOOM_WIDTH = 1050
+    TOOLBAR_HIDE_ZOOM_WIDTH = 1100
     TOOLBAR_HIDE_COMPUTE_WIDTH = 1350
     TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
 
@@ -1123,6 +1129,8 @@ class VippWidget(QWidget):
         self._stale_compute_badge_node_ids: set[str] = set()
         self._last_execution_report: ExecutionReport | None = None
         self._compute_setup_dialog: ComputeSetupDialog | None = None
+        self._node_benchmark_dialog: NodeBenchmarkDialog | None = None
+        self._node_benchmark_baseline: WorkflowHistorySnapshot | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -1401,6 +1409,8 @@ class VippWidget(QWidget):
         self._pipeline_thread_pool.setMaxThreadCount(1)
         self._compute_setup_thread_pool = QThreadPool(self)
         self._compute_setup_thread_pool.setMaxThreadCount(1)
+        self._node_benchmark_thread_pool = QThreadPool(self)
+        self._node_benchmark_thread_pool.setMaxThreadCount(1)
         self._pipeline_run_serial = 0
         self._active_pipeline_run_id: int | None = None
         self._active_pipeline_node_id: str | None = None
@@ -1481,6 +1491,11 @@ class VippWidget(QWidget):
         )
         self.node_compute_note.setWordWrap(True)
         self.node_compute_note.setStyleSheet("color: #94a3b8; font-size: 10px;")
+        self.node_benchmark_button = QPushButton("Benchmark node…")
+        self.node_benchmark_button.setToolTip(
+            "Compare CPU and eligible GPU implementations using this node's "
+            "exact current input and parameters."
+        )
         self.parameter_group = QGroupBox("Parameters")
         self.parameter_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.parameter_form = QFormLayout(self.parameter_group)
@@ -1988,11 +2003,16 @@ class VippWidget(QWidget):
             hide_compute=hide_compute,
             include_compute_status=True,
         )
+        long_compute_status = len(self.compute_status_label.text()) > 24
         hide_compute_status = hide_compute or (
             0 < width
             and (
                 width < self.TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH
                 or width < status_required_width
+                or (
+                    long_compute_status
+                    and width < self.TOOLBAR_HIDE_CHECKBOXES_WIDTH
+                )
             )
         )
         hide_checkboxes = True
@@ -2003,8 +2023,6 @@ class VippWidget(QWidget):
             hide_compute_status,
             hide_compute,
         )
-        if stage == self._toolbar_compact_stage:
-            return
         self._toolbar_compact_stage = stage
         for widget in self._toolbar_checkbox_widgets:
             widget.setVisible(not hide_checkboxes)
@@ -2329,6 +2347,7 @@ class VippWidget(QWidget):
         compute_layout = QVBoxLayout(self.compute_group)
         compute_layout.addWidget(self.node_compute_preference_combo)
         compute_layout.addWidget(self.node_compute_note)
+        compute_layout.addWidget(self.node_benchmark_button)
         self.compute_group.setHidden(True)
         layout.addWidget(self.compute_group)
         layout.addWidget(self.parameter_group)
@@ -2448,6 +2467,7 @@ class VippWidget(QWidget):
         self.node_compute_preference_combo.currentIndexChanged.connect(
             self._on_node_compute_preference_changed
         )
+        self.node_benchmark_button.clicked.connect(self._benchmark_selected_node)
         self.strict_compute_checkbox.toggled.connect(self._on_strict_compute_toggled)
         self.cache_mode_combo.currentTextChanged.connect(self._on_cache_mode_changed)
         self.memory_guard_checkbox.toggled.connect(
@@ -2809,6 +2829,158 @@ class VippWidget(QWidget):
             )
             note = f"{note} {state}: {badge.text}."
         self.node_compute_note.setText(note)
+        benchmark_ready, benchmark_reason = self._can_benchmark_selected_node()
+        self.node_benchmark_button.setEnabled(benchmark_ready)
+        self.node_benchmark_button.setToolTip(benchmark_reason)
+
+    def _can_benchmark_selected_node(self) -> tuple[bool, str]:
+        node_id = self._selected_node_id
+        if self._compute_mode is not ComputeMode.SELECTIVE:
+            return False, "Choose Selective compute policy to benchmark a node."
+        if node_id not in self.pipeline.nodes:
+            return False, "Select a workflow node first."
+        dialog = self._node_benchmark_dialog
+        if dialog is not None and dialog.running:
+            return False, "A node benchmark is already running."
+        if (
+            self._active_pipeline_run_id is not None
+            or self._active_source_load_id is not None
+        ):
+            return False, "Wait for the current calculation or source load to finish."
+        values_by_port = self.pipeline.input_data_by_port_for_node(node_id)
+        if len(values_by_port) != 1 or any(
+            value is None for value in values_by_port.values()
+        ):
+            return (
+                False,
+                "Benchmarking currently requires one resolved image input "
+                "and one output.",
+            )
+        return (
+            True,
+            "Compare CPU and eligible GPU implementations using this node's "
+            "exact current input and parameters.",
+        )
+
+    def _benchmark_selected_node(self) -> None:
+        ready, reason = self._can_benchmark_selected_node()
+        if not ready:
+            self._set_status(reason, severity=MessageSeverity.WARNING)
+            return
+        existing = self._node_benchmark_dialog
+        if existing is not None:
+            existing.close()
+            existing.deleteLater()
+        node_id = self._selected_node_id
+        dialog = NodeBenchmarkDialog(self._node_title(node_id), self)
+        worker = NodeBenchmarkWorker(
+            self.pipeline,
+            node_id,
+            _default_compute_benchmark_store_path(),
+            allow_experimental=self._compute_allow_experimental,
+        )
+        dialog.apply_requested.connect(self._apply_node_benchmark_result)
+        dialog.benchmark_finished.connect(self._on_node_benchmark_finished)
+        dialog.finished.connect(self._on_node_benchmark_dialog_finished)
+        self._node_benchmark_dialog = dialog
+        self._node_benchmark_baseline = self._current_history_snapshot()
+        self._sync_node_compute_control()
+        self._set_status(
+            f"Benchmarking '{self._node_title(node_id)}' on exact current data…",
+            severity=MessageSeverity.INFO,
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.start(worker, self._node_benchmark_thread_pool)
+
+    def _on_node_benchmark_finished(
+        self,
+        outcome: NodeBenchmarkWorkerOutcome,
+    ) -> None:
+        self._sync_node_compute_control()
+        title = (
+            self._node_title(outcome.node_id)
+            if outcome.node_id in self.pipeline.nodes
+            else outcome.node_id
+        )
+        if outcome.result is not None:
+            winner = outcome.result.record.accepted_implementation_id
+            self._set_status(
+                f"Benchmark complete for '{title}': {winner} was fastest and "
+                "passed parity. Review the result before applying it.",
+                severity=MessageSeverity.SUCCESS,
+            )
+            return
+        if outcome.cancelled:
+            self._set_status(
+                f"Benchmark cancelled for '{title}'; no preference changed.",
+                severity=MessageSeverity.INFO,
+            )
+            return
+        if outcome.reason_code == "unavailable":
+            self._set_status(
+                f"'{title}' cannot be benchmarked on the current data: {outcome.error}",
+                severity=MessageSeverity.WARNING,
+            )
+            return
+        severity = (
+            MessageSeverity.WARNING
+            if outcome.reason_code == "budget_exceeded"
+            else MessageSeverity.ERROR
+        )
+        self._set_status(
+            f"Benchmark failed for '{title}': {outcome.error}",
+            severity=severity,
+            actionable=severity is MessageSeverity.ERROR,
+        )
+
+    def _apply_node_benchmark_result(self, result) -> None:
+        node_id = result.plan.node_id
+        baseline = self._node_benchmark_baseline
+        if (
+            self._compute_mode is not ComputeMode.SELECTIVE
+            or node_id not in self.pipeline.nodes
+            or baseline is None
+            or self._current_history_snapshot() != baseline
+        ):
+            self._set_status(
+                "The workflow changed after this benchmark started. Run the "
+                "node benchmark again before applying it.",
+                severity=MessageSeverity.WARNING,
+                actionable=True,
+            )
+            return
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        preference = result.winner_preference
+        if preference.kind is NodePreferenceKind.AUTO:
+            self._compute_node_preferences.pop(node_id, None)
+        else:
+            self._compute_node_preferences[node_id] = preference
+        self._push_undo_if_changed(before)
+        self._invalidate_compute_policy_results()
+        self._sync_node_compute_control()
+        self._sync_compute_toolbar_summary()
+        preference_label = preference.kind.value
+        if preference.value:
+            preference_label += f":{preference.value}"
+        self._set_status(
+            f"Applied benchmark result to '{self._node_title(node_id)}': "
+            f"{preference_label}. Recalculating…",
+            severity=MessageSeverity.SUCCESS,
+        )
+        dialog = self._node_benchmark_dialog
+        if dialog is not None:
+            dialog.accept()
+        self.run_pipeline()
+
+    def _on_node_benchmark_dialog_finished(self, _result: int) -> None:
+        dialog = self.sender()
+        if dialog is self._node_benchmark_dialog:
+            self._node_benchmark_dialog = None
+            self._node_benchmark_baseline = None
+        self._sync_node_compute_control()
 
     def _invalidate_compute_policy_results(self) -> None:
         """Drop result caches that do not yet carry implementation provenance."""
@@ -2828,7 +3000,8 @@ class VippWidget(QWidget):
             self._sync_compute_toolbar_summary()
 
     def _mark_compute_badges_stale(self, node_ids: Iterable[str]) -> None:
-        affected = set(node_ids) & set(self._accepted_compute_decisions)
+        stale_node_ids = set(node_ids)
+        affected = stale_node_ids & set(self._accepted_compute_decisions)
         if not affected:
             return
         self._stale_compute_badge_node_ids.update(affected)
@@ -13537,18 +13710,37 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
             return
-        self._run_pipeline_synchronously(
-            input_data,
-            input_metadata,
-            input_name,
-            source_payloads,
-            primary_layer,
-            source_label,
-            source_signature,
-            dirty_node_ids,
-            manual_node_ids,
-            target_node_ids,
-        )
+        if force_sync or self._current_compute_request().mode is ComputeMode.CPU:
+            self._run_pipeline_synchronously(
+                input_data,
+                input_metadata,
+                input_name,
+                source_payloads,
+                primary_layer,
+                source_label,
+                source_signature,
+                dirty_node_ids,
+                manual_node_ids,
+                target_node_ids,
+            )
+        else:
+            # Small Auto workloads still use the exact same detached planner
+            # and executor as background work. Running that service inline
+            # gives a newly opened workflow one coherent initial result without
+            # an immediately stale worker racing the user's first interaction.
+            self._start_background_pipeline_run(
+                input_data,
+                input_metadata,
+                input_name,
+                source_payloads,
+                primary_layer,
+                source_label,
+                source_signature,
+                dirty_node_ids,
+                manual_node_ids,
+                target_node_ids,
+                execute_synchronously=True,
+            )
 
     def _abandon_background_pipeline_run(self) -> None:
         """Cancel and detach an in-flight clone whose result must be ignored."""
@@ -13861,12 +14053,11 @@ class VippWidget(QWidget):
         target_node_ids: set[str] | None = None,
     ) -> bool:
         compute_request = self._current_compute_request()
-        if compute_request.mode is not ComputeMode.CPU:
-            # Auto and every form of Selective intent must pass through the
-            # detached compute service.  The ordinary size/operation heuristic
-            # is only a responsiveness decision for authoritative CPU runs; it
-            # must never bypass planning, environment probes, fallback, or
-            # actual-implementation provenance for non-CPU requests.
+        if compute_request.mode is ComputeMode.SELECTIVE:
+            # Selective execution can require an accelerator even for a small
+            # array, so keep it off the GUI thread. Auto may use the normal
+            # responsiveness heuristic because its small synchronous path also
+            # goes through the detached compute service.
             return True
         return (
             self._background_processing_node_id(
@@ -13949,6 +14140,8 @@ class VippWidget(QWidget):
         dirty_node_ids: set[str] | None,
         manual_node_ids: set[str] | None = None,
         target_node_ids: set[str] | None = None,
+        *,
+        execute_synchronously: bool = False,
     ) -> None:
         manual_node_ids = set(manual_node_ids or set())
         processing_node_id = self._background_processing_node_id(
@@ -14099,6 +14292,21 @@ class VippWidget(QWidget):
             else "graph"
         )
         self.status_label.setText(f"Processing '{title}' in background...")
+        if execute_synchronously:
+            result = execute_pipeline_request(
+                request,
+                node_started_callback=lambda node_id: (
+                    self._on_background_pipeline_node_started((run_id, node_id))
+                ),
+                node_finished_callback=self._on_background_pipeline_node_finished,
+                progress_callback=lambda node_id, current, total, message: (
+                    self._on_background_pipeline_progress(
+                        (run_id, node_id, current, total, message)
+                    )
+                ),
+            )
+            self._on_background_pipeline_finished(result)
+            return
         worker = PipelineRunWorker(request)
         worker.signals.node_started.connect(self._on_background_pipeline_node_started)
         worker.signals.node_finished.connect(
@@ -14289,6 +14497,14 @@ class VippWidget(QWidget):
             )
             return
         if result.error:
+            if (
+                result.pipeline is not None
+                and self._workflow_matches_current_pipeline(result.workflow)
+            ):
+                self._apply_pipeline_run_result(
+                    result.pipeline,
+                    update_params=False,
+                )
             self.pipeline.set_node_execution_error(processing_node_id, result.error)
             continue_pending = bool(self._pipeline_run_pending and pending_dirty)
             self._pipeline_run_pending = False
@@ -18652,6 +18868,22 @@ def _format_byte_count(size: int | float | None) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024.0
     return f"{value:.1f} TB"
+
+
+def _default_compute_benchmark_store_path() -> Path:
+    """Return a machine-local, cross-platform benchmark evidence path."""
+    if sys.platform == "win32":
+        root = Path(
+            os.environ.get(
+                "LOCALAPPDATA",
+                Path.home() / "AppData" / "Local",
+            )
+        )
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return root / "napari-vipp" / "compute-benchmarks-v1.json"
 
 
 def _system_memory_bytes() -> tuple[int | None, int | None]:

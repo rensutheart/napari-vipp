@@ -8,6 +8,7 @@ from copy import deepcopy
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import imageio.v3 as iio
 import numpy as np
@@ -699,14 +700,61 @@ def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
     )
 
 
-@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.SELECTIVE))
-def test_non_cpu_compute_modes_always_use_detached_compute_service(qtbot, mode):
+def test_node_benchmark_apply_is_atomic_and_undoable(qtbot):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget.run_pipeline = lambda *args, **kwargs: None
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("selective")
+        )
+    widget._compute_mode = ComputeMode.SELECTIVE
+    widget.graph_view.select_node("gaussian")
+    widget._node_benchmark_baseline = widget._current_history_snapshot()
+    result = SimpleNamespace(
+        plan=SimpleNamespace(node_id="gaussian"),
+        record=SimpleNamespace(
+            accepted_implementation_id="cupyx-gaussian-filter-v1"
+        ),
+        winner_preference=NodeComputePreference("library", "cupyx"),
+    )
+    undo_count = len(widget._undo_stack)
+
+    widget._apply_node_benchmark_result(result)
+
+    assert widget._compute_node_preferences["gaussian"] == NodeComputePreference(
+        "library",
+        "cupyx",
+    )
+    assert len(widget._undo_stack) == undo_count + 1
+
+    widget.undo()
+
+    assert "gaussian" not in widget._compute_node_preferences
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_background"),
+    (
+        (ComputeMode.AUTO, False),
+        (ComputeMode.SELECTIVE, True),
+    ),
+)
+def test_non_cpu_compute_modes_use_detached_compute_service(
+    qtbot,
+    mode,
+    expected_background,
+):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)
     widget._compute_mode = mode
 
     assert widget._background_processing_node_id({"gaussian"}) is None
-    assert widget._should_run_pipeline_in_background({"gaussian"}) is True
+    assert (
+        widget._should_run_pipeline_in_background({"gaussian"})
+        is expected_background
+    )
 
 
 def test_small_cpu_run_keeps_existing_responsiveness_heuristic(qtbot):
@@ -3944,7 +3992,7 @@ def test_rescale_z_visibility_refresh_preserves_specialized_params(qtbot):
     assert node.params == params_before
 
 
-def test_hidden_parameter_round_trips_through_workflow_version_three(qtbot):
+def test_hidden_parameter_round_trips_through_current_workflow_schema(qtbot):
     data = np.zeros((8, 9), dtype=np.uint16)
     widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
     qtbot.addWidget(widget)
@@ -3963,7 +4011,7 @@ def test_hidden_parameter_round_trips_through_workflow_version_three(qtbot):
         restored_graph.get("output_tunnels", ()),
     )
 
-    assert document["version"] == 3
+    assert document["version"] == 4
     assert restored.nodes[node.id].params["histogram_bins"] == 8_192
     assert "histogram_bins=8192" in widget._node_code_text(node.id)
     exported = export_pipeline_to_python(widget.pipeline)
@@ -9038,6 +9086,7 @@ def test_connecting_new_branch_reuses_cached_upstream(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     node = widget.add_node_from_palette("binary_threshold")
     calls = []
@@ -9061,6 +9110,7 @@ def test_inserting_node_on_wire_reuses_cached_source_side(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     calls = []
     original_run_node = widget.pipeline._run_node
@@ -10947,6 +10997,7 @@ def test_tune_node_in_isolation_marks_and_holds_automatic_descendants(
     image = np.arange(100, dtype=np.float32).reshape(10, 10)
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
     widget.graph_view.select_node("gaussian")
@@ -11115,6 +11166,7 @@ def test_isolated_tuning_recalculates_a_manual_root_without_auto_mode(
     image[1:4, 1:4] = 10
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     threshold = widget.add_node_from_palette("binary_threshold")
     labels = widget.add_node_from_palette("label_connected_components")
@@ -11163,6 +11215,7 @@ def test_calculate_all_releases_isolation_in_all_automatic_graph(
     image = np.arange(100, dtype=np.float32).reshape(10, 10)
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
     widget.graph_view.select_node("gaussian")
@@ -11195,6 +11248,7 @@ def test_apply_before_local_result_is_ready_recalculates_the_tuned_node(
     image = np.arange(100, dtype=np.float32).reshape(10, 10)
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
     widget.graph_view.select_node("gaussian")
@@ -11292,6 +11346,7 @@ def test_editing_other_node_parameter_after_isolation_runs_branch_once(
     image = np.arange(100, dtype=np.float32).reshape(10, 10)
     widget = VippWidget(_Viewer(image, metadata={"axes": "YX"}))
     widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    widget._compute_mode = ComputeMode.CPU
     qtbot.addWidget(widget)
     widget.run_pipeline(force_sync=True)
     calls: list[str] = []

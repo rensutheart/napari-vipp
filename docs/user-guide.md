@@ -62,6 +62,34 @@ their complete name as a tooltip. Changing the mode preserves manual node
 positions. If wider cards overlap, VIPP reports it in the status line; use
 `Auto structure graph` to reflow the graph using the new card sizes.
 
+### Compute Policy And Benchmarking (Development Branch)
+
+The compute selector in the main toolbar has three policies:
+
+- `Auto` uses the best scientifically admitted implementation available on this
+  machine and falls back visibly to CPU.
+- `CPU` keeps every operation on the established host implementation.
+- `Selective` exposes a compact per-node preference in the Inspector wherever
+  a GPU implementation is declared. Node-card badges report what the accepted
+  run actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
+
+For an eligible selected node, `Benchmark node…` captures its exact current
+input and parameters and compares CPU with every scientifically eligible GPU
+implementation on a worker. Parity must pass before timings can influence a
+choice. The review dialog shows warm timing, CPU speedup, parity, and peak
+memory; no preference changes until you click `Use fastest for this node`.
+The complete benchmark record is stored only on this machine. Raw timing is not
+fed into `Auto`, because an isolated-node record does not carry the same
+transfer/topology context as a full pipeline plan. The portable
+CPU/library/exact preference you explicitly accept in `Selective` is used going
+forward and saved in workflow schema 4.
+
+Use `Settings > Compute setup and memory…` to verify optional GPU packages and
+hardware without freezing the interface. VIPP shows separate system RAM and
+VRAM for discrete GPUs, and one shared CPU/GPU memory budget on unified-memory
+systems. If setup is unavailable or misconfigured, VIPP offers a command to
+copy; it does not run installation commands automatically.
+
 ## Core Concepts
 
 ### Images, Masks, Labels, And Tables

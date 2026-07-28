@@ -20,6 +20,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -412,6 +413,60 @@ def _benchmark_store_lock(path: Path):
         return _BENCHMARK_STORE_LOCKS.setdefault(key, threading.RLock())
 
 
+@contextmanager
+def _benchmark_store_process_lock(path: Path):
+    """Serialize store mutations across processes sharing ``path``.
+
+    The lock file is intentionally persistent. Removing a lock file while
+    another process has it open can create two independent lock identities and
+    defeat serialization. A single byte is present so Windows can lock a real
+    byte range; POSIX locks the same file with ``flock``.
+    """
+
+    lock_path = path.with_name(f"{path.name}.lock")
+    handle = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    except Exception as exc:
+        if handle is not None:
+            handle.close()
+        raise BenchmarkStoreError(
+            f"Could not acquire local benchmark store lock {lock_path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    try:
+        yield
+    finally:
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
 def benchmark_record_staleness(
     record: BenchmarkRecord,
     current_key: BenchmarkRecordKey,
@@ -446,10 +501,10 @@ class JsonBenchmarkStore:
     The caller chooses the local path.  This store is deliberately independent
     of workflow JSON and scientific result caches, and each update replaces the
     complete small index atomically. Instances in this Python process share a
-    per-path lock and reload before mutation, preventing stale-instance lost
-    updates. Unique same-directory temporary files make replacement collision
-    safe. This class does not claim cross-process serialization; callers that
-    share a path across processes must provide an external file lock.
+    per-path lock, while a persistent sibling lock file serializes mutations
+    across processes. Each mutation reloads after acquiring both locks, which
+    prevents stale-instance lost updates. Unique same-directory temporary files
+    make replacement collision safe.
     """
 
     SCHEMA_VERSION = 1
@@ -474,10 +529,11 @@ class JsonBenchmarkStore:
         if not isinstance(record, BenchmarkRecord):
             raise TypeError("record must be a BenchmarkRecord.")
         with self._lock:
-            updated = self._read_records()
-            updated[record.key.digest] = record
-            self._write(updated)
-            self._records = updated
+            with _benchmark_store_process_lock(self.path):
+                updated = self._read_records()
+                updated[record.key.digest] = record
+                self._write(updated)
+                self._records = updated
 
     def records(self) -> tuple[BenchmarkRecord, ...]:
         with self._lock:
@@ -486,8 +542,9 @@ class JsonBenchmarkStore:
 
     def clear(self) -> None:
         with self._lock:
-            self._write({})
-            self._records.clear()
+            with _benchmark_store_process_lock(self.path):
+                self._write({})
+                self._records.clear()
 
     def __len__(self) -> int:
         with self._lock:

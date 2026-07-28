@@ -16,6 +16,7 @@ from napari_vipp.core.compute import (
     canonical_digest,
 )
 from napari_vipp.core.compute_benchmark import (
+    BenchmarkCancelled,
     BenchmarkImplementation,
     JsonBenchmarkStore,
     NodeBenchmarkRequest,
@@ -27,7 +28,9 @@ from napari_vipp.core.compute_benchmark_adapter import (
     CUSTOM_BENCHMARK_POLICY_ID,
     PRODUCTION_BENCHMARK_POLICY_ID,
     build_registered_node_benchmark,
+    detach_prepared_node_call,
     operation_parity,
+    workload_from_prepared_node_call,
 )
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
@@ -287,6 +290,70 @@ def _fake_registered_benchmark(
         paired_bootstrap_samples=200,
     )
     return clock, runtime, registry, live, built
+
+
+def test_detached_capture_and_hash_are_read_only_and_promptly_abortable():
+    values = np.arange(2_000_000, dtype=np.uint16).reshape(1000, 2000)
+    call = PreparedNodeCall(
+        "median-node",
+        "median_filter",
+        _identity_cpu,
+        (values,),
+        kwargs={"size": 3, "channel_axis": None},
+    )
+    checks = 0
+
+    def abort_copy() -> None:
+        nonlocal checks
+        checks += 1
+        if checks >= 4:
+            raise BenchmarkCancelled("capture cancelled")
+
+    with pytest.raises(BenchmarkCancelled, match="capture cancelled"):
+        detach_prepared_node_call(call, check_abort=abort_copy)
+
+    detached = detach_prepared_node_call(call)
+    assert not detached.inputs[0].flags.writeable
+    assert not np.shares_memory(detached.inputs[0], values)
+    checks = 0
+
+    def abort_hash() -> None:
+        nonlocal checks
+        checks += 1
+        if checks >= 4:
+            raise BenchmarkCancelled("hash cancelled")
+
+    with pytest.raises(BenchmarkCancelled, match="hash cancelled"):
+        workload_from_prepared_node_call(detached, check_abort=abort_hash)
+
+
+def test_trusted_detached_fast_path_rejects_mutable_arrays(monkeypatch):
+    clock = ManualClock()
+    runtime = _FakeRuntime(clock)
+    registry = ComputeRegistry()
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        registry,
+        "implementation_callable",
+        lambda *_args, **_kwargs: _identity_cpu,
+    )
+    call = PreparedNodeCall(
+        "median-node",
+        "median_filter",
+        _identity_cpu,
+        (np.arange(25, dtype=np.uint16).reshape(5, 5),),
+        kwargs={"size": 3, "channel_axis": None},
+    )
+
+    with pytest.raises(ValueError, match="read-only"):
+        build_registered_node_benchmark(
+            call,
+            admitted_specs=(_spec("median_filter"),),
+            registry=registry,
+            environment_fingerprint="fake-exact-environment",
+            allow_experimental=True,
+            call_is_detached=True,
+        )
 
 
 def test_registered_adapter_is_transactional_synchronized_and_memory_observed(

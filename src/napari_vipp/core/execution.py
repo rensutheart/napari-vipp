@@ -242,6 +242,7 @@ def execute_pipeline_request(
     array_facts_cache: ArrayFactsCache | None = None,
 ) -> PipelineRunResult:
     """Execute ``request`` without Qt and return errors as typed results."""
+    pipeline: PrototypePipeline | None = None
     try:
         workflow = deserialize_workflow(deepcopy(request.workflow))
         pipeline = PrototypePipeline()
@@ -325,6 +326,7 @@ def execute_pipeline_request(
         return PipelineRunResult(
             request.run_id,
             request.workflow,
+            pipeline=pipeline,
             error=str(exc),
             source_revisions=request.source_revisions,
         )
@@ -371,11 +373,38 @@ def _execute_accelerated_pipeline(
             manual_node_ids=request.manual_node_ids,
             target_node_ids=request.target_node_ids,
         )
+        execution = pipeline.prepare_execution(
+            request.dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            manual_node_ids=request.manual_node_ids,
+            target_node_ids=request.target_node_ids,
+            retain_node_ids=request.retain_node_ids,
+            prune_unretained=request.prune_unretained,
+        )
+        if execution.execution_plan.runnable_node_ids != schedule.runnable_node_ids:
+            raise RuntimeError(
+                "Pipeline execution changed between compute planning and commit."
+            )
         host_values, state_by_port, source_results = _initial_transaction_values(
             pipeline,
             request,
             schedule.runnable_node_ids,
         )
+        # Source boundaries are authoritative inputs rather than transformed
+        # scientific results. Commit them before accelerator planning so a
+        # downstream eligibility/axis error can still present the exact source
+        # and let the user repair the graph. All operation nodes remain inside
+        # the atomic device transaction below.
+        for node_id, results in source_results.items():
+            if node_id not in execution.remaining_node_ids:
+                continue
+            pipeline.node_execution_states[node_id] = EXECUTION_RUNNING
+            pipeline.node_execution_messages[node_id] = ""
+            if node_started_callback is not None:
+                node_started_callback(node_id)
+            pipeline.commit_node_results(execution, node_id, results)
+            if node_finished_callback is not None:
+                node_finished_callback(node_id)
         workloads, array_facts, preflight_environment = _build_workloads(
             pipeline,
             schedule.runnable_node_ids,
@@ -419,19 +448,6 @@ def _execute_accelerated_pipeline(
             target_node_ids=request.target_node_ids,
             retained_ports=retained_ports,
         )
-        execution = pipeline.prepare_execution(
-            request.dirty_node_ids,
-            manual_mode=MANUAL_RUN_SKIP,
-            manual_node_ids=request.manual_node_ids,
-            target_node_ids=request.target_node_ids,
-            retain_node_ids=retained_node_ids,
-            prune_unretained=request.prune_unretained,
-        )
-        if execution.execution_plan.runnable_node_ids != schedule.runnable_node_ids:
-            raise RuntimeError(
-                "Pipeline execution changed between compute planning and commit."
-            )
-
         calls_by_node: dict[str, PreparedNodeCall] = {}
         started_node_ids: set[str] = set()
 
@@ -490,8 +506,6 @@ def _execute_accelerated_pipeline(
             for port_index, state in enumerate(states):
                 state_by_port[OutputPortKey(node_id, port_index)] = state
 
-        for node_id in source_results:
-            mark_started(node_id)
         device_result = execute_device_plan(
             device_plan,
             pipeline,

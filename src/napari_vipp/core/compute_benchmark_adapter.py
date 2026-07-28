@@ -153,6 +153,8 @@ def build_registered_node_benchmark(
     paired_bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
     paired_bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
     paired_confidence_level: float = DEFAULT_CONFIDENCE_LEVEL,
+    check_abort: Callable[[], None] | None = None,
+    call_is_detached: bool = False,
 ) -> RegisteredNodeBenchmark:
     """Build a production-faithful request from an already prepared node call.
 
@@ -165,6 +167,10 @@ def build_registered_node_benchmark(
         raise TypeError("call must be a PreparedNodeCall.")
     if not callable(clock):
         raise TypeError("clock must be callable.")
+    if check_abort is not None and not callable(check_abort):
+        raise TypeError("check_abort must be callable or None.")
+    if not isinstance(call_is_detached, bool):
+        raise TypeError("call_is_detached must be a boolean.")
     environment = str(environment_fingerprint).strip()
     if not environment:
         raise ValueError("environment_fingerprint must not be empty.")
@@ -194,8 +200,18 @@ def build_registered_node_benchmark(
         safety_reserve_bytes=safety_reserve_bytes,
     )
 
-    detached = detach_prepared_node_call(call)
-    workload = _workload_from_call(detached)
+    _run_abort_check(check_abort)
+    detached = (
+        call
+        if call_is_detached
+        else detach_prepared_node_call(call, check_abort=check_abort)
+    )
+    if call_is_detached:
+        _validate_detached_call(detached)
+    workload = workload_from_prepared_node_call(
+        detached,
+        check_abort=check_abort,
+    )
     observations = ProductionBenchmarkObservationLog()
     candidates = tuple(
         _candidate_implementation(
@@ -221,7 +237,10 @@ def build_registered_node_benchmark(
         environment_fingerprint=environment,
         reference=reference,
         candidates=candidates,
-        private_input_factory=lambda: _clone_detached_call(detached),
+        private_input_factory=lambda: _clone_detached_call(
+            detached,
+            check_abort=check_abort,
+        ),
         parity=lambda expected, actual: operation_parity(
             call.operation_id,
             expected,
@@ -251,11 +270,18 @@ def build_registered_node_benchmark(
     return RegisteredNodeBenchmark(request, detached, observations)
 
 
-def detach_prepared_node_call(call: PreparedNodeCall) -> PreparedNodeCall:
+def detach_prepared_node_call(
+    call: PreparedNodeCall,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> PreparedNodeCall:
     """Copy runtime data and remove live progress state from a prepared call."""
 
     if not isinstance(call, PreparedNodeCall):
         raise TypeError("call must be a PreparedNodeCall.")
+    if check_abort is not None and not callable(check_abort):
+        raise TypeError("check_abort must be callable or None.")
+    _run_abort_check(check_abort)
     kwargs = call.keyword_arguments()
     if "progress" in kwargs:
         kwargs["progress"] = None
@@ -264,12 +290,25 @@ def detach_prepared_node_call(call: PreparedNodeCall) -> PreparedNodeCall:
         node_id=call.node_id,
         operation_id=call.operation_id,
         cpu_function=call.cpu_function,
-        inputs=tuple(_detached_host_value(value) for value in call.inputs),
+        inputs=tuple(
+            _detached_host_value(value, check_abort=check_abort)
+            for value in call.inputs
+        ),
         input_states=copy.deepcopy(call.input_states),
         kwargs=kwargs,
         multiple_inputs=call.multiple_inputs,
         output_port_count=call.output_port_count,
     )
+
+
+def _validate_detached_call(call: PreparedNodeCall) -> None:
+    """Reject mutable arrays passed through the trusted detached fast path."""
+
+    for value in call.inputs:
+        if isinstance(value, np.ndarray) and value.flags.writeable:
+            raise ValueError(
+                "call_is_detached=True requires read-only NumPy input arrays."
+            )
 
 
 def operation_parity(
@@ -882,7 +921,25 @@ def _ensure_host_only(value: object, runtime: RuntimeProtocol) -> None:
             _ensure_host_only(item, runtime)
 
 
-def _workload_from_call(call: PreparedNodeCall) -> WorkloadDescriptor:
+def workload_from_prepared_node_call(
+    call: PreparedNodeCall,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> WorkloadDescriptor:
+    """Return the exact benchmark identity for one prepared production call.
+
+    The facts fingerprint covers every input byte in addition to shape, dtype,
+    layout, resolved parameters, and operation identity.  Application-facing
+    coordinators use this helper before runtime probing so scientific/workload
+    eligibility is evaluated against the same identity ultimately stored by
+    :class:`~napari_vipp.core.compute_benchmark.NodeBenchmarkService`.
+    """
+
+    if not isinstance(call, PreparedNodeCall):
+        raise TypeError("call must be a PreparedNodeCall.")
+    if check_abort is not None and not callable(check_abort):
+        raise TypeError("check_abort must be callable or None.")
+    _run_abort_check(check_abort)
     arrays = tuple(np.asarray(value) for value in call.inputs)
     parameters = tuple(
         (name, _json_parameter(value))
@@ -901,22 +958,34 @@ def _workload_from_call(call: PreparedNodeCall) -> WorkloadDescriptor:
         input_dtypes=tuple(array.dtype.name for array in arrays),
         parameters=parameters,
         resolved_spatial_ndim=resolved,
-        facts_fingerprint=_call_facts_fingerprint(call),
+        facts_fingerprint=_call_facts_fingerprint(
+            call,
+            check_abort=check_abort,
+        ),
     )
 
 
-def _call_facts_fingerprint(call: PreparedNodeCall) -> str:
+def _call_facts_fingerprint(
+    call: PreparedNodeCall,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> str:
     digest = sha256()
     digest.update(call.operation_id.encode("utf-8"))
     digest.update(str(call.output_port_count).encode("ascii"))
     for value in call.inputs:
+        _run_abort_check(check_abort)
         array = np.asarray(value)
         digest.update(array.dtype.str.encode("ascii"))
         digest.update(repr(tuple(array.shape)).encode("ascii"))
         digest.update(repr(tuple(array.strides)).encode("ascii"))
         digest.update(b"C" if array.flags.c_contiguous else b"-")
         digest.update(b"F" if array.flags.f_contiguous else b"-")
-        digest.update(np.ascontiguousarray(array).tobytes(order="C"))
+        _update_digest_from_array(
+            digest,
+            array,
+            check_abort=check_abort,
+        )
     return digest.hexdigest()
 
 
@@ -939,12 +1008,19 @@ def _json_parameter(value: object) -> object:
     )
 
 
-def _clone_detached_call(call: PreparedNodeCall) -> PreparedNodeCall:
+def _clone_detached_call(
+    call: PreparedNodeCall,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> PreparedNodeCall:
     return PreparedNodeCall(
         node_id=call.node_id,
         operation_id=call.operation_id,
         cpu_function=call.cpu_function,
-        inputs=tuple(_detached_host_value(value) for value in call.inputs),
+        inputs=tuple(
+            _detached_host_value(value, check_abort=check_abort)
+            for value in call.inputs
+        ),
         input_states=copy.deepcopy(call.input_states),
         kwargs=copy.deepcopy(call.keyword_arguments()),
         multiple_inputs=call.multiple_inputs,
@@ -952,12 +1028,52 @@ def _clone_detached_call(call: PreparedNodeCall) -> PreparedNodeCall:
     )
 
 
-def _detached_host_value(value: object) -> object:
+def _detached_host_value(
+    value: object,
+    *,
+    check_abort: Callable[[], None] | None = None,
+) -> object:
     if isinstance(value, np.ndarray):
-        detached = np.array(value, copy=True, order="K", subok=False)
+        detached = np.empty_like(value, order="K", subok=False)
+        iterator = np.nditer(
+            (value, detached),
+            flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+            op_flags=(("readonly",), ("writeonly", "no_broadcast")),
+            order="K",
+            buffersize=262_144,
+        )
+        for source_chunk, destination_chunk in iterator:
+            _run_abort_check(check_abort)
+            destination_chunk[...] = source_chunk
+        _run_abort_check(check_abort)
         detached.setflags(write=False)
         return detached
     return copy.deepcopy(value)
+
+
+def _update_digest_from_array(
+    digest,
+    array: np.ndarray,
+    *,
+    check_abort: Callable[[], None] | None,
+) -> None:
+    iterator = np.nditer(
+        array,
+        flags=["buffered", "external_loop", "refs_ok", "zerosize_ok"],
+        op_flags=(("readonly",),),
+        order="C",
+        buffersize=262_144,
+    )
+    for raw_chunk in iterator:
+        _run_abort_check(check_abort)
+        chunk = np.ascontiguousarray(raw_chunk).view(np.uint8).reshape(-1)
+        digest.update(memoryview(chunk))
+    _run_abort_check(check_abort)
+
+
+def _run_abort_check(check_abort: Callable[[], None] | None) -> None:
+    if check_abort is not None:
+        check_abort()
 
 
 def _exact_array_parity(reference: object, candidate: object) -> ParityResult:
@@ -1202,4 +1318,5 @@ __all__ = [
     "build_registered_node_benchmark",
     "detach_prepared_node_call",
     "operation_parity",
+    "workload_from_prepared_node_call",
 ]
