@@ -324,6 +324,13 @@ from napari_vipp.ui.compute import (
     preference_from_value,
     preference_to_value,
 )
+from napari_vipp.ui.compute_setup import (
+    ComputeSetupPresentation,
+    ComputeSetupState,
+    ComputeSetupTone,
+    HostMemorySnapshot,
+)
+from napari_vipp.ui.compute_setup_dialog import ComputeSetupDialog
 from napari_vipp.ui.controls import (
     BoolControl,
     ChoiceControl,
@@ -1113,6 +1120,7 @@ class VippWidget(QWidget):
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
         self._stale_compute_badge_node_ids: set[str] = set()
         self._last_execution_report: ExecutionReport | None = None
+        self._compute_setup_dialog: ComputeSetupDialog | None = None
         self.setMinimumSize(0, 0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
 
@@ -1389,6 +1397,8 @@ class VippWidget(QWidget):
         self._right_panel_last_width = self._default_splitter_sizes[2]
         self._pipeline_thread_pool = QThreadPool(self)
         self._pipeline_thread_pool.setMaxThreadCount(1)
+        self._compute_setup_thread_pool = QThreadPool(self)
+        self._compute_setup_thread_pool.setMaxThreadCount(1)
         self._pipeline_run_serial = 0
         self._active_pipeline_run_id: int | None = None
         self._active_pipeline_node_id: str | None = None
@@ -2102,6 +2112,12 @@ class VippWidget(QWidget):
             "Strict selective GPU choices",
             self.strict_compute_checkbox,
         )
+        compute_setup_action = menu.addAction("Compute setup and memory…")
+        compute_setup_action.setToolTip(
+            "Verify optional GPU support and inspect RAM or VRAM without "
+            "blocking VIPP."
+        )
+        compute_setup_action.triggered.connect(self._show_compute_setup_dialog)
         menu.addSeparator()
         self._add_checkbox_menu_action(
             menu,
@@ -2591,6 +2607,50 @@ class VippWidget(QWidget):
             text,
             severity=severity,
             actionable=actionable,
+        )
+
+    def _show_compute_setup_dialog(self) -> None:
+        """Show one reusable, nonblocking GPU setup and memory dialog."""
+        dialog = self._compute_setup_dialog
+        if dialog is None:
+            dialog = ComputeSetupDialog(
+                self,
+                thread_pool=self._compute_setup_thread_pool,
+                host_memory_provider=self._compute_setup_host_memory,
+            )
+            dialog.presentation_changed.connect(
+                self._on_compute_setup_presentation_changed
+            )
+            self._compute_setup_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        if dialog.presentation.state is ComputeSetupState.NOT_CHECKED:
+            dialog.verify()
+
+    def _compute_setup_host_memory(self) -> HostMemorySnapshot:
+        available_bytes, total_bytes = _system_memory_bytes()
+        return HostMemorySnapshot(
+            total_bytes=total_bytes,
+            available_bytes=available_bytes,
+        )
+
+    def _on_compute_setup_presentation_changed(
+        self,
+        presentation: ComputeSetupPresentation,
+    ) -> None:
+        """Reuse the app message strip for diagnostic progress and outcomes."""
+        severity = {
+            ComputeSetupTone.NEUTRAL: MessageSeverity.NEUTRAL,
+            ComputeSetupTone.INFO: MessageSeverity.INFO,
+            ComputeSetupTone.SUCCESS: MessageSeverity.SUCCESS,
+            ComputeSetupTone.WARNING: MessageSeverity.WARNING,
+            ComputeSetupTone.ERROR: MessageSeverity.ERROR,
+        }[presentation.tone]
+        self._set_status(
+            presentation.summary,
+            severity=severity,
+            actionable=presentation.actionable,
         )
 
     def _current_compute_request(self) -> ComputeRequest:

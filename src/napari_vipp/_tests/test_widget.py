@@ -10593,6 +10593,7 @@ def test_settings_menu_shows_controls_hidden_at_current_stage(qtbot):
     assert "Save thumbnail visibility in workflows" in labels
     assert "Run all in background" in labels
     assert "Link napari/VIPP sliders" in labels
+    assert "Compute setup and memory…" in labels
     assert "Port labels" in labels
     assert "Cache mode" in labels
     assert "Auto memory guard" in labels
