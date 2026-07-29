@@ -8,3 +8,4 @@ include SUPPORT.md
 recursive-include docs *.json *.md *.png
 recursive-include examples *.json *.md
 include scripts/benchmark_gpu_rl_admission.py
+include scripts/benchmark_gpu_rl_performance.py
