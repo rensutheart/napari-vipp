@@ -157,9 +157,12 @@ GPU execution is currently design/development work on
 [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
 not a supported feature in the released plugin. Phase 1 is implemented as a
 headless, developer-hidden vertical slice for Rolling-Ball/Subtract Background,
-median, and 2D/3D Gaussian. It includes CPU/Auto/Selective execution contracts,
-visible or strict fallback, transactional device execution, scientific cache
-identity, and per-node/whole-pipeline benchmark services. The toolbar controls
+median, and 2D/3D Gaussian. Phase 2B adds an ordinary CuPy/CuPyX
+Richardson-Lucy implementation for 2D/3D spatial data and leading blocks,
+together with exact ordered-multi-input benchmarking. The branch includes
+CPU/Auto/Selective execution contracts, visible or strict fallback,
+transactional device execution, scientific cache identity, and per-node/
+whole-pipeline benchmark services. The toolbar controls
 now provide the first Phase 2 interactive slice: new sessions default to
 `Auto`, the main toolbar exposes `CPU`/`Auto`/`Selective`, and Selective mode
 shows `Follow pipeline policy`, `CPU`, and one choice per declared GPU library
@@ -177,17 +180,29 @@ and benchmark evidence are not copied between machines. Batch and generated
 Python exports retain the compute block but execute on CPU in this phase.
 `Settings > Compute setup and memory…` verifies optional packages and hardware
 on a worker and presents system RAM plus discrete VRAM, or one shared budget on
-unified-memory machines. In Selective mode, eligible one-input/one-output nodes
-offer `Benchmark node…`: VIPP compares the exact current workload, requires
-scientific parity, saves evidence locally, previews warm timing/parity/memory
-results, and changes the portable node preference only after explicit
-acceptance.
+unified-memory machines. In Selective mode, eligible single-output nodes with
+one or more ordered inputs offer `Benchmark node…`: VIPP detaches and hashes
+every input, includes every transfer and input in memory accounting, compares
+the exact captured workload, requires scientific parity, saves evidence
+locally, previews warm timing/parity/memory results, and changes the portable
+node preference only after explicit acceptance. The coordinator can revalidate
+the exact inputs, but wiring that source-byte check into the final UI Apply
+boundary remains a tracked promotion requirement. Writers and multi-output
+nodes remain excluded.
 GPU eligibility is dtype-sensitive. For example, the currently reviewed CuPyX
 Gaussian implementation accepts finite `float32`; native `uint16` Gaussian is
 intentionally CPU-only until its integer result semantics pass a separate
-scientific admission gate. When it is appropriate for the analysis, an explicit
-**Convert Dtype** node to `float32` before Gaussian can unlock that GPU candidate
-and may improve acceleration across a longer GPU-resident segment. Choose
+scientific admission gate. The initial GPU Richardson-Lucy region likewise
+requires both the Image and PSF to be explicitly finite `float32`; its output is
+shape-preserving `float32`. Its first scientifically admitted numerical region
+also requires `filter_epsilon == 1e-8`, 1 through 25 iterations, odd PSF
+extents, and the default-safe normalization/clipping/scale options. The CPU
+operation's existing `1e-12` default and every other epsilon are unchanged and
+therefore remain on CPU: VIPP does not silently alter the threshold or shorten
+an authored run to use the GPU. Change that scientific parameter only when it is appropriate for the
+analysis, then benchmark the exact Image/PSF workload. Explicit **Convert
+Dtype** nodes can unlock these GPU candidates and may improve
+acceleration across a longer GPU-resident segment. Choose
 `Scaling = Preserve` when the intention is to keep the numeric values; the
 node's default `Rescale` deliberately remaps the intensity range. VIPP never
 inserts this cast merely to win a benchmark. With Preserve, a `float32` value
@@ -226,9 +241,11 @@ measured. The selectable time limit is elapsed wall-clock time, not a RAM or
 VRAM budget. Multi-plane background subtraction reports each completed plane
 for both CPU and cuCIM; its current-operation bar advances through those planes
 and starts over for each parity, warmup, or timed invocation. A cuCIM plane is
-reported only after its output has been synchronized. Operations implemented as
-one monolithic NumPy, SciPy, CuPy, or cuCIM call have no truthful intermediate
-milestone, so their current-operation bar can remain unchanged until that call
+reported only after its output has been synchronized. Richardson-Lucy reports
+completed iterations for each leading 2D/3D block, synchronizes before each
+reported checkpoint, and checks cancellation between iterations. Operations
+implemented as one monolithic NumPy, SciPy, CuPy, or cuCIM call have no truthful
+intermediate milestone, so their current-operation bar can remain unchanged until that call
 returns even though work is continuing; this pause alone does not mean the
 analysis is stuck.
 
@@ -254,19 +271,31 @@ graph, source, compute intent and locks, actual assignment, exact source
 bytes/metadata/image state, and a fresh probe of the exact candidate environment
 before one undoable apply,
 after which only affected branches are invalidated.
+
+GPU work for one runtime/device is serialized by a fair process-wide
+accelerator lease. Execution, transfer measurement, and node/pipeline
+optimization therefore cannot unknowingly contend for the same CUDA device;
+cancellation and the one absolute analysis deadline also apply while waiting
+for the lease. Different runtime/device keys remain independent.
+
 GPU candidates remain developer-hidden in the core admission model
 and are explicitly labelled experimental in this development UI, so this is
 not yet a public GPU support claim. The current optimizer is deliberately limited
 to a calculated, writer-free scientific subgraph, one accelerator runtime, and
-the node shapes supported by exact node benchmarking; it fails closed instead of
-estimating around unsupported multi-runtime, side-effecting, or incomplete
-workloads. See the
+single-output nodes supported by exact node benchmarking. Ordered multi-input
+nodes such as Richardson-Lucy are supported; multi-output, multi-runtime,
+side-effecting, and incomplete workloads still fail closed. Unifying every UI
+optimizer input into one immutable application snapshot remains a named
+hardening task rather than a completed claim. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
 CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
 memory, and promotion rules. The
 [Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
 summarizes the code, exact admitted matrix, validation evidence, and deferred
-gates.
+gates. The
+[Phase 2B Richardson-Lucy implementation record](docs/gpu-phase2b-rl-implementation-report.md)
+records the new provider, benchmark/lease substrate, exact parity policy,
+limitations, and ordered next work.
 
 Structural cache reuse also fails closed on exact scientific context: source
 bytes/state and revision, node parameters and incoming topology, chained
@@ -276,11 +305,11 @@ cache, while in-place source changes and stale upstream parameters do.
 
 Use the checked-in setup helper to create a dedicated Python 3.12 environment.
 It pins one CUDA major, refuses mixed CuPy distributions, installs only into the
-named virtual environment, runs `pip check`, and finishes with real Gaussian and
-median kernels. A successful run writes a strict provenance record inside that
-environment; cuCIM remains unavailable if the record is missing, malformed, or
-no longer matches the installed wheel. Inspect the exact commands without
-writing first if desired:
+named virtual environment, runs `pip check`, and finishes with real Gaussian,
+median, and signal-convolution kernels. A successful run writes a strict
+provenance record inside that environment; cuCIM remains unavailable if the
+record is missing, malformed, or no longer matches the installed wheel. Inspect
+the exact commands without writing first if desired:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13 --plan-only
@@ -297,10 +326,10 @@ bash scripts/setup_gpu_dev.sh --track cuda13
 ./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
 
-The current executable Phase 1 policy admits only the validated native-Windows
-matrix. Linux preparation is available for the pending clean-host validation,
-but GPU execution intentionally fails closed there until that evidence is
-reviewed.
+The current executable Phase 1/Phase 2B policy admits only the validated
+native-Windows matrix. Linux preparation is available for the pending clean-host
+validation, but GPU execution intentionally fails closed there until that
+evidence is reviewed.
 
 The base package accepts Python 3.12 and newer, but the initial GPU development
 and validation matrix is deliberately CPython 3.12 only. A newer interpreter

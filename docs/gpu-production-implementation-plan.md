@@ -1,13 +1,15 @@
 # Production GPU implementation plan
 
-Date: 2026-07-15
-Product-direction revision: 2026-07-28
+Date: 2026-07-29
+Product-direction revision: 2026-07-29
 Status: Phase 1 is implemented headlessly on
 `codex/gpu-cross-platform-support`; the experimental Pass 4 application slice now
 includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
 benchmark review, and a Selective-only review-first whole-pipeline optimizer.
-All GPU implementations remain developer-hidden pending the remaining Phase 2
-and named release/platform gates.
+Phase 2B now adds developer-hidden ordinary CuPy/CuPyX Richardson-Lucy,
+ordered-multi-input/single-output exact benchmarking, and a process-wide
+per-device accelerator lease. All GPU implementations remain developer-hidden
+pending the remaining Phase 2 and named release/platform gates.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -56,9 +58,9 @@ The following constraints and approved product directions are non-negotiable:
   universal `Auto` policy. Unknown workload-policy regions resolve to CPU.
 - GPU work is introduced behind contracts and promotion gates. The first
   headless vertical slice covers Subtract Background/Rolling-Ball Background,
-  median, and 2D/3D Gaussian. Ordinary RL, RL-TV, Otsu, Canny, connected
-  components, region measurements, and other reasonable nodes follow quickly
-  in evidence-driven families.
+  median, and 2D/3D Gaussian. The next completed operation slice adds ordinary
+  RL; RL-TV, Otsu, Canny, connected components, region measurements, and other
+  reasonable nodes follow quickly in evidence-driven families.
 - Capability declarations are dtype-explicit and designed for bool, common
   microscopy integers, float32, float64, and non-finite policies from the
   beginning. A provider may still expose only the dtype/parameter regions that
@@ -68,7 +70,9 @@ The following constraints and approved product directions are non-negotiable:
   detail. VIPP may explain that an explicit, scientifically appropriate
   conversion can unlock another implementation, but must never insert such a
   conversion merely to improve a benchmark. For example, the current Gaussian
-  GPU region is finite `float32`; native `uint16` remains CPU-only. Converting
+  GPU region is finite `float32`; native `uint16` remains CPU-only. Ordinary RL
+  initially requires explicit finite `float32` for both Image and PSF and
+  returns shape-preserving `float32`. Converting
   integer values of magnitude up to 2^24 to `float32` with the Convert Dtype
   node's `Scaling = Preserve` option is exact (including all `uint16` values);
   its default `Rescale` option intentionally remaps the range. The workflow's
@@ -120,7 +124,7 @@ The final Phase 1/pre-UI branch-wide validation completed with 2,375 passes and
 two expected, documented integer-Gaussian xfails; the post-record real-device-focused run
 completed with 167 passes and no skips.
 
-### Phase 2 interactive slice status (2026-07-28)
+### Phase 2 interactive slice status (2026-07-29)
 
 The branch now has the compact toolbar `CPU`/`Auto`/`Selective` policy selector,
 Settings-menu mirror, simplified dynamic Selective per-node choices, accepted
@@ -172,8 +176,9 @@ The optimizer fails closed for missing or stale benchmark identity, incomplete
 candidate/resident timing, unavailable or unknown VRAM, unsupported transfer
 runtimes, unsafe retained writer paths, no feasible assignment, no material
 benefit, cancellation, or deadline expiry. This first application version covers
-one shared accelerator runtime and the one-input/one-output operations supported
-by exact node benchmarking; it does not execute writers, optimize batch/generated
+one shared accelerator runtime and single-output operations supported by exact
+node benchmarking, including nodes with multiple ordered inputs; it does not
+execute writers, support multi-output benchmarks, optimize batch/generated
 surfaces, or synthesize estimates for unsupported nodes. Its current dialog shows
 the reviewed assignment, fixed/excluded rows, validated totals, and confidence
 bound; detailed transfer-boundary, peak-VRAM, and per-refusal drill-down remain
@@ -194,6 +199,83 @@ optimizer/coordinator/dialog suite completed with 34 passes. After adversarial
 assignment, parity, cleanup, transfer-lifetime, and cache-provenance hardening,
 the final branch-wide run completed with **2,549 passes and the same two expected
 xfails**; repository Ruff and `git diff --check` were clean.
+
+### Phase 2B ordinary Richardson-Lucy status (2026-07-29)
+
+The branch now contains a developer-hidden `rl-cupy-f32-v1` implementation
+backed by CuPy and `cupyx.scipy.signal`. It preserves the ordinary CPU operation's
+prepared-call parameters and zero-fill `same` convolution semantics, accepts 2D
+or 3D spatial data with arbitrary leading blocks, keeps Image, PSF, output, and
+image-sized intermediates device-resident, and returns shape-preserving
+`float32`. Its admitted region requires an explicit finite `float32` Image and
+PSF, a resolved matching 2D/3D PSF rank, non-empty compatible extents, positive
+PSF mass, odd PSF extents, the default-safe normalization/clipping/scale
+options, `filter_epsilon` exactly at the evidence-backed `1e-8` point, and 1..25
+iterations. The unchanged CPU default (`1e-12`), every other epsilon, and longer
+runs visibly remain on CPU; VIPP neither alters a scientific threshold nor
+truncates a run.
+VIPP does not insert a dtype conversion. A reviewed `Convert Dtype` node can
+unlock the candidate when
+that representation change is scientifically appropriate.
+
+The production benchmark adapter and application coordinator now accept one or
+more ordered inputs for a single-output pure operation. Every input is detached,
+byte-hashed, transferred, included in memory accounting, and rechecked for
+staleness; changing only the PSF therefore invalidates exact RL evidence. Writer
+and multi-output benchmarks still fail closed. Typed planning propagates RL's
+fixed-`float32` output metadata and conservative array facts without inspecting a
+device result.
+
+A fair process-wide lease serializes accelerator work for each
+`(runtime_id, device_id)` key. The lease is reentrant for the owning thread,
+cancellable and deadline-aware, releases on every exit path, and permits work on
+different device keys to proceed independently. Device execution, transfer
+measurement, exact node benchmarking, and each pipeline-optimizer GPU
+subtransaction use this common lease, preventing simultaneous same-device VIPP
+work. Lease wait time consumes the same absolute analysis deadline. Holding one
+lease across the optimizer's entire paired evidence window remains required to
+prevent unrelated work from interleaving between subtransactions.
+
+Large FFT-backed providers additionally run with new plan caching disabled only
+inside the VIPP private allocator scope. Pre-existing per-thread/device plans
+and cache limits are held and restored exactly after private-pool cleanup. A
+512×512 RL regression that formerly retained 8,821,760 private bytes now proves
+zero terminal live/reserved/out-of-pool bytes across two same-runtime runs. The
+versioned RL FFT memory model admits 55,973,460 bytes for that 512×512/13×13
+workload, bounding its 33,554,432-byte observed private-plus-out-of-pool peak.
+
+Richardson-Lucy reports synchronized progress after each completed iteration of
+each leading block and checks cancellation at those boundaries. Its exact
+benchmark parity policy requires matching shape and `float32` dtype, identical
+finite masks with completely finite output, NRMSE `<= 2e-6`, and
+`max_abs <= 1e-6 + 5e-6 * reference_peak`; maximum float32 ULP distance is
+reported as a diagnostic, not a separate pass gate. Final focused validation on
+2026-07-29 completed with **315 passes** and 18 warnings, including real CUDA
+provider and exact benchmark paths, lease contention, multi-input invalidation,
+optimizer reuse, typed metadata, cleanup, progress, and cancellation. The final
+branch-wide run completed with **2,675 passes, 2 documented xfails, and 83
+warnings**. This is development-host evidence, not a public support or full
+cross-platform promotion claim.
+
+The initial numerical rectangle was narrowed after real-device adversarial
+validation. Across 164 normalized nonnegative float32 2D/3D fixtures, exactly
+`1e-8` passed the production gate through 25 iterations with a worst normalized
+gate score of 0.864348. The threshold response was not monotonic: `1e-7` failed
+one fixture at 25 iterations, and `1e-6` failed one as early as 10. At 50
+iterations, `1e-8` failed four fixtures. A separate matrix rejected the
+provisional `1e-10` point, and 40 even-PSF comparison fixtures had 14 failures
+at 25 iterations for every tested epsilon. Policy therefore admits at most 25
+iterations, exactly `1e-8`, odd PSF extents, and default-safe options. Optimizer
+selection retains the exact-workload parity gate, and neither CPU defaults nor
+tolerances changed.
+
+Current limits remain explicit: RL is developer-hidden; RL-TV is not yet
+implemented; broad Auto admission is not claimed; exact benchmarking still
+requires one output and excludes writers; pipeline optimization still supports
+one accelerator runtime; batch/generated/CLI/export stay CPU-only; native Linux
+and secondary Windows hardware evidence is pending; and the UI's separately
+captured optimizer inputs have not yet been replaced with one immutable
+application snapshot.
 
 Immediate hardening before this optimizer can support broader operation and
 platform claims:
@@ -217,9 +299,19 @@ platform claims:
   `(node, implementation)` view that could clear Auto for a different graph
   context; Selective authored choices may outlive stale evidence, but every
   `fastest` or `optimal` claim must not;
-- expand only with explicit evidence for multi-input/output nodes, multiple
-  accelerator runtimes, writer-adjacent graphs, and richer retained/previewed
-  materialization. The current refusal is preferable to an optimistic estimate.
+- expand beyond the now-supported ordered-multi-input/single-output path only
+  with explicit evidence for multi-output nodes, multiple accelerator runtimes,
+  writer-adjacent graphs, and richer retained/previewed materialization. The
+  current refusal is preferable to an optimistic estimate;
+- make both benchmark dialogs lifecycle-safe: owner shutdown and worker-start
+  failure must clear modal state, late results/Apply signals must be ignored,
+  and registry cleanup failure must invalidate rather than publish evidence;
+- revalidate selected-node source bytes as well as workflow history before
+  Apply, move expensive source/environment verification off the modal GUI
+  thread, and retain a final cheap generation guard for the commit; and
+- prevent unrelated same-device work from entering between paired optimizer
+  timing subtransactions, or prove an equivalent contract that excludes lease
+  wait/foreign work from the accepted timing evidence.
 
 ### Cross-platform support contract
 
@@ -1261,7 +1353,8 @@ Named implementation memory models cover at least:
 - median/Gaussian: input, output, CuPyX workspace upper bound by rank/dtype/
   kernel, and branch-retained values;
 - RL: observed image, normalized image, estimate, blur, ratio, correction, PSF,
-  mirrored PSF, output, and convolution workspace;
+  mirrored PSF, output, versioned padded real/complex FFT arrays, cuFFT plan
+  workspaces, and a calibrated first-use/out-of-pool allowance;
 - RL-TV: all RL buffers plus per-axis gradients, norm, normalized components,
   divergence, denominator, and stack/workspace behavior.
 
@@ -1888,13 +1981,23 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   legacy direct helper's scikit-image behavior when `progress is None` as a
   separately tested API until a versioned migration deliberately unifies it;
   Pass 6 must not silently move a caller between the two semantics.
-- Initial numerical gates: NRMSE `<= 5e-6` and
-  `max_abs <= 2e-5 * max(input_finite_peak, 1.0)` for deterministic arrays;
-  MSE, flux, and point/line/dim-feature recovery must differ by no more than
-  0.5% relative or 0.5 percentage point, whichever is stricter.
-- Test 2D/3D, leading blocks, iterations 1/2/25 and 500 on a small fixture, PSF
-  sizes/support, normalized and deliberately unnormalized valid PSFs, parameter
-  extremes, zeros, negative clipping modes, and cleaned NaN/Inf inputs.
+- The implemented exact-workload benchmark gate requires matching shape and
+  `float32` dtype, identical finite masks with completely finite output, NRMSE
+  `<= 2e-6`, and
+  `max_abs <= 1e-6 + 5e-6 * max(abs(reference))`. Maximum float32 ULP distance
+  is recorded as a diagnostic but is not a separate pass gate. Public promotion
+  still requires the wider MSE, flux, and point/line/dim-feature recovery
+  evidence; implementing the benchmark policy does not waive those dataset
+  gates.
+- Test 2D/3D, leading blocks, iterations 1/2/25 and long-run boundaries on a
+  small fixture, PSF sizes/support, normalized and deliberately unnormalized
+  valid PSFs, parameter extremes, zeros, negative clipping modes, and cleaned
+  NaN/Inf inputs.
+- The developer-hidden initial region is deliberately narrower than the public
+  CPU surface: finite float32 Image/PSF, odd PSF extents, the default-safe
+  options, `filter_epsilon == 1e-8`, and no more than 25 iterations. The
+  unchanged `1e-12` CPU default, other epsilon values, and longer runs remain
+  CPU-only until a versioned numerical study clears the same parity policy.
 
 #### RL-TV — `rl-tv-cupy-f32-v1`
 
@@ -2008,7 +2111,8 @@ permission to rewrite adjacent code.
   Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. No toolbar,
   workflow-schema, batch, or generated-Python behavior changes yet.
 - **Phase 2 — interactive use and deconvolution:** Pass 4 plus the RL/RL-TV
-  operation work in Passes 6-7. Add toolbar mode, Selective node choices,
+  operation work in Passes 6-7. Ordinary RL is implemented headlessly; RL-TV is
+  next. Add toolbar mode, Selective node choices,
   badges, review-first node and whole-pipeline benchmark UI,
   diagnostics/install guidance, RAM/VRAM presentation, the minimal workflow v4
   compute-intent block plus canonical hash and atomic reader/writer preservation
@@ -2362,6 +2466,11 @@ algorithm tests after Pass 4 if no shared files are edited.
 
 ### Pass 6 — Ordinary Richardson–Lucy
 
+**Status (2026-07-29):** the developer-hidden headless implementation and its
+exact node/optimizer benchmark substrate are implemented. Public Selective/Auto,
+batch exposure, broader real-data evidence, and cross-platform promotion remain
+gated.
+
 **Depends on:** Passes 1, 4, and the batch cleanup contract if batch exposure is
 included.
 **Owns:** new `core/gpu/cupy_rl.py`; RL declaration/policy blocks; RL-specific
@@ -2370,21 +2479,32 @@ memory model; new `_tests/test_gpu_rl.py`; focused additions to
 `_tests/test_batch.py` only after Pass 5; benchmark artifacts. CPU algorithm edits are prohibited
 unless a separate reviewed contract test exposes an existing inconsistency.
 
-**Public contracts:** `vipp.cupy.richardson_lucy` version 1, iteration checkpoint
-protocol, RL memory estimate, and `rl-cupy-f32-v1` parity policy.
+**Implementation contracts:** operation `richardson_lucy_deconvolution`,
+implementation `rl-cupy-f32-v1` version 1, callable
+`napari_vipp.core.gpu.cupy_rl:richardson_lucy_deconvolution`, block/iteration
+checkpoint protocol, conservative fixed-output RL memory estimate, and
+`rl-float32-tolerance-v1` parity policy.
 
-**Tests/documentation:** exact current parameters, PSF/grid checks, 2D/3D and
-leading blocks, iteration extremes, negative/non-finite behavior, scale
-preservation, per-iteration progress/cancel/sync, OOM retry, real-data parity/
-performance, and batch cleanup when batch exposure is enabled.
+**Tests/documentation:** focused fake and real-CUDA coverage now exercises current
+parameters, PSF/grid checks, 2D/3D and leading blocks, negative/non-finite
+handling, scale preservation, typed output planning, per-iteration progress/
+cancel/sync, exact two-input evidence, cleanup, and optimizer reuse. The
+implemented exact parity gate is NRMSE `<= 2e-6` plus
+`max_abs <= 1e-6 + 5e-6 * reference_peak`, with maximum ULP distance retained
+as a diagnostic. Iteration-500 stress outside the initial admitted region,
+wider calibrated real-data performance, RL-specific OOM recovery,
+cross-platform evidence, and batch cleanup remain
+promotion work where not already covered by common substrate tests.
 
 **Migration:** none; declarations only widen runtime capability.
 
-**Acceptance/rollback:** every advertised Selective region passes scientific,
-memory, cleanup, and iteration-progress gates; Auto regions additionally clear
-the section 5.4 end-to-end benefit rule using the production adapter. No
-parameter is hard-coded from the spike. Rollback removes the RL declaration.
-**Still disabled:** RL-TV and any new RL initialization/boundary/default.
+**Acceptance/rollback:** the developer-hidden region passes its focused
+scientific, memory-model, cleanup, exact-benchmark, and iteration-progress gates.
+No public Selective or Auto claim follows until the remaining platform/real-data
+gates pass; Auto must additionally clear the section 5.4 end-to-end benefit rule
+using the production adapter. No parameter is hard-coded from the spike.
+Rollback removes the RL declaration. **Still disabled:** RL-TV, batch/generated/
+export GPU execution, and any new RL initialization/boundary/default.
 
 **Parallelism:** algorithm/parity work can overlap Pass 5 batch work after Pass
 4 with disjoint files; final batch tests wait for Pass 5. One owner controls
@@ -2569,7 +2689,7 @@ Pass 0 contracts
       -> Pass 2 Background/Subtract Background
           -> Pass 3 Median/Gaussian/headless optimizer
               -> Pass 4 toolbar + Selective node/pipeline UX
-                  -> Pass 6 RL -> Pass 7 RL-TV
+                  -> Pass 6 RL [implemented] -> Pass 7 RL-TV
                   -> Pass 10 Otsu/Canny/labels/measurements and bridges
                   -> Pass 5 batch
                       -> Pass 8 generated Python/cross-surface persistence
@@ -2718,6 +2838,47 @@ not reasons to redesign Phase 1.
   registries and each of `pipeline.py`, `_widget.py`, `batch.py`, and
   `workflow.py`; split operation-family declarations before parallel promotion.
 
+## Ordered next suggested steps (maintained 2026-07-29)
+
+This is the implementation queue after the Phase 2B ordinary RL slice. Update
+this section when a wave lands so the branch and handoff report retain one
+explicit order.
+
+1. **Richardson-Lucy TV:** implement the existing formula and validation
+   baseline without changing its sign, stencil, initialization, floor, padding,
+   defaults, PSF, or progress/cancellation semantics. Reuse the ordinary RL
+   lease, ordered-input benchmark, typed planning, and memory contracts.
+2. **Canny and Otsu:** add separate versioned operation regions and compare all
+   scientifically eligible CuPyX/cuCIM alternatives. Preserve axes, thresholds,
+   boundaries, dtype, and deterministic output semantics before timing.
+3. **Connected components:** preserve the CPU connectivity and independent
+   leading-block rules, public `int32` output, and exact label-ID ordering; time
+   any required deterministic canonicalization.
+4. **Measurements:** introduce the typed labels-plus-intensity inputs and
+   host-table finalizer while preserving schema, row/column order, units,
+   calibration, missing values, and public scalar types.
+5. **Convert Dtype and inexpensive residency bridges:** support only explicit
+   authored conversions and scientifically faithful low-cost operations that can
+   keep useful segments resident. Never insert a cast or bridge merely to improve
+   a benchmark.
+6. **Native platform evidence:** validate supported native Linux targets and the
+   available Windows RTX 40-series laptops, including clean setup, real kernels,
+   parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
+   secondary evidence, not a substitute for native Windows/Linux claims.
+7. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+   with unified-memory accounting. Keep the CPU path as the honest fallback
+   unless an operation family passes scientific and performance gates.
+8. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+   time-boxed packaging/upstream review. Prefer a maintainable feature-complete
+   cuCIM route; do not normalize a permanently hobbled skimage-only fork.
+9. **Durable execution surfaces:** add batch, generated Python/CLI, and export
+   GPU execution and provenance after the core interactive operation coverage
+   and lifecycle contracts are stable.
+
+The UI immutable-snapshot/lifecycle hardening listed above remains a prerequisite
+for broad optimizer claims and should be completed alongside the early operation
+waves; it is not marked complete by Phase 2B.
+
 ## Handoff summary
 
 1. **Product model:** CPU, Auto, and Selective are distinct global modes. Auto is
@@ -2732,12 +2893,11 @@ not reasons to redesign Phase 1.
    Background/Subtract Background -> CuPyX median and Gaussian -> headless node
    benchmark, scientific cache identity, and whole-pipeline optimizer.
 4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
-   intent, setup/memory diagnostics, selected-node benchmark review, and the
-   conservative Selective whole-pipeline optimizer are implemented. Finish the
-   optimizer evidence/detail UX and the hardening items below, then move to
-   RL/RL-TV, Otsu, Canny, connected components, measurements, residency bridges,
-   and broad reasonable-node promotion; batch/generated/CLI/export integration
-   follows.
+   intent, setup/memory diagnostics, selected-node benchmark review, the
+   conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
+   implemented. Continue in the maintained order above: RL-TV; Canny/Otsu;
+   connected components; measurements; explicit Convert Dtype/residency bridges;
+   platform/provider evidence; then durable batch/generated/CLI/export surfaces.
 5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and
    packaging admit a Selective candidate. Auto additionally needs conservative
    whole-segment performance evidence. Primitive benchmarks alone admit nothing.
