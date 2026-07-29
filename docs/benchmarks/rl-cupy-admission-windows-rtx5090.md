@@ -1,12 +1,14 @@
 # CuPy Richardson-Lucy admission evidence
 
-- Generated: `2026-07-29T17:47:57.996856+00:00`
+- Generated: `2026-07-29T21:46:15.679475+00:00`
 - Schema: `napari-vipp-cupy-rl-admission-evidence` version 1
 - Device: `NVIDIA GeForce RTX 5090`
 - Platform: `Windows-10-10.0.19045-SP0`
 
-This is deterministic, machine-local scientific-parity evidence. It is
-not a portable performance claim and does not waive exact-workload parity.
+This deterministic, machine-local scientific-parity evidence supports
+public exposure inside the reviewed exact region on this development
+branch. It is not a portable performance, cross-platform, or released-
+package promotion claim, and it does not waive exact-workload parity.
 
 ## Policy gate
 
@@ -66,13 +68,16 @@ not a portable performance claim and does not waive exact-workload parity.
 - `iterations <= 25`
 - every PSF extent is odd;
 - normalized PSF and default-safe clipping/scale controls;
-- developer-hidden exposure; and
+- public exposure on this development branch, limited to this exact
+  reviewed region; and
 - exact-workload CPU/GPU parity before timing or optimizer selection.
 
 Higher epsilon values are not automatically safer: the ratio update has
 a threshold branch, and the 1e-7/1e-6 comparison contains parity failures.
 The authored CPU default `filter_epsilon=1e-12` remains unchanged and
 uses CPU fallback. VIPP must never silently raise it to qualify a GPU run.
+Cross-platform support and released-package promotion require their
+own validation and are not claimed by this artifact.
 
 Raw per-fixture metrics, environment versions, generator contract, and
 source hashes are retained in the sibling JSON artifact.

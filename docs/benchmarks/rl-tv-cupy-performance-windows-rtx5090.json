@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-07-29T17:45:34.955198+00:00",
+  "created_utc": "2026-07-29T21:43:55.774255+00:00",
   "environment": {
     "device_class": "nvidia-cuda",
     "device_id": "cuda:0",
@@ -40,6 +40,11 @@
     "runtime_versions": {
       "cuda-cupy": "14.1.1",
       "cupyx": "14.1.1"
+    },
+    "scientific_stack_versions": {
+      "numpy": "2.5.1",
+      "scikit-image": "0.26.0",
+      "scipy": "1.18.0"
     },
     "total_accelerator_memory_bytes": 34190458880
   },
@@ -91,7 +96,7 @@
       "candidates": [
         {
           "cold_resident_seconds": null,
-          "cold_seconds": 35.592288799991366,
+          "cold_seconds": 34.96090359991649,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -110,16 +115,16 @@
           "transfers_included": false,
           "warm_resident_seconds": [],
           "warm_seconds": [
-            35.94525769990287,
-            36.26607930002501,
-            36.00420969998231
+            34.58494989993051,
+            34.83043169989833,
+            35.00890840005013
           ],
           "warm_transfer_seconds": []
         },
         {
-          "cold_resident_seconds": 0.5842077998968307,
-          "cold_seconds": 0.6329603999038227,
-          "cold_transfer_seconds": 0.025579299981473014,
+          "cold_resident_seconds": 0.6272828000073787,
+          "cold_seconds": 0.6732162000262178,
+          "cold_transfer_seconds": 0.02371919999131933,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-tv-cupy-f32-v1",
@@ -136,26 +141,26 @@
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
           "warm_resident_seconds": [
-            0.3653392999258358,
-            0.5776386999932583,
-            0.44724899998982437
+            0.3582441001199186,
+            0.5595177000795957,
+            0.4607858999806922
           ],
           "warm_seconds": [
-            0.4014186999411322,
-            0.6233761000039522,
-            0.4888195999665186
+            0.4085540001105983,
+            0.6046473000606056,
+            0.5292302999878302
           ],
           "warm_transfer_seconds": [
-            0.014921699999831617,
-            0.025938899983884767,
-            0.023228100006235763
+            0.014497299998765811,
+            0.024495699995895848,
+            0.025005500006955117
           ]
         }
       ],
       "case_id": "private-real-nd2-volume-3d",
       "direct_private_identifiers_published": false,
       "dtype": "float32",
-      "environment_fingerprint": "4d6ff8bbcef9cdbed85dbea4027fde4d2cb9880cf073273f18111b9f3f316b0f",
+      "environment_fingerprint": "0ed1db9d29dc1df05452208ccf069ed403c8f7581eb28a5f37413906b004a811",
       "gpu_cleanup": {
         "all_cleanup_succeeded": true,
         "all_runtime_pool_terminal_zero": true,
@@ -242,7 +247,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 15896797184,
+        "host_available_bytes": 16509255680,
         "input_bytes": 34065396,
         "required_host_bytes": 4294967296
       },
@@ -277,20 +282,20 @@
         ],
         "selected_indices": {
           "C": 1,
-          "T": 9
+          "T": 0
         }
       },
       "summary": {
-        "absolute_median_saving_seconds": 35.51539010001579,
-        "cpu_median_seconds": 36.00420969998231,
-        "gpu_end_to_end_median_seconds": 0.4888195999665186,
-        "gpu_resident_median_seconds": 0.44724899998982437,
-        "gpu_transfer_median_seconds": 0.023228100006235763,
-        "paired_speedup_median": 73.65541337223057,
+        "absolute_median_saving_seconds": 34.3012013999105,
+        "cpu_median_seconds": 34.83043169989833,
+        "gpu_end_to_end_median_seconds": 0.5292302999878302,
+        "gpu_resident_median_seconds": 0.4607858999806922,
+        "gpu_transfer_median_seconds": 0.024495699995895848,
+        "paired_speedup_median": 66.15061231538552,
         "paired_speedups": [
-          89.54554858847935,
-          58.176884387763806,
-          73.65541337223057
+          84.65208978633946,
+          57.60454350231477,
+          66.15061231538552
         ],
         "peak_observed_device_bytes": 1002438656,
         "screening_choice": "GPU-CuPy"
@@ -300,11 +305,11 @@
     },
     {
       "benchmark_policy_id": "custom-node-paired-adaptive-bootstrap-v3",
-      "benchmark_record_digest": "12b02b8fcf3c13214c4bea41fb1e039ce02ed762fceca54bc36037910306f936",
+      "benchmark_record_digest": "a7f694e8aad9605e1c0a8ac4456047f8240adaffe751306c2756d47a6c7d3f34",
       "candidates": [
         {
           "cold_resident_seconds": null,
-          "cold_seconds": 58.69563509998261,
+          "cold_seconds": 55.422861800005194,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -323,16 +328,16 @@
           "transfers_included": false,
           "warm_resident_seconds": [],
           "warm_seconds": [
-            59.09064330000547,
-            58.81601599996793,
-            58.79901509999763
+            55.526696200016886,
+            55.630162500194274,
+            55.22100959994714
           ],
           "warm_transfer_seconds": []
         },
         {
-          "cold_resident_seconds": 0.6654819000978023,
-          "cold_seconds": 0.7722773001005407,
-          "cold_transfer_seconds": 0.04337050000322051,
+          "cold_resident_seconds": 0.6901231999217998,
+          "cold_seconds": 0.800676599930739,
+          "cold_transfer_seconds": 0.0422326999832876,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-tv-cupy-f32-v1",
@@ -349,26 +354,26 @@
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
           "warm_resident_seconds": [
-            0.4681614000000991,
-            0.6408729000831954,
-            0.46955439998419024
+            0.44492979999631643,
+            0.6274646999954712,
+            0.4458790000353474
           ],
           "warm_seconds": [
-            0.5292524000105914,
-            0.7239259000925813,
-            0.5371745999727864
+            0.5111432999547105,
+            0.7062467999930959,
+            0.5075036000343971
           ],
           "warm_transfer_seconds": [
-            0.026734699989901856,
-            0.04424699998344295,
-            0.028252400021301582
+            0.02521970000816509,
+            0.0440511999768205,
+            0.028006399981677532
           ]
         }
       ],
       "case_id": "synthetic-shape-stress-medium-3d",
       "direct_private_identifiers_published": false,
       "dtype": "float32",
-      "environment_fingerprint": "4d6ff8bbcef9cdbed85dbea4027fde4d2cb9880cf073273f18111b9f3f316b0f",
+      "environment_fingerprint": "0ed1db9d29dc1df05452208ccf069ed403c8f7581eb28a5f37413906b004a811",
       "gpu_cleanup": {
         "all_cleanup_succeeded": true,
         "all_runtime_pool_terminal_zero": true,
@@ -455,7 +460,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 15790342144,
+        "host_available_bytes": 16483565568,
         "input_bytes": 67166524,
         "required_host_bytes": 4294967296
       },
@@ -481,22 +486,22 @@
         "generator": "numpy-pcg64-large-rl-tv-v1"
       },
       "summary": {
-        "absolute_median_saving_seconds": 58.278841399995144,
-        "cpu_median_seconds": 58.81601599996793,
-        "gpu_end_to_end_median_seconds": 0.5371745999727864,
-        "gpu_resident_median_seconds": 0.46955439998419024,
-        "gpu_transfer_median_seconds": 0.028252400021301582,
-        "paired_speedup_median": 109.45978291411475,
+        "absolute_median_saving_seconds": 55.015552900062175,
+        "cpu_median_seconds": 55.526696200016886,
+        "gpu_end_to_end_median_seconds": 0.5111432999547105,
+        "gpu_resident_median_seconds": 0.4458790000353474,
+        "gpu_transfer_median_seconds": 0.028006399981677532,
+        "paired_speedup_median": 108.6323467507777,
         "paired_speedups": [
-          111.64926847534929,
-          81.24590651121348,
-          109.45978291411475
+          108.6323467507777,
+          78.76872858147902,
+          108.80909927772812
         ],
         "peak_observed_device_bytes": 2011168768,
         "screening_choice": "GPU-CuPy"
       },
       "voxel_count": 16777216,
-      "workload_fingerprint": "1d771036e42494cb44079d374312c31aefb5c3e03b9baa1e1114fc222d90a992"
+      "workload_fingerprint": "dcae202b64d759ffe43db9bfbe15565791841f16f7be25688851a13382686c3d"
     }
   ],
   "schema": "napari-vipp-cupy-rl-tv-performance-evidence",
@@ -508,7 +513,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute.py",
-      "sha256": "e6c67726ad443257ea6a966600afb802cc8ed8e8f7967decb9e9404011cbe016"
+      "sha256": "70c4a589739b0b826cfa355f09f2710e62c9a233815e43fc993db2f611e7e78a"
     },
     {
       "path": "src/napari_vipp/core/accelerator_lease.py",
@@ -520,15 +525,15 @@
     },
     {
       "path": "src/napari_vipp/core/compute_benchmark_adapter.py",
-      "sha256": "bc1a664c6b169ea1e3e2a06d6b0fe3f41589b464c56fe7919d09765cedfd5727"
+      "sha256": "5a4ccc97e9a488a3265607117b6fa369a8a79d873921620cd2a90074aeabda3b"
     },
     {
       "path": "src/napari_vipp/core/compute_planning.py",
-      "sha256": "a03b7d82887daca82ec106f260503e42ab0446049a2b8d2fc93e858b5ec82408"
+      "sha256": "65f8bdd03b2420f99487393873069b87385ed27b5bd36f2d03cec1117f8d7c13"
     },
     {
       "path": "src/napari_vipp/core/compute_policy.py",
-      "sha256": "fd0ad676838191c803088a7149acddb5acfeb34be793545c494651ce85de400f"
+      "sha256": "30d86a075bfeaf9dab0e3384371ab237a381a6fa2c66c9cea4872e066372a956"
     },
     {
       "path": "src/napari_vipp/core/compute_registry.py",
@@ -536,7 +541,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute_specs.py",
-      "sha256": "7c26c8c0eef203152019984afb046b1d1d73e5a8eab990693ade8adb01c09ee4"
+      "sha256": "807683b8dcefeea5fdd73116d069d5f5e7d588b4d797489385e722f218f95b26"
     },
     {
       "path": "src/napari_vipp/core/node_execution.py",
@@ -544,7 +549,7 @@
     },
     {
       "path": "src/napari_vipp/core/operations.py",
-      "sha256": "c7fc008531cdc2e998f904da4d6c2231a5d3463616330b30fec6b2d33e9bf84c"
+      "sha256": "1fda0c0b2f21880c9544d5e2ddacee81281be9cd95666851c41401136fc41754"
     },
     {
       "path": "src/napari_vipp/core/progress.py",

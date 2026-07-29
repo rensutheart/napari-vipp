@@ -63,9 +63,11 @@ reviewing VIPP itself.
   [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support)
   branch, which has absorbed current `main` while development remains separate.
   Main remains the CPU production baseline; the GPU branch contains feasibility
-  evidence plus the implemented developer-hidden Phase 1, Phase 2B ordinary
-  Richardson-Lucy, and Phase 2C Richardson-Lucy TV slices, not a supported
-  user-facing GPU execution mode yet.
+  evidence plus implemented public-candidate regions for Phase 1, ordinary
+  Richardson-Lucy, Richardson-Lucy TV, Canny, and Otsu. Validated regions are
+  available in normal Auto/Selective pipelines on that branch; unsupported
+  regions visibly use CPU. This remains branch-scoped evidence rather than a
+  released cross-platform GPU-support claim.
 
 ## Implementation Records
 
@@ -79,10 +81,12 @@ override the current planning documents above.
 - [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md)
 - [GPU Phase 2B Richardson-Lucy implementation record](gpu-phase2b-rl-implementation-report.md)
 - [GPU Phase 2C Richardson-Lucy TV implementation record](gpu-phase2c-rl-tv-implementation-report.md)
+- [GPU Phase 3A Canny and Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md)
 - [Representative real-acquisition ND2 GPU benchmark](benchmarks/representative-nd2-phase1-benchmark.md)
 - [Richardson-Lucy large-stack CPU/GPU timing](benchmarks/rl-cupy-performance-windows-rtx5090.md)
 - [Richardson-Lucy TV admission matrix](benchmarks/rl-tv-cupy-admission-windows-rtx5090.md)
 - [Richardson-Lucy TV large-stack CPU/GPU timing](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
+- [Canny/Otsu exact-mask CPU/GPU evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md)
 - [cuCIM native-Windows source evaluation](cucim-windows-source-evaluation.md)
 - [Context-aware controls audit](context-aware-controls-audit.md)
 - [Object and mesh morphology](object-mesh-morphology-plan.md)

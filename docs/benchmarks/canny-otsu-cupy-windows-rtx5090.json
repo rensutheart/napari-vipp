@@ -1,0 +1,1310 @@
+{
+  "admission": {
+    "case_count": 28,
+    "cases": [
+      {
+        "case_id": "canny-bool-default",
+        "coverage": [
+          "dtype:bool",
+          "sigma:positive",
+          "quantile:ordered"
+        ],
+        "cpu_foreground_pixels": 417,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 417,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "bool",
+        "input_sha256": "e7fc73531940270dbf75b82930da4c9b00f7560a91c41828ea1c3b6c72707082",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {}
+      },
+      {
+        "case_id": "canny-u8-zero-endpoints",
+        "coverage": [
+          "dtype:uint8",
+          "sigma:zero",
+          "quantile:endpoints"
+        ],
+        "cpu_foreground_pixels": 47,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 47,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "749d204002bca9945ec14815eaa54400fd40b780222f2a6da558816e0bbfc527",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "high_quantile": 1.0,
+          "low_quantile": 0.0,
+          "sigma": 0.0
+        }
+      },
+      {
+        "case_id": "canny-u8-negative-sigma-clamped",
+        "coverage": [
+          "dtype:uint8",
+          "sigma:negative-clamped",
+          "quantile:ordered"
+        ],
+        "cpu_foreground_pixels": 516,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 516,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "41881141d2079ee16a3b82b99a96e314c237e2d2ed1ec2a0e638a45a984f852a",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "high_quantile": 0.8,
+          "low_quantile": 0.2,
+          "sigma": -3.0
+        }
+      },
+      {
+        "case_id": "canny-u16-upper-sigma-equal-quantile",
+        "coverage": [
+          "dtype:uint16",
+          "sigma:upper-bound",
+          "quantile:equal"
+        ],
+        "cpu_foreground_pixels": 55,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 55,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "13043d2055f91783c065bcc62960211ea720757f14297567cabe3514d7c80e91",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "high_quantile": 0.35,
+          "low_quantile": 0.35,
+          "sigma": 12.0
+        }
+      },
+      {
+        "case_id": "canny-u16-leading-blocks",
+        "coverage": [
+          "dtype:uint16",
+          "sigma:positive",
+          "quantile:ordered",
+          "layout:leading-blocks"
+        ],
+        "cpu_foreground_pixels": 1038,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 1038,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "2c213a20726787892ebb78bdc356ed425332013a39ba0cd672add8f5205a29c5",
+        "input_shape": [
+          3,
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          3,
+          37,
+          43
+        ],
+        "parameters": {
+          "high_quantile": 0.75,
+          "low_quantile": 0.15,
+          "sigma": 1.25
+        }
+      },
+      {
+        "case_id": "canny-rgb-last-axis",
+        "coverage": [
+          "layout:rgb"
+        ],
+        "cpu_foreground_pixels": 553,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 553,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "2ba30430d9220aef395635f8e54a44a0900c7e018023ea158e7b3e376cbdbf08",
+        "input_shape": [
+          37,
+          43,
+          3
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "channel_axis": -1,
+          "sigma": 0.75
+        }
+      },
+      {
+        "case_id": "canny-rgba-first-axis",
+        "coverage": [
+          "layout:rgba"
+        ],
+        "cpu_foreground_pixels": 242,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 242,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "177f8d23742aba075ec0be34ee38d8f01f4ccd9f80429509a81ef183814f3d20",
+        "input_shape": [
+          4,
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "channel_axis": 0,
+          "sigma": 2.0
+        }
+      },
+      {
+        "case_id": "canny-narrow-border",
+        "coverage": [
+          "topology:narrow",
+          "topology:border"
+        ],
+        "cpu_foreground_pixels": 2,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 2,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "a7b32f7481657eb2f62f3d0d4115fad88f58c9dbaeadd8913d5fae056a509a18",
+        "input_shape": [
+          3,
+          17
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          3,
+          17
+        ],
+        "parameters": {
+          "high_quantile": 0.0,
+          "low_quantile": 0.0,
+          "sigma": 0.0
+        }
+      },
+      {
+        "case_id": "canny-flat-tie",
+        "coverage": [
+          "topology:flat",
+          "quantile:equal"
+        ],
+        "cpu_foreground_pixels": 124,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 124,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "46ddd6823c3f7fd50c8e711d7758ed80a0231aca2964d2ba6adbdf0c1ac67901",
+        "input_shape": [
+          19,
+          23
+        ],
+        "mismatch_count": 0,
+        "operation_id": "canny_edges",
+        "output_dtype": "bool",
+        "output_shape": [
+          19,
+          23
+        ],
+        "parameters": {
+          "high_quantile": 0.5,
+          "low_quantile": 0.5,
+          "sigma": 4.0
+        }
+      },
+      {
+        "case_id": "otsu-bool-identity",
+        "coverage": [
+          "dtype:bool",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 711,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 711,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "bool",
+        "input_sha256": "e7fc73531940270dbf75b82930da4c9b00f7560a91c41828ea1c3b6c72707082",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {}
+      },
+      {
+        "case_id": "otsu-int8-native-levels",
+        "coverage": [
+          "dtype:int8",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 796,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 796,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "int8",
+        "input_sha256": "8c92be7ff66067321bd9d6b1f4570bef17a6f98a6263bb716ad38f477ccfefb8",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-uint8-native-levels",
+        "coverage": [
+          "dtype:uint8",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 799,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 799,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "246768e0c59c95bc918105a2639bbc20a8224c0e4a8dafaf582aa9f4019267ef",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-int16-native-levels",
+        "coverage": [
+          "dtype:int16",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "int16",
+        "input_sha256": "bc63656e6fdd3bb7b859740fb6cb1cf6ea4c632d92df75b7a4660cbddbcc5a06",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-uint16-native-levels",
+        "coverage": [
+          "dtype:uint16",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "857468c54430b5af817033497eddccfcd1ef64c302ab6492adbd995e10703aa3",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-int32-native-levels",
+        "coverage": [
+          "dtype:int32",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "int32",
+        "input_sha256": "779493b8863491a016b410c2caa9d2150aab0d537e0de61632a90cdd1d0d70bb",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-uint32-native-levels",
+        "coverage": [
+          "dtype:uint32",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint32",
+        "input_sha256": "68845f8937faa520cad505c5ac76b93e734a9d8c0e7621694de59c5d1d21a41e",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-int64-native-levels",
+        "coverage": [
+          "dtype:int64",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "int64",
+        "input_sha256": "075e3128efb2c2b837f8b98781ce6c428812be991ed4f596beed543831fe3e85",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-uint64-native-levels",
+        "coverage": [
+          "dtype:uint64",
+          "values:native-integer-levels",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 795,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 795,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint64",
+        "input_sha256": "4cdfcd4af6adff4dd85355c4c6c9030fd8c2964be4fbb0d235cd107ef259ccad",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-f16-two-bins",
+        "coverage": [
+          "dtype:float16",
+          "bins:2",
+          "scope:stack"
+        ],
+        "cpu_foreground_pixels": 1459,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 1459,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "float16",
+        "input_sha256": "e5575325d609a229296c3e07184142bd29615dcf64220f2b1a8659a55cd6bf8d",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 2
+        }
+      },
+      {
+        "case_id": "otsu-f32-nonfinite-256-bins",
+        "coverage": [
+          "dtype:float32",
+          "bins:256",
+          "values:nonfinite"
+        ],
+        "cpu_foreground_pixels": 806,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 806,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "float32",
+        "input_sha256": "7349b5896a7cf689f6429a6930114f541eaad9d28c9221ecf0143c3005e6b780",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 256
+        }
+      },
+      {
+        "case_id": "otsu-f64-65536-bins",
+        "coverage": [
+          "dtype:float64",
+          "bins:65536"
+        ],
+        "cpu_foreground_pixels": 800,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 800,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "float64",
+        "input_sha256": "a9b15236ebdf0969b3be39a82f18cbd6ef59be605c276a258e9d00aa8b3d86e8",
+        "input_shape": [
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "histogram_bins": 65536
+        }
+      },
+      {
+        "case_id": "otsu-constant",
+        "coverage": [
+          "values:constant"
+        ],
+        "cpu_foreground_pixels": 0,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 0,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "acb289f33958338cf81d0ad9d43b73234960e18b704772f51d179c8ce3ee8516",
+        "input_shape": [
+          17,
+          21
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          17,
+          21
+        ],
+        "parameters": {}
+      },
+      {
+        "case_id": "otsu-u16-complete-native-span",
+        "coverage": [
+          "integer-span:65536",
+          "values:native-integer-levels"
+        ],
+        "cpu_foreground_pixels": 32768,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 32768,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "7131549f9d8707f51e36ffcdd869a2192e6e75ba76b022e8e838d807abc92c2c",
+        "input_shape": [
+          256,
+          256
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          256,
+          256
+        ],
+        "parameters": {}
+      },
+      {
+        "case_id": "otsu-slice-leading-blocks",
+        "coverage": [
+          "scope:slice",
+          "layout:leading-blocks"
+        ],
+        "cpu_foreground_pixels": 2400,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 2400,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "6b7e16a8afc04a87f53617821fda64d1423d0a602789ff1a39371b5be66fa705",
+        "input_shape": [
+          3,
+          37,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          3,
+          37,
+          43
+        ],
+        "parameters": {
+          "threshold_scope": "Slice histogram"
+        }
+      },
+      {
+        "case_id": "otsu-rgb-last-axis",
+        "coverage": [
+          "layout:rgb"
+        ],
+        "cpu_foreground_pixels": 827,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 827,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint8",
+        "input_sha256": "33cf57c7879cece9b60c6e3a003931d837f1798e87f15fb99ea8b8e43d373e90",
+        "input_shape": [
+          37,
+          43,
+          3
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "channel_axis": -1,
+          "histogram_bins": 256
+        }
+      },
+      {
+        "case_id": "otsu-rgba-first-axis-slices",
+        "coverage": [
+          "layout:rgba",
+          "scope:slice"
+        ],
+        "cpu_foreground_pixels": 829,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 829,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "uint16",
+        "input_sha256": "2a6959ab5d310d79abe9b99ec95c2901d6cab652e9119282c05fb4fd61958dfd",
+        "input_shape": [
+          37,
+          4,
+          43
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          37,
+          43
+        ],
+        "parameters": {
+          "channel_axis": 1,
+          "histogram_bins": 256,
+          "threshold_scope": "Slice histogram"
+        }
+      },
+      {
+        "case_id": "otsu-f32-extreme-range",
+        "coverage": [
+          "dtype:float32",
+          "range:float32-extreme"
+        ],
+        "cpu_foreground_pixels": 5,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 5,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "float32",
+        "input_sha256": "a1e286640125fa53a85007323cad7c5caa1c96d90b15c0f0988af73deeb7e0b5",
+        "input_shape": [
+          3,
+          3
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          3,
+          3
+        ],
+        "parameters": {
+          "histogram_bins": 3
+        }
+      },
+      {
+        "case_id": "otsu-int64-rgb-wide-range",
+        "coverage": [
+          "dtype:int64",
+          "layout:rgb",
+          "range:int64-rgb-luma"
+        ],
+        "cpu_foreground_pixels": 31,
+        "exact_mask_match": true,
+        "gpu_foreground_pixels": 31,
+        "gpu_output_dtype": "bool",
+        "gpu_output_resident": true,
+        "input_dtype": "int64",
+        "input_sha256": "6df21ad15dab6e846493dabff707cab96865d87f7839f2cb695467914469c16b",
+        "input_shape": [
+          7,
+          9,
+          3
+        ],
+        "mismatch_count": 0,
+        "operation_id": "otsu_threshold",
+        "output_dtype": "bool",
+        "output_shape": [
+          7,
+          9
+        ],
+        "parameters": {
+          "channel_axis": -1,
+          "histogram_bins": 256
+        }
+      }
+    ],
+    "coverage": {
+      "canny_edges": [
+        "dtype:bool",
+        "dtype:uint16",
+        "dtype:uint8",
+        "layout:leading-blocks",
+        "layout:rgb",
+        "layout:rgba",
+        "quantile:endpoints",
+        "quantile:equal",
+        "quantile:ordered",
+        "sigma:negative-clamped",
+        "sigma:positive",
+        "sigma:upper-bound",
+        "sigma:zero",
+        "topology:border",
+        "topology:flat",
+        "topology:narrow"
+      ],
+      "otsu_threshold": [
+        "bins:2",
+        "bins:256",
+        "bins:65536",
+        "dtype:bool",
+        "dtype:float16",
+        "dtype:float32",
+        "dtype:float64",
+        "dtype:int16",
+        "dtype:int32",
+        "dtype:int64",
+        "dtype:int8",
+        "dtype:uint16",
+        "dtype:uint32",
+        "dtype:uint64",
+        "dtype:uint8",
+        "integer-span:65536",
+        "layout:leading-blocks",
+        "layout:rgb",
+        "layout:rgba",
+        "range:float32-extreme",
+        "range:int64-rgb-luma",
+        "scope:slice",
+        "scope:stack",
+        "values:constant",
+        "values:native-integer-levels",
+        "values:nonfinite"
+      ]
+    },
+    "failure_count": 0,
+    "status": "pass"
+  },
+  "created_utc": "2026-07-29T21:52:01.828857+00:00",
+  "durable_optimizer_record": false,
+  "kind": "scientific-admission-and-machine-local-performance-evidence",
+  "lifecycle": {
+    "operations": [
+      {
+        "cancellation_observed": true,
+        "cancellation_requested": true,
+        "cleanup": {
+          "error": "",
+          "passed": true,
+          "reserved_bytes_after_cleanup": 0,
+          "used_bytes_after_cleanup": 0
+        },
+        "implementation_id": "cupyx-canny-edges-exact-v1",
+        "operation_id": "canny_edges",
+        "parameters": {
+          "high_quantile": 0.2,
+          "low_quantile": 0.1,
+          "sigma": 1.5
+        },
+        "reported_progress": [
+          {
+            "current": 0,
+            "message": "Canny planes",
+            "total": 2
+          },
+          {
+            "current": 1,
+            "message": "Canny planes",
+            "total": 2
+          }
+        ]
+      },
+      {
+        "cancellation_observed": true,
+        "cancellation_requested": true,
+        "cleanup": {
+          "error": "",
+          "passed": true,
+          "reserved_bytes_after_cleanup": 0,
+          "used_bytes_after_cleanup": 0
+        },
+        "implementation_id": "cupy-otsu-threshold-exact-v1",
+        "operation_id": "otsu_threshold",
+        "parameters": {
+          "histogram_bins": 256,
+          "threshold_scope": "Slice histogram"
+        },
+        "reported_progress": [
+          {
+            "current": 0,
+            "message": "Otsu slice histograms",
+            "total": 2
+          },
+          {
+            "current": 1,
+            "message": "Otsu histogram ready",
+            "total": 2
+          }
+        ]
+      }
+    ],
+    "status": "pass"
+  },
+  "method": {
+    "cpu_path": "production-napari-vipp-operations",
+    "cpu_timing_scope": "synchronous-operation-call-v1",
+    "disk_io_included": false,
+    "exact_parity_required_before_timing": true,
+    "gpu_end_to_end_timing_scope": "host-to-device-plus-synchronized-compute-plus-device-to-host-v1",
+    "gpu_path": "production-exact-cupy-providers",
+    "gpu_resident_timing_scope": "synchronized-resident-compute-v1",
+    "input_generation_included": false,
+    "parity": "bitwise-identical-boolean-mask",
+    "timed_rounds": 3,
+    "warmup_rounds": 1
+  },
+  "packages": {
+    "cupy-cuda12x": "not-installed",
+    "cupy-cuda13x": "14.1.1",
+    "napari-vipp": "0.12.0a3",
+    "numpy": "2.5.1",
+    "scikit-image": "0.26.0",
+    "scipy": "1.18.0"
+  },
+  "performance": {
+    "source_count": 2,
+    "sources": [
+      {
+        "direct_private_identifiers_published": false,
+        "dtype": "uint16",
+        "element_count": 8388608,
+        "input_bytes": 16777216,
+        "input_sha256": "bacd55a41842069317c71b72b53f23a6373a0263b27d9c2c226cf89955ec9ae8",
+        "label": "Structured synthetic 8x1024x1024 uint16 stack",
+        "operations": [
+          {
+            "implementation_id": "cupyx-canny-edges-exact-v1",
+            "memory": {
+              "admitted_device_peak_bytes": 157286400,
+              "cleanup": {
+                "error": "",
+                "passed": true,
+                "reserved_bytes_after_cleanup": 0,
+                "used_bytes_after_cleanup": 0
+              },
+              "model_id": "cupyx-canny-exact-memory-v1",
+              "observed_private_pool_peak_bytes": 72516608,
+              "observed_within_admitted_peak": true,
+              "runtime_managed_peak_bytes": 125829120,
+              "uncertainty_bytes": 31457280
+            },
+            "operation_id": "canny_edges",
+            "parameters": {
+              "high_quantile": 0.2,
+              "low_quantile": 0.1,
+              "sigma": 1.5
+            },
+            "parity": {
+              "cpu_output_dtype": "bool",
+              "foreground_pixels": 454490,
+              "gpu_output_dtype": "bool",
+              "gpu_output_resident": true,
+              "mismatch_count": 0,
+              "passed": true,
+              "profile": "bitwise-identical-boolean-mask"
+            },
+            "samples": {
+              "cpu_seconds": [
+                0.6812104000127874,
+                0.6950058999937028,
+                0.6681061999988742
+              ],
+              "gpu_end_to_end_seconds": [
+                0.03642069999477826,
+                0.03492040000855923,
+                0.03448309999657795
+              ],
+              "gpu_resident_seconds": [
+                0.03385199999320321,
+                0.032467000011820346,
+                0.03137020001304336
+              ]
+            },
+            "summary": {
+              "cpu_median_seconds": 0.6812104000127874,
+              "gpu_end_to_end_median_seconds": 0.03492040000855923,
+              "gpu_end_to_end_speedup": 19.507519955264492,
+              "gpu_resident_median_seconds": 0.032467000011820346,
+              "gpu_resident_speedup": 20.98162441139549,
+              "screening_choice": "GPU-CuPy"
+            }
+          },
+          {
+            "implementation_id": "cupy-otsu-threshold-exact-v1",
+            "memory": {
+              "admitted_device_peak_bytes": 200048642,
+              "cleanup": {
+                "error": "",
+                "passed": true,
+                "reserved_bytes_after_cleanup": 0,
+                "used_bytes_after_cleanup": 0
+              },
+              "model_id": "cupy-otsu-histogram-memory-v1",
+              "observed_private_pool_peak_bytes": 84377600,
+              "observed_within_admitted_peak": true,
+              "runtime_managed_peak_bytes": 160038914,
+              "uncertainty_bytes": 40009728
+            },
+            "operation_id": "otsu_threshold",
+            "parameters": {
+              "histogram_bins": 256,
+              "threshold_scope": "Stack histogram"
+            },
+            "parity": {
+              "cpu_output_dtype": "bool",
+              "foreground_pixels": 3862766,
+              "gpu_output_dtype": "bool",
+              "gpu_output_resident": true,
+              "mismatch_count": 0,
+              "passed": true,
+              "profile": "bitwise-identical-boolean-mask"
+            },
+            "samples": {
+              "cpu_seconds": [
+                0.04871390000334941,
+                0.044266599987167865,
+                0.04550870001548901
+              ],
+              "gpu_end_to_end_seconds": [
+                0.007659299997612834,
+                0.007692199986195192,
+                0.007826100016245618
+              ],
+              "gpu_resident_seconds": [
+                0.0024693000013940036,
+                0.002291699987836182,
+                0.0020432999881450087
+              ]
+            },
+            "summary": {
+              "cpu_median_seconds": 0.04550870001548901,
+              "gpu_end_to_end_median_seconds": 0.007692199986195192,
+              "gpu_end_to_end_speedup": 5.916213839624712,
+              "gpu_resident_median_seconds": 0.002291699987836182,
+              "gpu_resident_speedup": 19.858053085935662,
+              "screening_choice": "GPU-CuPy"
+            }
+          }
+        ],
+        "shape": [
+          8,
+          1024,
+          1024
+        ],
+        "source_id": "synthetic-structured-large-stack",
+        "source_kind": "deterministic-synthetic",
+        "source_metadata": {
+          "generator": "numpy-pcg64-structured-confocal-like-stack-v1"
+        }
+      },
+      {
+        "direct_private_identifiers_published": false,
+        "dtype": "uint16",
+        "element_count": 8507700,
+        "input_bytes": 17015400,
+        "input_sha256": null,
+        "label": "Private real-acquisition single-channel ZYX volume",
+        "operations": [
+          {
+            "implementation_id": "cupyx-canny-edges-exact-v1",
+            "memory": {
+              "admitted_device_peak_bytes": 145339875,
+              "cleanup": {
+                "error": "",
+                "passed": true,
+                "reserved_bytes_after_cleanup": 0,
+                "used_bytes_after_cleanup": 0
+              },
+              "model_id": "cupyx-canny-exact-memory-v1",
+              "observed_private_pool_peak_bytes": 71998464,
+              "observed_within_admitted_peak": true,
+              "runtime_managed_peak_bytes": 116271900,
+              "uncertainty_bytes": 29067975
+            },
+            "operation_id": "canny_edges",
+            "parameters": {
+              "high_quantile": 0.2,
+              "low_quantile": 0.1,
+              "sigma": 1.5
+            },
+            "parity": {
+              "cpu_output_dtype": "bool",
+              "foreground_pixels": 1999236,
+              "gpu_output_dtype": "bool",
+              "gpu_output_resident": true,
+              "mismatch_count": 0,
+              "passed": true,
+              "profile": "bitwise-identical-boolean-mask"
+            },
+            "samples": {
+              "cpu_seconds": [
+                0.7701186000194866,
+                0.7396258999942802,
+                0.7450138000131119
+              ],
+              "gpu_end_to_end_seconds": [
+                0.05332140001701191,
+                0.04481260001193732,
+                0.04543929998180829
+              ],
+              "gpu_resident_seconds": [
+                0.04553260002285242,
+                0.045196899998700246,
+                0.04674590000649914
+              ]
+            },
+            "summary": {
+              "cpu_median_seconds": 0.7450138000131119,
+              "gpu_end_to_end_median_seconds": 0.04543929998180829,
+              "gpu_end_to_end_speedup": 16.39580275909575,
+              "gpu_resident_median_seconds": 0.04553260002285242,
+              "gpu_resident_speedup": 16.362206411212973,
+              "screening_choice": "GPU-CuPy"
+            }
+          },
+          {
+            "implementation_id": "cupy-otsu-threshold-exact-v1",
+            "memory": {
+              "admitted_device_peak_bytes": 202877077,
+              "cleanup": {
+                "error": "",
+                "passed": true,
+                "reserved_bytes_after_cleanup": 0,
+                "used_bytes_after_cleanup": 0
+              },
+              "model_id": "cupy-otsu-histogram-memory-v1",
+              "observed_private_pool_peak_bytes": 85119488,
+              "observed_within_admitted_peak": true,
+              "runtime_managed_peak_bytes": 162301662,
+              "uncertainty_bytes": 40575415
+            },
+            "operation_id": "otsu_threshold",
+            "parameters": {
+              "histogram_bins": 256,
+              "threshold_scope": "Stack histogram"
+            },
+            "parity": {
+              "cpu_output_dtype": "bool",
+              "foreground_pixels": 202437,
+              "gpu_output_dtype": "bool",
+              "gpu_output_resident": true,
+              "mismatch_count": 0,
+              "passed": true,
+              "profile": "bitwise-identical-boolean-mask"
+            },
+            "samples": {
+              "cpu_seconds": [
+                0.040699100005440414,
+                0.04142540000611916,
+                0.04758959999890067
+              ],
+              "gpu_end_to_end_seconds": [
+                0.008152900001732633,
+                0.007563100021798164,
+                0.007848699984606355
+              ],
+              "gpu_resident_seconds": [
+                0.002647100016474724,
+                0.002404200000455603,
+                0.0020795000018551946
+              ]
+            },
+            "summary": {
+              "cpu_median_seconds": 0.04142540000611916,
+              "gpu_end_to_end_median_seconds": 0.007848699984606355,
+              "gpu_end_to_end_speedup": 5.277995093119465,
+              "gpu_resident_median_seconds": 0.002404200000455603,
+              "gpu_resident_speedup": 17.230430079972102,
+              "screening_choice": "GPU-CuPy"
+            }
+          }
+        ],
+        "shape": [
+          9,
+          1150,
+          822
+        ],
+        "source_id": "private-real-nd2-single-channel-zyx",
+        "source_kind": "private-nd2-volume",
+        "source_metadata": {
+          "direct_identifiers_omitted": true,
+          "original_axes": "TZCYX",
+          "original_dtype": "uint16",
+          "original_shape": [
+            19,
+            9,
+            2,
+            1150,
+            822
+          ],
+          "selected_indices": {
+            "C": 1,
+            "T": 0
+          }
+        }
+      }
+    ],
+    "status": "pass"
+  },
+  "platform": {
+    "cuda_compute_capability": "12.0",
+    "cuda_device_index": 0,
+    "cuda_device_name": "NVIDIA GeForce RTX 5090",
+    "cuda_driver_version": 13030,
+    "cuda_runtime_version": 13020,
+    "execution_mode": "native",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 165 Stepping 3, GenuineIntel",
+    "python": "3.12.9",
+    "python_abi": "cpython-312",
+    "python_implementation": "CPython",
+    "release": "10",
+    "system": "Windows",
+    "total_accelerator_memory_bytes": 34190458880
+  },
+  "portable_performance_claim": false,
+  "profile": "practical",
+  "schema": "napari-vipp-cupy-canny-otsu-evidence",
+  "schema_version": 3,
+  "source_provenance": [
+    {
+      "path": "scripts/benchmark_gpu_canny_otsu.py",
+      "sha256": "a274ac39477b8d7c1249b56d1b4451789343c6ccff6db95e79c6049e3e211e1a"
+    },
+    {
+      "path": "src/napari_vipp/core/compute.py",
+      "sha256": "70c4a589739b0b826cfa355f09f2710e62c9a233815e43fc993db2f611e7e78a"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_planning.py",
+      "sha256": "65f8bdd03b2420f99487393873069b87385ed27b5bd36f2d03cec1117f8d7c13"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_registry.py",
+      "sha256": "7695aee91e35526447ee58992da671e92bd019e1092646f1932c982d02d26eb9"
+    },
+    {
+      "path": "src/napari_vipp/core/operations.py",
+      "sha256": "1fda0c0b2f21880c9544d5e2ddacee81281be9cd95666851c41401136fc41754"
+    },
+    {
+      "path": "src/napari_vipp/core/gpu/cupy_canny.py",
+      "sha256": "77aeab2f3ea56c1e17b2bc35c54c46e5833dde5f696d0816848ef82ec4b7deca"
+    },
+    {
+      "path": "src/napari_vipp/core/gpu/cupy_otsu.py",
+      "sha256": "41846ca2499057d579b8576ab785a5fbc38abc3bc6497b384a13756d9df68e7c"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_specs.py",
+      "sha256": "807683b8dcefeea5fdd73116d069d5f5e7d588b4d797489385e722f218f95b26"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_policy.py",
+      "sha256": "30d86a075bfeaf9dab0e3384371ab237a381a6fa2c66c9cea4872e066372a956"
+    },
+    {
+      "path": "src/napari_vipp/core/execution.py",
+      "sha256": "d902df3424954c7f78b8261c115ecabe9910da1783cb250ce6611b556c179e75"
+    },
+    {
+      "path": "src/napari_vipp/core/progress.py",
+      "sha256": "ae649699a5be68095f011c5640b02157f28eaff7c8d4d390b27acadac97710f3"
+    }
+  ]
+}

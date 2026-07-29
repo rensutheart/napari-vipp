@@ -10,9 +10,11 @@
   "conclusion": {
     "admitted_positive_profile_is_exact_not_a_range": true,
     "all_reviewed_gates_passed": true,
+    "cross_platform_promotion_justified": false,
+    "development_branch_public_exposure_justified": true,
     "lambda_zero_inherits_strict_rl_gate": true,
     "positive_profile_uses_versioned_rl_tv_gate": true,
-    "public_promotion_justified": false
+    "released_package_promotion_justified": false
   },
   "contract": {
     "authoritative_cpu": "progress-aware-vipp-richardson-lucy-tv",
@@ -149,7 +151,7 @@
     "runtime_environment_fingerprint": "03e9298e0908b1592fb1b1c5e187ecb03f0fe753aeeda03bfffd8f3593707dae",
     "runtime_probe_version": "14.1.1",
     "system": "Windows",
-    "validated_environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v2",
+    "validated_environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v3",
     "version": "10.0.19045"
   },
   "fixtures": {
@@ -160,13 +162,15 @@
     "inherited_manifest_sha256": "5269b76f3df4588c19b0c6bf4a26d40f152028b5363e2acb205dfcf2f4591db3",
     "total_count": 260
   },
-  "generated_at_utc": "2026-07-29T17:37:11.328219+00:00",
+  "generated_at_utc": "2026-07-29T21:51:36.807649+00:00",
   "limitations": [
     "This is single-host native-Windows RTX 5090 evidence.",
     "The positive profile is the exact shipped parameter tuple, not a continuous lambda, epsilon, floor, or iteration claim.",
     "Synthetic matrices cannot replace calibrated biological datasets, bead data, or blinded expert review.",
     "Exact-workload parity remains mandatory before optimizer selection.",
-    "No authored parameter is silently changed to qualify for GPU execution."
+    "No authored parameter is silently changed to qualify for GPU execution.",
+    "This artifact supports public exposure only inside the reviewed exact regions on this development branch.",
+    "Cross-platform support and released-package promotion are not claimed."
   ],
   "matrices": {
     "lambda_zero_strict": {
@@ -51127,11 +51131,11 @@
     "files": [
       {
         "relative_path": "scripts/benchmark_gpu_rl_tv_admission.py",
-        "sha256": "a0c54e7170275a54668becd458eeebead84ea021ee828b9eca4427dc36c5b873"
+        "sha256": "f194c4d4aa8e222f749b56365d648b937bd4076733036d0f55dd1186733970a8"
       },
       {
         "relative_path": "scripts/benchmark_gpu_rl_admission.py",
-        "sha256": "3cb6ef8419856d68cccaab60ece999276607fa1108850c718c7fd4ad484a63f8"
+        "sha256": "79d36355744abcabce1dbe56e3d2bf2b7f86d3c6d1e3254b506ce86d06f77f43"
       },
       {
         "relative_path": "scripts/validate_rl_tv_phantoms.py",
@@ -51139,7 +51143,7 @@
       },
       {
         "relative_path": "src/napari_vipp/core/operations.py",
-        "sha256": "c7fc008531cdc2e998f904da4d6c2231a5d3463616330b30fec6b2d33e9bf84c"
+        "sha256": "1fda0c0b2f21880c9544d5e2ddacee81281be9cd95666851c41401136fc41754"
       },
       {
         "relative_path": "src/napari_vipp/core/gpu/cupy_rl.py",
@@ -51155,15 +51159,15 @@
       },
       {
         "relative_path": "src/napari_vipp/core/compute_benchmark_adapter.py",
-        "sha256": "bc1a664c6b169ea1e3e2a06d6b0fe3f41589b464c56fe7919d09765cedfd5727"
+        "sha256": "5a4ccc97e9a488a3265607117b6fa369a8a79d873921620cd2a90074aeabda3b"
       },
       {
         "relative_path": "src/napari_vipp/core/compute_policy.py",
-        "sha256": "fd0ad676838191c803088a7149acddb5acfeb34be793545c494651ce85de400f"
+        "sha256": "30d86a075bfeaf9dab0e3384371ab237a381a6fa2c66c9cea4872e066372a956"
       },
       {
         "relative_path": "src/napari_vipp/core/compute_specs.py",
-        "sha256": "7c26c8c0eef203152019984afb046b1d1d73e5a8eab990693ade8adb01c09ee4"
+        "sha256": "807683b8dcefeea5fdd73116d069d5f5e7d588b4d797489385e722f218f95b26"
       },
       {
         "relative_path": "src/napari_vipp/core/progress.py",
@@ -51174,44 +51178,65 @@
       "available": true,
       "branch": "codex/gpu-cross-platform-support",
       "dirty_relative_paths": [
-        "MANIFEST.in",
         "README.md",
+        "constraints/gpu-cuda12-py312.txt",
+        "constraints/gpu-cuda13-py312.txt",
         "docs/README.md",
         "docs/benchmarks/rl-cupy-admission-windows-rtx5090.json",
         "docs/benchmarks/rl-cupy-admission-windows-rtx5090.md",
-        "docs/gpu-phase2b-rl-implementation-report.md",
-        "docs/gpu-production-implementation-plan.md",
-        "docs/planning.md",
-        "docs/rl-tv-validation-report.md",
-        "docs/validation/rl-tv/psf-checks.csv",
-        "docs/validation/rl-tv/results.csv",
-        "docs/validation/rl-tv/summary.json",
-        "scripts/validate_rl_tv_phantoms.py",
-        "src/napari_vipp/_tests/test_compute_benchmark_adapter.py",
-        "src/napari_vipp/_tests/test_compute_contracts.py",
-        "src/napari_vipp/_tests/test_compute_policy.py",
-        "src/napari_vipp/_tests/test_execution_array_facts.py",
-        "src/napari_vipp/_tests/test_gpu_execution_integration.py",
-        "src/napari_vipp/_tests/test_widget.py",
-        "src/napari_vipp/_widget.py",
-        "src/napari_vipp/core/compute_benchmark_adapter.py",
-        "src/napari_vipp/core/compute_policy.py",
-        "src/napari_vipp/core/compute_specs.py",
-        "src/napari_vipp/core/execution.py",
-        "src/napari_vipp/core/gpu/cupy_rl.py",
+        "docs/benchmarks/rl-cupy-performance-windows-rtx5090.json",
+        "docs/benchmarks/rl-cupy-performance-windows-rtx5090.md",
         "docs/benchmarks/rl-tv-cupy-admission-windows-rtx5090.json",
         "docs/benchmarks/rl-tv-cupy-admission-windows-rtx5090.md",
         "docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.json",
         "docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md",
+        "docs/cucim-windows-source-evaluation.md",
+        "docs/gpu-phase1-implementation-report.md",
+        "docs/gpu-phase2b-rl-implementation-report.md",
         "docs/gpu-phase2c-rl-tv-implementation-report.md",
+        "docs/gpu-production-implementation-plan.md",
+        "docs/planning.md",
+        "scripts/benchmark_gpu_rl_admission.py",
         "scripts/benchmark_gpu_rl_tv_admission.py",
-        "scripts/benchmark_gpu_rl_tv_performance.py",
+        "src/napari_vipp/_tests/test_benchmark_gpu_rl_admission_script.py",
         "src/napari_vipp/_tests/test_benchmark_gpu_rl_tv_admission_script.py",
-        "src/napari_vipp/_tests/test_benchmark_gpu_rl_tv_performance_script.py",
-        "src/napari_vipp/_tests/test_gpu_rl_tv.py",
-        "src/napari_vipp/core/gpu/cupy_rl_tv.py"
+        "src/napari_vipp/_tests/test_compute_benchmark_adapter.py",
+        "src/napari_vipp/_tests/test_compute_benchmark_coordinator.py",
+        "src/napari_vipp/_tests/test_compute_cache.py",
+        "src/napari_vipp/_tests/test_compute_contracts.py",
+        "src/napari_vipp/_tests/test_compute_pipeline_optimizer_coordinator.py",
+        "src/napari_vipp/_tests/test_compute_planning.py",
+        "src/napari_vipp/_tests/test_compute_policy.py",
+        "src/napari_vipp/_tests/test_compute_policy_artifact.py",
+        "src/napari_vipp/_tests/test_compute_ui.py",
+        "src/napari_vipp/_tests/test_execution_array_facts.py",
+        "src/napari_vipp/_tests/test_gpu_execution_integration.py",
+        "src/napari_vipp/_tests/test_gpu_setup.py",
+        "src/napari_vipp/_tests/test_widget.py",
+        "src/napari_vipp/_widget.py",
+        "src/napari_vipp/core/compute.py",
+        "src/napari_vipp/core/compute_benchmark_adapter.py",
+        "src/napari_vipp/core/compute_cache.py",
+        "src/napari_vipp/core/compute_planning.py",
+        "src/napari_vipp/core/compute_policy.py",
+        "src/napari_vipp/core/compute_policy_artifact.py",
+        "src/napari_vipp/core/compute_specs.py",
+        "src/napari_vipp/core/execution.py",
+        "src/napari_vipp/core/operations.py",
+        "src/napari_vipp/ui/compute.py",
+        "docs/benchmarks/canny-otsu-cupy-windows-rtx5090.json",
+        "docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md",
+        "docs/gpu-phase3-canny-otsu-implementation-report.md",
+        "scripts/benchmark_gpu_canny_otsu.py",
+        "src/napari_vipp/_tests/test_benchmark_gpu_canny_otsu_script.py",
+        "src/napari_vipp/_tests/test_compute_policy_segmentation_gpu.py",
+        "src/napari_vipp/_tests/test_gpu_canny.py",
+        "src/napari_vipp/_tests/test_gpu_otsu.py",
+        "src/napari_vipp/compute_policies/phase1-gpu-public-v3.json",
+        "src/napari_vipp/core/gpu/cupy_canny.py",
+        "src/napari_vipp/core/gpu/cupy_otsu.py"
       ],
-      "head": "0ad8ce60105417a8f8f9e29394ec2e587b7c610d"
+      "head": "9b57fe772d62c76efb273ddbb6e5fa2586607db2"
     }
   },
   "status": "complete"

@@ -2,8 +2,8 @@
 
 Initial evaluation: 2026-07-15
 Phase 1 checksum/install refresh: 2026-07-27
-Status: successful research build and developer-hidden background adapter;
-cuCIM remains an unsupported dependency pending packaging/platform gates
+Status: successful research build and public background candidate in the exact
+validated environment; ordinary installation and wider-platform gates remain open
 
 ## Bottom line
 
@@ -88,7 +88,7 @@ source-built `skimage` experiment now that the pinned procedure is repeatable.
 | CUDA toolkit package | `cuda-toolkit == 13.2.2` |
 | CUDA compiler/runtime/CRT/NVVM/nvJitLink build components | `13.2.86` |
 | nvImageCodec package | `nvidia-nvimgcodec-cu13 == 0.8.0.22` |
-| CUDA driver/runtime APIs | 13.3 / 13.2 |
+| CUDA driver/runtime APIs | 13.3 (`13030`) / 13.2 (`13020`) |
 | GPU | NVIDIA GeForce RTX 5090, compute capability 12.0, 32 GiB |
 | NumPy / SciPy / scikit-image | 2.5.1 / 1.18.0 / 0.26.0 |
 | Wheel size | 8,654,879 bytes |
@@ -231,10 +231,10 @@ provider dependency on their own.
 
 | Operation family | Decision from this host | Reason |
 |---|---|---|
-| Rolling ball/background subtraction | **Validated as a developer-hidden VIPP adapter** | The complete wrapper now preserves smoothing, inversion, clipping, blocks/channels, non-finite handling, dtype restoration, cancellation boundaries, and metadata across 98 adapter tests and 45 real RTX cases. Integer output is exact and float32 uses bounded v2 parity. Public admission still waits on packaging and wider-platform gates. |
-| Canny | **Advance to VIPP-adapter validation** | Primitive output matched with a 17x benefit; VIPP's full parameter/grayscale contract remains. |
+| Rolling ball/background subtraction | **Public candidate in the exact recorded environment** | The complete wrapper preserves smoothing, inversion, clipping, blocks/channels, non-finite handling, dtype restoration, cancellation boundaries, and metadata across 98 adapter tests and 45 real RTX cases. Integer output is exact and float32 uses bounded v2 parity. Unsupported environments and regions visibly remain on CPU; ordinary packaging and wider-platform qualification remain open. |
+| Canny | **Raw cuCIM route rejected; exact CuPyX adapter implemented** | Later adversarial testing found raw cuCIM mask disagreements. VIPP now uses its exact CuPyX implementation and retains raw cuCIM only as rejected feasibility evidence. |
 | Connected components | **Advance to VIPP-adapter validation** | Primitive output/schema matched with 2.8x benefit in both 2D and 3D. |
-| Otsu threshold | **Advance to VIPP-adapter validation** | Primitive scalar dtype/value matched with 2.4x benefit; VIPP's finite-value histogram policy remains. |
+| Otsu threshold | **Exact CuPy adapter implemented** | GPU histogram/mask work plus the bounded authoritative host finalizer preserve VIPP's bool, integer, floating, non-finite, luma, scope, and exact-mask contract. |
 | Region-properties table | **Advance with schema work** | 10x primitive benefit, but output dtypes and VIPP's production table schema need an explicit adapter/overflow policy. |
 | Histogram median | **Map production crossover** | The 1.42x primitive result is worth retaining as a Selective candidate study; compare the complete adapter and neighboring-node residency before any Auto policy. |
 | Gaussian, ordinary median, Sobel, binary morphology | **Keep CuPy** | No material cuCIM advantage on the tested workload. |

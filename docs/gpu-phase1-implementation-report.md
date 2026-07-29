@@ -1,10 +1,12 @@
 # GPU Phase 1 implementation record
 
-Status: implemented on `codex/gpu-cross-platform-support` as a headless,
-developer-hidden vertical slice, with the first experimental Phase 2
+Status: implemented on `codex/gpu-cross-platform-support` as a headless and
+interactive public-candidate vertical slice, with the first Phase 2
 interactive controls, workflow-v4 intent, node benchmarking, and Selective-only
 whole-pipeline optimizer now connected to that service. This remains a
-development surface and is not yet a public GPU support promise.
+development-branch surface and is not yet a released cross-platform GPU support
+promise. Each validated region is visible normally; regions outside its
+scientific or environment contract visibly remain on CPU.
 
 This record describes the code that exists, the environment in which it was
 validated, and the gates that intentionally remain closed. The normative
@@ -103,9 +105,11 @@ The executable Phase 1 policy is deliberately narrower than the eventual
 cross-platform product:
 
 - native Windows, CPython 3.12 with the `cpython-312` ABI;
-- CuPy and CuPyX 14.1.1 with a working CUDA 12 or CUDA 13 runtime probe,
-  numeric driver metadata, a selected NVIDIA device, and compute-capability
-  metadata;
+- NumPy 2.5.1, SciPy 1.18.0, and scikit-image 0.26.0 as the authoritative CPU
+  scientific stack;
+- CuPy and CuPyX 14.1.1 with the recorded CUDA runtime API 13.2 (`13020`) and
+  driver API 13.3 (`13030`);
+- an NVIDIA GeForce RTX 5090 with compute capability 12.0;
 - for cuCIM, the CUDA 13 `cucim-cu13` 26.6.0 wheel with SHA-256
   `586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8`;
 - a strict environment record written only after the setup kernels and
@@ -117,6 +121,9 @@ Native Linux setup assets exist, but GPU admission fails closed until a clean
 host supplies the required evidence. macOS remains on the authoritative CPU
 path while a separate Metal/MPS/MLX provider and unified-memory accounting are
 investigated. WSL2 is not treated as native-Windows evidence.
+CUDA 12 and secondary NVIDIA devices remain qualification-only tracks outside
+public admission; their setup assets do not make them normal Auto/Selective
+candidates.
 
 ## Recreate the validated development environment
 
@@ -128,8 +135,8 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda1
 powershell -ExecutionPolicy Bypass -File scripts/setup_gpu_dev.ps1 --track cuda13
 ```
 
-The CuPyX operations need no cuCIM wheel. To enable the developer-hidden
-background implementations, first build the reviewed wheel with
+The CuPyX operations need no cuCIM wheel. To enable the public background
+candidates inside their exact validated environment, first build the reviewed wheel with
 `scripts/build_cucim_windows.ps1`, then supply the exact reported path and
 digest together:
 
@@ -153,8 +160,9 @@ selected.
 ## Local validation target
 
 The primary Phase 1 machine is native Windows with Python 3.12.9, CuPy 14.1.1,
-CUDA runtime 13.2, driver API 13.3, cuCIM 26.6.0/26.06.00, and an NVIDIA GeForce
-RTX 5090 (compute capability 12.0, 34,190,458,880 bytes VRAM). Validation covers
+CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), cuCIM
+26.6.0/26.06.00, and an NVIDIA GeForce RTX 5090 (compute capability 12.0,
+34,190,458,880 bytes VRAM). Validation covers
 CPU compatibility, exact environment admission, scientific parity, read-only
 inputs, one-transfer device chains, cancellation, result/fact cache isolation,
 benchmark identity, memory accounting, terminal zero-allocation checks, and a

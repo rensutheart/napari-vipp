@@ -149,33 +149,51 @@ either already implemented enough to build on or intentionally deferred.
 
 Keep implementation on `codex/gpu-cross-platform-support`, synchronized with
 main but separate until promotion gates pass. Phase 1 is now implemented
-headlessly: CPU/Auto/Selective and per-node/benchmark contracts, unified
+headlessly and interactively: CPU/Auto/Selective and per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
 Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
-also has a developer-hidden ordinary CuPy Richardson-Lucy backend, ordered
+also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
 multi-input exact benchmarking, and per-device accelerator coordination; its
 initial finite-float32 region deliberately keeps the CPU's `1e-12` epsilon
 default, epsilon values other than the validated `1e-8` point, and runs above
 25 iterations on CPU pending broader numerical evidence. Phase 2C adds a
-developer-hidden CuPy RL-TV provider without changing the existing formula,
+public-candidate CuPy RL-TV provider without changing the existing formula,
 sign, central-gradient stencil, initialization, padding, floor, or defaults.
 Its lambda-zero profile inherits ordinary RL's strict gate; its initial
 positive-TV profile covers only the exact shipped parameter tuple at the
 measured 10- and 25-iteration points under a separately versioned nonlinear
-parity study. Lambda-zero retains ordinary RL's 1–25 range.
-Machine-local large-stack timing now records 70.44x to 86.91x paired median
-speedups on the RTX 5090 across one real 8.51-million-voxel ND2 volume and
-16.78/67.11-million-voxel 3D shape stresses. Those short descriptive results are
-not a reusable optimizer record or cross-platform claim; see the
+parity study. Lambda-zero retains ordinary RL's 1–25 range. Phase 3A adds
+implemented, exact-mask CuPy/CuPyX Canny and Otsu providers with explicit luma,
+stack/slice, progress, cancellation, memory, and CPU-fallback contracts. Their
+validated regions are normal public `Auto`/`Selective` candidates;
+`developer_hidden` is reserved for incomplete or unvalidated work.
+Normal public admission currently fails closed to the exact recorded
+native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
+RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
+outside public admission; other driver/runtime versions and secondary NVIDIA
+hardware likewise require reviewed provider-qualification evidence.
+Machine-local large-stack timing now records 55.88x, 77.96x, and 90.81x paired
+median speedups on the RTX 5090 for one real 8.51-million-voxel ND2 volume and
+16.78/67.11-million-voxel 3D shape stresses, respectively. Those short
+descriptive results are not a reusable optimizer record or cross-platform claim;
+see the
 [raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
-The matching positive-TV screen records 73.66x and 109.46x paired median
+The matching positive-TV screen records 66.15x and 108.63x paired median
 speedups for the private 8.51-million-voxel volume and a 16.78-million-voxel
 shape stress; see the
 [RL-TV timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md).
-The toolbar now has the first experimental CPU/Auto/Selective policy slice,
+The source-current schema-v3 Canny/Otsu screen passed all 28 exact-mask admission cases.
+On the 8x1024x1024 `uint16` stack, transfer-inclusive Canny and Otsu speedups
+were 19.51x and 5.92x; on the privacy-redacted 8.51-million-voxel ND2 volume
+they were 16.40x and 5.28x. Both providers passed bounded-memory,
+cancellation, zero-residue cleanup, source-integrity, and strict private-metadata
+checks. See the
+[Canny/Otsu evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md); these are
+single-host descriptive measurements, not portable Auto choices.
+The toolbar now has the CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
-lifecycle/snapshot hardening, Canny/Otsu, connected components, measurements,
+lifecycle/snapshot hardening, connected components, measurements,
 explicit residency bridges, platform/provider evidence, batch, and
 generated-Python integration follow in the maintained order in the
 [GPU production plan](gpu-production-implementation-plan.md).

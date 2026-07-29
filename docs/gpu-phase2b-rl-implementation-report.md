@@ -2,14 +2,14 @@
 
 - Date: 2026-07-29
 - Branch: `codex/gpu-cross-platform-support`
-- Status: developer-hidden headless implementation complete; public and
-  cross-platform promotion gates remain open
+- Status: exact admitted region is a normal public Auto/Selective candidate on
+  the GPU branch; release-wide and cross-platform qualification remains open
 
-Phase 2C has since implemented the developer-hidden RL-TV slice described in
+Phase 2C has since implemented the RL-TV slice described in
 this record's former first next step. See the
 [Phase 2C implementation record](gpu-phase2c-rl-tv-implementation-report.md)
 for its current contracts and evidence; the Phase 2B measurements below remain
-the historical ordinary-RL record.
+the ordinary-RL record refreshed against the current source revision.
 
 ## Outcome
 
@@ -26,8 +26,12 @@ the substrate that a scientifically meaningful multi-input node needs:
 - exact implementation provenance through headless device execution and the
   optimizer.
 
-The implementation remains `developer_hidden`. This record is development
-evidence, not a released GPU-support statement.
+The validated region is no longer `developer_hidden`: it is visible in normal
+pipelines as a public candidate for `Selective`, and can participate in `Auto`
+when the exact workload/runtime has applicable benefit evidence. Unsupported
+dtype, parameter, shape, or runtime regions visibly remain on CPU. This record
+is still branch-scoped development evidence, not a blanket released-package or
+cross-platform GPU-support statement.
 
 ## Implemented contracts
 
@@ -97,7 +101,8 @@ The versioned `rl-float32-tolerance-v1` exact-workload gate requires:
 
 Maximum float32 ULP distance is recorded for diagnosis but does not independently
 pass or fail the result. Wider calibrated real-data morphology, flux, recovery,
-and performance gates remain prerequisites for public promotion.
+and performance gates remain prerequisites for broadening the admitted region
+or making wider release/platform claims.
 
 The narrower region is evidence-driven. On the RTX 5090 development host, an
 adversarial matrix of 164 normalized nonnegative float32 2D/3D fixtures covered
@@ -148,15 +153,16 @@ Disk I/O and input generation are excluded.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.465 s | 0.347 s | 0.316 s | 0.017 s | 70.44x |
-| Medium 3D shape stress | 16,777,216 | 36.349 s | 0.417 s | 0.358 s | 0.030 s | 86.91x |
-| Large 3D shape stress | 67,108,864 | 138.716 s | 1.617 s | 1.293 s | 0.204 s | 85.79x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.853 s | 0.445 s | 0.388 s | 0.036 s | 55.88x |
+| Medium 3D shape stress | 16,777,216 | 35.779 s | 0.465 s | 0.401 s | 0.032 s | 77.96x |
+| Large 3D shape stress | 67,108,864 | 134.306 s | 1.478 s | 1.195 s | 0.170 s | 90.81x |
 
 All three exact workloads passed production parity, synchronized execution,
-and terminal-zero private allocator cleanup. The largest case observed 4.50 GiB
-of device use against the conservative 7.72 GiB admitted bound. These are
-machine-local RTX 5090 results and a short descriptive screen, not a portable
-speed promise or reusable optimizer record. The synthetic volumes deliberately
+and terminal-zero private allocator cleanup. Observed device peaks were 0.697,
+1.098, and 4.500 GiB, within conservative admitted bounds of 1.361, 2.111, and
+7.720 GiB, respectively. These are machine-local RTX 5090 results and a short
+descriptive screen, not a portable speed promise or reusable optimizer record.
+The synthetic volumes deliberately
 stress realistic stack shapes and memory; they are not claimed to reproduce
 confocal image statistics. The private ND2 case supplies the real-acquisition
 anchor without publishing its path, filename, pixel data, or content-derived
@@ -246,18 +252,20 @@ The final branch-wide run completed with **2,675 passes, 2 documented xfails,
 and 83 warnings**. The xfails are the existing narrow integer-Gaussian CuPy
 parity gaps; they are explicit scientific exclusions rather than Phase 2B
 regressions. Clean-host installation, native Linux, secondary Windows GPU, and
-public Auto calibration remain separate gates and must not be inferred from
-this development-host result.
+portable Auto calibration and broader release/platform qualification remain
+separate gates and must not be inferred from this development-host result.
 
 ## Current limitations and open hardening
 
-- Ordinary GPU RL is developer-hidden; broad public Selective and Auto admission
-  are not claimed.
+- Ordinary GPU RL's exact validated region is publicly visible in Selective and
+  is an Auto candidate. This does not admit parameters outside that region or
+  claim portable performance on unmeasured hardware.
 - The CPU default epsilon (`1e-12`), all epsilon values other than `1e-8`, and
   authored runs above 25 iterations are intentionally CPU-only in the first GPU
   region. A future numerical study should broaden this without changing CPU
   defaults or tolerances.
-- RL-TV is implemented separately in Phase 2C and remains developer-hidden.
+- RL-TV is implemented separately in Phase 2C and its validated profiles are
+  public candidates under the same region-specific rule.
 - Exact node benchmarking supports ordered multi-input calls only when there is
   exactly one output. Writers, side effects, and multi-output operations fail
   closed.
@@ -267,13 +275,15 @@ this development-host result.
   and accepted assignment as separate inputs. Replacing these with one immutable
   application snapshot under a coherent capture boundary remains required; this
   lifecycle hardening is not complete.
-- The admitted environment remains the validated native-Windows CPython 3.12 /
-  CUDA/CuPy matrix. Native Linux, RTX 40-series laptop, Apple accelerator, and
-  wider clean-install evidence remain open.
+- The public environment remains the exact validated native-Windows CPython
+  3.12 matrix with CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`),
+  and an RTX 5090 at compute capability 12.0. CUDA 12 is qualification-only;
+  native Linux, RTX 40-series laptop, Apple accelerator, and wider
+  clean-install evidence remain open.
 - The current Windows cuCIM research wheel is skimage-focused and omits Clara
   I/O. That temporary limitation is not the desired final cuCIM scope.
 
-## Required hardening tracked before broad promotion
+## Required hardening tracked before broader release/platform claims
 
 These items are deliberately tracked separately from the operation-family
 queue below; completing Phase 2B does not silently close them:
@@ -304,29 +314,29 @@ queue below; completing Phase 2B does not silently close them:
 
 ## Ordered next suggested steps
 
-Phase 2C completed the former first item. The maintained order is now:
+Phase 2C completed the former first item, and the next phase has implemented
+Canny and Otsu. See the
+[Canny/Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md).
+The maintained order is now:
 
-1. **Canny and Otsu** — declare and validate operation-specific dtype,
-   parameter, boundary, memory, and parity regions, comparing CuPyX and cuCIM
-   where both are scientifically eligible.
-2. **Connected components** — preserve connectivity, leading-block semantics,
+1. **Connected components** — preserve connectivity, leading-block semantics,
    `int32` output, and exact deterministic label numbering.
-3. **Measurements** — support ordered labels-plus-intensity inputs and an exact
+2. **Measurements** — support ordered labels-plus-intensity inputs and an exact
    typed host-table finalizer with schema, order, units, and missing-value
    parity.
-4. **Convert Dtype and inexpensive residency bridges** — accelerate only
+3. **Convert Dtype and inexpensive residency bridges** — accelerate only
    explicit authored conversion/bridge nodes that preserve their CPU semantics;
    never synthesize casts to improve a benchmark.
-5. **Native Linux and Windows laptop validation** — collect clean-environment,
+4. **Native Linux and Windows laptop validation** — collect clean-environment,
    parity, memory, cancellation, cleanup, and end-to-end evidence on supported
    Linux hosts and available RTX 40-series Windows laptops; treat WSL2 as
    secondary evidence.
-6. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
+5. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
    accounting and retain CPU fallback unless operation-level gates pass.
-7. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
+6. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
    time-boxed Windows packaging/upstream review, aiming for a maintainable
    feature-complete integration rather than a permanent skimage-only fork.
-8. **Batch, generated Python/CLI, and export** — add durable GPU execution and
+7. **Batch, generated Python/CLI, and export** — add durable GPU execution and
    provenance only after core interactive coverage and lifecycle contracts are
    stable.
 

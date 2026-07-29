@@ -2,8 +2,9 @@
 
 - Date: 2026-07-29
 - Branch: `codex/gpu-cross-platform-support`
-- Status: developer-hidden headless implementation complete; calibrated
-  biological-data, cross-platform, and public-promotion gates remain open
+- Status: exact validated profiles are normal public Auto/Selective candidates
+  on the GPU branch; broader biological-data, release, and cross-platform
+  qualification remains open
 
 ## Outcome
 
@@ -22,8 +23,12 @@ The slice includes:
 - selected-node benchmark support for resolved multi-input, single-output
   operations in the application UI.
 
-The implementation remains `developer_hidden`. This report is development-host
-evidence, not a released GPU-support statement.
+The validated profiles are no longer `developer_hidden`: they are visible in
+normal pipelines as public `Selective` candidates and may participate in
+`Auto` where applicable workload/runtime benefit evidence exists. Unsupported
+parameters, data, shapes, or runtimes visibly remain on CPU. This report is
+still branch-scoped development-host evidence, not a blanket released-package
+or cross-platform GPU-support statement.
 
 ## Frozen scientific contract
 
@@ -148,10 +153,12 @@ validated on a CPU-only system without importing CuPy. It supports a fresh GPU
 run on the named development host; changing any hashed implementation or policy
 source makes the checked-in result stale rather than silently reusable.
 
-This is sufficient for a hidden exact-profile implementation. Public promotion
-still requires bead data and at least three calibrated biological datasets
-covering sparse points, dim structures near bright signal, anisotropic 3D, and
-boundary objects, with blinded review and cross-platform replication.
+This is sufficient to expose the exact profiles as public candidates on this
+branch. Broadening the admitted region or making stronger biological-restoration,
+release, or cross-platform claims still requires bead data and at least three
+calibrated biological datasets covering sparse points, dim structures near
+bright signal, anisotropic 3D, and boundary objects, with blinded review and
+cross-platform replication.
 
 ## Memory, progress, cancellation, and cleanup
 
@@ -178,19 +185,19 @@ input transfers, synchronized resident compute, output transfer, and private
 scope cleanup; disk I/O and input generation are excluded.
 
 The machine-local evidence uses one private real-acquisition `ZYX` volume
-selected lazily from the representative ND2 file (`T=9`, `C=1`) plus a
+selected lazily from the representative ND2 file (`T=0`, `C=1`) plus a
 deterministic 16.78-million-voxel 3D shape stress. The private path, filename,
 pixels, content hash, and content-derived workload identity are not published.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 36.004 s | 0.489 s | 0.447 s | 0.023 s | 73.66x |
-| Medium 3D shape stress | 16,777,216 | 58.816 s | 0.537 s | 0.470 s | 0.028 s | 109.46x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 34.830 s | 0.529 s | 0.461 s | 0.024 s | 66.15x |
+| Medium 3D shape stress | 16,777,216 | 55.527 s | 0.511 s | 0.446 s | 0.028 s | 108.63x |
 
 Both cases passed exact production parity and terminal-zero private allocator
-cleanup. Observed device peaks were 0.93 GiB and 1.87 GiB, bounded by the
-conservative 1.50 GiB and 2.50 GiB memory-model estimates before their separate
-uncertainty allowances.
+cleanup. Observed device peaks were 0.934 GiB and 1.873 GiB. The memory model
+estimated 1.501 GiB and 2.502 GiB before its uncertainty allowance; final
+admitted bounds were 1.876 GiB and 3.127 GiB, respectively.
 
 Results and raw paired samples are recorded in:
 
@@ -227,16 +234,20 @@ phantom validator, machine-readable evidence, and validation CSVs are included.
 
 ## Current limitations and required hardening
 
-- RL-TV remains developer-hidden; broad Selective and Auto promotion is not
-  claimed.
+- RL-TV's exact validated profiles are publicly visible in Selective and are
+  Auto candidates. This does not admit parameters outside those profiles or
+  claim portable performance on unmeasured hardware.
 - Positive TV is admitted only for the exact shipped tuple at 10 or 25
   iterations. Lambda zero requires ordinary RL's explicit `1e-8` filter
   profile. Wider parameters require new versioned evidence, not a relaxed test.
 - The study does not yet cover calibrated biological volumes, denominator-floor
   activation as a scientifically useful regime, alternative TV stencils,
   physical-spacing-aware TV, reflect padding, or observed initialization.
-- Native Linux, RTX 40-series laptop, clean-environment, and Apple M1 Max
-  provider studies remain open. WSL2 is secondary evidence.
+- Public admission remains the exact native-Windows CUDA runtime API 13.2
+  (`13020`), driver API 13.3 (`13030`), and RTX 5090 compute capability 12.0
+  region. CUDA 12 is qualification-only. Native Linux, RTX 40-series laptop,
+  clean-environment, and Apple M1 Max provider studies remain open; WSL2 is
+  secondary evidence.
 - Exact node benchmarking still requires one output; writers, multi-output
   operations, multiple accelerator runtimes, batch, generated Python/CLI, and
   export GPU execution remain outside this slice.
@@ -246,27 +257,27 @@ phantom validator, machine-readable evidence, and validation CSVs are included.
 
 ## Ordered next suggested steps
 
-1. **Canny and Otsu** — declare and validate operation-specific dtype,
-   parameter, boundary, memory, and parity regions, comparing CuPyX and cuCIM
-   where both are scientifically eligible.
-2. **Connected components** — preserve connectivity, leading-block semantics,
+The next phase has implemented Canny and Otsu; see the
+[Canny/Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md).
+
+1. **Connected components** — preserve connectivity, leading-block semantics,
    `int32` output, and exact deterministic label numbering.
-3. **Measurements** — support ordered labels-plus-intensity inputs and an exact
+2. **Measurements** — support ordered labels-plus-intensity inputs and an exact
    typed host-table finalizer with schema, order, units, and missing-value
    parity.
-4. **Convert Dtype and inexpensive residency bridges** — accelerate only
+3. **Convert Dtype and inexpensive residency bridges** — accelerate only
    explicit authored conversion/bridge nodes that preserve CPU semantics; never
    synthesize casts to improve a benchmark.
-5. **Native Linux and Windows laptop validation** — collect clean-environment,
+4. **Native Linux and Windows laptop validation** — collect clean-environment,
    parity, memory, cancellation, cleanup, and end-to-end evidence on supported
    Linux hosts and available RTX 40-series Windows laptops; treat WSL2 as
    secondary evidence.
-6. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
+5. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
    accounting and retain CPU fallback unless operation-level gates pass.
-7. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
+6. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
    time-boxed Windows packaging/upstream review, aiming for a maintainable
    feature-complete integration rather than a permanent skimage-only fork.
-8. **Batch, generated Python/CLI, and export** — add durable GPU execution and
+7. **Batch, generated Python/CLI, and export** — add durable GPU execution and
    provenance only after core interactive coverage and lifecycle contracts are
    stable.
 

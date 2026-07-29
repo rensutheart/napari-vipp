@@ -151,15 +151,18 @@ python -m venv .venv
 python -m pip install -e ".[dev]"
 ```
 
-### Experimental GPU Branch Environment
+### GPU Development Branch Environment
 
 GPU execution is currently design/development work on
 [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
 not a supported feature in the released plugin. Phase 1 is implemented as a
-headless, developer-hidden vertical slice for Rolling-Ball/Subtract Background,
-median, and 2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
-Richardson-Lucy, and Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data
-and leading blocks while preserving the existing CPU formula and defaults.
+headless vertical slice for Rolling-Ball/Subtract Background, median, and
+2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
+Richardson-Lucy, Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data and
+leading blocks while preserving the existing CPU formula and defaults, and
+Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Their
+validated regions are normal public `Auto`/`Selective` candidates on this
+branch; unsupported regions visibly use CPU.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
 includes
 CPU/Auto/Selective execution contracts, visible or strict fallback,
@@ -177,7 +180,7 @@ persistence now records portable authored compute intent, while separate
 non-scientific UI metadata preserves explicit optimizer locks without changing
 the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
 with every node unlocked until the user explicitly opts into Auto or Selective.
-Machine-local runtime/device selection, memory limits, experimental admission,
+Machine-local runtime/device selection, memory limits, provider admission,
 and benchmark evidence are not copied between machines. Batch and generated
 Python exports retain the compute block but execute on CPU in this phase.
 `Settings > Compute setup and memory…` verifies optional packages and hardware
@@ -220,9 +223,42 @@ nonlinear trajectories are measured; lambda-zero retains ordinary RL's 1–25
 range. Its nonlinear recurrence amplifies small CPU/GPU convolution and
 reduction-order differences, so positive TV uses a separate, versioned 0.5%
 NRMSE/peak-scaled maximum-error screen plus feature, MSE, flux, boundary, and
-floor diagnostics. This is a developer admission bound backed by fixed and
-holdout matrices—not permission to change an authored parameter, and not yet a
-public biological-restoration equivalence claim.
+floor diagnostics. This is an operation-specific public candidate region backed
+by fixed and holdout matrices—not permission to change an authored parameter,
+and not a blanket biological-restoration or cross-platform equivalence claim.
+
+GPU provider visibility on this branch follows the evidence. An implementation
+whose declared region has passed scientific parity and the required memory,
+progress, cancellation, cleanup, and runtime checks is a normal public
+`Selective` candidate and may participate in `Auto` where applicable performance
+evidence exists. `developer_hidden` is reserved for incomplete or unvalidated
+work. Promotion is region-specific: data types, parameters, shapes, or platforms
+outside a provider's reviewed region remain on CPU with a visible CPU decision
+or fallback. Public visibility on the development branch does not imply that
+every GPU, operating system, or released VIPP package has been qualified.
+
+Canny preserves VIPP's float32 plane conversion, constant-boundary Gaussian and
+Sobel arithmetic, bilinear non-maximum suppression, eight-connected hysteresis,
+quantile semantics, leading blocks, and explicit RGB/RGBA luma conversion. Its
+initial public GPU region accepts bool, `uint8`, and `uint16` inputs with
+canonical sigma 0 through 12. Authored `float32` Canny remains on CPU because
+CUDA subnormal flush-to-zero can change final edge bits even for finite inputs.
+Otsu preserves exact native integer
+levels up to the existing 65,536-level guard, NumPy float histogram edges and
+first-maximum tie breaking, finite-value handling, boolean identity, stack/slice
+scope, RGB/RGBA luma conversion, and the strict `image > threshold` mask rule.
+Its bounded atomic histogram avoids CuPy/CUB's device-occupancy-dependent wide-
+histogram workspace while retaining exact counts.
+Both providers return an exact boolean mask, report only synchronized progress,
+and visibly use CPU outside their admitted regions. In the source-current schema-v3
+[canonical RTX 5090 record](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md),
+all 28 admission cases were bitwise exact. On the 8x1024x1024 `uint16` stack,
+Canny measured 0.6812 seconds on CPU versus 0.0349 seconds GPU end-to-end
+(19.51x), while Otsu measured 0.0455 versus 0.0077 seconds (5.92x). The
+privacy-redacted 8.51-million-voxel ND2 volume measured 16.40x and 5.28x,
+respectively. Schema v3 binds the evidence to source fingerprints and strictly
+limits private-source metadata; these remain short machine-local screens, not
+portable performance guarantees or saved optimizer choices.
 
 Explicit **Convert
 Dtype** nodes can unlock these GPU candidates and may improve
@@ -304,9 +340,10 @@ optimization therefore cannot unknowingly contend for the same CUDA device;
 cancellation and the one absolute analysis deadline also apply while waiting
 for the lease. Different runtime/device keys remain independent.
 
-GPU candidates remain developer-hidden in the core admission model
-and are explicitly labelled experimental in this development UI, so this is
-not yet a public GPU support claim. The current optimizer is deliberately limited
+Validated GPU candidates are normally visible in the core admission model and
+the development UI; only unfinished or unvalidated providers remain
+`developer_hidden`. This is still branch-scoped operation support rather than a
+blanket released-package or cross-platform GPU claim. The current optimizer is deliberately limited
 to a calculated, writer-free scientific subgraph, one accelerator runtime, and
 single-output nodes supported by exact node benchmarking. Ordered multi-input
 nodes such as Richardson-Lucy and Richardson-Lucy TV are supported;
@@ -325,14 +362,21 @@ records the new provider, benchmark/lease substrate, exact parity policy,
 limitations, and ordered next work. The
 [Phase 2C Richardson-Lucy TV implementation record](docs/gpu-phase2c-rl-tv-implementation-report.md)
 records the preserved nonlinear contract, separate lambda-zero and positive-TV
-profiles, validation evidence, and remaining promotion gates. The machine-local
+profiles, validation evidence, and remaining promotion gates. The
+[Canny and Otsu implementation record](docs/gpu-phase3-canny-otsu-implementation-report.md)
+records the exact-mask contracts, initial public regions, rejected raw cuCIM
+Canny route, lifecycle policies, and real-device evidence protocol. The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
-representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses. The
+representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with
+paired median speedups of 55.88x, 77.96x, and 90.81x, respectively. The
 [Richardson-Lucy TV timing summary](docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
-records 73.66x and 109.46x paired median speedups for the same private
+records 66.15x and 108.63x paired median speedups for the same private
 8.51-million-voxel volume and a 16.78-million-voxel shape stress at the exact
-positive shipped profile.
+positive shipped profile. The
+[Canny/Otsu timing summary](docs/benchmarks/canny-otsu-cupy-windows-rtx5090.md)
+records their separate 28-case exact-mask admission, synchronized timing,
+memory-bound, cancellation, and zero-residue cleanup evidence.
 
 Structural cache reuse also fails closed on exact scientific context: source
 bytes/state and revision, node parameters and incoming topology, chained
@@ -374,8 +418,23 @@ resolving the base package or CuPy is not yet a VIPP GPU support claim; each
 Python minor must pass the clean-install, real-kernel, scientific-parity, memory,
 and cleanup gates first.
 
+Exact GPU parity is also defined against the authoritative CPU scientific stack.
+The current public Windows region requires NumPy 2.5.1, SciPy 1.18.0, and
+scikit-image 0.26.0. VIPP records those versions in the compute-environment
+fingerprint and visibly keeps nodes on CPU if any are missing or different;
+broader dependency versions require their own parity matrix rather than an
+implicit compatibility claim.
+
+Public admission currently matches the recorded native-Windows host exactly:
+CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), CuPy/CuPyX 14.1.1,
+and an NVIDIA GeForce RTX 5090 with compute capability 12.0. A different CUDA
+runtime, driver, model, or compute capability visibly keeps the node on CPU
+until that environment has its own reviewed evidence. Provider-level developer
+qualification can still run directly outside this public gate.
+
 The machine still needs a compatible NVIDIA driver. Select `--track cuda12` for
-the separate `.venv-gpu-cu12` compatibility environment. The project also
+the separate `.venv-gpu-cu12` qualification-only environment; CUDA 12 is
+outside the current public admission region. The project also
 publishes platform-marked `gpu-cuda12` and `gpu-cuda13` extras, but the setup
 helper is the reproducible development route because it applies the matching
 constraint file and verifies the installation. Never install the CUDA 12 and
@@ -383,13 +442,16 @@ CUDA 13 CuPy distributions into the same environment. If diagnostics report an
 unavailable runtime, they print a copyable setup command; VIPP's CPU path remains
 usable.
 
-The pinned native-Windows cuCIM skimage build remains experimental. Its current
+The scientifically validated cuCIM background provider is a normal public
+candidate in its exact admitted Windows environment. That provider status is
+separate from distribution: the pinned native-Windows cuCIM skimage
+source-built wheel and its installation route remain experimental. The current
 reproduction path is documented in the
 [cuCIM source evaluation](docs/cucim-windows-source-evaluation.md) and
 [`scripts/build_cucim_windows.ps1`](scripts/build_cucim_windows.ps1); it omits
-Clara I/O and is not yet a user-facing install route. The builder uses its own
-temporary environment and reports the wheel path/hash; it does not install
-cuCIM into `.venv-gpu-cu13`. Install a reviewed local build explicitly with
+Clara I/O and is not yet a general user-facing install route. The builder uses
+its own temporary environment and reports the wheel path/hash; it does not
+install cuCIM into `.venv-gpu-cu13`. Install a reviewed local build explicitly with
 `--cucim-wheel <path> --cucim-sha256 <digest>`; both values are required and the
 helper verifies the file immediately before installing it. CUDA acceleration
 targets validated Windows systems first, with native Linux next. macOS

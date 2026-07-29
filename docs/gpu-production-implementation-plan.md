@@ -3,15 +3,20 @@
 Date: 2026-07-29
 Product-direction revision: 2026-07-29
 Status: Phase 1 is implemented headlessly on
-`codex/gpu-cross-platform-support`; the experimental Pass 4 application slice now
+`codex/gpu-cross-platform-support`; the Pass 4 application slice now
 includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
 benchmark review, and a Selective-only review-first whole-pipeline optimizer.
-Phase 2B now adds developer-hidden ordinary CuPy/CuPyX Richardson-Lucy,
+Phase 2B adds ordinary CuPy/CuPyX Richardson-Lucy,
 ordered-multi-input/single-output exact benchmarking, and a process-wide
-per-device accelerator lease. Phase 2C adds developer-hidden CuPy/CuPyX
+per-device accelerator lease. Phase 2C adds CuPy/CuPyX
 Richardson-Lucy TV with separate lambda-zero and positive-TV scientific
-profiles. All GPU implementations remain developer-hidden pending the remaining
-Phase 2 and named release/platform gates.
+profiles. Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu. The validated
+regions for all of these providers are normal public Auto/Selective candidates
+on this branch; unsupported regions visibly use CPU. Canonical Canny/Otsu
+numerical evidence for this source revision records 28/28 exact admission cases,
+memory/lifecycle proof, and separate synthetic/real-acquisition timings.
+`developer_hidden` is reserved for unfinished or
+unvalidated work, while named release/platform gates remain region-specific.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -63,6 +68,15 @@ The following constraints and approved product directions are non-negotiable:
   median, and 2D/3D Gaussian. The next completed operation slices add ordinary
   RL and RL-TV; Otsu, Canny, connected components, region measurements, and
   other reasonable nodes follow quickly in evidence-driven families.
+- Admission and visibility are region-specific. Once a provider region has
+  passed its scientific-parity and required memory, progress, cancellation,
+  cleanup, and runtime gates, it is visible as a normal `Selective` candidate;
+  it may participate in `Auto` after the applicable end-to-end benefit gate.
+  `developer_hidden` is only for incomplete or unvalidated work. Unsupported
+  dtype, parameter, shape, environment, or platform regions visibly resolve or
+  fall back to CPU rather than hiding a validated provider or coercing the
+  authored workflow. Branch visibility is not a blanket released-package or
+  cross-platform support claim.
 - Capability declarations are dtype-explicit and designed for bool, common
   microscopy integers, float32, float64, and non-finite policies from the
   beginning. A provider may still expose only the dtype/parameter regions that
@@ -102,7 +116,7 @@ The development branch now contains the Phase 1 headless vertical slice:
 - a lazy provider registry, graph/device planner, transactional executor,
   private CuPy allocation scope, cleanup/OOM recovery, and host-only public
   result boundaries;
-- developer-hidden production adapters for cuCIM Rolling-Ball/Subtract
+- production adapters for cuCIM Rolling-Ball/Subtract
   Background and CuPyX median plus 2D/3D Gaussian, each with explicit admitted
   dtype/parameter regions and conservative CPU decisions outside them;
 - parity-before-timing node benchmarking, exact local benchmark fingerprints,
@@ -116,9 +130,10 @@ real finite-float32 execution region, the compatible Background → Gaussian →
 Median graph runs as one device-resident segment with one H2D and one D2H
 boundary, and a deliberately constrained allocation proves classified OOM
 cleanup followed by successful reuse. These results complete the local Phase 1
-implementation gate; the new development toolbar exposes them only through
-explicitly experimental controls and does not claim broadly calibrated Auto
-selection. A second Windows RTX 40-series tier, supported Linux
+implementation gate. Their validated regions are normal public candidates in
+the development toolbar; unsupported regions visibly remain on CPU. This does
+not claim portable Auto calibration or release-wide support. A second Windows
+RTX 40-series tier, supported Linux
 hosts, clean packaging/JIT evidence, and the M1 Max provider study remain named
 promotion or Phase 2+ gates. The concise implementation and validation handoff
 is the [GPU Phase 1 implementation record](gpu-phase1-implementation-report.md).
@@ -204,7 +219,7 @@ xfails**; repository Ruff and `git diff --check` were clean.
 
 ### Phase 2B ordinary Richardson-Lucy status (2026-07-29)
 
-The branch now contains a developer-hidden `rl-cupy-f32-v1` implementation
+The branch now contains a public-candidate `rl-cupy-f32-v1` implementation
 backed by CuPy and `cupyx.scipy.signal`. It preserves the ordinary CPU operation's
 prepared-call parameters and zero-fill `same` convolution semantics, accepts 2D
 or 3D spatial data with arbitrary leading blocks, keeps Image, PSF, output, and
@@ -273,17 +288,19 @@ tolerances changed.
 
 Large-stack timing on the same development host passed exact parity for a
 private 8.51-million-voxel ND2 `ZYX` volume and deterministic 16.78/67.11-million
-voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.347, 0.417, and
-1.617 seconds versus CPU medians of 24.465, 36.349, and 138.716 seconds: paired
-median speedups of 70.44x, 86.91x, and 85.79x. This was a three-pair descriptive
-screen, not a durable optimizer record or portable hardware promise. The
+voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.445, 0.465, and
+1.478 seconds versus CPU medians of 24.853, 35.779, and 134.306 seconds: paired
+median speedups of 55.88x, 77.96x, and 90.81x. This was a three-pair descriptive
+screen. Observed device peaks of 0.697, 1.098, and 4.500 GiB stayed within
+admitted bounds of 1.361, 2.111, and 7.720 GiB, respectively. This is not a
+durable optimizer record or portable hardware promise. The
 [versioned timing summary](benchmarks/rl-cupy-performance-windows-rtx5090.md)
 retains resident/transfer timing, memory, cleanup, environment, and raw-sample
 context.
 
 ### Phase 2C Richardson-Lucy TV status (2026-07-29)
 
-The branch now contains developer-hidden `rl-tv-cupy-f32-v1`, reusing the
+The branch now contains public-candidate `rl-tv-cupy-f32-v1`, reusing the
 ordinary RL input, PSF, block, progress, cancellation, transfer, lease, and
 cleanup substrate. It preserves the CPU recurrence's constant `0.5`
 initialization, zero-extension FFT convolution, flipped PSF, minus sign,
@@ -312,29 +329,82 @@ all 164 inherited fixtures passed at 10 and 25 iterations, with worst normalized
 gate scores 0.45744 and 0.44384. An independently constructed 96-fixture
 2D/3D holdout also had zero failures at both iteration counts, with worst scores
 0.22686 and 0.24209. Maintained phantoms additionally gate feature recovery,
-MSE, flux, borders, and floor/threshold diagnostics. This evidence supports only
-the hidden exact profile; calibrated biological datasets and cross-platform
-replication remain mandatory before public promotion.
+MSE, flux, borders, and floor/threshold diagnostics. This evidence supports
+public visibility only for the exact profiles; calibrated biological datasets
+and cross-platform replication remain mandatory before broader restoration,
+release, or platform claims.
 
 Machine-local positive-TV timing at 25 iterations passed exact parity for the
 private 8.51-million-voxel ND2 `ZYX` volume and a deterministic
-16.78-million-voxel 3D shape stress. Transfer-inclusive CuPy medians were 0.489
-and 0.537 seconds versus CPU medians of 36.004 and 58.816 seconds: paired median
-speedups of 73.66x and 109.46x. Observed device peaks of 0.93 and 1.87 GiB were
-bounded by the conservative 1.50 and 2.50 GiB estimates before uncertainty.
+16.78-million-voxel 3D shape stress. Transfer-inclusive CuPy medians were 0.529
+and 0.511 seconds versus CPU medians of 34.830 and 55.527 seconds: paired median
+speedups of 66.15x and 108.63x. Observed device peaks of 0.934 and 1.873 GiB
+were bounded by final admitted limits of 1.876 and 3.127 GiB, respectively
+(1.501 and 2.502 GiB before uncertainty).
 These are short descriptive RTX 5090 measurements, not portable performance or
-public Auto claims; the
+universal Auto claims; the
 [versioned timing summary](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
 retains paired samples, transfer/resident timing, memory, cleanup, environment,
 and source-currentness context.
 
-Current limits remain explicit: RL and RL-TV are developer-hidden; broad Auto
-admission is not claimed; exact benchmarking still requires one output and
+Current limits remain explicit: RL and RL-TV expose only their exact validated
+regions; portable broad Auto admission is not claimed; exact benchmarking still requires one output and
 excludes writers; pipeline optimization still supports
 one accelerator runtime; batch/generated/CLI/export stay CPU-only; native Linux
 and secondary Windows hardware evidence is pending; and the UI's separately
 captured optimizer inputs have not yet been replaced with one immutable
 application snapshot.
+
+### Phase 3A Canny and Otsu status (2026-07-29)
+
+The branch now contains two exact-mask public candidates. Canny uses a
+CuPy/CuPyX adapter (`cupyx-canny-edges-exact-v1`) that mirrors the CPU operation
+instead of delegating to a high-level GPU Canny call. It preserves float32 plane
+conversion, constant-boundary Gaussian/Sobel arithmetic, bilinear
+non-maximum-suppression tie behavior, eight-connected hysteresis, ordered
+quantiles, leading blocks, and explicit BT.601 RGB/RGBA luma conversion. The
+initial region accepts bool, `uint8`, and `uint16`, with canonical sigma from 0
+through 12 and the existing quantile parameter contract. Authored `float32`
+uses a visible CPU decision because CUDA subnormal flush-to-zero can change final
+mask bits even for finite input. A custom correlation kernel preserves SciPy's
+observable outside-in accumulation order inside the admitted integer/bool region.
+Raw cuCIM Canny was rejected for this region because adversarial edge masks were
+not exactly equal; library availability does not override final-mask parity.
+
+Otsu uses a CuPy adapter (`cupy-otsu-threshold-exact-v1`) that keeps image-sized
+finite masking, histogram construction, and final threshold comparison on the
+device, then transfers only a bounded histogram for the authoritative NumPy
+float64 cumulative arithmetic and first-maximum tie break. It preserves boolean
+identity, exact native integer levels and offsets (subject to the existing
+65,536-level span guard), float16/32/64 histogram edges, non-finite handling,
+constant/error behavior, stack/slice scope, BT.601 luma conversion, and strict
+`image > threshold` output. A raw cuCIM threshold scalar alone was insufficient
+to establish those complete public semantics. A bounded atomic `uint64`
+histogram replaces CuPy/CUB's device-occupancy-dependent wide-histogram
+workspace while preserving the exact counts.
+
+Both providers declare fixed boolean output and `mask-bitwise-v1` parity.
+Memory admission covers their image-sized device intermediates and bounded
+histograms; completed plane/histogram milestones are reported only after stream
+synchronization, with cancellation checked at honest operation boundaries.
+All public exact candidates additionally require the reviewed CPU reference
+stack (NumPy 2.5.1, SciPy 1.18.0, scikit-image 0.26.0); a missing or changed
+version visibly retains CPU before GPU probing. Regions outside the declarations
+visibly use CPU. Focused implementation tests and exploratory parity matrices
+validated the exact candidate contracts, which are available in normal
+`Auto`/`Selective` pipelines. The source-current schema-v3 canonical record passed 28/28
+exact-mask admission cases. On the 8x1024x1024 `uint16` stack, Canny measured
+0.6812 seconds CPU versus 0.0349 seconds GPU end-to-end (19.51x), and Otsu
+measured 0.0455 versus 0.0077 seconds (5.92x). On the privacy-redacted
+8.51-million-voxel ND2 volume, the corresponding speedups were 16.40x and
+5.28x. Observed synthetic-stack private-pool peaks were 72,516,608 bytes for
+Canny and 84,377,600 bytes for Otsu, both inside admission; cancellation and
+zero-residue cleanup passed. The schema-v3 validator also enforces source
+fingerprint integrity and the closed, identifier-free private-source metadata
+contract. These are machine-local screens, not portable performance or
+universal Auto claims. See the
+[Canny/Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md)
+and [canonical evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md).
 
 Immediate hardening before this optimizer can support broader operation and
 platform claims:
@@ -459,7 +529,7 @@ The pinned source result was:
 | --- | --- |
 | Source | cuCIM `v26.06.00`, commit `3c15781c207eab93a317dd9803a6e726fe01f7c4` |
 | Artifact | `cucim_cu13-26.6.0-cp312-cp312-win_amd64.whl`, 8,654,879 bytes, SHA-256 `586D3443091EEA67CE2C697BE2C490CA51977A5DBDF894B9318B270977134CF8` |
-| Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA toolkit package 13.2.2, NVCC/nvJitLink 13.2.86, runtime API 13.2 |
+| Host | Windows 10, Python 3.12.9, RTX 5090 compute capability 12.0, CuPy 14.1.1, CUDA toolkit package 13.2.2, NVCC/nvJitLink 13.2.86, runtime API 13.2 (`13020`), driver API 13.3 (`13030`) |
 | Available surface | `cucim.skimage` and `cucim.core` |
 | Unavailable surface in this artifact | Native `cucim.clara/libcucim` whole-slide image I/O; feasibility and delivery are owned by the [Windows port plan](cucim-windows-port-plan.md) |
 | Clean procedural reproduction | Fresh clone/build/install plus Gaussian, rolling-ball, and labeling real-kernel probe passed |
@@ -845,11 +915,16 @@ rule, conversion/rounding/overflow policy, and non-finite policy. This per-port
 model is mandatory for multi-input, dtype-changing, and table-producing nodes;
 a coarse operation-wide dtype tuple is prohibited.
 
-Admission is an explicit lifecycle. `developer_hidden` is available only to an
-explicit headless developer request and is excluded from ordinary UI, workflow,
-Auto, and Selective discovery. `public_selective` has passed scientific and
-operational gates. `public_auto_candidate` may additionally be considered by
-Auto, but only inside its validated environment/workload policy. An internal
+Admission is an explicit, region-specific lifecycle. `developer_hidden` is
+reserved for incomplete or unvalidated work, is available only to an explicit
+headless developer request, and is excluded from ordinary UI, workflow, Auto,
+and Selective discovery. `public_selective` has passed scientific parity plus
+the required memory, progress, cancellation, cleanup, and runtime gates and is
+therefore visible in normal pipelines. `public_auto_candidate` has additionally
+met the evidence requirements to be considered by Auto, but only inside its
+validated environment/workload policy. A provider is not hidden merely because
+some of its dtype/parameter/platform subregions are unsupported: those calls
+receive a visible CPU decision or fallback. An internal
 `allow_experimental=True` test/developer flag is never serialized into workflow
 JSON or exposed as a normal user setting.
 
@@ -1992,23 +2067,27 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   leading blocks, explicit channel axes, and scalar trailing 3/4 axes.
 - Non-finite and unpromoted dtype regions remain CPU until separately validated.
 
-#### Otsu — `otsu-*-v1`
+#### Otsu — `cupy-otsu-threshold-exact-v1`
 
-- Reproduce VIPP's complete finite-value histogram, bin/count policy, integer
+- The implemented CuPy adapter reproduces VIPP's complete finite-value
+  histogram, bin/count policy, integer
   offset/range preservation, bool identity, slice/stack scope, and final mask;
   raw `cucim.skimage.filters.threshold_otsu` scalar parity is insufficient.
 - Compare the final public dtype/mask exactly and record the threshold only as
   intermediate provenance. Empty/all-non-finite and constant regions follow the
   CPU error/result contract exactly.
 
-#### Canny — `canny-*-v1`
+#### Canny — `cupyx-canny-edges-exact-v1`
 
-- Preserve VIPP's BT.601 channel reduction, plane-wise spatial semantics,
+- The implemented CuPy/CuPyX adapter preserves VIPP's BT.601 channel reduction,
+  plane-wise spatial semantics,
   ordered low/high quantile thresholds with `use_quantiles=True`, sigma/boundary
   behavior, leading blocks/channels, and exact boolean output. Adding an
   absolute-threshold mode would be separate scientific and schema work.
-- Promote only complete parameter regions whose final edge mask is exactly
-  equal; a raw default cuCIM Canny fixture cannot establish this contract.
+- Only complete parameter regions whose final edge mask is exactly equal are
+  public candidates. Raw cuCIM Canny was evaluated and rejected because
+  adversarial final masks diverged; a raw default fixture cannot establish this
+  contract.
 
 #### Connected components — `connected-components-*-v1`
 
@@ -2044,23 +2123,24 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   `float32` dtype, identical finite masks with completely finite output, NRMSE
   `<= 2e-6`, and
   `max_abs <= 1e-6 + 5e-6 * max(abs(reference))`. Maximum float32 ULP distance
-  is recorded as a diagnostic but is not a separate pass gate. Public promotion
-  still requires the wider MSE, flux, and point/line/dim-feature recovery
-  evidence; implementing the benchmark policy does not waive those dataset
-  gates.
+  is recorded as a diagnostic but is not a separate pass gate. The exact
+  validated region is publicly visible on this branch; wider MSE, flux, and
+  point/line/dim-feature recovery evidence is still required to broaden the
+  region or make stronger release/platform claims.
 - Test 2D/3D, leading blocks, iterations 1/2/25 and long-run boundaries on a
   small fixture, PSF sizes/support, normalized and deliberately unnormalized
   valid PSFs, parameter extremes, zeros, negative clipping modes, and cleaned
   NaN/Inf inputs.
-- The developer-hidden initial region is deliberately narrower than the public
-  CPU surface: finite float32 Image/PSF, odd PSF extents, the default-safe
+- The public-candidate initial GPU region is deliberately narrower than the
+  public CPU surface: finite float32 Image/PSF, odd PSF extents, the default-safe
   options, `filter_epsilon == 1e-8`, and no more than 25 iterations. The
   unchanged `1e-12` CPU default, other epsilon values, and longer runs remain
   CPU-only until a versioned numerical study clears the same parity policy.
 
 #### RL-TV — `rl-tv-cupy-f32-v1`
 
-- Implemented developer-hidden in Phase 2C. Preserve the current formula, minus
+- Implemented as an exact-profile public candidate in Phase 2C. Preserve the
+  current formula, minus
   sign, denominator placement/floor,
   central-difference `np.gradient` convention, zero-extension convolution,
   constant initialization, epsilon behavior, clipping, and lack of physical
@@ -2351,24 +2431,35 @@ Raw primitive benchmark results are labelled feasibility evidence and cannot
 stand in for these adapter tests.
 
 **Migration:** existing workflow-v3 files load in CPU mode until the user opts
-in. An explicit headless developer request with `allow_experimental=True`, or
-the clearly experimental controls on this development branch, may exercise the
-`developer_hidden` cuCIM implementation; public admission remains closed.
+in. The scientifically and lifecycle-validated cuCIM background region is now a
+normal public candidate on this branch. Its exact environment policy still
+fails closed when the reviewed wheel/provenance is absent, and unsupported
+workloads visibly remain on CPU.
 
 **Acceptance/rollback:** every advertised dtype/parameter region clears the
-scientific, memory, cleanup, cancellation, and provenance gates. The results may
-qualify it for later `public_selective` and `public_auto_candidate` promotion,
-but the developer-hidden tier remains decisive until the packaging gate passes;
-Auto-performance evidence never bypasses exposure. Rollback removes only the
+scientific, memory, cleanup, cancellation, and provenance gates. That exact
+region is now `public_auto_candidate`; packaging and broader platform support
+remain separate claims, and Auto-performance evidence never bypasses the exact
+environment gate. The current public gate is the recorded native-Windows CUDA
+runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and RTX 5090 (compute
+capability 12.0) host. CUDA 12 is qualification-only and outside public
+admission; secondary NVIDIA models remain provider-level qualification targets.
+Rollback removes only the
 background declarations/adapter. The production-adapter tests must run from the
 same dedicated VIPP environment into which the recorded wheel was installed,
-not only the builder's temporary venv. **Still disabled:** public GPU controls
-and a public cuCIM installation extra.
+not only the builder's temporary venv. **Still pending:** a public cuCIM
+installation extra and wider-platform qualification.
 
 **Parallelism:** fixtures and adapter code can overlap Pass 1 in new files;
 declaration/integration waits for Pass 1. One owner edits `compute_specs.py`.
 
 ### Pass 3 — Median, Gaussian, and the first headless optimizer
+
+> **Historical pass gate:** this section records the constraints in force when
+> Pass 3 was completed. Later passes added public toolbar controls and promoted
+> scientifically and lifecycle-validated implementations within their exact
+> admitted environment regions. The current status and region tables above
+> supersede the historical visibility statements below.
 
 **Depends on:** Pass 1. Median/Gaussian implementation proceeds independently
 of experimental cuCIM packaging; only the combined resident-chain test waits for
@@ -2400,9 +2491,10 @@ when an isolated-node winner differs.
 requests until Pass 4; raw benchmark evidence is local and no workflow schema
 changes.
 
-**Acceptance/rollback:** scientifically valid implementations appear as
-Selective candidates within the explicit Phase 1 developer request regardless
-of the Auto threshold; their public exposure still requires the packaging tier.
+**Acceptance/rollback (historical):** scientifically valid implementations
+appeared as Selective candidates within the explicit Phase 1 developer request
+regardless of the Auto threshold; at that pass boundary, public exposure still
+required the packaging tier.
 Developer Auto calibration considers only validated regions whose complete
 segment clears the lower-confidence 1.20x and 20-ms gate, or a valid local
 benchmark shows a statistically clear win. Small,
@@ -2529,10 +2621,10 @@ algorithm tests after Pass 4 if no shared files are edited.
 
 ### Pass 6 — Ordinary Richardson–Lucy
 
-**Status (2026-07-29):** the developer-hidden headless implementation and its
-exact node/optimizer benchmark substrate are implemented. Public Selective/Auto,
-batch exposure, broader real-data evidence, and cross-platform promotion remain
-gated.
+**Status (2026-07-29):** the headless implementation, exact node/optimizer
+benchmark substrate, and exact-region public Auto/Selective visibility are
+implemented. Batch exposure, broader real-data evidence, and cross-platform
+qualification remain gated.
 
 **Depends on:** Passes 1, 4, and the batch cleanup contract if batch exposure is
 included.
@@ -2561,11 +2653,11 @@ promotion work where not already covered by common substrate tests.
 
 **Migration:** none; declarations only widen runtime capability.
 
-**Acceptance/rollback:** the developer-hidden region passes its focused
-scientific, memory-model, cleanup, exact-benchmark, and iteration-progress gates.
-No public Selective or Auto claim follows until the remaining platform/real-data
-gates pass; Auto must additionally clear the section 5.4 end-to-end benefit rule
-using the production adapter. No parameter is hard-coded from the spike.
+**Acceptance/rollback:** the exact region passes its focused scientific,
+memory-model, cleanup, exact-benchmark, and iteration-progress gates and is
+visible as a public candidate. Auto selection still requires the section 5.4
+end-to-end benefit rule using the production adapter; unvalidated environments
+and parameter regions remain on CPU. No parameter is hard-coded from the spike.
 Rollback removes the RL declaration. **Still disabled:** batch/generated/export
 GPU execution and any new RL initialization/boundary/default.
 
@@ -2575,11 +2667,11 @@ shared RL provider primitives.
 
 ### Pass 7 — RL-TV
 
-**Status (2026-07-29):** the developer-hidden headless implementation, exact
-lambda-zero and positive-TV regions, ordered-input benchmarking, iteration
-progress/cancellation, conservative memory model, and fixed/holdout evidence are
-implemented. Public Selective/Auto, batch exposure, calibrated biological data,
-and cross-platform promotion remain gated.
+**Status (2026-07-29):** the headless implementation, exact lambda-zero and
+positive-TV regions, ordered-input benchmarking, iteration
+progress/cancellation, conservative memory model, fixed/holdout evidence, and
+exact-region public Auto/Selective visibility are implemented. Batch exposure,
+calibrated biological data, and cross-platform qualification remain gated.
 
 **Depends on:** Pass 6 and the existing RL-TV validation baseline.
 **Owns:** new `core/gpu/cupy_rl_tv.py` (or an RL-TV-only extension of a shared
@@ -2600,11 +2692,12 @@ OOM, and batch cleanup when batch exposure is enabled.
 **Migration:** none. Do not change shipped examples, defaults, formula,
 initialization, padding, PSF preparation, or TV spacing.
 
-**Acceptance/rollback:** the developer-hidden exact profiles pass numerical,
-feature, memory, cleanup, and truthful iteration gates. Auto regions must also
-clear the section 5.4 end-to-end benefit rule; public promotion still requires
-calibrated real-data and cross-platform review. Rollback removes only RL-TV
-capability. **Still disabled:** alternative TV stencils, observed
+**Acceptance/rollback:** the exact public-candidate profiles pass numerical,
+feature, memory, cleanup, and truthful iteration gates. Auto selection still
+requires the section 5.4 end-to-end benefit rule; broader restoration,
+release, and platform claims still require calibrated real-data and
+cross-platform review. Rollback removes only RL-TV capability. **Still
+disabled:** alternative TV stencils, observed
 initialization, reflect padding, and fast precision.
 
 **Parallelism:** dataset preparation and blinded review can begin earlier; code
@@ -2910,34 +3003,33 @@ not reasons to redesign Phase 1.
 
 ## Ordered next suggested steps (maintained 2026-07-29)
 
-This is the implementation queue after the Phase 2C RL-TV slice. Update
-this section when a wave lands so the branch and handoff report retain one
-explicit order.
+This is the implementation queue after the Canny/Otsu slice. Update this
+section when a wave lands so the branch and handoff report retain one explicit
+order. The completed public Canny/Otsu contracts and their separate evidence
+protocol are recorded in
+the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md).
 
-1. **Canny and Otsu:** add separate versioned operation regions and compare all
-   scientifically eligible CuPyX/cuCIM alternatives. Preserve axes, thresholds,
-   boundaries, dtype, and deterministic output semantics before timing.
-2. **Connected components:** preserve the CPU connectivity and independent
+1. **Connected components:** preserve the CPU connectivity and independent
    leading-block rules, public `int32` output, and exact label-ID ordering; time
    any required deterministic canonicalization.
-3. **Measurements:** introduce the typed labels-plus-intensity inputs and
+2. **Measurements:** introduce the typed labels-plus-intensity inputs and
    host-table finalizer while preserving schema, row/column order, units,
    calibration, missing values, and public scalar types.
-4. **Convert Dtype and inexpensive residency bridges:** support only explicit
+3. **Convert Dtype and inexpensive residency bridges:** support only explicit
    authored conversions and scientifically faithful low-cost operations that can
    keep useful segments resident. Never insert a cast or bridge merely to improve
    a benchmark.
-5. **Native platform evidence:** validate supported native Linux targets and the
+4. **Native platform evidence:** validate supported native Linux targets and the
    available Windows RTX 40-series laptops, including clean setup, real kernels,
    parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
    secondary evidence, not a substitute for native Windows/Linux claims.
-6. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+5. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
    with unified-memory accounting. Keep the CPU path as the honest fallback
    unless an operation family passes scientific and performance gates.
-7. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+6. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
    time-boxed packaging/upstream review. Prefer a maintainable feature-complete
    cuCIM route; do not normalize a permanently hobbled skimage-only fork.
-8. **Durable execution surfaces:** add batch, generated Python/CLI, and export
+7. **Durable execution surfaces:** add batch, generated Python/CLI, and export
    GPU execution and provenance after the core interactive operation coverage
    and lifecycle contracts are stable.
 
@@ -2964,13 +3056,16 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
 4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
    intent, setup/memory diagnostics, selected-node benchmark review, the
    conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
-   implemented. RL-TV is now implemented headlessly too. Continue in the
-   maintained order above: Canny/Otsu;
-   connected components; measurements; explicit Convert Dtype/residency bridges;
+   implemented. RL-TV and exact-mask Canny/Otsu are now implemented too.
+   Continue in the maintained order above: connected components; measurements;
+   explicit Convert Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.
-5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and
-   packaging admit a Selective candidate. Auto additionally needs conservative
-   whole-segment performance evidence. Primitive benchmarks alone admit nothing.
+5. **Admission rule:** scientific validity, memory, progress, cancellation,
+   cleanup, and runtime evidence make a region a normal public Selective
+   candidate; incomplete/unvalidated work alone remains `developer_hidden`.
+   Auto additionally needs conservative whole-segment performance evidence.
+   Unsupported subregions visibly use CPU, and primitive benchmarks alone admit
+   nothing.
 6. **Platform direction:** portable CPU support remains Windows/macOS/Linux;
    CUDA targets validated Windows/Linux first. M1 Max Metal/MPS/MLX feasibility
    is a named near-term investigation with unified-memory semantics. cuCIM's

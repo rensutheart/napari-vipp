@@ -3,7 +3,7 @@
 - Device: `NVIDIA GeForce RTX 5090` (`cuda:0`)
 - Python / CuPy: `3.12.9` / `14.1.1`
 - Fixtures: `164` inherited adversarial + `96` independent holdout
-- Status: **all reviewed developer-hidden gates passed**
+- Status: **all reviewed gates passed for development-branch public exposure**
 
 The lambda-zero profile remains ordinary Richardson-Lucy and uses its
 strict numerical policy. The positive profile is only the exact shipped
@@ -37,6 +37,8 @@ at exactly 10 or 25 iterations; this is not a continuous parameter claim.
 - Guard activity is diagnostic, not a reason to alter authored values.
   The evidence records threshold and denominator-floor activity for
   every positive-profile fixture.
-- This single-machine artifact supports developer-hidden admission.
-  Calibrated bead/biological datasets, blinded review, and Linux/laptop
-  evidence remain required before public promotion.
+- This single-machine artifact supports public exposure for the
+  reviewed exact regions on this development branch.
+- It does not establish cross-platform support or released-package
+  promotion. Calibrated bead/biological datasets, blinded review, and
+  Linux/laptop evidence remain required before those broader claims.
