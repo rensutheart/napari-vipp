@@ -21,6 +21,7 @@ from hashlib import sha256
 
 import numpy as np
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import WorkloadDescriptor
 from napari_vipp.core.compute_benchmark import (
     ADAPTIVE_WARM_ROUNDS,
@@ -62,11 +63,18 @@ BACKGROUND_PARITY_OPERATION_IDS = frozenset(
     {"rolling_ball_background", "subtract_background"}
 )
 GAUSSIAN_PARITY_OPERATION_IDS = frozenset({"gaussian_blur", "gaussian_blur_3d"})
+RICHARDSON_LUCY_PARITY_OPERATION_IDS = frozenset(
+    {"richardson_lucy_deconvolution"}
+)
+BENCHMARK_WRITER_OPERATION_IDS = frozenset({"save_output", "batch_output"})
 GAUSSIAN_FLOAT32_NRMSE_LIMIT = 2e-6
 GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR = 1e-12
+RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT = 2e-6
+RICHARDSON_LUCY_FLOAT32_ABSOLUTE_FLOOR = 1e-12
 BACKGROUND_FLOAT32_NRMSE_LIMIT = 2e-6
 BACKGROUND_FLOAT32_MAX_ABS_BASE = 1e-6
 BACKGROUND_FLOAT32_SCALE_ULPS = 2.0
+_BENCHMARK_ABORT_CALLBACK_KWARG = "__vipp_benchmark_abort_callback"
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,10 +197,17 @@ def build_registered_node_benchmark(
         raise TypeError("admitted_specs must contain OperationComputeSpec values.")
     if len({spec.implementation_id for spec in specs}) != len(specs):
         raise ValueError("admitted_specs implementation IDs must be unique.")
-    if call.multiple_inputs or len(call.inputs) != 1 or call.output_port_count != 1:
+    if call.operation_id in BENCHMARK_WRITER_OPERATION_IDS:
         raise ValueError(
-            "Phase-1 registered node benchmarking requires one input and one output."
+            "Registered node benchmarking refuses writer operations."
         )
+    if call.output_port_count != 1:
+        raise ValueError(
+            "Registered node benchmarking requires exactly one output; "
+            "multiple ordered inputs are supported."
+        )
+    if _BENCHMARK_ABORT_CALLBACK_KWARG in call.kwargs:
+        raise ValueError("Prepared calls may not define benchmark-private keywords.")
 
     for spec in specs:
         _validate_admitted_spec(
@@ -320,8 +335,6 @@ def _bind_benchmark_operation_progress(
     if not isinstance(private_input, PreparedNodeCall):
         raise TypeError("private benchmark input must be a PreparedNodeCall.")
     kwargs = private_input.keyword_arguments()
-    if "progress" not in kwargs:
-        return private_input
 
     def forward(update: ProgressUpdate) -> None:
         if reporter is None:
@@ -335,10 +348,12 @@ def _bind_benchmark_operation_progress(
             ),
         )
 
-    kwargs["progress"] = ProgressContext(
-        cancelled=abort,
-        reporter=forward if reporter is not None else None,
-    )
+    if "progress" in kwargs:
+        kwargs["progress"] = ProgressContext(
+            cancelled=abort,
+            reporter=forward if reporter is not None else None,
+        )
+    kwargs[_BENCHMARK_ABORT_CALLBACK_KWARG] = abort
     return PreparedNodeCall(
         node_id=private_input.node_id,
         operation_id=private_input.operation_id,
@@ -395,6 +410,8 @@ def operation_parity(
         return _exact_array_parity(reference, candidate)
     if operation in GAUSSIAN_PARITY_OPERATION_IDS:
         return _gaussian_float32_parity(reference, candidate)
+    if operation in RICHARDSON_LUCY_PARITY_OPERATION_IDS:
+        return _richardson_lucy_float32_parity(reference, candidate)
     raise ValueError(f"No production benchmark parity policy for {operation!r}.")
 
 
@@ -497,6 +514,11 @@ def _validate_admitted_spec(
         raise ValueError("Only declared pure operations may be benchmarked.")
     if len(spec.input_ports) != len(call.inputs):
         raise ValueError("Implementation input contracts do not match the call.")
+    for index, port in enumerate(spec.input_ports):
+        if port.port_index != index:
+            raise ValueError(
+                "Implementation input contracts must match ordered call ports."
+            )
     if len(spec.output_ports) != call.output_port_count:
         raise ValueError("Implementation output contracts do not match the call.")
     if spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN and not allow_experimental:
@@ -522,6 +544,8 @@ def _validate_admitted_spec(
         expected_parity = "median-production-bitwise-v1"
     elif call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
         expected_parity = "background-dtype-parity-v2"
+    elif call.operation_id in RICHARDSON_LUCY_PARITY_OPERATION_IDS:
+        expected_parity = "rl-float32-tolerance-v1"
     if expected_parity is None or spec.parity_policy_id != expected_parity:
         raise ValueError(
             f"Implementation {spec.implementation_id!r} has unsupported parity "
@@ -601,11 +625,16 @@ class _RegisteredCandidateRunner:
         ):
             raise ValueError("private benchmark call does not match its template.")
         runtime = self.registry.runtime(self.spec.runtime_id)
-        implementation = self.registry.implementation_callable(
-            self.spec,
-            allow_experimental=self.allow_experimental,
-        )
-        return self._execute_in_scope(private_call, runtime, implementation)
+        with accelerator_lease(
+            self.spec.runtime_id,
+            self.device_id,
+            cancelled=_benchmark_abort_callback(private_call),
+        ):
+            implementation = self.registry.implementation_callable(
+                self.spec,
+                allow_experimental=self.allow_experimental,
+            )
+            return self._execute_in_scope(private_call, runtime, implementation)
 
     def _execute_in_scope(
         self,
@@ -677,7 +706,7 @@ class _RegisteredCandidateRunner:
                         )
                         raw = implementation(
                             positional,
-                            **private_call.keyword_arguments(),
+                            **_provider_keyword_arguments(private_call),
                         )
                         try:
                             outputs = _normalized_outputs(
@@ -985,10 +1014,27 @@ def _execute_cpu_reference(private_call: object) -> object:
         raise TypeError("private benchmark input must be a PreparedNodeCall.")
     raw = private_call.cpu_function(
         private_call.positional_input(),
-        **private_call.keyword_arguments(),
+        **_provider_keyword_arguments(private_call),
     )
     outputs = _normalized_outputs(raw, private_call.output_port_count)
     return outputs[0] if private_call.output_port_count == 1 else outputs
+
+
+def _benchmark_abort_callback(
+    call: PreparedNodeCall,
+) -> Callable[[], bool] | None:
+    callback = call.kwargs.get(_BENCHMARK_ABORT_CALLBACK_KWARG)
+    if callback is None:
+        return None
+    if not callable(callback):
+        raise TypeError("benchmark-private abort callback must be callable.")
+    return callback
+
+
+def _provider_keyword_arguments(call: PreparedNodeCall) -> dict[str, object]:
+    kwargs = call.keyword_arguments()
+    kwargs.pop(_BENCHMARK_ABORT_CALLBACK_KWARG, None)
+    return kwargs
 
 
 def _normalized_outputs(raw: object, output_count: int) -> tuple[object, ...]:
@@ -1321,6 +1367,64 @@ def _gaussian_float32_parity(
     )
 
 
+def _richardson_lucy_float32_parity(
+    reference: object,
+    candidate: object,
+) -> ParityResult:
+    """Gate accumulated convolution differences in the admitted RL region."""
+
+    try:
+        expected = np.asarray(reference)
+        actual = np.asarray(candidate)
+    except Exception as exc:
+        return ParityResult(False, f"outputs are not host arrays: {exc}")
+    mismatch = _array_contract_mismatch(expected, actual)
+    if mismatch:
+        return ParityResult(False, mismatch)
+    if expected.dtype != np.dtype(np.float32):
+        return ParityResult(
+            False,
+            "Richardson-Lucy production benchmark requires float32, "
+            f"got {expected.dtype}",
+        )
+    expected_finite = np.isfinite(expected)
+    actual_finite = np.isfinite(actual)
+    if not np.array_equal(expected_finite, actual_finite):
+        return ParityResult(False, "finite/non-finite masks differ")
+    if not bool(np.all(expected_finite)):
+        return ParityResult(
+            False,
+            "Richardson-Lucy admitted region must be completely finite",
+        )
+    expected64 = expected.astype(np.float64)
+    actual64 = actual.astype(np.float64)
+    difference = actual64 - expected64
+    max_abs = float(np.max(np.abs(difference))) if difference.size else 0.0
+    peak = float(np.max(np.abs(expected64))) if expected64.size else 0.0
+    max_abs_limit = 1e-6 + 5e-6 * peak
+    denominator = max(
+        float(np.linalg.norm(expected64.ravel())),
+        float(
+            math.sqrt(expected64.size)
+            * RICHARDSON_LUCY_FLOAT32_ABSOLUTE_FLOOR
+        ),
+    )
+    numerator = float(np.linalg.norm(difference.ravel()))
+    nrmse = numerator / denominator if denominator else 0.0
+    max_ulp = _maximum_float32_ulp_distance(expected, actual)
+    passed = bool(
+        nrmse <= RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT
+        and max_abs <= max_abs_limit
+    )
+    return ParityResult(
+        passed,
+        f"nrmse={nrmse:.9g} "
+        f"(limit={RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT:.9g}); "
+        f"max_abs={max_abs:.9g} (limit={max_abs_limit:.9g}); "
+        f"max_ulp={max_ulp} (diagnostic)",
+    )
+
+
 def _array_contract_mismatch(expected: np.ndarray, actual: np.ndarray) -> str:
     if expected.shape != actual.shape:
         return f"shape differs: CPU {expected.shape}, candidate {actual.shape}"
@@ -1400,6 +1504,7 @@ __all__ = [
     "BACKGROUND_FLOAT32_NRMSE_LIMIT",
     "BACKGROUND_FLOAT32_SCALE_ULPS",
     "BACKGROUND_PARITY_OPERATION_IDS",
+    "BENCHMARK_WRITER_OPERATION_IDS",
     "CUSTOM_BENCHMARK_POLICY_ID",
     "EXACT_PARITY_OPERATION_IDS",
     "GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR",
@@ -1410,6 +1515,9 @@ __all__ = [
     "ProductionBenchmarkObservationLog",
     "ProductionInvocationObservation",
     "RegisteredNodeBenchmark",
+    "RICHARDSON_LUCY_FLOAT32_ABSOLUTE_FLOOR",
+    "RICHARDSON_LUCY_FLOAT32_NRMSE_LIMIT",
+    "RICHARDSON_LUCY_PARITY_OPERATION_IDS",
     "build_registered_node_benchmark",
     "detach_prepared_node_call",
     "operation_parity",

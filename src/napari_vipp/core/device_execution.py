@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Protocol
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeMode,
     ComputeRequest,
@@ -621,6 +623,61 @@ def execute_device_plan(
     cancel_callback: Callable[[], bool] | None = None,
     node_outputs_callback: NodeOutputsCallback | None = None,
 ) -> DeviceExecutionResult:
+    """Execute one plan while exclusively owning all of its accelerators."""
+
+    runtime_ids = sorted(
+        {
+            unit.segment.runtime_id
+            for unit in plan.units
+            if isinstance(unit, DeviceSegmentUnit)
+        }
+    )
+    if not runtime_ids:
+        return _execute_device_plan_under_leases(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values=host_values,
+            prepare_call=prepare_call,
+            cancel_callback=cancel_callback,
+            node_outputs_callback=node_outputs_callback,
+        )
+    _check_cancelled(cancel_callback)
+    with ExitStack() as leases:
+        for runtime_id in runtime_ids:
+            runtime = registry.runtime(runtime_id)
+            device_id = _accelerator_lease_device_id(runtime, request.device_id)
+            leases.enter_context(
+                accelerator_lease(
+                    runtime_id,
+                    device_id,
+                    cancelled=cancel_callback,
+                )
+            )
+        return _execute_device_plan_under_leases(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values=host_values,
+            prepare_call=prepare_call,
+            cancel_callback=cancel_callback,
+            node_outputs_callback=node_outputs_callback,
+        )
+
+
+def _execute_device_plan_under_leases(
+    plan: DeviceGraphPlan,
+    pipeline: PrototypePipeline,
+    registry: ComputeRegistry,
+    request: ComputeRequest,
+    *,
+    host_values: Mapping[OutputPortKey, object],
+    prepare_call: PrepareNodeCall,
+    cancel_callback: Callable[[], bool] | None = None,
+    node_outputs_callback: NodeOutputsCallback | None = None,
+) -> DeviceExecutionResult:
     """Execute ``plan`` and return an atomic host-only result mapping.
 
     Device segments commit only their declared exits/retained ports.  A typed,
@@ -768,6 +825,38 @@ def _execute_host_unit(
 
 
 def _execute_device_segment(
+    unit: DeviceSegmentUnit,
+    pipeline: PrototypePipeline,
+    registry: ComputeRegistry,
+    runtime: RuntimeProtocol,
+    request: ComputeRequest,
+    committed: Mapping[OutputPortKey, object],
+    prepare_call: PrepareNodeCall,
+    cancel_callback: Callable[[], bool] | None,
+    cleanup_status: _CleanupStatus,
+    node_outputs_callback: NodeOutputsCallback | None,
+) -> dict[OutputPortKey, object]:
+    lease_device_id = _accelerator_lease_device_id(runtime, request.device_id)
+    with accelerator_lease(
+        unit.segment.runtime_id,
+        lease_device_id,
+        cancelled=cancel_callback,
+    ):
+        return _execute_device_segment_under_lease(
+            unit,
+            pipeline,
+            registry,
+            runtime,
+            request,
+            committed,
+            prepare_call,
+            cancel_callback,
+            cleanup_status,
+            node_outputs_callback,
+        )
+
+
+def _execute_device_segment_under_lease(
     unit: DeviceSegmentUnit,
     pipeline: PrototypePipeline,
     registry: ComputeRegistry,
@@ -934,6 +1023,18 @@ def _execute_device_segment(
     if detached_failure is not None:
         raise _DetachedRuntimeFailure(detached_failure) from None
     return provisional
+
+
+def _accelerator_lease_device_id(
+    runtime: RuntimeProtocol,
+    requested_device_id: str,
+) -> str:
+    requested = str(requested_device_id).strip()
+    if requested:
+        return requested
+    probe = runtime.probe()
+    selected = str(probe.selected_device_id).strip()
+    return selected or "default"
 
 
 def _execute_cpu_segment_fallback(

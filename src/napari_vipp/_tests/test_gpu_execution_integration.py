@@ -13,6 +13,7 @@ import napari_vipp.core.execution as execution_module
 from napari_vipp._tests.test_device_execution import (
     _device_copy,
     _device_oom_once,
+    _device_richardson_lucy,
     _FakeDeviceArray,
     _FakeRuntime,
     _implementation_spec,
@@ -32,6 +33,7 @@ from napari_vipp.core.compute import (
     NodeExecutionDecision,
     WorkloadDescriptor,
 )
+from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
@@ -41,7 +43,7 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
-from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline
+from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
 from napari_vipp.core.workflow import serialize_workflow
 
 
@@ -377,11 +379,12 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
     assert result.pipeline.outputs[gaussian.id] is None
     np.testing.assert_array_equal(result.pipeline.outputs[median.id], data)
     assert set(result.pipeline.node_compute_provenance) == {median.id}
-    assert result.pipeline.node_compute_provenance[
-        median.id
-    ].actual_implementation.implementation_id == specs[
-        "median_filter"
-    ].implementation_id
+    assert (
+        result.pipeline.node_compute_provenance[
+            median.id
+        ].actual_implementation.implementation_id
+        == specs["median_filter"].implementation_id
+    )
     assert result.pipeline.node_execution_states[background.id] == EXECUTION_READY
     assert result.pipeline.node_execution_states[gaussian.id] == EXECUTION_READY
     assert [item.node_id for item in finished] == [
@@ -406,6 +409,57 @@ def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
         "median_filter",
     ]
     assert planner.workloads[-1].input_shapes == (data.shape,)
+    registry.close()
+
+
+def test_headless_multi_input_rl_projects_resident_metadata_and_history():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    deconvolution = pipeline.add_node("richardson_lucy_deconvolution")
+    pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+    pipeline.set_param(deconvolution.id, "iterations", 3)
+    assert pipeline.connect("input", deconvolution.id, target_port=0).success
+    assert pipeline.connect("input", deconvolution.id, target_port=1).success
+
+    runtime = _ShapeAwareRuntime()
+    registry, specs = _test_registry(
+        runtime,
+        (("richardson_lucy_deconvolution", _device_richardson_lucy),),
+    )
+    compute_request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    planner = _StaticPlanner(
+        compute_request,
+        (_decision(deconvolution.id, specs[deconvolution.operation_id]),),
+    )
+    data = np.ones((9, 9), dtype=np.float32)
+
+    result = execute_pipeline_request(
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request,
+            retain_node_ids=frozenset({deconvolution.id}),
+            prune_unretained=True,
+            manual_node_ids=frozenset({deconvolution.id}),
+        ),
+        compute_registry=registry,
+        compute_planner=planner,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert runtime.host_to_device_count == 1
+    assert runtime.device_to_host_count == 1
+    assert runtime.operation_count == 1
+    assert runtime.live == {}
+    state = result.pipeline.output_states[deconvolution.id]
+    assert state.shape == data.shape
+    assert state.dtype == "float32"
+    assert state.history[-1] == ("Richardson-Lucy Deconvolution: 3 iterations, 2D YX")
     registry.close()
 
 
@@ -443,9 +497,7 @@ def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain():
                 f"implementation:{specs['subtract_background'].implementation_id}"
             ),
             gaussian.id: "cpu",
-            median.id: (
-                f"implementation:{specs['median_filter'].implementation_id}"
-            ),
+            median.id: (f"implementation:{specs['median_filter'].implementation_id}"),
         },
         runtime_id="cuda-cupy",
         device_id="cuda:0",
@@ -495,8 +547,7 @@ def test_cpu_extract_channel_projects_shape_through_requested_mixed_chain():
     assert actual[gaussian.id].runtime_id == "cpu-numpy"
     assert actual[gaussian.id].reason is DecisionReason.EXPLICIT_CPU
     assert (
-        actual[median.id].implementation_id
-        == specs["median_filter"].implementation_id
+        actual[median.id].implementation_id == specs["median_filter"].implementation_id
     )
     assert actual[median.id].decision_kind is DecisionKind.SELECTED
     assert runtime.host_to_device_count == 2
@@ -1003,5 +1054,195 @@ def test_real_extreme_float_background_keeps_finite_only_nodes_on_cpu(
             for segment in result.execution_report.plan.segments
         )
         assert np.isnan(result.pipeline.outputs[downstream.id]).all()
+    finally:
+        registry.close()
+
+
+def test_real_headless_rl_two_source_pipeline_cleans_fft_plans_and_reuses_runtime():
+    """Exercise the production multi-input RL transaction on a real CUDA device."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        library_probe = registry.probe_library("cupyx", refresh=True)
+        if not library_probe.available:
+            pytest.skip(
+                library_probe.message
+                or "The CuPyX implementation library is unavailable."
+            )
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        image_source_id = next(iter(pipeline.nodes))
+        psf_source = pipeline.add_node("input")
+        deconvolution = pipeline.add_node("richardson_lucy_deconvolution")
+        pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+        pipeline.set_param(deconvolution.id, "iterations", 10)
+        pipeline.set_param(deconvolution.id, "filter_epsilon", 1e-8)
+        assert image_source_id != psf_source.id
+        assert pipeline.connect(
+            image_source_id,
+            deconvolution.id,
+            target_port=0,
+        ).success
+        assert pipeline.connect(
+            psf_source.id,
+            deconvolution.id,
+            target_port=1,
+        ).success
+
+        y, x = np.mgrid[:512, :512].astype(np.float32)
+        image = np.full((512, 512), 0.002, dtype=np.float32)
+        for center_y, center_x, sigma, amplitude in (
+            (91, 102, 2.5, 1.0),
+            (225, 391, 4.1, 0.8),
+            (416, 287, 3.2, 0.6),
+            (345, 79, 6.0, 0.35),
+            (40, 470, 1.8, 0.25),
+        ):
+            image += np.float32(amplitude) * np.exp(
+                -((x - np.float32(center_x)) ** 2 + (y - np.float32(center_y)) ** 2)
+                / np.float32(2.0 * sigma**2)
+            ).astype(np.float32)
+        psf_y, psf_x = np.mgrid[-6:7, -6:7].astype(np.float32)
+        psf = np.exp(-(psf_x**2 + psf_y**2) / np.float32(2.0 * 1.7**2)).astype(
+            np.float32
+        )
+        psf /= np.float32(psf.sum(dtype=np.float64))
+
+        workflow = serialize_workflow(pipeline)
+        source_payloads = {
+            psf_source.id: SourcePayload(
+                psf,
+                {"axes": "YX"},
+                "CUDA regression PSF",
+            )
+        }
+
+        def run_request(
+            run_id: int,
+            compute_request: ComputeRequest,
+            progress_updates: list[tuple[str, int, int, str]],
+            *,
+            compute_registry: ComputeRegistry | None = None,
+        ):
+            return execute_pipeline_request(
+                PipelineRunRequest(
+                    run_id=run_id,
+                    workflow=workflow,
+                    input_data=image,
+                    input_metadata={"axes": "YX"},
+                    input_name="CUDA regression image",
+                    source_payloads=source_payloads,
+                    compute_request=compute_request,
+                    manual_node_ids=frozenset({deconvolution.id}),
+                    retain_node_ids=frozenset({deconvolution.id}),
+                    prune_unretained=True,
+                ),
+                progress_callback=lambda *update: progress_updates.append(update),
+                compute_registry=compute_registry,
+            )
+
+        cpu_progress: list[tuple[str, int, int, str]] = []
+        cpu_result = run_request(
+            401,
+            ComputeRequest(mode=ComputeMode.CPU),
+            cpu_progress,
+        )
+        assert cpu_result.error == ""
+        assert cpu_result.pipeline is not None
+        cpu_output = np.asarray(cpu_result.pipeline.outputs[deconvolution.id]).copy()
+        expected_progress = [
+            (
+                deconvolution.id,
+                current,
+                10,
+                "Richardson-Lucy deconvolution",
+            )
+            for current in range(11)
+        ]
+        assert cpu_progress == expected_progress
+
+        compute_request = ComputeRequest(
+            mode=ComputeMode.SELECTIVE,
+            node_preferences={deconvolution.id: "implementation:rl-cupy-f32-v1"},
+            runtime_id="cuda-cupy",
+            device_id=runtime_probe.selected_device_id,
+            allow_experimental=True,
+        )
+        runtime = registry.runtime("cuda-cupy")
+
+        for run_id in (402, 403):
+            gpu_progress: list[tuple[str, int, int, str]] = []
+            result = run_request(
+                run_id,
+                compute_request,
+                gpu_progress,
+                compute_registry=registry,
+            )
+
+            assert result.error == ""
+            assert result.pipeline is not None
+            assert result.execution_report is not None
+            assert result.execution_report.cleanup_succeeded
+            assert result.execution_report.plan is not None
+            assert len(result.execution_report.plan.segments) == 1
+            assert result.execution_report.plan.segments[0].node_ids == (
+                deconvolution.id,
+            )
+            assert registry.runtime("cuda-cupy") is runtime
+            decision = next(
+                item
+                for item in result.execution_report.actual_decisions
+                if item.node_id == deconvolution.id
+            )
+            assert decision.decision_kind is DecisionKind.SELECTED
+            assert decision.runtime_id == "cuda-cupy"
+            assert decision.implementation_library_id == "cupyx"
+            assert decision.implementation_id == "rl-cupy-f32-v1"
+            assert decision.requested_preference == NodeComputePreference(
+                "implementation",
+                "rl-cupy-f32-v1",
+            )
+
+            output = result.pipeline.outputs[deconvolution.id]
+            assert isinstance(output, np.ndarray)
+            assert output.shape == image.shape
+            assert output.dtype == np.dtype(np.float32)
+            assert np.isfinite(output).all()
+            parity = operation_parity(
+                "richardson_lucy_deconvolution",
+                cpu_output,
+                output,
+            )
+            assert parity.passed, parity.detail
+            assert gpu_progress == expected_progress
+
+            state = result.pipeline.output_states[deconvolution.id]
+            assert state.axis_order == "YX"
+            assert state.shape == image.shape
+            assert state.dtype == "float32"
+            assert state.history[-1] == (
+                "Richardson-Lucy Deconvolution: 10 iterations, 2D YX"
+            )
+            provenance = result.pipeline.node_compute_provenance[
+                deconvolution.id
+            ].actual_implementation
+            assert provenance.runtime_id == "cuda-cupy"
+            assert provenance.implementation_library_id == "cupyx"
+            assert provenance.implementation_id == "rl-cupy-f32-v1"
+            assert provenance.implementation_version == "1"
+
+            terminal = runtime.memory_snapshot(
+                device_id=runtime_probe.selected_device_id
+            )
+            assert terminal.runtime_live_bytes == 0
+            assert terminal.runtime_reserved_bytes == 0
+            assert terminal.out_of_pool_bytes == 0
     finally:
         registry.close()

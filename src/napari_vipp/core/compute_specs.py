@@ -388,12 +388,105 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
     )
 
 
+def _richardson_lucy_spec() -> OperationComputeSpec:
+    """Return the first production-faithful CuPy Richardson-Lucy contract.
+
+    The initial admitted region is intentionally narrow: both the observed
+    image and PSF must already be finite float32 arrays.  VIPP therefore never
+    hides an implicit dtype conversion inside accelerator selection, and the
+    fixed-float32 output contract remains explicit for future typed planning.
+    """
+
+    input_values = {
+        "public_dtypes": ("float32",),
+        "internal_dtypes": ("float32",),
+        "conversion_policy_id": "cupyx-rl-float32-identity-v1",
+        "nonfinite_policy_id": "finite-only-v1",
+        "rounding_policy_id": "rl-float32-tolerance-v1",
+        "overflow_policy_id": "finite-float32-cleanup-v1",
+        "boundary_policy_id": "scipy-signal-zero-fill-same-v1",
+        "precision_policy_id": "rl-float32-v1",
+    }
+    image_input = _gpu_image_port(0, name="image", **input_values)
+    psf_input = ComputePortContract(
+        1,
+        ValueKind.ARRAY,
+        port_name="psf",
+        public_dtypes=("float32",),
+        internal_dtypes=("float32",),
+        accumulation_dtype="float64",
+        value_domain="nonnegative-psf-kernel-v1",
+        shape_policy_id="psf-spatial-kernel-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="cupyx-rl-float32-identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id="rl-float32-tolerance-v1",
+        overflow_policy_id="finite-float32-cleanup-v1",
+        boundary_policy_id="scipy-signal-zero-fill-same-v1",
+        precision_policy_id="rl-float32-v1",
+    )
+    image_output = ComputePortContract(
+        0,
+        ValueKind.IMAGE,
+        port_name="image",
+        public_dtypes=("float32",),
+        internal_dtypes=("float32",),
+        accumulation_dtype="float32",
+        value_domain="microscopy-intensity-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:float32",
+        conversion_policy_id="cupyx-rl-float32-identity-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id="rl-float32-tolerance-v1",
+        overflow_policy_id="finite-float32-cleanup-v1",
+        boundary_policy_id="scipy-signal-zero-fill-same-v1",
+        precision_policy_id="rl-float32-v1",
+    )
+    return OperationComputeSpec(
+        operation_id="richardson_lucy_deconvolution",
+        implementation_id="rl-cupy-f32-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=("napari_vipp.core.gpu.cupy_rl:richardson_lucy_deconvolution"),
+        host_boundary=False,
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+        ),
+        input_ports=(image_input, psf_input),
+        output_ports=(image_output,),
+        parameter_policy_id="rl-parameters-v1",
+        workload_policy_id="rl-finite-f32-v1",
+        parity_policy_id="rl-float32-tolerance-v1",
+        memory_model_id="cupyx-richardson-lucy-fft-memory-v2",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id="scipy-signal-zero-fill-same-v1",
+        precision_policy_id="rl-float32-v1",
+        progress_policy_id="deconvolution-block-iteration-progress-v1",
+        cancellation_policy_id="deconvolution-iteration-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "finite-only",
+            "float32-only-v1",
+            "filter-epsilon-exactly-1e-8-v1",
+            "iterations-at-most-25-v1",
+            "odd-psf-extents-v1",
+            "default-safe-options-v1",
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
     _median_spec(),
     _gaussian_spec(three_dimensional=False),
     _gaussian_spec(three_dimensional=True),
+    _richardson_lucy_spec(),
 )
 
 

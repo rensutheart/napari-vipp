@@ -24,6 +24,7 @@ from weakref import WeakKeyDictionary
 
 import numpy as np
 
+from napari_vipp.core import metadata as _metadata
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
@@ -52,9 +53,11 @@ from napari_vipp.core.compute_policy import (
     ArrayFactsKey,
     FactCompleteness,
     PerformanceEvidence,
+    ValueDescriptor,
     evaluate_auto_performance,
     evaluate_candidate_support,
     evaluate_candidate_workload_support,
+    propagate_output_descriptors,
 )
 from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.pipeline import (
@@ -84,6 +87,8 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "gaussian_blur",
         "gaussian_blur_3d",
         "median_filter",
+        "prepare_validate_psf",
+        "richardson_lucy_deconvolution",
     }
 )
 
@@ -585,7 +590,22 @@ def _execute_accelerated_pipeline(
                 results = pipeline.finalize_node_call(call, raw_output)
                 states = tuple(state for _value, state in results)
             else:
-                states = pipeline.predict_shape_preserving_node_states(call)
+                decision = decisions_by_node.get(node_id)
+                if decision is None:
+                    raise RuntimeError(
+                        f"Device node {node_id!r} has no captured compute decision."
+                    )
+                implementation = registry.implementation_spec(
+                    decision.implementation_id,
+                    allow_experimental=request.compute_request.allow_experimental,
+                )
+                states = pipeline.predict_shape_preserving_node_states(
+                    call,
+                    output_dtype_policy_ids=tuple(
+                        port.output_dtype_policy_id
+                        for port in implementation.output_ports
+                    ),
+                )
             for port_index, state in enumerate(states):
                 state_by_port[OutputPortKey(node_id, port_index)] = state
 
@@ -933,6 +953,7 @@ def _assemble_workloads(
         workloads.append(workload)
 
         projected_output = _project_host_planning_output(
+            pipeline,
             node.operation_id,
             planning_call,
             input_shapes,
@@ -943,24 +964,62 @@ def _assemble_workloads(
             port = OutputPortKey(node_id, 0)
             values[port] = projected_value
             states[port] = projected_state
+            if (
+                node.operation_id in _PHASE_ONE_FACT_OPERATIONS
+                and len(connections) == 1
+            ):
+                connection = connections[0]
+                fact_lineage[port] = OutputPortKey(
+                    connection.source_id,
+                    connection.source_port,
+                )
+            if complete_input_facts := facts_by_node.get(node_id):
+                propagated = _propagate_shape_preserving_facts(
+                    node.operation_id,
+                    complete_input_facts[0],
+                    dict(parameters),
+                    output_port=port,
+                    output_shape=projected_value.shape,
+                    output_dtype=projected_value.dtype.name,
+                )
+                if propagated is not None:
+                    facts_by_port[port] = propagated
         elif planning_call is not None and (
-            _has_shape_preserving_device_implementation(
+            projection_spec := _shape_preserving_device_projection(
                 registry,
                 node.operation_id,
                 allow_experimental,
             )
-        ):
-            predicted_states = pipeline.predict_shape_preserving_node_states(
-                planning_call
+        ) is not None:
+            projected_descriptors = propagate_output_descriptors(
+                projection_spec,
+                tuple(
+                    ValueDescriptor(shape, dtype)
+                    for shape, dtype in zip(
+                        input_shapes,
+                        input_dtypes,
+                        strict=True,
+                    )
+                ),
             )
-            for port_index, predicted_state in enumerate(predicted_states):
+            if projected_descriptors is None:
+                continue
+            predicted_states = pipeline.predict_shape_preserving_node_states(
+                planning_call,
+                output_dtype_policy_ids=tuple(
+                    port.output_dtype_policy_id
+                    for port in projection_spec.output_ports
+                ),
+            )
+            for port_index, (predicted_state, descriptor) in enumerate(
+                zip(predicted_states, projected_descriptors, strict=True)
+            ):
                 port = OutputPortKey(node_id, port_index)
                 states[port] = predicted_state
-                if input_shapes and input_dtypes:
-                    values[port] = _ArrayDescription(
-                        input_shapes[0],
-                        np.dtype(input_dtypes[0]),
-                    )
+                values[port] = _ArrayDescription(
+                    descriptor.shape,
+                    np.dtype(descriptor.dtype),
+                )
                 if (
                     node.operation_id in _PHASE_ONE_FACT_OPERATIONS
                     and len(connections) == 1
@@ -976,6 +1035,8 @@ def _assemble_workloads(
                         complete_input_facts[0],
                         dict(parameters),
                         output_port=port,
+                        output_shape=descriptor.shape,
+                        output_dtype=descriptor.dtype,
                     )
                     if propagated is not None:
                         facts_by_port[port] = propagated
@@ -987,6 +1048,7 @@ def _assemble_workloads(
 
 
 def _project_host_planning_output(
+    pipeline: PrototypePipeline,
     operation_id: str,
     planning_call: PreparedNodeCall | None,
     input_shapes: Sequence[tuple[int, ...]],
@@ -1001,8 +1063,7 @@ def _project_host_planning_output(
     validated by the authoritative CPU operation at execution time.
     """
     if (
-        operation_id != "extract_channel"
-        or planning_call is None
+        planning_call is None
         or planning_call.multiple_inputs
         or planning_call.output_port_count != 1
         or len(input_shapes) != 1
@@ -1012,6 +1073,37 @@ def _project_host_planning_output(
 
     input_shape = tuple(input_shapes[0])
     if not input_shape:
+        return None
+    if operation_id == "prepare_validate_psf":
+        if bool(planning_call.kwargs.get("crop_empty_border", False)):
+            # Cropping depends on exact pixel support and has no static shape
+            # theorem. A cached concrete output can still be benchmarked.
+            return None
+        output_shape = tuple(
+            size + 1
+            if bool(planning_call.kwargs.get("force_odd_shape", True))
+            and size % 2 == 0
+            else size
+            for size in input_shape
+        )
+        description = _ArrayDescription(output_shape, np.dtype(np.float32))
+        projected_state = None
+        if planning_call.input_states and planning_call.input_states[0] is not None:
+            (base_state,) = pipeline.predict_shape_preserving_node_states(
+                planning_call,
+                output_dtype_policy_ids=("fixed:float32",),
+            )
+            if base_state is not None:
+                projected_state = replace(
+                    base_state,
+                    shape=output_shape,
+                    memory=_metadata._memory_label(
+                        int(np.prod(output_shape, dtype=np.int64))
+                        * np.dtype(np.float32).itemsize
+                    ),
+                )
+        return description, projected_state
+    if operation_id != "extract_channel":
         return None
     axis_types = tuple(planning_call.kwargs.get("axis_types", ()))
     axis_names = tuple(planning_call.kwargs.get("axis_names", ()))
@@ -1723,6 +1815,8 @@ def _propagate_shape_preserving_facts(
     parameters: Mapping[str, object],
     *,
     output_port: OutputPortKey,
+    output_shape: tuple[int, ...] | None = None,
+    output_dtype: str | None = None,
 ) -> ArrayFacts | None:
     if operation_id not in _PHASE_ONE_FACT_OPERATIONS:
         return None
@@ -1730,22 +1824,25 @@ def _propagate_shape_preserving_facts(
     guarantees = set(facts.guarantees)
     finite_count = facts.finite_count
     completeness = facts.completeness
+    resolved_shape = facts.shape if output_shape is None else tuple(output_shape)
+    resolved_dtype_name = facts.dtype if output_dtype is None else str(output_dtype)
+    output_elements = int(math.prod(resolved_shape))
     try:
-        output_dtype = np.dtype(facts.dtype)
-    except TypeError:
-        output_dtype = None
-    dtype_proves_finite = output_dtype is not None and (
-        output_dtype == np.dtype(bool) or np.issubdtype(output_dtype, np.integer)
+        resolved_dtype = np.dtype(resolved_dtype_name)
+    except (TypeError, ValueError):
+        resolved_dtype = None
+    dtype_proves_finite = resolved_dtype is not None and (
+        resolved_dtype == np.dtype(bool) or np.issubdtype(resolved_dtype, np.integer)
     )
     if operation_id in {"rolling_ball_background", "subtract_background"}:
         float_output_proven_finite = (
-            output_dtype is not None
-            and np.issubdtype(output_dtype, np.floating)
+            resolved_dtype is not None
+            and np.issubdtype(resolved_dtype, np.floating)
             and _background_float_output_proven_finite(
                 operation_id,
                 facts,
                 parameters,
-                output_dtype,
+                resolved_dtype,
             )
         )
         if dtype_proves_finite or float_output_proven_finite:
@@ -1786,15 +1883,42 @@ def _propagate_shape_preserving_facts(
             guarantees.add("no-negative-zero")
         else:
             guarantees.discard("no-negative-zero")
+    elif operation_id == "prepare_validate_psf":
+        normalize = bool(parameters.get("normalize_sum", True))
+        clip = bool(parameters.get("clip_negatives", True))
+        if normalize and not clip:
+            # Positive/negative cancellation can make a finite float32 sum
+            # arbitrarily small and overflow normalization. Fail closed for
+            # downstream finite-only candidates in that advanced region.
+            return None
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        if clip:
+            guarantees.update(("nonnegative", "no-negative-zero"))
+        else:
+            guarantees.discard("nonnegative")
+            guarantees.discard("no-negative-zero")
+    elif operation_id == "richardson_lucy_deconvolution":
+        # The reviewed RL contract sanitizes every iteration and its public
+        # output. This is an output theorem, not an assumption inherited from
+        # either input, and lets downstream finite-only GPU nodes be planned
+        # without rescanning a resident result.
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        if bool(parameters.get("clip_output_negative", True)):
+            guarantees.update(("nonnegative", "no-negative-zero"))
+        else:
+            guarantees.discard("nonnegative")
+            guarantees.discard("no-negative-zero")
 
     # Exact extrema are intentionally not propagated: each operation can
     # change them.  Phase-1 downstream facts gates consume only completeness,
     # finiteness, and signed-zero/nonnegative guarantees; another magnitude-
     # sensitive transform therefore fails closed instead of using false bounds.
     return ArrayFacts(
-        shape=facts.shape,
-        dtype=facts.dtype,
-        element_count=facts.element_count,
+        shape=resolved_shape,
+        dtype=resolved_dtype_name,
+        element_count=output_elements,
         revision_fingerprint=(
             f"{facts.revision_fingerprint}>{operation_id}:{output_port.port_index}"
         ),
@@ -1879,25 +2003,40 @@ def _json_contract_value(value: object) -> object:
     raise TypeError(f"Unsupported planning parameter {type(value).__name__}.")
 
 
-def _has_shape_preserving_device_implementation(
+def _shape_preserving_device_projection(
     registry: ComputeRegistry,
     operation_id: str,
     allow_experimental: bool,
-) -> bool:
+) -> OperationComputeSpec | None:
     implementations = registry.implementations_for_operation(
         operation_id,
         allow_experimental=allow_experimental,
     )
-    return any(
+    compatible = tuple(
         implementation.supports_device_residency
         and not implementation.host_boundary
         and implementation.shape_policy_id == "shape-preserving-v1"
-        and all(
-            port.output_dtype_policy_id == "dtype-same-v1"
-            for port in implementation.output_ports
-        )
         for implementation in implementations
     )
+    candidates = tuple(
+        implementation
+        for implementation, supported in zip(
+            implementations,
+            compatible,
+            strict=True,
+        )
+        if supported
+    )
+    if not candidates:
+        return None
+    output_policies = {
+        tuple(port.output_dtype_policy_id for port in implementation.output_ports)
+        for implementation in candidates
+    }
+    if len(output_policies) != 1:
+        # Planning must not guess between incompatible typed projections.
+        return None
+    return candidates[0]
 
 
 def _planning_decisions_by_node(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 from dataclasses import replace
@@ -7,10 +8,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+import napari_vipp.core.compute_benchmark_adapter as adapter_module
 import napari_vipp.core.compute_benchmark_coordinator as coordinator_module
 from napari_vipp._tests.test_compute_benchmark_adapter import (
     ManualClock,
     _FakeRuntime,
+    _two_input_rl_spec,
 )
 from napari_vipp.core.compute import (
     BenchmarkCandidateFailureKind,
@@ -35,8 +38,11 @@ from napari_vipp.core.compute_benchmark_coordinator import (
     stable_preference_for_benchmark_winner,
 )
 from napari_vipp.core.compute_registry import ComputeRegistry
-from napari_vipp.core.operations import median_filter
-from napari_vipp.core.pipeline import PrototypePipeline
+from napari_vipp.core.operations import (
+    median_filter,
+    richardson_lucy_deconvolution,
+)
+from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 
 
 def _environment() -> ComputeEnvironment:
@@ -133,6 +139,110 @@ def _coordinator_with_fake_runtime(
     )
 
 
+def _rl_pipeline(
+    image: np.ndarray,
+    psf: np.ndarray,
+) -> tuple[PrototypePipeline, str, str, str]:
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    image_source_id = next(iter(pipeline.nodes))
+    psf_source = pipeline.add_node("input")
+    deconvolution = pipeline.add_node("richardson_lucy_deconvolution")
+    pipeline.set_param(deconvolution.id, "spatial_mode", "2D YX")
+    pipeline.set_param(deconvolution.id, "iterations", 1)
+    pipeline.set_param(deconvolution.id, "filter_epsilon", 1e-8)
+    assert pipeline.connect(
+        image_source_id,
+        deconvolution.id,
+        target_port=0,
+    ).success
+    assert pipeline.connect(
+        psf_source.id,
+        deconvolution.id,
+        target_port=1,
+    ).success
+    pipeline.run(
+        image,
+        input_metadata={"axes": "YX"},
+        source_payloads={
+            psf_source.id: SourcePayload(
+                psf,
+                {"axes": "YX"},
+                "benchmark PSF",
+            )
+        },
+    )
+    return pipeline, image_source_id, psf_source.id, deconvolution.id
+
+
+def _coordinator_with_fake_rl_runtime(
+    tmp_path,
+    monkeypatch,
+    clock: ManualClock,
+):
+    runtime = _FakeRuntime(clock)
+    specification = _two_input_rl_spec()
+    registry = ComputeRegistry()
+    observed_gpu_inputs: list[tuple[tuple[int, ...], ...]] = []
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        registry,
+        "implementations_for_operation",
+        lambda *_args, **_kwargs: (specification,),
+    )
+    monkeypatch.setattr(
+        registry,
+        "implementation_spec",
+        lambda *_args, **_kwargs: specification,
+    )
+    monkeypatch.setattr(
+        registry,
+        "probe_runtime",
+        lambda _runtime_id, refresh=False: runtime.probe(refresh=refresh),
+    )
+
+    def gpu(inputs, **kwargs):
+        observed_gpu_inputs.append(tuple(item.array.shape for item in inputs))
+        clock.advance(0.040)
+        return runtime.allocate(
+            richardson_lucy_deconvolution(
+                [item.array for item in inputs],
+                **kwargs,
+            )
+        )
+
+    monkeypatch.setattr(
+        registry,
+        "implementation_callable",
+        lambda *_args, **_kwargs: gpu,
+    )
+    original_builder = build_registered_node_benchmark
+
+    def measured_builder(call, **kwargs):
+        cpu_function = call.cpu_function
+
+        def slower_cpu(inputs, **cpu_kwargs):
+            clock.advance(0.100)
+            return cpu_function(inputs, **cpu_kwargs)
+
+        return original_builder(
+            replace(call, cpu_function=slower_cpu),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(
+        coordinator_module,
+        "build_registered_node_benchmark",
+        measured_builder,
+    )
+    coordinator = ApplicationNodeBenchmarkCoordinator(
+        registry,
+        tmp_path / "rl-node-benchmarks.json",
+        clock=clock,
+    )
+    return coordinator, runtime, specification, observed_gpu_inputs
+
+
 def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     tmp_path,
     monkeypatch,
@@ -223,6 +333,239 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     assert pipeline.completed_node_ids == completed_before
     np.testing.assert_array_equal(pipeline.outputs[source_id], source_before)
     np.testing.assert_array_equal(pipeline.outputs[node_id], node_output_before)
+
+
+def test_run_owns_transaction_lease_and_charges_wait_against_budget(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        warm_rounds=3,
+        max_warm_rounds=3,
+        paired_bootstrap_samples=200,
+        time_budget_seconds=10.0,
+    )
+    outer_active = False
+    outer_arguments = []
+    nested_count = 0
+    observed_service_budgets = []
+
+    @contextlib.contextmanager
+    def outer_lease(
+        runtime_id,
+        device_id,
+        *,
+        cancelled=None,
+        deadline=None,
+        clock=None,
+    ):
+        nonlocal outer_active
+        assert cancelled is not None
+        assert clock is not None
+        assert cancelled() is False
+        outer_arguments.append((runtime_id, device_id, deadline))
+        clock.advance(0.250)
+        assert cancelled() is False
+        outer_active = True
+        try:
+            yield None
+        finally:
+            outer_active = False
+
+    @contextlib.contextmanager
+    def nested_lease(_runtime_id, _device_id, *, cancelled=None, **_kwargs):
+        nonlocal nested_count
+        assert outer_active
+        assert cancelled is not None
+        assert cancelled() is False
+        nested_count += 1
+        yield None
+
+    delegate = coordinator.service
+
+    class CapturingService:
+        def benchmark(self, request, *, cancelled=None, progress=None):
+            assert outer_active
+            observed_service_budgets.append(request.time_budget_seconds)
+            return delegate.benchmark(
+                request,
+                cancelled=cancelled,
+                progress=progress,
+            )
+
+    coordinator.service = CapturingService()
+    monkeypatch.setattr(coordinator_module, "accelerator_lease", outer_lease)
+    monkeypatch.setattr(adapter_module, "accelerator_lease", nested_lease)
+
+    coordinator.run(plan)
+
+    assert outer_arguments == [("cuda-cupy", "cuda:0", pytest.approx(10.0))]
+    assert observed_service_budgets == [pytest.approx(9.750)]
+    assert nested_count > 0
+    assert not outer_active
+
+
+def test_transaction_lease_wait_budget_exhaustion_publishes_nothing(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        time_budget_seconds=0.5,
+    )
+
+    @contextlib.contextmanager
+    def exhausted_lease(
+        _runtime_id,
+        _device_id,
+        *,
+        cancelled=None,
+        clock=None,
+        **_kwargs,
+    ):
+        assert cancelled is not None
+        assert clock is not None
+        clock.advance(0.5)
+        cancelled()
+        raise AssertionError("an expired lease waiter must not acquire")
+        yield None
+
+    monkeypatch.setattr(
+        coordinator_module,
+        "accelerator_lease",
+        exhausted_lease,
+    )
+
+    with pytest.raises(BenchmarkBudgetExceeded, match="accelerator ownership"):
+        coordinator.run(plan)
+
+    assert coordinator.store.records() == ()
+
+
+def test_selected_multi_input_node_uses_both_ports_and_invalidates_on_psf_change(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    (
+        coordinator,
+        runtime,
+        specification,
+        observed_gpu_inputs,
+    ) = _coordinator_with_fake_rl_runtime(tmp_path, monkeypatch, clock)
+    image = np.zeros((9, 11), dtype=np.float32)
+    image[4, 5] = 1.0
+    psf = np.array(
+        [[0.0, 0.125, 0.0], [0.125, 0.5, 0.125], [0.0, 0.125, 0.0]],
+        dtype=np.float32,
+    )
+    pipeline, image_source_id, psf_source_id, node_id = _rl_pipeline(image, psf)
+    image_source = pipeline.outputs[image_source_id]
+    psf_source = pipeline.outputs[psf_source_id]
+
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        warm_rounds=3,
+        max_warm_rounds=3,
+        paired_bootstrap_samples=200,
+    )
+
+    assert plan.registered.detached_call.multiple_inputs
+    assert plan.registered.request.workload.input_shapes == (
+        image.shape,
+        psf.shape,
+    )
+    assert plan.registered.request.workload.input_dtypes == (
+        "float32",
+        "float32",
+    )
+    assert len(plan.registered.detached_call.inputs) == 2
+    assert not np.shares_memory(
+        plan.registered.detached_call.inputs[0],
+        image_source,
+    )
+    assert not np.shares_memory(
+        plan.registered.detached_call.inputs[1],
+        psf_source,
+    )
+    assert coordinator.workload_is_current(pipeline, plan)
+
+    result = coordinator.run(plan)
+
+    candidate = next(
+        item
+        for item in result.record.candidates
+        if item.implementation_id == specification.implementation_id
+    )
+    assert candidate.parity_passed, candidate.error
+    assert candidate.cold_transfer_seconds == pytest.approx(0.006)
+    assert candidate.peak_runtime_reserved_bytes >= (
+        image.nbytes + psf.nbytes + image.nbytes
+    )
+    assert observed_gpu_inputs
+    assert set(observed_gpu_inputs) == {(image.shape, psf.shape)}
+    assert runtime.live == {}
+
+    psf_source[0, 1] += np.float32(0.01)
+    assert not coordinator.workload_is_current(pipeline, plan)
+    psf_source[0, 1] -= np.float32(0.01)
+    assert coordinator.workload_is_current(pipeline, plan)
+    image_source[0, 0] += np.float32(0.01)
+    assert not coordinator.workload_is_current(pipeline, plan)
+
+
+def test_selected_node_benchmark_refuses_writers_before_runtime_or_io(
+    tmp_path,
+    monkeypatch,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    writer = pipeline.add_node("save_output")
+    assert pipeline.connect("input", writer.id).success
+    registry = ComputeRegistry()
+
+    def unexpected_runtime(*_args, **_kwargs):
+        raise AssertionError("writer refusal must happen before runtime access")
+
+    monkeypatch.setattr(registry, "runtime", unexpected_runtime)
+    monkeypatch.setattr(registry, "probe_runtime", unexpected_runtime)
+    coordinator = ApplicationNodeBenchmarkCoordinator(
+        registry,
+        tmp_path / "writer-benchmarks.json",
+    )
+
+    with pytest.raises(NodeBenchmarkUnavailable, match="writer operations"):
+        coordinator.prepare(pipeline, writer.id, allow_experimental=True)
+
+    assert not (tmp_path / "writer-benchmarks.json").exists()
 
 
 def test_internal_operation_progress_is_forwarded_with_a_readable_backend_label(

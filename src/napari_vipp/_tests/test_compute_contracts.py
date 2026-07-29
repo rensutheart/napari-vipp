@@ -245,7 +245,7 @@ def _candidate_spec(**updates) -> OperationComputeSpec:
     return OperationComputeSpec(**values)
 
 
-def test_compute_spec_registry_declares_only_lazy_phase_one_candidates():
+def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     accelerator_specs = accelerator_compute_specs()
     assert {spec.operation_id for spec in accelerator_specs} == {
         "rolling_ball_background",
@@ -253,6 +253,7 @@ def test_compute_spec_registry_declares_only_lazy_phase_one_candidates():
         "median_filter",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "richardson_lucy_deconvolution",
     }
     assert all(
         spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
@@ -260,6 +261,12 @@ def test_compute_spec_registry_declares_only_lazy_phase_one_candidates():
     )
     assert all(spec.runtime_id == "cuda-cupy" for spec in accelerator_specs)
     assert all(spec.array_domain == "cuda-cupy" for spec in accelerator_specs)
+    richardson_lucy = next(
+        spec
+        for spec in accelerator_specs
+        if spec.operation_id == "richardson_lucy_deconvolution"
+    )
+    assert richardson_lucy.input_ports[1].accumulation_dtype == "float64"
     assert compute_specs_for("gaussian_blur", include_cpu=False) == ()
     assert (
         len(

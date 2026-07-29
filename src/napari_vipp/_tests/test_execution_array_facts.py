@@ -1179,3 +1179,40 @@ def test_unclipped_background_drops_unproven_signed_zero_guarantees():
     assert "no-negative-zero" not in propagated.guarantees
     assert propagated.minimum is None
     assert propagated.maximum is None
+
+
+def test_prepare_psf_projects_finite_float32_facts_across_odd_padding():
+    source = execution_module._complete_array_facts(
+        np.ones((8, 10), dtype=np.uint16),
+        revision_fingerprint="psf-source",
+    )
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        "prepare_validate_psf",
+        source,
+        {
+            "clip_negatives": True,
+            "normalize_sum": True,
+            "force_odd_shape": True,
+            "crop_empty_border": False,
+        },
+        output_port=OutputPortKey("prepared-psf", 0),
+        output_shape=(9, 11),
+        output_dtype="float32",
+    )
+    unsafe_cancellation = execution_module._propagate_shape_preserving_facts(
+        "prepare_validate_psf",
+        source,
+        {"clip_negatives": False, "normalize_sum": True},
+        output_port=OutputPortKey("prepared-psf", 0),
+        output_shape=(8, 10),
+        output_dtype="float32",
+    )
+
+    assert propagated is not None
+    assert propagated.shape == (9, 11)
+    assert propagated.dtype == "float32"
+    assert propagated.element_count == 99
+    assert propagated.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
+    assert unsafe_cancellation is None

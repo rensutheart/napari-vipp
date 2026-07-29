@@ -22,6 +22,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import MemoryTopology
 from napari_vipp.core.compute_policy import validate_spec_policy_references
 from napari_vipp.core.compute_specs import (
@@ -708,33 +709,42 @@ class ComputeRegistry:
                 )
                 self._probe_results[runtime_id] = result
                 return result
+
+        # Provider probes may wait for the process accelerator lease.  Never
+        # retain the registry lock across that call: execution owns the lease
+        # before resolving implementation callables through this registry.
+        try:
+            result = runtime.probe(refresh=refresh)
+        except Exception as exc:
             try:
-                result = runtime.probe(refresh=refresh)
-            except Exception as exc:
-                try:
-                    failure = runtime.classify_exception(exc)
-                except Exception:
-                    failure = RuntimeExceptionInfo(
-                        RuntimeExceptionKind.UNKNOWN,
-                        "runtime_probe_failed",
-                        str(exc),
-                        exception_type=type(exc).__name__,
-                    )
-                result = RuntimeProbeResult(
-                    runtime_id,
-                    False,
-                    reason_code=failure.reason_code,
-                    message=failure.message,
-                    metadata=(
-                        ("exception_kind", failure.kind.value),
-                        ("exception_type", failure.exception_type),
-                    ),
+                failure = runtime.classify_exception(exc)
+            except Exception:
+                failure = RuntimeExceptionInfo(
+                    RuntimeExceptionKind.UNKNOWN,
+                    "runtime_probe_failed",
+                    str(exc),
+                    exception_type=type(exc).__name__,
                 )
-            if not isinstance(result, RuntimeProbeResult):
-                raise TypeError("Runtime probe must return RuntimeProbeResult.")
-            if result.runtime_id != runtime_id:
-                raise ValueError("Runtime probe result belongs to a different runtime.")
-            self._probe_results[runtime_id] = result
+            result = RuntimeProbeResult(
+                runtime_id,
+                False,
+                reason_code=failure.reason_code,
+                message=failure.message,
+                metadata=(
+                    ("exception_kind", failure.kind.value),
+                    ("exception_type", failure.exception_type),
+                ),
+            )
+        if not isinstance(result, RuntimeProbeResult):
+            raise TypeError("Runtime probe must return RuntimeProbeResult.")
+        if result.runtime_id != runtime_id:
+            raise ValueError("Runtime probe result belongs to a different runtime.")
+        with self._lock:
+            self._ensure_open()
+            if not refresh and runtime_id in self._probe_results:
+                return self._probe_results[runtime_id]
+            if self._runtime_instances.get(runtime_id) is runtime:
+                self._probe_results[runtime_id] = result
             return result
 
     def probe_library(
@@ -782,25 +792,30 @@ class ComputeRegistry:
                 )
                 self._library_probe_results[library_id] = result
                 return result
-            try:
-                result = probe()
-            except Exception as exc:
-                result = ImplementationLibraryProbeResult(
-                    library_id,
-                    False,
-                    reason_code="library_probe_failed",
-                    message=f"{type(exc).__name__}: {exc}",
-                )
-            if not isinstance(result, ImplementationLibraryProbeResult):
-                raise TypeError(
-                    "Implementation-library probes must return "
-                    "ImplementationLibraryProbeResult."
-                )
-            if result.library_id != library_id:
-                raise ValueError(
-                    "Implementation-library probe result belongs to a different "
-                    "library."
-                )
+
+        try:
+            result = probe()
+        except Exception as exc:
+            result = ImplementationLibraryProbeResult(
+                library_id,
+                False,
+                reason_code="library_probe_failed",
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        if not isinstance(result, ImplementationLibraryProbeResult):
+            raise TypeError(
+                "Implementation-library probes must return "
+                "ImplementationLibraryProbeResult."
+            )
+        if result.library_id != library_id:
+            raise ValueError(
+                "Implementation-library probe result belongs to a different "
+                "library."
+            )
+        with self._lock:
+            self._ensure_open()
+            if not refresh and library_id in self._library_probe_results:
+                return self._library_probe_results[library_id]
             self._library_probe_results[library_id] = result
             return result
 
@@ -947,22 +962,36 @@ class ComputeRegistry:
 
 
 def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
-    """Import and exercise the CuPyX ndimage layer after CUDA admission."""
+    """Import and exercise required CuPyX ndimage and signal primitives."""
 
     cupy = importlib.import_module("cupy")
     ndimage = importlib.import_module("cupyx.scipy.ndimage")
+    signal = importlib.import_module("cupyx.scipy.signal")
     if not callable(getattr(ndimage, "gaussian_filter", None)) or not callable(
         getattr(ndimage, "median_filter", None)
-    ):
+    ) or not callable(getattr(signal, "convolve", None)):
         return ImplementationLibraryProbeResult(
             "cupyx",
             False,
             version=str(getattr(cupy, "__version__", "")),
             reason_code="cupyx_ndimage_incomplete",
-            message="CuPyX ndimage does not expose Gaussian and median filters.",
+            message=(
+                "CuPyX does not expose the required Gaussian, median, and "
+                "signal-convolution functions."
+            ),
         )
+    device_id = _cupy_current_device_id(cupy)
+    with accelerator_lease("cuda-cupy", device_id):
+        return _exercise_cupyx_library(cupy, ndimage, signal)
+
+
+def _exercise_cupyx_library(
+    cupy: object,
+    ndimage: object,
+    signal: object,
+) -> ImplementationLibraryProbeResult:
     pool = cupy.cuda.MemoryPool()
-    values = gaussian = median = None
+    values = gaussian = median = convolved = None
     probe_error: BaseException | None = None
     try:
         with cupy.cuda.using_allocator(pool.malloc):
@@ -973,19 +1002,28 @@ def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
                 mode="reflect",
             )
             median = ndimage.median_filter(values, size=3, mode="reflect")
-            float((gaussian + median).sum().item())
+            convolved = signal.convolve(
+                values,
+                cupy.asarray([[0.0, 1.0, 0.0]], dtype=cupy.float32),
+                mode="same",
+                method="fft",
+            )
+            float((gaussian + median + convolved).sum().item())
             cupy.cuda.get_current_stream().synchronize()
         return ImplementationLibraryProbeResult(
             "cupyx",
             True,
             version=str(getattr(cupy, "__version__", "")),
-            message="CuPyX completed synchronized Gaussian and median probes.",
+            message=(
+                "CuPyX completed synchronized Gaussian, median, and signal "
+                "convolution probes."
+            ),
         )
     except BaseException as exc:
         probe_error = exc
         raise
     finally:
-        values = gaussian = median = None
+        values = gaussian = median = convolved = None
         _drain_private_probe_pool(
             cupy,
             pool,
@@ -1083,6 +1121,22 @@ def _probe_cucim_skimage_library(
             metadata=metadata,
         )
     cupy = importlib.import_module("cupy")
+    device_id = _cupy_current_device_id(cupy)
+    with accelerator_lease("cuda-cupy", device_id):
+        return _exercise_cucim_skimage_library(
+            cupy,
+            cucim,
+            restoration,
+            metadata,
+        )
+
+
+def _exercise_cucim_skimage_library(
+    cupy: object,
+    cucim: object,
+    restoration: object,
+    metadata: tuple[tuple[str, str], ...],
+) -> ImplementationLibraryProbeResult:
     pool = cupy.cuda.MemoryPool()
     values = background = None
     probe_error: BaseException | None = None
@@ -1110,6 +1164,26 @@ def _probe_cucim_skimage_library(
             library_id="cucim",
             suppress_errors=probe_error is not None,
         )
+
+
+def _cupy_current_device_id(cupy: object) -> str:
+    cuda = getattr(cupy, "cuda", None)
+    runtime = getattr(cuda, "runtime", None)
+    get_device = getattr(runtime, "getDevice", None)
+    if callable(get_device):
+        index = int(get_device())
+    else:
+        device_factory = getattr(cuda, "Device", None)
+        if callable(device_factory):
+            try:
+                index = int(device_factory().id)
+            except TypeError:
+                index = 0
+        else:
+            index = 0
+    if index < 0:
+        raise ValueError(f"CUDA returned an invalid current device index: {index}.")
+    return f"cuda:{index}"
 
 
 _GPU_ENVIRONMENT_RECORD_SCHEMA = "napari-vipp-gpu-environment"

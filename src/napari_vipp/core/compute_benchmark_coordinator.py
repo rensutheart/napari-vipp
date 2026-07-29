@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     BenchmarkCandidateFailureKind,
     BenchmarkRecord,
@@ -44,6 +45,7 @@ from napari_vipp.core.compute_benchmark import (
     NodeBenchmarkService,
 )
 from napari_vipp.core.compute_benchmark_adapter import (
+    BENCHMARK_WRITER_OPERATION_IDS,
     RegisteredNodeBenchmark,
     build_registered_node_benchmark,
     detach_prepared_node_call,
@@ -610,11 +612,38 @@ class ApplicationNodeBenchmarkCoordinator:
                 operation_message=operation_message,
             )
 
-        record = self.service.benchmark(
-            plan.registered.request,
-            cancelled=cancelled,
-            progress=forward_measurement,
-        )
+        request = plan.registered.request
+        budget = _validated_budget(request.time_budget_seconds)
+        lease_started = _read_clock(self.clock)
+        deadline = None if budget is None else lease_started + budget
+
+        def check_lease_abort() -> bool:
+            _check_cancelled(cancelled)
+            if deadline is not None and _read_clock(self.clock) >= deadline:
+                raise BenchmarkBudgetExceeded(
+                    "node benchmark budget was exhausted while waiting for "
+                    "accelerator ownership"
+                )
+            return False
+
+        runtime_ids = {spec.runtime_id for spec in plan.admitted_specs}
+        if len(runtime_ids) != 1:
+            raise ValueError("one node benchmark requires one accelerator runtime.")
+        with accelerator_lease(
+            next(iter(runtime_ids)),
+            request.device_id,
+            cancelled=check_lease_abort,
+            deadline=deadline,
+            clock=self.clock,
+        ):
+            remaining = _remaining_run_budget(deadline, self.clock)
+            if remaining is not None:
+                request = replace(request, time_budget_seconds=remaining)
+            record = self.service.benchmark(
+                request,
+                cancelled=cancelled,
+                progress=forward_measurement,
+            )
         preference = plan.preference_for(record)
         _emit_progress(
             progress,
@@ -761,6 +790,10 @@ def _prepared_call_from_detached_pipeline(
     selected = str(node_id).strip()
     if selected not in pipeline.nodes:
         raise NodeBenchmarkUnavailable(f"Unknown selected node {selected!r}.")
+    if pipeline.nodes[selected].operation_id in BENCHMARK_WRITER_OPERATION_IDS:
+        raise NodeBenchmarkUnavailable(
+            "Selected-node benchmarking refuses writer operations."
+        )
     detached = PrototypePipeline()
     detached.restore_graph(
         tuple(pipeline.nodes.values()),
@@ -785,9 +818,10 @@ def _prepared_call_from_detached_pipeline(
         raise NodeBenchmarkUnavailable(
             "The selected node cannot be prepared from its current inputs."
         )
-    if call.multiple_inputs or len(call.inputs) != 1 or call.output_port_count != 1:
+    if call.output_port_count != 1:
         raise NodeBenchmarkUnavailable(
-            "Selected-node benchmarking currently requires one input and one output."
+            "Selected-node benchmarking requires exactly one output; "
+            "multiple ordered inputs are supported."
         )
     return detach_prepared_node_call(call, check_abort=check_abort)
 
@@ -1078,6 +1112,21 @@ def _remaining_budget(
     if remaining <= 0:
         raise BenchmarkBudgetExceeded(
             "node benchmark budget was exhausted during preparation"
+        )
+    return remaining
+
+
+def _remaining_run_budget(
+    deadline: float | None,
+    clock: Callable[[], float],
+) -> float | None:
+    if deadline is None:
+        return None
+    remaining = deadline - _read_clock(clock)
+    if remaining <= 0:
+        raise BenchmarkBudgetExceeded(
+            "node benchmark budget was exhausted while waiting for "
+            "accelerator ownership"
         )
     return remaining
 

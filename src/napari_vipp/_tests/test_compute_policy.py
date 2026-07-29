@@ -655,6 +655,246 @@ def test_gaussian_advertises_full_public_float32_sigma_but_not_integer_or_float6
         assert "CPU" in rejected.reason_text or "proven" in rejected.reason_text
 
 
+def _rl_workload(
+    *,
+    image_shape=(3, 64, 64),
+    psf_shape=(9, 9),
+    image_dtype="float32",
+    psf_dtype="float32",
+    spatial_ndim=2,
+    iterations=25,
+):
+    return WorkloadDescriptor(
+        "rl-node",
+        "richardson_lucy_deconvolution",
+        (image_shape, psf_shape),
+        (image_dtype, psf_dtype),
+        parameters=(
+            ("spatial_mode", "2D YX" if spatial_ndim == 2 else "3D ZYX"),
+            ("iterations", iterations),
+            ("normalize_psf", True),
+            ("clip_negative_input", True),
+            ("clip_output_negative", True),
+            ("preserve_input_scale", True),
+            ("filter_epsilon", 1e-8),
+        ),
+        resolved_spatial_ndim=spatial_ndim,
+    )
+
+
+def _rl_facts(*, image_shape=(3, 64, 64), psf_shape=(9, 9)):
+    return tuple(
+        ArrayFacts(
+            shape,
+            "float32",
+            int(np.prod(shape)),
+            f"revision-{index}",
+            completeness=FactCompleteness.COMPLETE,
+            finite_count=int(np.prod(shape)),
+            maximum=1.0,
+        )
+        for index, shape in enumerate((image_shape, psf_shape))
+    )
+
+
+def test_richardson_lucy_requires_explicit_finite_float32_image_and_psf():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    workload = _rl_workload()
+
+    missing_facts = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+    accepted = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    integer_image = evaluate_candidate_support(
+        spec,
+        _rl_workload(image_dtype="uint16"),
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+
+    assert not missing_facts.supported
+    assert missing_facts.requires_complete_facts
+    assert accepted.supported
+    assert not integer_image.supported
+    assert "Convert Dtype" in integer_image.reason_text
+
+
+def test_richardson_lucy_rejects_invalid_psf_geometry_and_empty_mass():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    oversized = evaluate_candidate_support(
+        spec,
+        _rl_workload(psf_shape=(65, 9)),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(psf_shape=(65, 9)),
+    )
+    image_facts, psf_facts = _rl_facts()
+    empty_psf = evaluate_candidate_support(
+        spec,
+        _rl_workload(),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=(image_facts, replace(psf_facts, maximum=0.0)),
+    )
+
+    assert not oversized.supported
+    assert "PSF extent" in oversized.reason_text
+    assert not empty_psf.supported
+    assert "positive mass" in empty_psf.reason_text
+
+
+@pytest.mark.parametrize("epsilon", (1e-10, 1e-7, 1e-6))
+def test_richardson_lucy_rejects_epsilon_outside_validated_point(epsilon):
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+
+    outside_point = evaluate_candidate_support(
+        spec,
+        replace(
+            _rl_workload(),
+            parameters=tuple(
+                (name, epsilon if name == "filter_epsilon" else value)
+                for name, value in _rl_workload().parameters
+            ),
+        ),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not outside_point.supported
+    assert outside_point.fallback_allowed
+    assert "exactly 1e-08" in outside_point.reason_text
+    assert "not monotonic" in outside_point.reason_text
+
+
+def test_richardson_lucy_rejects_iterations_above_validated_parity_region():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+
+    too_many = evaluate_candidate_support(
+        spec,
+        _rl_workload(iterations=26),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not too_many.supported
+    assert too_many.fallback_allowed
+    assert "1 through 25" in too_many.reason_text
+    assert "roundoff" in too_many.reason_text
+
+
+def test_richardson_lucy_rejects_even_psf_and_nondefault_safety_options():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    even_psf = evaluate_candidate_support(
+        spec,
+        _rl_workload(psf_shape=(8, 9)),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(psf_shape=(8, 9)),
+    )
+    unsafe_options = evaluate_candidate_support(
+        spec,
+        replace(
+            _rl_workload(),
+            parameters=tuple(
+                (name, False if name == "preserve_input_scale" else value)
+                for name, value in _rl_workload().parameters
+            ),
+        ),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not even_psf.supported
+    assert even_psf.fallback_allowed
+    assert "odd PSF extents" in even_psf.reason_text
+    assert not unsafe_options.supported
+    assert unsafe_options.fallback_allowed
+    assert "preserve_input_scale" in unsafe_options.reason_text
+
+
+def test_richardson_lucy_projects_fixed_float32_output_and_conservative_memory():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    workload = _rl_workload()
+    projected = propagate_output_descriptors(
+        spec,
+        (
+            ValueDescriptor((3, 64, 64), "float32"),
+            ValueDescriptor((9, 9), "float32"),
+        ),
+    )
+    estimate = estimate_candidate_memory(spec, workload)
+
+    assert projected == (ValueDescriptor((3, 64, 64), "float32"),)
+    assert estimate.model_id == "cupyx-richardson-lucy-fft-memory-v2"
+    assert (
+        estimate.total_device_peak_bytes
+        > (np.prod((3, 64, 64)) + np.prod((9, 9))) * np.dtype(np.float32).itemsize
+    )
+
+
+def test_richardson_lucy_fft_memory_model_covers_padded_workspaces_and_first_use():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    workload = _rl_workload(
+        image_shape=(512, 512),
+        psf_shape=(13, 13),
+        iterations=10,
+    )
+
+    estimate = estimate_candidate_memory(spec, workload)
+
+    # 524-pixel full convolution extents are conservatively padded to the next
+    # 2/3/5-smooth real-FFT length (540). The exact assertion makes accidental
+    # removal of complex buffers, plan workspaces, or first-use allowance loud.
+    assert estimate.runtime_managed_peak_bytes == 22_419_028
+    assert estimate.total_device_peak_bytes == 22_419_028
+    assert estimate.uncertainty_bytes == 32 * 1024**2
+    assert estimate.total_device_peak_bytes + estimate.uncertainty_bytes == 55_973_460
+
+
+def test_richardson_lucy_fft_memory_model_scales_for_near_image_sized_3d_psf():
+    spec = _builtin_spec("richardson_lucy_deconvolution")
+    small = estimate_candidate_memory(
+        spec,
+        _rl_workload(
+            image_shape=(32, 32, 32),
+            psf_shape=(3, 3, 3),
+            spatial_ndim=3,
+        ),
+    )
+    large = estimate_candidate_memory(
+        spec,
+        _rl_workload(
+            image_shape=(32, 32, 32),
+            psf_shape=(31, 31, 31),
+            spatial_ndim=3,
+        ),
+    )
+    padded_real_elements = 64**3
+    padded_complex_elements = 64 * 64 * (64 // 2 + 1)
+    explicit_fft_array_bytes = (
+        padded_real_elements * np.dtype(np.float32).itemsize
+        + 3 * padded_complex_elements * np.dtype(np.complex64).itemsize
+    )
+    resident_bytes = (
+        2 * np.prod((32, 32, 32)) + np.prod((31, 31, 31))
+    ) * np.dtype(np.float32).itemsize
+
+    assert large.total_device_peak_bytes > small.total_device_peak_bytes
+    assert large.total_device_peak_bytes >= resident_bytes + explicit_fft_array_bytes
+
+
 def test_background_memory_model_scales_with_radius_and_spatial_rank():
     spec = _builtin_spec("rolling_ball_background")
     small = estimate_candidate_memory(

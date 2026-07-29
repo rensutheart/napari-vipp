@@ -22,6 +22,7 @@ from types import MappingProxyType
 
 import numpy as np
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeEnvironment,
     ComputeMode,
@@ -1792,6 +1793,38 @@ def _measure_directional_transfers(
     clock: Callable[[], float],
     check_abort: Callable[[], None],
 ) -> DirectionalTransferProfile:
+    with accelerator_lease(
+        runtime_id,
+        device_id,
+        cancelled=lambda: _check_lease_abort(check_abort),
+    ):
+        return _measure_directional_transfers_under_lease(
+            registry,
+            runtime_id,
+            device_id,
+            environment,
+            identity,
+            pipeline,
+            benchmarked_node_ids,
+            request,
+            clock=clock,
+            check_abort=check_abort,
+        )
+
+
+def _measure_directional_transfers_under_lease(
+    registry: ComputeRegistry,
+    runtime_id: str,
+    device_id: str,
+    environment: ComputeEnvironment,
+    identity: PipelineOptimizationIdentity,
+    pipeline: PrototypePipeline,
+    benchmarked_node_ids: Sequence[str],
+    request: ComputeRequest,
+    *,
+    clock: Callable[[], float],
+    check_abort: Callable[[], None],
+) -> DirectionalTransferProfile:
     runtime = registry.runtime(runtime_id)
     dtype, maximum_bytes = _representative_transfer_dtype(
         pipeline,
@@ -1884,6 +1917,11 @@ def _measure_directional_transfers(
         max(sizes),
         synchronized=True,
     )
+
+
+def _check_lease_abort(check_abort: Callable[[], None]) -> bool:
+    check_abort()
+    return False
 
 
 def _representative_transfer_dtype(

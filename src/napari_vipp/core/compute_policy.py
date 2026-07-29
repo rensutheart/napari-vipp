@@ -8,7 +8,7 @@ becoming a second execution engine.
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -23,6 +23,15 @@ from napari_vipp.core.compute import (
     WorkloadDescriptor,
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec
+
+RICHARDSON_LUCY_FILTER_EPSILON = 1e-8
+RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 25
+
+_RICHARDSON_LUCY_FLOAT32_BYTES = 4
+_RICHARDSON_LUCY_COMPLEX64_BYTES = 8
+_RICHARDSON_LUCY_LIVE_BLOCK_BUFFERS = 6
+_RICHARDSON_LUCY_FFT_PLAN_WORKSPACE_MULTIPLIER = 4
+_RICHARDSON_LUCY_FIRST_USE_ALLOWANCE_BYTES = 32 * 1024**2
 
 
 class PolicyKind(StrEnum):
@@ -685,7 +694,14 @@ def estimate_candidate_memory(
     primary_itemsize = (
         _dtype_itemsize(workload.input_dtypes[0]) if workload.input_dtypes else 0
     )
-    output_bytes = primary_elements * primary_itemsize * len(spec.output_ports)
+    output_bytes = sum(
+        primary_elements
+        * _output_port_itemsize(
+            port.output_dtype_policy_id,
+            primary_itemsize,
+        )
+        for port in spec.output_ports
+    )
 
     if spec.memory_model_id == "host-reference-v1":
         return MemoryEstimate(
@@ -724,12 +740,71 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
+    elif spec.memory_model_id == "cupyx-richardson-lucy-fft-memory-v2":
+        spatial_ndim = workload.resolved_spatial_ndim
+        if spatial_ndim not in {2, 3}:
+            raise ValueError(
+                "Richardson-Lucy memory estimation requires a resolved 2D or 3D "
+                "spatial rank."
+            )
+        image_shape = workload.input_shapes[0]
+        block_elements = math.prod(image_shape[-spatial_ndim:])
+        psf_shape = workload.input_shapes[1]
+        psf_elements = math.prod(psf_shape)
+
+        # CuPyX signal convolution pads every spatial extent to an FFT-friendly
+        # length.  The stable 2/3/5-smooth upper bound is deliberately at least
+        # as large as the lengths selected by the validated CuPy 14.1.1 real-FFT
+        # implementation, without importing an optional accelerator package.
+        fft_shape = tuple(
+            _next_235_smooth_length(image_extent + psf_extent - 1)
+            for image_extent, psf_extent in zip(
+                image_shape[-spatial_ndim:],
+                psf_shape,
+                strict=True,
+            )
+        )
+        fft_real_elements = math.prod(fft_shape)
+        fft_complex_elements = math.prod(fft_shape[:-1]) * (fft_shape[-1] // 2 + 1)
+        fft_real_bytes = fft_real_elements * _RICHARDSON_LUCY_FLOAT32_BYTES
+        fft_complex_bytes = fft_complex_elements * _RICHARDSON_LUCY_COMPLEX64_BYTES
+
+        # One convolution can simultaneously own two transformed operands,
+        # their product, and the padded inverse result.  cuFFT plan work areas
+        # are version/device dependent, so reserve four additional padded
+        # real-plus-complex pairs.  The logical RL loop retains observation,
+        # estimate, blur, ratio, correction, and result-sized storage around
+        # that convolution. Leading blocks remain sequential.
+        logical_block_workspace = (
+            block_elements
+            * _RICHARDSON_LUCY_FLOAT32_BYTES
+            * _RICHARDSON_LUCY_LIVE_BLOCK_BUFFERS
+        )
+        fft_array_workspace = fft_real_bytes + 3 * fft_complex_bytes
+        fft_plan_workspace = _RICHARDSON_LUCY_FFT_PLAN_WORKSPACE_MULTIPLIER * (
+            fft_real_bytes + fft_complex_bytes
+        )
+        psf_workspace = psf_elements * _RICHARDSON_LUCY_FLOAT32_BYTES * 4
+        workspace = (
+            logical_block_workspace
+            + fft_array_workspace
+            + fft_plan_workspace
+            + psf_workspace
+        )
     else:
         raise ValueError(
             f"No executable memory model is registered for {spec.memory_model_id!r}."
         )
     runtime_peak = input_bytes + output_bytes + workspace
-    uncertainty = max(8 * 1024**2, runtime_peak // 4)
+    uncertainty_floor = (
+        _RICHARDSON_LUCY_FIRST_USE_ALLOWANCE_BYTES
+        if spec.memory_model_id == "cupyx-richardson-lucy-fft-memory-v2"
+        else 8 * 1024**2
+    )
+    # For RL the floor covers first-use CuPyX/JIT/cuFFT allocations which are
+    # visible in device-wide accounting but are not governed by the private
+    # memory-pool cap.  The proportional term continues to cover larger plans.
+    uncertainty = max(uncertainty_floor, runtime_peak // 4)
     return MemoryEstimate(
         runtime_managed_peak_bytes=runtime_peak,
         total_device_peak_bytes=runtime_peak,
@@ -816,17 +891,178 @@ def _evaluate_operation_region(
     *,
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
-    policy_id = spec.parameter_policy_id
-    if policy_id == "background-parameters-v1":
-        return _evaluate_background_region(workload)
-    if policy_id == "median-parameters-v1":
-        return _evaluate_median_region(workload, array_facts=array_facts)
-    if policy_id in {"gaussian-2d-parameters-v1", "gaussian-3d-parameters-v1"}:
-        return _evaluate_gaussian_region(
-            workload,
-            three_dimensional=policy_id == "gaussian-3d-parameters-v1",
+    evaluator = _OPERATION_REGION_EVALUATORS.get(spec.parameter_policy_id)
+    if evaluator is None:
+        return None
+    return evaluator(workload, array_facts)
+
+
+def _background_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    return _evaluate_background_region(workload)
+
+
+def _median_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    return _evaluate_median_region(workload, array_facts=array_facts)
+
+
+def _gaussian_2d_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    return _evaluate_gaussian_region(workload, three_dimensional=False)
+
+
+def _gaussian_3d_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    return _evaluate_gaussian_region(workload, three_dimensional=True)
+
+
+def _richardson_lucy_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    if len(workload.input_shapes) != 2 or len(workload.input_dtypes) != 2:
+        return _workload_rejection(
+            "Richardson-Lucy GPU execution requires ordered Image and PSF inputs.",
+            fallback_allowed=False,
         )
+    if any(_dtype_name(dtype) != "float32" for dtype in workload.input_dtypes):
+        return _workload_rejection(
+            "Richardson-Lucy GPU execution initially requires explicit float32 "
+            "Image and PSF inputs; add Convert Dtype when appropriate."
+        )
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim not in {2, 3}:
+        return _workload_rejection(
+            "Richardson-Lucy Auto mode requires a resolved 2D or 3D spatial rank.",
+            fallback_allowed=False,
+        )
+    image_shape, psf_shape = workload.input_shapes
+    if len(image_shape) < spatial_ndim or len(psf_shape) != spatial_ndim:
+        return _workload_rejection(
+            "The PSF rank must match the resolved Richardson-Lucy spatial rank.",
+            fallback_allowed=False,
+        )
+    if any(size <= 0 for size in (*image_shape, *psf_shape)):
+        return _workload_rejection(
+            "Richardson-Lucy inputs must not contain empty dimensions.",
+            fallback_allowed=False,
+        )
+    if any(
+        kernel > image
+        for kernel, image in zip(psf_shape, image_shape[-spatial_ndim:], strict=True)
+    ):
+        return _workload_rejection(
+            "The initial GPU region requires each PSF extent to fit inside its "
+            "corresponding spatial image extent."
+        )
+    if any(size % 2 == 0 for size in psf_shape):
+        return _workload_rejection(
+            "The initial Richardson-Lucy GPU region requires odd PSF extents. "
+            "Prepare / Validate PSF uses Force odd shape by default."
+        )
+
+    parameters = dict(workload.parameters)
+    mode = str(parameters.get("spatial_mode", "Auto from axes")).strip().casefold()
+    declared_rank = {
+        "auto from axes": spatial_ndim,
+        "2d yx": 2,
+        "2d per xy slice (advanced)": 2,
+        "3d zyx": 3,
+        "3d zyx volume": 3,
+    }.get(mode)
+    if declared_rank is None or declared_rank != spatial_ndim:
+        return _workload_rejection(
+            "Richardson-Lucy spatial parameters disagree with the resolved rank.",
+            fallback_allowed=False,
+        )
+    iterations = parameters.get("iterations", 25)
+    if isinstance(iterations, bool) or not isinstance(iterations, int):
+        return _workload_rejection(
+            "Richardson-Lucy iterations must be an integer.",
+            fallback_allowed=False,
+        )
+    if not 1 <= iterations <= RICHARDSON_LUCY_MAXIMUM_ITERATIONS:
+        return _workload_rejection(
+            "Richardson-Lucy GPU execution is initially validated for 1 through "
+            f"{RICHARDSON_LUCY_MAXIMUM_ITERATIONS} iterations. Longer authored "
+            "runs remain on CPU because iterative cross-library roundoff has not "
+            "passed the production parity gate."
+        )
+    for name in (
+        "normalize_psf",
+        "clip_negative_input",
+        "clip_output_negative",
+        "preserve_input_scale",
+    ):
+        if name in parameters and not isinstance(parameters[name], bool):
+            return _workload_rejection(
+                f"Richardson-Lucy parameter {name!r} must be boolean.",
+                fallback_allowed=False,
+            )
+    nondefault_safety_flags = tuple(
+        name
+        for name in (
+            "normalize_psf",
+            "clip_negative_input",
+            "clip_output_negative",
+            "preserve_input_scale",
+        )
+        if parameters.get(name, True) is not True
+    )
+    if nondefault_safety_flags:
+        return _workload_rejection(
+            "The initial Richardson-Lucy GPU region requires the default-safe "
+            "normalization, clipping, and scale-preservation options. CPU is "
+            "used when these authored options are disabled: "
+            + ", ".join(nondefault_safety_flags)
+            + "."
+        )
+    filter_epsilon = _finite_number(parameters.get("filter_epsilon", 1e-12))
+    if filter_epsilon != RICHARDSON_LUCY_FILTER_EPSILON:
+        return _workload_rejection(
+            "Richardson-Lucy GPU execution is initially validated only for "
+            f"filter epsilon exactly {RICHARDSON_LUCY_FILTER_EPSILON:g}. Other "
+            "authored values remain on CPU because threshold-branch behavior "
+            "is not monotonic across the tested adversarial matrix."
+        )
+    if len(array_facts) == 2:
+        psf_facts = array_facts[1]
+        if (
+            psf_facts.completeness is FactCompleteness.COMPLETE
+            and psf_facts.maximum is not None
+            and float(psf_facts.maximum) <= 1e-12
+        ):
+            return _workload_rejection(
+                "The finite PSF has no positive mass above the validation floor.",
+                fallback_allowed=False,
+            )
     return None
+
+
+_OPERATION_REGION_EVALUATORS: Mapping[
+    str,
+    Callable[
+        [WorkloadDescriptor, tuple[ArrayFacts, ...]],
+        SupportDecision | None,
+    ],
+] = MappingProxyType(
+    {
+        "background-parameters-v1": _background_region_policy,
+        "median-parameters-v1": _median_region_policy,
+        "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
+        "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
+        "rl-parameters-v1": _richardson_lucy_region_policy,
+    }
+)
 
 
 def _evaluate_background_region(
@@ -1062,6 +1298,42 @@ def _dtype_itemsize(value: object) -> int:
         raise ValueError(f"Unsupported workload dtype {value!r}.") from exc
 
 
+def _output_port_itemsize(policy_id: str, primary_itemsize: int) -> int:
+    """Resolve static output storage without importing an implementation.
+
+    Fixed dtype policies are intentionally data-driven so future boolean,
+    label, and conversion providers do not need another memory-model branch.
+    """
+
+    normalized = str(policy_id).strip()
+    if normalized == "dtype-same-v1":
+        return primary_itemsize
+    prefix = "fixed:"
+    if normalized.startswith(prefix):
+        return _dtype_itemsize(normalized[len(prefix) :])
+    raise ValueError(f"Unsupported output dtype policy {normalized!r}.")
+
+
+def _next_235_smooth_length(value: int) -> int:
+    """Return the smallest integer >= ``value`` with only 2/3/5 factors."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("FFT extents must be positive integers.")
+    best = 1 << (value - 1).bit_length()
+    power_two = 1
+    while power_two <= best:
+        power_three = power_two
+        while power_three <= best:
+            candidate = power_three
+            while candidate < value:
+                candidate *= 5
+            if candidate < best:
+                best = candidate
+            power_three *= 3
+        power_two *= 2
+    return best
+
+
 def _workload_rejection(
     reason_text: str,
     *,
@@ -1211,6 +1483,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-parameters-v1",
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
+            "rl-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -1218,12 +1491,14 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-u8-u16-f32-v2",
             "median-exact-u8-u16-f32-v1",
             "gaussian-finite-f32-v1",
+            "rl-finite-f32-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
             "background-dtype-parity-v2",
             "median-production-bitwise-v1",
             "gaussian-float32-tolerance-v1",
+            "rl-float32-tolerance-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -1231,15 +1506,18 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-median-memory-v1",
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
+            "cupyx-richardson-lucy-fft-memory-v2",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
             "cpu-dynamic-output-v1",
             "shape-unknown-v1",
             "shape-preserving-v1",
+            "psf-spatial-kernel-v1",
         },
         PolicyKind.OUTPUT_DTYPE: {
             "dtype-same-v1",
+            "fixed:float32",
             "cpu-dynamic-output-v1",
         },
         PolicyKind.CONVERSION: {
@@ -1247,44 +1525,52 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-float-workspace-restore-v1",
             "cupyx-median-identity-v1",
             "cupyx-gaussian-float32-v1",
+            "cupyx-rl-float32-identity-v1",
         },
         PolicyKind.NONFINITE: {
             "cpu-reference-v1",
             "background-cpu-parity-v1",
             "finite-no-negative-zero-v1",
             "finite-only-v1",
+            "finite-output-v1",
         },
         PolicyKind.ROUNDING: {
             "cpu-reference-v1",
             "background-bankers-round-clip-v1",
             "median-bitwise-v1",
             "gaussian-float32-tolerance-v1",
+            "rl-float32-tolerance-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
             "background-clip-public-dtype-v1",
             "preserve-public-dtype-v1",
+            "finite-float32-cleanup-v1",
         },
         PolicyKind.BOUNDARY: {
             "cpu-reference-v1",
             "background-nearest-rolling-ball-v1",
             "scipy-reflect-v1",
+            "scipy-signal-zero-fill-same-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
             "background-public-dtype-v2",
             "median-bitwise-v1",
             "gaussian-float32-v1",
+            "rl-float32-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
             "background-block-progress-v1",
             "monolithic-sync-progress-v1",
+            "deconvolution-block-iteration-progress-v1",
         },
         PolicyKind.CANCELLATION: {
             "cpu-reference-v1",
             "background-block-cancel-v1",
             "monolithic-boundary-cancel-v1",
+            "deconvolution-iteration-cancel-v1",
         },
         PolicyKind.SIDE_EFFECT: {
             "pure-or-source-v1",
@@ -1349,6 +1635,8 @@ __all__ = [
     "PerformanceEvidence",
     "PolicyCatalog",
     "PolicyKind",
+    "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
+    "RICHARDSON_LUCY_FILTER_EPSILON",
     "SupportDecision",
     "ValueDescriptor",
     "evaluate_auto_performance",

@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 import pytest
 
+import napari_vipp.core.compute_benchmark_adapter as adapter_module
 from napari_vipp.core.compute import (
     MemoryTopology,
     WorkloadDescriptor,
@@ -47,6 +48,7 @@ from napari_vipp.core.node_execution import PreparedNodeCall
 from napari_vipp.core.operations import (
     gaussian_blur,
     median_filter,
+    richardson_lucy_deconvolution,
     subtract_background,
 )
 
@@ -243,6 +245,73 @@ def _spec(operation_id: str):
     )
 
 
+def _two_input_rl_spec():
+    return _spec("richardson_lucy_deconvolution")
+
+
+def _fake_multi_input_registered_benchmark(monkeypatch):
+    clock = ManualClock()
+    runtime = _FakeRuntime(clock)
+    spec = _two_input_rl_spec()
+    registry = ComputeRegistry()
+    calls: list[tuple[str, tuple[tuple[int, ...], ...]]] = []
+
+    def cpu(inputs, **_kwargs):
+        image, psf = inputs
+        calls.append(("cpu", (image.shape, psf.shape)))
+        clock.advance(0.100)
+        return np.asarray(image) * np.asarray(psf).sum(dtype=np.float32)
+
+    def gpu(inputs, **_kwargs):
+        image, psf = inputs
+        calls.append(("gpu", (image.array.shape, psf.array.shape)))
+        clock.advance(0.040)
+        return runtime.allocate(
+            image.array * psf.array.sum(dtype=np.float32)
+        )
+
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        registry,
+        "implementation_spec",
+        lambda *_args, **_kwargs: spec,
+    )
+    monkeypatch.setattr(
+        registry,
+        "implementation_callable",
+        lambda *_args, **_kwargs: gpu,
+    )
+    image = np.arange(7 * 9, dtype=np.float32).reshape(7, 9) / 63
+    psf = np.array(
+        [[0.0, 0.125, 0.0], [0.125, 0.5, 0.125], [0.0, 0.125, 0.0]],
+        dtype=np.float32,
+    )
+    call = PreparedNodeCall(
+        "rl-node",
+        "richardson_lucy_deconvolution",
+        cpu,
+        (image, psf),
+        kwargs={
+            "iterations": 3,
+            "resolved_spatial_ndim": 2,
+            "progress": None,
+        },
+        multiple_inputs=True,
+    )
+    built = build_registered_node_benchmark(
+        call,
+        admitted_specs=(spec,),
+        registry=registry,
+        environment_fingerprint="fake-multi-input-environment",
+        allow_experimental=True,
+        clock=clock,
+        warm_rounds=3,
+        max_warm_rounds=3,
+        paired_bootstrap_samples=200,
+    )
+    return clock, runtime, registry, spec, image, psf, calls, built
+
+
 def _fake_registered_benchmark(
     monkeypatch,
     *,
@@ -402,6 +471,231 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
     assert set(runtime.release_counts.values()) == {1}
     np.testing.assert_array_equal(live, before)
     assert not live.flags.writeable
+
+
+def test_multi_input_benchmark_detaches_hashes_invokes_and_observes_every_port(
+    monkeypatch,
+):
+    (
+        clock,
+        runtime,
+        _registry,
+        spec,
+        image,
+        psf,
+        calls,
+        built,
+    ) = _fake_multi_input_registered_benchmark(monkeypatch)
+    image_before = image.copy()
+    psf_before = psf.copy()
+
+    assert built.request.workload.input_shapes == (image.shape, psf.shape)
+    assert built.request.workload.input_dtypes == ("float32", "float32")
+    assert len(built.detached_call.inputs) == 2
+    assert all(not value.flags.writeable for value in built.detached_call.inputs)
+    assert not np.shares_memory(built.detached_call.inputs[0], image)
+    assert not np.shares_memory(built.detached_call.inputs[1], psf)
+    private_call = built.request.private_input_factory()
+    assert private_call.multiple_inputs
+    assert len(private_call.positional_input()) == 2
+    assert all(not value.flags.writeable for value in private_call.inputs)
+
+    record = NodeBenchmarkService(clock=clock).benchmark(built.request)
+
+    candidate = next(
+        item
+        for item in record.candidates
+        if item.implementation_id == spec.implementation_id
+    )
+    assert candidate.parity_passed, candidate.error
+    assert candidate.cold_seconds == pytest.approx(0.046)
+    assert candidate.warm_seconds == pytest.approx((0.046,) * 3)
+    # Two H2D transfers and one D2H transfer are included in every GPU call.
+    assert candidate.cold_transfer_seconds == pytest.approx(0.006)
+    assert candidate.warm_transfer_seconds == pytest.approx((0.006,) * 3)
+    assert candidate.cold_resident_seconds == pytest.approx(0.040)
+    assert candidate.peak_runtime_reserved_bytes >= (
+        image.nbytes + psf.nbytes + image.nbytes
+    )
+    assert {kind for kind, _shapes in calls} == {"cpu", "gpu"}
+    assert {shapes for _kind, shapes in calls} == {(image.shape, psf.shape)}
+    assert runtime.live == {}
+    assert set(runtime.release_counts.values()) == {1}
+    np.testing.assert_array_equal(image, image_before)
+    np.testing.assert_array_equal(psf, psf_before)
+
+
+def test_multi_input_exact_identity_changes_when_only_psf_changes(monkeypatch):
+    (
+        _clock,
+        _runtime,
+        registry,
+        spec,
+        image,
+        psf,
+        _calls,
+        first,
+    ) = _fake_multi_input_registered_benchmark(monkeypatch)
+    changed_psf = psf.copy()
+    changed_psf[0, 1] += np.float32(0.01)
+    changed = PreparedNodeCall(
+        "rl-node",
+        "richardson_lucy_deconvolution",
+        first.detached_call.cpu_function,
+        (image, changed_psf),
+        kwargs={
+            "iterations": 3,
+            "resolved_spatial_ndim": 2,
+            "progress": None,
+        },
+        multiple_inputs=True,
+    )
+
+    second = build_registered_node_benchmark(
+        changed,
+        admitted_specs=(spec,),
+        registry=registry,
+        environment_fingerprint="fake-multi-input-environment",
+        allow_experimental=True,
+    )
+
+    assert (
+        first.request.workload.facts_fingerprint
+        != second.request.workload.facts_fingerprint
+    )
+    assert first.request.workload.fingerprint != second.request.workload.fingerprint
+    assert first.request.key.digest != second.request.key.digest
+
+
+def test_multi_input_second_transfer_failure_releases_first_input(monkeypatch):
+    (
+        _clock,
+        runtime,
+        _registry,
+        _specification,
+        _image,
+        _psf,
+        _calls,
+        built,
+    ) = _fake_multi_input_registered_benchmark(monkeypatch)
+    original_to_device = runtime.to_device
+    transfer_count = 0
+
+    def fail_second_transfer(value, *, device_id=""):
+        nonlocal transfer_count
+        transfer_count += 1
+        if transfer_count == 2:
+            raise _FakeOOM("second input transfer failed")
+        return original_to_device(value, device_id=device_id)
+
+    monkeypatch.setattr(runtime, "to_device", fail_second_transfer)
+
+    with pytest.raises(RuntimeError, match="second input transfer failed"):
+        built.request.candidates[0].execute(
+            built.request.private_input_factory()
+        )
+
+    assert transfer_count == 2
+    assert runtime.live == {}
+    assert runtime.release_counts == Counter({1: 1})
+
+
+def test_gpu_benchmark_invocations_hold_a_cancellable_device_lease(monkeypatch):
+    (
+        clock,
+        runtime,
+        _registry,
+        specification,
+        _image,
+        _psf,
+        _calls,
+        built,
+    ) = _fake_multi_input_registered_benchmark(monkeypatch)
+    acquired: list[tuple[str, str]] = []
+
+    @contextlib.contextmanager
+    def observed_lease(runtime_id, device_id, *, cancelled=None, **_kwargs):
+        assert cancelled is not None
+        assert cancelled() is False
+        acquired.append((runtime_id, device_id))
+        yield None
+
+    monkeypatch.setattr(adapter_module, "accelerator_lease", observed_lease)
+
+    NodeBenchmarkService(clock=clock).benchmark(built.request)
+
+    assert acquired == [
+        (specification.runtime_id, "cuda:0")
+    ] * len(built.observations.runs(specification.implementation_id))
+
+    def abort_wait() -> bool:
+        raise BenchmarkCancelled("cancelled while waiting for the GPU lease")
+
+    private_call = built.request.private_input_factory()
+    assert built.request.bind_operation_progress is not None
+    private_call = built.request.bind_operation_progress(
+        private_call,
+        None,
+        abort_wait,
+    )
+    scope_count = runtime.scope_count
+
+    with pytest.raises(BenchmarkCancelled, match="waiting for the GPU lease"):
+        built.request.candidates[0].execute(private_call)
+
+    assert runtime.scope_count == scope_count
+    assert runtime.live == {}
+
+
+def test_multi_input_port_contracts_and_refused_outputs_and_writers(
+    monkeypatch,
+):
+    (
+        _clock,
+        _runtime,
+        registry,
+        spec,
+        image,
+        psf,
+        _calls,
+        built,
+    ) = _fake_multi_input_registered_benchmark(monkeypatch)
+    call = built.detached_call
+
+    with pytest.raises(ValueError, match="input contracts"):
+        build_registered_node_benchmark(
+            call,
+            admitted_specs=(replace(spec, input_ports=spec.input_ports[:1]),),
+            registry=registry,
+            environment_fingerprint="multi-input-port-mismatch",
+            allow_experimental=True,
+            call_is_detached=True,
+        )
+
+    with pytest.raises(ValueError, match="exactly one output"):
+        build_registered_node_benchmark(
+            replace(call, output_port_count=2),
+            admitted_specs=(spec,),
+            registry=registry,
+            environment_fingerprint="multi-output-refused",
+            allow_experimental=True,
+            call_is_detached=True,
+        )
+
+    with pytest.raises(ValueError, match="writer operations"):
+        build_registered_node_benchmark(
+            PreparedNodeCall(
+                "writer",
+                "save_output",
+                _identity_cpu,
+                (image, psf),
+                multiple_inputs=True,
+            ),
+            admitted_specs=(spec,),
+            registry=registry,
+            environment_fingerprint="writer-refused",
+            allow_experimental=True,
+        )
 
 
 def test_registered_background_benchmark_reports_each_completed_yx_plane(
@@ -826,6 +1120,42 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
         input_peak=3.0,
     ).passed
 
+    rl_reference = np.linspace(0.0, 2.0, 256, dtype=np.float32).reshape(16, 16)
+    rl_within = rl_reference + np.float32(2e-7)
+    rl_outside = rl_reference.copy()
+    rl_outside[8, 8] += np.float32(1e-2)
+
+    rl_accepted = operation_parity(
+        "richardson_lucy_deconvolution",
+        rl_reference,
+        rl_within,
+    )
+    rl_rejected = operation_parity(
+        "richardson_lucy_deconvolution",
+        rl_reference,
+        rl_outside,
+    )
+
+    assert rl_accepted.passed
+    assert "nrmse=" in rl_accepted.detail and "max_ulp=" in rl_accepted.detail
+    assert not rl_rejected.passed
+    assert "max_abs=" in rl_rejected.detail
+
+
+def test_rl_parity_floor_is_independent_of_gaussian_policy(monkeypatch):
+    monkeypatch.setattr(adapter_module, "GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR", 1.0)
+    reference = np.zeros((4, 4), dtype=np.float32)
+    candidate = np.full((4, 4), 5e-7, dtype=np.float32)
+
+    result = operation_parity(
+        "richardson_lucy_deconvolution",
+        reference,
+        candidate,
+    )
+
+    assert not result.passed
+    assert "nrmse=" in result.detail
+
 
 def test_adaptive_rounds_bootstrap_and_json_store_are_exact_and_deterministic(
     tmp_path,
@@ -1007,14 +1337,27 @@ def test_real_registered_production_benchmark_smoke_when_cuda_is_available():
     background[9:14, 12:18] += np.float32(25.0)
     gaussian = rng.normal(0.0, 3.0, size=(128, 160)).astype(np.float32)
     median = rng.normal(0.5, 4.0, size=(96, 112)).astype(np.float32)
-    for values in (background, gaussian, median):
+    rl_image = rng.uniform(0.0, 1.0, size=(31, 37)).astype(np.float32)
+    rl_image[15, 18] += np.float32(3.0)
+    rl_psf = np.array(
+        [
+            [0.0, 0.0, 0.0625, 0.0, 0.0],
+            [0.0, 0.0625, 0.125, 0.0625, 0.0],
+            [0.0625, 0.125, 0.125, 0.125, 0.0625],
+            [0.0, 0.0625, 0.125, 0.0625, 0.0],
+            [0.0, 0.0, 0.0625, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    rl_psf /= rl_psf.sum(dtype=np.float32)
+    for values in (background, gaussian, median, rl_image, rl_psf):
         values.setflags(write=False)
 
     cases = (
         (
             "subtract_background",
             subtract_background,
-            background,
+            (background,),
             {
                 "radius": 5.0,
                 "light_background": False,
@@ -1029,18 +1372,34 @@ def test_real_registered_production_benchmark_smoke_when_cuda_is_available():
         (
             "gaussian_blur",
             gaussian_blur,
-            gaussian,
+            (gaussian,),
             {"sigma": 1.3, "channel_axis": None},
         ),
         (
             "median_filter",
             median_filter,
-            median,
+            (median,),
             {"size": 5, "channel_axis": None},
+        ),
+        (
+            "richardson_lucy_deconvolution",
+            richardson_lucy_deconvolution,
+            (rl_image, rl_psf),
+            {
+                "spatial_mode": "2D YX",
+                "iterations": 3,
+                "normalize_psf": True,
+                "clip_negative_input": True,
+                "clip_output_negative": True,
+                "preserve_input_scale": True,
+                "filter_epsilon": 1e-8,
+                "resolved_spatial_ndim": 2,
+                "progress": None,
+            },
         ),
     )
     try:
-        for index, (operation_id, cpu_function, values, kwargs) in enumerate(cases):
+        for index, (operation_id, cpu_function, inputs, kwargs) in enumerate(cases):
             spec = _spec(operation_id)
             library_probe = registry.probe_library(
                 spec.implementation_library_id,
@@ -1063,8 +1422,9 @@ def test_real_registered_production_benchmark_smoke_when_cuda_is_available():
                 f"real-{operation_id}",
                 operation_id,
                 cpu_function,
-                (values,),
+                inputs,
                 kwargs=kwargs,
+                multiple_inputs=len(inputs) > 1,
             )
             built = build_registered_node_benchmark(
                 call,

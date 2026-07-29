@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import replace
@@ -7,6 +8,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeMode,
     ComputeRequest,
@@ -240,6 +242,17 @@ def _device_copy(value: _FakeDeviceArray, **_kwargs) -> _FakeDeviceArray:
     assert not value.released
     value.runtime.operation_count += 1
     return value.runtime.allocate(value.payload)
+
+
+def _device_richardson_lucy(
+    values: list[_FakeDeviceArray],
+    **_kwargs,
+) -> _FakeDeviceArray:
+    assert len(values) == 2
+    image, psf = values
+    assert image.runtime is psf.runtime
+    image.runtime.operation_count += 1
+    return image.runtime.allocate(image.payload.astype(np.float32, copy=True))
 
 
 def _device_add(
@@ -512,6 +525,59 @@ def test_linear_segment_keeps_intermediate_on_device_and_returns_host_only():
     assert runtime.live == {}
     assert all(
         not runtime.is_device_value(value) for value in result.host_values.values()
+    )
+    registry.close()
+
+
+def test_device_plan_cancels_while_waiting_for_process_accelerator_lease():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_copy),))
+    request = _request()
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+    lease_entered = threading.Event()
+    release_lease = threading.Event()
+
+    def holder() -> None:
+        with accelerator_lease("fake-device", "fake:0"):
+            lease_entered.set()
+            assert release_lease.wait(timeout=5)
+
+    holder_thread = threading.Thread(target=holder)
+    holder_thread.start()
+    assert lease_entered.wait(timeout=5)
+    cancelled = threading.Event()
+    timer = threading.Timer(0.1, cancelled.set)
+    timer.start()
+    try:
+        with pytest.raises(OperationCancelled, match="waiting"):
+            execute_device_plan(
+                plan,
+                pipeline,
+                registry,
+                request,
+                host_values={
+                    OutputPortKey("input", 0): np.ones((4, 4), dtype=np.float32)
+                },
+                prepare_call=_prepare_call(pipeline),
+                cancel_callback=cancelled.is_set,
+            )
+    finally:
+        timer.join(timeout=5)
+        release_lease.set()
+        holder_thread.join(timeout=5)
+    assert not holder_thread.is_alive()
+    assert not any(
+        isinstance(event, tuple) and event[0] == "scope-enter"
+        for event in runtime.events
     )
     registry.close()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ import numpy as np
 import pytest
 
 import napari_vipp.core.compute_registry as registry_module
+from napari_vipp.core.accelerator_lease import AcceleratorLeaseManager
 from napari_vipp.core.compute_registry import (
     ComputeRegistry,
     ComputeRegistryClosed,
@@ -249,6 +251,87 @@ def test_library_probe_is_explicit_cached_and_refreshable():
     assert first is second
     assert refreshed.available
     assert calls == ["probe", "probe"]
+    registry.close()
+
+
+@pytest.mark.parametrize("probe_kind", ("runtime", "library"))
+def test_provider_probe_wait_does_not_hold_registry_lock(probe_kind) -> None:
+    """Lease owner may resolve a callable while a provider probe is queued."""
+
+    manager = AcceleratorLeaseManager()
+    probe_attempted_lease = threading.Event()
+    owner_has_lease = threading.Event()
+    callable_resolved = threading.Event()
+    probe_finished = threading.Event()
+    failures: list[BaseException] = []
+
+    def probe() -> ImplementationLibraryProbeResult:
+        probe_attempted_lease.set()
+        with manager.acquire("cuda-cupy", "cuda:0"):
+            return ImplementationLibraryProbeResult(
+                "fake-library",
+                True,
+                version="2.0",
+                message="ready",
+            )
+
+    class LeaseProbeRuntime(FakeRuntime):
+        def probe(self, *, refresh: bool = False) -> RuntimeProbeResult:
+            probe_attempted_lease.set()
+            with manager.acquire("cuda-cupy", "cuda:0"):
+                return super().probe(refresh=refresh)
+
+    spec = _implementation_spec()
+    registry = ComputeRegistry(
+        runtime_descriptors=(_runtime_descriptor(),),
+        library_descriptors=(_library_descriptor(),),
+        implementation_specs=(spec,),
+        runtime_factories={"fake-device": LeaseProbeRuntime},
+        library_probes={"fake-library": probe},
+    )
+
+    def own_device_then_resolve_callable() -> None:
+        try:
+            with manager.acquire("cuda-cupy", "cuda:0"):
+                owner_has_lease.set()
+                if not probe_attempted_lease.wait(timeout=5):
+                    raise AssertionError("provider probe did not queue for the lease")
+                registry.implementation_callable(spec, allow_experimental=True)
+                callable_resolved.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    def run_probe() -> None:
+        try:
+            if not owner_has_lease.wait(timeout=5):
+                raise AssertionError("execution did not acquire the lease")
+            result = (
+                registry.probe_runtime("fake-device")
+                if probe_kind == "runtime"
+                else registry.probe_library("fake-library")
+            )
+            if not result.available:
+                raise AssertionError(result.message)
+            probe_finished.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    owner_thread = threading.Thread(
+        target=own_device_then_resolve_callable,
+        daemon=True,
+    )
+    probe_thread = threading.Thread(target=run_probe, daemon=True)
+    owner_thread.start()
+    assert owner_has_lease.wait(timeout=5)
+    probe_thread.start()
+    owner_thread.join(timeout=5)
+    probe_thread.join(timeout=5)
+
+    assert callable_resolved.is_set(), "process owner deadlocked on registry lock"
+    assert probe_finished.is_set(), "provider probe deadlocked on process lease"
+    assert not owner_thread.is_alive()
+    assert not probe_thread.is_alive()
+    assert failures == []
     registry.close()
 
 
@@ -554,6 +637,14 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     tmp_path,
 ):
     events = []
+    lease_calls: list[tuple[str, str]] = []
+
+    @contextmanager
+    def observed_lease(runtime_id: str, device_id: str):
+        lease_calls.append((runtime_id, device_id))
+        yield
+
+    monkeypatch.setattr(registry_module, "accelerator_lease", observed_lease)
 
     class Pool:
         def __init__(self):
@@ -604,6 +695,10 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
             return np.arange(*args, **kwargs)
 
         @staticmethod
+        def asarray(*args, **kwargs):
+            return np.asarray(*args, **kwargs)
+
+        @staticmethod
         def get_default_memory_pool():
             raise AssertionError("A library probe touched the global default pool")
 
@@ -616,6 +711,12 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
         @staticmethod
         def median_filter(values, **_kwargs):
             events.append("median")
+            return values.copy()
+
+    class Signal:
+        @staticmethod
+        def convolve(values, _kernel, **_kwargs):
+            events.append("convolve")
             return values.copy()
 
     class Cucim:
@@ -634,6 +735,7 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     modules = {
         "cupy": Cupy(),
         "cupyx.scipy.ndimage": Ndimage(),
+        "cupyx.scipy.signal": Signal(),
         "cucim": Cucim(),
         "cucim.skimage.restoration": Restoration(),
     }
@@ -666,9 +768,172 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     assert events.count("allocator-enter") == 2
     assert events.count("allocator-exit") == 2
     assert events.count("free") == 2
+    assert lease_calls == [
+        ("cuda-cupy", "cuda:0"),
+        ("cuda-cupy", "cuda:0"),
+    ]
     assert "gaussian" in events
     assert "median" in events
+    assert "convolve" in events
     assert "rolling-ball" in events
+
+
+@pytest.mark.parametrize("library_id", ("cupyx", "cucim"))
+def test_builtin_gpu_library_probe_waits_for_process_device_lease(
+    library_id,
+    monkeypatch,
+    tmp_path,
+):
+    manager = AcceleratorLeaseManager()
+    lease_attempted = threading.Event()
+    pool_created = threading.Event()
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    failures: list[BaseException] = []
+    results: list[ImplementationLibraryProbeResult] = []
+
+    @contextmanager
+    def observed_lease(runtime_id: str, device_id: str):
+        assert (runtime_id, device_id) == ("cuda-cupy", "cuda:0")
+        lease_attempted.set()
+        with manager.acquire(runtime_id, device_id):
+            yield
+
+    monkeypatch.setattr(registry_module, "accelerator_lease", observed_lease)
+
+    class Pool:
+        def __init__(self):
+            pool_created.set()
+
+        @staticmethod
+        def malloc(_size):
+            return object()
+
+        @staticmethod
+        def used_bytes():
+            return 0
+
+        @staticmethod
+        def total_bytes():
+            return 0
+
+        @staticmethod
+        def free_all_blocks():
+            return None
+
+    class Stream:
+        @staticmethod
+        def synchronize():
+            return None
+
+    class Runtime:
+        @staticmethod
+        def getDevice():
+            return 0
+
+    class Cuda:
+        runtime = Runtime()
+        MemoryPool = Pool
+
+        @staticmethod
+        @contextmanager
+        def using_allocator(_allocator):
+            yield
+
+        @staticmethod
+        def get_current_stream():
+            return Stream()
+
+    class Cupy:
+        __version__ = "test-cupy"
+        float32 = np.float32
+        cuda = Cuda()
+
+        @staticmethod
+        def arange(*args, **kwargs):
+            return np.arange(*args, **kwargs)
+
+        @staticmethod
+        def asarray(*args, **kwargs):
+            return np.asarray(*args, **kwargs)
+
+    class Ndimage:
+        @staticmethod
+        def gaussian_filter(values, **_kwargs):
+            return values.copy()
+
+        @staticmethod
+        def median_filter(values, **_kwargs):
+            return values.copy()
+
+    class Signal:
+        @staticmethod
+        def convolve(values, _kernel, **_kwargs):
+            return values.copy()
+
+    class Cucim:
+        __version__ = "test-cucim"
+
+        @staticmethod
+        def is_available(component):
+            return component == "skimage"
+
+    class Restoration:
+        @staticmethod
+        def rolling_ball(values, **_kwargs):
+            return values.copy()
+
+    modules = {
+        "cupy": Cupy(),
+        "cupyx.scipy.ndimage": Ndimage(),
+        "cupyx.scipy.signal": Signal(),
+        "cucim": Cucim(),
+        "cucim.skimage.restoration": Restoration(),
+    }
+    monkeypatch.setattr(
+        registry_module.importlib,
+        "import_module",
+        modules.__getitem__,
+    )
+    _mock_installed_gpu_distributions(monkeypatch)
+    record_path = _cucim_environment_record(
+        tmp_path / "gpu-environment.json",
+        digest="A" * 64,
+    )
+
+    def holder() -> None:
+        with manager.acquire("cuda-cupy", "cuda:0"):
+            holder_entered.set()
+            assert release_holder.wait(timeout=5)
+
+    def run_probe() -> None:
+        try:
+            if library_id == "cupyx":
+                result = registry_module._probe_cupyx_library()
+            else:
+                result = registry_module._probe_cucim_skimage_library(
+                    record_path=record_path
+                )
+            results.append(result)
+        except BaseException as exc:
+            failures.append(exc)
+
+    holder_thread = threading.Thread(target=holder)
+    probe_thread = threading.Thread(target=run_probe)
+    holder_thread.start()
+    assert holder_entered.wait(timeout=5)
+    probe_thread.start()
+    assert lease_attempted.wait(timeout=5)
+    assert not pool_created.is_set()
+    release_holder.set()
+    holder_thread.join(timeout=5)
+    probe_thread.join(timeout=5)
+
+    assert not holder_thread.is_alive()
+    assert not probe_thread.is_alive()
+    assert failures == []
+    assert len(results) == 1 and results[0].available
+    assert pool_created.is_set()
 
 
 @pytest.mark.parametrize(
@@ -989,6 +1254,10 @@ def test_library_probe_does_not_mask_operation_failure_with_cleanup_failure(
         def arange(*args, **kwargs):
             return np.arange(*args, **kwargs)
 
+        @staticmethod
+        def asarray(*args, **kwargs):
+            return np.asarray(*args, **kwargs)
+
     class Ndimage:
         @staticmethod
         def gaussian_filter(_values, **_kwargs):
@@ -998,7 +1267,16 @@ def test_library_probe_does_not_mask_operation_failure_with_cleanup_failure(
         def median_filter(values, **_kwargs):
             return values
 
-    modules = {"cupy": Cupy(), "cupyx.scipy.ndimage": Ndimage()}
+    class Signal:
+        @staticmethod
+        def convolve(values, _kernel, **_kwargs):
+            return values
+
+    modules = {
+        "cupy": Cupy(),
+        "cupyx.scipy.ndimage": Ndimage(),
+        "cupyx.scipy.signal": Signal(),
+    }
     monkeypatch.setattr(
         registry_module.importlib,
         "import_module",

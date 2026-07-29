@@ -7237,18 +7237,19 @@ class PrototypePipeline:
     def predict_shape_preserving_node_states(
         self,
         call: PreparedNodeCall,
+        *,
+        output_dtype_policy_ids: tuple[str, ...] = ("dtype-same-v1",),
     ) -> tuple[ImageState | None, ...]:
         """Carry preparation metadata through a resident device operation.
 
         This prediction never inspects the device value.  It is intentionally
-        limited to one-output, shape- and dtype-preserving image declarations;
-        callers must finalize any materialized host output with
-        :meth:`finalize_node_call` before committing it to the cache.
+        limited to one-output, shape-preserving image declarations with a
+        static output dtype policy. Callers must finalize any materialized host
+        output with :meth:`finalize_node_call` before committing it to the cache.
         """
-        if call.multiple_inputs or call.output_port_count != 1:
+        if call.output_port_count != 1 or len(output_dtype_policy_ids) != 1:
             raise ValueError(
-                "Resident metadata prediction currently requires one input and "
-                "one output."
+                "Resident metadata prediction currently requires one output."
             )
         input_state = call.input_states[0] if call.input_states else None
         if input_state is None:
@@ -7256,18 +7257,61 @@ class PrototypePipeline:
         if not isinstance(input_state, ImageState):
             raise TypeError("Resident image metadata requires an ImageState input.")
         node = self.nodes[call.node_id]
-        history_item = _metadata._operation_history(
-            input_state,
-            node.operation_id,
-            node.title,
-            self._public_params(node.params),
+        dtype_policy = str(output_dtype_policy_ids[0]).strip()
+        if dtype_policy == "dtype-same-v1":
+            output_dtype = np.dtype(input_state.dtype)
+        elif dtype_policy.startswith("fixed:"):
+            output_dtype = np.dtype(dtype_policy.partition(":")[2])
+        else:
+            raise ValueError(
+                f"Resident metadata cannot project output dtype policy "
+                f"{dtype_policy!r}."
+            )
+        if call.multiple_inputs:
+            image_states = [
+                state for state in call.input_states if isinstance(state, ImageState)
+            ]
+            history_item = _metadata._multi_input_history(
+                image_states,
+                node.operation_id,
+                node.title,
+                dict(call.kwargs),
+            )
+            channels = _metadata._multi_input_channels(
+                image_states,
+                node.operation_id,
+                dict(call.kwargs),
+            )
+        else:
+            history_item = _metadata._operation_history(
+                input_state,
+                node.operation_id,
+                node.title,
+                self._public_params(node.params),
+            )
+            channels = input_state.channels
+        kind = _metadata._lazy_kind_label(
+            output_dtype,
+            input_state.shape,
+            input_state.axes,
         )
         return (
-            replace(
-                input_state,
-                history=input_state.history + (history_item,),
-                value_range=DEFERRED_VALUE_RANGE,
-                value_pattern="",
+            _metadata._with_operation_kind(
+                replace(
+                    input_state,
+                    dtype=output_dtype.name,
+                    kind=kind,
+                    bit_depth=_metadata._bit_depth_label(output_dtype),
+                    memory=_metadata._memory_label(
+                        int(np.prod(input_state.shape, dtype=np.int64))
+                        * output_dtype.itemsize
+                    ),
+                    history=input_state.history + (history_item,),
+                    channels=channels,
+                    value_range=DEFERRED_VALUE_RANGE,
+                    value_pattern="",
+                ),
+                node.operation_id,
             ),
         )
 

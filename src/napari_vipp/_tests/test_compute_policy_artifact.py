@@ -130,9 +130,11 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
     policy = load_phase1_compute_policy()
     executable = {spec.implementation_id: spec for spec in accelerator_compute_specs()}
 
-    assert set(executable) == {
-        operation.implementation_id for operation in policy.operations
-    }
+    phase1_ids = {operation.implementation_id for operation in policy.operations}
+    # The signed Phase-1 record is immutable. Later-phase declarations remain
+    # executable records in the live catalog without rewriting its audit
+    # history, so this artifact mirrors exactly its own declared subset.
+    assert phase1_ids <= set(executable)
     for operation in policy.operations:
         spec = executable[operation.implementation_id]
         assert operation.operation_id == spec.operation_id

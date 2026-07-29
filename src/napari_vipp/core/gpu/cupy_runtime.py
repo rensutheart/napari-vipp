@@ -9,10 +9,12 @@ import sys
 import threading
 from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from types import ModuleType
 
 import numpy as np
 
+from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import MemoryTopology, canonical_digest
 from napari_vipp.core.compute_registry import (
     RuntimeDevice,
@@ -38,12 +40,91 @@ class CUDACleanupError(RuntimeError):
     """Raised when a private CUDA scope cannot prove complete cleanup."""
 
 
+@dataclass(slots=True)
+class _FFTPlanCachePolicy:
+    """Temporarily disable one thread/device cache without losing its plans."""
+
+    cache: object
+    maximum_size: int
+    maximum_memsize: int
+    entries: tuple[tuple[object, object], ...]
+    restored: bool = False
+
+    @classmethod
+    def disable(cls, cupy: object) -> _FFTPlanCachePolicy:
+        cache = _fft_plan_cache(cupy)
+        maximum_size = _cache_integer(cache, "get_size")
+        maximum_memsize = _cache_integer(cache, "get_memsize")
+        entries = _fft_plan_cache_entries(cache)
+        policy = cls(cache, maximum_size, maximum_memsize, entries)
+        try:
+            for key, _plan in entries:
+                del cache[key]
+            # CuPy 14.1.1 evicts existing entries when this is called.  The
+            # plans above remain alive in ``entries`` and are restored later.
+            cache.set_size(0)
+            if _cache_integer(cache, "get_curr_size") != 0:
+                raise RuntimeError(
+                    "CuPy's FFT plan cache remained populated after disabling it."
+                )
+        except BaseException as setup_error:
+            try:
+                policy.restore()
+            except BaseException as restore_error:
+                raise CUDACleanupError(
+                    "Could not restore the external CuPy FFT plan cache after "
+                    "scope setup failed."
+                ) from restore_error
+            raise setup_error
+        return policy
+
+    def restore(self) -> None:
+        if self.restored:
+            return
+        cache = self.cache
+        original_by_key = {key: plan for key, plan in self.entries}
+        missing = object()
+        current = _fft_plan_cache_entries(cache)
+        for key, plan in current:
+            original = original_by_key.get(key, missing)
+            if original is not missing and original is not plan:
+                raise RuntimeError(
+                    "The CuPy FFT plan cache replaced an externally owned key "
+                    "while VIPP held the device lease."
+                )
+            # Any non-baseline entry was created inside this exclusive VIPP
+            # scope.  Remove that attributable entry, never an unknown cache.
+            del cache[key]
+        cache.set_memsize(self.maximum_memsize)
+        cache.set_size(self.maximum_size)
+        # Iteration is MRU-first while insertion makes an entry MRU.  Reverse
+        # insertion therefore restores the exact external LRU order.
+        for key, plan in reversed(self.entries):
+            cache[key] = plan
+        if _cache_integer(cache, "get_size") != self.maximum_size:
+            raise RuntimeError("CuPy FFT plan-cache size limit was not restored.")
+        if _cache_integer(cache, "get_memsize") != self.maximum_memsize:
+            raise RuntimeError("CuPy FFT plan-cache memory limit was not restored.")
+        restored_entries = _fft_plan_cache_entries(cache)
+        if len(restored_entries) != len(self.entries) or any(
+            restored_key != expected_key or restored_plan is not expected_plan
+            for (restored_key, restored_plan), (expected_key, expected_plan) in zip(
+                restored_entries,
+                self.entries,
+                strict=True,
+            )
+        ):
+            raise RuntimeError("CuPy FFT plan-cache entries were not restored exactly.")
+        self.restored = True
+        self.entries = ()
+
+
 class CuPyRuntime:
     """A lazy CuPy adapter with a private memory pool per execution scope.
 
-    The scope lock intentionally serializes use of one runtime instance.  This
-    gives transfers, accounting, and cleanup a single owner and prevents one
-    pipeline from changing another pipeline's allocator.
+    The instance lock protects private-pool bookkeeping.  A process-wide
+    runtime/device lease additionally coordinates separate registries and
+    runtime instances, while leaving distinct devices independently schedulable.
     """
 
     runtime_id = "cuda-cupy"
@@ -106,26 +187,31 @@ class CuPyRuntime:
             if compatibility is not None:
                 return self._remember_unavailable(*compatibility)
 
-            try:
-                cupy = self._load_cupy()
-            except Exception as exc:
-                reason = (
-                    "cupy_missing"
-                    if isinstance(exc, ModuleNotFoundError)
-                    else "cupy_import_failed"
-                )
+        # Optional imports and device enumeration do not allocate scientific
+        # buffers.  They happen without retaining the instance lock so the
+        # process lease can always be acquired before ``self._lock`` below.
+        try:
+            cupy = self._load_cupy()
+        except Exception as exc:
+            reason = (
+                "cupy_missing"
+                if isinstance(exc, ModuleNotFoundError)
+                else "cupy_import_failed"
+            )
+            with self._lock:
                 return self._remember_unavailable(
                     reason,
                     f"CuPy could not be loaded: {_exception_summary(exc)}",
                 )
-            try:
-                ndimage = self._load_ndimage()
-            except Exception as exc:
-                reason = (
-                    "cupyx_ndimage_missing"
-                    if isinstance(exc, ModuleNotFoundError)
-                    else "cupyx_ndimage_import_failed"
-                )
+        try:
+            ndimage = self._load_ndimage()
+        except Exception as exc:
+            reason = (
+                "cupyx_ndimage_missing"
+                if isinstance(exc, ModuleNotFoundError)
+                else "cupyx_ndimage_import_failed"
+            )
+            with self._lock:
                 return self._remember_unavailable(
                     reason,
                     "CuPy's ndimage provider could not be loaded: "
@@ -133,33 +219,82 @@ class CuPyRuntime:
                     version=str(getattr(cupy, "__version__", "unknown")),
                 )
 
-            version = str(getattr(cupy, "__version__", "unknown"))
-            try:
-                runtime = cupy.cuda.runtime
-                device_count = int(runtime.getDeviceCount())
-                if device_count < 1:
-                    return self._remember_unavailable(
-                        "no_cuda_device",
-                        "CuPy loaded, but CUDA reported no devices.",
-                        version=version,
-                    )
-                devices = tuple(
-                    self._probe_device(cupy, index) for index in range(device_count)
-                )
-                for device_index in range(device_count):
-                    self._exercise_runtime(cupy, ndimage, device_index=device_index)
-                driver_version = _optional_runtime_version(runtime, "driverGetVersion")
-                runtime_version = _optional_runtime_version(
-                    runtime, "runtimeGetVersion"
-                )
-            except Exception as exc:
-                info = self.classify_exception(exc)
+        version = str(getattr(cupy, "__version__", "unknown"))
+        try:
+            runtime = cupy.cuda.runtime
+            device_count = int(runtime.getDeviceCount())
+        except Exception as exc:
+            info = self.classify_exception(exc)
+            with self._lock:
                 return self._remember_unavailable(
                     info.reason_code,
                     f"CuPy loaded but its CUDA probe failed: {_exception_summary(exc)}",
                     version=version,
                 )
+        if device_count < 1:
+            with self._lock:
+                return self._remember_unavailable(
+                    "no_cuda_device",
+                    "CuPy loaded, but CUDA reported no devices.",
+                    version=version,
+                )
 
+        # Probe one device at a time, always taking its process lease before
+        # re-entering instance state.  Avoiding simultaneous multi-device
+        # leases also lets independent devices make progress without creating
+        # a second lock-order hierarchy between device IDs.
+        devices_list: list[RuntimeDevice] = []
+        driver_version = ""
+        runtime_version = ""
+        for device_index in range(device_count):
+            with accelerator_lease(self.runtime_id, f"cuda:{device_index}"):
+                with self._lock:
+                    if self._closed:
+                        return self._remember_unavailable(
+                            "runtime_closed",
+                            "This runtime instance has been closed.",
+                        )
+                    if self._unhealthy_message:
+                        return self._remember_unavailable(
+                            "runtime_unhealthy", self._unhealthy_message
+                        )
+                    if self._probe_result is not None and not refresh:
+                        return self._probe_result
+                    try:
+                        devices_list.append(self._probe_device(cupy, device_index))
+                        self._exercise_runtime(
+                            cupy,
+                            ndimage,
+                            device_index=device_index,
+                        )
+                        if device_index == 0:
+                            driver_version = _optional_runtime_version(
+                                runtime, "driverGetVersion"
+                            )
+                            runtime_version = _optional_runtime_version(
+                                runtime, "runtimeGetVersion"
+                            )
+                    except Exception as exc:
+                        info = self.classify_exception(exc)
+                        return self._remember_unavailable(
+                            info.reason_code,
+                            "CuPy loaded but its CUDA probe failed: "
+                            + _exception_summary(exc),
+                            version=version,
+                        )
+
+        devices = tuple(devices_list)
+        with self._lock:
+            if self._closed:
+                return self._remember_unavailable(
+                    "runtime_closed", "This runtime instance has been closed."
+                )
+            if self._unhealthy_message:
+                return self._remember_unavailable(
+                    "runtime_unhealthy", self._unhealthy_message
+                )
+            if self._probe_result is not None and not refresh:
+                return self._probe_result
             fingerprint_payload = {
                 "runtime_id": self.runtime_id,
                 "cupy": version,
@@ -181,7 +316,10 @@ class CuPyRuntime:
                 devices=devices,
                 selected_device_id=devices[0].device_id,
                 reason_code="available",
-                message="CuPy completed allocation, Gaussian, and median probes.",
+                message=(
+                    "CuPy completed allocation, Gaussian, median, and FFT "
+                    "convolution probes."
+                ),
                 environment_fingerprint=canonical_digest(fingerprint_payload),
                 metadata=(
                     ("driver_version", driver_version),
@@ -198,18 +336,55 @@ class CuPyRuntime:
         memory_limit_bytes: int | None = None,
         safety_reserve_bytes: int | None = None,
     ) -> Iterator[None]:
+        """Own one process-wide runtime/device lease and private allocator."""
+
+        result = self.probe()
+        selected = device_id.strip() or result.selected_device_id
+        if not result.available or not selected:
+            with self._execution_scope_unleased(
+                probe_result=result,
+                device_id=device_id,
+                memory_limit_bytes=memory_limit_bytes,
+                safety_reserve_bytes=safety_reserve_bytes,
+            ):
+                yield None
+            return
+        with accelerator_lease(self.runtime_id, selected):
+            with self._execution_scope_unleased(
+                probe_result=result,
+                device_id=selected,
+                memory_limit_bytes=memory_limit_bytes,
+                safety_reserve_bytes=safety_reserve_bytes,
+            ):
+                yield None
+
+    @contextmanager
+    def _execution_scope_unleased(
+        self,
+        *,
+        probe_result: RuntimeProbeResult,
+        device_id: str = "",
+        memory_limit_bytes: int | None = None,
+        safety_reserve_bytes: int | None = None,
+    ) -> Iterator[None]:
         """Own a CUDA device and private allocator for one execution segment."""
 
         self._lock.acquire()
         pool = None
         cupy = None
+        device_index: int | None = None
+        fft_cache_policy: _FFTPlanCachePolicy | None = None
         cleanup_cause: BaseException | None = None
         cleanup_failed = False
         owns_scope = False
         try:
             if self._scope_active:
                 raise RuntimeError("Nested CuPy execution scopes are not supported.")
-            result = self.probe()
+            result = self._probe_result or probe_result
+            if self._closed:
+                raise RuntimeError("This CuPy runtime instance has been closed.")
+            if self._unhealthy_message:
+                raise RuntimeError(self._unhealthy_message)
             if not result.available:
                 raise RuntimeError(
                     f"CuPy runtime unavailable ({result.reason_code}): {result.message}"
@@ -240,10 +415,18 @@ class CuPyRuntime:
                 if limit < 1:
                     raise CUDAAdmissionError(
                         "No CUDA memory remains after applying the safety reserve."
-                )
+                    )
                 pool = cupy.cuda.MemoryPool()
                 pool.set_limit(size=limit)
                 pool_owner = _private_pool_owner(pool)
+                try:
+                    fft_cache_policy = _FFTPlanCachePolicy.disable(cupy)
+                except CUDACleanupError as exc:
+                    self._mark_unhealthy(
+                        "CuPy FFT plan-cache setup could not restore external "
+                        f"state: {_exception_summary(exc)}"
+                    )
+                    raise
                 self._scope_active = True
                 owns_scope = True
                 self._scope_thread_id = threading.get_ident()
@@ -286,6 +469,23 @@ class CuPyRuntime:
                     )
                 finally:
                     self._clear_scope_state()
+            if fft_cache_policy is not None:
+                try:
+                    if cupy is None or device_index is None:
+                        raise RuntimeError(
+                            "The CUDA scope lost the device needed to restore "
+                            "its FFT plan cache."
+                        )
+                    with cupy.cuda.Device(device_index):
+                        fft_cache_policy.restore()
+                except BaseException as exc:
+                    cleanup_failed = True
+                    if cleanup_cause is None:
+                        cleanup_cause = exc
+                    self._mark_unhealthy(
+                        "CuPy FFT plan-cache restoration failed: "
+                        + _exception_summary(exc)
+                    )
             self._lock.release()
             if cleanup_failed:
                 error = CUDACleanupError(self._unhealthy_message)
@@ -386,51 +586,87 @@ class CuPyRuntime:
         cupy.cuda.get_current_stream().synchronize()
 
     def memory_snapshot(self, *, device_id: str = "") -> RuntimeMemorySnapshot:
+        requested = device_id.strip()
         with self._lock:
-            requested = device_id.strip()
-            if not self._scope_active:
-                selected_terminal = requested or self._terminal_device_id
-                terminal = self._terminal_snapshots.get(selected_terminal)
-                if terminal is not None:
-                    return self._refreshed_terminal_snapshot(terminal)
+            selected_terminal = requested or self._terminal_device_id
+            terminal = (
+                None
+                if self._scope_active
+                else self._terminal_snapshots.get(selected_terminal)
+            )
+        if terminal is not None:
+            with accelerator_lease(self.runtime_id, terminal.device_id):
+                with self._lock:
+                    current_terminal = self._terminal_snapshots.get(terminal.device_id)
+                    if not self._scope_active and current_terminal is not None:
+                        return self._refreshed_terminal_snapshot_unleased(
+                            current_terminal
+                        )
 
-            result = self.probe()
-            if not result.available:
-                raise RuntimeError(
-                    f"CuPy runtime unavailable ({result.reason_code}): "
-                    f"{result.message}"
-                )
+        result = self.probe()
+        if not result.available:
+            raise RuntimeError(
+                f"CuPy runtime unavailable ({result.reason_code}): {result.message}"
+            )
+        with self._lock:
             selected = requested or self._active_device_id or result.selected_device_id
             _device_index(selected, result)
             if self._scope_active and selected != self._active_device_id:
                 raise InvalidCUDADeviceError(
                     "Memory snapshots during execution must use the active device."
                 )
-            cupy = self._load_cupy()
-            with cupy.cuda.Device(_raw_device_index(selected)):
-                free_bytes, total_bytes = _memory_info(cupy)
-                pool = self._active_pool if self._scope_active else None
-                live = int(pool.used_bytes()) if pool is not None else 0
-                reserved = int(pool.total_bytes()) if pool is not None else 0
-                device_used_delta = max(
-                    0,
-                    total_bytes
-                    - free_bytes
-                    - self._baseline_device_used_bytes,
+
+        # Never retain the instance lock while waiting for process ownership.
+        # Once ownership is held, re-read all mutable scope/terminal state.
+        with accelerator_lease(self.runtime_id, selected):
+            with self._lock:
+                current_result = self._probe_result or result
+                if self._closed:
+                    raise RuntimeError("This CuPy runtime instance has been closed.")
+                if self._unhealthy_message:
+                    raise RuntimeError(self._unhealthy_message)
+                if not current_result.available:
+                    raise RuntimeError(
+                        "CuPy runtime unavailable "
+                        f"({current_result.reason_code}): {current_result.message}"
+                    )
+                selected = (
+                    requested
+                    or self._active_device_id
+                    or current_result.selected_device_id
                 )
-                out_of_pool = (
-                    max(0, device_used_delta - reserved) if pool is not None else 0
-                )
-                return RuntimeMemorySnapshot(
-                    runtime_id=self.runtime_id,
-                    device_id=selected,
-                    topology=MemoryTopology.DISCRETE,
-                    device_total_bytes=total_bytes,
-                    device_free_bytes=free_bytes,
-                    runtime_live_bytes=live,
-                    runtime_reserved_bytes=reserved,
-                    out_of_pool_bytes=out_of_pool,
-                )
+                _device_index(selected, current_result)
+                if self._scope_active and selected != self._active_device_id:
+                    raise InvalidCUDADeviceError(
+                        "Memory snapshots during execution must use the active device."
+                    )
+                if not self._scope_active:
+                    terminal = self._terminal_snapshots.get(selected)
+                    if terminal is not None:
+                        return self._refreshed_terminal_snapshot_unleased(terminal)
+                cupy = self._load_cupy()
+                with cupy.cuda.Device(_raw_device_index(selected)):
+                    free_bytes, total_bytes = _memory_info(cupy)
+                    pool = self._active_pool if self._scope_active else None
+                    live = int(pool.used_bytes()) if pool is not None else 0
+                    reserved = int(pool.total_bytes()) if pool is not None else 0
+                    device_used_delta = max(
+                        0,
+                        total_bytes - free_bytes - self._baseline_device_used_bytes,
+                    )
+                    out_of_pool = (
+                        max(0, device_used_delta - reserved) if pool is not None else 0
+                    )
+                    return RuntimeMemorySnapshot(
+                        runtime_id=self.runtime_id,
+                        device_id=selected,
+                        topology=MemoryTopology.DISCRETE,
+                        device_total_bytes=total_bytes,
+                        device_free_bytes=free_bytes,
+                        runtime_live_bytes=live,
+                        runtime_reserved_bytes=reserved,
+                        out_of_pool_bytes=out_of_pool,
+                    )
 
     def classify_exception(self, exc: BaseException) -> RuntimeExceptionInfo:
         """Map typed CuPy/Python failures without brittle message matching."""
@@ -619,9 +855,7 @@ class CuPyRuntime:
         if free_bytes is not None and total_bytes is not None:
             device_used_delta = max(
                 0,
-                total_bytes
-                - free_bytes
-                - self._baseline_device_used_bytes,
+                total_bytes - free_bytes - self._baseline_device_used_bytes,
             )
             out_of_pool = max(0, device_used_delta - reserved)
         terminal = RuntimeMemorySnapshot(
@@ -662,11 +896,11 @@ class CuPyRuntime:
         )
         self._probe_result = None
 
-    def _refreshed_terminal_snapshot(
+    def _refreshed_terminal_snapshot_unleased(
         self,
         terminal: RuntimeMemorySnapshot,
     ) -> RuntimeMemorySnapshot:
-        """Refresh device totals without erasing the last scope's residue."""
+        """Refresh totals while the caller owns device then instance locks."""
 
         cupy = self._cupy
         if cupy is None:
@@ -745,28 +979,37 @@ class CuPyRuntime:
     ) -> None:
         values: list[object] = []
         source = None
+        frequency = None
         with cupy.cuda.Device(device_index):
             pool = cupy.cuda.MemoryPool()
-            with cupy.cuda.using_allocator(pool.malloc):
-                try:
-                    source = cupy.arange(64, dtype=cupy.float32).reshape((8, 8))
-                    values.append(source)
-                    values.append(ndimage.gaussian_filter(source, sigma=1.0))
-                    values.append(ndimage.median_filter(source, size=3))
-                    cupy.cuda.get_current_stream().synchronize()
-                finally:
-                    cupy.cuda.get_current_stream().synchronize()
-                    values.clear()
-                    source = None
-                    pool.free_all_blocks()
-                    cupy.cuda.get_current_stream().synchronize()
-                    live = int(pool.used_bytes())
-                    reserved = int(pool.total_bytes())
-                    if live or reserved:
-                        raise RuntimeError(
-                            "CuPy probe leaked its private memory pool "
-                            f"(live={live}, reserved={reserved} bytes)."
-                        )
+            fft_cache_policy = _FFTPlanCachePolicy.disable(cupy)
+            try:
+                with cupy.cuda.using_allocator(pool.malloc):
+                    try:
+                        source = cupy.arange(64, dtype=cupy.float32).reshape((8, 8))
+                        values.append(source)
+                        values.append(ndimage.gaussian_filter(source, sigma=1.0))
+                        values.append(ndimage.median_filter(source, size=3))
+                        frequency = cupy.fft.rfftn(source)
+                        values.append(frequency)
+                        values.append(cupy.fft.irfftn(frequency, s=source.shape))
+                        cupy.cuda.get_current_stream().synchronize()
+                    finally:
+                        cupy.cuda.get_current_stream().synchronize()
+                        values.clear()
+                        source = None
+                        frequency = None
+                        pool.free_all_blocks()
+                        cupy.cuda.get_current_stream().synchronize()
+                        live = int(pool.used_bytes())
+                        reserved = int(pool.total_bytes())
+                        if live or reserved:
+                            raise RuntimeError(
+                                "CuPy probe leaked its private memory pool "
+                                f"(live={live}, reserved={reserved} bytes)."
+                            )
+            finally:
+                fft_cache_policy.restore()
 
     def _remember_unavailable(
         self, reason_code: str, message: str, *, version: str = ""
@@ -812,6 +1055,78 @@ def create_runtime() -> CuPyRuntime:
     """Create the built-in lazy CuPy runtime."""
 
     return CuPyRuntime()
+
+
+def _fft_plan_cache(cupy: object) -> object:
+    """Return CuPy's cache for the selected thread and CUDA device."""
+
+    fft = getattr(cupy, "fft", None)
+    config = getattr(fft, "config", None)
+    getter = getattr(config, "get_plan_cache", None)
+    if not callable(getter):
+        raise RuntimeError("CuPy does not expose its FFT plan-cache API.")
+    cache = getter()
+    required = (
+        "get_size",
+        "get_memsize",
+        "get_curr_size",
+        "set_size",
+        "set_memsize",
+    )
+    missing = [name for name in required if not callable(getattr(cache, name, None))]
+    if missing:
+        raise RuntimeError(
+            "CuPy's FFT plan cache is missing required operations: "
+            + ", ".join(missing)
+            + "."
+        )
+    return cache
+
+
+def _cache_integer(cache: object, method_name: str) -> int:
+    method = getattr(cache, method_name, None)
+    if not callable(method):
+        raise RuntimeError(f"CuPy's FFT plan cache does not expose {method_name}().")
+    value = method()
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(
+            f"CuPy's FFT plan cache returned an invalid {method_name}() value."
+        )
+    minimum = -1 if method_name == "get_memsize" else 0
+    if value < minimum:
+        raise RuntimeError(
+            f"CuPy's FFT plan cache returned an invalid {method_name}() value."
+        )
+    return value
+
+
+def _fft_plan_cache_entries(cache: object) -> tuple[tuple[object, object], ...]:
+    """Snapshot plan identities in the cache's MRU-to-LRU iteration order."""
+
+    try:
+        raw_entries = tuple(cache)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("CuPy's FFT plan cache is not inspectable.") from exc
+    entries: list[tuple[object, object]] = []
+    keys: set[object] = set()
+    for raw_entry in raw_entries:
+        if not isinstance(raw_entry, tuple) or len(raw_entry) != 2:
+            raise RuntimeError("CuPy's FFT plan cache returned an unrecognized entry.")
+        key, node = raw_entry
+        try:
+            if key in keys:
+                raise RuntimeError("CuPy's FFT plan cache returned a duplicate key.")
+            keys.add(key)
+        except TypeError as exc:
+            raise RuntimeError(
+                "CuPy's FFT plan cache returned an unhashable key."
+            ) from exc
+        missing = object()
+        plan = getattr(node, "plan", missing)
+        if plan is missing:
+            raise RuntimeError("CuPy's FFT plan cache entry does not expose its plan.")
+        entries.append((key, plan))
+    return tuple(entries)
 
 
 def _raw_device_index(device_id: str) -> int:

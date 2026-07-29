@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import weakref
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import napari_vipp.core.gpu.cupy_runtime as cupy_runtime_module
+from napari_vipp.core.accelerator_lease import AcceleratorLeaseManager
 from napari_vipp.core.compute_registry import (
     RuntimeExceptionKind,
     RuntimeProtocol,
@@ -197,6 +200,101 @@ class _FakeRuntimeAPI:
         return 13020
 
 
+class _FakeFFTPlan:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeFFTPlanNode:
+    def __init__(self, plan: _FakeFFTPlan) -> None:
+        self.plan = plan
+
+
+class _FakeFFTPlanCache:
+    """Small MRU-first model of CuPy 14's per-thread/device PlanCache."""
+
+    def __init__(self) -> None:
+        self.maximum_size = 16
+        self.maximum_memsize = -1
+        self.entries: list[tuple[object, _FakeFFTPlan]] = []
+        self.events: list[tuple[str, object]] = []
+
+    def __iter__(self):
+        return iter(tuple((key, _FakeFFTPlanNode(plan)) for key, plan in self.entries))
+
+    def __delitem__(self, key: object) -> None:
+        self.events.append(("delete", key))
+        for index, (candidate, _plan) in enumerate(self.entries):
+            if candidate == key:
+                del self.entries[index]
+                return
+        raise KeyError(key)
+
+    def __setitem__(self, key: object, plan: _FakeFFTPlan) -> None:
+        self.events.append(("insert", key))
+        self.entries = [
+            (candidate, candidate_plan)
+            for candidate, candidate_plan in self.entries
+            if candidate != key
+        ]
+        if self.maximum_size == 0:
+            return
+        self.entries.insert(0, (key, plan))
+        self._trim()
+
+    def get_size(self) -> int:
+        return self.maximum_size
+
+    def get_memsize(self) -> int:
+        return self.maximum_memsize
+
+    def get_curr_size(self) -> int:
+        return len(self.entries)
+
+    def get_curr_memsize(self) -> int:
+        return 0
+
+    def set_size(self, size: int) -> None:
+        self.events.append(("set_size", size))
+        self.maximum_size = size
+        self._trim()
+
+    def set_memsize(self, memsize: int) -> None:
+        self.events.append(("set_memsize", memsize))
+        self.maximum_memsize = memsize
+
+    def _trim(self) -> None:
+        if self.maximum_size >= 0:
+            del self.entries[self.maximum_size :]
+
+
+class _FakeFFTConfig:
+    def __init__(self, owner: _FakeCuPy) -> None:
+        self.owner = owner
+        self.caches: dict[tuple[int, int], _FakeFFTPlanCache] = {}
+
+    def get_plan_cache(self) -> _FakeFFTPlanCache:
+        key = (threading.get_ident(), self.owner.device_index)
+        return self.caches.setdefault(key, _FakeFFTPlanCache())
+
+
+class _FakeFFT:
+    def __init__(self, owner: _FakeCuPy) -> None:
+        self.owner = owner
+        self.config = _FakeFFTConfig(owner)
+
+    def rfftn(self, value: _FakeArray) -> _FakeArray:
+        cache = self.config.get_plan_cache()
+        cache[("rfftn", value.shape)] = _FakeFFTPlan("rfftn")
+        return _FakeArray(self.owner, np.fft.rfftn(value._value))
+
+    def irfftn(self, value: _FakeArray, *, s) -> _FakeArray:
+        cache = self.config.get_plan_cache()
+        cache[("irfftn", tuple(s))] = _FakeFFTPlan("irfftn")
+        axes = tuple(range(len(s)))
+        return _FakeArray(self.owner, np.fft.irfftn(value._value, s=s, axes=axes))
+
+
 class _FakeCuPy:
     __version__ = "14.1.1"
     float32 = np.float32
@@ -210,6 +308,7 @@ class _FakeCuPy:
         self.default_pool = _FakeMemoryPool(self)
         self.pools.append(self.default_pool)
         self.stream = _FakeStream()
+        self.fft = _FakeFFT(self)
         runtime = _FakeRuntimeAPI(self)
 
         def memory_pool_factory():
@@ -282,6 +381,12 @@ def _fake_runtime():
     return runtime, cupy, imports
 
 
+def _fake_plan_entries(
+    cache: _FakeFFTPlanCache,
+) -> tuple[tuple[object, _FakeFFTPlan], ...]:
+    return tuple((key, node.plan) for key, node in cache)
+
+
 def test_runtime_modules_are_import_safe_without_optional_dependencies():
     source_root = Path(__file__).resolve().parents[2]
     environment = os.environ.copy()
@@ -340,6 +445,62 @@ def test_private_scope_transfers_accounts_and_releases():
         runtime.to_device(host)
 
 
+@pytest.mark.parametrize("outcome", ["success", "body_failure", "cleanup_failure"])
+def test_scope_restores_external_fft_plan_cache_for_every_exit(outcome):
+    runtime, cupy, _imports = _fake_runtime()
+    assert runtime.probe().available
+    cache = cupy.fft.config.get_plan_cache()
+    cache.set_size(7)
+    cache.set_memsize(123_456)
+    oldest = _FakeFFTPlan("oldest")
+    newest = _FakeFFTPlan("newest")
+    cache[("external", 1)] = oldest
+    cache[("external", 2)] = newest
+    before = _fake_plan_entries(cache)
+    cache.events.clear()
+    escaped = None
+
+    def exercise_scope() -> None:
+        nonlocal escaped
+        with runtime.execution_scope(safety_reserve_bytes=0):
+            assert cache.get_size() == 0
+            assert cache.get_memsize() == 123_456
+            assert cache.get_curr_size() == 0
+            # This models a CuPy FFT attempting to cache a plan in the VIPP
+            # scope.  A zero size limit must keep the cache empty.
+            cache[("vipp", 1)] = _FakeFFTPlan("temporary")
+            assert cache.get_curr_size() == 0
+            if outcome == "body_failure":
+                raise ValueError("synthetic body failure")
+            if outcome == "cleanup_failure":
+                escaped = runtime.to_device(np.ones(32, dtype=np.float32))
+
+    if outcome == "body_failure":
+        with pytest.raises(ValueError, match="synthetic body failure"):
+            exercise_scope()
+    elif outcome == "cleanup_failure":
+        with pytest.raises(CUDACleanupError, match="live private allocation"):
+            exercise_scope()
+    else:
+        exercise_scope()
+
+    after = _fake_plan_entries(cache)
+    assert cache.get_size() == 7
+    assert cache.get_memsize() == 123_456
+    assert tuple(key for key, _plan in after) == tuple(key for key, _plan in before)
+    assert all(
+        restored_plan is original_plan
+        for (_key, restored_plan), (_original_key, original_plan) in zip(
+            after, before, strict=True
+        )
+    )
+    assert ("set_size", 0) in cache.events
+    assert ("set_memsize", 123_456) in cache.events
+    assert cache.events.count(("delete", ("external", 1))) == 1
+    assert cache.events.count(("delete", ("external", 2))) == 1
+    del escaped
+
+
 def test_nested_scope_is_rejected_without_destroying_outer_scope():
     runtime, _cupy, _imports = _fake_runtime()
     with runtime.execution_scope(safety_reserve_bytes=0):
@@ -349,6 +510,130 @@ def test_nested_scope_is_rejected_without_destroying_outer_scope():
         value = runtime.to_device(np.ones(2, dtype=np.float32))
         runtime.release(value)
         del value
+
+
+def test_separate_runtime_instances_serialize_the_same_physical_device():
+    first_runtime, _first_cupy, _first_imports = _fake_runtime()
+    second_runtime, _second_cupy, _second_imports = _fake_runtime()
+    assert first_runtime.probe().available
+    assert second_runtime.probe().available
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    second_entered = threading.Event()
+
+    def first() -> None:
+        with first_runtime.execution_scope(safety_reserve_bytes=0):
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+
+    def second() -> None:
+        second_started.set()
+        with second_runtime.execution_scope(safety_reserve_bytes=0):
+            second_entered.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    assert first_entered.wait(timeout=5)
+    second_thread.start()
+    assert second_started.wait(timeout=5)
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    assert second_entered.wait(timeout=5)
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+
+
+def test_snapshot_and_outer_execution_lease_have_one_lock_order(monkeypatch):
+    """An outer process owner and diagnostic snapshot must never deadlock."""
+
+    runtime, _cupy, _imports = _fake_runtime()
+    assert runtime.probe().available
+    manager = AcceleratorLeaseManager()
+    monkeypatch.setattr(cupy_runtime_module, "accelerator_lease", manager.acquire)
+    snapshot_has_instance_lock = threading.Event()
+    execution_is_attempting_instance_lock = threading.Event()
+    lease_held = threading.Event()
+    execution_finished = threading.Event()
+    snapshot_finished = threading.Event()
+    failures: list[BaseException] = []
+    underlying_lock = runtime._lock
+
+    class ObservedRLock:
+        def __init__(self) -> None:
+            self.reported_snapshot_acquisition = False
+
+        def acquire(self, *args, **kwargs):
+            acquired = underlying_lock.acquire(*args, **kwargs)
+            if (
+                acquired
+                and threading.current_thread().name == "snapshot-thread"
+                and not self.reported_snapshot_acquisition
+            ):
+                self.reported_snapshot_acquisition = True
+                snapshot_has_instance_lock.set()
+                if not execution_is_attempting_instance_lock.wait(timeout=5):
+                    raise AssertionError("execution thread did not contend")
+            return acquired
+
+        def release(self) -> None:
+            underlying_lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *_args) -> None:
+            self.release()
+
+    runtime._lock = ObservedRLock()
+
+    def execute_with_outer_lease() -> None:
+        try:
+            with manager.acquire("cuda-cupy", "cuda:0"):
+                lease_held.set()
+                if not snapshot_has_instance_lock.wait(timeout=5):
+                    raise AssertionError("snapshot did not acquire the instance lock")
+                execution_is_attempting_instance_lock.set()
+                with runtime.execution_scope(safety_reserve_bytes=0):
+                    pass
+            execution_finished.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    def take_snapshot() -> None:
+        try:
+            if not lease_held.wait(timeout=5):
+                raise AssertionError("execution did not acquire the process lease")
+            runtime.memory_snapshot(device_id="cuda:0")
+            snapshot_finished.set()
+        except BaseException as exc:
+            failures.append(exc)
+
+    execution_thread = threading.Thread(
+        target=execute_with_outer_lease,
+        name="execution-thread",
+        daemon=True,
+    )
+    snapshot_thread = threading.Thread(
+        target=take_snapshot,
+        name="snapshot-thread",
+        daemon=True,
+    )
+    execution_thread.start()
+    assert lease_held.wait(timeout=5)
+    snapshot_thread.start()
+    execution_thread.join(timeout=5)
+    snapshot_thread.join(timeout=5)
+
+    assert execution_finished.is_set(), "execution deadlocked on the instance lock"
+    assert snapshot_finished.is_set(), "snapshot deadlocked on the process lease"
+    assert not execution_thread.is_alive()
+    assert not snapshot_thread.is_alive()
+    assert failures == []
 
 
 def test_release_tracks_shared_allocation_without_force_freeing_aliases():
@@ -547,6 +832,58 @@ def test_close_before_probe_does_not_import_cupy_and_is_idempotent():
     assert runtime.probe().reason_code == "runtime_closed"
 
 
+def test_real_fft_work_areas_leave_no_private_residue_and_runtime_reuses():
+    cupy = pytest.importorskip("cupy")
+    signal = pytest.importorskip("cupyx.scipy.signal")
+    runtime = CuPyRuntime()
+    probe = runtime.probe()
+    if not probe.available:
+        pytest.skip(probe.message)
+    selected = probe.selected_device_id
+    device_index = int(selected.partition(":")[2])
+    with cupy.cuda.Device(device_index):
+        cache = cupy.fft.config.get_plan_cache()
+        original_size = cache.get_size()
+        original_memsize = cache.get_memsize()
+        original_entries = tuple((key, node.plan) for key, node in cache)
+
+    host_image = np.ones((512, 512), dtype=np.float32)
+    host_psf = np.full((31, 31), 1.0 / (31 * 31), dtype=np.float32)
+    for _attempt in range(2):
+        with runtime.execution_scope(
+            device_id=selected,
+            memory_limit_bytes=512 * 1024**2,
+            safety_reserve_bytes=0,
+        ):
+            image = runtime.to_device(host_image, device_id=selected)
+            psf = runtime.to_device(host_psf, device_id=selected)
+            result = signal.fftconvolve(image, psf, mode="same")
+            runtime.allocation_identity(result)
+            runtime.synchronize(device_id=selected)
+            runtime.release(result)
+            runtime.release(psf)
+            runtime.release(image)
+            del result, psf, image
+
+        snapshot = runtime.memory_snapshot(device_id=selected)
+        assert snapshot.runtime_live_bytes == 0
+        assert snapshot.runtime_reserved_bytes == 0
+        assert snapshot.out_of_pool_bytes == 0
+
+    with cupy.cuda.Device(device_index):
+        restored_entries = tuple((key, node.plan) for key, node in cache)
+        assert cache.get_size() == original_size
+        assert cache.get_memsize() == original_memsize
+        assert len(restored_entries) == len(original_entries)
+        assert all(
+            restored_key == original_key and restored_plan is original_plan
+            for (restored_key, restored_plan), (original_key, original_plan) in zip(
+                restored_entries, original_entries, strict=True
+            )
+        )
+    runtime.close()
+
+
 def test_real_runtime_scope_releases_its_private_pool_when_cuda_is_available():
     pytest.importorskip("cupy")
     runtime = CuPyRuntime()
@@ -562,9 +899,12 @@ def test_real_runtime_scope_releases_its_private_pool_when_cuda_is_available():
     ):
         device = runtime.to_device(host, device_id=probe.selected_device_id)
         np.testing.assert_array_equal(runtime.to_host(device), host)
-        assert runtime.memory_snapshot(
-            device_id=probe.selected_device_id
-        ).runtime_live_bytes >= host.nbytes
+        assert (
+            runtime.memory_snapshot(
+                device_id=probe.selected_device_id
+            ).runtime_live_bytes
+            >= host.nbytes
+        )
         runtime.release(device)
         del device
 
