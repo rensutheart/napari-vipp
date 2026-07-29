@@ -855,10 +855,10 @@ def render_markdown(document: Mapping[str, object]) -> str:
     lines = [
         "# CuPy Richardson-Lucy admission evidence",
         "",
-        f"Generated: `{document['generated_at_utc']}`  ",
-        f"Schema: `{document['schema']}` version {document['schema_version']}  ",
-        f"Device: `{environment['cuda']['device_name']}`  ",
-        f"Platform: `{environment['platform']}`  ",
+        f"- Generated: `{document['generated_at_utc']}`",
+        f"- Schema: `{document['schema']}` version {document['schema_version']}",
+        f"- Device: `{environment['cuda']['device_name']}`",
+        f"- Platform: `{environment['platform']}`",
         "",
         "This is deterministic, machine-local scientific-parity evidence. It is",
         "not a portable performance claim and does not waive exact-workload parity.",
@@ -880,8 +880,8 @@ def render_markdown(document: Mapping[str, object]) -> str:
             [
                 f"## {suite_name.replace('_', ' ')}",
                 "",
-                f"Fixtures: **{suite['fixture_count']}**  ",
-                f"Manifest SHA-256: `{suite['fixture_manifest_sha256']}`",
+                f"- Fixtures: **{suite['fixture_count']}**",
+                f"- Manifest SHA-256: `{suite['fixture_manifest_sha256']}`",
                 "",
                 "| Filter epsilon | Iterations | Failures | Worst gate score | "
                 "Worst fixture |",

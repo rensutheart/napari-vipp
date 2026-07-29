@@ -1,9 +1,9 @@
 # CuPy Richardson-Lucy admission evidence
 
-Generated: `2026-07-29T13:25:40.428518+00:00`  
-Schema: `napari-vipp-cupy-rl-admission-evidence` version 1  
-Device: `NVIDIA GeForce RTX 5090`  
-Platform: `Windows-10-10.0.19045-SP0`  
+- Generated: `2026-07-29T13:37:54.377777+00:00`
+- Schema: `napari-vipp-cupy-rl-admission-evidence` version 1
+- Device: `NVIDIA GeForce RTX 5090`
+- Platform: `Windows-10-10.0.19045-SP0`
 
 This is deterministic, machine-local scientific-parity evidence. It is
 not a portable performance claim and does not waive exact-workload parity.
@@ -16,8 +16,8 @@ not a portable performance claim and does not waive exact-workload parity.
 
 ## final odd 164
 
-Fixtures: **164**  
-Manifest SHA-256: `3238340a510f933ebb0e5e12839e2bd4600b533f1c0326cd638cdd2ff6291641`
+- Fixtures: **164**
+- Manifest SHA-256: `3238340a510f933ebb0e5e12839e2bd4600b533f1c0326cd638cdd2ff6291641`
 
 | Filter epsilon | Iterations | Failures | Worst gate score | Worst fixture |
 |---:|---:|---:|---:|:---|
@@ -33,8 +33,8 @@ Manifest SHA-256: `3238340a510f933ebb0e5e12839e2bd4600b533f1c0326cd638cdd2ff6291
 
 ## provisional floor rejection 36
 
-Fixtures: **36**  
-Manifest SHA-256: `d2a4b96a5c58c8c1cd10bf8de3137ae12b4793e4b45ed2a4798dda8788fe26ce`
+- Fixtures: **36**
+- Manifest SHA-256: `d2a4b96a5c58c8c1cd10bf8de3137ae12b4793e4b45ed2a4798dda8788fe26ce`
 
 | Filter epsilon | Iterations | Failures | Worst gate score | Worst fixture |
 |---:|---:|---:|---:|:---|
@@ -45,8 +45,8 @@ Manifest SHA-256: `d2a4b96a5c58c8c1cd10bf8de3137ae12b4793e4b45ed2a4798dda8788fe2
 
 ## even psf comparison 40
 
-Fixtures: **40**  
-Manifest SHA-256: `54cec35b037f3de98829b6fc18e8646c0209d2afde9b2d6325aec898bebd8865`
+- Fixtures: **40**
+- Manifest SHA-256: `54cec35b037f3de98829b6fc18e8646c0209d2afde9b2d6325aec898bebd8865`
 
 | Filter epsilon | Iterations | Failures | Worst gate score | Worst fixture |
 |---:|---:|---:|---:|:---|

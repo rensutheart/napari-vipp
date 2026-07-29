@@ -288,7 +288,7 @@
     "release": "10",
     "system": "Windows"
   },
-  "generated_at_utc": "2026-07-29T13:25:40.428518+00:00",
+  "generated_at_utc": "2026-07-29T13:37:54.377777+00:00",
   "limitations": [
     "This is single-host native-Windows RTX 5090 evidence.",
     "The sampled matrix cannot prove parity for every possible image or PSF.",
@@ -311,7 +311,7 @@
   "schema_version": 1,
   "source_provenance": {
     "files": {
-      "scripts/benchmark_gpu_rl_admission.py": "6e1c34cf9fd8c7f9de9791192e9c62f91a066d88300db95b805f3b10e9e6dff6",
+      "scripts/benchmark_gpu_rl_admission.py": "3cb6ef8419856d68cccaab60ece999276607fa1108850c718c7fd4ad484a63f8",
       "src/napari_vipp/core/compute_benchmark_adapter.py": "792d4ff8eab5189caa43026eea2c0dfaef16ec4e5b06e232fa39877b9eb3ac6f",
       "src/napari_vipp/core/compute_policy.py": "d4d0f5f37d08fd9c5ae4fac1f447e0f4766bea99fb039f6268f7dfc7569529cf",
       "src/napari_vipp/core/compute_specs.py": "ea9b2cfd9aa26c36ba61b2d8546ac621e6b25d2c42206cc48b68537d9c1c9b92",
@@ -321,38 +321,14 @@
     },
     "git": {
       "available": true,
-      "head": "3f58827663d9c6e16d6e5bd807d142eaa760f4ac",
+      "head": "d8f672564f0cbb5ab0335235632aecd03beac056",
       "status_porcelain_v1": [
         " M README.md",
         " M docs/README.md",
         " M docs/gpu-production-implementation-plan.md",
         " M docs/planning.md",
-        " M src/napari_vipp/_tests/test_compute_benchmark_adapter.py",
-        " M src/napari_vipp/_tests/test_compute_benchmark_coordinator.py",
-        " M src/napari_vipp/_tests/test_compute_contracts.py",
-        " M src/napari_vipp/_tests/test_compute_policy.py",
-        " M src/napari_vipp/_tests/test_compute_policy_artifact.py",
-        " M src/napari_vipp/_tests/test_compute_registry.py",
-        " M src/napari_vipp/_tests/test_cupy_runtime.py",
-        " M src/napari_vipp/_tests/test_device_execution.py",
-        " M src/napari_vipp/_tests/test_execution_array_facts.py",
-        " M src/napari_vipp/_tests/test_gpu_execution_integration.py",
-        " M src/napari_vipp/core/compute_benchmark_adapter.py",
-        " M src/napari_vipp/core/compute_benchmark_coordinator.py",
-        " M src/napari_vipp/core/compute_pipeline_optimizer_coordinator.py",
-        " M src/napari_vipp/core/compute_policy.py",
-        " M src/napari_vipp/core/compute_registry.py",
-        " M src/napari_vipp/core/compute_specs.py",
-        " M src/napari_vipp/core/device_execution.py",
-        " M src/napari_vipp/core/execution.py",
-        " M src/napari_vipp/core/gpu/cupy_runtime.py",
-        " M src/napari_vipp/core/pipeline.py",
-        "?? docs/gpu-phase2b-rl-implementation-report.md",
-        "?? scripts/benchmark_gpu_rl_admission.py",
-        "?? src/napari_vipp/_tests/test_accelerator_lease.py",
-        "?? src/napari_vipp/_tests/test_gpu_rl.py",
-        "?? src/napari_vipp/core/accelerator_lease.py",
-        "?? src/napari_vipp/core/gpu/cupy_rl.py"
+        " M scripts/benchmark_gpu_rl_admission.py",
+        "?? docs/gpu-phase2b-rl-implementation-report.md"
       ],
       "worktree_dirty": true
     },
