@@ -26,10 +26,18 @@ from napari_vipp.core.compute_specs import OperationComputeSpec
 
 RICHARDSON_LUCY_FILTER_EPSILON = 1e-8
 RICHARDSON_LUCY_MAXIMUM_ITERATIONS = 25
+RICHARDSON_LUCY_TV_FILTER_EPSILON = 1e-12
+RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS = 25
+RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS = frozenset({10, 25})
+RICHARDSON_LUCY_TV_REGULARIZATION = 0.002
+RICHARDSON_LUCY_TV_EPSILON = 1e-6
+RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR = 0.05
 
 _RICHARDSON_LUCY_FLOAT32_BYTES = 4
 _RICHARDSON_LUCY_COMPLEX64_BYTES = 8
 _RICHARDSON_LUCY_LIVE_BLOCK_BUFFERS = 6
+_RICHARDSON_LUCY_TV_EXTRA_LIVE_BLOCK_BUFFERS_PER_AXIS = 3
+_RICHARDSON_LUCY_TV_EXTRA_LIVE_BLOCK_BUFFERS = 4
 _RICHARDSON_LUCY_FFT_PLAN_WORKSPACE_MULTIPLIER = 4
 _RICHARDSON_LUCY_FIRST_USE_ALLOWANCE_BYTES = 32 * 1024**2
 
@@ -740,7 +748,10 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
-    elif spec.memory_model_id == "cupyx-richardson-lucy-fft-memory-v2":
+    elif spec.memory_model_id in {
+        "cupyx-richardson-lucy-fft-memory-v2",
+        "cupyx-richardson-lucy-tv-fft-memory-v1",
+    }:
         spatial_ndim = workload.resolved_spatial_ndim
         if spatial_ndim not in {2, 3}:
             raise ValueError(
@@ -775,10 +786,27 @@ def estimate_candidate_memory(
         # real-plus-complex pairs.  The logical RL loop retains observation,
         # estimate, blur, ratio, correction, and result-sized storage around
         # that convolution. Leading blocks remain sequential.
+        live_block_buffers = _RICHARDSON_LUCY_LIVE_BLOCK_BUFFERS
+        tv_regularization = _finite_number(
+            dict(workload.parameters).get(
+                "tv_regularization",
+                RICHARDSON_LUCY_TV_REGULARIZATION,
+            )
+        )
+        if (
+            spec.memory_model_id == "cupyx-richardson-lucy-tv-fft-memory-v1"
+            and tv_regularization != 0.0
+        ):
+            # np/cupy.gradient retains one component per spatial axis. The TV
+            # norm stack and normalized components each retain another block
+            # per axis; norm, divergence, denominator, and one gradient output
+            # account for the fixed extra buffers. This deliberately errs high.
+            live_block_buffers += (
+                _RICHARDSON_LUCY_TV_EXTRA_LIVE_BLOCK_BUFFERS_PER_AXIS * spatial_ndim
+                + _RICHARDSON_LUCY_TV_EXTRA_LIVE_BLOCK_BUFFERS
+            )
         logical_block_workspace = (
-            block_elements
-            * _RICHARDSON_LUCY_FLOAT32_BYTES
-            * _RICHARDSON_LUCY_LIVE_BLOCK_BUFFERS
+            block_elements * _RICHARDSON_LUCY_FLOAT32_BYTES * live_block_buffers
         )
         fft_array_workspace = fft_real_bytes + 3 * fft_complex_bytes
         fft_plan_workspace = _RICHARDSON_LUCY_FFT_PLAN_WORKSPACE_MULTIPLIER * (
@@ -798,7 +826,11 @@ def estimate_candidate_memory(
     runtime_peak = input_bytes + output_bytes + workspace
     uncertainty_floor = (
         _RICHARDSON_LUCY_FIRST_USE_ALLOWANCE_BYTES
-        if spec.memory_model_id == "cupyx-richardson-lucy-fft-memory-v2"
+        if spec.memory_model_id
+        in {
+            "cupyx-richardson-lucy-fft-memory-v2",
+            "cupyx-richardson-lucy-tv-fft-memory-v1",
+        }
         else 8 * 1024**2
     )
     # For RL the floor covers first-use CuPyX/JIT/cuFFT allocations which are
@@ -929,20 +961,135 @@ def _richardson_lucy_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
+    return _deconvolution_region_policy(
+        workload,
+        array_facts,
+        operation_name="Richardson-Lucy",
+        maximum_iterations=RICHARDSON_LUCY_MAXIMUM_ITERATIONS,
+        admitted_filter_epsilon=RICHARDSON_LUCY_FILTER_EPSILON,
+    )
+
+
+def _richardson_lucy_tv_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    parameters = dict(workload.parameters)
+    regularization = _finite_number(
+        parameters.get("tv_regularization", RICHARDSON_LUCY_TV_REGULARIZATION)
+    )
+    if regularization is None or regularization < 0:
+        return _workload_rejection(
+            "Richardson-Lucy TV regularization must be finite and non-negative.",
+            fallback_allowed=False,
+        )
+    lambda_zero = regularization == 0.0
+    common = _deconvolution_region_policy(
+        workload,
+        array_facts,
+        operation_name="Richardson-Lucy TV",
+        maximum_iterations=RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS,
+        admitted_filter_epsilon=(
+            RICHARDSON_LUCY_FILTER_EPSILON
+            if lambda_zero
+            else RICHARDSON_LUCY_TV_FILTER_EPSILON
+        ),
+    )
+    if common is not None:
+        return common
+
+    for parameter_name, default, display_name in (
+        ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
+        (
+            "denominator_floor",
+            RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR,
+            "denominator floor",
+        ),
+    ):
+        if _finite_number(parameters.get(parameter_name, default)) is None:
+            return _workload_rejection(
+                f"Richardson-Lucy TV {display_name} must be finite.",
+                fallback_allowed=False,
+            )
+    if lambda_zero:
+        # TV epsilon, stencil, and floor are semantically inactive. This profile
+        # inherits ordinary RL admission and has a separate cross-provider
+        # equivalence gate in the evidence harness.
+        return None
+
+    iterations = parameters.get("iterations", 25)
+    if iterations not in RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS:
+        reviewed = ", ".join(
+            str(value) for value in sorted(RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS)
+        )
+        return _workload_rejection(
+            "The initial positive-TV GPU region is validated only for "
+            f"{reviewed} iterations. This authored iteration count remains on "
+            "CPU until the nonlinear trajectory matrix passes."
+        )
+
+    image_shape = workload.input_shapes[0]
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim in {2, 3} and any(
+        extent < 2 for extent in image_shape[-spatial_ndim:]
+    ):
+        return _workload_rejection(
+            "Richardson-Lucy TV requires at least two samples along every active "
+            "spatial axis for its central-gradient stencil.",
+            fallback_allowed=False,
+        )
+    if regularization != RICHARDSON_LUCY_TV_REGULARIZATION:
+        return _workload_rejection(
+            "The initial positive-TV GPU region is validated only for the shipped "
+            f"TV regularization value {RICHARDSON_LUCY_TV_REGULARIZATION:g}. This "
+            "authored value remains on CPU until the wider numerical matrix passes."
+        )
+    admitted_values = (
+        ("tv_epsilon", RICHARDSON_LUCY_TV_EPSILON, "TV epsilon"),
+        (
+            "denominator_floor",
+            RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR,
+            "denominator floor",
+        ),
+    )
+    for parameter_name, default, display_name in admitted_values:
+        value = _finite_number(parameters.get(parameter_name, default))
+        if value is None:
+            return _workload_rejection(
+                f"Richardson-Lucy TV {display_name} must be finite.",
+                fallback_allowed=False,
+            )
+        if value != default:
+            return _workload_rejection(
+                "The initial Richardson-Lucy TV GPU region is validated only "
+                f"for the shipped {display_name} value {default:g}. This authored "
+                "value remains on CPU until the wider numerical matrix passes."
+            )
+    return None
+
+
+def _deconvolution_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+    *,
+    operation_name: str,
+    maximum_iterations: int,
+    admitted_filter_epsilon: float,
+) -> SupportDecision | None:
     if len(workload.input_shapes) != 2 or len(workload.input_dtypes) != 2:
         return _workload_rejection(
-            "Richardson-Lucy GPU execution requires ordered Image and PSF inputs.",
+            f"{operation_name} GPU execution requires ordered Image and PSF inputs.",
             fallback_allowed=False,
         )
     if any(_dtype_name(dtype) != "float32" for dtype in workload.input_dtypes):
         return _workload_rejection(
-            "Richardson-Lucy GPU execution initially requires explicit float32 "
+            f"{operation_name} GPU execution initially requires explicit float32 "
             "Image and PSF inputs; add Convert Dtype when appropriate."
         )
     spatial_ndim = workload.resolved_spatial_ndim
     if spatial_ndim not in {2, 3}:
         return _workload_rejection(
-            "Richardson-Lucy Auto mode requires a resolved 2D or 3D spatial rank.",
+            f"{operation_name} Auto mode requires a resolved 2D or 3D spatial rank.",
             fallback_allowed=False,
         )
     image_shape, psf_shape = workload.input_shapes
@@ -953,7 +1100,7 @@ def _richardson_lucy_region_policy(
         )
     if any(size <= 0 for size in (*image_shape, *psf_shape)):
         return _workload_rejection(
-            "Richardson-Lucy inputs must not contain empty dimensions.",
+            f"{operation_name} inputs must not contain empty dimensions.",
             fallback_allowed=False,
         )
     if any(
@@ -966,7 +1113,7 @@ def _richardson_lucy_region_policy(
         )
     if any(size % 2 == 0 for size in psf_shape):
         return _workload_rejection(
-            "The initial Richardson-Lucy GPU region requires odd PSF extents. "
+            f"The initial {operation_name} GPU region requires odd PSF extents. "
             "Prepare / Validate PSF uses Force odd shape by default."
         )
 
@@ -981,19 +1128,19 @@ def _richardson_lucy_region_policy(
     }.get(mode)
     if declared_rank is None or declared_rank != spatial_ndim:
         return _workload_rejection(
-            "Richardson-Lucy spatial parameters disagree with the resolved rank.",
+            f"{operation_name} spatial parameters disagree with the resolved rank.",
             fallback_allowed=False,
         )
     iterations = parameters.get("iterations", 25)
     if isinstance(iterations, bool) or not isinstance(iterations, int):
         return _workload_rejection(
-            "Richardson-Lucy iterations must be an integer.",
+            f"{operation_name} iterations must be an integer.",
             fallback_allowed=False,
         )
-    if not 1 <= iterations <= RICHARDSON_LUCY_MAXIMUM_ITERATIONS:
+    if not 1 <= iterations <= maximum_iterations:
         return _workload_rejection(
-            "Richardson-Lucy GPU execution is initially validated for 1 through "
-            f"{RICHARDSON_LUCY_MAXIMUM_ITERATIONS} iterations. Longer authored "
+            f"{operation_name} GPU execution is initially validated for 1 through "
+            f"{maximum_iterations} iterations. Longer authored "
             "runs remain on CPU because iterative cross-library roundoff has not "
             "passed the production parity gate."
         )
@@ -1005,7 +1152,7 @@ def _richardson_lucy_region_policy(
     ):
         if name in parameters and not isinstance(parameters[name], bool):
             return _workload_rejection(
-                f"Richardson-Lucy parameter {name!r} must be boolean.",
+                f"{operation_name} parameter {name!r} must be boolean.",
                 fallback_allowed=False,
             )
     nondefault_safety_flags = tuple(
@@ -1020,17 +1167,17 @@ def _richardson_lucy_region_policy(
     )
     if nondefault_safety_flags:
         return _workload_rejection(
-            "The initial Richardson-Lucy GPU region requires the default-safe "
+            f"The initial {operation_name} GPU region requires the default-safe "
             "normalization, clipping, and scale-preservation options. CPU is "
             "used when these authored options are disabled: "
             + ", ".join(nondefault_safety_flags)
             + "."
         )
     filter_epsilon = _finite_number(parameters.get("filter_epsilon", 1e-12))
-    if filter_epsilon != RICHARDSON_LUCY_FILTER_EPSILON:
+    if filter_epsilon != admitted_filter_epsilon:
         return _workload_rejection(
-            "Richardson-Lucy GPU execution is initially validated only for "
-            f"filter epsilon exactly {RICHARDSON_LUCY_FILTER_EPSILON:g}. Other "
+            f"{operation_name} GPU execution is initially validated only for "
+            f"filter epsilon exactly {admitted_filter_epsilon:g}. Other "
             "authored values remain on CPU because threshold-branch behavior "
             "is not monotonic across the tested adversarial matrix."
         )
@@ -1061,6 +1208,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "rl-parameters-v1": _richardson_lucy_region_policy,
+        "rl-tv-parameters-v1": _richardson_lucy_tv_region_policy,
     }
 )
 
@@ -1484,6 +1632,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
             "rl-parameters-v1",
+            "rl-tv-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -1492,6 +1641,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-exact-u8-u16-f32-v1",
             "gaussian-finite-f32-v1",
             "rl-finite-f32-v1",
+            "rl-tv-finite-f32-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
@@ -1499,6 +1649,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-production-bitwise-v1",
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
+            "rl-tv-float32-tolerance-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -1507,6 +1658,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
             "cupyx-richardson-lucy-fft-memory-v2",
+            "cupyx-richardson-lucy-tv-fft-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -1540,6 +1692,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-bitwise-v1",
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
+            "rl-tv-float32-tolerance-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
@@ -1552,6 +1705,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "background-nearest-rolling-ball-v1",
             "scipy-reflect-v1",
             "scipy-signal-zero-fill-same-v1",
+            "rl-tv-zero-fill-same-central-gradient-edge1-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
@@ -1559,6 +1713,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "median-bitwise-v1",
             "gaussian-float32-v1",
             "rl-float32-v1",
+            "rl-tv-float32-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
@@ -1637,6 +1792,12 @@ __all__ = [
     "PolicyKind",
     "RICHARDSON_LUCY_MAXIMUM_ITERATIONS",
     "RICHARDSON_LUCY_FILTER_EPSILON",
+    "RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR",
+    "RICHARDSON_LUCY_TV_EPSILON",
+    "RICHARDSON_LUCY_TV_FILTER_EPSILON",
+    "RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS",
+    "RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS",
+    "RICHARDSON_LUCY_TV_REGULARIZATION",
     "SupportDecision",
     "ValueDescriptor",
     "evaluate_auto_performance",

@@ -2970,13 +2970,18 @@ class VippWidget(QWidget):
         ):
             return False, "Wait for the current calculation or source load to finish."
         values_by_port = self.pipeline.input_data_by_port_for_node(node_id)
-        if len(values_by_port) != 1 or any(
-            value is None for value in values_by_port.values()
+        input_ports = self.pipeline.input_ports(node_id)
+        expected_ports = set(range(len(input_ports)))
+        if (
+            not expected_ports
+            or set(values_by_port) != expected_ports
+            or any(value is None for value in values_by_port.values())
+            or len(self.pipeline.output_ports(node_id)) != 1
         ):
             return (
                 False,
-                "Benchmarking currently requires one resolved image input "
-                "and one output.",
+                "Benchmarking requires every ordered input to be resolved and "
+                "exactly one output.",
             )
         return (
             True,

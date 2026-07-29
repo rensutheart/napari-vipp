@@ -697,6 +697,36 @@ def _rl_facts(*, image_shape=(3, 64, 64), psf_shape=(9, 9)):
     )
 
 
+def _rl_tv_workload(
+    *,
+    image_shape=(3, 64, 64),
+    psf_shape=(9, 9),
+    spatial_ndim=2,
+    iterations=25,
+):
+    ordinary = _rl_workload(
+        image_shape=image_shape,
+        psf_shape=psf_shape,
+        spatial_ndim=spatial_ndim,
+        iterations=iterations,
+    )
+    parameters = dict(ordinary.parameters)
+    parameters.update(
+        {
+            "tv_regularization": 0.002,
+            "tv_epsilon": 1e-6,
+            "filter_epsilon": 1e-12,
+            "denominator_floor": 0.05,
+        }
+    )
+    return replace(
+        ordinary,
+        node_id="rl-tv-node",
+        operation_id="richardson_lucy_tv_deconvolution",
+        parameters=tuple(parameters.items()),
+    )
+
+
 def test_richardson_lucy_requires_explicit_finite_float32_image_and_psf():
     spec = _builtin_spec("richardson_lucy_deconvolution")
     workload = _rl_workload()
@@ -893,6 +923,200 @@ def test_richardson_lucy_fft_memory_model_scales_for_near_image_sized_3d_psf():
 
     assert large.total_device_peak_bytes > small.total_device_peak_bytes
     assert large.total_device_peak_bytes >= resident_bytes + explicit_fft_array_bytes
+
+
+def test_richardson_lucy_tv_admits_only_the_finite_float32_default_profile():
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    workload = _rl_tv_workload()
+
+    accepted = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    missing_facts = evaluate_candidate_support(
+        spec,
+        workload,
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+    integer_image = evaluate_candidate_support(
+        spec,
+        replace(workload, input_dtypes=("uint16", "float32")),
+        _cuda_environment(),
+        allow_experimental=True,
+    )
+
+    assert accepted.supported
+    assert not missing_facts.supported
+    assert missing_facts.requires_complete_facts
+    assert not integer_image.supported
+    assert "Convert Dtype" in integer_image.reason_text
+
+
+def test_richardson_lucy_tv_positive_profile_admits_only_measured_iterations():
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+
+    for iterations in (10, 25):
+        decision = evaluate_candidate_support(
+            spec,
+            _rl_tv_workload(iterations=iterations),
+            _cuda_environment(),
+            allow_experimental=True,
+            array_facts=_rl_facts(),
+        )
+        assert decision.supported
+
+    for iterations in (1, 5, 11, 24):
+        decision = evaluate_candidate_support(
+            spec,
+            _rl_tv_workload(iterations=iterations),
+            _cuda_environment(),
+            allow_experimental=True,
+            array_facts=_rl_facts(),
+        )
+        assert not decision.supported
+        assert decision.fallback_allowed
+        assert "10, 25 iterations" in decision.reason_text
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "text"),
+    (
+        ("tv_regularization", 0.008, "TV regularization"),
+        ("tv_epsilon", 1e-3, "TV epsilon"),
+        ("filter_epsilon", 1e-8, "filter epsilon"),
+        ("denominator_floor", 0.15, "denominator floor"),
+    ),
+)
+def test_richardson_lucy_tv_rejects_parameters_outside_initial_profile(
+    name,
+    value,
+    text,
+):
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    workload = _rl_tv_workload()
+    changed = replace(
+        workload,
+        parameters=tuple(
+            (parameter, value if parameter == name else current)
+            for parameter, current in workload.parameters
+        ),
+    )
+
+    decision = evaluate_candidate_support(
+        spec,
+        changed,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not decision.supported
+    assert decision.fallback_allowed
+    assert text in decision.reason_text
+
+
+def test_richardson_lucy_tv_rejects_singleton_gradient_axis_and_long_runs():
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    singleton = _rl_tv_workload(image_shape=(3, 1, 64), psf_shape=(1, 9))
+    singleton_decision = evaluate_candidate_support(
+        spec,
+        singleton,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(image_shape=(3, 1, 64), psf_shape=(1, 9)),
+    )
+    long_run = evaluate_candidate_support(
+        spec,
+        _rl_tv_workload(iterations=26),
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+
+    assert not singleton_decision.supported
+    assert not singleton_decision.fallback_allowed
+    assert "at least two samples" in singleton_decision.reason_text
+    assert not long_run.supported
+    assert long_run.fallback_allowed
+    assert "1 through 25" in long_run.reason_text
+
+
+def test_richardson_lucy_tv_lambda_zero_inherits_the_ordinary_rl_profile():
+    spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    workload = _rl_tv_workload()
+    lambda_zero = replace(
+        workload,
+        parameters=tuple(
+            (
+                name,
+                0.0
+                if name == "tv_regularization"
+                else 1e-8
+                if name == "filter_epsilon"
+                else 1e-3
+                if name == "tv_epsilon"
+                else 0.5
+                if name == "denominator_floor"
+                else value,
+            )
+            for name, value in workload.parameters
+        ),
+    )
+
+    accepted = evaluate_candidate_support(
+        spec,
+        lambda_zero,
+        _cuda_environment(),
+        allow_experimental=True,
+        array_facts=_rl_facts(),
+    )
+    tv_estimate = estimate_candidate_memory(spec, lambda_zero)
+    ordinary_estimate = estimate_candidate_memory(
+        _builtin_spec("richardson_lucy_deconvolution"),
+        _rl_workload(),
+    )
+
+    assert accepted.supported
+    assert (
+        tv_estimate.runtime_managed_peak_bytes
+        == ordinary_estimate.runtime_managed_peak_bytes
+    )
+
+
+def test_richardson_lucy_tv_projects_float32_and_reserves_tv_workspaces():
+    tv_spec = _builtin_spec("richardson_lucy_tv_deconvolution")
+    rl_spec = _builtin_spec("richardson_lucy_deconvolution")
+    projected = propagate_output_descriptors(
+        tv_spec,
+        (
+            ValueDescriptor((16, 64, 64), "float32"),
+            ValueDescriptor((5, 9, 9), "float32"),
+        ),
+    )
+    tv_estimate = estimate_candidate_memory(
+        tv_spec,
+        _rl_tv_workload(
+            image_shape=(16, 64, 64),
+            psf_shape=(5, 9, 9),
+            spatial_ndim=3,
+        ),
+    )
+    rl_estimate = estimate_candidate_memory(
+        rl_spec,
+        _rl_workload(
+            image_shape=(16, 64, 64),
+            psf_shape=(5, 9, 9),
+            spatial_ndim=3,
+        ),
+    )
+
+    assert projected == (ValueDescriptor((16, 64, 64), "float32"),)
+    assert tv_estimate.model_id == "cupyx-richardson-lucy-tv-fft-memory-v1"
+    assert tv_estimate.total_device_peak_bytes > rl_estimate.total_device_peak_bytes
 
 
 def test_background_memory_model_scales_with_radius_and_spatial_rank():

@@ -89,6 +89,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "median_filter",
         "prepare_validate_psf",
         "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
     }
 )
 
@@ -1898,8 +1899,11 @@ def _propagate_shape_preserving_facts(
         else:
             guarantees.discard("nonnegative")
             guarantees.discard("no-negative-zero")
-    elif operation_id == "richardson_lucy_deconvolution":
-        # The reviewed RL contract sanitizes every iteration and its public
+    elif operation_id in {
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+    }:
+        # The reviewed RL/RL-TV contracts sanitize every iteration and their public
         # output. This is an output theorem, not an assumption inherited from
         # either input, and lets downstream finite-only GPU nodes be planned
         # without rescanning a resident result.

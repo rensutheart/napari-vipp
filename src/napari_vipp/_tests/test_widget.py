@@ -735,6 +735,42 @@ def test_node_benchmark_apply_is_atomic_and_undoable(qtbot):
     assert "gaussian" not in widget._compute_node_preferences
 
 
+def test_node_benchmark_control_accepts_resolved_ordered_multi_input_node(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._active_source_load_id = None
+    node = widget.pipeline.add_node("richardson_lucy_tv_deconvolution")
+    widget._selected_node_id = node.id
+    widget._compute_mode = ComputeMode.SELECTIVE
+    image = np.ones((8, 8), dtype=np.float32)
+    psf = np.ones((3, 3), dtype=np.float32) / np.float32(9)
+    monkeypatch.setattr(
+        widget.pipeline,
+        "input_data_by_port_for_node",
+        lambda _node_id: {0: image, 1: psf},
+    )
+
+    ready, reason = widget._can_benchmark_selected_node()
+
+    assert ready
+    assert "exact current input" in reason
+
+    monkeypatch.setattr(
+        widget.pipeline,
+        "input_data_by_port_for_node",
+        lambda _node_id: {0: image},
+    )
+
+    ready, reason = widget._can_benchmark_selected_node()
+
+    assert not ready
+    assert "every ordered input" in reason
+
+
 def test_pipeline_optimizer_action_is_selective_only(qtbot):
     widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
     qtbot.addWidget(widget)

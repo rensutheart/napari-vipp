@@ -9,7 +9,7 @@ an admitted implementation.
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 
@@ -480,6 +480,47 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
     )
 
 
+def _richardson_lucy_tv_spec() -> OperationComputeSpec:
+    """Return the initial production-faithful CuPy RL-TV contract."""
+
+    ordinary = _richardson_lucy_spec()
+    boundary_policy_id = "rl-tv-zero-fill-same-central-gradient-edge1-v1"
+
+    def tv_port(port: ComputePortContract) -> ComputePortContract:
+        return replace(
+            port,
+            rounding_policy_id="rl-tv-float32-tolerance-v1",
+            boundary_policy_id=boundary_policy_id,
+            precision_policy_id="rl-tv-float32-v1",
+        )
+
+    return replace(
+        ordinary,
+        operation_id="richardson_lucy_tv_deconvolution",
+        implementation_id="rl-tv-cupy-f32-v1",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_rl_tv:richardson_lucy_tv_deconvolution"
+        ),
+        input_ports=tuple(tv_port(port) for port in ordinary.input_ports),
+        output_ports=tuple(tv_port(port) for port in ordinary.output_ports),
+        parameter_policy_id="rl-tv-parameters-v1",
+        workload_policy_id="rl-tv-finite-f32-v1",
+        parity_policy_id="rl-tv-float32-tolerance-v1",
+        memory_model_id="cupyx-richardson-lucy-tv-fft-memory-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="rl-tv-float32-v1",
+        limitations=(
+            "finite-only",
+            "float32-only-v1",
+            "validated-rl-tv-profiles-v1",
+            "lambda-zero-iterations-at-most-25-v1",
+            "positive-tv-iterations-10-or-25-v1",
+            "odd-psf-extents-v1",
+            "default-safe-options-v1",
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -487,6 +528,7 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _gaussian_spec(three_dimensional=False),
     _gaussian_spec(three_dimensional=True),
     _richardson_lucy_spec(),
+    _richardson_lucy_tv_spec(),
 )
 
 

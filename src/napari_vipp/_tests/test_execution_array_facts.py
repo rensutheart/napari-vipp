@@ -1216,3 +1216,31 @@ def test_prepare_psf_projects_finite_float32_facts_across_odd_padding():
     assert propagated.all_finite is True
     assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
     assert unsafe_cancellation is None
+
+
+@pytest.mark.parametrize(
+    "operation_id",
+    (
+        "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
+    ),
+)
+def test_deconvolution_projects_its_finite_nonnegative_output_theorem(operation_id):
+    source = execution_module._complete_array_facts(
+        np.array([[np.nan, -1.0], [1.0, np.inf]], dtype=np.float32),
+        revision_fingerprint="deconvolution-source",
+    )
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        operation_id,
+        source,
+        {"clip_output_negative": True},
+        output_port=OutputPortKey("deconvolution", 0),
+        output_dtype="float32",
+    )
+
+    assert propagated is not None
+    assert propagated.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
+    assert propagated.minimum is None
+    assert propagated.maximum is None

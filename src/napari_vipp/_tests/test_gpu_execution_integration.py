@@ -1246,3 +1246,140 @@ def test_real_headless_rl_two_source_pipeline_cleans_fft_plans_and_reuses_runtim
             assert terminal.out_of_pool_bytes == 0
     finally:
         registry.close()
+
+
+def test_real_headless_rl_tv_pipeline_selects_provider_reports_and_cleans():
+    """Exercise the positive-TV profile through the production planner/runtime."""
+
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        runtime_probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not runtime_probe.available or not runtime_probe.selected_device_id:
+            pytest.skip(runtime_probe.message or "The CUDA runtime is unavailable.")
+        library_probe = registry.probe_library("cupyx", refresh=True)
+        if not library_probe.available:
+            pytest.skip(library_probe.message or "CuPyX is unavailable.")
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        image_source_id = next(iter(pipeline.nodes))
+        psf_source = pipeline.add_node("input")
+        deconvolution = pipeline.add_node("richardson_lucy_tv_deconvolution")
+        for name, value in (
+            ("spatial_mode", "2D YX"),
+            ("iterations", 10),
+            ("tv_regularization", 0.002),
+            ("tv_epsilon", 1e-6),
+            ("filter_epsilon", 1e-12),
+            ("denominator_floor", 0.05),
+        ):
+            pipeline.set_param(deconvolution.id, name, value)
+        assert pipeline.connect(
+            image_source_id,
+            deconvolution.id,
+            target_port=0,
+        ).success
+        assert pipeline.connect(psf_source.id, deconvolution.id, target_port=1).success
+
+        rng = np.random.default_rng(20260729)
+        image = rng.random((128, 129), dtype=np.float32) * np.float32(0.05)
+        image[24, 31] = np.float32(1.0)
+        image[83, 97] = np.float32(0.6)
+        y, x = np.mgrid[-6:7, -6:7].astype(np.float32)
+        psf = np.exp(-(x * x + y * y) / np.float32(2.0 * 1.7**2)).astype(
+            np.float32
+        )
+        psf /= np.float32(psf.sum(dtype=np.float64))
+        workflow = serialize_workflow(pipeline)
+        source_payloads = {
+            psf_source.id: SourcePayload(psf, {"axes": "YX"}, "RL-TV test PSF")
+        }
+
+        def run(run_id, compute_request, progress_updates, compute_registry=None):
+            return execute_pipeline_request(
+                PipelineRunRequest(
+                    run_id=run_id,
+                    workflow=workflow,
+                    input_data=image,
+                    input_metadata={"axes": "YX"},
+                    input_name="RL-TV test image",
+                    source_payloads=source_payloads,
+                    compute_request=compute_request,
+                    manual_node_ids=frozenset({deconvolution.id}),
+                    retain_node_ids=frozenset({deconvolution.id}),
+                    prune_unretained=True,
+                ),
+                progress_callback=lambda *update: progress_updates.append(update),
+                compute_registry=compute_registry,
+            )
+
+        cpu_progress = []
+        cpu_result = run(451, ComputeRequest(mode=ComputeMode.CPU), cpu_progress)
+        assert cpu_result.error == ""
+        cpu_output = np.asarray(cpu_result.pipeline.outputs[deconvolution.id]).copy()
+        expected_progress = [
+            (
+                deconvolution.id,
+                current,
+                10,
+                "Richardson-Lucy TV deconvolution",
+            )
+            for current in range(11)
+        ]
+        assert cpu_progress == expected_progress
+
+        gpu_progress = []
+        gpu_result = run(
+            452,
+            ComputeRequest(
+                mode=ComputeMode.SELECTIVE,
+                node_preferences={
+                    deconvolution.id: "implementation:rl-tv-cupy-f32-v1"
+                },
+                runtime_id="cuda-cupy",
+                device_id=runtime_probe.selected_device_id,
+                allow_experimental=True,
+            ),
+            gpu_progress,
+            registry,
+        )
+
+        assert gpu_result.error == ""
+        assert gpu_result.execution_report.cleanup_succeeded
+        assert gpu_result.execution_report.plan.segments[0].node_ids == (
+            deconvolution.id,
+        )
+        decision = next(
+            item
+            for item in gpu_result.execution_report.actual_decisions
+            if item.node_id == deconvolution.id
+        )
+        assert decision.decision_kind is DecisionKind.SELECTED
+        assert decision.implementation_id == "rl-tv-cupy-f32-v1"
+        assert decision.implementation_library_id == "cupyx"
+        output = gpu_result.pipeline.outputs[deconvolution.id]
+        parity = operation_parity(
+            "richardson_lucy_tv_deconvolution",
+            cpu_output,
+            output,
+            parameters={"tv_regularization": 0.002},
+        )
+        assert parity.passed, parity.detail
+        assert gpu_progress == expected_progress
+        provenance = gpu_result.pipeline.node_compute_provenance[
+            deconvolution.id
+        ].actual_implementation
+        assert provenance.implementation_id == "rl-tv-cupy-f32-v1"
+        assert provenance.runtime_id == "cuda-cupy"
+
+        terminal = registry.runtime("cuda-cupy").memory_snapshot(
+            device_id=runtime_probe.selected_device_id
+        )
+        assert terminal.runtime_live_bytes == 0
+        assert terminal.runtime_reserved_bytes == 0
+        assert terminal.out_of_pool_bytes == 0
+    finally:
+        registry.close()

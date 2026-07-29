@@ -254,6 +254,7 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "gaussian_blur",
         "gaussian_blur_3d",
         "richardson_lucy_deconvolution",
+        "richardson_lucy_tv_deconvolution",
     }
     assert all(
         spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
@@ -267,6 +268,20 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         if spec.operation_id == "richardson_lucy_deconvolution"
     )
     assert richardson_lucy.input_ports[1].accumulation_dtype == "float64"
+    assert richardson_lucy.boundary_policy_id == "scipy-signal-zero-fill-same-v1"
+    richardson_lucy_tv = next(
+        spec
+        for spec in accelerator_specs
+        if spec.operation_id == "richardson_lucy_tv_deconvolution"
+    )
+    expected_tv_boundary = "rl-tv-zero-fill-same-central-gradient-edge1-v1"
+    assert richardson_lucy_tv.boundary_policy_id == expected_tv_boundary
+    assert all(
+        port.boundary_policy_id == expected_tv_boundary
+        for port in (*richardson_lucy_tv.input_ports, *richardson_lucy_tv.output_ports)
+    )
+    assert "iterations-at-most-25-v1" in richardson_lucy.limitations
+    assert "positive-tv-iterations-10-or-25-v1" in richardson_lucy_tv.limitations
     assert compute_specs_for("gaussian_blur", include_cpu=False) == ()
     assert (
         len(

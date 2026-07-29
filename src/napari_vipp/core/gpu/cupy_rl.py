@@ -96,6 +96,7 @@ def richardson_lucy_deconvolution(
         restore_block,
         iterations=iteration_count,
         progress=progress,
+        progress_message="Richardson-Lucy deconvolution",
         cupy=cupy,
     )
 
@@ -279,12 +280,13 @@ def _apply_deconvolution_blocks(
     *,
     iterations: int,
     progress,
+    progress_message: str,
     cupy,
 ):
     block_count = _spatial_block_count(image.shape, spatial_ndim)
     total = max(block_count * int(iterations), 1)
     completed = 0
-    message = "Richardson-Lucy deconvolution"
+    message = str(progress_message)
     if progress is not None:
         progress.report(0, total, message)
 

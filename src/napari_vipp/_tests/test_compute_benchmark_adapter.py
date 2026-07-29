@@ -245,14 +245,17 @@ def _spec(operation_id: str):
     )
 
 
-def _two_input_rl_spec():
-    return _spec("richardson_lucy_deconvolution")
+def _two_input_rl_spec(operation_id: str = "richardson_lucy_deconvolution"):
+    return _spec(operation_id)
 
 
-def _fake_multi_input_registered_benchmark(monkeypatch):
+def _fake_multi_input_registered_benchmark(
+    monkeypatch,
+    operation_id: str = "richardson_lucy_deconvolution",
+):
     clock = ManualClock()
     runtime = _FakeRuntime(clock)
-    spec = _two_input_rl_spec()
+    spec = _two_input_rl_spec(operation_id)
     registry = ComputeRegistry()
     calls: list[tuple[str, tuple[tuple[int, ...], ...]]] = []
 
@@ -288,11 +291,13 @@ def _fake_multi_input_registered_benchmark(monkeypatch):
     )
     call = PreparedNodeCall(
         "rl-node",
-        "richardson_lucy_deconvolution",
+        operation_id,
         cpu,
         (image, psf),
         kwargs={
-            "iterations": 3,
+            "iterations": (
+                10 if operation_id == "richardson_lucy_tv_deconvolution" else 3
+            ),
             "resolved_spatial_ndim": 2,
             "progress": None,
         },
@@ -523,6 +528,25 @@ def test_multi_input_benchmark_detaches_hashes_invokes_and_observes_every_port(
     assert set(runtime.release_counts.values()) == {1}
     np.testing.assert_array_equal(image, image_before)
     np.testing.assert_array_equal(psf, psf_before)
+
+
+def test_rl_tv_multi_input_benchmark_uses_registered_positive_tv_parity(monkeypatch):
+    clock, runtime, _registry, spec, _image, _psf, _calls, built = (
+        _fake_multi_input_registered_benchmark(
+            monkeypatch,
+            "richardson_lucy_tv_deconvolution",
+        )
+    )
+    record = NodeBenchmarkService(clock=clock).benchmark(built.request)
+
+    candidate = next(
+        item
+        for item in record.candidates
+        if item.implementation_id == spec.implementation_id
+    )
+    assert candidate.parity_passed, candidate.error
+    assert record.accepted_implementation_id == spec.implementation_id
+    assert runtime.live == {}
 
 
 def test_multi_input_exact_identity_changes_when_only_psf_changes(monkeypatch):
@@ -1140,6 +1164,42 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
     assert "nrmse=" in rl_accepted.detail and "max_ulp=" in rl_accepted.detail
     assert not rl_rejected.passed
     assert "max_abs=" in rl_rejected.detail
+
+    tv_within = rl_reference.copy()
+    tv_within[8, 8] += np.float32(1e-3)
+    tv_outside = rl_reference.copy()
+    tv_outside[8, 8] += np.float32(2e-2)
+    tv_positive = operation_parity(
+        "richardson_lucy_tv_deconvolution",
+        rl_reference,
+        tv_within,
+        parameters={"tv_regularization": 0.002},
+    )
+    tv_positive_rejected = operation_parity(
+        "richardson_lucy_tv_deconvolution",
+        rl_reference,
+        tv_outside,
+        parameters={"tv_regularization": 0.002},
+    )
+    tv_lambda_zero = operation_parity(
+        "richardson_lucy_tv_deconvolution",
+        rl_reference,
+        tv_within,
+        parameters={"tv_regularization": 0.0},
+    )
+    tv_negative = rl_reference.copy()
+    tv_negative[0, 0] = np.float32(-1e-6)
+
+    assert tv_positive.passed
+    assert "limit=0.005" in tv_positive.detail
+    assert not tv_positive_rejected.passed
+    assert not tv_lambda_zero.passed
+    assert not operation_parity(
+        "richardson_lucy_tv_deconvolution",
+        rl_reference,
+        tv_negative,
+        parameters={"tv_regularization": 0.002},
+    ).passed
 
 
 def test_rl_parity_floor_is_independent_of_gaussian_policy(monkeypatch):
