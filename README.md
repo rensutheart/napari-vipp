@@ -199,8 +199,13 @@ also requires `filter_epsilon == 1e-8`, 1 through 25 iterations, odd PSF
 extents, and the default-safe normalization/clipping/scale options. The CPU
 operation's existing `1e-12` default and every other epsilon are unchanged and
 therefore remain on CPU: VIPP does not silently alter the threshold or shorten
-an authored run to use the GPU. Change that scientific parameter only when it is appropriate for the
-analysis, then benchmark the exact Image/PSF workload. Explicit **Convert
+an authored run to use the GPU. This is a conservative measured allowlist, not
+a claim that `1e-8` is intrinsically the only valid GPU value: `1e-10` already
+missed the production parity gate at 25 iterations, other tested values were
+not monotonic, and `1e-8` itself had failures at 50 iterations. The exact
+`1e-12` point has not yet had a complete GPU admission study. Change that
+scientific parameter only when it is appropriate for the analysis, then
+benchmark the exact Image/PSF workload. Explicit **Convert
 Dtype** nodes can unlock these GPU candidates and may improve
 acceleration across a longer GPU-resident segment. Choose
 `Scaling = Preserve` when the intention is to keep the numeric values; the
@@ -295,7 +300,10 @@ summarizes the code, exact admitted matrix, validation evidence, and deferred
 gates. The
 [Phase 2B Richardson-Lucy implementation record](docs/gpu-phase2b-rl-implementation-report.md)
 records the new provider, benchmark/lease substrate, exact parity policy,
-limitations, and ordered next work.
+limitations, and ordered next work. The machine-local
+[large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
+compares synchronized CPU and transfer-inclusive CuPy execution on the private
+representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses.
 
 Structural cache reuse also fails closed on exact scientific context: source
 bytes/state and revision, node parameters and incoming topology, chained

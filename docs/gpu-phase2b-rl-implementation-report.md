@@ -102,12 +102,14 @@ worst normalized gate score was 0.864348. The threshold response was not
 monotonic: `1e-7` failed one fixture at 25 iterations, and `1e-6` failed one as
 early as 10 iterations. At 50 iterations, `1e-8` failed four fixtures. A
 separate 36-fixture matrix rejected the provisional `1e-10` point, and the
-unchanged `1e-12` default failed decisively. Forty even-PSF comparison fixtures
-had 14 failures at 25 iterations for every tested epsilon. The initial
-admission therefore uses exactly `1e-8`, at most 25 iterations, odd PSF extents,
-and default-safe options. Optimizer selection still requires exact-workload
-parity evidence. Broadening any bound requires new versioned evidence;
-loosening the parity tolerance does not.
+nearby unchanged `1e-12` CPU default was not directly included in that matrix.
+It therefore remains unvalidated for GPU rather than being described as a
+measured failure; VIPP never silently changes it to qualify an authored run.
+Forty even-PSF comparison fixtures had 14 failures at 25 iterations for every
+tested epsilon. The initial admission therefore uses exactly `1e-8`, at most 25
+iterations, odd PSF extents, and default-safe options. Optimizer selection still
+requires exact-workload parity evidence. Broadening any bound requires new
+versioned evidence; loosening the parity tolerance does not.
 
 The fixed matrices and production-path runner are preserved in
 [`scripts/benchmark_gpu_rl_admission.py`](../scripts/benchmark_gpu_rl_admission.py).
@@ -128,6 +130,38 @@ generator and scientific source snapshot without importing CuPy:
 .\.venv-gpu-cu13\Scripts\python.exe scripts\benchmark_gpu_rl_admission.py `
   --validate-existing docs\benchmarks\rl-cupy-admission-windows-rtx5090.json
 ```
+
+## Large-stack CPU/GPU timing
+
+A separate production-path performance screen used the admitted 3D operation
+at 25 iterations and `filter_epsilon=1e-8`. It compared the same CPU and GPU
+parameters after exact-workload parity, then measured one warmup and three
+paired warm calls. GPU end-to-end samples include both Image and PSF transfers,
+synchronized resident compute, output transfer, and private-scope cleanup.
+Disk I/O and input generation are excluded.
+
+| Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
+|---|---:|---:|---:|---:|---:|---:|
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 23.911 s | 0.360 s | 0.328 s | 0.016 s | 65.85x |
+| Medium 3D shape stress | 16,777,216 | 34.463 s | 0.511 s | 0.439 s | 0.037 s | 67.41x |
+| Large 3D shape stress | 67,108,864 | 132.066 s | 1.523 s | 1.200 s | 0.192 s | 86.73x |
+
+All three exact workloads passed production parity, synchronized execution,
+and terminal-zero private allocator cleanup. The largest case observed 4.50 GiB
+of device use against the conservative 7.72 GiB admitted bound. These are
+machine-local RTX 5090 results and a short descriptive screen, not a portable
+speed promise or reusable optimizer record. The synthetic volumes deliberately
+stress realistic stack shapes and memory; they are not claimed to reproduce
+confocal image statistics. The private ND2 case supplies the real-acquisition
+anchor without publishing its path, filename, pixel data, or content-derived
+fingerprints. Its generated Gaussian PSF is a timing kernel, not a measured
+restoration-quality PSF.
+
+The [readable result](benchmarks/rl-cupy-performance-windows-rtx5090.md) and
+[raw evidence](benchmarks/rl-cupy-performance-windows-rtx5090.json) retain the
+three paired samples, transfer/resident breakdown, memory observations, cleanup
+snapshots, environment, and source fingerprints. Re-run or validate them with
+[`scripts/benchmark_gpu_rl_performance.py`](../scripts/benchmark_gpu_rl_performance.py).
 
 Progress is measured as `leading block count × iteration count`. A checkpoint
 is reported only after the completed GPU work is synchronized, and cancellation
@@ -256,6 +290,11 @@ queue below; completing Phase 2B does not silently close them:
 - [ ] Prevent unrelated same-device work from biasing paired optimizer timing
   between subtransactions, either with one cancellable evidence window or an
   equally strong measured-wait exclusion contract.
+- [ ] Make Extract Channel and Select Axis Slice apply their selection to lazy
+  resource-backed arrays before NumPy materialization. The representative ND2
+  source is `TZCYX`; selecting one `T,C` volume should decode roughly 32 MiB of
+  float32 image data, not first materialize the complete 617 MiB uint16
+  acquisition.
 
 ## Ordered next suggested steps
 

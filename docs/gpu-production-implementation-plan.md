@@ -269,6 +269,16 @@ iterations, exactly `1e-8`, odd PSF extents, and default-safe options. Optimizer
 selection retains the exact-workload parity gate, and neither CPU defaults nor
 tolerances changed.
 
+Large-stack timing on the same development host passed exact parity for a
+private 8.51-million-voxel ND2 `ZYX` volume and deterministic 16.78/67.11-million
+voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.360, 0.511, and
+1.523 seconds versus CPU medians of 23.911, 34.463, and 132.066 seconds: paired
+median speedups of 65.85x, 67.41x, and 86.73x. This was a three-pair descriptive
+screen, not a durable optimizer record or portable hardware promise. The
+[versioned timing summary](benchmarks/rl-cupy-performance-windows-rtx5090.md)
+retains resident/transfer timing, memory, cleanup, environment, and raw-sample
+context.
+
 Current limits remain explicit: RL is developer-hidden; RL-TV is not yet
 implemented; broad Auto admission is not claimed; exact benchmarking still
 requires one output and excludes writers; pipeline optimization still supports
@@ -2877,7 +2887,10 @@ explicit order.
 
 The UI immutable-snapshot/lifecycle hardening listed above remains a prerequisite
 for broad optimizer claims and should be completed alongside the early operation
-waves; it is not marked complete by Phase 2B.
+waves; it is not marked complete by Phase 2B. Lazy resource-backed axis/channel
+selection is also now tracked before sustained real-acquisition benchmarking:
+Extract Channel and Select Axis Slice must slice first and materialize only the
+selected workload rather than eagerly decoding a complete ND2 acquisition.
 
 ## Handoff summary
 

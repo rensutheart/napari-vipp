@@ -157,6 +157,11 @@ multi-input exact benchmarking, and per-device accelerator coordination; its
 initial finite-float32 region deliberately keeps the CPU's `1e-12` epsilon
 default, epsilon values other than the validated `1e-8` point, and runs above
 25 iterations on CPU pending broader numerical evidence.
+Machine-local large-stack timing now records 65.85x to 86.73x paired median
+speedups on the RTX 5090 across one real 8.51-million-voxel ND2 volume and
+16.78/67.11-million-voxel 3D shape stresses. Those short descriptive results are
+not a reusable optimizer record or cross-platform claim; see the
+[raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
 The toolbar now has the first experimental CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
