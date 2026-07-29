@@ -174,6 +174,20 @@ def test_measurement_progress_is_frozen_normalized_and_validated():
     with pytest.raises(ValueError, match="message"):
         replace(progress, message=" ")
 
+    operation = replace(
+        progress,
+        operation_completed=37,
+        operation_total=171,
+        operation_message="  Rolling-ball YX plane  ",
+    )
+    assert operation.operation_completed == 37
+    assert operation.operation_total == 171
+    assert operation.operation_message == "Rolling-ball YX plane"
+    with pytest.raises(ValueError, match="operation progress must fit"):
+        replace(operation, operation_completed=172)
+    with pytest.raises(ValueError, match="requires a message"):
+        replace(operation, operation_message=" ")
+
 
 def test_progress_callback_is_validated_before_benchmark_work_starts():
     clock = ManualClock()
@@ -257,6 +271,134 @@ def test_progress_wraps_every_measurement_without_changing_durations():
             item.implementation_version == "unspecified" and item.message.strip()
             for item in implementation_events
         )
+
+
+def test_nested_operation_progress_is_ordered_and_observer_time_is_not_measured():
+    clock = ManualClock()
+    progress_events: list[BenchmarkMeasurementProgress] = []
+    retained_reporters = []
+
+    def bind(private_input, reporter, abort):
+        private_input["report"] = reporter
+        private_input["abort"] = abort
+        retained_reporters.append(reporter)
+        return private_input
+
+    def implementation(private_input):
+        report = private_input["report"]
+        abort = private_input["abort"]
+        assert report is not None
+        for plane in range(4):
+            assert abort() is False
+            report(plane, 3, "YX plane")
+            if plane < 3:
+                clock.advance(0.1)
+        return 6
+
+    request = NodeBenchmarkRequest(
+        workload=_workload(),
+        environment_fingerprint="environment-a",
+        reference=BenchmarkImplementation("cpu-reference", implementation),
+        candidates=(BenchmarkImplementation("cuda-cupy", implementation),),
+        private_input_factory=dict,
+        parity=lambda expected, actual: expected == actual,
+        warm_rounds=3,
+        time_parity_as_cold=True,
+        bind_operation_progress=bind,
+    )
+
+    def report(item: BenchmarkMeasurementProgress) -> None:
+        progress_events.append(item)
+        if item.operation_total:
+            clock.advance(5.0)
+
+    record = NodeBenchmarkService(clock=clock).benchmark(request, progress=report)
+
+    results = {item.implementation_id: item for item in record.candidates}
+    assert results["cpu-reference"].cold_seconds == pytest.approx(0.3)
+    assert results["cpu-reference"].warm_seconds == pytest.approx((0.3,) * 3)
+    assert results["cuda-cupy"].cold_seconds == pytest.approx(0.3)
+    assert results["cuda-cupy"].warm_seconds == pytest.approx((0.3,) * 3)
+
+    first_call = progress_events[:6]
+    assert [item.operation_completed for item in first_call] == [0, 0, 1, 2, 3, 0]
+    assert [item.operation_total for item in first_call] == [0, 3, 3, 3, 3, 0]
+    assert all(
+        item.phase is BenchmarkMeasurementPhase.PARITY_COLD
+        and item.implementation_id == "cpu-reference"
+        for item in first_call
+    )
+
+    event_count = len(progress_events)
+    assert retained_reporters[-1] is not None
+    retained_reporters[-1](1, 3, "late")
+    assert len(progress_events) == event_count
+
+
+@pytest.mark.parametrize(
+    ("budget", "expected_error"),
+    [(None, BenchmarkCancelled), (0.15, BenchmarkBudgetExceeded)],
+)
+def test_nested_operation_abort_is_typed_and_keeps_publication_atomic(
+    budget,
+    expected_error,
+):
+    clock = ManualClock()
+    store = InMemoryBenchmarkStore()
+    cancel_requested = False
+    candidate_calls = 0
+    progress_events: list[BenchmarkMeasurementProgress] = []
+
+    def bind(private_input, reporter, abort):
+        private_input["report"] = reporter
+        private_input["abort"] = abort
+        return private_input
+
+    def reference(private_input):
+        for plane in range(3):
+            private_input["abort"]()
+            private_input["report"](plane, 3, "YX plane")
+            clock.advance(0.1)
+        private_input["abort"]()
+        private_input["report"](3, 3, "YX plane")
+        return 6
+
+    def candidate(_private_input):
+        nonlocal candidate_calls
+        candidate_calls += 1
+        return 6
+
+    request = NodeBenchmarkRequest(
+        workload=_workload(),
+        environment_fingerprint="environment-a",
+        reference=BenchmarkImplementation("cpu-reference", reference),
+        candidates=(BenchmarkImplementation("cuda-cupy", candidate),),
+        private_input_factory=dict,
+        parity=lambda expected, actual: expected == actual,
+        warm_rounds=3,
+        time_budget_seconds=budget,
+        bind_operation_progress=bind,
+    )
+
+    def report(item: BenchmarkMeasurementProgress) -> None:
+        nonlocal cancel_requested
+        progress_events.append(item)
+        if budget is None and item.operation_completed == 1:
+            cancel_requested = True
+
+    with pytest.raises(expected_error):
+        NodeBenchmarkService(store=store, clock=clock).benchmark(
+            request,
+            cancelled=lambda: cancel_requested,
+            progress=report,
+        )
+
+    assert candidate_calls == 0
+    assert len(store) == 0
+    assert (
+        progress_events[-1].operation_completed,
+        progress_events[-1].operation_total,
+    ) == (1, 3)
 
 
 def test_timed_parity_reports_combined_phase_and_replaces_cold_diagnostic():

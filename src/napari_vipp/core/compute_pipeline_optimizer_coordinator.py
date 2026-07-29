@@ -296,9 +296,7 @@ class ApplicationPipelineOptimizerCoordinator:
             restored.get("output_tunnels", ()),
         )
         safe_ids, unsafe_ids = _writer_free_node_ids(pipeline)
-        raw_locks = tuple(
-            str(node_id).strip() for node_id in optimizer_locked_node_ids
-        )
+        raw_locks = tuple(str(node_id).strip() for node_id in optimizer_locked_node_ids)
         if any(not node_id for node_id in raw_locks) or len(set(raw_locks)) != len(
             raw_locks
         ):
@@ -316,8 +314,7 @@ class ApplicationPipelineOptimizerCoordinator:
         if auto_locks:
             names = ", ".join(sorted(auto_locks))
             raise ValueError(
-                "optimizer locks require an explicit per-node compute choice: "
-                f"{names}"
+                f"optimizer locks require an explicit per-node compute choice: {names}"
             )
         retained = _normalized_node_ids(retain_node_ids)
         unknown_retained = retained - set(pipeline.nodes)
@@ -342,13 +339,11 @@ class ApplicationPipelineOptimizerCoordinator:
         )
         check_abort()
 
-        environment, accelerator_runtime_id = (
-            _probe_optimizer_environment_for_pipeline(
-                self.registry,
-                pipeline,
-                safe_ids,
-                compute_request,
-            )
+        environment, accelerator_runtime_id = _probe_optimizer_environment_for_pipeline(
+            self.registry,
+            pipeline,
+            safe_ids,
+            compute_request,
         )
         check_abort()
 
@@ -423,10 +418,17 @@ class ApplicationPipelineOptimizerCoordinator:
             overall_completed: int,
         ):
             def forward(update) -> None:
-                measurement_total = int(
-                    getattr(update, "measurement_total", 0) or 0
-                )
-                if measurement_total:
+                operation_total = int(getattr(update, "operation_total", 0) or 0)
+                measurement_total = int(getattr(update, "measurement_total", 0) or 0)
+                if operation_total:
+                    operation_state.update(
+                        completed=int(update.operation_completed),
+                        total=operation_total,
+                        message=str(update.operation_message),
+                        implementation_id=str(update.implementation_id),
+                        measurement_phase=str(update.measurement_phase),
+                    )
+                elif measurement_total:
                     operation_state.update(
                         completed=int(update.measurement_completed),
                         total=measurement_total,
@@ -441,28 +443,21 @@ class ApplicationPipelineOptimizerCoordinator:
                         total=int(update.total),
                         message=f"{node_title}: {update.message}",
                         implementation_id="",
-                        measurement_phase=str(
-                            getattr(raw_phase, "value", raw_phase)
-                        ),
+                        measurement_phase=str(getattr(raw_phase, "value", raw_phase)),
                     )
                 _emit(
                     progress,
                     PipelineOptimizerPhase.BENCHMARKING,
                     overall_completed,
                     total_steps,
-                    f"Benchmarking {node_title} "
-                    f"({node_index}/{len(eligible_ids)}).",
+                    f"Benchmarking {node_title} ({node_index}/{len(eligible_ids)}).",
                     operation_completed=int(operation_state["completed"]),
                     operation_total=int(operation_state["total"]),
                     operation_message=str(operation_state["message"]),
                     node_id=node_id,
                     node_title=node_title,
-                    implementation_id=str(
-                        operation_state["implementation_id"]
-                    ),
-                    measurement_phase=str(
-                        operation_state["measurement_phase"]
-                    ),
+                    implementation_id=str(operation_state["implementation_id"]),
+                    measurement_phase=str(operation_state["measurement_phase"]),
                 )
 
             return forward
@@ -492,8 +487,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 PipelineOptimizerPhase.BENCHMARKING,
                 overall_completed,
                 total_steps,
-                f"Benchmarking {node.title} "
-                f"({index}/{len(eligible_ids)}).",
+                f"Benchmarking {node.title} ({index}/{len(eligible_ids)}).",
                 operation_completed=0,
                 operation_total=4,
                 operation_message=str(operation_state["message"]),
@@ -547,13 +541,11 @@ class ApplicationPipelineOptimizerCoordinator:
                         PipelineOptimizerPhase.BENCHMARKING,
                         2 + index,
                         total_steps,
-                        "Reused exact saved evidence for "
-                        f"{node.title}.",
+                        f"Reused exact saved evidence for {node.title}.",
                         operation_completed=1,
                         operation_total=1,
                         operation_message=(
-                            f"{node.title}: reused complete exact benchmark "
-                            "evidence."
+                            f"{node.title}: reused complete exact benchmark evidence."
                         ),
                         node_id=node_id,
                         node_title=node.title,
@@ -653,8 +645,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 "the current data.",
             )
         benchmark_environment_fingerprints = {
-            record.key.environment_fingerprint
-            for record in evidence_records.values()
+            record.key.environment_fingerprint for record in evidence_records.values()
         }
         if len(benchmark_environment_fingerprints) != 1:
             _refuse(
@@ -713,8 +704,7 @@ class ApplicationPipelineOptimizerCoordinator:
                 report=PipelineOptimizationTimeoutReport(
                     stage="transfers",
                     stage_message=(
-                        "Measuring synchronized host-to-GPU and GPU-to-host "
-                        "transfers."
+                        "Measuring synchronized host-to-GPU and GPU-to-host transfers."
                     ),
                     elapsed_seconds=elapsed,
                     budget_seconds=budget,
@@ -832,14 +822,10 @@ class ApplicationPipelineOptimizerCoordinator:
                     ),
                     overall_total=total_steps,
                     operation_completed=(
-                        int(validation_state["completed"])
-                        if validation_started
-                        else 0
+                        int(validation_state["completed"]) if validation_started else 0
                     ),
                     operation_total=(
-                        int(validation_state["total"])
-                        if validation_started
-                        else 0
+                        int(validation_state["total"]) if validation_started else 0
                     ),
                     operation_message=(stage_message if validation_started else ""),
                     completed_node_ids=tuple(sorted(evidence_records)),
@@ -958,9 +944,7 @@ class ApplicationPipelineOptimizerCoordinator:
         parity_targets = frozenset(
             set(changed) | (set(observable_boundaries) & affected)
         )
-        parity_retain = frozenset(
-            set(observable_boundaries) | set(parity_targets)
-        )
+        parity_retain = frozenset(set(observable_boundaries) | set(parity_targets))
         current_request = _exact_assignment_request(
             base_request, baseline_pipeline, current_map
         )
@@ -2031,9 +2015,7 @@ def _successful_exact_pipeline(
         )
     decisions = {item.node_id: item for item in report.actual_decisions}
     expected_processing_ids = {
-        node_id
-        for node_id in node_ids
-        if reference_pipeline.nodes[node_id].has_input
+        node_id for node_id in node_ids if reference_pipeline.nodes[node_id].has_input
     }
     unexpected_processing_ids = {
         item.node_id

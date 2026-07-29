@@ -29,8 +29,11 @@ from napari_vipp.core.compute_benchmark import (
     DEFAULT_CONFIDENCE_LEVEL,
     MINIMUM_WARM_ROUNDS,
     SCREENING_MINIMUM_WARM_ROUNDS,
+    BenchmarkBudgetExceeded,
+    BenchmarkCancelled,
     BenchmarkImplementation,
     BenchmarkInvocationObservation,
+    BenchmarkProgressError,
     NodeBenchmarkRequest,
     ParityResult,
 )
@@ -43,12 +46,13 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import AdmissionTier, OperationComputeSpec
 from napari_vipp.core.node_execution import PreparedNodeCall
+from napari_vipp.core.progress import ProgressContext, ProgressUpdate
 
-PRODUCTION_BENCHMARK_POLICY_ID = "production-node-paired-adaptive-bootstrap-v2"
+PRODUCTION_BENCHMARK_POLICY_ID = "production-node-paired-adaptive-bootstrap-v3"
 PIPELINE_SCREENING_BENCHMARK_POLICY_ID = (
-    "pipeline-node-progressive-screening-bootstrap-v1"
+    "pipeline-node-progressive-screening-bootstrap-v2"
 )
-CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v2"
+CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v3"
 EXACT_PARITY_OPERATION_IDS = frozenset(
     {
         "median_filter",
@@ -270,6 +274,7 @@ def build_registered_node_benchmark(
         device_id=resolved_device_id,
         memory_limit_bytes=memory_limit_bytes,
         safety_reserve_bytes=safety_reserve_bytes,
+        bind_operation_progress=_bind_benchmark_operation_progress,
     )
     return RegisteredNodeBenchmark(request, detached, observations)
 
@@ -303,6 +308,61 @@ def detach_prepared_node_call(
         multiple_inputs=call.multiple_inputs,
         output_port_count=call.output_port_count,
     )
+
+
+def _bind_benchmark_operation_progress(
+    private_input: object,
+    reporter,
+    abort,
+) -> object:
+    """Attach fresh benchmark-only progress after private input cloning."""
+
+    if not isinstance(private_input, PreparedNodeCall):
+        raise TypeError("private benchmark input must be a PreparedNodeCall.")
+    kwargs = private_input.keyword_arguments()
+    if "progress" not in kwargs:
+        return private_input
+
+    def forward(update: ProgressUpdate) -> None:
+        if reporter is None:
+            return
+        reporter(
+            update.current,
+            update.total,
+            _benchmark_operation_progress_message(
+                private_input,
+                update.message,
+            ),
+        )
+
+    kwargs["progress"] = ProgressContext(
+        cancelled=abort,
+        reporter=forward if reporter is not None else None,
+    )
+    return PreparedNodeCall(
+        node_id=private_input.node_id,
+        operation_id=private_input.operation_id,
+        cpu_function=private_input.cpu_function,
+        inputs=private_input.inputs,
+        input_states=private_input.input_states,
+        kwargs=kwargs,
+        multiple_inputs=private_input.multiple_inputs,
+        output_port_count=private_input.output_port_count,
+    )
+
+
+def _benchmark_operation_progress_message(
+    call: PreparedNodeCall,
+    message: str,
+) -> str:
+    if call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
+        resolved = call.kwargs.get("resolved_spatial_ndim")
+        if resolved == 2:
+            return "Rolling-ball YX plane"
+        if resolved == 3:
+            return "Rolling-ball spatial volume"
+        return "Rolling-ball spatial block"
+    return str(message).strip() or call.operation_id.replace("_", " ")
 
 
 def _validate_detached_call(call: PreparedNodeCall) -> None:
@@ -566,6 +626,15 @@ class _RegisteredCandidateRunner:
         device_value: object | None = None
         transferred: list[object] = []
         detached_failure: RuntimeExceptionInfo | None = None
+        control_failure: (
+            tuple[
+                type[BenchmarkCancelled]
+                | type[BenchmarkBudgetExceeded]
+                | type[BenchmarkProgressError],
+                str,
+            ]
+            | None
+        ) = None
         cleanup_failure: RuntimeExceptionInfo | None = None
         scope_failure: RuntimeExceptionInfo | None = None
         terminal_failure: RuntimeExceptionInfo | None = None
@@ -657,6 +726,15 @@ class _RegisteredCandidateRunner:
                             else host_outputs
                         )
                         _ensure_host_only(host_result, runtime)
+                    except (
+                        BenchmarkCancelled,
+                        BenchmarkBudgetExceeded,
+                        BenchmarkProgressError,
+                    ) as exc:
+                        # Do not retain the original exception: its traceback
+                        # can hold provider frames and device temporaries alive
+                        # across private-scope cleanup and memory validation.
+                        control_failure = (type(exc), str(exc))
                     except Exception as exc:
                         # Provider exceptions may retain traceback-local device
                         # arrays. Classify and suppress them before the private
@@ -735,6 +813,11 @@ class _RegisteredCandidateRunner:
             if final_failure is None:
                 raise RuntimeError("Benchmark terminal memory state is unavailable.")
             raise _DetachedBenchmarkCandidateFailure(final_failure) from None
+        if control_failure is not None:
+            if final_failure is not None:
+                raise _DetachedBenchmarkCandidateFailure(final_failure) from None
+            failure_type, failure_message = control_failure
+            raise failure_type(failure_message) from None
         observed = tuple(snapshot for _stage, snapshot in snapshots) + (terminal,)
         measurement = BenchmarkInvocationObservation(
             timing_scope="synchronized-end-to-end-v1",

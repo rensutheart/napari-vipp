@@ -223,9 +223,14 @@ The analysis dialog separates **overall progress** from the **current
 operation**. Overall progress follows the complete analysis, while the second
 bar names the node, implementation, phase, and timing round currently being
 measured. The selectable time limit is elapsed wall-clock time, not a RAM or
-VRAM budget. A synchronized NumPy, SciPy, CuPy, or cuCIM call cannot always
-report progress from inside the call, so the current-operation bar may remain
-unchanged until that call returns even though work is continuing.
+VRAM budget. Multi-plane background subtraction reports each completed plane
+for both CPU and cuCIM; its current-operation bar advances through those planes
+and starts over for each parity, warmup, or timed invocation. A cuCIM plane is
+reported only after its output has been synchronized. Operations implemented as
+one monolithic NumPy, SciPy, CuPy, or cuCIM call have no truthful intermediate
+milestone, so their current-operation bar can remain unchanged until that call
+returns even though work is continuing; this pause alone does not mean the
+analysis is stuck.
 
 Reaching the time limit does **not** mean the current pipeline is optimal: it
 means that no fastest assignment was determined within the selected time. VIPP

@@ -85,6 +85,10 @@ class BenchmarkBudgetExceeded(BenchmarkError):
     """Raised when a benchmark exceeds its wall-clock budget."""
 
 
+class BenchmarkProgressError(BenchmarkError):
+    """Raised when a nested benchmark progress observer fails."""
+
+
 class BenchmarkReferenceError(BenchmarkError):
     """Raised when the CPU/reference implementation cannot produce a baseline."""
 
@@ -130,6 +134,9 @@ class BenchmarkMeasurementProgress:
     completed: int
     total: int
     message: str
+    operation_completed: int = 0
+    operation_total: int = 0
+    operation_message: str = ""
 
     def __post_init__(self) -> None:
         phase = (
@@ -161,6 +168,17 @@ class BenchmarkMeasurementProgress:
             raise ValueError(
                 "benchmark measurement progress must fit inside its total."
             )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.operation_completed, self.operation_total)
+        ):
+            raise ValueError(
+                "benchmark operation progress must use non-negative integers."
+            )
+        if self.operation_completed > self.operation_total:
+            raise ValueError(
+                "benchmark operation progress must fit inside its total."
+            )
         message = str(self.message).strip()
         if not message:
             raise ValueError(
@@ -170,9 +188,25 @@ class BenchmarkMeasurementProgress:
         object.__setattr__(self, "implementation_id", implementation_id)
         object.__setattr__(self, "implementation_version", implementation_version)
         object.__setattr__(self, "message", message)
+        operation_message = str(self.operation_message).strip()
+        if self.operation_total and not operation_message:
+            raise ValueError(
+                "benchmark operation progress requires a message."
+            )
+        object.__setattr__(self, "operation_message", operation_message)
 
 
 BenchmarkMeasurementProgressCallback = Callable[[BenchmarkMeasurementProgress], None]
+BenchmarkOperationProgressCallback = Callable[[int, int, str], None]
+BenchmarkOperationAbortCallback = Callable[[], bool]
+BenchmarkPrivateInputProgressBinder = Callable[
+    [
+        object,
+        BenchmarkOperationProgressCallback | None,
+        BenchmarkOperationAbortCallback | None,
+    ],
+    object,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,10 +331,19 @@ class NodeBenchmarkRequest:
     device_id: str = ""
     memory_limit_bytes: int | None = None
     safety_reserve_bytes: int | None = None
+    bind_operation_progress: BenchmarkPrivateInputProgressBinder | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.workload, WorkloadDescriptor):
             raise TypeError("workload must be a WorkloadDescriptor.")
+        if self.bind_operation_progress is not None and not callable(
+            self.bind_operation_progress
+        ):
+            raise TypeError("bind_operation_progress must be callable or None.")
         environment = str(self.environment_fingerprint).strip()
         policy = str(self.benchmark_policy_id).strip()
         if not environment or not policy:
@@ -994,9 +1037,10 @@ class NodeBenchmarkService:
 
         Candidate parity is established for every runnable implementation before
         the first duration is recorded.  A failed candidate is quarantined while
-        the reference implementation remains mandatory.  Optional progress
-        callbacks bracket provider calls but remain outside all recorded timing
-        boundaries.
+        the reference implementation remains mandatory.  Coarse progress
+        callbacks bracket provider calls outside recorded timing.  Operation
+        callbacks may run within a provider call; their direct observer time is
+        removed from the recorded duration.
         """
 
         if not isinstance(request, NodeBenchmarkRequest):
@@ -1033,18 +1077,23 @@ class NodeBenchmarkService:
                     "Finished the parity and cold-call attempt for reference "
                     f"{reference_label}."
                 ),
-                call=lambda: self._timed_invoke_with_result(
+                call=lambda operation_progress: self._timed_invoke_with_result(
                     reference_state,
-                    request.private_input_factory,
                     request,
                     started,
                     cancelled,
                     phase="cold",
+                    operation_progress=operation_progress,
                 ),
             )
             if call_error is not None:
                 if isinstance(
-                    call_error, (BenchmarkCancelled, BenchmarkBudgetExceeded)
+                    call_error,
+                    (
+                        BenchmarkCancelled,
+                        BenchmarkBudgetExceeded,
+                        BenchmarkProgressError,
+                    ),
                 ):
                     raise call_error
                 raise BenchmarkReferenceError(
@@ -1069,10 +1118,11 @@ class NodeBenchmarkService:
                 after_message=(
                     f"Finished the parity attempt for reference {reference_label}."
                 ),
-                call=lambda: self._invoke_reference(
+                call=lambda operation_progress: self._invoke_reference(
                     request,
                     started,
                     cancelled,
+                    operation_progress=operation_progress,
                 ),
             )
             if call_error is not None:
@@ -1114,24 +1164,36 @@ class NodeBenchmarkService:
                     f"Finished the {parity_action} attempt for {candidate_label}."
                 ),
                 call=(
-                    lambda state=state, candidate=candidate: (
+                    lambda operation_progress, state=state, candidate=candidate: (
                         self._timed_invoke_with_result(
                             state,
-                            request.private_input_factory,
                             request,
                             started,
                             cancelled,
                             phase="cold",
+                            operation_progress=operation_progress,
                         )
                         if request.time_parity_as_cold
                         else self._invoke(
                             candidate,
-                            request.private_input_factory,
+                            request,
+                            started,
+                            cancelled,
+                            operation_progress=operation_progress,
                         )
                     )
                 ),
             )
             if call_error is not None:
+                if isinstance(
+                    call_error,
+                    (
+                        BenchmarkCancelled,
+                        BenchmarkBudgetExceeded,
+                        BenchmarkProgressError,
+                    ),
+                ):
+                    raise call_error
                 self._quarantine_state(
                     request,
                     state,
@@ -1202,18 +1264,23 @@ class NodeBenchmarkService:
                     f"Finished the cold diagnostic attempt for "
                     f"{implementation_label}."
                 ),
-                call=lambda state=state: self._timed_invoke(
+                call=lambda operation_progress, state=state: self._timed_invoke(
                     state,
-                    request.private_input_factory,
                     request,
                     started,
                     cancelled,
                     phase="cold",
+                    operation_progress=operation_progress,
                 ),
             )
             if call_error is not None:
                 if isinstance(
-                    call_error, (BenchmarkCancelled, BenchmarkBudgetExceeded)
+                    call_error,
+                    (
+                        BenchmarkCancelled,
+                        BenchmarkBudgetExceeded,
+                        BenchmarkProgressError,
+                    ),
                 ):
                     raise call_error
                 if implementation_id == request.reference.implementation_id:
@@ -1252,15 +1319,25 @@ class NodeBenchmarkService:
                         f"Finished warmup {warmup_index + 1} of "
                         f"{request.warmup_rounds} for {implementation_label}."
                     ),
-                    call=lambda implementation=state.implementation: self._invoke(
-                        implementation,
-                        request.private_input_factory,
+                    call=(
+                        lambda operation_progress,
+                        implementation=state.implementation: self._invoke(
+                            implementation,
+                            request,
+                            started,
+                            cancelled,
+                            operation_progress=operation_progress,
+                        )
                     ),
                 )
                 if call_error is not None:
                     if isinstance(
                         call_error,
-                        (BenchmarkCancelled, BenchmarkBudgetExceeded),
+                        (
+                            BenchmarkCancelled,
+                            BenchmarkBudgetExceeded,
+                            BenchmarkProgressError,
+                        ),
                     ):
                         raise call_error
                     if implementation_id == request.reference.implementation_id:
@@ -1325,19 +1402,23 @@ class NodeBenchmarkService:
                         f"Finished paired warm round {round_index + 1} of "
                         f"{target_rounds} for {implementation_label}."
                     ),
-                    call=lambda state=state: self._timed_invoke(
+                    call=lambda operation_progress, state=state: self._timed_invoke(
                         state,
-                        request.private_input_factory,
                         request,
                         started,
                         cancelled,
                         phase="warm",
+                        operation_progress=operation_progress,
                     ),
                 )
                 if call_error is not None:
                     if isinstance(
                         call_error,
-                        (BenchmarkCancelled, BenchmarkBudgetExceeded),
+                        (
+                            BenchmarkCancelled,
+                            BenchmarkBudgetExceeded,
+                            BenchmarkProgressError,
+                        ),
                     ):
                         raise call_error
                     if implementation_id == request.reference.implementation_id:
@@ -1407,7 +1488,7 @@ class NodeBenchmarkService:
         total: int,
         before_message: str,
         after_message: str,
-        call: Callable[[], Any],
+        call: Callable[[BenchmarkOperationProgressCallback | None], Any],
     ) -> tuple[Any | None, Exception | None]:
         """Invoke one provider call between unmeasured progress callbacks."""
 
@@ -1421,18 +1502,69 @@ class NodeBenchmarkService:
         )
         result: Any | None = None
         call_error: Exception | None = None
+
+        operation_callback = None
+        operation_callback_active = True
+        if progress is not None:
+
+            def forward_operation_progress(
+                operation_completed: int,
+                operation_total: int,
+                operation_message: str,
+            ) -> None:
+                if not operation_callback_active:
+                    return
+                try:
+                    NodeBenchmarkService._emit_measurement_progress(
+                        progress,
+                        phase=phase,
+                        implementation=implementation,
+                        completed=completed,
+                        total=total,
+                        message=before_message,
+                        operation_completed=operation_completed,
+                        operation_total=operation_total,
+                        operation_message=operation_message,
+                    )
+                except (
+                    BenchmarkCancelled,
+                    BenchmarkBudgetExceeded,
+                    BenchmarkProgressError,
+                ):
+                    raise
+                except Exception as exc:
+                    detail = str(exc).strip() or type(exc).__name__
+                    raise BenchmarkProgressError(
+                        f"benchmark progress callback failed: {detail}"
+                    ) from None
+
+            operation_callback = forward_operation_progress
+
         try:
-            result = call()
+            result = call(operation_callback)
         except Exception as exc:
             call_error = exc
-        NodeBenchmarkService._emit_measurement_progress(
-            progress,
-            phase=phase,
-            implementation=implementation,
-            completed=completed + 1,
-            total=total,
-            message=after_message,
-        )
+        finally:
+            operation_callback_active = False
+        # A cooperative abort is not a completed provider attempt.  Preserve
+        # its last truthful operation boundary (for example plane 37/171) so
+        # callers can render and retain the exact interruption point.
+        if not isinstance(
+            call_error,
+            (
+                BenchmarkCancelled,
+                BenchmarkBudgetExceeded,
+                BenchmarkProgressError,
+            ),
+        ):
+            NodeBenchmarkService._emit_measurement_progress(
+                progress,
+                phase=phase,
+                implementation=implementation,
+                completed=completed + 1,
+                total=total,
+                message=after_message,
+            )
         return result, call_error
 
     @staticmethod
@@ -1444,6 +1576,9 @@ class NodeBenchmarkService:
         completed: int,
         total: int,
         message: str,
+        operation_completed: int = 0,
+        operation_total: int = 0,
+        operation_message: str = "",
     ) -> None:
         if progress is None:
             return
@@ -1455,6 +1590,9 @@ class NodeBenchmarkService:
                 completed=completed,
                 total=total,
                 message=message,
+                operation_completed=operation_completed,
+                operation_total=operation_total,
+                operation_message=operation_message,
             )
         )
 
@@ -1620,24 +1758,52 @@ class NodeBenchmarkService:
         request: NodeBenchmarkRequest,
         started: float,
         cancelled: Callable[[], bool] | None,
+        *,
+        operation_progress: BenchmarkOperationProgressCallback | None = None,
     ) -> object:
         try:
-            result = self._invoke(request.reference, request.private_input_factory)
+            result = self._invoke(
+                request.reference,
+                request,
+                started,
+                cancelled,
+                operation_progress=operation_progress,
+            )
             self._check_abort(request, started, cancelled)
             return result
-        except (BenchmarkCancelled, BenchmarkBudgetExceeded):
+        except (
+            BenchmarkCancelled,
+            BenchmarkBudgetExceeded,
+            BenchmarkProgressError,
+        ):
             raise
         except Exception as exc:
             raise BenchmarkReferenceError(
                 f"Reference parity call failed: {self._error_text(exc)}"
             ) from exc
 
-    @staticmethod
     def _invoke(
+        self,
         implementation: BenchmarkImplementation,
-        private_input_factory: Callable[[], object],
+        request: NodeBenchmarkRequest,
+        started: float,
+        cancelled: Callable[[], bool] | None,
+        *,
+        operation_progress: BenchmarkOperationProgressCallback | None = None,
     ) -> object:
-        private_input = private_input_factory()
+        private_input = request.private_input_factory()
+        binder = request.bind_operation_progress
+        if binder is not None:
+
+            def abort_operation() -> bool:
+                self._check_abort(request, started, cancelled)
+                return False
+
+            private_input = binder(
+                private_input,
+                operation_progress,
+                abort_operation,
+            )
         result = implementation.execute(private_input)
         implementation.synchronize()
         return result
@@ -1645,41 +1811,70 @@ class NodeBenchmarkService:
     def _timed_invoke(
         self,
         state: _CandidateState,
-        private_input_factory: Callable[[], object],
         request: NodeBenchmarkRequest,
         started: float,
         cancelled: Callable[[], bool] | None,
         *,
         phase: str,
+        operation_progress: BenchmarkOperationProgressCallback | None = None,
     ) -> float:
         _result, elapsed = self._timed_invoke_with_result(
             state,
-            private_input_factory,
             request,
             started,
             cancelled,
             phase=phase,
+            operation_progress=operation_progress,
         )
         return elapsed
 
     def _timed_invoke_with_result(
         self,
         state: _CandidateState,
-        private_input_factory: Callable[[], object],
         request: NodeBenchmarkRequest,
         started: float,
         cancelled: Callable[[], bool] | None,
         *,
         phase: str,
+        operation_progress: BenchmarkOperationProgressCallback | None = None,
     ) -> tuple[object, float]:
         self._check_abort(request, started, cancelled)
+        observer_seconds = 0.0
+
+        timed_operation_progress = None
+        if operation_progress is not None:
+
+            def timed_operation_progress(
+                completed: int,
+                total: int,
+                message: str,
+            ) -> None:
+                nonlocal observer_seconds
+                observer_started = self._read_clock()
+                operation_progress(completed, total, message)
+                observer_finished = self._read_clock()
+                observer_elapsed = observer_finished - observer_started
+                if observer_elapsed >= 0 and math.isfinite(observer_elapsed):
+                    observer_seconds += observer_elapsed
+
         call_started = self._read_clock()
-        result = self._invoke(state.implementation, private_input_factory)
+        result = self._invoke(
+            state.implementation,
+            request,
+            started,
+            cancelled,
+            operation_progress=timed_operation_progress,
+        )
         call_finished = self._read_clock()
-        elapsed = call_finished - call_started
-        if elapsed < 0 or not math.isfinite(elapsed):
+        raw_elapsed = call_finished - call_started
+        if raw_elapsed < 0 or not math.isfinite(raw_elapsed):
             raise BenchmarkError("clock returned a non-monotonic or invalid duration.")
-        self._sample_observation(state, phase=phase)
+        elapsed = max(raw_elapsed - observer_seconds, 0.0)
+        self._sample_observation(
+            state,
+            phase=phase,
+            operation_observer_seconds=observer_seconds,
+        )
         self._check_abort(request, started, cancelled)
         return result, elapsed
 
@@ -1688,6 +1883,7 @@ class NodeBenchmarkService:
         state: _CandidateState,
         *,
         phase: str | None = None,
+        operation_observer_seconds: float = 0.0,
     ) -> None:
         value = state.implementation.peak_memory_bytes()
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -1699,6 +1895,12 @@ class NodeBenchmarkService:
         if not isinstance(observation, BenchmarkInvocationObservation):
             raise TypeError(
                 "observation must return BenchmarkInvocationObservation or None."
+            )
+        resident_seconds = observation.resident_seconds
+        if resident_seconds is not None:
+            resident_seconds = max(
+                resident_seconds - operation_observer_seconds,
+                0.0,
             )
         state.timing_scopes.add(observation.timing_scope)
         state.synchronized_observations.append(observation.synchronized)
@@ -1723,10 +1925,10 @@ class NodeBenchmarkService:
         )
         if phase == "cold":
             state.cold_transfer_seconds = observation.transfer_seconds
-            state.cold_resident_seconds = observation.resident_seconds
+            state.cold_resident_seconds = resident_seconds
         elif phase == "warm":
             state.warm_transfer_seconds.append(observation.transfer_seconds)
-            state.warm_resident_seconds.append(observation.resident_seconds)
+            state.warm_resident_seconds.append(resident_seconds)
 
     def _quarantine_state(
         self,
@@ -2369,6 +2571,10 @@ __all__ = [
     "BenchmarkMeasurementPhase",
     "BenchmarkMeasurementProgress",
     "BenchmarkMeasurementProgressCallback",
+    "BenchmarkOperationAbortCallback",
+    "BenchmarkOperationProgressCallback",
+    "BenchmarkPrivateInputProgressBinder",
+    "BenchmarkProgressError",
     "BenchmarkReferenceError",
     "BenchmarkRejected",
     "BenchmarkStaleness",

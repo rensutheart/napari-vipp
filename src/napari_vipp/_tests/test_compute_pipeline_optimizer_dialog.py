@@ -73,13 +73,13 @@ def test_dialog_updates_overall_and_current_operation_progress_independently(qtb
             completed=2,
             total=9,
             message="Benchmarking Subtract Background (1/3).",
-            operation_completed=4,
-            operation_total=10,
-            operation_message="CuPy warm timing round 2/5.",
+            operation_completed=37,
+            operation_total=171,
+            operation_message="CPU: Rolling-ball YX plane (37 of 171).",
             node_id="subtract-background",
             node_title="Subtract Background",
-            implementation_id="subtract-background-cupy",
-            measurement_phase="warm-timing",
+            implementation_id="cpu-subtract_background-v1",
+            measurement_phase="parity_cold",
         )
     )
 
@@ -88,9 +88,11 @@ def test_dialog_updates_overall_and_current_operation_progress_independently(qtb
     assert dialog.overall_progress_bar.value() == 2
     assert "Benchmarking Subtract Background" in dialog.overall_progress_label.text()
     assert dialog.operation_progress_bar.minimum() == 0
-    assert dialog.operation_progress_bar.maximum() == 10
-    assert dialog.operation_progress_bar.value() == 4
-    assert "CuPy warm timing round 2/5" in dialog.operation_progress_label.text()
+    assert dialog.operation_progress_bar.maximum() == 171
+    assert dialog.operation_progress_bar.value() == 37
+    assert "CPU: Rolling-ball YX plane (37 of 171)" in (
+        dialog.operation_progress_label.text()
+    )
 
     dialog._on_progress(
         PipelineOptimizerProgress(

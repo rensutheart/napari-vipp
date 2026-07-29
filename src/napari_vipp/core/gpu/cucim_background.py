@@ -133,7 +133,7 @@ def _estimate_background(
     def estimate(block):
         if progress is not None:
             progress.check_cancelled()
-        output = _background_block(
+        return _background_block(
             block,
             radius_pixels=radius_pixels,
             light_background=light_background,
@@ -143,12 +143,6 @@ def _estimate_background(
             ndimage=ndimage,
             restoration=restoration,
         )
-        # A progress/cancellation boundary represents completed device work,
-        # not merely queued kernels.  It also surfaces asynchronous failures.
-        cupy.cuda.get_current_stream().synchronize()
-        if progress is not None:
-            progress.check_cancelled()
-        return output
 
     if channel_axis is not None:
         channels_last = cupy.moveaxis(array, channel_axis, -1)
@@ -300,6 +294,7 @@ def _apply_spatial_blocks(
         progress.report(progress_start, denominator, progress_message)
     if array.ndim <= spatial_ndim:
         result = function(array).astype(dtype, copy=False)
+        _synchronize_completed_block(cupy, progress)
         if progress is not None:
             progress.report(progress_start + 1, denominator, progress_message)
         return result
@@ -310,6 +305,7 @@ def _apply_spatial_blocks(
         if progress is not None:
             progress.check_cancelled()
         result[index] = function(array[index])
+        _synchronize_completed_block(cupy, progress)
         completed += 1
         if progress is not None:
             progress.report(
@@ -318,6 +314,17 @@ def _apply_spatial_blocks(
                 progress_message,
             )
     return result
+
+
+def _synchronize_completed_block(cupy, progress) -> None:
+    """Make a block's output assignment real before exposing its completion."""
+
+    # Keep this boundary even without a reporter: cuCIM/CuPy kernels and the
+    # final assignment are asynchronous, and every block must surface failures
+    # before the operation advances to the next block.
+    cupy.cuda.get_current_stream().synchronize()
+    if progress is not None:
+        progress.check_cancelled()
 
 
 def _spatial_block_count(shape: tuple[int, ...], spatial_ndim: int) -> int:

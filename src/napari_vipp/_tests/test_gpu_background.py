@@ -369,6 +369,84 @@ def test_progress_reports_identical_completed_blocks(fake_stack):
     assert gpu_updates == cpu_updates
 
 
+def test_completed_plane_is_written_and_synchronized_before_progress_is_reported():
+    events: list[str] = []
+
+    class TrackedResult:
+        def __setitem__(self, index, value) -> None:
+            del value
+            events.append(f"write:{index!r}")
+
+    class TrackedStream:
+        def synchronize(self) -> None:
+            events.append("synchronize")
+
+    class TrackedProgress:
+        def check_cancelled(self) -> None:
+            pass
+
+        def report(self, current, total, message="") -> None:
+            events.append(f"report:{current}/{total}:{message}")
+
+    call_count = 0
+
+    def calculate_plane(plane):
+        nonlocal call_count
+        del plane
+        call_count += 1
+        events.append(f"calculate:{call_count}")
+        return np.zeros((3, 5), dtype=np.float32)
+
+    cupy = SimpleNamespace(
+        empty=lambda _shape, dtype: TrackedResult(),
+        cuda=SimpleNamespace(get_current_stream=lambda: TrackedStream()),
+    )
+    result = gpu_background._apply_spatial_blocks(
+        np.zeros((2, 3, 5), dtype=np.float32),
+        2,
+        calculate_plane,
+        dtype=np.float32,
+        cupy=cupy,
+        progress=TrackedProgress(),
+        progress_message="Rolling-ball background",
+    )
+
+    assert isinstance(result, TrackedResult)
+    assert events == [
+        "report:0/2:Rolling-ball background",
+        "calculate:1",
+        "write:(0,)",
+        "synchronize",
+        "report:1/2:Rolling-ball background",
+        "calculate:2",
+        "write:(1,)",
+        "synchronize",
+        "report:2/2:Rolling-ball background",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_synchronizations"),
+    (((5, 7), 1), ((4, 5, 7), 4)),
+)
+def test_every_plane_is_synchronized_without_a_progress_reporter(
+    fake_stack,
+    shape,
+    expected_synchronizations,
+):
+    cupy, _ndimage, _restoration = fake_stack
+    host = _fixture(np.float32, shape)
+
+    gpu_background.subtract_background(
+        host,
+        radius=2,
+        spatial_mode="2D YX",
+        progress=None,
+    )
+
+    assert cupy.stream.synchronizations == expected_synchronizations
+
+
 def test_cancellation_is_checked_before_and_after_synchronized_block(fake_stack):
     cupy, _ndimage, restoration = fake_stack
     host = _fixture(np.float32, (5, 7))

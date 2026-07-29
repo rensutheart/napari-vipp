@@ -21,6 +21,7 @@ from napari_vipp.core.compute_benchmark import (
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
     BenchmarkMeasurementPhase,
+    BenchmarkMeasurementProgress,
     JsonBenchmarkStore,
 )
 from napari_vipp.core.compute_benchmark_adapter import (
@@ -47,9 +48,7 @@ def _environment() -> ComputeEnvironment:
         runtime_ids=("cpu-numpy", "cuda-cupy"),
         implementation_libraries=("cpu", "cupyx"),
         runtime_versions=(("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")),
-        runtime_probe_fingerprints=(
-            ("cuda-cupy", "fake-runtime-fingerprint"),
-        ),
+        runtime_probe_fingerprints=(("cuda-cupy", "fake-runtime-fingerprint"),),
         runtime_metadata=(
             (
                 "cuda-cupy",
@@ -226,6 +225,62 @@ def test_selected_node_benchmark_is_detached_persisted_and_parity_gated(
     np.testing.assert_array_equal(pipeline.outputs[node_id], node_output_before)
 
 
+def test_internal_operation_progress_is_forwarded_with_a_readable_backend_label(
+    tmp_path,
+    monkeypatch,
+):
+    clock = ManualClock()
+    coordinator, _runtime = _coordinator_with_fake_runtime(
+        tmp_path,
+        monkeypatch,
+        clock,
+    )
+    pipeline, _source_id, node_id = _median_pipeline(
+        np.arange(31 * 37, dtype=np.uint16).reshape(31, 37)
+    )
+    plan = coordinator.prepare(
+        pipeline,
+        node_id,
+        environment=_environment(),
+        allow_experimental=True,
+        paired_bootstrap_samples=200,
+        time_budget_seconds=10.0,
+    )
+    delegate = coordinator.service
+
+    class ServiceWithInternalProgress:
+        def benchmark(self, request, *, cancelled=None, progress=None):
+            assert progress is not None
+            progress(
+                BenchmarkMeasurementProgress(
+                    phase=BenchmarkMeasurementPhase.PARITY_COLD,
+                    implementation_id=f"cpu-{plan.operation_id}-v1",
+                    implementation_version="1",
+                    completed=0,
+                    total=1,
+                    message="Measuring the CPU reference.",
+                    operation_completed=37,
+                    operation_total=171,
+                    operation_message="Rolling-ball background",
+                )
+            )
+            return delegate.benchmark(request, cancelled=cancelled)
+
+    coordinator.service = ServiceWithInternalProgress()
+    updates = []
+
+    coordinator.run(plan, progress=updates.append)
+
+    internal = next(item for item in updates if item.operation_total)
+    assert (internal.operation_completed, internal.operation_total) == (37, 171)
+    assert internal.operation_message == (
+        "CPU: Rolling-ball background (37 of 171) — "
+        "scientific parity + cold timing."
+    )
+    assert internal.measurement_phase == BenchmarkMeasurementPhase.PARITY_COLD.value
+    assert internal.implementation_id == f"cpu-{plan.operation_id}-v1"
+
+
 def test_exact_saved_record_is_reused_across_different_abort_budgets(
     tmp_path,
     monkeypatch,
@@ -293,9 +348,7 @@ def test_exact_saved_record_reuses_completed_candidate_rejection(
                 candidate,
                 parity_passed=False,
                 error="scientific mismatch",
-                failure_kind=(
-                    BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
-                ),
+                failure_kind=(BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY),
             )
             if candidate.implementation_id == gpu_id
             else candidate
@@ -319,9 +372,7 @@ def test_exact_saved_record_reuses_completed_candidate_rejection(
             replace(
                 candidate,
                 error="out_of_memory: retryable",
-                failure_kind=(
-                    BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME
-                ),
+                failure_kind=(BenchmarkCandidateFailureKind.TRANSIENT_RUNTIME),
             )
             if candidate.implementation_id == gpu_id
             else candidate

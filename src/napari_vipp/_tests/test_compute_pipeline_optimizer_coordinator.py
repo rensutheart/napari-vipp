@@ -187,6 +187,11 @@ class _NodeBenchmarker:
                     implementation_id=gpu_spec.implementation_id,
                     implementation_version=gpu_spec.implementation_version,
                     measurement_phase="paired_warm",
+                    operation_completed=37,
+                    operation_total=171,
+                    operation_message=(
+                        "CuPy GPU: Rolling-ball background (37 of 171)."
+                    ),
                 )
             )
         record = BenchmarkRecord(
@@ -417,27 +422,32 @@ def test_application_optimizer_is_private_writer_free_and_evidence_gated(
     )
     assert operation.phase is PipelineOptimizerPhase.BENCHMARKING
     assert (operation.completed, operation.total) == (2, 7)
-    assert (operation.operation_completed, operation.operation_total) == (2, 3)
+    assert (operation.operation_completed, operation.operation_total) == (37, 171)
     assert operation.node_id == median_id
     assert operation.node_title == pipeline.nodes[median_id].title
     assert operation.implementation_id == gpu_spec.implementation_id
     assert operation.operation_message == (
-        "Measuring paired warm round 3 of 3 for the GPU."
+        "CuPy GPU: Rolling-ball background (37 of 171)."
     )
     np.testing.assert_array_equal(values, original)
     assert all(
-        not np.shares_memory(item, values)
-        for item in executor.detached_source_arrays
+        not np.shares_memory(item, values) for item in executor.detached_source_arrays
     )
-    assert fingerprint_pipeline_optimizer_sources(
-        document,
-        {source_id: SourcePayload(values, name="private-source")},
-    ) == result.identity.source_fingerprint
+    assert (
+        fingerprint_pipeline_optimizer_sources(
+            document,
+            {source_id: SourcePayload(values, name="private-source")},
+        )
+        == result.identity.source_fingerprint
+    )
     values[0, 0] += 1
-    assert fingerprint_pipeline_optimizer_sources(
-        document,
-        {source_id: SourcePayload(values, name="private-source")},
-    ) != result.identity.source_fingerprint
+    assert (
+        fingerprint_pipeline_optimizer_sources(
+            document,
+            {source_id: SourcePayload(values, name="private-source")},
+        )
+        != result.identity.source_fingerprint
+    )
 
 
 def test_node_benchmark_timeout_reports_stage_progress_and_no_optimality(
@@ -613,11 +623,7 @@ def test_decisive_current_pipeline_win_stops_after_five_rounds(
 
     result = coordinator.optimize(
         document,
-        {
-            source_id: SourcePayload(
-                np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)
-            )
-        },
+        {source_id: SourcePayload(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64))},
         ComputeRequest("selective", allow_experimental=True),
         time_budget_seconds=20.0,
     )
@@ -782,9 +788,7 @@ def test_pipeline_validation_checks_unchanged_observable_downstream_output(
             result_pipeline.outputs[node_id] = value
             result_pipeline.node_outputs[node_id] = [value]
             result_pipeline.completed_node_ids.add(node_id)
-        gaussian_spec = (
-            gpu_spec if gpu else compute_specs_for("gaussian_blur")[0]
-        )
+        gaussian_spec = gpu_spec if gpu else compute_specs_for("gaussian_blur")[0]
         threshold_spec = compute_specs_for("binary_threshold")[0]
         decisions = (
             NodeExecutionDecision(
@@ -905,9 +909,7 @@ def test_pipeline_validation_rejects_untrustworthy_execution_report(
             == gpu_spec.implementation_id
         )
         actual_spec = (
-            cpu_spec
-            if failure_mode == "assignment" or not requested_gpu
-            else gpu_spec
+            cpu_spec if failure_mode == "assignment" or not requested_gpu else gpu_spec
         )
         ignored = NodeExecutionDecision(
             median.id,

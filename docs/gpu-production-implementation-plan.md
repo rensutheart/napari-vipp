@@ -1658,6 +1658,15 @@ median, CPU speedup, parity result, peak memory, and explicit `Use fastest`
 action. Cold/range/transfer-resident detail, a dedicated `View details` surface,
 and visible stale-evidence/rebenchmark state remain presentation hardening.
 
+Benchmark progress must distinguish the whole analysis from the provider call
+currently executing. Operations with real internal boundaries should report
+those boundaries: CPU and cuCIM background subtraction report completed spatial
+planes, and a GPU plane is complete only after its output assignment has been
+synchronized. The per-operation indicator resets for every parity, cold,
+warmup, or paired-timing invocation. A monolithic provider call must not invent
+percentage progress; its indicator may pause at the call boundary until the
+synchronized call returns, with text explaining that work is still continuing.
+
 `Find fastest pipeline` shows the current and proposed implementation assignment,
 estimated/measured total, transfer/runtime boundaries, peak memory, stale or
 estimated nodes, and any excluded candidate. `Apply choices` is a separate

@@ -18,6 +18,8 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_benchmark import (
     BenchmarkCancelled,
     BenchmarkImplementation,
+    BenchmarkMeasurementPhase,
+    BenchmarkProgressError,
     JsonBenchmarkStore,
     NodeBenchmarkRequest,
     NodeBenchmarkService,
@@ -400,6 +402,155 @@ def test_registered_adapter_is_transactional_synchronized_and_memory_observed(
     assert set(runtime.release_counts.values()) == {1}
     np.testing.assert_array_equal(live, before)
     assert not live.flags.writeable
+
+
+def test_registered_background_benchmark_reports_each_completed_yx_plane(
+    monkeypatch,
+):
+    clock = ManualClock()
+    runtime = _FakeRuntime(clock)
+    registry = ComputeRegistry()
+    spec = _spec("subtract_background")
+    progress_contexts: list[object] = []
+
+    def cpu(data, **kwargs):
+        progress_contexts.append(kwargs["progress"])
+        result = subtract_background(data, **kwargs)
+        clock.advance(0.100)
+        return result
+
+    def gpu(device, **kwargs):
+        progress_contexts.append(kwargs["progress"])
+        result = subtract_background(device.array, **kwargs)
+        clock.advance(0.040)
+        return runtime.allocate(result)
+
+    monkeypatch.setattr(registry, "runtime", lambda _runtime_id: runtime)
+    monkeypatch.setattr(
+        registry,
+        "implementation_callable",
+        lambda *_args, **_kwargs: gpu,
+    )
+    values = np.arange(2 * 3 * 7 * 9, dtype=np.float32).reshape(2, 3, 7, 9)
+    values.setflags(write=False)
+    live_progress = _NonCopyableProgress()
+    call = PreparedNodeCall(
+        "background-node",
+        "subtract_background",
+        cpu,
+        (values,),
+        kwargs={
+            "radius": 2.0,
+            "light_background": False,
+            "disable_smoothing": True,
+            "clip_negative": True,
+            "spatial_mode": "2D YX",
+            "resolved_spatial_ndim": 2,
+            "progress": live_progress,
+            "channel_axis": None,
+        },
+    )
+    built = build_registered_node_benchmark(
+        call,
+        admitted_specs=(spec,),
+        registry=registry,
+        environment_fingerprint="fake-exact-environment",
+        allow_experimental=True,
+        clock=clock,
+        warm_rounds=3,
+        max_warm_rounds=3,
+        paired_bootstrap_samples=200,
+    )
+    updates = []
+
+    assert built.detached_call.kwargs["progress"] is None
+    assert built.request.private_input_factory().kwargs["progress"] is None
+
+    def collect_with_observer_delay(update):
+        updates.append(update)
+        if update.operation_total:
+            clock.advance(5.0)
+
+    record = NodeBenchmarkService(clock=clock).benchmark(
+        built.request,
+        progress=collect_with_observer_delay,
+    )
+
+    first_cpu_call = [
+        update
+        for update in updates
+        if update.implementation_id == "cpu-subtract_background-v1"
+        and update.phase is BenchmarkMeasurementPhase.PARITY_COLD
+        and update.operation_total
+    ]
+    assert [update.operation_completed for update in first_cpu_call] == list(range(7))
+    assert {update.operation_total for update in first_cpu_call} == {6}
+    assert {update.operation_message for update in first_cpu_call} == {
+        "Rolling-ball YX plane"
+    }
+    assert len(progress_contexts) == len({id(item) for item in progress_contexts})
+    candidate = next(
+        item
+        for item in record.candidates
+        if item.implementation_id == spec.implementation_id
+    )
+    assert candidate.cold_seconds == pytest.approx(0.044)
+    assert candidate.warm_seconds == pytest.approx((0.044,) * 3)
+    assert candidate.cold_resident_seconds == pytest.approx(0.040)
+    assert candidate.warm_resident_seconds == pytest.approx((0.040,) * 3)
+
+    cancel_requested = False
+    aborted_updates = []
+    service = NodeBenchmarkService(clock=clock)
+
+    def cancel_during_gpu(update):
+        nonlocal cancel_requested
+        aborted_updates.append(update)
+        if (
+            update.implementation_id == spec.implementation_id
+            and update.operation_completed == 1
+        ):
+            cancel_requested = True
+
+    with pytest.raises(BenchmarkCancelled):
+        service.benchmark(
+            built.request,
+            cancelled=lambda: cancel_requested,
+            progress=cancel_during_gpu,
+        )
+
+    last_gpu_update = next(
+        update
+        for update in reversed(aborted_updates)
+        if update.implementation_id == spec.implementation_id
+        and update.operation_total
+    )
+    assert (last_gpu_update.operation_completed, last_gpu_update.operation_total) == (
+        1,
+        6,
+    )
+    assert runtime.live == {}
+    assert service.quarantine.entries() == ()
+    assert len(service.store) == 0
+
+    observer_service = NodeBenchmarkService(clock=clock)
+
+    def fail_during_gpu_progress(update):
+        if (
+            update.implementation_id == spec.implementation_id
+            and update.operation_completed == 1
+        ):
+            raise RuntimeError("observer disconnected")
+
+    with pytest.raises(BenchmarkProgressError, match="observer disconnected"):
+        observer_service.benchmark(
+            built.request,
+            progress=fail_during_gpu_progress,
+        )
+
+    assert runtime.live == {}
+    assert observer_service.quarantine.entries() == ()
+    assert len(observer_service.store) == 0
 
 
 def test_aliasing_input_and_output_allocation_is_released_once(monkeypatch):

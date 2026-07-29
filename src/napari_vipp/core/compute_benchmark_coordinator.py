@@ -37,6 +37,7 @@ from napari_vipp.core.compute_benchmark import (
     MINIMUM_WARM_ROUNDS,
     BenchmarkBudgetExceeded,
     BenchmarkCancelled,
+    BenchmarkMeasurementPhase,
     BenchmarkMeasurementProgress,
     BenchmarkRejected,
     JsonBenchmarkStore,
@@ -118,6 +119,9 @@ class NodeBenchmarkProgress:
     implementation_id: str = ""
     implementation_version: str = ""
     measurement_phase: str = ""
+    operation_completed: int = 0
+    operation_total: int = 0
+    operation_message: str = ""
 
     def __post_init__(self) -> None:
         phase = (
@@ -139,6 +143,13 @@ class NodeBenchmarkProgress:
             raise ValueError("measurement progress values must be non-negative.")
         if self.measurement_completed > self.measurement_total:
             raise ValueError("measurement progress must fit inside its declared total.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (self.operation_completed, self.operation_total)
+        ):
+            raise ValueError("operation progress values must be non-negative.")
+        if self.operation_completed > self.operation_total:
+            raise ValueError("operation progress must fit inside its declared total.")
         message = str(self.message).strip()
         if not message:
             raise ValueError("benchmark progress message must not be empty.")
@@ -149,10 +160,13 @@ class NodeBenchmarkProgress:
             "implementation_id",
             "implementation_version",
             "measurement_phase",
+            "operation_message",
         ):
             object.__setattr__(self, name, str(getattr(self, name)).strip())
         if self.measurement_total and not self.measurement_message:
             raise ValueError("measurement progress requires a message.")
+        if self.operation_total and not self.operation_message:
+            raise ValueError("operation progress requires a message.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,8 +324,7 @@ def _record_is_complete_for_plan(
     # parity mismatch is durable rejection evidence.  Runtime, OOM, cleanup, or
     # timing failures remain retryable and invalidate reuse of the whole record.
     return all(
-        candidate.failure_kind
-        is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
+        candidate.failure_kind is BenchmarkCandidateFailureKind.SCIENTIFIC_PARITY
         or has_complete_timings(candidate.implementation_id)
         for candidate in record.candidates
     )
@@ -575,6 +588,11 @@ class ApplicationNodeBenchmarkCoordinator:
 
         def forward_measurement(update: BenchmarkMeasurementProgress) -> None:
             phase = str(getattr(update.phase, "value", update.phase))
+            operation_completed = int(getattr(update, "operation_completed", 0) or 0)
+            operation_total = int(getattr(update, "operation_total", 0) or 0)
+            operation_message = ""
+            if operation_total:
+                operation_message = _operation_progress_message(update)
             _emit_progress(
                 progress,
                 NodeBenchmarkPhase.BENCHMARKING,
@@ -587,6 +605,9 @@ class ApplicationNodeBenchmarkCoordinator:
                 implementation_id=update.implementation_id,
                 implementation_version=update.implementation_version,
                 measurement_phase=phase,
+                operation_completed=operation_completed,
+                operation_total=operation_total,
+                operation_message=operation_message,
             )
 
         record = self.service.benchmark(
@@ -914,9 +935,7 @@ def _resolved_runtime_memory_limits(
             "Accelerator free memory does not exceed the safety reserve."
         )
     requested_limit = (
-        total * 80 // 100
-        if memory_limit_bytes is None
-        else memory_limit_bytes
+        total * 80 // 100 if memory_limit_bytes is None else memory_limit_bytes
     )
     effective_limit = min(requested_limit, free - reserve)
     if effective_limit <= 0:
@@ -941,6 +960,50 @@ def _check_cancelled(cancelled: CancelCallback | None) -> None:
         raise BenchmarkCancelled("node benchmark cancelled")
 
 
+def _operation_progress_message(update: BenchmarkMeasurementProgress) -> str:
+    """Describe internal work together with the invocation that is repeating it."""
+
+    implementation_id = str(update.implementation_id).strip()
+    if implementation_id.startswith("cpu-"):
+        implementation = "CPU"
+    elif "cucim" in implementation_id.lower():
+        implementation = "cuCIM GPU"
+    elif "cupy" in implementation_id.lower():
+        implementation = "CuPy GPU"
+    else:
+        implementation = implementation_id or "Current implementation"
+    detail = str(getattr(update, "operation_message", "")).strip()
+    completed = int(getattr(update, "operation_completed", 0) or 0)
+    total = int(getattr(update, "operation_total", 0) or 0)
+    measurement_completed = int(getattr(update, "completed", 0) or 0)
+    measurement_total = int(getattr(update, "total", 0) or 0)
+    raw_phase = getattr(update.phase, "value", update.phase)
+    phase = str(raw_phase).strip()
+    if phase == BenchmarkMeasurementPhase.PARITY_COLD.value:
+        invocation = "scientific parity + cold timing"
+    elif phase == BenchmarkMeasurementPhase.PARITY.value:
+        invocation = "scientific parity"
+    elif phase == BenchmarkMeasurementPhase.COLD.value:
+        invocation = "cold timing"
+    elif phase == BenchmarkMeasurementPhase.WARMUP.value:
+        invocation = (
+            f"warmup call {min(measurement_completed + 1, measurement_total)} "
+            f"of {measurement_total}"
+        )
+    elif phase == BenchmarkMeasurementPhase.PAIRED_WARM.value:
+        invocation = (
+            "paired warm timing "
+            f"{min(measurement_completed + 1, measurement_total)} "
+            f"of {measurement_total}"
+        )
+    else:
+        invocation = str(update.message).strip().rstrip(".")
+    return (
+        f"{implementation}: {detail} ({completed} of {total}) — "
+        f"{invocation}."
+    )
+
+
 def _emit_progress(
     callback: ProgressCallback | None,
     phase: NodeBenchmarkPhase,
@@ -954,20 +1017,26 @@ def _emit_progress(
     implementation_id: str = "",
     implementation_version: str = "",
     measurement_phase: str = "",
+    operation_completed: int = 0,
+    operation_total: int = 0,
+    operation_message: str = "",
 ) -> None:
     if callback is not None:
         callback(
             NodeBenchmarkProgress(
-                phase,
-                completed,
-                total,
-                message,
-                measurement_completed,
-                measurement_total,
-                measurement_message,
-                implementation_id,
-                implementation_version,
-                measurement_phase,
+                phase=phase,
+                completed=completed,
+                total=total,
+                message=message,
+                measurement_completed=measurement_completed,
+                measurement_total=measurement_total,
+                measurement_message=measurement_message,
+                implementation_id=implementation_id,
+                implementation_version=implementation_version,
+                measurement_phase=measurement_phase,
+                operation_completed=operation_completed,
+                operation_total=operation_total,
+                operation_message=operation_message,
             )
         )
 
