@@ -46,7 +46,9 @@ DEFAULT_TV_REGULARIZATION = 0.002
 DEFAULT_TV_EPSILON = 1e-6
 DEFAULT_FILTER_EPSILON = 1e-12
 DEFAULT_DENOMINATOR_FLOOR = 0.05
-EXAMPLE_WORKFLOW_SETTINGS = {
+# Historical aggressive profiles retained only for the original sensitivity
+# study. Current bundled workflows use the production defaults above.
+HISTORICAL_DEMONSTRATION_SETTINGS = {
     "2D": {"iterations": 18, "tv_regularization": 0.012, "denominator_floor": 0.15},
     "3D": {"iterations": 8, "tv_regularization": 0.008, "denominator_floor": 0.15},
 }
@@ -571,20 +573,20 @@ def run_sweeps(phantom: Phantom) -> list[dict[str, Any]]:
         )
     )
 
-    example_settings = EXAMPLE_WORKFLOW_SETTINGS[phantom.name]
-    example_tv = _production_tv(observed, phantom, **example_settings)
+    historical_settings = HISTORICAL_DEMONSTRATION_SETTINGS[phantom.name]
+    historical_tv = _production_tv(observed, phantom, **historical_settings)
     rows.append(
         _result_row(
             phantom,
-            "example_workflow_parameters",
-            "shipped_example",
-            example_tv,
+            "historical_demonstration_parameters",
+            "historical_aggressive_profile",
+            historical_tv,
             implementation="production_rl_tv",
-            iterations=example_settings["iterations"],
-            tv_regularization=example_settings["tv_regularization"],
+            iterations=historical_settings["iterations"],
+            tv_regularization=historical_settings["tv_regularization"],
             tv_epsilon=DEFAULT_TV_EPSILON,
             filter_epsilon=DEFAULT_FILTER_EPSILON,
-            denominator_floor=example_settings["denominator_floor"],
+            denominator_floor=historical_settings["denominator_floor"],
         )
     )
     default_tv = _production_tv(observed, phantom)

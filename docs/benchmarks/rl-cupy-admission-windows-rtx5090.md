@@ -1,6 +1,6 @@
 # CuPy Richardson-Lucy admission evidence
 
-- Generated: `2026-07-29T13:37:54.377777+00:00`
+- Generated: `2026-07-29T17:47:57.996856+00:00`
 - Schema: `napari-vipp-cupy-rl-admission-evidence` version 1
 - Device: `NVIDIA GeForce RTX 5090`
 - Platform: `Windows-10-10.0.19045-SP0`

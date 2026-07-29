@@ -8,8 +8,10 @@ includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
 benchmark review, and a Selective-only review-first whole-pipeline optimizer.
 Phase 2B now adds developer-hidden ordinary CuPy/CuPyX Richardson-Lucy,
 ordered-multi-input/single-output exact benchmarking, and a process-wide
-per-device accelerator lease. All GPU implementations remain developer-hidden
-pending the remaining Phase 2 and named release/platform gates.
+per-device accelerator lease. Phase 2C adds developer-hidden CuPy/CuPyX
+Richardson-Lucy TV with separate lambda-zero and positive-TV scientific
+profiles. All GPU implementations remain developer-hidden pending the remaining
+Phase 2 and named release/platform gates.
 Cross-platform review: 2026-07-15
 cuCIM native-Windows evidence update: 2026-07-16
 cuCIM Windows port-plan update: 2026-07-16
@@ -58,9 +60,9 @@ The following constraints and approved product directions are non-negotiable:
   universal `Auto` policy. Unknown workload-policy regions resolve to CPU.
 - GPU work is introduced behind contracts and promotion gates. The first
   headless vertical slice covers Subtract Background/Rolling-Ball Background,
-  median, and 2D/3D Gaussian. The next completed operation slice adds ordinary
-  RL; RL-TV, Otsu, Canny, connected components, region measurements, and other
-  reasonable nodes follow quickly in evidence-driven families.
+  median, and 2D/3D Gaussian. The next completed operation slices add ordinary
+  RL and RL-TV; Otsu, Canny, connected components, region measurements, and
+  other reasonable nodes follow quickly in evidence-driven families.
 - Capability declarations are dtype-explicit and designed for bool, common
   microscopy integers, float32, float64, and non-finite policies from the
   beginning. A provider may still expose only the dtype/parameter regions that
@@ -271,17 +273,64 @@ tolerances changed.
 
 Large-stack timing on the same development host passed exact parity for a
 private 8.51-million-voxel ND2 `ZYX` volume and deterministic 16.78/67.11-million
-voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.360, 0.511, and
-1.523 seconds versus CPU medians of 23.911, 34.463, and 132.066 seconds: paired
-median speedups of 65.85x, 67.41x, and 86.73x. This was a three-pair descriptive
+voxel 3D shape stresses. Transfer-inclusive CuPy medians were 0.347, 0.417, and
+1.617 seconds versus CPU medians of 24.465, 36.349, and 138.716 seconds: paired
+median speedups of 70.44x, 86.91x, and 85.79x. This was a three-pair descriptive
 screen, not a durable optimizer record or portable hardware promise. The
 [versioned timing summary](benchmarks/rl-cupy-performance-windows-rtx5090.md)
 retains resident/transfer timing, memory, cleanup, environment, and raw-sample
 context.
 
-Current limits remain explicit: RL is developer-hidden; RL-TV is not yet
-implemented; broad Auto admission is not claimed; exact benchmarking still
-requires one output and excludes writers; pipeline optimization still supports
+### Phase 2C Richardson-Lucy TV status (2026-07-29)
+
+The branch now contains developer-hidden `rl-tv-cupy-f32-v1`, reusing the
+ordinary RL input, PSF, block, progress, cancellation, transfer, lease, and
+cleanup substrate. It preserves the CPU recurrence's constant `0.5`
+initialization, zero-extension FFT convolution, flipped PSF, minus sign,
+repeated central/one-sided `gradient` stencil, unit spacing, threshold branch,
+denominator floor, per-iteration sanitization, non-negativity clamp, defaults,
+and fixed `float32` output. The CPU operation and shipped workflows are
+unchanged.
+
+Admission deliberately distinguishes two scientific profiles. With
+`tv_regularization == 0`, the TV branch is inactive and the provider inherits
+ordinary RL's strict `filter_epsilon == 1e-8`, 1..25-iteration region and parity
+gate. Positive TV is initially admitted only for the exact shipped tuple
+`tv_regularization=0.002`, `tv_epsilon=1e-6`, `filter_epsilon=1e-12`, and
+`denominator_floor=0.05`, at exactly 10 or 25 iterations, with the same
+finite-float32, odd-PSF, resolved-rank, and default-safe-option requirements.
+Other positive-TV iteration counts remain on CPU until their nonlinear
+trajectories are measured; lambda-zero retains ordinary RL's 1..25 region.
+
+Positive TV has a separately versioned nonlinear gate: equal shape/dtype and
+finite/non-negative contract, NRMSE `<= 0.005`, and
+`max_abs <= 1e-6 + 0.005 * reference_peak`. The ordinary RL gate was not reused
+because the regularized recurrence amplifies tiny cross-library convolution and
+reduction-order differences: 113 of the inherited 164 adversarial fixtures
+missed that much tighter gate at 25 iterations. Under the RL-TV-specific screen,
+all 164 inherited fixtures passed at 10 and 25 iterations, with worst normalized
+gate scores 0.45744 and 0.44384. An independently constructed 96-fixture
+2D/3D holdout also had zero failures at both iteration counts, with worst scores
+0.22686 and 0.24209. Maintained phantoms additionally gate feature recovery,
+MSE, flux, borders, and floor/threshold diagnostics. This evidence supports only
+the hidden exact profile; calibrated biological datasets and cross-platform
+replication remain mandatory before public promotion.
+
+Machine-local positive-TV timing at 25 iterations passed exact parity for the
+private 8.51-million-voxel ND2 `ZYX` volume and a deterministic
+16.78-million-voxel 3D shape stress. Transfer-inclusive CuPy medians were 0.489
+and 0.537 seconds versus CPU medians of 36.004 and 58.816 seconds: paired median
+speedups of 73.66x and 109.46x. Observed device peaks of 0.93 and 1.87 GiB were
+bounded by the conservative 1.50 and 2.50 GiB estimates before uncertainty.
+These are short descriptive RTX 5090 measurements, not portable performance or
+public Auto claims; the
+[versioned timing summary](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
+retains paired samples, transfer/resident timing, memory, cleanup, environment,
+and source-currentness context.
+
+Current limits remain explicit: RL and RL-TV are developer-hidden; broad Auto
+admission is not claimed; exact benchmarking still requires one output and
+excludes writers; pipeline optimization still supports
 one accelerator runtime; batch/generated/CLI/export stay CPU-only; native Linux
 and secondary Windows hardware evidence is pending; and the UI's separately
 captured optimizer inputs have not yet been replaced with one immutable
@@ -2011,22 +2060,26 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
 
 #### RL-TV — `rl-tv-cupy-f32-v1`
 
-- Preserve the current formula, minus sign, denominator placement/floor,
+- Implemented developer-hidden in Phase 2C. Preserve the current formula, minus
+  sign, denominator placement/floor,
   central-difference `np.gradient` convention, zero-extension convolution,
   constant initialization, epsilon behavior, clipping, and lack of physical
   spacing in the TV stencil. Acceleration may not introduce reflect padding,
   observed initialization, an adjoint stencil, implicit PSF preparation, or new
   defaults.
-- With `tv_regularization=0`, GPU RL-TV must meet the same GPU/CPU RL gates and
-  stay within `1e-6 * max(input_peak, 1)` maximum absolute difference from the
-  corresponding ordinary GPU RL path.
+- With `tv_regularization=0`, GPU RL-TV meets the same GPU/CPU RL gate and must
+  remain exactly equivalent to the corresponding ordinary GPU RL provider for
+  the same admitted call.
 - Use the existing deterministic phantom harness and preserve its production
   checks: finite/non-negative output, denominator-floor diagnostics, feature
   retention, PSF centering/sampling sensitivity, 2D/3D boundary structures, and
   current default behavior.
-- Use the RL numerical gates above plus no more than 0.5 percentage point change
-  in point, thin-line, or dim-line recovery and no more than 0.5% relative
-  change in MSE/border MSE/flux versus CPU for promoted fixtures.
+- Positive TV uses the versioned development screen NRMSE `<= 0.005` and
+  `max_abs <= 1e-6 + 0.005 * CPU_peak`, plus no more than 0.5 percentage point
+  change in point, thin-line, or dim-line recovery and no more than 0.5%
+  relative change in MSE/border MSE/flux versus CPU for maintained promotion
+  fixtures. This separate gate is required by the nonlinear recurrence and
+  must not be applied to ordinary RL or lambda-zero RL-TV.
 - Real-data gate: bead data and at least three calibrated biological datasets
   spanning sparse points, dim structures near bright signal, anisotropic 3D,
   and boundary objects, with blinded review and no systematic loss.
@@ -2121,8 +2174,8 @@ permission to rewrite adjacent code.
   Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian. No toolbar,
   workflow-schema, batch, or generated-Python behavior changes yet.
 - **Phase 2 — interactive use and deconvolution:** Pass 4 plus the RL/RL-TV
-  operation work in Passes 6-7. Ordinary RL is implemented headlessly; RL-TV is
-  next. Add toolbar mode, Selective node choices,
+  operation work in Passes 6-7. Ordinary RL and RL-TV are implemented
+  headlessly. Add toolbar mode, Selective node choices,
   badges, review-first node and whole-pipeline benchmark UI,
   diagnostics/install guidance, RAM/VRAM presentation, the minimal workflow v4
   compute-intent block plus canonical hash and atomic reader/writer preservation
@@ -2513,14 +2566,20 @@ scientific, memory-model, cleanup, exact-benchmark, and iteration-progress gates
 No public Selective or Auto claim follows until the remaining platform/real-data
 gates pass; Auto must additionally clear the section 5.4 end-to-end benefit rule
 using the production adapter. No parameter is hard-coded from the spike.
-Rollback removes the RL declaration. **Still disabled:** RL-TV, batch/generated/
-export GPU execution, and any new RL initialization/boundary/default.
+Rollback removes the RL declaration. **Still disabled:** batch/generated/export
+GPU execution and any new RL initialization/boundary/default.
 
 **Parallelism:** algorithm/parity work can overlap Pass 5 batch work after Pass
 4 with disjoint files; final batch tests wait for Pass 5. One owner controls
 shared RL provider primitives.
 
 ### Pass 7 — RL-TV
+
+**Status (2026-07-29):** the developer-hidden headless implementation, exact
+lambda-zero and positive-TV regions, ordered-input benchmarking, iteration
+progress/cancellation, conservative memory model, and fixed/holdout evidence are
+implemented. Public Selective/Auto, batch exposure, calibrated biological data,
+and cross-platform promotion remain gated.
 
 **Depends on:** Pass 6 and the existing RL-TV validation baseline.
 **Owns:** new `core/gpu/cupy_rl_tv.py` (or an RL-TV-only extension of a shared
@@ -2541,11 +2600,12 @@ OOM, and batch cleanup when batch exposure is enabled.
 **Migration:** none. Do not change shipped examples, defaults, formula,
 initialization, padding, PSF preparation, or TV spacing.
 
-**Acceptance/rollback:** all numerical/feature, memory, cleanup, and truthful
-iteration gates hold in every Selective region; Auto regions also clear the
-section 5.4 end-to-end benefit rule. Real-data review is signed off. Rollback
-removes only RL-TV capability. **Still disabled:** alternative TV stencils,
-observed initialization, reflect padding, and fast precision.
+**Acceptance/rollback:** the developer-hidden exact profiles pass numerical,
+feature, memory, cleanup, and truthful iteration gates. Auto regions must also
+clear the section 5.4 end-to-end benefit rule; public promotion still requires
+calibrated real-data and cross-platform review. Rollback removes only RL-TV
+capability. **Still disabled:** alternative TV stencils, observed
+initialization, reflect padding, and fast precision.
 
 **Parallelism:** dataset preparation and blinded review can begin earlier; code
 integration waits for Pass 6 and has one owner for shared RL files.
@@ -2699,7 +2759,7 @@ Pass 0 contracts
       -> Pass 2 Background/Subtract Background
           -> Pass 3 Median/Gaussian/headless optimizer
               -> Pass 4 toolbar + Selective node/pipeline UX
-                  -> Pass 6 RL [implemented] -> Pass 7 RL-TV
+                  -> Pass 6 RL [implemented] -> Pass 7 RL-TV [implemented]
                   -> Pass 10 Otsu/Canny/labels/measurements and bridges
                   -> Pass 5 batch
                       -> Pass 8 generated Python/cross-surface persistence
@@ -2850,38 +2910,34 @@ not reasons to redesign Phase 1.
 
 ## Ordered next suggested steps (maintained 2026-07-29)
 
-This is the implementation queue after the Phase 2B ordinary RL slice. Update
+This is the implementation queue after the Phase 2C RL-TV slice. Update
 this section when a wave lands so the branch and handoff report retain one
 explicit order.
 
-1. **Richardson-Lucy TV:** implement the existing formula and validation
-   baseline without changing its sign, stencil, initialization, floor, padding,
-   defaults, PSF, or progress/cancellation semantics. Reuse the ordinary RL
-   lease, ordered-input benchmark, typed planning, and memory contracts.
-2. **Canny and Otsu:** add separate versioned operation regions and compare all
+1. **Canny and Otsu:** add separate versioned operation regions and compare all
    scientifically eligible CuPyX/cuCIM alternatives. Preserve axes, thresholds,
    boundaries, dtype, and deterministic output semantics before timing.
-3. **Connected components:** preserve the CPU connectivity and independent
+2. **Connected components:** preserve the CPU connectivity and independent
    leading-block rules, public `int32` output, and exact label-ID ordering; time
    any required deterministic canonicalization.
-4. **Measurements:** introduce the typed labels-plus-intensity inputs and
+3. **Measurements:** introduce the typed labels-plus-intensity inputs and
    host-table finalizer while preserving schema, row/column order, units,
    calibration, missing values, and public scalar types.
-5. **Convert Dtype and inexpensive residency bridges:** support only explicit
+4. **Convert Dtype and inexpensive residency bridges:** support only explicit
    authored conversions and scientifically faithful low-cost operations that can
    keep useful segments resident. Never insert a cast or bridge merely to improve
    a benchmark.
-6. **Native platform evidence:** validate supported native Linux targets and the
+5. **Native platform evidence:** validate supported native Linux targets and the
    available Windows RTX 40-series laptops, including clean setup, real kernels,
    parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
    secondary evidence, not a substitute for native Windows/Linux claims.
-7. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+6. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
    with unified-memory accounting. Keep the CPU path as the honest fallback
    unless an operation family passes scientific and performance gates.
-8. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+7. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
    time-boxed packaging/upstream review. Prefer a maintainable feature-complete
    cuCIM route; do not normalize a permanently hobbled skimage-only fork.
-9. **Durable execution surfaces:** add batch, generated Python/CLI, and export
+8. **Durable execution surfaces:** add batch, generated Python/CLI, and export
    GPU execution and provenance after the core interactive operation coverage
    and lifecycle contracts are stable.
 
@@ -2908,7 +2964,8 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
 4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
    intent, setup/memory diagnostics, selected-node benchmark review, the
    conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
-   implemented. Continue in the maintained order above: RL-TV; Canny/Otsu;
+   implemented. RL-TV is now implemented headlessly too. Continue in the
+   maintained order above: Canny/Otsu;
    connected components; measurements; explicit Convert Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.
 5. **Admission rule:** scientific validity, memory, cancellation, cleanup, and

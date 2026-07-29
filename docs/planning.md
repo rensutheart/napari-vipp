@@ -156,19 +156,28 @@ also has a developer-hidden ordinary CuPy Richardson-Lucy backend, ordered
 multi-input exact benchmarking, and per-device accelerator coordination; its
 initial finite-float32 region deliberately keeps the CPU's `1e-12` epsilon
 default, epsilon values other than the validated `1e-8` point, and runs above
-25 iterations on CPU pending broader numerical evidence.
-Machine-local large-stack timing now records 65.85x to 86.73x paired median
+25 iterations on CPU pending broader numerical evidence. Phase 2C adds a
+developer-hidden CuPy RL-TV provider without changing the existing formula,
+sign, central-gradient stencil, initialization, padding, floor, or defaults.
+Its lambda-zero profile inherits ordinary RL's strict gate; its initial
+positive-TV profile covers only the exact shipped parameter tuple at the
+measured 10- and 25-iteration points under a separately versioned nonlinear
+parity study. Lambda-zero retains ordinary RL's 1–25 range.
+Machine-local large-stack timing now records 70.44x to 86.91x paired median
 speedups on the RTX 5090 across one real 8.51-million-voxel ND2 volume and
 16.78/67.11-million-voxel 3D shape stresses. Those short descriptive results are
 not a reusable optimizer record or cross-platform claim; see the
 [raw and readable timing evidence](benchmarks/rl-cupy-performance-windows-rtx5090.md).
+The matching positive-TV screen records 73.66x and 109.46x paired median
+speedups for the private 8.51-million-voxel volume and a 16.78-million-voxel
+shape stress; see the
+[RL-TV timing evidence](benchmarks/rl-tv-cupy-performance-windows-rtx5090.md).
 The toolbar now has the first experimental CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
-lifecycle/snapshot
-hardening, RL-TV, Canny/Otsu, connected components, measurements, explicit
-residency bridges, platform/provider evidence, batch, and generated-Python
-integration follow in the maintained order in the
+lifecycle/snapshot hardening, Canny/Otsu, connected components, measurements,
+explicit residency bridges, platform/provider evidence, batch, and
+generated-Python integration follow in the maintained order in the
 [GPU production plan](gpu-production-implementation-plan.md).
 
 ### 1. PSF Generation And Deconvolution

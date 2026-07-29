@@ -1,10 +1,13 @@
-# CuPy Richardson-Lucy large-stack performance
+# CuPy Richardson-Lucy TV large-stack performance
 
-- Generated: `2026-07-29T18:05:10.603477+00:00`
+- Generated: `2026-07-29T17:45:34.955198+00:00`
 - Device: `NVIDIA GeForce RTX 5090`
 - Host processor: `Intel64 Family 6 Model 165 Stepping 3, GenuineIntel`
 - Iterations: `25`
-- Filter epsilon: `1e-08`
+- TV regularization: `0.002`
+- TV epsilon: `1e-06`
+- Filter epsilon: `1e-12`
+- Denominator floor: `0.05`
 - Paired warm rounds: `3`
 
 This is machine-local production-path evidence, not a portable speed
@@ -17,9 +20,8 @@ before the observed screening winner was reported.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Speedup | Screen winner |
 |---|---:|---:|---:|---:|---:|---:|:---|
-| Private real-acquisition single-channel ZYX volume | 8,507,700 | 24.465 s | 0.347 s | 0.316 s | 0.017 s | 70.44x | GPU-CuPy |
-| Medium 3D shape stress (synthetic) | 16,777,216 | 36.349 s | 0.417 s | 0.358 s | 0.030 s | 86.91x | GPU-CuPy |
-| Large 3D shape stress (synthetic) | 67,108,864 | 138.716 s | 1.617 s | 1.293 s | 0.204 s | 85.79x | GPU-CuPy |
+| Private real-acquisition single-channel ZYX volume | 8,507,700 | 36.004 s | 0.489 s | 0.447 s | 0.023 s | 73.66x | GPU-CuPy |
+| Medium 3D shape stress (synthetic) | 16,777,216 | 58.816 s | 0.537 s | 0.470 s | 0.028 s | 109.46x | GPU-CuPy |
 
 ## Interpretation
 
@@ -31,11 +33,13 @@ before the observed screening winner was reported.
 - Synthetic cases are shape-and-memory stress tests, not claims that
   independent random voxels reproduce confocal image statistics. The
   optional private ND2 volume supplies the real-acquisition anchor.
-- `filter_epsilon=1e-8` is the currently admitted measured point, not
-  an assertion that it is inherently the only useful GPU epsilon.
-- Large-stack results do not broaden the scientific region. New
-  epsilon, iteration, PSF, dtype, or safety-option regions require a
-  versioned numerical study across adversarial fixtures.
+- This evidence uses the exact positive shipped RL-TV defaults:
+  `tv_regularization=0.002`, `tv_epsilon=1e-6`,
+  `filter_epsilon=1e-12`, and `denominator_floor=0.05`.
+- Large-stack results do not broaden the scientific region. New TV
+  weight, epsilon, floor, iteration, PSF, dtype, or safety-option
+  regions require a versioned numerical study across adversarial
+  fixtures.
 - The optional private ND2 case publishes workload metadata and timings
   but no path, filename, content digest, or pixels. Its generated
   Gaussian timing PSF is not a measured restoration-quality PSF.

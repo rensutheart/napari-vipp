@@ -5,7 +5,10 @@ include CODE_OF_CONDUCT.md
 include CONTRIBUTING.md
 include SECURITY.md
 include SUPPORT.md
-recursive-include docs *.json *.md *.png
+recursive-include docs *.csv *.json *.md *.png
 recursive-include examples *.json *.md
 include scripts/benchmark_gpu_rl_admission.py
 include scripts/benchmark_gpu_rl_performance.py
+include scripts/benchmark_gpu_rl_tv_admission.py
+include scripts/benchmark_gpu_rl_tv_performance.py
+include scripts/validate_rl_tv_phantoms.py

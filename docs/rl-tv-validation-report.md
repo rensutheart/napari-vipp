@@ -1,13 +1,14 @@
 # Richardson–Lucy Total Variation scientific validation
 
 Date: 2026-07-15
+Terminology correction: 2026-07-29
 Status: **No definite production algorithm defect established; share with caveats**
 
 ## Executive finding
 
 The reported pattern—plausible structures becoming blurred or disappearing in the first few iterations, then becoming clearer without fully recovering—is reproduced most strongly by **under-convergence from the constant initialization**, compounded by **TV regularization above the production default**. On the deterministic phantoms, initializing from the observed image reduced 5-iteration MSE by 24% in 2D and 26% in 3D and recovered more point, line, and dim signal. Increasing TV regularization monotonically reduced point/line/dim recovery even when global MSE improved.
 
-The production default `lambda=0.002` was mild on these phantoms: relative to ordinary RL at 25 iterations, dim-structure recovery changed by -0.4 percentage points in 2D and -0.8 points in 3D, while MSE improved by 3.0% and 2.3%. The shipped examples are not default-like: the 2D workflow uses 18 iterations and `lambda=0.012`; the 3D workflow uses only 8 iterations and `lambda=0.008`. Those settings produced substantially lower feature recovery than the 25-iteration default.
+The production default `lambda=0.002` was mild on these phantoms: relative to ordinary RL at 25 iterations, dim-structure recovery changed by -0.4 percentage points in 2D and -0.8 points in 3D, while MSE improved by 3.0% and 2.3%. Historical aggressive study profiles used 18 iterations with `lambda=0.012` in 2D and 8 iterations with `lambda=0.008` in 3D. Those profiles produced substantially lower feature recovery than the 25-iteration default. They are retained for sensitivity context but are not current shipped workflow settings; current bundled RL-TV workflows use the production defaults.
 
 PSF errors had the largest conditional impact. A one-pixel lateral PSF shift reduced point recovery from 0.830 to 0.023 in 2D and from 0.545 to 0.077 in 3D. A 25% spatial-sampling mismatch raised 2D MSE by 35% and reduced dim recovery from 0.739 to 0.487. VIPP's pipeline correctly rejects metadata-known sampling and dimensionality mismatches, but direct array calls cannot validate physical sampling, and the RL nodes do not themselves force odd shape or recenter a PSF.
 
@@ -28,7 +29,9 @@ Reproduce from the repository root:
 .\.venv\Scripts\python.exe -m pytest -q src\napari_vipp\_tests\test_rl_tv_validation.py
 ```
 
-The script uses fixed seeds `20260715` and `20260716`. The recorded environment was Python 3.12.7, NumPy 2.4.6, SciPy 1.17.1, and scikit-image 0.26.0 on Windows 11.
+The script uses fixed seeds `20260715` and `20260716`. The regenerated evidence
+records Python 3.12.9, NumPy 2.5.1, SciPy 1.18.0, and scikit-image 0.26.0 on
+Windows 10 (`10.0.19045`).
 
 ## Experimental design
 
@@ -47,13 +50,13 @@ Recovery values are ratios of restored intensity to truth intensity on the exact
 | 2D observed | 0 | 0 | 0.0047545 | 23.229 | 0.8373 | 0.173 | 0.399 | 0.472 | 0.0020327 |
 | 2D ordinary RL | 25 | 0 | 0.0013571 | 28.674 | 0.9561 | 0.835 | 0.882 | 0.743 | 0.0019441 |
 | 2D RL-TV default | 25 | 0.002 | 0.0013162 | 28.807 | 0.9564 | 0.830 | 0.879 | 0.739 | 0.0018879 |
-| 2D shipped example | 18 | 0.012 | 0.0011170 | 29.519 | 0.9519 | 0.747 | 0.827 | 0.653 | 0.0011232 |
+| 2D historical aggressive profile | 18 | 0.012 | 0.0011170 | 29.519 | 0.9519 | 0.747 | 0.827 | 0.653 | 0.0011232 |
 | 3D observed | 0 | 0 | 0.0015093 | 28.212 | 0.8156 | 0.062 | 0.102 | 0.209 | 0.0010457 |
 | 3D ordinary RL | 25 | 0 | 0.0005363 | 32.706 | 0.9581 | 0.554 | 0.635 | 0.335 | 0.0005539 |
 | 3D RL-TV default | 25 | 0.002 | 0.0005241 | 32.806 | 0.9576 | 0.545 | 0.628 | 0.327 | 0.0005326 |
-| 3D shipped example | 8 | 0.008 | 0.0007645 | 31.166 | 0.8890 | 0.227 | 0.266 | 0.233 | 0.0003688 |
+| 3D historical aggressive profile | 8 | 0.008 | 0.0007645 | 31.166 | 0.8890 | 0.227 | 0.266 | 0.233 | 0.0003688 |
 
-Total variation was 76.96 for 2D RL, 76.20 for default RL-TV, and 69.22 for the 2D example. In 3D it was 245.16, 242.26, and 163.10 respectively. Thus the example settings have a visibly stronger smoothing/convergence effect than the default.
+Total variation was 76.96 for 2D RL, 76.20 for default RL-TV, and 69.22 for the historical 2D profile. In 3D it was 245.16, 242.26, and 163.10 respectively. Thus those aggressive study profiles have a visibly stronger smoothing/convergence effect than the default.
 
 Flux ratios were 1.09 in 2D and 1.31–1.32 in 3D for observed/RL outputs. This is expected for this deliberately adversarial boundary fixture: reflecting the near-boundary object adds out-of-field signal back into the acquired field. The ratio is therefore a boundary-model diagnostic here, not evidence that RL created flux.
 
@@ -62,12 +65,12 @@ Flux ratios were 1.09 in 2D and 1.31–1.32 in 3D for observed/RL outputs. This 
 | Rank | Candidate | Likelihood for the reported behavior | Measured impact and interpretation |
 |---:|---|---|---|
 | 1 | Few iterations plus constant initialization | High | At 5 iterations, observed initialization reduced MSE 24% (2D) and 26% (3D). Dim recovery rose 0.407→0.501 and 0.219→0.269; 3D point recovery rose 0.126→0.240. Feature recovery continued to rise through 50 iterations even after MSE began worsening. |
-| 2 | TV regularization strength | High for the shipped examples; moderate at the default | From λ=0 to 0.02, dim recovery fell 0.743→0.703 in 2D and 0.335→0.266 in 3D while MSE improved. The default λ=0.002 cost less than one recovery point; λ=0.008–0.012 was materially more suppressive. |
+| 2 | TV regularization strength | High for the historical aggressive profiles; moderate at the default | From λ=0 to 0.02, dim recovery fell 0.743→0.703 in 2D and 0.335→0.266 in 3D while MSE improved. The default λ=0.002 cost less than one recovery point; λ=0.008–0.012 was materially more suppressive. |
 | 3 | PSF centering, sampling, or inadequate support | Very high impact; likelihood depends on PSF provenance | A one-pixel shift caused the largest failure. A 25% sampling mismatch materially degraded both phantoms. A too-small 3D PSF raised MSE 48% and reduced thin-line recovery 0.628→0.382. Generated, metadata-matched Born–Wolf PSFs passed all checks, so this is less likely for the exact shipped workflows than for imported PSFs. |
 | 4 | Zero-extension boundary handling | Moderate, boundary- and iteration-dependent | At 25 iterations reflect padding reduced border MSE 37% in 2D and 15% in 3D. At 5 iterations it worsened border MSE 67% and 84%, respectively. It is not a safe unconditional replacement under the current initialization. |
 | 5 | Dataset/noise-specific behavior | Unresolved | Photon sweeps changed absolute and feature-specific results non-monotonically. Only synthetic ground truth and one fixed seed per noise level were evaluated; real morphology and PSF aberration remain untested. |
 | 6 | TV divergence discretization | Low-to-moderate | A forward/backward-adjoint comparison changed 2D MSE by -6.0% and 3D MSE by -0.6%, but slightly reduced feature recovery. This does not establish the production central-difference stencil as defective. Physical voxel spacing is not used in the production TV stencil, so anisotropic-TV behavior deserves a separate controlled study. |
-| 7 | Denominator floor | Very low at current/default-example λ | Instrumented default runs had minimum raw denominators 0.9955 (2D) and 0.9932 (3D) with zero floor activation. Sweeping the floor from 0.001 through 0.5 produced identical results. |
+| 7 | Denominator floor | Very low at the default and historical study profiles | Instrumented default runs had minimum raw denominators 0.9955 (2D) and 0.9932 (3D) with zero floor activation. Sweeping the floor from 0.001 through 0.5 produced identical results. |
 | 8 | TV epsilon or filter epsilon | Very low at defaults | TV epsilon from `1e-12` to `1e-3` was immaterial. Filter epsilon `0`, `1e-12`, and `1e-6` were identical; only the extreme `1e-3` setting changed results. |
 | 9 | Scalar PSF normalization | Very low for the reported loss | Multiplying the PSF by 3 and disabling normalization was numerically invariant because the scalar cancels between the forward blur ratio and adjoint correction. Normalization remains advisable for model semantics and validation. |
 
@@ -117,7 +120,7 @@ Current behavior should be understood precisely:
 
 ## Recommendations
 
-1. **Default λ:** retain `0.002` provisionally. Do not increase it. The synthetic evidence does not justify lowering the production default either; validate representative real datasets first. Operational guidance should start at λ=0 and add only the minimum regularization needed for noise control. Treat the shipped λ=0.008/0.012 examples as aggressive demonstrations, not recommended defaults.
+1. **Default λ:** retain `0.002` provisionally. Do not increase it. The synthetic evidence does not justify lowering the production default either; validate representative real datasets first. Operational guidance should start at λ=0 and add only the minimum regularization needed for noise control. Treat the historical λ=0.008/0.012 study profiles as aggressive demonstrations, not recommended defaults or descriptions of current bundled workflows.
 2. **Initialization:** evaluate observed-image initialization in a separate behavior-changing PR. It materially improves low-iteration recovery, especially the 3D case, but changes convergence and is not uniformly superior at 25 iterations. Consider exposing initialization as an explicit option before changing the default.
 3. **Padding:** do not globally replace zero extension with reflect padding yet. Reflect is promising at 25 iterations and near boundaries, but it regresses early constant-initialized runs. A future PR should compare zero, reflect, and preferably non-circulant/normalization-aware edge handling across initialization and iteration count.
 4. **PSF sampling and centering:** retain mandatory pipeline grid checks. Add an explicit preflight status or warning for missing physical calibration, even PSF shape, and off-center peak/centroid; direct users toward **Prepare / Validate PSF**. Never resample a PSF implicitly.

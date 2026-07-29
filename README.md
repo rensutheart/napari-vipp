@@ -157,9 +157,11 @@ GPU execution is currently design/development work on
 [`codex/gpu-cross-platform-support`](https://github.com/rensutheart/napari-vipp/tree/codex/gpu-cross-platform-support),
 not a supported feature in the released plugin. Phase 1 is implemented as a
 headless, developer-hidden vertical slice for Rolling-Ball/Subtract Background,
-median, and 2D/3D Gaussian. Phase 2B adds an ordinary CuPy/CuPyX
-Richardson-Lucy implementation for 2D/3D spatial data and leading blocks,
-together with exact ordered-multi-input benchmarking. The branch includes
+median, and 2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
+Richardson-Lucy, and Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data
+and leading blocks while preserving the existing CPU formula and defaults.
+Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
+includes
 CPU/Auto/Selective execution contracts, visible or strict fallback,
 transactional device execution, scientific cache identity, and per-node/
 whole-pipeline benchmark services. The toolbar controls
@@ -192,9 +194,9 @@ nodes remain excluded.
 GPU eligibility is dtype-sensitive. For example, the currently reviewed CuPyX
 Gaussian implementation accepts finite `float32`; native `uint16` Gaussian is
 intentionally CPU-only until its integer result semantics pass a separate
-scientific admission gate. The initial GPU Richardson-Lucy region likewise
-requires both the Image and PSF to be explicitly finite `float32`; its output is
-shape-preserving `float32`. Its first scientifically admitted numerical region
+scientific admission gate. The initial ordinary GPU Richardson-Lucy region
+likewise requires both the Image and PSF to be explicitly finite `float32`; its
+output is shape-preserving `float32`. Its first scientifically admitted region
 also requires `filter_epsilon == 1e-8`, 1 through 25 iterations, odd PSF
 extents, and the default-safe normalization/clipping/scale options. The CPU
 operation's existing `1e-12` default and every other epsilon are unchanged and
@@ -205,7 +207,24 @@ missed the production parity gate at 25 iterations, other tested values were
 not monotonic, and `1e-8` itself had failures at 50 iterations. The exact
 `1e-12` point has not yet had a complete GPU admission study. Change that
 scientific parameter only when it is appropriate for the analysis, then
-benchmark the exact Image/PSF workload. Explicit **Convert
+benchmark the exact Image/PSF workload.
+
+GPU Richardson-Lucy TV has two separately validated profiles. With
+`tv_regularization == 0`, it reduces to ordinary RL and therefore uses that
+path's strict `filter_epsilon == 1e-8` policy and parity gate. Positive TV is
+initially admitted only at the unchanged shipped settings:
+`tv_regularization == 0.002`, `tv_epsilon == 1e-6`,
+`filter_epsilon == 1e-12`, `denominator_floor == 0.05`, and exactly 10 or 25
+iterations. Other positive-TV iteration counts remain on CPU until their
+nonlinear trajectories are measured; lambda-zero retains ordinary RL's 1–25
+range. Its nonlinear recurrence amplifies small CPU/GPU convolution and
+reduction-order differences, so positive TV uses a separate, versioned 0.5%
+NRMSE/peak-scaled maximum-error screen plus feature, MSE, flux, boundary, and
+floor diagnostics. This is a developer admission bound backed by fixed and
+holdout matrices—not permission to change an authored parameter, and not yet a
+public biological-restoration equivalence claim.
+
+Explicit **Convert
 Dtype** nodes can unlock these GPU candidates and may improve
 acceleration across a longer GPU-resident segment. Choose
 `Scaling = Preserve` when the intention is to keep the numeric values; the
@@ -248,7 +267,9 @@ for both CPU and cuCIM; its current-operation bar advances through those planes
 and starts over for each parity, warmup, or timed invocation. A cuCIM plane is
 reported only after its output has been synchronized. Richardson-Lucy reports
 completed iterations for each leading 2D/3D block, synchronizes before each
-reported checkpoint, and checks cancellation between iterations. Operations
+reported checkpoint, and checks cancellation between iterations.
+Richardson-Lucy TV uses the same truthful per-block/per-iteration checkpoint
+contract. Operations
 implemented as one monolithic NumPy, SciPy, CuPy, or cuCIM call have no truthful
 intermediate milestone, so their current-operation bar can remain unchanged until that call
 returns even though work is continuing; this pause alone does not mean the
@@ -288,7 +309,8 @@ and are explicitly labelled experimental in this development UI, so this is
 not yet a public GPU support claim. The current optimizer is deliberately limited
 to a calculated, writer-free scientific subgraph, one accelerator runtime, and
 single-output nodes supported by exact node benchmarking. Ordered multi-input
-nodes such as Richardson-Lucy are supported; multi-output, multi-runtime,
+nodes such as Richardson-Lucy and Richardson-Lucy TV are supported;
+multi-output, multi-runtime,
 side-effecting, and incomplete workloads still fail closed. Unifying every UI
 optimizer input into one immutable application snapshot remains a named
 hardening task rather than a completed claim. See the
@@ -300,10 +322,17 @@ summarizes the code, exact admitted matrix, validation evidence, and deferred
 gates. The
 [Phase 2B Richardson-Lucy implementation record](docs/gpu-phase2b-rl-implementation-report.md)
 records the new provider, benchmark/lease substrate, exact parity policy,
-limitations, and ordered next work. The machine-local
+limitations, and ordered next work. The
+[Phase 2C Richardson-Lucy TV implementation record](docs/gpu-phase2c-rl-tv-implementation-report.md)
+records the preserved nonlinear contract, separate lambda-zero and positive-TV
+profiles, validation evidence, and remaining promotion gates. The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
-representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses.
+representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses. The
+[Richardson-Lucy TV timing summary](docs/benchmarks/rl-tv-cupy-performance-windows-rtx5090.md)
+records 73.66x and 109.46x paired median speedups for the same private
+8.51-million-voxel volume and a 16.78-million-voxel shape stress at the exact
+positive shipped profile.
 
 Structural cache reuse also fails closed on exact scientific context: source
 bytes/state and revision, node parameters and incoming topology, chained
@@ -334,7 +363,7 @@ bash scripts/setup_gpu_dev.sh --track cuda13
 ./.venv-gpu-cu13/bin/python -m napari_vipp.core.compute_diagnostics --track cuda13
 ```
 
-The current executable Phase 1/Phase 2B policy admits only the validated
+The current executable Phase 1/Phase 2B/Phase 2C policy admits only the validated
 native-Windows matrix. Linux preparation is available for the pending clean-host
 validation, but GPU execution intentionally fails closed there until that
 evidence is reviewed.

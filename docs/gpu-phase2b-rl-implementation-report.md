@@ -5,6 +5,12 @@
 - Status: developer-hidden headless implementation complete; public and
   cross-platform promotion gates remain open
 
+Phase 2C has since implemented the developer-hidden RL-TV slice described in
+this record's former first next step. See the
+[Phase 2C implementation record](gpu-phase2c-rl-tv-implementation-report.md)
+for its current contracts and evidence; the Phase 2B measurements below remain
+the historical ordinary-RL record.
+
 ## Outcome
 
 Phase 2B adds ordinary Richardson-Lucy as a normal VIPP accelerator
@@ -142,9 +148,9 @@ Disk I/O and input generation are excluded.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Paired median speedup |
 |---|---:|---:|---:|---:|---:|---:|
-| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 23.911 s | 0.360 s | 0.328 s | 0.016 s | 65.85x |
-| Medium 3D shape stress | 16,777,216 | 34.463 s | 0.511 s | 0.439 s | 0.037 s | 67.41x |
-| Large 3D shape stress | 67,108,864 | 132.066 s | 1.523 s | 1.200 s | 0.192 s | 86.73x |
+| Private real-acquisition single-channel `ZYX` volume | 8,507,700 | 24.465 s | 0.347 s | 0.316 s | 0.017 s | 70.44x |
+| Medium 3D shape stress | 16,777,216 | 36.349 s | 0.417 s | 0.358 s | 0.030 s | 86.91x |
+| Large 3D shape stress | 67,108,864 | 138.716 s | 1.617 s | 1.293 s | 0.204 s | 85.79x |
 
 All three exact workloads passed production parity, synchronized execution,
 and terminal-zero private allocator cleanup. The largest case observed 4.50 GiB
@@ -251,7 +257,7 @@ this development-host result.
   authored runs above 25 iterations are intentionally CPU-only in the first GPU
   region. A future numerical study should broaden this without changing CPU
   defaults or tolerances.
-- RL-TV is not implemented.
+- RL-TV is implemented separately in Phase 2C and remains developer-hidden.
 - Exact node benchmarking supports ordered multi-input calls only when there is
   exactly one output. Writers, side effects, and multi-output operations fail
   closed.
@@ -298,35 +304,32 @@ queue below; completing Phase 2B does not silently close them:
 
 ## Ordered next suggested steps
 
-This is the maintained order after Phase 2B:
+Phase 2C completed the former first item. The maintained order is now:
 
-1. **Richardson-Lucy TV** — preserve the existing formula, sign, stencil,
-   initialization, floor, padding, defaults, and phantom validation while
-   reusing the ordinary RL substrate.
-2. **Canny and Otsu** — declare and validate operation-specific dtype,
+1. **Canny and Otsu** — declare and validate operation-specific dtype,
    parameter, boundary, memory, and parity regions, comparing CuPyX and cuCIM
    where both are scientifically eligible.
-3. **Connected components** — preserve connectivity, leading-block semantics,
+2. **Connected components** — preserve connectivity, leading-block semantics,
    `int32` output, and exact deterministic label numbering.
-4. **Measurements** — support ordered labels-plus-intensity inputs and an exact
+3. **Measurements** — support ordered labels-plus-intensity inputs and an exact
    typed host-table finalizer with schema, order, units, and missing-value
    parity.
-5. **Convert Dtype and inexpensive residency bridges** — accelerate only
+4. **Convert Dtype and inexpensive residency bridges** — accelerate only
    explicit authored conversion/bridge nodes that preserve their CPU semantics;
    never synthesize casts to improve a benchmark.
-6. **Native Linux and Windows laptop validation** — collect clean-environment,
+5. **Native Linux and Windows laptop validation** — collect clean-environment,
    parity, memory, cancellation, cleanup, and end-to-end evidence on supported
    Linux hosts and available RTX 40-series Windows laptops; treat WSL2 as
    secondary evidence.
-7. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
+6. **Apple M1 Max study** — evaluate Metal/MPS/MLX providers with unified-memory
    accounting and retain CPU fallback unless operation-level gates pass.
-8. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
+7. **cuCIM/Clara feature-complete investigation** — perform the named near-term,
    time-boxed Windows packaging/upstream review, aiming for a maintainable
    feature-complete integration rather than a permanent skimage-only fork.
-9. **Batch, generated Python/CLI, and export** — add durable GPU execution and
+8. **Batch, generated Python/CLI, and export** — add durable GPU execution and
    provenance only after core interactive coverage and lifecycle contracts are
    stable.
 
 The immutable UI optimizer snapshot should be hardened alongside the first
-operation waves and before broad optimizer claims. Completion of ordinary RL
-does not mark that work done.
+operation waves and before broad optimizer claims. Completion of ordinary RL or
+RL-TV does not mark that work done.
