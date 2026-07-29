@@ -18,10 +18,10 @@ from importlib import resources
 from typing import Any
 
 POLICY_SCHEMA_ID = "napari-vipp-compute-policy-artifact-v1"
-PHASE1_POLICY_ID = "phase1-gpu-developer-v2"
-PHASE1_POLICY_RESOURCE = "phase1-gpu-developer-v2.json"
+PHASE1_POLICY_ID = "phase1-gpu-public-v3"
+PHASE1_POLICY_RESOURCE = "phase1-gpu-public-v3.json"
 PHASE1_POLICY_SHA256 = (
-    "2cbd80480ffdbc9ab0855dee0e7707b88f7c530c911f8ea3847c7e6a86d44234"
+    "74e9a5b0831ec9ec7428ace8819deb51c6ebb5fc46a6f46f7d0179b696f81281"
 )
 _POLICY_PACKAGE = "napari_vipp.compute_policies"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -70,12 +70,19 @@ class PlatformAdmissionPolicy:
     python_implementation: str
     python_minor_versions: tuple[str, ...]
     python_abis: tuple[str, ...]
+    numpy_versions: tuple[str, ...]
+    scipy_versions: tuple[str, ...]
+    scikit_image_versions: tuple[str, ...]
     cuda_major_versions: tuple[int, ...]
+    cuda_runtime_versions: tuple[str, ...]
+    driver_versions: tuple[str, ...]
     cupy_versions: tuple[str, ...]
     cupyx_versions: tuple[str, ...]
     runtime_probe_fingerprint_required: bool
     driver_version_metadata_required: bool
     nvidia_compute_capability_required: bool
+    nvidia_device_names: tuple[str, ...]
+    nvidia_compute_capabilities: tuple[str, ...]
     cucim_versions: tuple[str, ...]
     cucim_environment_record_schema: str
     cucim_environment_record_schema_version: int
@@ -226,7 +233,7 @@ def parse_compute_policy_artifact(
     if policy_id != PHASE1_POLICY_ID:
         raise ComputePolicyArtifactError(f"Unsupported Phase 1 policy {policy_id!r}.")
     policy_version = _integer(root["policy_version"], "$.policy_version", minimum=1)
-    if policy_version != 2:
+    if policy_version != 3:
         raise ComputePolicyArtifactError(
             f"Unsupported Phase 1 policy version {policy_version}."
         )
@@ -263,7 +270,7 @@ def parse_compute_policy_artifact(
         policy_version=policy_version,
         content_sha256=declared_digest,
         phase=_literal(policy["phase"], "$.policy.phase", {"phase1"}),
-        status=_literal(policy["status"], "$.policy.status", {"developer-preview"}),
+        status=_literal(policy["status"], "$.policy.status", {"public-validated"}),
         exposure=_parse_exposure(policy["exposure"]),
         auto_selection=_parse_auto_selection(policy["auto_selection"]),
         local_benchmark=_parse_benchmark(policy["local_benchmark"]),
@@ -438,12 +445,19 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
             "python_implementation",
             "python_minor_versions",
             "python_abis",
+            "numpy_versions",
+            "scipy_versions",
+            "scikit_image_versions",
             "cuda_major_versions",
+            "cuda_runtime_versions",
+            "driver_versions",
             "cupy_versions",
             "cupyx_versions",
             "runtime_probe_fingerprint_required",
             "driver_version_metadata_required",
             "nvidia_compute_capability_required",
+            "nvidia_device_names",
+            "nvidia_compute_capabilities",
             "cucim_versions",
             "cucim_environment_record_schema",
             "cucim_environment_record_schema_version",
@@ -483,8 +497,27 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
         python_abis=_identifier_tuple(
             record["python_abis"], f"{path}.python_abis", nonempty=True
         ),
+        numpy_versions=_string_tuple(
+            record["numpy_versions"], f"{path}.numpy_versions", nonempty=True
+        ),
+        scipy_versions=_string_tuple(
+            record["scipy_versions"], f"{path}.scipy_versions", nonempty=True
+        ),
+        scikit_image_versions=_string_tuple(
+            record["scikit_image_versions"],
+            f"{path}.scikit_image_versions",
+            nonempty=True,
+        ),
         cuda_major_versions=_integer_tuple(
             record["cuda_major_versions"], f"{path}.cuda_major_versions", minimum=1
+        ),
+        cuda_runtime_versions=_string_tuple(
+            record["cuda_runtime_versions"],
+            f"{path}.cuda_runtime_versions",
+            nonempty=True,
+        ),
+        driver_versions=_string_tuple(
+            record["driver_versions"], f"{path}.driver_versions", nonempty=True
         ),
         cupy_versions=_string_tuple(
             record["cupy_versions"], f"{path}.cupy_versions", nonempty=True
@@ -503,6 +536,16 @@ def _parse_platform(value: object) -> PlatformAdmissionPolicy:
         nvidia_compute_capability_required=_boolean(
             record["nvidia_compute_capability_required"],
             f"{path}.nvidia_compute_capability_required",
+        ),
+        nvidia_device_names=_string_tuple(
+            record["nvidia_device_names"],
+            f"{path}.nvidia_device_names",
+            nonempty=True,
+        ),
+        nvidia_compute_capabilities=_string_tuple(
+            record["nvidia_compute_capabilities"],
+            f"{path}.nvidia_compute_capabilities",
+            nonempty=True,
         ),
         cucim_versions=_string_tuple(
             record["cucim_versions"], f"{path}.cucim_versions", nonempty=True
@@ -575,7 +618,13 @@ def _parse_operation(value: object, path: str) -> PackagedOperationPolicy:
             record["implementation_library_id"], f"{path}.implementation_library_id"
         ),
         admission_tier=_literal(
-            record["admission_tier"], f"{path}.admission_tier", {"developer_hidden"}
+            record["admission_tier"],
+            f"{path}.admission_tier",
+            {
+                "developer_hidden",
+                "public_selective",
+                "public_auto_candidate",
+            },
         ),
         environment_policy_id=_identifier(
             record["environment_policy_id"], f"{path}.environment_policy_id"

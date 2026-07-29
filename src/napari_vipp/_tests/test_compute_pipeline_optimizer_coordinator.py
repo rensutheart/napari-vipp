@@ -733,13 +733,15 @@ def test_environment_recheck_probes_exact_candidates_without_execution(monkeypat
     assert len(calls) == 1
     assert {item.operation_id for item in calls[0][1]} == {"median_filter"}
 
-    with pytest.raises(PipelineOptimizationEvidenceIncomplete) as unavailable:
-        probe_pipeline_optimizer_environment(
-            registry,
-            document,
-            ComputeRequest("selective", allow_experimental=False),
-        )
-    assert unavailable.value.reasons[0].code == "no_gpu_candidates"
+    public = probe_pipeline_optimizer_environment(
+        registry,
+        document,
+        ComputeRequest("selective", allow_experimental=False),
+    )
+
+    assert public.fingerprint == environment.fingerprint
+    assert len(calls) == 2
+    assert {item.operation_id for item in calls[1][1]} == {"median_filter"}
 
 
 def test_pipeline_validation_checks_unchanged_observable_downstream_output(

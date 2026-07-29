@@ -56,9 +56,12 @@ PIPELINE_SCREENING_BENCHMARK_POLICY_ID = (
 CUSTOM_BENCHMARK_POLICY_ID = "custom-node-paired-adaptive-bootstrap-v3"
 EXACT_PARITY_OPERATION_IDS = frozenset(
     {
+        "canny_edges",
         "median_filter",
+        "otsu_threshold",
     }
 )
+EXACT_MASK_PARITY_OPERATION_IDS = frozenset({"canny_edges", "otsu_threshold"})
 BACKGROUND_PARITY_OPERATION_IDS = frozenset(
     {"rolling_ball_background", "subtract_background"}
 )
@@ -554,7 +557,11 @@ def _validate_admitted_spec(
         else None
     )
     if call.operation_id in EXACT_PARITY_OPERATION_IDS:
-        expected_parity = "median-production-bitwise-v1"
+        expected_parity = (
+            "mask-bitwise-v1"
+            if call.operation_id in EXACT_MASK_PARITY_OPERATION_IDS
+            else "median-production-bitwise-v1"
+        )
     elif call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
         expected_parity = "background-dtype-parity-v2"
     elif call.operation_id in RICHARDSON_LUCY_PARITY_OPERATION_IDS:

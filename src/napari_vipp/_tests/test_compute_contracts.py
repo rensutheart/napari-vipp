@@ -5,6 +5,7 @@ import subprocess
 import sys
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from napari_vipp.core.compute import (
@@ -72,9 +73,12 @@ def test_contract_import_does_not_import_optional_accelerators():
                 "import sys; import napari_vipp.core.compute; "
                 "import napari_vipp.core.compute_specs; "
                 "import napari_vipp.core.compute_planning; "
+                "from napari_vipp.core.compute import ComputeEnvironment; "
                 "from napari_vipp.core.compute_registry import ComputeRegistry; "
+                "ComputeEnvironment(); "
                 "ComputeRegistry(); "
                 "assert 'cupy' not in sys.modules; "
+                "assert 'cupyx' not in sys.modules; "
                 "assert 'cucim' not in sys.modules; "
                 "assert 'napari_vipp.core.pipeline' not in sys.modules"
             ),
@@ -111,6 +115,11 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
         runtime_ids=("cuda-cupy", "cpu-numpy"),
         implementation_libraries=("cupyx", "cpu"),
         runtime_versions=(("cupy", "14.1.1"),),
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
         runtime_probe_fingerprints=(("cuda-cupy", "probe-a"),),
         runtime_metadata=(
             (
@@ -135,6 +144,17 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
         != replace(
             environment,
             runtime_probe_fingerprints=(("cuda-cupy", "probe-b"),),
+        ).fingerprint
+    )
+    assert (
+        environment.fingerprint
+        != replace(
+            environment,
+            scientific_stack_versions=(
+                ("numpy", "2.5.0"),
+                ("scipy", "1.18.0"),
+                ("scikit-image", "0.26.0"),
+            ),
         ).fingerprint
     )
     assert (
@@ -174,6 +194,24 @@ def test_numeric_contracts_reject_bool_nan_and_noncanonical_values():
             ("float32",),
             parameters=(("sigma", float("nan")),),
         )
+    with pytest.raises(TypeError, match="inputs_resolved must be a boolean"):
+        WorkloadDescriptor(
+            "node",
+            "gaussian_blur",
+            ((8, 8),),
+            ("float32",),
+            inputs_resolved=1,
+        )
+
+    numpy_integer = WorkloadDescriptor(
+        "node",
+        "canny_edges",
+        ((3, 8, 8),),
+        ("uint16",),
+        parameters=(("channel_axis", np.int64(0)),),
+    )
+    assert dict(numpy_integer.parameters)["channel_axis"] == 0
+    assert type(dict(numpy_integer.parameters)["channel_axis"]) is int
 
 
 def test_fallback_is_typed_and_distinct_from_a_policy_cpu_choice():
@@ -248,16 +286,18 @@ def _candidate_spec(**updates) -> OperationComputeSpec:
 def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     accelerator_specs = accelerator_compute_specs()
     assert {spec.operation_id for spec in accelerator_specs} == {
+        "canny_edges",
         "rolling_ball_background",
         "subtract_background",
         "median_filter",
         "gaussian_blur",
         "gaussian_blur_3d",
+        "otsu_threshold",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
     }
     assert all(
-        spec.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
+        spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE
         for spec in accelerator_specs
     )
     assert all(spec.runtime_id == "cuda-cupy" for spec in accelerator_specs)
@@ -282,13 +322,11 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
     )
     assert "iterations-at-most-25-v1" in richardson_lucy.limitations
     assert "positive-tv-iterations-10-or-25-v1" in richardson_lucy_tv.limitations
-    assert compute_specs_for("gaussian_blur", include_cpu=False) == ()
     assert (
         len(
             compute_specs_for(
                 "gaussian_blur",
                 include_cpu=False,
-                allow_experimental=True,
             )
         )
         == 1
@@ -334,3 +372,12 @@ def test_developer_hidden_declaration_requires_explicit_visibility():
 
     assert not spec.visible_for(allow_experimental=False)
     assert spec.visible_for(allow_experimental=True)
+    assert not spec.eligible_for_auto(allow_experimental=False)
+    assert spec.eligible_for_auto(allow_experimental=True)
+
+
+def test_public_auto_declaration_is_visible_without_experimental_enablement():
+    spec = _candidate_spec(admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE)
+
+    assert spec.visible_for(allow_experimental=False)
+    assert spec.eligible_for_auto(allow_experimental=False)

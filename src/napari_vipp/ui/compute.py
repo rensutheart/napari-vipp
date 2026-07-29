@@ -123,10 +123,10 @@ def node_preference_options(
     an advanced API/workflow feature and are shown only when an existing pin
     must be represented honestly in the control.
 
-    GPU choices are derived only from immutable compute declarations.  The
-    current Phase-1 candidates are developer-hidden, so callers that expose
-    them must pass ``allow_experimental=True`` and the returned labels remain
-    conspicuously marked experimental.
+    GPU choices are derived only from immutable compute declarations. Reviewed
+    public candidates appear normally; genuinely unfinished developer-hidden
+    providers require ``allow_experimental=True`` and remain conspicuously
+    marked experimental.
     """
 
     candidates = compute_specs_for(

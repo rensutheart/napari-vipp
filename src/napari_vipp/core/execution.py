@@ -48,6 +48,7 @@ from napari_vipp.core.compute_cache import (
     cached_source_provenance_matches,
 )
 from napari_vipp.core.compute_policy import (
+    OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS,
     ArrayFacts,
     ArrayFactsCache,
     ArrayFactsKey,
@@ -87,6 +88,8 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "gaussian_blur",
         "gaussian_blur_3d",
         "median_filter",
+        "canny_edges",
+        "otsu_threshold",
         "prepare_validate_psf",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
@@ -600,12 +603,11 @@ def _execute_accelerated_pipeline(
                     decision.implementation_id,
                     allow_experimental=request.compute_request.allow_experimental,
                 )
-                states = pipeline.predict_shape_preserving_node_states(
+                states = _predict_device_node_states(
+                    pipeline,
                     call,
-                    output_dtype_policy_ids=tuple(
-                        port.output_dtype_policy_id
-                        for port in implementation.output_ports
-                    ),
+                    implementation,
+                    outputs,
                 )
             for port_index, state in enumerate(states):
                 state_by_port[OutputPortKey(node_id, port_index)] = state
@@ -885,8 +887,10 @@ def _assemble_workloads(
         input_values: list[object] = []
         input_states: list[object] = []
         input_facts: list[ArrayFacts | None] = []
+        inputs_resolved = True
         for connection in connections:
             port = OutputPortKey(connection.source_id, connection.source_port)
+            inputs_resolved = inputs_resolved and port in values
             state = states.get(port)
             value = values.get(port)
             shape, dtype = _shape_and_dtype(value, state)
@@ -950,6 +954,7 @@ def _assemble_workloads(
             resident_successors=successors,
             required_host_boundaries=required_boundaries,
             facts_fingerprint=facts_fingerprint,
+            inputs_resolved=inputs_resolved,
         )
         workloads.append(workload)
 
@@ -1104,6 +1109,40 @@ def _project_host_planning_output(
                     ),
                 )
         return description, projected_state
+    if operation_id in {"canny_edges", "otsu_threshold"}:
+        projection = _scalar_plane_luma_output_shape(
+            input_shape,
+            planning_call.kwargs.get("channel_axis"),
+        )
+        if projection is None:
+            return None
+        output_shape, channel_axis = projection
+
+        description = _ArrayDescription(output_shape, np.dtype(bool))
+        projected_state = None
+        if planning_call.input_states and planning_call.input_states[0] is not None:
+            (base_state,) = pipeline.predict_shape_preserving_node_states(
+                planning_call,
+                output_dtype_policy_ids=("fixed:bool",),
+            )
+            if base_state is not None:
+                axes = tuple(getattr(base_state, "axes", ()))
+                if channel_axis is not None and len(axes) == len(input_shape):
+                    axes = axes[:channel_axis] + axes[channel_axis + 1 :]
+                projected_state = replace(
+                    base_state,
+                    shape=output_shape,
+                    axes=axes,
+                    channels=(
+                        () if channel_axis is not None else base_state.channels
+                    ),
+                    memory=_metadata._memory_label(
+                        int(np.prod(output_shape, dtype=np.int64))
+                        * np.dtype(bool).itemsize
+                    ),
+                    value_pattern="",
+                )
+        return description, projected_state
     if operation_id != "extract_channel":
         return None
     axis_types = tuple(planning_call.kwargs.get("axis_types", ()))
@@ -1165,6 +1204,93 @@ def _project_host_planning_output(
             value_pattern="",
         )
     return description, projected_state
+
+
+def _scalar_plane_luma_output_shape(
+    input_shape: tuple[int, ...],
+    raw_channel_axis: object,
+) -> tuple[tuple[int, ...], int | None] | None:
+    """Return the exact mask shape and removed encoded-colour axis."""
+
+    if raw_channel_axis is None:
+        return input_shape, None
+    if (
+        isinstance(raw_channel_axis, (bool, np.bool_))
+        or not isinstance(raw_channel_axis, Integral)
+        or len(input_shape) < 3
+        or int(raw_channel_axis) < -len(input_shape)
+        or int(raw_channel_axis) >= len(input_shape)
+    ):
+        return None
+    channel_axis = int(raw_channel_axis) % len(input_shape)
+    if input_shape[channel_axis] not in {3, 4}:
+        return None
+    return (
+        input_shape[:channel_axis] + input_shape[channel_axis + 1 :],
+        channel_axis,
+    )
+
+
+def _predict_device_node_states(
+    pipeline: PrototypePipeline,
+    call: PreparedNodeCall,
+    implementation: OperationComputeSpec,
+    outputs: tuple[object, ...],
+) -> tuple[object | None, ...]:
+    """Project resident output metadata without materializing device arrays."""
+
+    output_dtype_policy_ids = tuple(
+        port.output_dtype_policy_id for port in implementation.output_ports
+    )
+    states = pipeline.predict_shape_preserving_node_states(
+        call,
+        output_dtype_policy_ids=output_dtype_policy_ids,
+    )
+    if implementation.shape_policy_id == "shape-preserving-v1":
+        return states
+    if implementation.shape_policy_id != "scalar-plane-luma-mask-v1":
+        raise RuntimeError(
+            "Resident metadata projection is unavailable for shape policy "
+            f"{implementation.shape_policy_id!r}."
+        )
+    if len(outputs) != 1 or len(states) != 1 or len(call.inputs) != 1:
+        raise RuntimeError(
+            "Scalar-plane mask metadata requires one input and one output."
+        )
+    input_shape = tuple(int(size) for size in call.inputs[0].shape)
+    projection = _scalar_plane_luma_output_shape(
+        input_shape,
+        call.kwargs.get("channel_axis"),
+    )
+    if projection is None:
+        raise RuntimeError("The admitted scalar-plane luma shape is invalid.")
+    expected_shape, channel_axis = projection
+    output = outputs[0]
+    actual_shape = tuple(int(size) for size in output.shape)
+    actual_dtype = np.dtype(output.dtype)
+    if actual_shape != expected_shape or actual_dtype != np.dtype(bool):
+        raise RuntimeError(
+            "The resident segmentation output violated its declared bool-mask "
+            "shape contract."
+        )
+    state = states[0]
+    if state is None:
+        return (None,)
+    axes = tuple(getattr(state, "axes", ()))
+    if channel_axis is not None and len(axes) == len(input_shape):
+        axes = axes[:channel_axis] + axes[channel_axis + 1 :]
+    return (
+        replace(
+            state,
+            shape=actual_shape,
+            axes=axes,
+            channels=(() if channel_axis is not None else state.channels),
+            memory=_metadata._memory_label(
+                int(np.prod(actual_shape, dtype=np.int64)) * actual_dtype.itemsize
+            ),
+            value_pattern="",
+        ),
+    )
 
 
 def _required_concrete_fact_ports(
@@ -1319,7 +1445,7 @@ def _candidate_specs_for_workload(
     request: ComputeRequest,
     workload: WorkloadDescriptor,
 ) -> tuple[OperationComputeSpec, ...]:
-    if request.mode is ComputeMode.CPU:
+    if request.mode is ComputeMode.CPU or not workload.inputs_resolved:
         return ()
     preference = request.preference_for(workload.node_id)
     if (
@@ -1331,6 +1457,18 @@ def _candidate_specs_for_workload(
         workload.operation_id,
         allow_experimental=request.allow_experimental,
     )
+    automatic_intent = (
+        request.mode is ComputeMode.AUTO
+        or preference.kind is NodePreferenceKind.AUTO
+    )
+    if automatic_intent:
+        implementations = tuple(
+            item
+            for item in implementations
+            if item.eligible_for_auto(
+                allow_experimental=request.allow_experimental,
+            )
+        )
     if request.runtime_id:
         implementations = tuple(
             item for item in implementations if item.runtime_id == request.runtime_id
@@ -1400,6 +1538,8 @@ def _implementation_required_fact_indexes(
         index
         for index, port in enumerate(getattr(implementation, "input_ports", ()))
         if port.nonfinite_policy_id == "finite-only-v1"
+        and index < len(workload.input_dtypes)
+        and not _dtype_intrinsically_finite(workload.input_dtypes[index])
     }
     if (
         workload.operation_id in {"gaussian_blur", "gaussian_blur_3d", "median_filter"}
@@ -1418,6 +1558,24 @@ def _implementation_required_fact_indexes(
     for limitation in getattr(implementation, "limitations", ()):
         if "requires-complete" not in limitation:
             continue
+        if limitation.startswith("integer-span-") and (
+            not workload.input_dtypes
+            or not np.issubdtype(np.dtype(workload.input_dtypes[0]), np.integer)
+            or np.dtype(workload.input_dtypes[0]) == np.dtype(bool)
+        ):
+            continue
+        if (
+            limitation.startswith("integer-span-")
+            and workload.operation_id == "otsu_threshold"
+            and workload.input_dtypes
+        ):
+            dtype = np.dtype(workload.input_dtypes[0])
+            dtype_limits = np.iinfo(dtype)
+            type_span = int(dtype_limits.max) - int(dtype_limits.min) + 1
+            if type_span <= OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS:
+                # Admission is provable from the <=16-bit dtype itself; a
+                # complete image extrema scan would not refine the decision.
+                continue
         if limitation.startswith("float32-") and (
             not workload.input_dtypes
             or np.dtype(workload.input_dtypes[0]) != np.dtype(np.float32)
@@ -1425,6 +1583,13 @@ def _implementation_required_fact_indexes(
             continue
         required.update(range(len(workload.input_dtypes)))
     return frozenset(required)
+
+
+def _dtype_intrinsically_finite(dtype: object) -> bool:
+    """Return whether the public dtype cannot represent NaN or infinity."""
+
+    resolved = np.dtype(dtype)
+    return resolved == np.dtype(bool) or np.issubdtype(resolved, np.integer)
 
 
 def _trace_concrete_fact_port(
@@ -1914,6 +2079,13 @@ def _propagate_shape_preserving_facts(
         else:
             guarantees.discard("nonnegative")
             guarantees.discard("no-negative-zero")
+    elif operation_id in {"canny_edges", "otsu_threshold"}:
+        # Both reviewed segmentation providers return an exact boolean mask.
+        # Boolean output is finite by construction and cannot contain negative
+        # values or a signed zero, independent of the source's numeric range.
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(("nonnegative", "no-negative-zero"))
 
     # Exact extrema are intentionally not propagated: each operation can
     # change them.  Phase-1 downstream facts gates consume only completeness,

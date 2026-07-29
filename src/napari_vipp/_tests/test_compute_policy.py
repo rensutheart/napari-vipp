@@ -14,12 +14,14 @@ from napari_vipp.core.compute import (
 from napari_vipp.core.compute_policy import (
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_ENVIRONMENT_POLICIES,
     ArrayFacts,
     ArrayFactsCache,
     ArrayFactsKey,
     FactCompleteness,
     PerformanceEvidence,
     ValueDescriptor,
+    _evaluate_phase1_cuda_host_environment,
     estimate_candidate_memory,
     evaluate_auto_performance,
     evaluate_candidate_support,
@@ -101,6 +103,11 @@ def _cuda_environment(**updates):
             ("cuda-cupy", "14.1.1"),
             ("cupyx", "14.1.1"),
         ),
+        "scientific_stack_versions": (
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        ),
         "runtime_probe_fingerprints": (("cuda-cupy", "probe-fingerprint"),),
         "runtime_metadata": (
             (
@@ -113,7 +120,7 @@ def _cuda_environment(**updates):
         ),
         "driver_version": "13030",
         "device_id": "cuda:0",
-        "device_name": "Fake RTX",
+        "device_name": "NVIDIA GeForce RTX 5090",
         "device_class": "nvidia-cuda",
         "device_metadata": (("compute_capability", "12.0"),),
         "probe_status": "available",
@@ -276,6 +283,142 @@ def test_cupyx_environment_policy_fails_closed_on_unproven_provenance(
 
     assert not decision.supported
     assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+
+
+@pytest.mark.parametrize(
+    ("environment_updates", "reason_fragment"),
+    [
+        (
+            {
+                "runtime_metadata": (
+                    (
+                        "cuda-cupy",
+                        (
+                            ("cuda_runtime_version", "12090"),
+                            ("driver_version", "13030"),
+                        ),
+                    ),
+                )
+            },
+            "cuda runtime api 13.2",
+        ),
+        (
+            {
+                "runtime_metadata": (
+                    (
+                        "cuda-cupy",
+                        (
+                            ("cuda_runtime_version", "13030"),
+                            ("driver_version", "13030"),
+                        ),
+                    ),
+                )
+            },
+            "cuda runtime api 13.2",
+        ),
+        (
+            {
+                "runtime_metadata": (
+                    (
+                        "cuda-cupy",
+                        (
+                            ("cuda_runtime_version", "13020"),
+                            ("driver_version", "13040"),
+                        ),
+                    ),
+                ),
+                "driver_version": "13040",
+            },
+            "cuda driver api 13.3",
+        ),
+        ({"device_name": "NVIDIA GeForce RTX 5080"}, "rtx 5090"),
+        (
+            {"device_metadata": (("compute_capability", "8.9"),)},
+            "compute capability 12.0",
+        ),
+    ],
+    ids=(
+        "cuda12",
+        "other-cuda13-runtime",
+        "other-driver",
+        "secondary-device-same-vendor",
+        "secondary-compute-capability",
+    ),
+)
+def test_public_gpu_environment_is_exactly_the_recorded_host_region(
+    environment_updates,
+    reason_fragment,
+):
+    for allow_experimental in (False, True):
+        decision = evaluate_candidate_support(
+            _gpu_spec(),
+            _workload(),
+            _cuda_environment(**environment_updates),
+            allow_experimental=allow_experimental,
+        )
+
+        assert not decision.supported
+        assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+        assert reason_fragment in decision.reason_text.lower()
+        assert "cpu remains authoritative" in decision.reason_text.lower()
+
+
+@pytest.mark.parametrize(
+    ("scientific_stack_versions", "reason_fragment"),
+    [
+        ((), "missing"),
+        (
+            (
+                ("numpy", "2.4.0"),
+                ("scipy", "1.18.0"),
+                ("scikit-image", "0.26.0"),
+            ),
+            "numpy 2.4.0 (validated 2.5.1)",
+        ),
+    ],
+    ids=("missing-metadata", "version-mismatch"),
+)
+def test_exact_gpu_environment_requires_validated_cpu_scientific_stack(
+    scientific_stack_versions,
+    reason_fragment,
+):
+    decision = evaluate_candidate_support(
+        _gpu_spec(),
+        _workload(),
+        _cuda_environment(
+            scientific_stack_versions=scientific_stack_versions,
+        ),
+        allow_experimental=False,
+    )
+
+    assert not decision.supported
+    assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+    assert reason_fragment in decision.reason_text.lower()
+    assert "cpu remains authoritative" in decision.reason_text.lower()
+
+
+def test_every_public_phase1_gpu_spec_uses_the_shared_cpu_stack_gate():
+    environment = _cuda_environment(
+        scientific_stack_versions=(
+            ("numpy", "2.5.0"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
+        )
+    )
+    public_specs = tuple(
+        spec
+        for spec in accelerator_compute_specs()
+        if spec.admission_tier
+        in {AdmissionTier.PUBLIC_SELECTIVE, AdmissionTier.PUBLIC_AUTO_CANDIDATE}
+        and spec.validated_environment_policy_id in CUDA_ENVIRONMENT_POLICIES
+    )
+
+    assert public_specs
+    for spec in public_specs:
+        decision = _evaluate_phase1_cuda_host_environment(spec, environment)
+        assert decision is not None, spec.implementation_id
+        assert decision.reason is DecisionReason.ENVIRONMENT_UNSUPPORTED
+        assert "numpy 2.5.0 (validated 2.5.1)" in decision.reason_text.lower()
 
 
 def _cucim_environment(**updates):

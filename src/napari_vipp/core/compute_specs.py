@@ -188,6 +188,14 @@ class OperationComputeSpec:
             or allow_experimental
         )
 
+    def eligible_for_auto(self, *, allow_experimental: bool) -> bool:
+        """Return whether automatic policy may consider this implementation."""
+
+        return self.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE or (
+            self.admission_tier is AdmissionTier.DEVELOPER_HIDDEN
+            and allow_experimental
+        )
+
 
 def _normalized_nonempty(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
     normalized = tuple(str(value).strip() for value in values if str(value).strip())
@@ -263,9 +271,9 @@ def _background_spec(operation_id: str) -> OperationComputeSpec:
         implementation_library_id="cucim",
         callable_ref=(f"napari_vipp.core.gpu.cucim_background:{operation_id}"),
         host_boundary=False,
-        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
@@ -305,9 +313,9 @@ def _median_spec() -> OperationComputeSpec:
         implementation_library_id="cupyx",
         callable_ref="napari_vipp.core.gpu.cupy_median:median_filter",
         host_boundary=False,
-        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
@@ -354,9 +362,9 @@ def _gaussian_spec(*, three_dimensional: bool) -> OperationComputeSpec:
         implementation_library_id="cupyx",
         callable_ref=(f"napari_vipp.core.gpu.cupy_gaussian:{operation_id}"),
         host_boundary=False,
-        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
         ),
         input_ports=(_gpu_image_port(0, name="image", **port_values),),
         output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
@@ -451,9 +459,9 @@ def _richardson_lucy_spec() -> OperationComputeSpec:
         implementation_library_id="cupyx",
         callable_ref=("napari_vipp.core.gpu.cupy_rl:richardson_lucy_deconvolution"),
         host_boundary=False,
-        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
         validated_environment_policy_id=(
-            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
         ),
         input_ports=(image_input, psf_input),
         output_ports=(image_output,),
@@ -521,6 +529,176 @@ def _richardson_lucy_tv_spec() -> OperationComputeSpec:
     )
 
 
+def _mask_port(
+    port_index: int,
+    *,
+    name: str,
+    public_dtypes: tuple[str, ...],
+    internal_dtypes: tuple[str, ...],
+    conversion_policy_id: str,
+    nonfinite_policy_id: str,
+    overflow_policy_id: str,
+    boundary_policy_id: str,
+    precision_policy_id: str,
+    output: bool = False,
+) -> ComputePortContract:
+    return ComputePortContract(
+        port_index,
+        ValueKind.MASK if output else ValueKind.ARRAY,
+        port_name=name,
+        public_dtypes=public_dtypes,
+        internal_dtypes=internal_dtypes,
+        accumulation_dtype=internal_dtypes[-1],
+        value_domain=("binary-mask-v1" if output else "real-image-v1"),
+        shape_policy_id="scalar-plane-luma-mask-v1",
+        output_dtype_policy_id=("fixed:bool" if output else "dtype-same-v1"),
+        conversion_policy_id=conversion_policy_id,
+        nonfinite_policy_id=nonfinite_policy_id,
+        rounding_policy_id="mask-bitwise-v1",
+        overflow_policy_id=overflow_policy_id,
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+
+
+def _canny_spec() -> OperationComputeSpec:
+    boundary_policy_id = "skimage-canny-constant-zero-v1"
+    input_port = _mask_port(
+        0,
+        name="image",
+        public_dtypes=("bool", "uint8", "uint16"),
+        internal_dtypes=("float32",),
+        conversion_policy_id="canny-plane-float32-or-luma-v1",
+        nonfinite_policy_id="finite-only-v1",
+        overflow_policy_id="finite-float32-workspace-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="canny-exact-mask-v1",
+    )
+    output_port = _mask_port(
+        0,
+        name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        conversion_policy_id="canny-plane-float32-or-luma-v1",
+        nonfinite_policy_id="finite-output-v1",
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="canny-exact-mask-v1",
+        output=True,
+    )
+    return OperationComputeSpec(
+        operation_id="canny_edges",
+        implementation_id="cupyx-canny-edges-exact-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref="napari_vipp.core.gpu.cupy_canny:canny_edges",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="canny-parameters-v1",
+        workload_policy_id="canny-exact-bool-u8-u16-v2",
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id="cupyx-canny-exact-memory-v1",
+        shape_policy_id="scalar-plane-luma-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="canny-exact-mask-v1",
+        progress_policy_id="scalar-plane-sync-progress-v1",
+        cancellation_policy_id="scalar-plane-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2,),
+        supports_device_residency=True,
+        limitations=(
+            "finite-only",
+            "bool-uint8-uint16-public-v2",
+            "float32-subnormal-intermediates-cpu-v1",
+            "sigma-zero-through-twelve-v1",
+            "quantile-thresholds-only-v1",
+            "exact-mask-v1",
+        ),
+    )
+
+
+def _otsu_spec() -> OperationComputeSpec:
+    boundary_policy_id = "otsu-strict-greater-finite-mask-v1"
+    real_dtypes = (
+        "bool",
+        "int8",
+        "uint8",
+        "int16",
+        "uint16",
+        "int32",
+        "uint32",
+        "int64",
+        "uint64",
+        "float16",
+        "float32",
+        "float64",
+    )
+    input_port = _mask_port(
+        0,
+        name="image",
+        public_dtypes=real_dtypes,
+        internal_dtypes=("same", "float64"),
+        conversion_policy_id="otsu-native-or-luma-v1",
+        nonfinite_policy_id="otsu-finite-histogram-v1",
+        overflow_policy_id="otsu-native-span-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="otsu-exact-mask-v1",
+    )
+    output_port = _mask_port(
+        0,
+        name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        conversion_policy_id="otsu-native-or-luma-v1",
+        nonfinite_policy_id="finite-output-v1",
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="otsu-exact-mask-v1",
+        output=True,
+    )
+    return OperationComputeSpec(
+        operation_id="otsu_threshold",
+        implementation_id="cupy-otsu-threshold-exact-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref="napari_vipp.core.gpu.cupy_otsu:otsu_threshold",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="otsu-parameters-v1",
+        workload_policy_id="otsu-real-exact-v1",
+        parity_policy_id="mask-bitwise-v1",
+        memory_model_id="cupy-otsu-histogram-memory-v1",
+        shape_policy_id="scalar-plane-luma-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id="otsu-exact-mask-v1",
+        progress_policy_id="histogram-scope-sync-progress-v1",
+        cancellation_policy_id="scalar-plane-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2,),
+        supports_device_residency=True,
+        limitations=(
+            "real-dtypes-only-v1",
+            "integer-span-at-most-65536-requires-complete-facts-for-wide-dtypes-v2",
+            "float-histogram-bins-2-through-65536-v1",
+            "exact-mask-v1",
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -529,6 +707,8 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _gaussian_spec(three_dimensional=True),
     _richardson_lucy_spec(),
     _richardson_lucy_tv_spec(),
+    _canny_spec(),
+    _otsu_spec(),
 )
 
 

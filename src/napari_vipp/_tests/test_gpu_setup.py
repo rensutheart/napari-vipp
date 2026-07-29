@@ -39,7 +39,14 @@ def _constraint_entries(name: str) -> set[str]:
 def test_cuda_constraint_files_pin_the_verified_runtime_components():
     cuda13 = _constraint_entries("gpu-cuda13-py312.txt")
     cuda12 = _constraint_entries("gpu-cuda12-py312.txt")
+    scientific_stack = {
+        "numpy==2.5.1",
+        "scipy==1.18.0",
+        "scikit-image==0.26.0",
+    }
 
+    assert scientific_stack <= cuda13
+    assert scientific_stack <= cuda12
     assert {
         "cupy-cuda13x==14.1.1",
         "cuda-toolkit==13.2.2",
@@ -57,6 +64,28 @@ def test_cuda_constraint_files_pin_the_verified_runtime_components():
     } <= cuda12
     assert not any("cuda12" in entry for entry in cuda13)
     assert not any("cuda13" in entry for entry in cuda12)
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="CUDA setup intentionally refuses macOS before planning.",
+)
+@pytest.mark.parametrize("track_name", ("cuda12", "cuda13"))
+def test_each_setup_plan_selects_constraints_with_the_validated_scientific_stack(
+    tmp_path,
+    track_name,
+):
+    plan = setup_gpu_dev.create_setup_plan(
+        track_name=track_name,
+        base_python=sys.executable,
+        venv_path=tmp_path / f"{track_name}-venv",
+    )
+
+    assert {
+        "numpy==2.5.1",
+        "scipy==1.18.0",
+        "scikit-image==0.26.0",
+    } <= _constraint_entries(plan.constraint_path.name)
 
 
 @pytest.mark.skipif(

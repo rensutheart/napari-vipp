@@ -184,10 +184,29 @@ def test_committed_evidence_is_current_and_renders() -> None:
     evidence.validate_evidence_document(document, require_current_sources=True)
     markdown = evidence.render_markdown(document)
 
-    assert "all reviewed developer-hidden gates passed" in markdown
+    assert "development-branch public exposure" in markdown
     assert "Positive shipped default" in markdown
     assert "Maintained microscopy phantoms" in markdown
     assert "historical_aggressive_profile" not in markdown
+    assert "cross-platform support" in markdown
+    assert "released-package" in markdown
+    conclusion = document["conclusion"]
+    assert conclusion["development_branch_public_exposure_justified"] is True
+    assert conclusion["cross_platform_promotion_justified"] is False
+    assert conclusion["released_package_promotion_justified"] is False
+
+
+def test_validation_requires_unambiguous_publication_scope() -> None:
+    document = json.loads(ARTIFACT.read_text(encoding="utf-8"))
+    conclusion = document["conclusion"]
+    conclusion.pop("public_promotion_justified", None)
+    conclusion.update(evidence.PUBLICATION_SCOPE)
+
+    evidence.validate_evidence_document(document, require_current_sources=False)
+
+    conclusion["released_package_promotion_justified"] = True
+    with pytest.raises(evidence.EvidenceError, match="released_package"):
+        evidence.validate_evidence_document(document, require_current_sources=False)
 
 
 def test_validate_existing_subprocess_does_not_require_cupy() -> None:

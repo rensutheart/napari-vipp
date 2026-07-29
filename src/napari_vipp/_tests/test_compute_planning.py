@@ -5,6 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+import napari_vipp.core.compute as compute_module
 import napari_vipp.core.compute_planning as planning_module
 from napari_vipp.core.compute import (
     ComputeEnvironment,
@@ -31,7 +32,7 @@ from napari_vipp.core.compute_registry import (
     RuntimeDevice,
     RuntimeProbeResult,
 )
-from napari_vipp.core.compute_specs import compute_specs_for
+from napari_vipp.core.compute_specs import AdmissionTier, compute_specs_for
 
 
 def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
@@ -44,6 +45,11 @@ def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
         implementation_libraries=libraries,
         runtime_versions=(
             (("cuda-cupy", "14.1.1"), ("cupyx", "14.1.1")) if runtime else ()
+        ),
+        scientific_stack_versions=(
+            ("numpy", "2.5.1"),
+            ("scipy", "1.18.0"),
+            ("scikit-image", "0.26.0"),
         ),
         runtime_probe_fingerprints=(
             (("cuda-cupy", "fake-runtime-fingerprint"),) if runtime else ()
@@ -63,7 +69,9 @@ def _environment(*, runtime=True, libraries=("cpu", "cupyx", "cucim")):
         ),
         driver_version="13030" if runtime else "",
         device_id="cuda:0" if runtime else "cpu:0",
-        device_name="Fake RTX" if runtime else "Host CPU",
+        device_name=(
+            "NVIDIA GeForce RTX 5090" if runtime else "Host CPU"
+        ),
         device_class="nvidia-cuda" if runtime else "host",
         device_metadata=((("compute_capability", "12.0"),) if runtime else ()),
         memory_topology="discrete" if runtime else "host",
@@ -125,6 +133,31 @@ def test_cpu_mode_returns_before_registry_construction_or_gpu_probe(monkeypatch)
     assert result.decisions[0].runtime_id == "cpu-numpy"
     assert result.decisions[0].reason is DecisionReason.EXPLICIT_CPU
     assert result.environment.runtime_ids == ("cpu-numpy",)
+
+
+def test_cpu_mode_records_scientific_stack_without_optional_provider_probe(
+    monkeypatch,
+):
+    requested_distributions: list[str] = []
+
+    def version(distribution):
+        requested_distributions.append(distribution)
+        return {
+            "numpy": "2.5.1",
+            "scipy": "1.18.0",
+            "scikit-image": "0.26.0",
+        }[distribution]
+
+    monkeypatch.setattr(compute_module.importlib.metadata, "version", version)
+
+    result = plan_compute_decisions(ComputeRequest(mode="cpu"), (_workload(),))
+
+    assert dict(result.environment.scientific_stack_versions) == {
+        "numpy": "2.5.1",
+        "scipy": "1.18.0",
+        "scikit-image": "0.26.0",
+    }
+    assert requested_distributions == ["numpy", "scipy", "scikit-image"]
 
 
 def test_selective_all_cpu_preserves_a_healthy_host_environment(monkeypatch):
@@ -228,6 +261,45 @@ def test_selective_exact_and_library_preferences_bypass_auto_threshold():
     assert library.decisions[0].implementation_library_id == "cupyx"
     assert exact.decisions[0].decision_kind is DecisionKind.SELECTED
     assert library.decisions[0].decision_kind is DecisionKind.SELECTED
+
+
+def test_public_selective_candidate_requires_explicit_selective_choice():
+    base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    selective = replace(base, admission_tier=AdmissionTier.PUBLIC_SELECTIVE)
+    registry = ComputeRegistry(implementation_specs=(selective,))
+    workload = _workload()
+    facts = {"node": _facts(workload)}
+    evidence = {
+        ("node", selective.implementation_id): PerformanceEvidence(
+            0.2,
+            0.05,
+            lower_confidence_speedup=2.0,
+        )
+    }
+
+    automatic = plan_compute_decisions(
+        ComputeRequest(mode="auto"),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts=facts,
+        performance_evidence=evidence,
+    )
+    explicit = plan_compute_decisions(
+        _request(
+            f"implementation:{selective.implementation_id}",
+            allow_experimental=False,
+        ),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts=facts,
+    )
+
+    assert automatic.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert explicit.decisions[0].implementation_id == selective.implementation_id
+    assert explicit.decisions[0].decision_kind is DecisionKind.SELECTED
+    registry.close()
 
 
 def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
@@ -375,6 +447,40 @@ def test_visible_forced_preference_has_typed_fallback_and_warning(
     assert result.warnings
 
 
+@pytest.mark.parametrize(
+    "scientific_stack_versions",
+    (
+        (),
+        (
+            ("numpy", "2.5.1"),
+            ("scipy", "1.17.0"),
+            ("scikit-image", "0.26.0"),
+        ),
+    ),
+    ids=("missing", "mismatched"),
+)
+def test_exact_public_gpu_pin_has_visible_cpu_fallback_for_unvalidated_cpu_stack(
+    scientific_stack_versions,
+):
+    workload = _workload()
+    result = plan_compute_decisions(
+        _request("library:cupyx"),
+        (workload,),
+        environment=replace(
+            _environment(),
+            scientific_stack_versions=scientific_stack_versions,
+        ),
+        array_facts={"node": _facts(workload)},
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.FALLBACK_CPU
+    assert decision.fallback_reason is FallbackReason.ENVIRONMENT_UNSUPPORTED
+    assert "validated authoritative CPU scientific stack" in decision.reason_text
+    assert "CPU remains authoritative" in decision.reason_text
+    assert result.warnings == (decision.reason_text,)
+
+
 def test_strict_forced_preference_fails_complete_preflight():
     workload = _workload()
 
@@ -388,6 +494,22 @@ def test_strict_forced_preference_fails_complete_preflight():
 
     assert len(error.value.failures) == 1
     assert error.value.failures[0].reason is DecisionReason.DEPENDENCY_UNAVAILABLE
+
+
+def test_unresolved_upstream_workload_defers_gpu_even_for_strict_preference():
+    workload = replace(_workload(), inputs_resolved=False)
+
+    result = plan_compute_decisions(
+        _request("library:cupyx", fallback="strict"),
+        (workload,),
+        environment=_environment(),
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.POLICY_CPU
+    assert decision.reason is DecisionReason.WORKLOAD_UNSUPPORTED
+    assert not decision.fallback_used
+    assert "upstream output" in decision.reason_text
 
 
 @pytest.mark.parametrize("dtype", ("uint8", "uint16", "float64"))
@@ -453,17 +575,22 @@ def test_memory_cap_rejects_forced_gpu_before_execution():
 
 
 def test_exact_hidden_candidate_is_unavailable_without_experimental_flag():
+    public = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    hidden = replace(public, admission_tier=AdmissionTier.DEVELOPER_HIDDEN)
+    registry = ComputeRegistry(implementation_specs=(hidden,))
     result = plan_compute_decisions(
         _request(
             "implementation:cupyx-gaussian-blur-v1",
             allow_experimental=False,
         ),
         (_workload(),),
+        registry=registry,
         environment=_environment(),
     )
 
     assert result.decisions[0].fallback_used
     assert result.decisions[0].fallback_reason is FallbackReason.DEPENDENCY_UNAVAILABLE
+    registry.close()
 
 
 def test_execution_plan_shell_and_actual_fallback_preserve_typed_identity():
@@ -495,6 +622,16 @@ def test_execution_plan_shell_and_actual_fallback_preserve_typed_identity():
 
 def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatch):
     registry = ComputeRegistry()
+    scientific_stack = {
+        "numpy": "2.5.1",
+        "scipy": "1.18.0",
+        "scikit-image": "0.26.0",
+    }
+    monkeypatch.setattr(
+        compute_module.importlib.metadata,
+        "version",
+        scientific_stack.__getitem__,
+    )
     runtime_fingerprint = "runtime-fingerprint-a"
     runtime_metadata = (
         ("cuda_runtime_version", "13020"),
@@ -522,7 +659,7 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
             devices=(
                 RuntimeDevice(
                     "cuda:0",
-                    "Fake RTX",
+                    "NVIDIA GeForce RTX 5090",
                     16 * 1024**3,
                     metadata=device_metadata,
                 ),
@@ -566,6 +703,7 @@ def test_public_environment_probe_preserves_exact_provider_provenance(monkeypatc
     )
 
     assert not warnings
+    assert dict(environment.scientific_stack_versions) == scientific_stack
     assert dict(environment.runtime_probe_fingerprints) == {
         "cuda-cupy": runtime_fingerprint
     }

@@ -43,16 +43,16 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 2
+    assert policy.policy_version == 3
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
-    assert policy.status == "developer-preview"
+    assert policy.status == "public-validated"
     assert policy.exposure.global_default == "auto"
-    assert not policy.exposure.public_controls_enabled
-    assert policy.exposure.developer_enablement_required
+    assert policy.exposure.public_controls_enabled
+    assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 2  # type: ignore[misc]
+        policy.policy_version = 3  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -70,7 +70,7 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         for operation in policy.operations
     } == expected_implementations
     assert {operation.admission_tier for operation in policy.operations} == {
-        "developer_hidden"
+        "public_auto_candidate"
     }
     assert not policy.auto_selection.broad_calibration_enabled
     assert policy.auto_selection.evidence_scope == "local-or-reviewed-segment-only-v1"
@@ -102,12 +102,19 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert policy.platform_admission.python_implementation == "CPython"
     assert policy.platform_admission.python_minor_versions == ("3.12",)
     assert platform.python_abis == ("cpython-312",)
-    assert policy.platform_admission.cuda_major_versions == (12, 13)
+    assert platform.numpy_versions == ("2.5.1",)
+    assert platform.scipy_versions == ("1.18.0",)
+    assert platform.scikit_image_versions == ("0.26.0",)
+    assert policy.platform_admission.cuda_major_versions == (13,)
+    assert platform.cuda_runtime_versions == ("13020",)
+    assert platform.driver_versions == ("13030",)
     assert platform.cupy_versions == ("14.1.1",)
     assert platform.cupyx_versions == ("14.1.1",)
     assert platform.runtime_probe_fingerprint_required
     assert platform.driver_version_metadata_required
     assert platform.nvidia_compute_capability_required
+    assert platform.nvidia_device_names == ("NVIDIA GeForce RTX 5090",)
+    assert platform.nvidia_compute_capabilities == ("12.0",)
     assert platform.cucim_versions == ("26.6.0", "26.06.00")
     assert platform.cucim_environment_record_schema == "napari-vipp-gpu-environment"
     assert platform.cucim_environment_record_schema_version == 1
@@ -118,12 +125,12 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
     )
     assert platform.validated_environment_policy_ids == (
-        "cuda-cupy-14.1.1-cpython312-windows-native-v2",
-        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2",
+        "cuda-cupy-14.1.1-cpython312-windows-native-v3",
+        "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3",
     )
     assert platform.linux_policy == "pending-native-clean-host-evidence-v1"
     assert platform.macos_policy == "cpu-only-provider-investigation-pending-v1"
-    assert not policy.platform_admission.public_advertisement_enabled
+    assert policy.platform_admission.public_advertisement_enabled
 
 
 def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
@@ -201,7 +208,7 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_valid_but_changed_v2_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v3_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)

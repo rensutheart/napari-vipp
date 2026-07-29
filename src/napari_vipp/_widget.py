@@ -1123,17 +1123,16 @@ class VippWidget(QWidget):
         self._graph_search_matches: tuple[GraphSearchMatch, ...] = ()
         self._graph_search_index = -1
         self._graph_search_highlighted_tunnel = ""
-        # Phase-1 GPU implementations remain deliberately experimental.  The
-        # development branch exposes them honestly while preserving the core
-        # admission tiers; provider packages are still imported only by an
-        # accepted background execution request.
+        # Ordinary UI and headless execution expose the same reviewed provider
+        # tiers. Optional packages remain lazy and are imported only after an
+        # admitted execution request selects them.
         self._compute_mode = ComputeMode.AUTO
         self._compute_fallback_policy = FallbackPolicy.VISIBLE
         self._compute_node_preferences: dict[str, NodeComputePreference] = {}
         self._compute_optimizer_locked_node_ids: set[str] = set()
         self._compute_precision_policy_id = "scientific-default-v1"
         self._compute_workload_policy_id = "vipp-best-available-v1"
-        self._compute_allow_experimental = True
+        self._compute_allow_experimental = False
         self._accepted_compute_decisions: dict[str, NodeExecutionDecision] = {}
         self._compute_decision_environments: dict[str, ComputeEnvironment] = {}
         self._stale_compute_badge_node_ids: set[str] = set()
@@ -1308,8 +1307,7 @@ class VippWidget(QWidget):
         )
         self.compute_mode_combo.setToolTip(
             "Choose CPU for deterministic host execution, Auto for the best "
-            "validated implementation, or Selective for per-node choices. "
-            "GPU implementations on this development branch are experimental."
+            "validated implementation, or Selective for per-node choices."
         )
         _configure_toolbar_combo(self.compute_mode_combo)
         self.compute_status_label = QLabel("Auto")
@@ -1499,7 +1497,7 @@ class VippWidget(QWidget):
         )
         self.auto_recalculate_notice.setStyleSheet("color: #f59e0b;")
         self.calculate_button = QPushButton("Calculate")
-        self.compute_group = QGroupBox("Compute (experimental GPU)")
+        self.compute_group = QGroupBox("Compute")
         self.node_compute_preference_combo = QComboBox()
         self.node_compute_preference_combo.setAccessibleName(
             "Compute preference for selected node"

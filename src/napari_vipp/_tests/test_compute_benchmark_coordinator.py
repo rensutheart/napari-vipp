@@ -66,7 +66,7 @@ def _environment() -> ComputeEnvironment:
         ),
         driver_version="13030",
         device_id="cuda:0",
-        device_name="Fake RTX",
+        device_name="NVIDIA GeForce RTX 5090",
         device_class="nvidia-cuda",
         device_metadata=(("compute_capability", "12.0"),),
         memory_topology="discrete",

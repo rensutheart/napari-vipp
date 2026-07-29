@@ -96,25 +96,17 @@ def test_node_preference_value_round_trip_preserves_stable_identifiers():
     )
 
 
-def test_selective_options_are_declaration_only_and_mark_experimental(monkeypatch):
+def test_selective_public_options_are_declaration_only_and_not_experimental(
+    monkeypatch,
+):
     def unexpected_import(_name, _package=None):
         raise AssertionError("candidate listing imported an optional provider")
 
     monkeypatch.setattr(importlib, "import_module", unexpected_import)
 
-    hidden = node_preference_options(
-        "median_filter",
-        allow_experimental=False,
-    )
-    assert [option.value for option in hidden] == ["auto", "cpu"]
-    assert [option.label for option in hidden] == [
-        "Follow pipeline policy",
-        "CPU",
-    ]
-
     options = node_preference_options(
         "median_filter",
-        allow_experimental=True,
+        allow_experimental=False,
     )
     values = [option.value for option in options]
     assert values == [
@@ -127,12 +119,14 @@ def test_selective_options_are_declaration_only_and_mark_experimental(monkeypatc
     assert "best_gpu" not in values
     assert not any(value.startswith("implementation:") for value in values)
     assert all(
-        "experimental" in option.label
+        "experimental" not in option.label.casefold()
         for option in options
         if option.value not in {"auto", "cpu"}
     )
     assert all(
-        option.experimental for option in options if option.value not in {"auto", "cpu"}
+        not option.experimental
+        for option in options
+        if option.value not in {"auto", "cpu"}
     )
 
 
@@ -203,18 +197,22 @@ def test_aggregate_gpu_choices_are_experimental_if_any_candidate_is_hidden(
     monkeypatch,
 ):
     original = compute_ui_module.compute_specs_for
-    hidden_cupyx = original(
+    public_base = original(
         "median_filter",
         include_cpu=False,
-        allow_experimental=True,
     )[0]
+    hidden_cupyx = replace(
+        public_base,
+        implementation_id="cupyx-median-filter-hidden-v1",
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+    )
     public_cupyx = replace(
-        hidden_cupyx,
+        public_base,
         implementation_id="cupyx-median-filter-public-v1",
         admission_tier=AdmissionTier.PUBLIC_SELECTIVE,
     )
     public_cucim = replace(
-        hidden_cupyx,
+        public_base,
         implementation_id="cucim-median-filter-public-v1",
         implementation_library_id="cucim",
         admission_tier=AdmissionTier.PUBLIC_SELECTIVE,
@@ -279,17 +277,41 @@ def test_current_exact_pin_is_the_only_exact_option_shown():
     assert "cupyx-median-filter-v1" in pinned.description
 
 
-def test_hidden_current_exact_pin_is_visible_but_unavailable_when_disabled():
+def test_hidden_current_exact_pin_is_visible_but_unavailable_when_disabled(
+    monkeypatch,
+):
+    original = compute_ui_module.compute_specs_for
+    public = original("median_filter", include_cpu=False)[0]
+    hidden = replace(
+        public,
+        implementation_id="cupyx-median-filter-hidden-v1",
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+    )
+
+    def hidden_candidates(
+        _operation_id,
+        *,
+        include_cpu=True,
+        allow_experimental=False,
+    ):
+        del include_cpu
+        return (hidden,) if allow_experimental else ()
+
+    monkeypatch.setattr(
+        compute_ui_module,
+        "compute_specs_for",
+        hidden_candidates,
+    )
     options = node_preference_options(
         "median_filter",
         allow_experimental=False,
-        current_preference="implementation:cupyx-median-filter-v1",
+        current_preference="implementation:cupyx-median-filter-hidden-v1",
     )
 
     assert [option.value for option in options] == [
         "auto",
         "cpu",
-        "implementation:cupyx-median-filter-v1",
+        "implementation:cupyx-median-filter-hidden-v1",
     ]
     pinned = options[-1]
     assert pinned.label == "Advanced pin · CuPy (unavailable)"
@@ -335,7 +357,7 @@ def test_unimplemented_node_offers_only_auto_and_cpu():
     assert [option.value for option in options] == ["auto", "cpu"]
 
 
-def test_actual_gpu_decision_becomes_experimental_provider_badge():
+def test_actual_public_gpu_decision_has_normal_provider_badge():
     decision = _decision(
         node_id="median",
         operation_id="median_filter",
@@ -346,10 +368,40 @@ def test_actual_gpu_decision_becomes_experimental_provider_badge():
 
     badge = actual_decision_badge(decision, environment=_gpu_environment())
 
-    assert badge.text == "GPU · CuPy · Exp"
+    assert badge.text == "GPU · CuPy"
     assert badge.tone is ComputePresentationTone.GPU
-    assert badge.experimental is True
+    assert badge.experimental is False
     assert "Test RTX" in badge.tooltip
+    assert "Experimental GPU implementation" not in badge.tooltip
+
+
+def test_actual_hidden_gpu_decision_keeps_experimental_provider_badge(monkeypatch):
+    public = compute_ui_module.compute_specs_for(
+        "median_filter",
+        include_cpu=False,
+    )[0]
+    hidden = replace(
+        public,
+        implementation_id="cupyx-median-filter-hidden-v1",
+        admission_tier=AdmissionTier.DEVELOPER_HIDDEN,
+    )
+    monkeypatch.setattr(
+        compute_ui_module,
+        "compute_specs_for",
+        lambda *_args, **_kwargs: (hidden,),
+    )
+    decision = _decision(
+        node_id="median",
+        operation_id="median_filter",
+        runtime_id="cuda-cupy",
+        library_id="cupyx",
+        implementation_id=hidden.implementation_id,
+    )
+
+    badge = actual_decision_badge(decision, environment=_gpu_environment())
+
+    assert badge.text == "GPU · CuPy · Exp"
+    assert badge.experimental is True
     assert "Experimental GPU implementation" in badge.tooltip
 
 

@@ -1086,6 +1086,23 @@ def test_exact_parity_checks_signed_zero_bits_and_gaussian_uses_both_gates():
     assert not result.passed
     assert "signed_zero_mismatches=1" in result.detail
 
+    reference_mask = np.array([[False, True], [True, False]], dtype=bool)
+    wrong_mask = reference_mask.copy()
+    wrong_mask[1, 1] = True
+    for operation_id in ("canny_edges", "otsu_threshold"):
+        assert operation_parity(
+            operation_id,
+            reference_mask,
+            reference_mask.copy(),
+        ).passed
+        mask_result = operation_parity(
+            operation_id,
+            reference_mask,
+            wrong_mask,
+        )
+        assert not mask_result.passed
+        assert "mismatch" in mask_result.detail
+
     gaussian = np.linspace(-1.0, 1.0, 128, dtype=np.float32).reshape(8, 16)
     within = gaussian + np.float32(2e-7)
     outside = gaussian.copy()

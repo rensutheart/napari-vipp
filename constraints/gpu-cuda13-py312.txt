@@ -3,6 +3,11 @@
 # CuPy 14.1.1 currently documents CUDA support through 13.2. Pinning the
 # toolkit meta-package is necessary because its unconstrained 13.x resolver can
 # otherwise select a newer, not-yet-admitted CUDA minor.
+# Public admission currently also requires the recorded CUDA runtime API 13.2,
+# driver API 13.3, RTX 5090, and compute capability 12.0 environment.
+numpy==2.5.1
+scipy==1.18.0
+scikit-image==0.26.0
 cupy-cuda13x==14.1.1
 cuda-pathfinder==1.6.0
 cuda-toolkit==13.2.2

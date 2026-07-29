@@ -68,6 +68,12 @@ POSITIVE_TV_EPSILON = 1e-6
 POSITIVE_FILTER_EPSILON = 1e-12
 POSITIVE_DENOMINATOR_FLOOR = 0.05
 
+PUBLICATION_SCOPE: dict[str, bool] = {
+    "development_branch_public_exposure_justified": True,
+    "cross_platform_promotion_justified": False,
+    "released_package_promotion_justified": False,
+}
+
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_rl_tv_admission.py",
     "scripts/benchmark_gpu_rl_admission.py",
@@ -480,7 +486,7 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
             "admitted_positive_profile_is_exact_not_a_range": True,
             "lambda_zero_inherits_strict_rl_gate": True,
             "positive_profile_uses_versioned_rl_tv_gate": True,
-            "public_promotion_justified": False,
+            **PUBLICATION_SCOPE,
         },
         "limitations": [
             "This is single-host native-Windows RTX 5090 evidence.",
@@ -490,6 +496,9 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
             "bead data, or blinded expert review.",
             "Exact-workload parity remains mandatory before optimizer selection.",
             "No authored parameter is silently changed to qualify for GPU execution.",
+            "This artifact supports public exposure only inside the reviewed exact "
+            "regions on this development branch.",
+            "Cross-platform support and released-package promotion are not claimed.",
         ],
     }
 
@@ -1092,6 +1101,9 @@ def validate_evidence_document(
     conclusion = _mapping(document, "conclusion")
     if conclusion.get("all_reviewed_gates_passed") is not True:
         raise EvidenceError("Evidence conclusion is not passing.")
+    for name, expected in PUBLICATION_SCOPE.items():
+        if conclusion.get(name) is not expected:
+            raise EvidenceError(f"Evidence publication scope field {name!r} is stale.")
     _validate_environment(_mapping(document, "environment"))
     _validate_privacy(document)
     _validate_source_provenance(
@@ -1182,7 +1194,10 @@ def render_markdown(document: Mapping[str, object]) -> str:
             f"`{environment['packages']['cupy-cuda13x']}`"
         ),
         "- Fixtures: `164` inherited adversarial + `96` independent holdout",
-        "- Status: **all reviewed developer-hidden gates passed**",
+        (
+            "- Status: **all reviewed gates passed for development-branch public "
+            "exposure**"
+        ),
         "",
         "The lambda-zero profile remains ordinary Richardson-Lucy and uses its",
         "strict numerical policy. The positive profile is only the exact shipped",
@@ -1269,9 +1284,11 @@ def render_markdown(document: Mapping[str, object]) -> str:
             "- Guard activity is diagnostic, not a reason to alter authored values.",
             "  The evidence records threshold and denominator-floor activity for",
             "  every positive-profile fixture.",
-            "- This single-machine artifact supports developer-hidden admission.",
-            "  Calibrated bead/biological datasets, blinded review, and Linux/laptop",
-            "  evidence remain required before public promotion.",
+            "- This single-machine artifact supports public exposure for the",
+            "  reviewed exact regions on this development branch.",
+            "- It does not establish cross-platform support or released-package",
+            "  promotion. Calibrated bead/biological datasets, blinded review, and",
+            "  Linux/laptop evidence remain required before those broader claims.",
             "",
         ]
     )
@@ -1315,7 +1332,7 @@ def _environment_fingerprint(
         "runtime_environment_fingerprint": probe.environment_fingerprint,
         "packages": packages,
         "validated_environment_policy_id": (
-            "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
         ),
     }
 

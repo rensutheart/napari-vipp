@@ -17,9 +17,11 @@ from napari_vipp.core.compute import (
     DecisionKind,
     DecisionReason,
     ExecutionPlan,
+    FallbackReason,
     NodeExecutionDecision,
     OutputPortKey,
 )
+from napari_vipp.core.compute_planning import plan_compute_decisions
 from napari_vipp.core.compute_policy import (
     ArrayFactsCache,
     ArrayFactsKey,
@@ -35,6 +37,9 @@ from napari_vipp.core.execution import (
     PipelineRunRequest,
     execute_pipeline_request,
 )
+from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
+from napari_vipp.core.operations import canny_edges as cpu_canny_edges
+from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -110,7 +115,7 @@ class _ProbeRegistry(ComputeRegistry):
             (
                 RuntimeDevice(
                     "cuda:0",
-                    "Test CUDA device",
+                    "NVIDIA GeForce RTX 5090",
                     8 * 1024**3,
                     metadata=(("compute_capability", "12.0"),),
                 ),
@@ -488,6 +493,14 @@ def test_pipeline_request_copies_and_freezes_performance_evidence():
         ("gaussian_blur", np.float64, "sigma", 1.0),
         ("median_filter", np.uint16, "size", 3),
         ("rolling_ball_background", np.float32, "radius", 2.0),
+        ("canny_edges", np.uint16, "sigma", 1.0),
+        ("canny_edges", np.float32, "sigma", 1.0),
+        ("otsu_threshold", np.bool_, "histogram_bins", 256),
+        ("otsu_threshold", np.int8, "histogram_bins", 256),
+        ("otsu_threshold", np.uint8, "histogram_bins", 256),
+        ("otsu_threshold", np.int16, "histogram_bins", 256),
+        ("otsu_threshold", np.uint16, "histogram_bins", 256),
+        ("otsu_threshold", np.float32, "histogram_bins", 256),
     ),
 )
 def test_unsupported_or_non_fact_gated_candidates_do_not_scan(
@@ -617,6 +630,124 @@ def test_float32_finite_only_candidates_scan_once(
     assert facts.all_finite is True
     assert facts.minimum == 0.0
     assert facts.maximum == 80.0
+
+
+@pytest.mark.parametrize("dtype", (np.int32, np.uint32, np.int64, np.uint64))
+def test_wide_integer_otsu_scans_once_for_exact_native_span(monkeypatch, dtype):
+    calls = _scan_spy(monkeypatch)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    otsu = pipeline.add_node("otsu_threshold")
+    assert pipeline.connect("input", otsu.id).success
+    data = np.arange(81).reshape(9, 9).astype(dtype)
+    planner = _CapturingPlanner()
+
+    result = _execute_accelerated(
+        _accelerated_request(pipeline, data),
+        planner,
+    )
+
+    assert result.error == ""
+    assert len(calls) == 1
+    facts = planner.array_facts[otsu.id][0]
+    assert facts.minimum == 0
+    assert facts.maximum == 80
+
+
+def test_float32_canny_executes_visible_cpu_fallback_without_fact_scan(monkeypatch):
+    calls = _scan_spy(monkeypatch)
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    canny = pipeline.add_node("canny_edges")
+    assert pipeline.connect("input", canny.id).success
+    data = np.arange(81, dtype=np.float32).reshape(9, 9)
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request=ComputeRequest(
+                mode=ComputeMode.SELECTIVE,
+                node_preferences={
+                    canny.id: "implementation:cupyx-canny-edges-exact-v1"
+                },
+                runtime_id="cuda-cupy",
+            ),
+        ),
+        plan_compute_decisions,
+    )
+
+    assert result.error == ""
+    assert calls == []
+    assert result.pipeline is not None
+    np.testing.assert_array_equal(
+        result.pipeline.outputs[canny.id],
+        cpu_canny_edges(data),
+    )
+    assert result.execution_report is not None
+    decision = next(
+        item
+        for item in result.execution_report.actual_decisions
+        if item.node_id == canny.id
+    )
+    assert decision.decision_kind is DecisionKind.FALLBACK_CPU
+    assert decision.reason is DecisionReason.VISIBLE_FALLBACK
+    assert decision.fallback_reason is FallbackReason.WORKLOAD_UNSUPPORTED
+    assert "subnormal" in decision.reason_text
+    assert result.execution_report.warnings == (decision.reason_text,)
+
+
+def test_integer_otsu_wide_stack_slice_scope_executes_visible_cpu_fallback():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    otsu = pipeline.add_node("otsu_threshold")
+    pipeline.set_param(otsu.id, "threshold_scope", "Slice histogram")
+    assert pipeline.connect("input", otsu.id).success
+    data = np.zeros((2, 9, 11), dtype=np.uint32)
+    data[1] = 1_000_000
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            data,
+            source_payloads={
+                "input": SourcePayload(
+                    data,
+                    {"axes": "ZYX"},
+                    "source",
+                    revision_token="wide-slice-revision",
+                )
+            },
+            compute_request=ComputeRequest(
+                mode=ComputeMode.SELECTIVE,
+                node_preferences={
+                    otsu.id: (
+                        "implementation:cupy-otsu-threshold-exact-v1"
+                    )
+                },
+                runtime_id="cuda-cupy",
+            ),
+        ),
+        plan_compute_decisions,
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    np.testing.assert_array_equal(
+        result.pipeline.outputs[otsu.id],
+        cpu_otsu_threshold(data, threshold_scope="Slice histogram"),
+    )
+    assert result.execution_report is not None
+    decision = next(
+        item
+        for item in result.execution_report.actual_decisions
+        if item.node_id == otsu.id
+    )
+    assert decision.decision_kind is DecisionKind.FALLBACK_CPU
+    assert decision.reason is DecisionReason.VISIBLE_FALLBACK
+    assert decision.fallback_reason is FallbackReason.WORKLOAD_UNSUPPORTED
+    assert "cannot be proved per plane" in decision.reason_text
+    assert result.execution_report.warnings == (decision.reason_text,)
 
 
 def test_background_to_gaussian_scans_source_once_and_propagates(monkeypatch):
@@ -1244,3 +1375,85 @@ def test_deconvolution_projects_its_finite_nonnegative_output_theorem(operation_
     assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
     assert propagated.minimum is None
     assert propagated.maximum is None
+
+
+@pytest.mark.parametrize("operation_id", ("canny_edges", "otsu_threshold"))
+def test_segmentation_projects_exact_boolean_facts(operation_id):
+    source = execution_module._complete_array_facts(
+        np.array([[np.nan, -1.0], [1.0, np.inf]], dtype=np.float32),
+        revision_fingerprint="segmentation-source",
+    )
+
+    propagated = execution_module._propagate_shape_preserving_facts(
+        operation_id,
+        source,
+        {},
+        output_port=OutputPortKey("mask", 0),
+        output_shape=(3, 7, 9),
+        output_dtype="bool",
+    )
+
+    assert propagated is not None
+    assert propagated.shape == (3, 7, 9)
+    assert propagated.dtype == "bool"
+    assert propagated.all_finite is True
+    assert {"nonnegative", "no-negative-zero"} <= set(propagated.guarantees)
+
+
+@pytest.mark.parametrize("operation_id", ("canny_edges", "otsu_threshold"))
+def test_segmentation_luma_planning_projects_shape_dtype_and_metadata(operation_id):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    node = pipeline.add_node(operation_id)
+    assert pipeline.connect("input", node.id).success
+    pipeline.set_param(node.id, "channel_axis", 1)
+    data = np.zeros((2, 3, 9, 11), dtype=np.uint16)
+    axes = (
+        AxisMetadata("t", "time"),
+        AxisMetadata("c", "channel"),
+        AxisMetadata("y", "space"),
+        AxisMetadata("x", "space"),
+    )
+    state = image_state_from_array(data, axes=axes)
+    assert state is not None
+    call = pipeline.prepare_node_call(node.id, (data,), (state,))
+
+    projected = execution_module._project_host_planning_output(
+        pipeline,
+        operation_id,
+        call,
+        (data.shape,),
+        (data.dtype.name,),
+    )
+
+    assert projected is not None
+    description, output_state = projected
+    assert description.shape == (2, 9, 11)
+    assert description.dtype == np.dtype(bool)
+    assert output_state is not None
+    assert output_state.shape == (2, 9, 11)
+    assert output_state.dtype == "bool"
+    assert tuple(axis.name for axis in output_state.axes) == ("t", "y", "x")
+    assert output_state.kind == "binary mask"
+    assert output_state.channels == ()
+
+    with ComputeRegistry() as registry:
+        implementation = registry.implementations_for_operation(
+            operation_id,
+            allow_experimental=False,
+        )[0]
+    (resident_state,) = execution_module._predict_device_node_states(
+        pipeline,
+        call,
+        implementation,
+        (np.zeros(description.shape, dtype=bool),),
+    )
+    assert resident_state == output_state
+
+    with pytest.raises(RuntimeError, match="shape contract"):
+        execution_module._predict_device_node_states(
+            pipeline,
+            call,
+            implementation,
+            (np.zeros(data.shape, dtype=bool),),
+        )

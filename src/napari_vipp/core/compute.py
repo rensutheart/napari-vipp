@@ -23,6 +23,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from hashlib import sha256
+from numbers import Integral
 from types import MappingProxyType
 from typing import Any
 
@@ -251,6 +252,22 @@ class MemoryTopology(StrEnum):
     UNIFIED = "unified"
 
 
+_SCIENTIFIC_STACK_DISTRIBUTIONS = ("numpy", "scipy", "scikit-image")
+
+
+def _installed_scientific_stack_versions() -> tuple[tuple[str, str], ...]:
+    """Read CPU-reference versions without importing scientific/GPU packages."""
+
+    versions: list[tuple[str, str]] = []
+    for distribution in _SCIENTIFIC_STACK_DISTRIBUTIONS:
+        try:
+            version = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            version = "not-installed"
+        versions.append((distribution, version))
+    return tuple(versions)
+
+
 @dataclass(frozen=True, slots=True)
 class ComputeEnvironment:
     """One immutable capability/provenance snapshot."""
@@ -266,6 +283,9 @@ class ComputeEnvironment:
     runtime_ids: tuple[str, ...] = ("cpu-numpy",)
     implementation_libraries: tuple[str, ...] = ("cpu",)
     runtime_versions: tuple[tuple[str, str], ...] = ()
+    scientific_stack_versions: tuple[tuple[str, str], ...] = field(
+        default_factory=_installed_scientific_stack_versions
+    )
     runtime_probe_fingerprints: tuple[tuple[str, str], ...] = ()
     runtime_metadata: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = ()
     implementation_library_metadata: tuple[
@@ -290,6 +310,11 @@ class ComputeEnvironment:
         versions = _normalized_unique_pairs(
             self.runtime_versions,
             "runtime_versions",
+            strip_values=True,
+        )
+        scientific_stack_versions = _normalized_unique_pairs(
+            self.scientific_stack_versions,
+            "scientific_stack_versions",
             strip_values=True,
         )
         runtime_fingerprints = _normalized_unique_pairs(
@@ -329,6 +354,11 @@ class ComputeEnvironment:
         object.__setattr__(self, "runtime_versions", versions)
         object.__setattr__(
             self,
+            "scientific_stack_versions",
+            scientific_stack_versions,
+        )
+        object.__setattr__(
+            self,
             "runtime_probe_fingerprints",
             runtime_fingerprints,
         )
@@ -347,6 +377,9 @@ class ComputeEnvironment:
         payload["runtime_ids"] = list(self.runtime_ids)
         payload["implementation_libraries"] = list(self.implementation_libraries)
         payload["runtime_versions"] = dict(self.runtime_versions)
+        payload["scientific_stack_versions"] = dict(
+            self.scientific_stack_versions
+        )
         payload["runtime_probe_fingerprints"] = dict(self.runtime_probe_fingerprints)
         payload["runtime_metadata"] = {
             scope: dict(metadata) for scope, metadata in self.runtime_metadata
@@ -366,6 +399,11 @@ class ComputeEnvironment:
         versions = values.get("runtime_versions", ())
         if isinstance(versions, Mapping):
             values["runtime_versions"] = tuple(versions.items())
+        scientific_stack_versions = values.get("scientific_stack_versions", ())
+        if isinstance(scientific_stack_versions, Mapping):
+            values["scientific_stack_versions"] = tuple(
+                scientific_stack_versions.items()
+            )
         fingerprints = values.get("runtime_probe_fingerprints", ())
         if isinstance(fingerprints, Mapping):
             values["runtime_probe_fingerprints"] = tuple(fingerprints.items())
@@ -466,6 +504,7 @@ class WorkloadDescriptor:
     resident_successors: tuple[str, ...] = ()
     required_host_boundaries: int = 0
     facts_fingerprint: str = ""
+    inputs_resolved: bool = True
 
     def __post_init__(self) -> None:
         node_id = str(self.node_id).strip()
@@ -499,6 +538,8 @@ class WorkloadDescriptor:
             or self.required_host_boundaries < 0
         ):
             raise ValueError("required_host_boundaries must be non-negative.")
+        if not isinstance(self.inputs_resolved, bool):
+            raise TypeError("inputs_resolved must be a boolean.")
         object.__setattr__(self, "node_id", node_id)
         object.__setattr__(self, "operation_id", operation_id)
         object.__setattr__(self, "input_shapes", tuple(shapes))
@@ -876,8 +917,10 @@ def canonical_digest(value: object) -> str:
 
 
 def _freeze_json_value(value: object) -> object:
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, (str, bool)):
         return value
+    if isinstance(value, Integral):
+        return int(value)
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("contract values must not contain NaN or infinity.")

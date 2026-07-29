@@ -100,6 +100,9 @@ def test_committed_evidence_is_current_and_supports_only_the_exact_value():
     assert conclusion["recommended_maximum_iterations"] == 25
     assert conclusion["require_all_psf_extents_odd"] is True
     assert conclusion["higher_filter_epsilon_is_not_monotone"] is True
+    assert conclusion["development_branch_public_exposure_justified"] is True
+    assert conclusion["cross_platform_promotion_justified"] is False
+    assert conclusion["released_package_promotion_justified"] is False
 
     final = _summaries(document, "final_odd_164")
     assert final[(1e-8, 10)]["failure_count"] == 0
@@ -119,9 +122,34 @@ def test_committed_evidence_is_current_and_supports_only_the_exact_value():
 
 
 def test_committed_markdown_is_rendered_from_the_json_artifact():
-    assert SUMMARY_PATH.read_text(encoding="utf-8") == (
-        benchmark_gpu_rl_admission.render_markdown(_evidence())
+    markdown = benchmark_gpu_rl_admission.render_markdown(_evidence())
+
+    assert SUMMARY_PATH.read_text(encoding="utf-8") == markdown
+    assert "public exposure on this development branch" in markdown
+    assert "cross-platform" in markdown
+    assert "released-package promotion" in markdown
+
+
+def test_validation_requires_unambiguous_publication_scope():
+    document = _evidence()
+    conclusion = document["conclusion"]
+    conclusion.pop("public_exposure", None)
+    conclusion.update(benchmark_gpu_rl_admission.PUBLICATION_SCOPE)
+
+    benchmark_gpu_rl_admission.validate_evidence_document(
+        document,
+        require_current_sources=False,
     )
+
+    conclusion["cross_platform_promotion_justified"] = True
+    with pytest.raises(
+        benchmark_gpu_rl_admission.AdmissionEvidenceError,
+        match="cross_platform_promotion_justified",
+    ):
+        benchmark_gpu_rl_admission.validate_evidence_document(
+            document,
+            require_current_sources=False,
+        )
 
 
 def test_validate_existing_is_cpu_safe(monkeypatch, capsys):

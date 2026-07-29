@@ -1,9 +1,10 @@
 """Create reproducible CuPy Richardson-Lucy admission evidence.
 
-This developer-only command preserves the deterministic adversarial matrices
-used to choose the initial ordinary Richardson-Lucy GPU region.  It compares
-VIPP's authoritative progress-aware CPU operation with the real resident CuPy
-provider; it is a scientific-parity command, not a performance benchmark.
+This development evidence command preserves the deterministic adversarial
+matrices used to choose the initial ordinary Richardson-Lucy GPU region.  It
+compares VIPP's authoritative progress-aware CPU operation with the real
+resident CuPy provider; it is a scientific-parity command, not a performance
+benchmark.
 
 Importing the module, asking for help, or validating an existing artifact does
 not import CuPy or initialize CUDA.  A full run writes evidence only after all
@@ -43,6 +44,12 @@ MAX_ABSOLUTE_FLOOR = 1e-6
 MAX_ABSOLUTE_PEAK_FACTOR = 5e-6
 RECOMMENDED_FILTER_EPSILON = 1e-8
 RECOMMENDED_MAXIMUM_ITERATIONS = 25
+
+PUBLICATION_SCOPE: dict[str, bool] = {
+    "development_branch_public_exposure_justified": True,
+    "cross_platform_promotion_justified": False,
+    "released_package_promotion_justified": False,
+}
 
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_rl_admission.py",
@@ -317,6 +324,9 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
             "The authored CPU default filter_epsilon=1e-12 is unchanged and "
             "remains outside the initial GPU region.",
             "No parameter is silently changed to qualify a workload for GPU execution.",
+            "This artifact supports public exposure only inside the reviewed exact "
+            "region on this development branch.",
+            "Cross-platform support and released-package promotion are not claimed.",
         ],
     }
 
@@ -783,7 +793,7 @@ def _derive_conclusion(suites: Mapping[str, object]) -> dict[str, object]:
         "iterations_above_25_rejected": long_iterations_rejected,
         "even_psf_region_rejected": even_psfs_rejected,
         "higher_filter_epsilon_is_not_monotone": higher_epsilon_not_monotone,
-        "public_exposure": "developer-hidden",
+        **PUBLICATION_SCOPE,
         "selection_requirement": (
             "exact-workload parity before timing or optimizer selection"
         ),
@@ -841,6 +851,9 @@ def validate_evidence_document(
     for key, expected in required_conclusion.items():
         if conclusion.get(key) != expected:
             raise AdmissionEvidenceError(f"Evidence conclusion {key!r} is stale.")
+    for key, expected in PUBLICATION_SCOPE.items():
+        if conclusion.get(key) is not expected:
+            raise AdmissionEvidenceError(f"Evidence conclusion {key!r} is stale.")
     if require_current_sources:
         provenance = document.get("source_provenance")
         if not isinstance(provenance, Mapping):
@@ -860,8 +873,10 @@ def render_markdown(document: Mapping[str, object]) -> str:
         f"- Device: `{environment['cuda']['device_name']}`",
         f"- Platform: `{environment['platform']}`",
         "",
-        "This is deterministic, machine-local scientific-parity evidence. It is",
-        "not a portable performance claim and does not waive exact-workload parity.",
+        "This deterministic, machine-local scientific-parity evidence supports",
+        "public exposure inside the reviewed exact region on this development",
+        "branch. It is not a portable performance, cross-platform, or released-",
+        "package promotion claim, and it does not waive exact-workload parity.",
         "",
         "## Policy gate",
         "",
@@ -905,7 +920,8 @@ def render_markdown(document: Mapping[str, object]) -> str:
             f"- `iterations <= {conclusion['recommended_maximum_iterations']}`",
             "- every PSF extent is odd;",
             "- normalized PSF and default-safe clipping/scale controls;",
-            "- developer-hidden exposure; and",
+            "- public exposure on this development branch, limited to this exact",
+            "  reviewed region; and",
             "- exact-workload CPU/GPU parity before timing or optimizer selection.",
             "",
             "Higher epsilon values are not automatically safer: the ratio update has",
@@ -914,6 +930,8 @@ def render_markdown(document: Mapping[str, object]) -> str:
             "The authored CPU default `filter_epsilon=1e-12` remains unchanged and",
             "uses CPU fallback. VIPP must never silently raise it to qualify a GPU "
             "run.",
+            "Cross-platform support and released-package promotion require their",
+            "own validation and are not claimed by this artifact.",
             "",
             "Raw per-fixture metrics, environment versions, generator contract, and",
             "source hashes are retained in the sibling JSON artifact.",

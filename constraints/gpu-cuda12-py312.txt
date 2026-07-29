@@ -1,4 +1,9 @@
-# Native Windows/Linux CUDA 12 compatibility runtime for CPython 3.12.
+# Native Windows/Linux CUDA 12 qualification runtime for CPython 3.12.
+# This track remains useful for developer evidence but is not admitted by the
+# current public Windows/CUDA 13/RTX 5090 compute policy.
+numpy==2.5.1
+scipy==1.18.0
+scikit-image==0.26.0
 cupy-cuda12x==14.1.1
 cuda-pathfinder==1.6.0
 cuda-toolkit==12.9.2.0

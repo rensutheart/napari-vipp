@@ -683,18 +683,19 @@ def test_selective_gpu_choice_is_captured_by_background_request(qtbot):
     widget.graph_view.select_node("gaussian")
 
     assert not widget.compute_group.isHidden()
+    assert widget.compute_group.title() == "Compute"
     library_index = widget.node_compute_preference_combo.findData("library:cupyx")
     assert library_index >= 0
-    assert "experimental" in widget.node_compute_preference_combo.itemText(
+    assert "experimental" not in widget.node_compute_preference_combo.itemText(
         library_index
-    )
+    ).casefold()
 
     widget.node_compute_preference_combo.setCurrentIndex(library_index)
 
     assert pool.workers
     request = pool.workers[-1].request.compute_request
     assert request.mode.value == "selective"
-    assert request.allow_experimental
+    assert not request.allow_experimental
     assert request.preference_for("gaussian") == NodeComputePreference(
         "library",
         "cupyx",
@@ -1322,7 +1323,7 @@ def test_selective_exact_pin_is_honest_until_user_replaces_it(qtbot):
 def test_accepted_gpu_report_updates_node_badge_and_toolbar_summary(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
-    request = ComputeRequest(mode="auto", allow_experimental=True)
+    request = ComputeRequest(mode="auto")
     decision = NodeExecutionDecision(
         "gaussian",
         "gaussian_blur",
@@ -1498,7 +1499,7 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
     assert restored_request.workload_policy_id == "interactive-volume-v2"
     assert restored_request.runtime_id == ""
     assert restored_request.device_id == ""
-    assert restored_request.allow_experimental is True
+    assert restored_request.allow_experimental is False
 
 
 def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):

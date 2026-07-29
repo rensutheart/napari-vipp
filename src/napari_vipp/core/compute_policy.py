@@ -11,6 +11,7 @@ import math
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from numbers import Integral
 from types import MappingProxyType
 
 import numpy as np
@@ -32,6 +33,8 @@ RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS = frozenset({10, 25})
 RICHARDSON_LUCY_TV_REGULARIZATION = 0.002
 RICHARDSON_LUCY_TV_EPSILON = 1e-6
 RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR = 0.05
+OTSU_DEFAULT_HISTOGRAM_BINS = 256
+OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
 
 _RICHARDSON_LUCY_FLOAT32_BYTES = 4
 _RICHARDSON_LUCY_COMPLEX64_BYTES = 8
@@ -336,10 +339,10 @@ class PerformanceDecision:
 
 
 CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID = (
-    "cuda-cupy-14.1.1-cpython312-windows-native-v2"
+    "cuda-cupy-14.1.1-cpython312-windows-native-v3"
 )
 CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
-    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2"
+    "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
 )
 CUDA_ENVIRONMENT_POLICIES = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
@@ -352,6 +355,15 @@ _PHASE1_CUDA_POLICY_PROVIDER = {
 }
 
 _PHASE1_CUPY_VERSION = "14.1.1"
+_PHASE1_CUDA_RUNTIME_VERSION = "13020"
+_PHASE1_CUDA_DRIVER_VERSION = "13030"
+_PHASE1_CUDA_DEVICE_NAME = "NVIDIA GeForce RTX 5090"
+_PHASE1_CUDA_COMPUTE_CAPABILITY = "12.0"
+_PHASE1_CPU_SCIENTIFIC_STACK = {
+    "numpy": "2.5.1",
+    "scipy": "1.18.0",
+    "scikit-image": "0.26.0",
+}
 _PHASE1_CUCIM_VERSIONS = frozenset({"26.6.0", "26.06.00"})
 _PHASE1_CUCIM_ARTIFACT_SHA256 = (
     "586d3443091eea67ce2c697be2c490ca51977a5dbdf894b9318b270977134cf8"
@@ -458,7 +470,18 @@ def evaluate_candidate_workload_support(
     requires_finite = "finite-only" in spec.limitations or any(
         port.nonfinite_policy_id == "finite-only-v1" for port in spec.input_ports
     )
-    if requires_finite:
+    finite_fact_indices = tuple(
+        index
+        for index, (dtype, port) in enumerate(
+            zip(workload.input_dtypes, spec.input_ports, strict=True)
+        )
+        if _dtype_can_contain_nonfinite(dtype)
+        and (
+            "finite-only" in spec.limitations
+            or port.nonfinite_policy_id == "finite-only-v1"
+        )
+    )
+    if requires_finite and finite_fact_indices:
         if len(facts) != len(spec.input_ports):
             return SupportDecision(
                 False,
@@ -467,9 +490,9 @@ def evaluate_candidate_workload_support(
                 requires_complete_facts=True,
             )
         if any(
-            item.completeness is not FactCompleteness.COMPLETE
-            or item.all_finite is not True
-            for item in facts
+            facts[index].completeness is not FactCompleteness.COMPLETE
+            or facts[index].all_finite is not True
+            for index in finite_fact_indices
         ):
             return SupportDecision(
                 False,
@@ -531,6 +554,36 @@ def _evaluate_phase1_cuda_host_environment(
         return rejected(
             "Phase-1 GPU admission requires the exact CPython 3.12 cpython-312 ABI."
         )
+    scientific_versions = dict(environment.scientific_stack_versions)
+    missing_scientific_versions = tuple(
+        distribution
+        for distribution in _PHASE1_CPU_SCIENTIFIC_STACK
+        if not scientific_versions.get(distribution)
+        or scientific_versions[distribution] == "not-installed"
+    )
+    if missing_scientific_versions:
+        missing = ", ".join(missing_scientific_versions)
+        return rejected(
+            "Phase-1 GPU admission requires version metadata for the validated "
+            "authoritative CPU scientific stack (NumPy 2.5.1, SciPy 1.18.0, "
+            "scikit-image 0.26.0); missing: "
+            f"{missing}. CPU remains authoritative."
+        )
+    mismatched_scientific_versions = tuple(
+        (distribution, scientific_versions[distribution], required)
+        for distribution, required in _PHASE1_CPU_SCIENTIFIC_STACK.items()
+        if scientific_versions[distribution] != required
+    )
+    if mismatched_scientific_versions:
+        mismatch = ", ".join(
+            f"{distribution} {actual} (validated {required})"
+            for distribution, actual, required in mismatched_scientific_versions
+        )
+        return rejected(
+            "Phase-1 GPU admission requires the validated authoritative CPU "
+            "scientific stack (NumPy 2.5.1, SciPy 1.18.0, scikit-image 0.26.0); "
+            f"found {mismatch}. CPU remains authoritative."
+        )
     return None
 
 
@@ -580,10 +633,12 @@ def _evaluate_phase1_cuda_environment(
     cuda_runtime = runtime_metadata.get("cuda_runtime_version", "")
     if not cuda_runtime.isascii() or not cuda_runtime.isdecimal():
         return rejected("The CUDA runtime version metadata must be numeric.")
-    if int(cuda_runtime) // 1000 not in {12, 13}:
+    if cuda_runtime != _PHASE1_CUDA_RUNTIME_VERSION:
         return rejected(
-            "Phase-1 admission has executable evidence only for CUDA runtime "
-            "major 12 or 13."
+            "Public GPU admission requires the validated CUDA runtime API 13.2 "
+            f"({_PHASE1_CUDA_RUNTIME_VERSION}); found {cuda_runtime}. CUDA 12 "
+            "and other runtime versions remain developer qualification tracks, "
+            "so CPU remains authoritative."
         )
     metadata_driver = runtime_metadata.get("driver_version", "")
     if (
@@ -596,12 +651,25 @@ def _evaluate_phase1_cuda_environment(
         return rejected(
             "The CUDA probe must preserve matching numeric driver-version metadata."
         )
+    if metadata_driver != _PHASE1_CUDA_DRIVER_VERSION:
+        return rejected(
+            "Public GPU admission requires the validated CUDA driver API 13.3 "
+            f"({_PHASE1_CUDA_DRIVER_VERSION}); found {metadata_driver}. Other "
+            "driver versions require renewed evidence, so CPU remains authoritative."
+        )
     if (
         not environment.device_id.startswith("cuda:")
         or environment.device_class != "nvidia-cuda"
         or not environment.device_name
     ):
         return rejected("Phase-1 admission requires a selected NVIDIA CUDA device.")
+    if environment.device_name != _PHASE1_CUDA_DEVICE_NAME:
+        return rejected(
+            "Public GPU admission is currently validated only for "
+            f"{_PHASE1_CUDA_DEVICE_NAME}; found "
+            f"{environment.device_name or 'an unnamed device'}. Secondary NVIDIA "
+            "hardware remains a qualification track, so CPU remains authoritative."
+        )
     compute_capability = dict(environment.device_metadata).get(
         "compute_capability",
         "",
@@ -609,6 +677,13 @@ def _evaluate_phase1_cuda_environment(
     if not _valid_compute_capability(compute_capability):
         return rejected(
             "The selected NVIDIA device is missing numeric compute-capability metadata."
+        )
+    if compute_capability != _PHASE1_CUDA_COMPUTE_CAPABILITY:
+        return rejected(
+            "Public GPU admission requires the validated NVIDIA compute capability "
+            f"{_PHASE1_CUDA_COMPUTE_CAPABILITY}; found {compute_capability}. "
+            "Secondary hardware requires its own evidence, so CPU remains "
+            "authoritative."
         )
 
     if spec.validated_environment_policy_id == (
@@ -710,6 +785,7 @@ def estimate_candidate_memory(
         )
         for port in spec.output_ports
     )
+    host_workspace = 0
 
     if spec.memory_model_id == "host-reference-v1":
         return MemoryEstimate(
@@ -748,6 +824,99 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
+    elif spec.memory_model_id == "cupyx-canny-exact-memory-v1":
+        parameters = dict(workload.parameters)
+        scalar_shape, luma_itemsize = _scalar_luma_shape_and_itemsize(
+            workload.input_shapes[0],
+            workload.input_dtypes[0],
+            parameters.get("channel_axis"),
+        )
+        scalar_elements = math.prod(scalar_shape)
+        plane_elements = (
+            math.prod(scalar_shape[-2:])
+            if len(scalar_shape) > 2
+            else scalar_elements
+        )
+        uses_luma = parameters.get("channel_axis") is not None
+        raw_dtype = np.dtype(workload.input_dtypes[0])
+        luma_dtype = np.result_type(raw_dtype, np.float32)
+        # RGB/RGBA reduction retains the coefficient product (3N) and scalar
+        # luma result (N).  Inputs whose dtype differs from the luma work dtype
+        # additionally retain the explicit three-channel cast (3N).  A
+        # same-dtype RGB view aliases the already-counted source allocation.
+        luma_buffers = 4 + (3 if raw_dtype != luma_dtype else 0)
+        luma_workspace = (
+            scalar_elements * luma_itemsize * luma_buffers if uses_luma else 0
+        )
+        # The exact provider retains float32 mask correction, smoothed image,
+        # Sobel components/magnitude and NMS arrays while its exact correlation
+        # kernels and CuPyX labeling/percentile calls own transient workspaces.
+        # Leading planes execute sequentially, so reserve a deliberately
+        # conservative 24 float32-equivalent plane buffers rather than scaling
+        # by stack depth.
+        plane_workspace = plane_elements * np.dtype(np.float32).itemsize * 24
+        workspace = luma_workspace + plane_workspace
+    elif spec.memory_model_id == "cupy-otsu-histogram-memory-v1":
+        parameters = dict(workload.parameters)
+        scalar_shape, luma_itemsize = _scalar_luma_shape_and_itemsize(
+            workload.input_shapes[0],
+            workload.input_dtypes[0],
+            parameters.get("channel_axis"),
+        )
+        scalar_elements = math.prod(scalar_shape)
+        scope = str(
+            parameters.get("threshold_scope", "Stack histogram")
+        ).strip().casefold()
+        histogram_elements = (
+            math.prod(scalar_shape[-2:])
+            if scope == "slice histogram" and len(scalar_shape) > 2
+            else scalar_elements
+        )
+        raw_dtype = np.dtype(workload.input_dtypes[0])
+        uses_luma = parameters.get("channel_axis") is not None
+        effective_dtype = (
+            np.dtype(f"float{luma_itemsize * 8}") if uses_luma else raw_dtype
+        )
+        # RGB/RGBA reduction can simultaneously retain the three-channel work
+        # cast, its coefficient product, and the scalar luma result.  Count all
+        # 3N + 3N + N elements; the source allocation is already included in
+        # ``input_bytes`` below.
+        luma_workspace = scalar_elements * luma_itemsize * 7 if uses_luma else 0
+        if effective_dtype == np.dtype(bool):
+            histogram_workspace = 0
+            histogram_bins = 0
+        elif np.issubdtype(effective_dtype, np.integer):
+            # The exact integer path owns uint64 relative levels and an int64
+            # bincount input concurrently. Admission proves a span no larger
+            # than the authoritative 65,536-level ceiling.
+            histogram_bins = OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS
+            histogram_workspace = histogram_elements * 16
+        else:
+            requested_bins = _histogram_bin_count(
+                parameters.get("histogram_bins", 256)
+            )
+            histogram_bins = requested_bins or OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS
+            # Finite mask + compact effective values + float64 histogram input
+            # + int64 comparison-derived bin indices.  The latter avoids
+            # CuPy's non-exact uniform-range histogram shortcut.
+            histogram_workspace = histogram_elements * (
+                1
+                + effective_dtype.itemsize
+                + np.dtype(np.float64).itemsize
+                + np.dtype(np.int64).itemsize
+            )
+        bounded_histogram_bytes = histogram_bins * np.dtype(np.intp).itemsize
+        edge_bytes = (histogram_bins + 1) * max(effective_dtype.itemsize, 1)
+        workspace = (
+            luma_workspace
+            + histogram_workspace
+            + bounded_histogram_bytes
+            + edge_bytes
+        )
+        # Otsu deliberately finalizes only bounded histogram metadata on the
+        # host to retain NumPy's exact cumulative arithmetic and first-argmax
+        # tie break.  Reserve counts plus both authored edges and centers.
+        host_workspace = bounded_histogram_bytes + 2 * edge_bytes
     elif spec.memory_model_id in {
         "cupyx-richardson-lucy-fft-memory-v2",
         "cupyx-richardson-lucy-tv-fft-memory-v1",
@@ -840,7 +1009,7 @@ def estimate_candidate_memory(
     return MemoryEstimate(
         runtime_managed_peak_bytes=runtime_peak,
         total_device_peak_bytes=runtime_peak,
-        host_materialization_peak_bytes=output_bytes,
+        host_materialization_peak_bytes=output_bytes + host_workspace,
         uncertainty_bytes=uncertainty,
         model_id=spec.memory_model_id,
     )
@@ -1068,6 +1237,193 @@ def _richardson_lucy_tv_region_policy(
     return None
 
 
+def _canny_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    parameters = dict(workload.parameters)
+    shape = workload.input_shapes[0]
+    if not shape or any(extent == 0 for extent in shape):
+        return _workload_rejection(
+            "Canny requires non-empty image data.",
+            fallback_allowed=False,
+        )
+    _channel_axis, channel_error = _validated_luma_axis(
+        shape,
+        parameters.get("channel_axis"),
+        operation="Canny",
+    )
+    if channel_error is not None:
+        return _workload_rejection(channel_error, fallback_allowed=False)
+    scalar_rank = len(shape) - (_channel_axis is not None)
+    if scalar_rank < 2:
+        return _workload_rejection(
+            "Canny requires trailing two-dimensional scalar image planes.",
+            fallback_allowed=False,
+        )
+
+    low = _finite_number(parameters.get("low_quantile", 0.1))
+    high = _finite_number(parameters.get("high_quantile", 0.2))
+    if low is None or high is None:
+        return _workload_rejection(
+            "Canny low and high quantiles must be finite numbers.",
+            fallback_allowed=False,
+        )
+    if not 0.0 <= low <= 1.0 or not 0.0 <= high <= 1.0:
+        return _workload_rejection(
+            "Canny low and high quantiles must be between 0 and 1.",
+            fallback_allowed=False,
+        )
+    if high < low:
+        return _workload_rejection(
+            "Canny low quantile must not exceed the high quantile.",
+            fallback_allowed=False,
+        )
+
+    sigma = _finite_number(parameters.get("sigma", 1.0))
+    if sigma is None:
+        return _workload_rejection(
+            "Canny sigma must be a finite number.",
+            fallback_allowed=False,
+        )
+    canonical_sigma = max(sigma, 0.0)
+    if canonical_sigma > 12.0:
+        return _workload_rejection(
+            "Canny GPU execution is validated for canonical sigma values in "
+            "the 0..12 range; this authored value remains on CPU."
+        )
+
+    dtype = _dtype_name(workload.input_dtypes[0])
+    if dtype == "float32":
+        return _workload_rejection(
+            "Canny float32 GPU execution remains on CPU because finite float32 "
+            "inputs can produce subnormal Gaussian, gradient, magnitude, or "
+            "interpolation intermediates. CUDA flush-to-zero behavior can then "
+            "change an exact edge-mask bit; bool, uint8, and uint16 retain the "
+            "validated GPU path."
+        )
+    if dtype not in {"bool", "uint8", "uint16"}:
+        return _workload_rejection(
+            f"Canny GPU execution has no promoted {dtype!r} input region; CPU "
+            "remains authoritative."
+        )
+    return None
+
+
+def _otsu_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    parameters = dict(workload.parameters)
+    shape = workload.input_shapes[0]
+    if any(extent == 0 for extent in shape):
+        return _workload_rejection(
+            "Otsu threshold requires non-empty image data.",
+            fallback_allowed=False,
+        )
+    channel_axis, channel_error = _validated_luma_axis(
+        shape,
+        parameters.get("channel_axis"),
+        operation="Otsu threshold",
+    )
+    if channel_error is not None:
+        return _workload_rejection(channel_error, fallback_allowed=False)
+
+    scope = str(
+        parameters.get("threshold_scope", "Stack histogram")
+    ).strip().casefold()
+    if scope not in {"stack histogram", "slice histogram"}:
+        return _workload_rejection(
+            "Threshold scope must be 'Stack histogram' or 'Slice histogram'.",
+            fallback_allowed=False,
+        )
+
+    dtype = np.dtype(workload.input_dtypes[0])
+    if dtype.kind not in "biuf":
+        return _workload_rejection(
+            "Automatic histogram thresholds require boolean, integer, or "
+            "floating-point image data.",
+            fallback_allowed=False,
+        )
+    effective_float = channel_axis is not None or np.issubdtype(dtype, np.floating)
+    if effective_float:
+        if _histogram_bin_count(
+            parameters.get("histogram_bins", OTSU_DEFAULT_HISTOGRAM_BINS)
+        ) is None:
+            return _workload_rejection(
+                "Float histogram bins must be an integer from 2 to 65,536.",
+                fallback_allowed=False,
+            )
+        if (
+            channel_axis is None
+            and array_facts
+            and array_facts[0].completeness is FactCompleteness.COMPLETE
+            and array_facts[0].finite_count == 0
+        ):
+            return _workload_rejection(
+                "Automatic thresholding requires at least one finite input value.",
+                fallback_allowed=False,
+            )
+        return None
+
+    if dtype == np.dtype(bool):
+        # The CPU contract treats a scalar boolean image as an identity and
+        # deliberately does not inspect histogram_bins.
+        return None
+    if np.issubdtype(dtype, np.integer):
+        dtype_limits = np.iinfo(dtype)
+        type_span = int(dtype_limits.max) - int(dtype_limits.min) + 1
+        if type_span <= OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS:
+            # Every possible value of <=16-bit integer dtypes fits the exact
+            # native-level histogram, so an image-sized extrema scan cannot
+            # change admission and is intentionally skipped.
+            return None
+    if not array_facts:
+        return _complete_facts_rejection(
+            "Exact wide-integer Otsu admission requires complete native extrema "
+            "facts."
+        )
+    facts = array_facts[0]
+    if (
+        facts.completeness is not FactCompleteness.COMPLETE
+        or not isinstance(facts.minimum, int)
+        or not isinstance(facts.maximum, int)
+    ):
+        return _complete_facts_rejection(
+            "Exact wide-integer Otsu admission requires complete native integer "
+            "minimum and maximum facts."
+        )
+    span = facts.maximum - facts.minimum + 1
+    if span < 1:
+        return _workload_rejection(
+            "Integer Otsu facts contain an invalid native intensity range.",
+            fallback_allowed=False,
+        )
+    if span > OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS:
+        scalar_shape = shape
+        if channel_axis is not None:
+            scalar_shape = shape[:channel_axis] + shape[channel_axis + 1 :]
+        if (
+            scope == "slice histogram"
+            and len(scalar_shape) > 2
+            and math.prod(scalar_shape[:-2]) > 1
+        ):
+            return _workload_rejection(
+                "Exact integer Otsu slice admission currently has only "
+                "whole-stack extrema. The stack spans "
+                f"{span:,} levels, so GPU safety cannot be proved per plane; "
+                "CPU remains authoritative for this run. Individual planes "
+                "may still be valid.",
+            )
+        return _workload_rejection(
+            f"Integer intensity span contains {span:,} levels; automatic "
+            "thresholding supports at most 65,536 exact integer levels. Convert "
+            "or rescale the image explicitly.",
+            fallback_allowed=False,
+        )
+    return None
+
+
 def _deconvolution_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
@@ -1209,6 +1565,8 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "rl-parameters-v1": _richardson_lucy_region_policy,
         "rl-tv-parameters-v1": _richardson_lucy_tv_region_policy,
+        "canny-parameters-v1": _canny_region_policy,
+        "otsu-parameters-v1": _otsu_region_policy,
     }
 )
 
@@ -1395,7 +1753,10 @@ def _active_axes(
     axes = list(range(len(shape)))
     if raw_channel_axis is None:
         return tuple(axes)
-    if isinstance(raw_channel_axis, bool) or not isinstance(raw_channel_axis, int):
+    if isinstance(raw_channel_axis, (bool, np.bool_)) or not isinstance(
+        raw_channel_axis,
+        Integral,
+    ):
         return None
     if (
         len(shape) < 3
@@ -1405,6 +1766,63 @@ def _active_axes(
         return None
     axes.remove(raw_channel_axis % len(shape))
     return tuple(axes)
+
+
+def _validated_luma_axis(
+    shape: tuple[int, ...],
+    raw_channel_axis: object,
+    *,
+    operation: str,
+) -> tuple[int | None, str | None]:
+    """Resolve an explicit RGB/RGBA axis without touching array data."""
+
+    if raw_channel_axis is None:
+        return None, None
+    if isinstance(raw_channel_axis, (bool, np.bool_)) or not isinstance(
+        raw_channel_axis,
+        Integral,
+    ):
+        return None, f"{operation} channel_axis must be an integer or None."
+    if len(shape) < 3:
+        return (
+            None,
+            f"{operation} requires at least two spatial dimensions when "
+            "channel_axis is set.",
+        )
+    if raw_channel_axis < -len(shape) or raw_channel_axis >= len(shape):
+        return (
+            None,
+            f"{operation} channel_axis {raw_channel_axis} is out of range for "
+            f"{len(shape)}D input.",
+        )
+    axis = int(raw_channel_axis % len(shape))
+    channel_count = shape[axis]
+    if channel_count not in {3, 4}:
+        return (
+            None,
+            f"{operation} channel_axis must contain exactly 3 RGB or 4 RGBA "
+            f"channels, not {channel_count}.",
+        )
+    return axis, None
+
+
+def _scalar_luma_shape_and_itemsize(
+    shape: tuple[int, ...],
+    dtype: object,
+    raw_channel_axis: object,
+) -> tuple[tuple[int, ...], int]:
+    """Return post-luma scalar shape and work itemsize for memory policy."""
+
+    axis, error = _validated_luma_axis(
+        shape,
+        raw_channel_axis,
+        operation="GPU operation",
+    )
+    if error is not None or axis is None:
+        return shape, _dtype_itemsize(dtype)
+    scalar_shape = shape[:axis] + shape[axis + 1 :]
+    work_dtype = np.result_type(np.dtype(dtype), np.float32)
+    return scalar_shape, int(work_dtype.itemsize)
 
 
 def _background_spatial_ndim(
@@ -1428,6 +1846,25 @@ def _finite_number(value: object) -> float | None:
         return None
     converted = float(value)
     return converted if math.isfinite(converted) else None
+
+
+def _histogram_bin_count(value: object) -> int | None:
+    if isinstance(value, (bool, np.bool_)):
+        return None
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if isinstance(value, (float, np.floating)) and not float(value).is_integer():
+        return None
+    return count if 2 <= count <= OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS else None
+
+
+def _dtype_can_contain_nonfinite(value: object) -> bool:
+    try:
+        return bool(np.issubdtype(np.dtype(value), np.inexact))
+    except (TypeError, ValueError):
+        return True
 
 
 def _dtype_name(value: object) -> str:
@@ -1633,6 +2070,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-3d-parameters-v1",
             "rl-parameters-v1",
             "rl-tv-parameters-v1",
+            "canny-parameters-v1",
+            "otsu-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -1642,6 +2081,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-finite-f32-v1",
             "rl-finite-f32-v1",
             "rl-tv-finite-f32-v1",
+            "canny-exact-bool-u8-u16-v2",
+            "otsu-real-exact-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
@@ -1650,6 +2091,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
+            "mask-bitwise-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -1659,6 +2101,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-gaussian-3d-memory-v1",
             "cupyx-richardson-lucy-fft-memory-v2",
             "cupyx-richardson-lucy-tv-fft-memory-v1",
+            "cupyx-canny-exact-memory-v1",
+            "cupy-otsu-histogram-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -1666,10 +2110,12 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "shape-unknown-v1",
             "shape-preserving-v1",
             "psf-spatial-kernel-v1",
+            "scalar-plane-luma-mask-v1",
         },
         PolicyKind.OUTPUT_DTYPE: {
             "dtype-same-v1",
             "fixed:float32",
+            "fixed:bool",
             "cpu-dynamic-output-v1",
         },
         PolicyKind.CONVERSION: {
@@ -1678,6 +2124,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-median-identity-v1",
             "cupyx-gaussian-float32-v1",
             "cupyx-rl-float32-identity-v1",
+            "canny-plane-float32-or-luma-v1",
+            "otsu-native-or-luma-v1",
         },
         PolicyKind.NONFINITE: {
             "cpu-reference-v1",
@@ -1685,6 +2133,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "finite-no-negative-zero-v1",
             "finite-only-v1",
             "finite-output-v1",
+            "otsu-finite-histogram-v1",
         },
         PolicyKind.ROUNDING: {
             "cpu-reference-v1",
@@ -1693,12 +2142,16 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
+            "mask-bitwise-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
             "background-clip-public-dtype-v1",
             "preserve-public-dtype-v1",
             "finite-float32-cleanup-v1",
+            "finite-float32-workspace-v1",
+            "binary-mask-v1",
+            "otsu-native-span-v1",
         },
         PolicyKind.BOUNDARY: {
             "cpu-reference-v1",
@@ -1706,6 +2159,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scipy-reflect-v1",
             "scipy-signal-zero-fill-same-v1",
             "rl-tv-zero-fill-same-central-gradient-edge1-v1",
+            "skimage-canny-constant-zero-v1",
+            "otsu-strict-greater-finite-mask-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
@@ -1714,18 +2169,23 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "gaussian-float32-v1",
             "rl-float32-v1",
             "rl-tv-float32-v1",
+            "canny-exact-mask-v1",
+            "otsu-exact-mask-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
             "background-block-progress-v1",
             "monolithic-sync-progress-v1",
             "deconvolution-block-iteration-progress-v1",
+            "scalar-plane-sync-progress-v1",
+            "histogram-scope-sync-progress-v1",
         },
         PolicyKind.CANCELLATION: {
             "cpu-reference-v1",
             "background-block-cancel-v1",
             "monolithic-boundary-cancel-v1",
             "deconvolution-iteration-cancel-v1",
+            "scalar-plane-boundary-cancel-v1",
         },
         PolicyKind.SIDE_EFFECT: {
             "pure-or-source-v1",

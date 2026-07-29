@@ -213,6 +213,21 @@ def plan_compute_decisions(
                 )
                 continue
 
+            if not workload.inputs_resolved:
+                decisions.append(
+                    _cpu_decision(
+                        workload,
+                        preference,
+                        reason=DecisionReason.WORKLOAD_UNSUPPORTED,
+                        reason_text=(
+                            "Accelerator planning was deferred because an upstream "
+                            "output could not be resolved before execution. The "
+                            "authoritative CPU path will report any operation error."
+                        ),
+                    )
+                )
+                continue
+
             specs = _specs_for_preference(
                 selected_registry,
                 request,
@@ -342,6 +357,8 @@ def _potential_specs(
     selected: list[OperationComputeSpec] = []
     identities: set[tuple[str, str]] = set()
     for workload in workloads:
+        if not workload.inputs_resolved:
+            continue
         preference = (
             request.preference_for(workload.node_id)
             if request.mode is ComputeMode.SELECTIVE
@@ -372,6 +389,18 @@ def _specs_for_preference(
         operation_id,
         allow_experimental=request.allow_experimental,
     )
+    automatic_intent = (
+        request.mode is ComputeMode.AUTO
+        or preference.kind is NodePreferenceKind.AUTO
+    )
+    if automatic_intent:
+        specs = tuple(
+            spec
+            for spec in specs
+            if spec.eligible_for_auto(
+                allow_experimental=request.allow_experimental,
+            )
+        )
     if request.runtime_id:
         specs = tuple(spec for spec in specs if spec.runtime_id == request.runtime_id)
     if preference.kind is NodePreferenceKind.LIBRARY:

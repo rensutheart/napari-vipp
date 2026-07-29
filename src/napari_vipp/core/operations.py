@@ -1033,6 +1033,7 @@ def canny_edges(
     low_quantile: float = 0.1,
     high_quantile: float = 0.2,
     channel_axis: int | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Return a scalar-plane Canny mask from ordered 0..1 quantiles.
 
@@ -1063,7 +1064,12 @@ def canny_edges(
             use_quantiles=True,
         )
 
-    return _apply_scalar_plane_wise(arr, canny_plane)
+    return _apply_scalar_plane_wise(
+        arr,
+        canny_plane,
+        progress=progress,
+        progress_message="Canny planes",
+    )
 
 
 def hysteresis_threshold(
@@ -1112,6 +1118,7 @@ def otsu_threshold(
     threshold_scope: str = "Stack histogram",
     histogram_bins: int = _GLOBAL_THRESHOLD_HISTOGRAM_BINS,
     channel_axis: int | None = None,
+    progress=None,
 ) -> np.ndarray:
     """Return an Otsu mask, optionally reducing declared RGB/RGBA to luma."""
     arr = _to_explicit_grayscale(
@@ -1123,6 +1130,8 @@ def otsu_threshold(
         arr,
         lambda values: _otsu_value(values, histogram_bins),
         threshold_scope=threshold_scope,
+        progress=progress,
+        progress_message="Otsu histograms",
     )
 
 
@@ -5825,6 +5834,8 @@ def _global_threshold(
     threshold_func: Callable[[np.ndarray], int | float],
     *,
     threshold_scope: str = "Stack histogram",
+    progress=None,
+    progress_message: str = "Threshold histograms",
 ) -> np.ndarray:
     scope = str(threshold_scope).strip().casefold()
     if scope not in {"stack histogram", "slice histogram"}:
@@ -5835,14 +5846,28 @@ def _global_threshold(
     # algorithms on only two levels is redundant and some methods (notably
     # Triangle) choose the True level itself, which would erase foreground.
     if arr.dtype == bool:
+        if progress is not None:
+            progress.check_cancelled()
+            progress.report(1, 1, progress_message)
         return arr.copy()
     if scope == "stack histogram":
-        return _threshold_mask(arr, threshold_func(arr))
+        if progress is not None:
+            progress.report(0, 1, progress_message)
+            progress.check_cancelled()
+        result = _threshold_mask(arr, threshold_func(arr))
+        if progress is not None:
+            progress.report(1, 1, progress_message)
+        return result
 
     def threshold_plane(plane: np.ndarray) -> np.ndarray:
         return _threshold_mask(plane, threshold_func(plane))
 
-    return _apply_scalar_plane_wise(arr, threshold_plane)
+    return _apply_scalar_plane_wise(
+        arr,
+        threshold_plane,
+        progress=progress,
+        progress_message=progress_message,
+    )
 
 
 def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
@@ -6510,20 +6535,41 @@ def _apply_plane_wise(arr: np.ndarray, func: Callable[[np.ndarray], np.ndarray])
 def _apply_scalar_plane_wise(
     arr: np.ndarray,
     func: Callable[[np.ndarray], np.ndarray],
+    *,
+    progress=None,
+    progress_message: str = "Scalar planes",
 ) -> np.ndarray:
     """Apply ``func`` over trailing YX planes without channel inference."""
     arr = np.asarray(arr)
     if arr.ndim <= 2:
-        return np.asarray(func(arr))
+        if progress is not None:
+            progress.report(0, 1, progress_message)
+            progress.check_cancelled()
+        result = np.asarray(func(arr))
+        if progress is not None:
+            progress.report(1, 1, progress_message)
+        return result
 
     leading_shape = arr.shape[:-2]
+    total = int(np.prod(leading_shape, dtype=np.int64))
+    if progress is not None:
+        progress.report(0, total, progress_message)
+        progress.check_cancelled()
     sample = np.asarray(func(arr[(0,) * len(leading_shape)]))
     out = np.empty(leading_shape + sample.shape, dtype=sample.dtype)
     out[(0,) * len(leading_shape)] = sample
+    completed = 1
+    if progress is not None:
+        progress.report(completed, total, progress_message)
     for index in np.ndindex(leading_shape):
         if all(i == 0 for i in index):
             continue
+        if progress is not None:
+            progress.check_cancelled()
         out[index] = func(arr[index])
+        completed += 1
+        if progress is not None:
+            progress.report(completed, total, progress_message)
     return out
 
 
