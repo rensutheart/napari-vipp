@@ -82,6 +82,7 @@ from napari_vipp.core.operations import (
     gaussian_blur_3d,
     h_maxima_markers,
     hysteresis_threshold,
+    imagej_auto_threshold,
     invert,
     isodata_threshold,
     label_connected_components,
@@ -183,9 +184,7 @@ PARAMETER_VISIBILITY_SPATIAL_MODE_RELEVANT = "spatial_mode_relevant"
 PARAMETER_VISIBILITY_STACK_SCOPE_RELEVANT = "stack_scope_relevant"
 PARAMETER_VISIBILITY_THREE_SPATIAL_DIMENSIONS = "three_spatial_dimensions"
 PARAMETER_VISIBILITY_TWO_DIMENSIONAL_PROCESSING = "two_dimensional_processing"
-PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS = (
-    "at_least_two_spatial_dimensions"
-)
+PARAMETER_VISIBILITY_AT_LEAST_TWO_SPATIAL_DIMENSIONS = "at_least_two_spatial_dimensions"
 PARAMETER_VISIBILITY_PARAMETER_IN = "parameter_in"
 PARAMETER_VISIBILITY_PARAMETER_NOT_IN = "parameter_not_in"
 PARAMETER_VISIBILITY_CONNECTED_INPUT_PORT = "connected_input_port"
@@ -228,9 +227,7 @@ class ParameterVisibilityContext:
     operation_id: str = ""
     parameter_values: Mapping[str, Any] = field(default_factory=dict)
     input_data_by_port: Mapping[str, Any] = field(default_factory=dict)
-    input_state_by_port: Mapping[str, ImageState | None] = field(
-        default_factory=dict
-    )
+    input_state_by_port: Mapping[str, ImageState | None] = field(default_factory=dict)
     declared_input_ports: tuple[str, ...] = ()
     connected_input_ports: frozenset[str] = frozenset()
     used_output_ports: frozenset[int] = frozenset()
@@ -318,10 +315,7 @@ def resolve_parameter_visibility(
                 "Input encoded-colour axis semantics are unresolved.",
             )
         assert state is not None
-        if any(
-            axis.name.strip().casefold() in {"rgb", "rgba"}
-            for axis in state.axes
-        ):
+        if any(axis.name.strip().casefold() in {"rgb", "rgba"} for axis in state.axes):
             return ParameterVisibility(True)
         return ParameterVisibility(
             False,
@@ -361,18 +355,14 @@ def resolve_parameter_visibility(
             is_scalar_yx = (
                 spatial_count == 2
                 and not has_non_spatial
-                and {axis.name.strip().casefold() for axis in state.axes}
-                == {"x", "y"}
+                and {axis.name.strip().casefold() for axis in state.axes} == {"x", "y"}
             )
             if not is_scalar_yx:
                 return ParameterVisibility(True)
         if spec.name == "spatial_mode":
-            selected_mode = str(
-                context.parameter_values.get(spec.name, "")
-            ).casefold()
+            selected_mode = str(context.parameter_values.get(spec.name, "")).casefold()
             if selected_mode and not (
-                selected_mode.startswith("auto")
-                or selected_mode.startswith("2d")
+                selected_mode.startswith("auto") or selected_mode.startswith("2d")
             ):
                 return ParameterVisibility(
                     True,
@@ -467,8 +457,7 @@ def resolve_parameter_visibility(
 
     if visibility == PARAMETER_VISIBILITY_MULTIPLE_INPUTS_OR_OUTPUTS:
         relevant = (
-            len(context.connected_input_ports) > 1
-            or len(context.used_output_ports) > 1
+            len(context.connected_input_ports) > 1 or len(context.used_output_ports) > 1
         )
         if not context.declared_input_ports:
             return ParameterVisibility(
@@ -490,8 +479,7 @@ def validate_parameter_visibility_spec(spec: ParameterSpec) -> None:
     visibility = str(spec.visibility or PARAMETER_VISIBILITY_ALWAYS)
     if visibility not in _PARAMETER_VISIBILITY_VALUES:
         raise ValueError(
-            f"Parameter {spec.name!r} has unknown visibility rule "
-            f"{visibility!r}."
+            f"Parameter {spec.name!r} has unknown visibility rule {visibility!r}."
         )
     if visibility in {
         PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -528,9 +516,7 @@ def _visibility_relevant_input_states(
     ports = spec.visibility_ports
     if not ports:
         ports = (
-            context.declared_input_ports
-            if all_ports
-            else (context.primary_input_port,)
+            context.declared_input_ports if all_ports else (context.primary_input_port,)
         )
     if not ports:
         return None
@@ -789,17 +775,13 @@ def _validate_dynamic_choice_value(
         return
     if spec.dynamic_choice_kind == "projection_axes":
         is_axis_index = re.fullmatch(r"axis:[+-]?\d+", text) is not None
-        is_axis_name = (
-            re.fullmatch(r"name:[A-Za-z][A-Za-z0-9_.-]*", text) is not None
-        )
+        is_axis_name = re.fullmatch(r"name:[A-Za-z][A-Za-z0-9_.-]*", text) is not None
         if text not in spec.choices and not is_axis_index and not is_axis_name:
             raise ValueError(
                 f"{label} must use auto, non_yx_spatial, axis:N, or name:axis."
             )
         return
-    raise ValueError(
-        f"{label} has no declared validator for its dynamic choices."
-    )
+    raise ValueError(f"{label} has no declared validator for its dynamic choices.")
 
 
 @dataclass(frozen=True)
@@ -988,6 +970,7 @@ SLICE_WISE_STACK_NOTICE = (
 GLOBAL_THRESHOLD_OPERATIONS = {
     "otsu_threshold",
     "triangle_threshold",
+    "imagej_auto_threshold",
     "li_threshold",
     "yen_threshold",
     "isodata_threshold",
@@ -1238,6 +1221,7 @@ _POSITIONAL_YX_OPERATIONS = frozenset(
         "adaptive_gaussian_threshold",
         "sauvola_threshold",
         "niblack_threshold",
+        "imagej_auto_threshold",
         "dilate",
         "erode",
         "opening",
@@ -1296,6 +1280,7 @@ SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
         "gaussian_blur",
         "gaussian_blur_3d",
         "hysteresis_threshold",
+        "imagej_auto_threshold",
         "isodata_threshold",
         "laplace_filter",
         "li_threshold",
@@ -1391,6 +1376,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         ),
         crop_stack,
         subcategory=AXES_REGIONS_GROUP,
+        preserves_input_type=True,
     ),
     OperationSpec(
         "linear_scale_offset",
@@ -1419,9 +1405,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         INTENSITY_CONTRAST_CATEGORY,
         "array",
         "image",
-        (
-            ParameterSpec("gamma", "Gamma", "float", 0.5, 0.01, 5.0, 0.01, 3),
-        ),
+        (ParameterSpec("gamma", "Gamma", "float", 0.5, 0.01, 5.0, 0.01, 3),),
         gamma_correction,
     ),
     OperationSpec(
@@ -2191,9 +2175,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         "Projection",
         "array",
         "image",
-        (
-            ParameterSpec("axis", "Axis", "int", 0, 0, 5, 1),
-        ),
+        (ParameterSpec("axis", "Axis", "int", 0, 0, 5, 1),),
         max_intensity_projection,
     ),
     OperationSpec(
@@ -2510,6 +2492,33 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
         ),
         triangle_threshold,
+        subcategory=GLOBAL_THRESHOLDS_GROUP,
+    ),
+    OperationSpec(
+        "imagej_auto_threshold",
+        "ImageJ Auto Threshold (8-bit)",
+        SEGMENTATION_CATEGORY,
+        "array",
+        "mask",
+        (
+            ParameterSpec(
+                "method",
+                "ImageJ method",
+                "choice",
+                "Default",
+                0,
+                0,
+                1,
+                choices=("Default", "Triangle"),
+                tooltip=(
+                    "ImageJ 1.x compatibility: each YX plane is converted to "
+                    "8-bit with ScaleConversions, then thresholded with the "
+                    "selected ImageJ AutoThresholder method."
+                ),
+            ),
+            SCALAR_LUMA_CHANNEL_AXIS_PARAMETER,
+        ),
+        imagej_auto_threshold,
         subcategory=GLOBAL_THRESHOLDS_GROUP,
     ),
     OperationSpec(
@@ -3607,11 +3616,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3620,11 +3629,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3659,11 +3668,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3672,11 +3681,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3712,11 +3721,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3725,11 +3734,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3803,11 +3812,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3816,11 +3825,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3895,11 +3904,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3908,11 +3917,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3977,11 +3986,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -3990,11 +3999,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -4061,11 +4070,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_1_threshold",
-                "Channel 1 threshold (0-255)",
+                "Channel 1 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -4074,11 +4083,11 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
             ),
             ParameterSpec(
                 "channel_2_threshold",
-                "Channel 2 threshold (0-255)",
+                "Channel 2 threshold (native intensity)",
                 "float",
                 25.0,
-                0.0,
-                255.0,
+                -1_000_000_000.0,
+                1_000_000_000.0,
                 1.0,
                 2,
                 visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
@@ -4266,9 +4275,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
-        (
-            ParameterSpec("channel", "Channel", "int", 0, 0, 5, 1),
-        ),
+        (ParameterSpec("channel", "Channel", "int", 0, 0, 5, 1),),
         extract_channel,
         subcategory=CHANNELS_COMPOSITES_GROUP,
     ),
@@ -4278,9 +4285,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
-        (
-            ParameterSpec("input_count", "Input channels", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Input channels", "int", 2, 2, 12, 1),),
         combine_channels,
         max_inputs=12,
         subcategory=CHANNELS_COMPOSITES_GROUP,
@@ -4315,9 +4320,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
-        (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),),
         add_images,
         max_inputs=12,
         subcategory=MATH_LOGIC_GROUP,
@@ -4328,9 +4331,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "image",
-        (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),),
         subtract_images,
         max_inputs=12,
         subcategory=MATH_LOGIC_GROUP,
@@ -4391,9 +4392,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "mask",
-        (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),),
         logical_and,
         max_inputs=12,
         subcategory=MATH_LOGIC_GROUP,
@@ -4404,9 +4403,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "mask",
-        (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),),
         logical_or,
         max_inputs=12,
         subcategory=MATH_LOGIC_GROUP,
@@ -4417,9 +4414,7 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         IMAGE_DATA_CATEGORY,
         "array",
         "mask",
-        (
-            ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),
-        ),
+        (ParameterSpec("input_count", "Inputs", "int", 2, 2, 12, 1),),
         logical_xor,
         max_inputs=12,
         subcategory=MATH_LOGIC_GROUP,
@@ -4851,9 +4846,7 @@ def graph_node_from_persisted_params(
         raise ValueError(f"{context} requires non-empty 'operation_id'.")
     spec = NODE_LIBRARY_BY_ID.get(operation_id)
     if spec is None:
-        raise ValueError(
-            f"Node {index} uses unknown operation {operation_id!r}."
-        )
+        raise ValueError(f"Node {index} uses unknown operation {operation_id!r}.")
     if not isinstance(node_id, str) or not node_id.strip():
         raise ValueError(f"{context} requires non-empty 'id'.")
     if not isinstance(saved_params, dict):
@@ -4863,9 +4856,7 @@ def graph_node_from_persisted_params(
     missing_params = required_params - saved_params.keys()
     if missing_params:
         missing = ", ".join(sorted(missing_params))
-        raise ValueError(
-            f"Node {node_id!r} is missing required parameters: {missing}."
-        )
+        raise ValueError(f"Node {node_id!r} is missing required parameters: {missing}.")
     unknown_params = [
         name
         for name in saved_params
@@ -4877,9 +4868,7 @@ def graph_node_from_persisted_params(
         )
     ]
     if unknown_params:
-        unknown = ", ".join(
-            repr(name) for name in sorted(unknown_params, key=str)
-        )
+        unknown = ", ".join(repr(name) for name in sorted(unknown_params, key=str))
         raise ValueError(f"Node {node_id!r} has unknown parameters: {unknown}.")
 
     # Keep this shallow copy for the established deserializer contract. Runtime
@@ -4910,6 +4899,7 @@ def graph_node_from_persisted_params(
         params,
         spec.max_inputs,
     )
+
 
 PROTOTYPE_NODES = [
     GraphNode(
@@ -4962,9 +4952,7 @@ class PrototypePipeline:
         self.node_output_states: dict[str, list[ImageState | TableState | None]] = {}
         self.output_tunnels: dict[str, OutputTunnel] = {}
         self.completed_node_ids: set[str] = set()
-        self.node_compute_provenance: dict[
-            str, CachedNodeComputeProvenance
-        ] = {}
+        self.node_compute_provenance: dict[str, CachedNodeComputeProvenance] = {}
         self.node_execution_states: dict[str, str] = {}
         self.node_execution_messages: dict[str, str] = {}
         self._counters: Counter[str] = Counter()
@@ -5051,17 +5039,12 @@ class PrototypePipeline:
         restored.node_execution_states = {
             node_id: EXECUTION_NOT_CALCULATED for node_id in restored.nodes
         }
-        restored.node_execution_messages = {
-            node_id: "" for node_id in restored.nodes
-        }
+        restored.node_execution_messages = {node_id: "" for node_id in restored.nodes}
         restored._counters = Counter()
 
         occupied_inputs: set[tuple[str, int]] = set()
         for connection in restored.connections:
-            if (
-                connection.source_id not in valid
-                or connection.target_id not in valid
-            ):
+            if connection.source_id not in valid or connection.target_id not in valid:
                 raise ValueError(
                     "Cannot restore a connection that references a missing node: "
                     f"{connection.source_id!r} -> {connection.target_id!r}."
@@ -5203,7 +5186,8 @@ class PrototypePipeline:
         self.connections = [
             connection
             for connection in self.connections
-            if connection.source_id != node_id and connection.target_id != node_id
+            if connection.source_id != node_id
+            and connection.target_id != node_id
             and connection.tunnel_name not in removed_tunnels
         ]
         return True
@@ -5236,18 +5220,13 @@ class PrototypePipeline:
             if tunnel.source_id != source_id or tunnel.source_port != source_port:
                 return ConnectionResult(
                     False,
-                    (
-                        f"Tunnel '{tunnel.name}' is not assigned to that output "
-                        "port."
-                    ),
+                    (f"Tunnel '{tunnel.name}' is not assigned to that output port."),
                 )
         if self._would_create_cycle(source_id, target_id):
             return ConnectionResult(False, "Cannot connect nodes in a cycle.")
 
         existing_targets = [
-            existing
-            for existing in self.connections
-            if existing.target_id == target_id
+            existing for existing in self.connections if existing.target_id == target_id
         ]
         removed: tuple[GraphConnection, ...] = ()
         if self._node_accepts_multiple_inputs(target):
@@ -5281,8 +5260,7 @@ class PrototypePipeline:
                 existing
                 for existing in self.connections
                 if not (
-                    existing.target_id == target_id
-                    and existing.target_port == port
+                    existing.target_id == target_id and existing.target_port == port
                 )
             ]
         else:
@@ -5456,10 +5434,7 @@ class PrototypePipeline:
             if not (
                 connection.source_id == source_id
                 and connection.target_id == target_id
-                and (
-                    target_port is None
-                    or connection.target_port == int(target_port)
-                )
+                and (target_port is None or connection.target_port == int(target_port))
             )
         ]
         return len(self.connections) != before
@@ -5546,9 +5521,7 @@ class PrototypePipeline:
                     context=f"Node {node_id!r} parameter",
                 )
             elif not isinstance(name, str) or not name.startswith("_vipp_"):
-                raise ValueError(
-                    f"Node {node_id!r} has no public parameter {name!r}."
-                )
+                raise ValueError(f"Node {node_id!r} has no public parameter {name!r}.")
         else:
             validate_parameter_value(
                 spec,
@@ -5602,8 +5575,7 @@ class PrototypePipeline:
             tunnel = self.output_tunnel(connection.tunnel_name)
             if tunnel is None:
                 raise ValueError(
-                    f"Connection references unknown tunnel "
-                    f"{connection.tunnel_name!r}."
+                    f"Connection references unknown tunnel {connection.tunnel_name!r}."
                 )
             if (
                 tunnel.source_id != connection.source_id
@@ -6026,9 +5998,7 @@ class PrototypePipeline:
                 connection.source_id,
                 connection.source_port,
             )
-            state_by_port[port_name] = (
-                state if isinstance(state, ImageState) else None
-            )
+            state_by_port[port_name] = state if isinstance(state, ImageState) else None
         used_output_ports = {
             int(connection.source_port)
             for connection in self.connections
@@ -6103,9 +6073,7 @@ class PrototypePipeline:
         message: str,
     ) -> set[str]:
         """Mark explicit automatic or manual nodes stale without clearing outputs."""
-        stale_node_ids = {
-            node_id for node_id in node_ids if node_id in self.nodes
-        }
+        stale_node_ids = {node_id for node_id in node_ids if node_id in self.nodes}
         for node_id in stale_node_ids:
             self.completed_node_ids.discard(node_id)
             self.node_execution_states[node_id] = EXECUTION_STALE
@@ -6124,9 +6092,7 @@ class PrototypePipeline:
         continue to present the last coherent result while making it clear
         that the node is not the actionable source of the stale branch.
         """
-        blocked_node_ids = {
-            node_id for node_id in node_ids if node_id in self.nodes
-        }
+        blocked_node_ids = {node_id for node_id in node_ids if node_id in self.nodes}
         for node_id in blocked_node_ids:
             self.node_execution_states[node_id] = EXECUTION_BLOCKED
             if message is not None:
@@ -6196,9 +6162,7 @@ class PrototypePipeline:
         targets = (
             None
             if target_node_ids is None
-            else {
-                node_id for node_id in target_node_ids if node_id in self.nodes
-            }
+            else {node_id for node_id in target_node_ids if node_id in self.nodes}
         )
         if targets == set():
             return PipelineExecutionPlan(
@@ -6209,13 +6173,9 @@ class PrototypePipeline:
                 runnable_node_ids=frozenset(),
                 target_node_ids=frozenset(),
             )
-        required_nodes = (
-            None if targets is None else self.ancestors_inclusive(targets)
-        )
+        required_nodes = None if targets is None else self.ancestors_inclusive(targets)
         requested_dirty_node_ids = (
-            targets
-            if dirty_node_ids is None and targets
-            else dirty_node_ids
+            targets if dirty_node_ids is None and targets else dirty_node_ids
         )
         dirty_nodes = self._validated_dirty_nodes(
             requested_dirty_node_ids,
@@ -6235,16 +6195,12 @@ class PrototypePipeline:
         )
         barriers, blocked = self._manual_barrier_partition(candidates, skipped)
         return PipelineExecutionPlan(
-            dirty_node_ids=(
-                None if dirty_nodes is None else frozenset(dirty_nodes)
-            ),
+            dirty_node_ids=(None if dirty_nodes is None else frozenset(dirty_nodes)),
             candidate_node_ids=frozenset(candidates),
             barrier_node_ids=frozenset(barriers),
             blocked_node_ids=frozenset(blocked),
             runnable_node_ids=frozenset(candidates - barriers - blocked),
-            target_node_ids=(
-                None if targets is None else frozenset(targets)
-            ),
+            target_node_ids=(None if targets is None else frozenset(targets)),
         )
 
     def _mark_nodes_blocked_by_manual_barrier(
@@ -6259,7 +6215,9 @@ class PrototypePipeline:
         has_cached_output = self._has_cached_output(node_id)
         if has_cached_output:
             self.node_execution_states[node_id] = (
-                EXECUTION_STALE if dirty else self.node_execution_states.get(
+                EXECUTION_STALE
+                if dirty
+                else self.node_execution_states.get(
                     node_id,
                     EXECUTION_READY,
                 )
@@ -6281,9 +6239,7 @@ class PrototypePipeline:
     @staticmethod
     def _public_params(params: dict[str, Any]) -> dict[str, Any]:
         return {
-            key: value
-            for key, value in params.items()
-            if not key.startswith("_vipp_")
+            key: value for key, value in params.items() if not key.startswith("_vipp_")
         }
 
     def _operation_kwargs(self, node: GraphNode) -> dict[str, Any]:
@@ -6472,8 +6428,7 @@ class PrototypePipeline:
             prior_outputs = dict(self.outputs)
             prior_output_states = dict(self.output_states)
             prior_node_outputs = {
-                node_id: list(outputs)
-                for node_id, outputs in self.node_outputs.items()
+                node_id: list(outputs) for node_id, outputs in self.node_outputs.items()
             }
             prior_node_output_states = {
                 node_id: list(states)
@@ -6547,9 +6502,7 @@ class PrototypePipeline:
             for node_id in barriers:
                 self._mark_skipped_manual_node(node_id, dirty=True)
             self._mark_nodes_blocked_by_manual_barrier(blocked)
-            completed = (
-                set(self.nodes) - remaining - barriers - blocked_manual_nodes
-            )
+            completed = set(self.nodes) - remaining - barriers - blocked_manual_nodes
 
         return PipelineRunState(
             execution_plan,
@@ -6576,9 +6529,7 @@ class PrototypePipeline:
         self.outputs[node_id] = primary_output
         self.output_states[node_id] = primary_state
         self.node_execution_states[node_id] = (
-            EXECUTION_READY
-            if primary_output is not None
-            else EXECUTION_NOT_CALCULATED
+            EXECUTION_READY if primary_output is not None else EXECUTION_NOT_CALCULATED
         )
         self.node_execution_messages[node_id] = ""
         self.node_compute_provenance.pop(node_id, None)
@@ -6858,9 +6809,7 @@ class PrototypePipeline:
                 layer_metadata=payload.metadata,
                 source_name=payload.name,
                 axes=(state.axes if state is not None else None),
-                metadata_source=(
-                    state.metadata_source if state is not None else None
-                ),
+                metadata_source=(state.metadata_source if state is not None else None),
                 history=(state.history if state is not None else ()),
                 channels=(state.channels if state is not None else None),
                 acquisition=(state.acquisition if state is not None else None),
@@ -6898,8 +6847,7 @@ class PrototypePipeline:
         if multiple_inputs:
             required = self._required_inputs_for(node)
             input_connections = {
-                connection.target_port: connection
-                for connection in connections
+                connection.target_port: connection for connection in connections
             }
             if any(port not in input_connections for port in range(required)):
                 return None
@@ -7015,9 +6963,7 @@ class PrototypePipeline:
             if isinstance(labels_state, ImageState):
                 kwargs["axis_names"] = tuple(axis.name for axis in labels_state.axes)
                 kwargs["axis_types"] = tuple(axis.type for axis in labels_state.axes)
-                kwargs["axis_scales"] = tuple(
-                    axis.scale for axis in labels_state.axes
-                )
+                kwargs["axis_scales"] = tuple(axis.scale for axis in labels_state.axes)
                 kwargs["axis_units"] = tuple(axis.unit for axis in labels_state.axes)
                 kwargs["source_name"] = labels_state.source_name
         if node.operation_id == "filter_labels_by_property":
@@ -7069,18 +7015,14 @@ class PrototypePipeline:
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
         if node.operation_id == "crop_stack" and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
-        if (
-            node.operation_id
-            in {
-                "project_image",
-                "orthogonal_projection",
-                "rescale_axes",
-                "split_axis",
-                "split_channels",
-                "extract_channel",
-            }
-            and isinstance(input_state, ImageState)
-        ):
+        if node.operation_id in {
+            "project_image",
+            "orthogonal_projection",
+            "rescale_axes",
+            "split_axis",
+            "split_channels",
+            "extract_channel",
+        } and isinstance(input_state, ImageState):
             kwargs["axis_names"] = tuple(axis.name for axis in input_state.axes)
             kwargs["axis_types"] = tuple(axis.type for axis in input_state.axes)
             if node.operation_id == "orthogonal_projection":
@@ -7473,10 +7415,7 @@ class PrototypePipeline:
         }
 
     def _input_sources(self, node_id: str) -> list[str]:
-        return [
-            connection.source_id
-            for connection in self._input_connections(node_id)
-        ]
+        return [connection.source_id for connection in self._input_connections(node_id)]
 
     def _input_connections(self, node_id: str) -> list[GraphConnection]:
         return sorted(
@@ -7873,9 +7812,8 @@ def _require_explicit_spatial_axes(
 ) -> None:
     if state is not None:
         spatial_axes = tuple(axis for axis in state.axes if axis.type == "space")
-        if (
-            len(spatial_axes) >= minimum_count
-            and all(axis.is_explicit for axis in spatial_axes)
+        if len(spatial_axes) >= minimum_count and all(
+            axis.is_explicit for axis in spatial_axes
         ):
             return
     detail = (
@@ -7902,10 +7840,7 @@ def _require_explicit_channel_axis(
 ) -> None:
     if state is not None:
         channel_axes = _image_state_channel_axes(state)
-        if (
-            len(channel_axes) == 1
-            and state.axes[channel_axes[0]].is_explicit
-        ):
+        if len(channel_axes) == 1 and state.axes[channel_axes[0]].is_explicit:
             return
     detail = (
         "no axis metadata"
@@ -8021,11 +7956,7 @@ def _strict_channel_axis_for_shape(
 ) -> int | None:
     if isinstance(state, ImageState):
         axis = _image_state_channel_axis(state)
-        if (
-            axis is not None
-            and 0 <= axis < len(shape)
-            and state.axes[axis].is_explicit
-        ):
+        if axis is not None and 0 <= axis < len(shape) and state.axes[axis].is_explicit:
             return axis
     return None
 
@@ -8070,12 +8001,8 @@ def _born_wolf_psf_channel_label(
 
 def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
     value = params.get("axis")
-    if not isinstance(value, str) or re.fullmatch(
-        r"axis:[+-]?\d+", value
-    ) is None:
-        raise ValueError(
-            "Split Axis axis parameter must use axis:N with an integer N."
-        )
+    if not isinstance(value, str) or re.fullmatch(r"axis:[+-]?\d+", value) is None:
+        raise ValueError("Split Axis axis parameter must use axis:N with an integer N.")
     axis = int(value.removeprefix("axis:"))
     if ndim <= 0:
         raise ValueError("Split Axis cannot select an axis from 0D input.")

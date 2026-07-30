@@ -64,6 +64,7 @@ from napari_vipp.core.operations import (
     gaussian_blur_3d,
     h_maxima_markers,
     hysteresis_threshold,
+    imagej_auto_threshold,
     isodata_threshold,
     label_connected_components,
     label_overlap_association,
@@ -210,6 +211,7 @@ def test_vipp_operation_nodes_are_registered():
         "expand_labels",
         "otsu_threshold",
         "triangle_threshold",
+        "imagej_auto_threshold",
         "li_threshold",
         "yen_threshold",
         "isodata_threshold",
@@ -333,6 +335,7 @@ def test_li_threshold_does_not_expose_histogram_bins():
         "binary_threshold",
         "canny_edges",
         "hysteresis_threshold",
+        "imagej_auto_threshold",
         "isodata_threshold",
         "laplace_filter",
         "li_threshold",
@@ -1131,6 +1134,137 @@ def test_colocalization_metrics_overlay_scatter_and_racc_outputs():
     assert masked_index[3, 4] == 0.0
 
 
+def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
+    channel_1 = np.asarray([[0, 2, 4], [6, 8, 10]], dtype=np.float32)
+    channel_2 = np.asarray([[1, 0, 5], [2, 9, 3]], dtype=np.float32)
+    roi = np.asarray([[1, 1, 1], [1, 1, 0]], dtype=bool)
+
+    record = colocalization_metrics(
+        [channel_1, channel_2, roi],
+        channel_1_threshold=4,
+        channel_2_threshold=3,
+    ).records()[0]
+
+    roi_1 = np.asarray([0, 2, 4, 6, 8], dtype=np.float64)
+    roi_2 = np.asarray([1, 0, 5, 2, 9], dtype=np.float64)
+    below = np.asarray([True, True, False, True, False])
+    above = np.asarray([False, False, True, True, True])
+    both_above = np.asarray([False, False, True, False, True])
+
+    assert record["threshold_units"] == "native_intensity"
+    assert record["coloc_semantics"] == "fiji_coloc2_3.1"
+    assert record["mask_restricted"] is True
+    assert np.isclose(record["pearson_all"], np.corrcoef(roi_1, roi_2)[0, 1])
+    assert np.isclose(
+        record["pearson_below_threshold"],
+        np.corrcoef(roi_1[below], roi_2[below])[0, 1],
+    )
+    assert np.isclose(
+        record["pearson_above_threshold"],
+        np.corrcoef(roi_1[above], roi_2[above])[0, 1],
+    )
+    assert np.isclose(
+        record["pearson_both_above_threshold"],
+        np.corrcoef(roi_1[both_above], roi_2[both_above])[0, 1],
+    )
+    assert record["pearson_colocalized"] == record["pearson_both_above_threshold"]
+
+    assert np.isclose(record["manders_m1_no_threshold"], 18 / 20)
+    assert np.isclose(record["manders_m2_no_threshold"], 16 / 17)
+    assert np.isclose(record["manders_tm1"], 12 / 20)
+    assert np.isclose(record["manders_tm2"], 16 / 17)
+    assert record["manders_m1"] == record["manders_tm1"]
+    assert record["manders_m2"] == record["manders_tm2"]
+    assert np.isclose(
+        record["fraction_ch1_above_threshold_intensity_in_both_above"],
+        12 / 18,
+    )
+    assert np.isclose(
+        record["fraction_ch2_above_threshold_intensity_in_both_above"],
+        1.0,
+    )
+
+    object_record = object_colocalization_metrics(
+        [roi.astype(np.uint8), channel_1, channel_2],
+        channel_1_threshold=4,
+        channel_2_threshold=3,
+        spatial_mode="2D YX",
+    ).records()[0]
+    for column in (
+        "pearson_below_threshold",
+        "pearson_above_threshold",
+        "pearson_both_above_threshold",
+        "manders_m1_no_threshold",
+        "manders_m2_no_threshold",
+        "manders_tm1",
+        "manders_tm2",
+        "fraction_ch1_above_threshold_intensity_in_both_above",
+        "fraction_ch2_above_threshold_intensity_in_both_above",
+    ):
+        assert np.isclose(object_record[column], record[column])
+
+
+def test_costes_auto_matches_fiji_simple_stepper_oracle():
+    channel_1 = np.asarray([[0, 1, 2], [3, 4, 5], [6, 7, 8]], dtype=np.float32)
+    channel_2 = np.asarray([[0, 1, 1], [2, 3, 5], [4, 7, 6]], dtype=np.float32)
+
+    record = colocalization_metrics(
+        [channel_1, channel_2],
+        threshold_mode="Costes auto",
+    ).records()[0]
+
+    # Values are frozen from Fiji Coloc 2's Costes SimpleStepper semantics,
+    # including its regression cursor skipping the first sample: start at max
+    # channel 1, Java-round the mapped pair, and retain the last tested pair
+    # when below-threshold Pearson increases.
+    assert record["channel_1_threshold"] == 5.0
+    assert record["channel_2_threshold"] == 4.0
+    assert record["costes_iterations"] == 4
+    assert record["costes_slope"] == 0.9144341430814114
+    assert record["costes_intercept"] == -0.4355143501034231
+    assert np.isclose(record["costes_pearson_below"], 0.9707253433941511)
+    assert record["costes_pearson_below"] == record["pearson_below_threshold"]
+    assert operations._java_round(2.5) == 3.0
+    assert operations._java_round(-1.5) == -1.0
+
+
+def test_colocalization_keeps_native_values_above_255_and_rejects_nonfinite():
+    channel_1 = np.asarray([[0, 512], [1024, 2048]], dtype=np.float32)
+    channel_2 = np.asarray([[0, 600], [1100, 2100]], dtype=np.float32)
+
+    record = colocalization_metrics(
+        [channel_1, channel_2],
+        channel_1_threshold=512,
+        channel_2_threshold=600,
+    ).records()[0]
+
+    assert record["channel_1_threshold"] == 512.0
+    assert record["channel_2_threshold"] == 600.0
+    assert record["channel_1_positive_sum"] == 3584.0
+    assert record["channel_2_positive_sum"] == 3800.0
+    assert record["normalization_warnings"] == ""
+
+    nonfinite = channel_1.copy()
+    nonfinite[0, 0] = np.nan
+    with pytest.raises(ValueError, match="only finite"):
+        colocalization_metrics([nonfinite, channel_2])
+
+
+def test_object_costes_colocalization_returns_empty_table_for_empty_labels():
+    labels = np.zeros((4, 5), dtype=np.uint8)
+    channel_1 = np.zeros_like(labels, dtype=np.float32)
+    channel_2 = np.zeros_like(labels, dtype=np.float32)
+
+    table = object_colocalization_metrics(
+        [labels, channel_1, channel_2],
+        threshold_mode="Costes auto",
+        spatial_mode="2D YX",
+    )
+
+    assert table.table_kind == "per-object colocalization metrics"
+    assert table.records() == []
+
+
 def test_object_colocalization_and_association_tables():
     labels = np.zeros((5, 6), dtype=np.int32)
     labels[1:3, 1:3] = 1
@@ -1399,10 +1533,7 @@ def test_pipeline_manual_measurement_nodes_skip_calculate_and_stale_cache():
 
     assert outputs[measurements.id] is None
     assert pipeline.output_states[measurements.id] is None
-    assert (
-        pipeline.node_execution_states[measurements.id]
-        == EXECUTION_NOT_CALCULATED
-    )
+    assert pipeline.node_execution_states[measurements.id] == EXECUTION_NOT_CALCULATED
 
     outputs = pipeline.run(
         data,
@@ -1615,9 +1746,9 @@ def test_stale_manual_node_blocks_automatic_descendants_until_recalculated(
     assert pipeline.node_execution_states[otsu.id] == EXECUTION_BLOCKED
     assert "upstream manual node" in pipeline.node_execution_messages[rescale.id]
     assert deconvolution.id not in pipeline.completed_node_ids
-    assert "resume downstream nodes" in pipeline.node_execution_messages[
-        deconvolution.id
-    ]
+    assert (
+        "resume downstream nodes" in pipeline.node_execution_messages[deconvolution.id]
+    )
 
     calls.clear()
     pipeline.run(
@@ -2047,10 +2178,7 @@ def test_pipeline_skeleton_graph_overlay_is_rgb_image_state():
     assert outputs[overlay.id].shape == (3, 7, 7, 3)
     assert state.kind == "RGB image"
     assert tuple(axis.name for axis in state.axes) == ("z", "y", "x", "rgb")
-    assert (
-        state.history[-1]
-        == "Skeleton Graph Overlay: Colored edges + colored nodes"
-    )
+    assert state.history[-1] == "Skeleton Graph Overlay: Colored edges + colored nodes"
 
 
 def test_measure_skeleton_branches_reports_branch_lengths_and_tortuosity():
@@ -2063,9 +2191,7 @@ def test_measure_skeleton_branches_reports_branch_lengths_and_tortuosity():
 
     assert table.row_count == 4
     assert table.table_kind == "Skeleton branches"
-    assert {record["branch_type"] for record in records} == {
-        "endpoint_to_junction"
-    }
+    assert {record["branch_type"] for record in records} == {"endpoint_to_junction"}
     assert all(record["branch_length_pixels"] == 2.0 for record in records)
     assert all(record["branch_edge_count"] == 2 for record in records)
     assert all(record["branch_tortuosity"] == 1.0 for record in records)
@@ -2374,12 +2500,10 @@ def test_pipeline_skeleton_keypoints_creates_three_mask_outputs():
         "binary mask",
     ]
     assert (
-        states[0].history[-1]
-        == "Skeleton Keypoints (Endpoints): extracted Endpoints"
+        states[0].history[-1] == "Skeleton Keypoints (Endpoints): extracted Endpoints"
     )
     assert (
-        states[1].history[-1]
-        == "Skeleton Keypoints (Junctions): extracted Junctions"
+        states[1].history[-1] == "Skeleton Keypoints (Junctions): extracted Junctions"
     )
     assert (
         states[2].history[-1]
@@ -2801,9 +2925,8 @@ def test_richardson_lucy_tv_zero_regularization_matches_rl_update():
 
 def test_richardson_lucy_tv_reduces_noise_variation_versus_ordinary_rl():
     yy, xx = np.mgrid[:32, :32]
-    truth = (
-        ((yy - 11) ** 2 + (xx - 11) ** 2 <= 4**2).astype(np.float32)
-        + 0.7 * ((yy - 21) ** 2 + (xx - 22) ** 2 <= 3**2)
+    truth = ((yy - 11) ** 2 + (xx - 11) ** 2 <= 4**2).astype(np.float32) + 0.7 * (
+        (yy - 21) ** 2 + (xx - 22) ** 2 <= 3**2
     )
     psf = _compact_psf_2d()
     blurred = signal.convolve(truth, psf, mode="same").astype(np.float32)
@@ -5572,6 +5695,91 @@ def test_global_threshold_scope_can_use_stack_or_slice_histogram():
     assert stack_mask.dtype == bool
     assert slice_mask.dtype == bool
     assert not np.array_equal(stack_mask, slice_mask)
+
+
+def test_imagej_8bit_conversion_matches_dtype_specific_reference_rules():
+    float_plane = np.asarray([[0, 1], [255, 510]], dtype=np.float32)
+    # 1 maps to exactly 0.5 before rounding. ImageJ's half-up cast produces 1;
+    # NumPy's bankers' rounding would incorrectly produce 0.
+    assert np.array_equal(
+        operations._imagej_8bit_plane(float_plane),
+        np.asarray([[0, 1], [128, 255]], dtype=np.uint8),
+    )
+
+    byte_plane = np.asarray([[0, 50], [100, 200]], dtype=np.uint8)
+    assert np.array_equal(operations._imagej_8bit_plane(byte_plane), byte_plane)
+
+    short_plane = np.asarray([[10, 11], [12, 13]], dtype=np.uint16)
+    assert np.array_equal(
+        operations._imagej_8bit_plane(short_plane),
+        np.asarray([[0, 64], [128, 192]], dtype=np.uint8),
+    )
+
+    nan_plane = np.asarray([[0, np.nan], [1, 2]], dtype=np.float32)
+    assert np.array_equal(
+        operations._imagej_8bit_plane(nan_plane),
+        np.asarray([[0, 0], [128, 255]], dtype=np.uint8),
+    )
+    assert not np.any(
+        operations._imagej_8bit_plane(np.full((2, 2), 7, dtype=np.float32))
+    )
+
+
+def test_imagej_auto_thresholder_matches_imagej_1_54p_histogram_oracles():
+    cases = (
+        (
+            "Triangle",
+            {0: 100, 1: 80, 2: 60, 3: 30, 4: 10, 5: 3},
+            5,
+        ),
+        (
+            "Triangle",
+            {0: 1, 1: 5, 2: 20, 3: 100, 4: 40, 5: 20, 6: 10, 7: 5, 8: 1},
+            6,
+        ),
+        (
+            "Default",
+            {0: 1000, 1: 20, 2: 30, 3: 40, 4: 30, 5: 20, 6: 10},
+            2,
+        ),
+        (
+            "Default",
+            {0: 10, 1: 20, 2: 40, 3: 20, 4: 10, 5: 20, 6: 50, 7: 20},
+            3,
+        ),
+    )
+    for method, counts, expected in cases:
+        histogram = np.zeros(256, dtype=np.int64)
+        for level, count in counts.items():
+            histogram[level] = count
+        assert operations._imagej_auto_threshold_value(histogram, method) == expected
+
+    bilevel = np.zeros(256, dtype=np.int64)
+    bilevel[[10, 20]] = 5
+    assert operations._imagej_auto_threshold_value(bilevel, "Default") == 19
+    assert operations._imagej_auto_threshold_value(bilevel, "Triangle") == 19
+
+
+@pytest.mark.parametrize("method", ["Default", "Triangle"])
+def test_imagej_auto_threshold_scales_each_yx_plane_independently(method):
+    plane = np.asarray([[0, 1], [255, 510]], dtype=np.float32)
+    stack = np.stack((plane, plane * 2))
+
+    result = imagej_auto_threshold(stack, method=method)
+
+    expected = np.asarray([[False, False], [True, True]])
+    assert result.dtype == bool
+    assert np.array_equal(result[0], expected)
+    assert np.array_equal(result[1], expected)
+
+
+def test_imagej_auto_threshold_rejects_unsupported_inputs():
+    with pytest.raises(ValueError, match="Default.*Triangle"):
+        imagej_auto_threshold(np.zeros((2, 2), dtype=np.uint8), method="Li")
+    with pytest.raises(ValueError, match="supports bool, uint8, uint16"):
+        imagej_auto_threshold(np.zeros((2, 2), dtype=np.int16))
+    with pytest.raises(ValueError, match="infinite"):
+        imagej_auto_threshold(np.asarray([[0, np.inf], [1, 2]], dtype=np.float32))
 
 
 def test_global_threshold_scope_rejects_unknown_mode():

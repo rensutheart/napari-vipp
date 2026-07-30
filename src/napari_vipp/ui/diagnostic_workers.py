@@ -110,6 +110,7 @@ class ColocalizationScatterResult:
     threshold_mode: str
     threshold_1: float
     threshold_2: float
+    intensity_min: float = 0.0
     intensity_max: float = 255.0
     density_counts: object = None
     roi_voxels: int = 0
@@ -400,6 +401,8 @@ class ColocalizationScatterWorker(QRunnable):
         request = self.request
         threshold_1 = float(request.threshold_1)
         threshold_2 = float(request.threshold_2)
+        display_min = 0.0
+        display_max = float(request.intensity_max)
         progress = (
             ProgressContext(cancelled=request.cancel_event.is_set)
             if request.cancel_event is not None
@@ -428,6 +431,8 @@ class ColocalizationScatterWorker(QRunnable):
                 density_counts,
                 roi_voxels,
                 colocalized_voxels,
+                display_min,
+                display_max,
             ) = self._scatter_density(
                 ch1,
                 ch2,
@@ -460,7 +465,8 @@ class ColocalizationScatterWorker(QRunnable):
                 request.threshold_mode,
                 threshold_1,
                 threshold_2,
-                intensity_max=request.intensity_max,
+                intensity_min=display_min,
+                intensity_max=display_max,
                 density_counts=density_counts,
                 roi_voxels=roi_voxels,
                 colocalized_voxels=colocalized_voxels,

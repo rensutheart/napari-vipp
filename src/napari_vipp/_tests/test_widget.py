@@ -5030,8 +5030,16 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     plot_rect = widget.colocalization_scatter_plot._plot_rect()
     assert plot_rect.width() == plot_rect.height()
     assert widget.pipeline.nodes[coloc.id].params["threshold_mode"] == "Costes auto"
-    assert 0 <= widget.pipeline.nodes[coloc.id].params["channel_1_threshold"] <= 255
-    assert 0 <= widget.pipeline.nodes[coloc.id].params["channel_2_threshold"] <= 255
+    assert (
+        0
+        <= widget.pipeline.nodes[coloc.id].params["channel_1_threshold"]
+        <= float(data[0].max())
+    )
+    assert (
+        0
+        <= widget.pipeline.nodes[coloc.id].params["channel_2_threshold"]
+        <= float(data[1].max())
+    )
     assert not np.isclose(
         widget.pipeline.nodes[coloc.id].params["channel_1_threshold"],
         25.0,
@@ -5057,14 +5065,16 @@ def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     channel_2 = ((indices * 37 + 11) % 256).astype(np.float32)
     roi = indices % 11 != 0
 
-    density, roi_voxels, colocalized_voxels = _prepare_colocalization_scatter_density(
-        channel_1,
-        channel_2,
-        threshold_1=125.0,
-        threshold_2=140.0,
-        roi_mask=roi,
-        intensity_max=255.0,
-        bins=64,
+    density, roi_voxels, colocalized_voxels, display_min, display_max = (
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=125.0,
+            threshold_2=140.0,
+            roi_mask=roi,
+            intensity_max=255.0,
+            bins=64,
+        )
     )
 
     expected_density = np.histogram2d(
@@ -5079,8 +5089,52 @@ def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     assert roi_voxels > 500_000
     assert roi_voxels == int(np.count_nonzero(roi))
     assert colocalized_voxels == int(expected_colocalized)
+    assert display_min == 0.0
+    assert display_max == 255.0
     np.testing.assert_array_equal(density, expected_density)
     assert int(density.sum()) == roi_voxels
+
+
+def test_colocalization_scatter_expands_to_native_intensity_range():
+    channel_1 = np.array([-20.0, 255.0, 2_000.0], dtype=np.float32)
+    channel_2 = np.array([4_000.0, 300.0, -10.0], dtype=np.float32)
+
+    density, roi_voxels, _colocalized_voxels, display_min, display_max = (
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=4.0,
+            threshold_2=3.0,
+            roi_mask=None,
+            intensity_max=255.0,
+            bins=32,
+        )
+    )
+
+    assert display_min == -20.0
+    assert display_max == 4_000.0
+    assert roi_voxels == 3
+    assert int(density.sum()) == roi_voxels
+
+
+def test_colocalization_scatter_uses_unit_extent_for_normalized_floats():
+    channel_1 = np.array([0.0, 0.25, 1.0], dtype=np.float32)
+    channel_2 = np.array([0.1, 0.5, 0.75], dtype=np.float32)
+
+    density, roi_voxels, _colocalized_voxels, display_min, display_max = (
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=0.4,
+            threshold_2=0.3,
+            roi_mask=None,
+            intensity_max=255.0,
+            bins=32,
+        )
+    )
+
+    assert (display_min, display_max) == (0.0, 1.0)
+    assert int(density.sum()) == roi_voxels == 3
 
 
 def test_colocalization_scatter_density_is_cooperatively_cancellable(monkeypatch):

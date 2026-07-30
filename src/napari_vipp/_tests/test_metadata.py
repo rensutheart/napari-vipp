@@ -685,6 +685,24 @@ def test_boolean_threshold_history_records_passthrough_instead_of_algorithm():
     )
 
 
+def test_imagej_threshold_history_records_explicit_compatibility_contract():
+    data = np.zeros((2, 3, 4), dtype=np.float32)
+    input_state = image_state_from_array(data, layer_metadata={"axes": "ZYX"})
+
+    output_state = transform_image_state(
+        np.zeros(data.shape, dtype=bool),
+        input_state,
+        operation_id="imagej_auto_threshold",
+        operation_title="ImageJ Auto Threshold (8-bit)",
+        params={"method": "Triangle", "channel_axis": -1},
+    )
+
+    assert output_state.history[-1] == (
+        "ImageJ Auto Threshold (8-bit): ImageJ 1.x Triangle; per-YX-plane "
+        "8-bit ScaleConversions and 256-bin AutoThresholder"
+    )
+
+
 def test_li_threshold_history_records_raw_finite_value_policy():
     data = np.zeros((3, 4), dtype=np.float32)
     input_state = image_state_from_array(data, layer_metadata={"axes": "YX"})

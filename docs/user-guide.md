@@ -168,11 +168,21 @@ scikit-image method. If two peaks cannot be found within the declared limit,
 the node reports the failure; it does not silently substitute another
 threshold.
 
-NaN, positive infinity, and negative infinity are excluded from cutoff fitting
-and become background in the resulting mask. Large calculations use bounded
-chunks and background workers to control memory and keep the interface
-responsive; chunking does not change which pixels contribute. An empty input or
-an input with no finite pixels reports an error instead of inventing a cutoff.
+`ImageJ Auto Threshold (8-bit)` is a separate compatibility node for workflows
+that must reproduce ImageJ 1.x. It always processes each trailing YX plane
+independently, applies ImageJ's dtype-specific 8-bit ScaleConversions behavior,
+and then runs ImageJ's `Default` or `Triangle` AutoThresholder. It does not
+change the scientific contract of VIPP's generic Triangle or Isodata nodes.
+Compatibility is exact for finite bool, uint8, uint16, and floating inputs.
+NaNs become zero during the plane conversion; infinite float values are
+rejected explicitly rather than reproducing ImageJ's collapsed all-zero plane.
+
+For the generic global threshold nodes, NaN, positive infinity, and negative
+infinity are excluded from cutoff fitting and become background in the
+resulting mask. Large calculations use bounded chunks and background workers
+to control memory and keep the interface responsive; chunking does not change
+which pixels contribute. An empty input or an input with no finite pixels
+reports an error instead of inventing a cutoff.
 
 For manual guides, dragging a Binary Threshold, either Hysteresis guide, either
 Rescale cutoff, or an explicit Clip cutoff reuses the already calculated input

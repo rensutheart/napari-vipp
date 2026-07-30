@@ -14,6 +14,7 @@ from napari_vipp.core.channel_colors import (
     FLUORESCENCE_COLORS,
     color_value_to_rgb,
 )
+from napari_vipp.core.operations import colocalization_display_range
 from napari_vipp.core.preview import _apply_monochrome_colormap
 
 COLOCALIZATION_SCATTER_BINS = 255
@@ -349,8 +350,8 @@ def _prepare_colocalization_scatter_density(
     bins: int,
     progress=None,
     chunk_elements: int = SCATTER_DENSITY_CHUNK_ELEMENTS,
-) -> tuple[np.ndarray, int, int]:
-    """Return an exact bounded-memory density and exact summary counts."""
+) -> tuple[np.ndarray, int, int, float, float]:
+    """Return exact density/counts and the complete native display range."""
     ch1 = np.asarray(channel_1)
     ch2 = np.asarray(channel_2)
     if ch1.shape != ch2.shape or ch1.size == 0:
@@ -368,8 +369,13 @@ def _prepare_colocalization_scatter_density(
 
     bins = int(np.clip(int(bins), 32, 512))
     chunk_elements = int(chunk_elements)
-    intensity_max = max(float(intensity_max), 1.0)
-    edges = np.linspace(0.0, intensity_max, bins + 1)
+    display_min, display_max = colocalization_display_range(
+        ch1,
+        ch2,
+        configured_max=intensity_max,
+        thresholds=(threshold_1, threshold_2),
+    )
+    edges = np.linspace(display_min, display_max, bins + 1)
     density_counts = np.zeros((bins, bins), dtype=np.float64)
     roi_voxels = 0
     colocalized_voxels = 0
@@ -402,7 +408,7 @@ def _prepare_colocalization_scatter_density(
             )
             density_counts += chunk_density
 
-    return density_counts, roi_voxels, colocalized_voxels
+    return density_counts, roi_voxels, colocalized_voxels, display_min, display_max
 
 
 class ColocalizationScatterPlot(QWidget):
@@ -415,6 +421,7 @@ class ColocalizationScatterPlot(QWidget):
         self._image: QImage | None = None
         self._threshold_1 = 25.0
         self._threshold_2 = 25.0
+        self._intensity_min = 0.0
         self._intensity_max = 255.0
         self._channel_1_color = QColor("#ef4444")
         self._channel_2_color = QColor("#22c55e")
@@ -430,6 +437,7 @@ class ColocalizationScatterPlot(QWidget):
         *,
         threshold_1: float,
         threshold_2: float,
+        intensity_min: float = 0.0,
         intensity_max: float = 255.0,
         channel_1_color: object = "Red",
         channel_2_color: object = "Green",
@@ -440,7 +448,10 @@ class ColocalizationScatterPlot(QWidget):
         """Render worker-prepared density counts without touching source images."""
         self._threshold_1 = float(threshold_1)
         self._threshold_2 = float(threshold_2)
-        self._intensity_max = max(float(intensity_max), 1.0)
+        self._intensity_min = float(intensity_min)
+        self._intensity_max = float(intensity_max)
+        if self._intensity_max <= self._intensity_min:
+            self._intensity_max = self._intensity_min + 1.0
         self._channel_1_color = _qcolor_from_channel_color(
             channel_1_color,
             fallback="#ef4444",
@@ -560,12 +571,12 @@ class ColocalizationScatterPlot(QWidget):
     def _draw_labels(self, painter: QPainter, rect: QRect, plot_rect: QRect) -> None:
         metrics = painter.fontMetrics()
         axis_color = QColor("#9ca3af")
-        zero_label = _format_histogram_label(0.0)
+        min_label = _format_histogram_label(self._intensity_min)
         max_label = _format_histogram_label(self._intensity_max)
 
         painter.setPen(axis_color)
         axis_value_y = plot_rect.bottom() + metrics.ascent() + 6
-        painter.drawText(plot_rect.left(), axis_value_y, zero_label)
+        painter.drawText(plot_rect.left(), axis_value_y, min_label)
         painter.drawText(
             plot_rect.right() - metrics.horizontalAdvance(max_label),
             axis_value_y,
@@ -582,9 +593,9 @@ class ColocalizationScatterPlot(QWidget):
         y_value_x = plot_rect.left() - metrics.horizontalAdvance(max_label) - 8
         painter.drawText(y_value_x, plot_rect.top() + metrics.ascent(), max_label)
         painter.drawText(
-            plot_rect.left() - metrics.horizontalAdvance(zero_label) - 8,
+            plot_rect.left() - metrics.horizontalAdvance(min_label) - 8,
             plot_rect.bottom(),
-            zero_label,
+            min_label,
         )
 
         y_label = "Ch 2 intensity"
@@ -637,8 +648,13 @@ class ColocalizationScatterPlot(QWidget):
     def _plot_rect(self) -> QRect:
         rect = self.rect().adjusted(8, 8, -8, -8)
         metrics = self.fontMetrics()
+        min_label = _format_histogram_label(self._intensity_min)
         max_label = _format_histogram_label(self._intensity_max)
-        left_margin = max(56, metrics.horizontalAdvance(max_label) + 22)
+        value_width = max(
+            metrics.horizontalAdvance(min_label),
+            metrics.horizontalAdvance(max_label),
+        )
+        left_margin = max(56, value_width + 22)
         right_margin = 10
         top_margin = 8
         bottom_margin = metrics.height() * 2 + 12
@@ -650,20 +666,28 @@ class ColocalizationScatterPlot(QWidget):
         return QRect(x, y, side, side)
 
     def _x_from_value(self, value: float, plot_rect: QRect) -> int:
-        fraction = float(np.clip(value / self._intensity_max, 0.0, 1.0))
+        span = self._intensity_max - self._intensity_min
+        fraction = float(
+            np.clip((value - self._intensity_min) / span, 0.0, 1.0)
+        )
         return plot_rect.left() + int(round(fraction * max(plot_rect.width(), 1)))
 
     def _y_from_value(self, value: float, plot_rect: QRect) -> int:
-        fraction = float(np.clip(value / self._intensity_max, 0.0, 1.0))
+        span = self._intensity_max - self._intensity_min
+        fraction = float(
+            np.clip((value - self._intensity_min) / span, 0.0, 1.0)
+        )
         return plot_rect.bottom() - int(round(fraction * max(plot_rect.height(), 1)))
 
     def _value_from_x(self, x: int, plot_rect: QRect) -> float:
         fraction = (float(x) - plot_rect.left()) / max(plot_rect.width(), 1)
-        return float(np.clip(fraction, 0.0, 1.0) * self._intensity_max)
+        span = self._intensity_max - self._intensity_min
+        return float(self._intensity_min + np.clip(fraction, 0.0, 1.0) * span)
 
     def _value_from_y(self, y: int, plot_rect: QRect) -> float:
         fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height(), 1)
-        return float(np.clip(fraction, 0.0, 1.0) * self._intensity_max)
+        span = self._intensity_max - self._intensity_min
+        return float(self._intensity_min + np.clip(fraction, 0.0, 1.0) * span)
 
 
 def _event_position(event):

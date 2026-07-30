@@ -561,7 +561,7 @@ INPUT_HISTOGRAM_OPERATIONS = {
     "clip_intensity",
     "hysteresis_threshold",
     "rescale_intensity",
-} | GLOBAL_THRESHOLD_OPERATIONS
+} | (GLOBAL_THRESHOLD_OPERATIONS - {"imagej_auto_threshold"})
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
@@ -907,7 +907,7 @@ def _prepare_colocalization_scatter_density(
     intensity_max: float,
     bins: int,
     progress=None,
-) -> tuple[np.ndarray, int, int]:
+) -> tuple[np.ndarray, int, int, float, float]:
     """Compatibility facade for the extracted scatter-density calculation."""
     return _prepare_scatter_density(
         channel_1,
@@ -16085,16 +16085,20 @@ class VippWidget(QWidget):
                     node.params.get("channel_2_threshold"),
                     threshold_2,
                 )
-            density_counts, roi_voxels, coloc_voxels = (
-                _prepare_colocalization_scatter_density(
-                    ch1,
-                    ch2,
-                    threshold_1=threshold_1,
-                    threshold_2=threshold_2,
-                    roi_mask=roi_mask,
-                    intensity_max=intensity_max,
-                    bins=COLOCALIZATION_SCATTER_BINS,
-                )
+            (
+                density_counts,
+                roi_voxels,
+                coloc_voxels,
+                display_min,
+                display_max,
+            ) = _prepare_colocalization_scatter_density(
+                ch1,
+                ch2,
+                threshold_1=threshold_1,
+                threshold_2=threshold_2,
+                roi_mask=roi_mask,
+                intensity_max=intensity_max,
+                bins=COLOCALIZATION_SCATTER_BINS,
             )
         except Exception as exc:
             message = f"Scatter unavailable: {exc}"
@@ -16110,7 +16114,8 @@ class VippWidget(QWidget):
             mode,
             threshold_1,
             threshold_2,
-            intensity_max=intensity_max,
+            intensity_min=display_min,
+            intensity_max=display_max,
             density_counts=density_counts,
             roi_voxels=roi_voxels,
             colocalized_voxels=coloc_voxels,
@@ -16286,6 +16291,7 @@ class VippWidget(QWidget):
             result.density_counts,
             threshold_1=result.threshold_1,
             threshold_2=result.threshold_2,
+            intensity_min=result.intensity_min,
             intensity_max=result.intensity_max,
             channel_1_color=node.params.get("channel_1_color", "Red"),
             channel_2_color=node.params.get("channel_2_color", "Green"),

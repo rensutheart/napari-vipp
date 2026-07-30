@@ -1088,6 +1088,47 @@ def test_restore_graph_rejects_dangling_connection():
     assert pipeline.connections == original_connections
 
 
+@pytest.mark.parametrize(
+    ("upstream_operation", "expected_output_type"),
+    (
+        ("binary_threshold", "mask"),
+        ("label_connected_components", "labels"),
+    ),
+)
+def test_crop_stack_preserves_roi_type_when_workflow_is_restored(
+    upstream_operation,
+    expected_output_type,
+):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    threshold = pipeline.add_node("binary_threshold")
+    assert pipeline.connect("input", threshold.id).success
+
+    upstream = threshold
+    if upstream_operation == "label_connected_components":
+        upstream = pipeline.add_node(upstream_operation)
+        assert pipeline.connect(threshold.id, upstream.id).success
+
+    crop = pipeline.add_node("crop_stack")
+    metrics = pipeline.add_node("masked_colocalization_metrics")
+    assert pipeline.connect(upstream.id, crop.id).success
+    assert pipeline.output_ports(crop.id)[0].output_type == expected_output_type
+    assert pipeline.connect("input", metrics.id, target_port=0).success
+    assert pipeline.connect("input", metrics.id, target_port=1).success
+    assert pipeline.connect(crop.id, metrics.id, target_port=2).success
+
+    workflow = deserialize_workflow(serialize_workflow(pipeline))
+    restored = PrototypePipeline()
+    restored.restore_graph(
+        workflow["nodes"],
+        workflow["connections"],
+        workflow["output_tunnels"],
+    )
+
+    assert restored.output_ports(crop.id)[0].output_type == expected_output_type
+    assert GraphConnection(crop.id, metrics.id, target_port=2) in restored.connections
+
+
 def test_restore_graph_rejects_incompatible_typed_input_connection():
     pipeline = PrototypePipeline()
     measurements = pipeline.add_node("measure_objects_intensity")

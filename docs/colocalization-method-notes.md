@@ -1,6 +1,6 @@
 # Colocalization Method Documentation
 
-Last reviewed: 2026-07-03
+Last reviewed: 2026-07-30
 
 This document describes the colocalization and object-association calculations
 implemented in VIPP. It is intended as methods-text source material for a
@@ -26,28 +26,18 @@ notices should be documented separately.
 
 ## Input Conventions
 
-Colocalization nodes operate on two same-shaped scalar image channels. If an
-RGB/RGBA image is supplied to a colocalization node, VIPP reduces it to a
-single intensity image by taking the maximum of the first three colour
-channels. Multichannel fluorescence data should usually be split into scalar
-channels first with `Split Channels`.
+Colocalization nodes operate on two same-shaped scalar numeric image channels.
+Split RGB/RGBA or multichannel fluorescence data into scalar channels before
+connecting it to these nodes.
 
-All colocalization threshold parameters are expressed on a normalized
-`0..255` intensity scale. For each two-channel calculation, VIPP converts both
-channels to floating point and jointly normalizes them as follows:
-
-1. Negative values are clipped to zero.
-2. If the joint maximum of both channels is less than or equal to `1`, both
-   channels are interpreted as normalized float images and multiplied by `255`.
-3. If the joint maximum exceeds `255`, both channels are scaled by
-   `255 / joint_maximum`.
-4. Otherwise, the original intensity scale is retained.
-5. The result is clipped to `[0, 255]`.
-
-This joint normalization preserves the relative intensity scale between the two
-channels while keeping manual and automatic thresholds comparable across
-`uint8`, `uint16`, and normalized floating-point images. Any normalization
-adjustments are reported in the `normalization_warnings` table column.
+Quantitative calculations use the finite native intensity values supplied by
+the upstream nodes. VIPP does not jointly rescale, clip, or replace values for
+colocalization. Manual thresholds, Costes thresholds, regression parameters,
+and intensity sums therefore use the same units as the two inputs. Inputs that
+contain `NaN` or infinite values are rejected. Negative values are retained,
+matching Fiji Coloc 2, and produce text in the backward-compatible
+`normalization_warnings` column because negative photon-count-like values can
+make threshold and Manders results difficult to interpret.
 
 Masked colocalization nodes accept a third ROI input. Voxels with ROI values
 greater than zero are included; all other voxels are excluded. When no ROI mask
@@ -55,7 +45,7 @@ is supplied, all voxels are included.
 
 ## Thresholds And Positive Sets
 
-Let `I1(i)` and `I2(i)` be the normalized channel intensities at voxel `i`.
+Let `I1(i)` and `I2(i)` be the native channel intensities at voxel `i`.
 Let `R` be the analysis population: either all voxels, ROI-restricted voxels,
 or one labeled object. Let `T1` and `T2` be the selected channel thresholds.
 
@@ -88,11 +78,25 @@ pearson(X, Y) =
   / sqrt(sum((X - mean(X))^2) * sum((Y - mean(Y))^2))
 ```
 
-For whole-image or ROI-restricted metrics, `pearson_all` is calculated over
-all voxels in the analysis population `R`. For object-restricted metrics,
+For whole-image or ROI-restricted metrics, `pearson_all` is calculated over all
+voxels in the analysis population `R`. For object-restricted metrics,
 `pearson_object` is calculated over all voxels in the labeled object.
+`pearson_no_threshold` is an explicit alias for the same quantity.
 
-`pearson_colocalized` is calculated only over the colocalized voxel set `C`.
+Fiji Coloc 2's thresholded Pearson populations use OR, not the intersection of
+the two threshold-positive sets:
+
+```text
+B = {i in R | I1(i) < T1 or I2(i) < T2}
+A = {i in R | I1(i) > T1 or I2(i) > T2}
+```
+
+VIPP reports these as `pearson_below_threshold` and
+`pearson_above_threshold`. The strict comparisons match Fiji Coloc 2 3.1.0.
+The older VIPP intersection calculation remains available under the explicit
+name `pearson_both_above_threshold`; `pearson_colocalized` is retained as a
+compatibility alias for that intersection quantity.
+
 If fewer than two voxels are available, or if either channel has effectively
 zero variance in the selected population, VIPP reports `NaN`.
 
@@ -102,21 +106,28 @@ are also reported.
 
 ## Manders Coefficients
 
-VIPP reports thresholded Manders-style intensity fractions:
+VIPP follows Fiji Coloc 2's Manders definitions. Unthresholded M1/M2 use an
+above-zero test in the opposite channel and the total intensity of the measured
+channel as denominator:
 
 ```text
-M1 = sum(I1(i) for i in C) / sum(I1(i) for i in P1)
-M2 = sum(I2(i) for i in C) / sum(I2(i) for i in P2)
+M1  = sum(I1(i) where I2(i) > 0) / sum(I1(i) for i in R)
+M2  = sum(I2(i) where I1(i) > 0) / sum(I2(i) for i in R)
+tM1 = sum(I1(i) where I2(i) > 0 and I2(i) >= T2) / sum(I1(i) for i in R)
+tM2 = sum(I2(i) where I1(i) > 0 and I1(i) >= T1) / sum(I2(i) for i in R)
 ```
 
-`M1` is the fraction of threshold-positive channel-1 intensity that is also
-threshold-positive in channel 2. `M2` is the reciprocal fraction for channel 2.
-Both are therefore threshold-dependent. If the denominator is zero, VIPP
-reports `NaN`.
+The explicit columns are `manders_m1_no_threshold`,
+`manders_m2_no_threshold`, `manders_tm1`, and `manders_tm2`. Existing VIPP
+workflows commonly select `manders_m1` and `manders_m2`; those names are kept
+as compatibility aliases for `manders_tm1` and `manders_tm2` respectively.
 
-The numerator and denominator values are also exposed through the
-`channel_1_positive_sum`, `channel_2_positive_sum`,
-`colocalized_channel_1_sum`, and `colocalized_channel_2_sum` columns.
+The former VIPP quantities—intensity in `C` divided by intensity in `P1` or
+`P2`—are not Manders coefficients. They remain available as
+`fraction_ch1_above_threshold_intensity_in_both_above` and
+`fraction_ch2_above_threshold_intensity_in_both_above`. Their sums are exposed
+through `channel_1_positive_sum`, `channel_2_positive_sum`,
+`colocalized_channel_1_sum`, and `colocalized_channel_2_sum`.
 
 ## Intensity Overlap Coefficient
 
@@ -141,27 +152,32 @@ thresholded voxel counts and Manders coefficients.
 
 ## Costes Automatic Thresholding
 
-When `Costes auto` is selected, VIPP estimates a two-channel intensity
-relationship on the normalized `0..255` intensities and searches for thresholds
-that drive correlation in the below-threshold population toward zero.
+When `Costes auto` is selected, VIPP implements Fiji Coloc 2 3.1.0's classic
+Costes `SimpleStepper` on native intensities. This is the implementation named
+`Costes` in Fiji; Fiji's separate `Bisection` implementation is not selected by
+VIPP's existing `Costes auto` workflow value.
 
 For the selected threshold population, VIPP computes channel means,
-variances, and covariance. It fits a line:
+variances, and covariance. Exact 3.1.0 compatibility includes a Fiji cursor
+quirk: the means use the full ROI, but the regression variance loop begins at
+the second ROI voxel because Coloc 2 advances its cursor while obtaining the
+first sample's numeric type. VIPP also retains Fiji's combined-variance
+covariance calculation and left-to-right double accumulation. It fits a line:
 
 ```text
 I2 = slope * I1 + intercept
 ```
 
-The slope is estimated from the variance/covariance terms using a
-Deming-style relationship. If covariance is effectively zero but both channel
-variances are non-zero, the fallback slope is `sqrt(var(I2) / var(I1))`; if the
-relationship is degenerate, the fallback slope is `1`.
+The slope is estimated from the sample variance/covariance terms using Fiji's
+orthogonal-regression expression. Degenerate zero-covariance data is rejected
+instead of inventing a regression line.
 
-Threshold search proceeds along the fitted line. If `-1 < slope < 1`, VIPP
-searches along the channel-1 axis and maps each candidate channel-1 threshold
-to channel 2 using the fitted line. Otherwise, it searches along the channel-2
-axis and maps back to channel 1. Candidate thresholds are clamped to
-`[0, 255]`.
+Threshold search proceeds along the fitted line. If `-1 < slope < 1`, the
+working threshold starts at the observed channel-1 maximum and is mapped to
+channel 2. Otherwise, it starts at the observed channel-2 maximum and maps back
+to channel 1. Each candidate pair is rounded with Java `Math.round` semantics
+and constrained only to the representable range of its source dtype—not to
+`0..255`.
 
 At each iteration, VIPP calculates Pearson correlation for the population:
 
@@ -169,10 +185,11 @@ At each iteration, VIPP calculates Pearson correlation for the population:
 B = {i | I1(i) < T1 or I2(i) < T2}
 ```
 
-If the below-threshold Pearson value is finite and positive, the search moves
-the threshold downward; otherwise it moves upward. The search stops when the
-step size is below `1` normalized intensity unit or after 100 iterations. Final
-thresholds are rounded to the nearest integer and clamped to `[0, 255]`.
+After every test, the working threshold is decremented by one native intensity
+unit. As in Fiji 3.1.0, the search stops when the decremented working threshold
+is below one, the tested correlation is below `0.0001`, or the correlation has
+increased relative to the previous test. The returned thresholds are the last
+pair actually tested. There is no arbitrary 100-iteration cap.
 
 The output table records:
 
@@ -183,6 +200,9 @@ The output table records:
 - `costes_pearson_below`;
 - `costes_iterations`.
 
+`threshold_units` is `native_intensity`, and `coloc_semantics` records
+`fiji_coloc2_3.1` for explicit provenance.
+
 For object-restricted colocalization, Costes thresholds are calculated once
 over all foreground voxels in the supplied label image and then reused for each
 object. This makes object rows comparable and avoids unstable per-object
@@ -191,10 +211,10 @@ threshold estimates for small objects.
 ## Colocalized-Voxel Visual Outputs
 
 `Colocalized Voxels` and `Masked Colocalized Voxels` are visual feedback nodes.
-They use the same normalized intensities, thresholds, and ROI restriction as
-the metric nodes. Voxels in `C` can be rendered as white on the channel-colour
-composite, white on black, or in channel colours only. Voxels outside an ROI
-mask are set to black.
+They apply the same native thresholds and ROI restriction as the metric nodes.
+Only the colour rendering is scaled to a display range. Voxels in `C` can be
+rendered as white on the channel-colour composite, white on black, or in
+channel colours only. Voxels outside an ROI mask are set to black.
 
 These outputs are intended for threshold review and figure generation; the
 table outputs are the primary quantitative record.
@@ -202,9 +222,10 @@ table outputs are the primary quantitative record.
 ## Scatter-Density Inspector
 
 The colocalization inspector scatter panel plots channel-1 intensity against
-channel-2 intensity over the active analysis population. VIPP uses a 2D
-histogram over `[0, 255] x [0, 255]`; display counts can be log-transformed
-with `log1p`. The threshold guide lines are drawn at `T1` and `T2`.
+channel-2 intensity over the active analysis population. Display counts can be
+log-transformed with `log1p`. The threshold guide lines represent native `T1`
+and `T2`; scatter display scaling does not feed back into the quantitative
+calculation.
 
 Dragging either guide line switches the node back to manual thresholds and
 updates the corresponding threshold parameter. The scatter plot is therefore a
@@ -227,12 +248,14 @@ The line is anchored between two points:
 
 - `p0`, where the fitted line intersects the lower threshold boundary defined
   by `T1` and `T2`;
-- `p1`, where the line intersects the upper normalized intensity boundary
-  at `255`.
+- `p1`, where the line intersects a common display/geometry extent. The extent
+  retains the former 255 behavior for 8-bit-like data and expands to the joint
+  native maximum when either input exceeds 255.
 
 For every voxel in `C`, VIPP projects the intensity point `(I1, I2)` onto the
 line from `p0` to `p1`, producing a fractional position `t`. It also measures
-the perpendicular distance from the point to the line, normalized by `255`.
+the perpendicular distance from the point to the line, normalized by the same
+common extent.
 
 The `include_percentile` parameter defines the high-intensity and distance
 population used to scale the output. VIPP calculates:
@@ -365,8 +388,8 @@ When reporting VIPP colocalization results, include:
 - the input channels and any preprocessing steps;
 - the analysis population: whole image, ROI mask, or objects;
 - the threshold mode and final threshold values;
-- whether intensities were normalized or clipped, as reported by
-  `normalization_warnings`;
+- that quantitative intensities and thresholds were retained in native units,
+  plus any negative-intensity warning in `normalization_warnings`;
 - the spatial dimensionality and whether leading axes such as time or channel
   were analyzed independently;
 - for object tables, the label-generation method and merge keys used;

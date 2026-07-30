@@ -33,6 +33,7 @@ DEFERRED_VALUE_RANGE = "pending exact background calculation"
 CHANNEL_COLLAPSE_OPERATIONS = {
     "otsu_threshold",
     "triangle_threshold",
+    "imagej_auto_threshold",
     "li_threshold",
     "yen_threshold",
     "isodata_threshold",
@@ -50,6 +51,7 @@ CHANNEL_COLLAPSE_OPERATIONS = {
 HISTOGRAM_THRESHOLD_OPERATIONS = {
     "otsu_threshold",
     "triangle_threshold",
+    "imagej_auto_threshold",
     "yen_threshold",
     "isodata_threshold",
     "minimum_threshold",
@@ -187,12 +189,8 @@ class ChannelMetadata:
             name=str(data.get("name", "")),
             color=_optional_int(data.get("color")),
             fluor=str(data.get("fluor", "")),
-            excitation_wavelength=_optional_float(
-                data.get("excitation_wavelength")
-            ),
-            excitation_wavelength_unit=str(
-                data.get("excitation_wavelength_unit", "")
-            ),
+            excitation_wavelength=_optional_float(data.get("excitation_wavelength")),
+            excitation_wavelength_unit=str(data.get("excitation_wavelength_unit", "")),
             emission_wavelength=_optional_float(data.get("emission_wavelength")),
             emission_wavelength_unit=str(data.get("emission_wavelength_unit", "")),
         )
@@ -247,9 +245,7 @@ class AcquisitionMetadata:
             ),
             objective_immersion=str(data.get("objective_immersion", "")),
             refractive_index=_optional_float(data.get("refractive_index")),
-            deconvolution_applied=_optional_bool(
-                data.get("deconvolution_applied")
-            ),
+            deconvolution_applied=_optional_bool(data.get("deconvolution_applied")),
             deconvolution_method=str(data.get("deconvolution_method", "")),
         )
 
@@ -362,9 +358,7 @@ class ImageState:
         if not isinstance(axes_data, list):
             return None
         try:
-            metadata_source = str(
-                data.get("metadata_source", "VIPP carried state")
-            )
+            metadata_source = str(data.get("metadata_source", "VIPP carried state"))
             default_axis_confidence = _persisted_axis_confidence(
                 data.get("axis_confidence"),
                 metadata_source=metadata_source,
@@ -971,9 +965,7 @@ def _axes_from_multiscales(value, shape: tuple[int, ...]):
     translations: list[float] | None = None
     transforms = dataset.get("coordinateTransformations")
     if transforms is not None and not isinstance(transforms, list):
-        raise ValueError(
-            "OME-NGFF coordinateTransformations must be a list."
-        )
+        raise ValueError("OME-NGFF coordinateTransformations must be a list.")
     if isinstance(transforms, list):
         for transform in transforms:
             if not isinstance(transform, dict):
@@ -1035,17 +1027,14 @@ def _validated_ngff_transform_values(
 ) -> list[float]:
     if not isinstance(values, list) or len(values) != ndim:
         raise ValueError(
-            f"OME-NGFF {transform_type} transform must contain exactly "
-            f"{ndim} values."
+            f"OME-NGFF {transform_type} transform must contain exactly {ndim} values."
         )
     if transform_type == "scale":
         return [
-            _validated_axis_scale(value, context="OME-NGFF axis")
-            for value in values
+            _validated_axis_scale(value, context="OME-NGFF axis") for value in values
         ]
     return [
-        _validated_axis_translation(value, context="OME-NGFF axis")
-        for value in values
+        _validated_axis_translation(value, context="OME-NGFF axis") for value in values
     ]
 
 
@@ -1153,10 +1142,7 @@ def _transformed_axes(
         if channel_index is not None:
             return _remove_axis(axes, channel_index)
 
-    if (
-        operation_id in CHANNEL_COLLAPSE_OPERATIONS
-        and arr.ndim == len(axes) - 1
-    ):
+    if operation_id in CHANNEL_COLLAPSE_OPERATIONS and arr.ndim == len(axes) - 1:
         channel_index = _explicit_channel_axis_parameter(params, len(axes))
         if channel_index is not None:
             return _remove_axis(axes, channel_index)
@@ -1483,12 +1469,8 @@ def _split_output_channels(
 
 def _split_axis_index_from_params(params: dict[str, Any], ndim: int) -> int:
     value = params.get("axis")
-    if not isinstance(value, str) or re.fullmatch(
-        r"axis:[+-]?\d+", value
-    ) is None:
-        raise ValueError(
-            "Split Axis axis parameter must use axis:N with an integer N."
-        )
+    if not isinstance(value, str) or re.fullmatch(r"axis:[+-]?\d+", value) is None:
+        raise ValueError("Split Axis axis parameter must use axis:N with an integer N.")
     axis = int(value.removeprefix("axis:"))
     if ndim <= 0:
         raise ValueError("Split Axis cannot select an axis from 0D input.")
@@ -1718,11 +1700,7 @@ def _xyz_axis_map_for_metadata(
     axes: tuple[AxisMetadata, ...],
 ) -> dict[str, int]:
     names = [axis.name.lower() for axis in axes]
-    axis_map = {
-        name: names.index(name)
-        for name in ("x", "y", "z")
-        if name in names
-    }
+    axis_map = {name: names.index(name) for name in ("x", "y", "z") if name in names}
     spatial_axes = [index for index, axis in enumerate(axes) if axis.type == "space"]
     if spatial_axes:
         axis_map.setdefault("x", spatial_axes[-1])
@@ -1868,9 +1846,7 @@ def _projection_axis_tokens(value) -> list[str]:
     else:
         values = (value,)
     return [
-        token
-        for token in (_projection_axis_token(part) for part in values)
-        if token
+        token for token in (_projection_axis_token(part) for part in values) if token
     ]
 
 
@@ -1920,11 +1896,7 @@ def _composite_to_rgb_history(
         if channel_axis is not None
         else "undeclared channel axis"
     )
-    count = (
-        int(input_state.shape[channel_axis])
-        if channel_axis is not None
-        else 0
-    )
+    count = int(input_state.shape[channel_axis]) if channel_axis is not None else 0
     semantic = str(params.get("channel_axis_semantics", "")).strip().casefold()
     selections = tuple(
         int(params.get(name, -1))
@@ -1935,18 +1907,14 @@ def _composite_to_rgb_history(
         params.get("mapping_mode"),
     )
     if mapping_mode is None:
-        mapping_mode = (
-            "Auto" if all(index == -1 for index in selections) else "Manual"
-        )
+        mapping_mode = "Auto" if all(index == -1 for index in selections) else "Manual"
     manual_mapping = str(mapping_mode).strip().casefold() == "manual"
     resolved_colors = params.get(
         "resolved_channel_colors",
         params.get("channel_colors", ""),
     )
     has_color_assignments = bool(
-        resolved_colors.strip()
-        if isinstance(resolved_colors, str)
-        else resolved_colors
+        resolved_colors.strip() if isinstance(resolved_colors, str) else resolved_colors
     )
     if manual_mapping and has_color_assignments:
         mapping_text = _composite_manual_colour_table_history(
@@ -1971,9 +1939,7 @@ def _composite_to_rgb_history(
     else:
         mapping_text = _composite_colour_table_history(params, count)
 
-    intensity_mapping = str(
-        params.get("intensity_mapping", "Preserve numeric values")
-    )
+    intensity_mapping = str(params.get("intensity_mapping", "Preserve numeric values"))
     if intensity_mapping == "Preserve numeric values":
         output_dtype = str(params.get("output_dtype", "floating RGB"))
         intensity_text = (
@@ -1985,9 +1951,7 @@ def _composite_to_rgb_history(
             "per-channel 1st-99th percentile normalization; "
             "additive mixtures clipped to [0, 1]"
         )
-    return (
-        f"{operation_title}: {axis_text}; {mapping_text}; {intensity_text}"
-    )
+    return f"{operation_title}: {axis_text}; {mapping_text}; {intensity_text}"
 
 
 def _composite_history_channel_axis(
@@ -2040,8 +2004,10 @@ def _composite_manual_colour_table_history(
     entries = []
     for index in range(count):
         value = colors[index] if index < len(colors) else "Unassigned"
-        if value is None or not str(value).strip() or (
-            str(value).strip().casefold() == "unassigned"
+        if (
+            value is None
+            or not str(value).strip()
+            or (str(value).strip().casefold() == "unassigned")
         ):
             color = "Unassigned"
         else:
@@ -2132,10 +2098,7 @@ def _operation_history(
                 for role in ("x", "y", "z")
                 if f"{role}_size" in params
             )
-            return (
-                f"{operation_title}: output size {dimensions} "
-                f"via {interpolation}"
-            )
+            return f"{operation_title}: output size {dimensions} via {interpolation}"
         x_scale = _format_number(params.get("x_scale", 1.0))
         y_scale = _format_number(
             params.get("x_scale", 1.0)
@@ -2282,21 +2245,26 @@ def _automatic_threshold_history(
         dtype = np.dtype(input_state.dtype)
     except (TypeError, ValueError):
         dtype = None
-    if dtype == np.dtype(bool):
-        return (
-            f"{operation_title}: existing boolean segmentation preserved; "
-            "automatic threshold bypassed"
-        )
     channel_axis = _explicit_channel_axis_parameter(params, len(input_state.axes))
     luma = (
         f"; BT.601 RGB/RGBA luma from channel axis {channel_axis}; alpha ignored"
         if channel_axis is not None
         else ""
     )
+    if operation_id == "imagej_auto_threshold":
+        method = str(params.get("method", "Default"))
+        return (
+            f"{operation_title}: ImageJ 1.x {method}; per-YX-plane 8-bit "
+            f"ScaleConversions and 256-bin AutoThresholder{luma}"
+        )
+    if dtype == np.dtype(bool):
+        return (
+            f"{operation_title}: existing boolean segmentation preserved; "
+            "automatic threshold bypassed"
+        )
     if operation_id == "li_threshold":
         return (
-            f"{operation_title}: {scope}; raw finite-value iteration"
-            f"{luma}; {nonfinite}"
+            f"{operation_title}: {scope}; raw finite-value iteration{luma}; {nonfinite}"
         )
 
     bins = int(params.get("histogram_bins", 256))
@@ -2556,8 +2524,7 @@ def _validated_insert_axis(value, ndim: int) -> int:
         axis += ndim + 1
     if axis < 0 or axis > ndim:
         raise ValueError(
-            f"Channel insertion axis {value!r} is out of range for a "
-            f"{ndim}D input."
+            f"Channel insertion axis {value!r} is out of range for a {ndim}D input."
         )
     return axis
 
@@ -2620,9 +2587,7 @@ def _shape_label(shape: tuple[int, ...]) -> str:
 def _axes_detail_label(state: ImageState) -> str:
     if not state.axes:
         return "scalar"
-    return ", ".join(
-        f"{axis.name}({axis.type})" for axis in state.axes
-    )
+    return ", ".join(f"{axis.name}({axis.type})" for axis in state.axes)
 
 
 def _dimensions_label(state: ImageState) -> str:
@@ -2720,12 +2685,8 @@ def _finite_extrema(arr: np.ndarray) -> tuple[int | float, int | float] | None:
                 continue
             chunk_minimum = int(values.min())
             chunk_maximum = int(values.max())
-            minimum = (
-                chunk_minimum if minimum is None else min(minimum, chunk_minimum)
-            )
-            maximum = (
-                chunk_maximum if maximum is None else max(maximum, chunk_maximum)
-            )
+            minimum = chunk_minimum if minimum is None else min(minimum, chunk_minimum)
+            maximum = chunk_maximum if maximum is None else max(maximum, chunk_maximum)
         if minimum is None or maximum is None:
             return None
         return minimum, maximum
@@ -2832,9 +2793,7 @@ def _fallback_axis_order(
     elif prefix_count <= len(labels):
         prefix = labels[-prefix_count:]
     else:
-        prefix = [
-            f"D{index}" for index in range(prefix_count - len(labels))
-        ] + labels
+        prefix = [f"D{index}" for index in range(prefix_count - len(labels))] + labels
     names = prefix + list(suffix)
     if any(len(name) != 1 for name in names):
         return ",".join(names)

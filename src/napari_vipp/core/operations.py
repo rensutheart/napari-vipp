@@ -158,8 +158,7 @@ def gamma_correction(data, gamma: float = 0.5) -> np.ndarray:
     if gamma <= 0.0:
         raise ValueError("Gamma Correction gamma must be greater than zero.")
     if not (
-        np.issubdtype(arr.dtype, np.integer)
-        or np.issubdtype(arr.dtype, np.floating)
+        np.issubdtype(arr.dtype, np.integer) or np.issubdtype(arr.dtype, np.floating)
     ):
         raise ValueError("Gamma Correction requires real-valued image data.")
     finite = arr[np.isfinite(arr)]
@@ -452,20 +451,14 @@ def _born_wolf_psf_from_resolution(
     radius_um = np.hypot(yy, xx)
     radial_phase = (2.0 * np.pi * numerical_aperture / wavelength_um) * radius_um
 
-    z_coords = (
-        np.arange(z_size, dtype=np.float64) - z_size // 2
-    ) * z_step_um
+    z_coords = (np.arange(z_size, dtype=np.float64) - z_size // 2) * z_step_um
     pupil_count = max(int(pupil_samples), 16)
     pupil = np.linspace(0.0, 1.0, pupil_count, dtype=np.float64)
     pupil_weight = pupil[None, None, :]
     bessel = special.j0(radial_phase[..., None] * pupil_weight)
     alpha = np.arcsin(np.clip(numerical_aperture / refractive_index, 0.0, 0.999999))
     defocus_scale = (
-        8.0
-        * np.pi
-        * refractive_index
-        * (np.sin(alpha / 2.0) ** 2)
-        / wavelength_um
+        8.0 * np.pi * refractive_index * (np.sin(alpha / 2.0) ** 2) / wavelength_um
     )
 
     planes = []
@@ -1210,6 +1203,52 @@ def isodata_threshold(
     )
 
 
+def imagej_auto_threshold(
+    data,
+    method: str = "Default",
+    channel_axis: int | None = None,
+    progress=None,
+) -> np.ndarray:
+    """Reproduce ImageJ 1.x 8-bit, slice-wise Default or Triangle thresholding.
+
+    Each trailing YX plane is converted as ImageJ's ``run("8-bit")`` would
+    after ``resetMinAndMax`` with ScaleConversions enabled. Byte input is kept
+    unchanged; unsigned-short and floating input use ImageJ's dtype-specific
+    conversion rules. The resulting 256-bin histogram is passed to the ImageJ
+    1.x AutoThresholder implementation and foreground is strictly greater than
+    the returned threshold.
+
+    This explicit compatibility operation is intentionally separate from
+    VIPP's generic scikit-image Triangle and Isodata operations.
+    """
+    arr = _to_explicit_grayscale(
+        np.asarray(data),
+        channel_axis=channel_axis,
+        operation="ImageJ auto threshold",
+    )
+    if arr.ndim < 2:
+        raise ValueError("ImageJ auto threshold requires at least 2D image data.")
+
+    normalized_method = str(method).strip().casefold()
+    if normalized_method not in {"default", "triangle"}:
+        raise ValueError(
+            "ImageJ auto threshold method must be 'Default' or 'Triangle'."
+        )
+
+    def threshold_plane(plane: np.ndarray) -> np.ndarray:
+        byte_plane = _imagej_8bit_plane(plane)
+        histogram = np.bincount(byte_plane.ravel(), minlength=256)
+        threshold = _imagej_auto_threshold_value(histogram, normalized_method)
+        return byte_plane > threshold
+
+    return _apply_scalar_plane_wise(
+        arr,
+        threshold_plane,
+        progress=progress,
+        progress_message=f"ImageJ {method} thresholds",
+    )
+
+
 def minimum_threshold(
     data,
     threshold_scope: str = "Stack histogram",
@@ -1333,11 +1372,7 @@ def sauvola_threshold(
         r = float(dynamic_range)
         if r <= 0.0:
             stats = _finite_array_stats(values)
-            r = (
-                float((stats.maximum - stats.minimum) / 2.0)
-                if stats.count
-                else 1.0
-            )
+            r = float((stats.maximum - stats.minimum) / 2.0) if stats.count else 1.0
             r = max(r, 1e-6)
         local = filters.threshold_sauvola(values, window_size=window, k=float(k), r=r)
         return values > local
@@ -1497,8 +1532,7 @@ def clear_border_objects(
             buffer_size >= block.shape[axis] for axis in boundary_axes
         ):
             raise ValueError(
-                "Border buffer must be smaller than every processed "
-                "boundary dimension."
+                "Border buffer must be smaller than every processed boundary dimension."
             )
         valid_region = np.ones(block.shape, dtype=bool)
         extent = buffer_size + 1
@@ -1880,15 +1914,11 @@ def filter_labels_by_property(
         tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(labels.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(labels.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     leading_axis_names = _safe_axis_column_names(
         moved_axis_names[: labels.ndim - spatial_ndim],
-        fallback=tuple(
-            f"axis_{index}" for index in range(labels.ndim - spatial_ndim)
-        ),
+        fallback=tuple(f"axis_{index}" for index in range(labels.ndim - spatial_ndim)),
     )
     leading_shape = labels_for_filter.shape[: labels.ndim - spatial_ndim]
     kept_by_block, matched_by_block = _property_filter_records_by_block(
@@ -1904,11 +1934,7 @@ def filter_labels_by_property(
     output = np.zeros_like(labels_for_filter)
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
-        block = (
-            labels_for_filter[block_index]
-            if leading_shape
-            else labels_for_filter
-        )
+        block = labels_for_filter[block_index] if leading_shape else labels_for_filter
         key = _property_filter_block_key(leading_axis_names, block_index)
         kept = _property_filter_labels_for_block(kept_by_block, key)
         if keep_unmatched:
@@ -1949,9 +1975,7 @@ def relabel_sequential(
     )
 
     def relabel_block(block: np.ndarray) -> np.ndarray:
-        relabeled, _forward_map, _inverse_map = segmentation.relabel_sequential(
-            block
-        )
+        relabeled, _forward_map, _inverse_map = segmentation.relabel_sequential(block)
         return np.asarray(relabeled, dtype=labels.dtype)
 
     return _apply_spatial_blocks(
@@ -2149,9 +2173,7 @@ def measure_objects(
         tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(labels.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(labels.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
@@ -2281,9 +2303,7 @@ def measure_objects_with_intensity(
         tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(labels.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(labels.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
@@ -2407,9 +2427,7 @@ def measure_3d_mesh_morphology(
         tuple(range(labels.ndim - spatial_ndim, labels.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(labels.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(labels.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, labels.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, labels.ndim, spatial_axes)
@@ -2512,9 +2530,7 @@ def analyze_skeleton(
         tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(mask.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(mask.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
@@ -2533,11 +2549,7 @@ def analyze_skeleton(
 
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
-        block = (
-            mask_for_analysis[block_index]
-            if leading_shape
-            else mask_for_analysis
-        )
+        block = mask_for_analysis[block_index] if leading_shape else mask_for_analysis
         skeleton = (
             morphology.skeletonize(block).astype(bool)
             if should_skeletonize
@@ -2598,9 +2610,7 @@ def measure_skeleton_branches(
         tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(mask.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(mask.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
@@ -2629,11 +2639,7 @@ def measure_skeleton_branches(
 
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
-        block = (
-            mask_for_analysis[block_index]
-            if leading_shape
-            else mask_for_analysis
-        )
+        block = mask_for_analysis[block_index] if leading_shape else mask_for_analysis
         skeleton = (
             morphology.skeletonize(block).astype(bool)
             if should_skeletonize
@@ -2706,11 +2712,7 @@ def skeleton_graph_tables(
 
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
-        block = (
-            mask_for_analysis[block_index]
-            if leading_shape
-            else mask_for_analysis
-        )
+        block = mask_for_analysis[block_index] if leading_shape else mask_for_analysis
         skeleton = (
             morphology.skeletonize(block).astype(bool)
             if should_skeletonize
@@ -2792,11 +2794,7 @@ def measure_overall_skeleton_network(
 
     for leading_index in np.ndindex(leading_shape or (1,)):
         block_index = () if not leading_shape else leading_index
-        block = (
-            mask_for_analysis[block_index]
-            if leading_shape
-            else mask_for_analysis
-        )
+        block = mask_for_analysis[block_index] if leading_shape else mask_for_analysis
         skeleton = (
             morphology.skeletonize(block).astype(bool)
             if should_skeletonize
@@ -2987,8 +2985,7 @@ def select_table_columns(
         missing = [column for column in requested if column not in table.columns]
         if missing:
             raise ValueError(
-                "Select Table Columns could not find column(s): "
-                + ", ".join(missing)
+                "Select Table Columns could not find column(s): " + ", ".join(missing)
             )
         mode = str(selection_mode).strip().lower()
         if mode.startswith("drop"):
@@ -3204,8 +3201,7 @@ def summarize_skeleton_branches(
             for stat in summary_stats:
                 row.append(_summary_statistic(tortuosity_values, stat))
         type_counts = Counter(
-            str(record.get("branch_type", "") or "")
-            for record in group_records
+            str(record.get("branch_type", "") or "") for record in group_records
         )
         for branch_type in branch_types:
             count = int(type_counts.get(branch_type, 0))
@@ -3585,12 +3581,7 @@ def _table_join_keys(
         keys = tuple(part.strip() for part in raw.split(",") if part.strip())
         if not keys:
             raise ValueError("Join keys cannot be blank.")
-        missing = {
-            key
-            for key in keys
-            for table in tables
-            if key not in table.columns
-        }
+        missing = {key for key in keys for table in tables if key not in table.columns}
         if missing:
             raise ValueError(
                 "Manual join keys must exist in every table: "
@@ -3635,8 +3626,7 @@ def _table_record_index(
             (int(row_index),)
             if row_position_join
             else tuple(
-                _hashable_table_key(record.get(column))
-                for column in key_columns
+                _hashable_table_key(record.get(column)) for column in key_columns
             )
         )
         if key in indexed:
@@ -3669,11 +3659,7 @@ def _joined_table_keys(
     orders: list[list[tuple[object, ...]]],
 ) -> list[tuple[object, ...]]:
     if mode == "inner":
-        return [
-            key
-            for key in orders[0]
-            if all(key in index for index in indexes[1:])
-        ]
+        return [key for key in orders[0] if all(key in index for index in indexes[1:])]
     if mode == "outer":
         joined: list[tuple[object, ...]] = []
         seen: set[tuple[object, ...]] = set()
@@ -3696,8 +3682,7 @@ def _hashable_table_key(value) -> object:
         return tuple(_hashable_table_key(item) for item in value)
     if isinstance(value, dict):
         return tuple(
-            (str(key), _hashable_table_key(item))
-            for key, item in sorted(value.items())
+            (str(key), _hashable_table_key(item)) for key, item in sorted(value.items())
         )
     return value
 
@@ -3869,8 +3854,7 @@ def _active_input_arrays(
         raise ValueError(f"{operation} input_count must be at least 1.")
     if len(arrays) < requested:
         raise ValueError(
-            f"{operation} needs {requested} connected inputs; received "
-            f"{len(arrays)}."
+            f"{operation} needs {requested} connected inputs; received {len(arrays)}."
         )
     return arrays[:requested]
 
@@ -4059,7 +4043,7 @@ def colocalization_threshold_values(
     channel_2_threshold: float = 25.0,
     intensity_max: float = 255.0,
 ) -> tuple[float, float]:
-    """Return the threshold pair used by a colocalization node."""
+    """Return the native-intensity threshold pair used by a colocalization node."""
     ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
         inputs,
         intensity_max=intensity_max,
@@ -4080,8 +4064,39 @@ def colocalization_normalized_inputs(
     inputs,
     intensity_max: float = 255.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, ...]]:
-    """Return normalized channel arrays and optional ROI mask for UI diagnostics."""
+    """Return native channel arrays and an optional ROI mask.
+
+    The public name is retained for compatibility with the diagnostic UI. The
+    returned values are finite native intensities, not 0..255 data.
+    """
     return _coloc_normalized_inputs_and_mask(inputs, intensity_max=intensity_max)
+
+
+def colocalization_display_range(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    configured_max: float = 255.0,
+    thresholds: Sequence[float] = (),
+) -> tuple[float, float]:
+    """Return a native scatter/display range containing data and thresholds."""
+    ch1 = np.asarray(channel_1)
+    ch2 = np.asarray(channel_2)
+    if ch1.size == 0 or ch2.size == 0:
+        raise ValueError("Colocalization display ranges require non-empty channels.")
+    bounds = tuple(float(value) for value in thresholds)
+    if not np.isfinite(ch1).all() or not np.isfinite(ch2).all() or not all(
+        np.isfinite(value) for value in bounds
+    ):
+        raise ValueError("Colocalization display ranges require finite values.")
+    data_min = min(float(np.min(ch1)), float(np.min(ch2)))
+    data_max = max(float(np.max(ch1)), float(np.max(ch2)))
+    display_min = min((0.0, data_min, *bounds))
+    base_max = 1.0 if data_max <= 1.0 else max(float(configured_max), data_max)
+    display_max = max((base_max, *bounds))
+    if display_max <= display_min:
+        display_max = display_min + 1.0
+    return float(display_min), float(display_max)
 
 
 def colocalization_metrics(
@@ -4091,7 +4106,7 @@ def colocalization_metrics(
     channel_2_threshold: float = 25.0,
     intensity_max: float = 255.0,
 ) -> TableData:
-    """Measure whole-image two-channel colocalization using normalized thresholds."""
+    """Measure Fiji Coloc 2-compatible two-channel colocalization."""
     ch1, ch2, roi_mask, warnings = _coloc_normalized_inputs_and_mask(
         inputs,
         intensity_max=intensity_max,
@@ -4105,49 +4120,27 @@ def colocalization_metrics(
         intensity_max=intensity_max,
         roi_mask=roi_mask,
     )
+    mask_supplied = roi_mask is not None
     if roi_mask is None:
         roi_mask = np.ones(ch1.shape, dtype=bool)
-    roi_voxels = int(np.count_nonzero(roi_mask))
-    positive_1 = (ch1 >= threshold_1) & roi_mask
-    positive_2 = (ch2 >= threshold_2) & roi_mask
-    overlap = positive_1 & positive_2
-
-    sum_1_positive = float(np.sum(ch1[positive_1], dtype=np.float64))
-    sum_2_positive = float(np.sum(ch2[positive_2], dtype=np.float64))
-    sum_1_overlap = float(np.sum(ch1[overlap], dtype=np.float64))
-    sum_2_overlap = float(np.sum(ch2[overlap], dtype=np.float64))
+    metrics = _coloc_metric_values(
+        ch1,
+        ch2,
+        roi_mask,
+        threshold_1=threshold_1,
+        threshold_2=threshold_2,
+    )
 
     columns = {
         "threshold_mode": [str(threshold_mode)],
         "channel_1_threshold": [float(threshold_1)],
         "channel_2_threshold": [float(threshold_2)],
-        "threshold_units": [f"normalized_0_{_format_coloc_max(intensity_max)}"],
-        "mask_restricted": [roi_voxels != int(ch1.size)],
-        "total_voxels": [roi_voxels],
-        "channel_1_positive_voxels": [int(np.count_nonzero(positive_1))],
-        "channel_2_positive_voxels": [int(np.count_nonzero(positive_2))],
-        "colocalized_voxels": [int(np.count_nonzero(overlap))],
-        "colocalized_fraction": [
-            _safe_fraction(np.count_nonzero(overlap), roi_voxels)
-        ],
-        "pearson_all": [_pearson(ch1[roi_mask], ch2[roi_mask])],
-        "pearson_colocalized": [_pearson(ch1[overlap], ch2[overlap])],
-        "manders_m1": [_safe_fraction(sum_1_overlap, sum_1_positive)],
-        "manders_m2": [_safe_fraction(sum_2_overlap, sum_2_positive)],
-        "overlap_coefficient_all": [
-            _overlap_coefficient(ch1[roi_mask], ch2[roi_mask])
-        ],
-        "overlap_coefficient_colocalized": [
-            _overlap_coefficient(ch1[overlap], ch2[overlap])
-        ],
-        "channel_1_positive_sum": [sum_1_positive],
-        "channel_2_positive_sum": [sum_2_positive],
-        "colocalized_channel_1_sum": [sum_1_overlap],
-        "colocalized_channel_2_sum": [sum_2_overlap],
+        "threshold_units": ["native_intensity"],
+        "coloc_semantics": ["fiji_coloc2_3.1"],
+        "mask_restricted": [mask_supplied],
+        **{name: [value] for name, value in metrics.items()},
         "costes_slope": [float("nan") if costes is None else costes["slope"]],
-        "costes_intercept": [
-            float("nan") if costes is None else costes["intercept"]
-        ],
+        "costes_intercept": [float("nan") if costes is None else costes["intercept"]],
         "costes_pearson_below": [
             float("nan") if costes is None else costes["pearson_below"]
         ],
@@ -4159,8 +4152,8 @@ def colocalization_metrics(
         name="Colocalization metrics",
         table_kind="colocalization metrics",
         column_units={
-            "channel_1_threshold": f"normalized_0_{_format_coloc_max(intensity_max)}",
-            "channel_2_threshold": f"normalized_0_{_format_coloc_max(intensity_max)}",
+            "channel_1_threshold": "native intensity",
+            "channel_2_threshold": "native intensity",
             "total_voxels": "voxels",
             "channel_1_positive_voxels": "voxels",
             "channel_2_positive_voxels": "voxels",
@@ -4208,21 +4201,23 @@ def object_colocalization_metrics(
             f"shapes; got {labels.shape}, {ch1_raw.shape}, and {ch2_raw.shape}."
         )
 
-    ch1, ch2, warnings = _normalize_coloc_channels(
-        ch1_raw,
-        ch2_raw,
-        output_max=float(intensity_max),
-    )
+    ch1, ch2, warnings = _prepare_coloc_channels(ch1_raw, ch2_raw)
     foreground = labels > 0
-    threshold_1, threshold_2, costes = _coloc_thresholds(
-        ch1,
-        ch2,
-        threshold_mode=threshold_mode,
-        channel_1_threshold=channel_1_threshold,
-        channel_2_threshold=channel_2_threshold,
-        intensity_max=intensity_max,
-        roi_mask=foreground if np.count_nonzero(foreground) else None,
-    )
+    if np.any(foreground):
+        threshold_1, threshold_2, costes = _coloc_thresholds(
+            ch1,
+            ch2,
+            threshold_mode=threshold_mode,
+            channel_1_threshold=channel_1_threshold,
+            channel_2_threshold=channel_2_threshold,
+            intensity_max=intensity_max,
+            roi_mask=foreground,
+        )
+    else:
+        # No rows will be emitted, so an automatic fit has no population.
+        threshold_1 = float(channel_1_threshold)
+        threshold_2 = float(channel_2_threshold)
+        costes = None
     labels_for_measure = _move_to_spatial_last(
         labels,
         context.spatial_axes,
@@ -4263,20 +4258,18 @@ def object_colocalization_metrics(
             threshold_mode=threshold_mode,
             threshold_1=threshold_1,
             threshold_2=threshold_2,
-            intensity_max=intensity_max,
             costes=costes,
             warnings=warnings,
         )
 
-    threshold_unit = f"normalized_0_{_format_coloc_max(intensity_max)}"
     return table_from_columns(
         columns,
         name="Object colocalization metrics",
         table_kind="per-object colocalization metrics",
         source_name=source_name,
         column_units={
-            "channel_1_threshold": threshold_unit,
-            "channel_2_threshold": threshold_unit,
+            "channel_1_threshold": "native intensity",
+            "channel_2_threshold": "native intensity",
             "object_voxels": "voxels",
             "channel_1_positive_voxels": "voxels",
             "channel_2_positive_voxels": "voxels",
@@ -4284,6 +4277,10 @@ def object_colocalization_metrics(
             "colocalized_fraction": "fraction",
             "manders_m1": "fraction",
             "manders_m2": "fraction",
+            "manders_m1_no_threshold": "fraction",
+            "manders_m2_no_threshold": "fraction",
+            "manders_tm1": "fraction",
+            "manders_tm2": "fraction",
             "channel_1_positive_sum": "intensity",
             "channel_2_positive_sum": "intensity",
             "colocalized_channel_1_sum": "intensity",
@@ -4623,7 +4620,6 @@ def racc_index(
     return output.astype(np.float32, copy=False)
 
 
-
 def rescale_intensity(
     data,
     in_low_percentile: float = 0.0,
@@ -4798,9 +4794,7 @@ def _exact_float_percentile_cutoffs(
             raise ValueError(
                 "Rescale percentile cutoffs require at least one finite input value."
             )
-        return tuple(
-            minimum if value == 0.0 else maximum for value in requested
-        )
+        return tuple(minimum if value == 0.0 else maximum for value in requested)
 
     if progress is not None:
         progress.check_cancelled()
@@ -5313,8 +5307,7 @@ def _broadcast_mask_to_image(
         return mask
     if mask.ndim > len(image_shape):
         raise ValueError(
-            f"Mask Image mask rank {mask.ndim}D exceeds image rank "
-            f"{len(image_shape)}D."
+            f"Mask Image mask rank {mask.ndim}D exceeds image rank {len(image_shape)}D."
         )
     if mask_axis_mapping is None:
         raise ValueError(
@@ -5399,9 +5392,7 @@ def convert_dtype(
             "Convert Dtype output_dtype must be bool, uint8, uint16, or float32."
         )
     if scaling not in {"rescale", "clip", "preserve"}:
-        raise ValueError(
-            "Convert Dtype scaling must be rescale, clip, or preserve."
-        )
+        raise ValueError("Convert Dtype scaling must be rescale, clip, or preserve.")
 
     if output_dtype == "bool":
         if arr.dtype == bool:
@@ -5804,9 +5795,7 @@ def _adaptive_threshold(
     channel_axis: int | None = None,
 ) -> np.ndarray:
     operation = (
-        "Adaptive mean threshold"
-        if method == "mean"
-        else "Adaptive Gaussian threshold"
+        "Adaptive mean threshold" if method == "mean" else "Adaptive Gaussian threshold"
     )
     arr = _to_explicit_grayscale(
         np.asarray(data),
@@ -5875,6 +5864,165 @@ def _threshold_mask(arr: np.ndarray, threshold: int | float) -> np.ndarray:
     if np.issubdtype(arr.dtype, np.inexact):
         mask &= np.isfinite(arr)
     return mask
+
+
+def _imagej_8bit_plane(plane: np.ndarray) -> np.ndarray:
+    """Convert one plane using ImageJ 1.x ScaleConversions semantics."""
+    plane = np.asarray(plane)
+    if plane.ndim != 2:
+        raise ValueError("ImageJ auto threshold requires trailing YX planes.")
+    if plane.dtype == np.dtype(bool):
+        return plane.astype(np.uint8)
+    if plane.dtype == np.dtype(np.uint8):
+        return plane.copy()
+    if plane.dtype == np.dtype(np.uint16):
+        minimum = int(np.min(plane))
+        maximum = int(np.max(plane))
+        scale = 256.0 / float(maximum - minimum + 1)
+        converted = np.floor((plane.astype(np.float64) - minimum) * scale + 0.5)
+        return np.clip(converted, 0.0, 255.0).astype(np.uint8)
+    if np.issubdtype(plane.dtype, np.floating):
+        # ImageJ FloatProcessor stores float32 values even when its constructor
+        # receives doubles. Match that narrowing before finding display limits.
+        values = plane.astype(np.float32, copy=False)
+        if np.isinf(values).any():
+            raise ValueError(
+                "ImageJ auto threshold does not support infinite float values."
+            )
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            return np.zeros(plane.shape, dtype=np.uint8)
+        minimum = float(np.min(values[finite]))
+        maximum = float(np.max(values[finite]))
+        if maximum <= minimum:
+            return np.zeros(plane.shape, dtype=np.uint8)
+        converted = np.zeros(plane.shape, dtype=np.float64)
+        converted[finite] = (values[finite].astype(np.float64) - minimum) * (
+            255.0 / (maximum - minimum)
+        )
+        # Java casts positive doubles after adding 0.5; unlike np.rint this is
+        # half-up rather than bankers' rounding.
+        converted = np.floor(converted + 0.5)
+        return np.clip(converted, 0.0, 255.0).astype(np.uint8)
+    raise ValueError(
+        "ImageJ auto threshold supports bool, uint8, uint16, and floating input; "
+        f"received {plane.dtype}."
+    )
+
+
+def _imagej_auto_threshold_value(histogram: np.ndarray, method: str) -> int:
+    """Return the ImageJ 1.x AutoThresholder cutoff for a byte histogram."""
+    data = np.asarray(histogram, dtype=np.int64)
+    if data.shape != (256,) or np.any(data < 0):
+        raise ValueError("ImageJ auto threshold requires a 256-bin histogram.")
+
+    occupied = np.flatnonzero(data > 0)
+    if occupied.size == 1:
+        bilevel = int(occupied[0]) - 1
+        if bilevel >= 0:
+            return bilevel
+    elif occupied.size == 2:
+        bilevel = int(occupied[1]) - 1
+        if bilevel >= 0:
+            return bilevel
+
+    normalized_method = str(method).strip().casefold()
+    if normalized_method == "default":
+        threshold = _imagej_default_threshold(data)
+    elif normalized_method == "triangle":
+        threshold = _imagej_triangle_threshold(data)
+    else:
+        raise ValueError(
+            "ImageJ auto threshold method must be 'Default' or 'Triangle'."
+        )
+    return max(int(threshold), 0)
+
+
+def _imagej_default_threshold(histogram: np.ndarray) -> int:
+    """Port ImageJ 1.x's modified Default/IJIsoData threshold."""
+    data = np.asarray(histogram, dtype=np.int64).copy()
+    mode = int(np.argmax(data))
+    maximum_count = int(data[mode])
+    second_count = int(np.max(np.delete(data, mode)))
+    if maximum_count > second_count * 2 and second_count != 0:
+        data[mode] = int(second_count * 1.5)
+    return _imagej_ij_isodata_threshold(data)
+
+
+def _imagej_ij_isodata_threshold(histogram: np.ndarray) -> int:
+    data = np.asarray(histogram, dtype=np.int64).copy()
+    maximum_value = int(data.size - 1)
+    data[0] = 0
+    data[maximum_value] = 0
+    occupied = np.flatnonzero(data > 0)
+    if occupied.size < 2 or int(occupied[0]) >= int(occupied[-1]):
+        return int(data.size // 2)
+
+    minimum = int(occupied[0])
+    maximum = int(occupied[-1])
+    moving_index = minimum
+    result = float(moving_index)
+    while True:
+        sum_1 = sum(
+            float(index) * int(data[index])
+            for index in range(minimum, moving_index + 1)
+        )
+        count_1 = sum(int(data[index]) for index in range(minimum, moving_index + 1))
+        sum_2 = sum(
+            float(index) * int(data[index])
+            for index in range(moving_index + 1, maximum + 1)
+        )
+        count_2 = sum(
+            int(data[index]) for index in range(moving_index + 1, maximum + 1)
+        )
+        result = (sum_1 / count_1 + sum_2 / count_2) / 2.0
+        moving_index += 1
+        if not (moving_index + 1 <= result and moving_index < maximum - 1):
+            break
+    return int(np.floor(result + 0.5))
+
+
+def _imagej_triangle_threshold(histogram: np.ndarray) -> int:
+    """Port ImageJ 1.x Triangle, including reversal and split decrement."""
+    data = np.asarray(histogram, dtype=np.int64).copy()
+    occupied = np.flatnonzero(data > 0)
+    if occupied.size == 0:
+        return 0
+
+    minimum = int(occupied[0])
+    if minimum > 0:
+        minimum -= 1
+    second_minimum = int(occupied[-1])
+    if second_minimum < data.size - 1:
+        second_minimum += 1
+    maximum = int(np.argmax(data))
+
+    inverted = False
+    if maximum - minimum < second_minimum - maximum:
+        inverted = True
+        data = data[::-1].copy()
+        minimum = data.size - 1 - second_minimum
+        maximum = data.size - 1 - maximum
+
+    if minimum == maximum:
+        return minimum
+
+    normal_x = float(data[maximum])
+    normal_y = float(minimum - maximum)
+    norm = float(np.hypot(normal_x, normal_y))
+    normal_x /= norm
+    normal_y /= norm
+    distance = normal_x * minimum + normal_y * float(data[minimum])
+
+    split = minimum
+    split_distance = 0.0
+    for index in range(minimum + 1, maximum + 1):
+        candidate = normal_x * index + normal_y * float(data[index]) - distance
+        if candidate > split_distance:
+            split = index
+            split_distance = candidate
+    split -= 1
+    return data.size - 1 - split if inverted else split
 
 
 def _to_explicit_grayscale(
@@ -6127,9 +6275,7 @@ def _native_integer_histogram(arr: np.ndarray) -> _FiniteHistogram:
                 count=levels.size,
             )
             counts[indices] += level_counts.astype(np.intp, copy=False)
-    center_dtype = (
-        np.uint64 if maximum > np.iinfo(np.int64).max else np.int64
-    )
+    center_dtype = np.uint64 if maximum > np.iinfo(np.int64).max else np.int64
     centers = np.fromiter(
         (minimum + index for index in range(span)),
         dtype=center_dtype,
@@ -6147,9 +6293,10 @@ def _validated_histogram_bins(histogram_bins: int) -> int:
         raise ValueError(
             "Float histogram bins must be an integer from 2 to 65,536."
         ) from exc
-    if isinstance(histogram_bins, (float, np.floating)) and not float(
-        histogram_bins
-    ).is_integer():
+    if (
+        isinstance(histogram_bins, (float, np.floating))
+        and not float(histogram_bins).is_integer()
+    ):
         raise ValueError("Float histogram bins must be an integer from 2 to 65,536.")
     if not 2 <= bin_count <= _MAX_NATIVE_INTEGER_HISTOGRAM_BINS:
         raise ValueError("Float histogram bins must be an integer from 2 to 65,536.")
@@ -6200,8 +6347,7 @@ def _otsu_value(
     weight2 = np.cumsum(hist[::-1])[::-1]
     mean1 = np.cumsum(hist * calculation_centers) / np.maximum(weight1, 1)
     mean2 = (
-        np.cumsum((hist * calculation_centers)[::-1])
-        / np.maximum(weight2[::-1], 1)
+        np.cumsum((hist * calculation_centers)[::-1]) / np.maximum(weight2[::-1], 1)
     )[::-1]
     variance12 = weight1[:-1] * weight2[1:] * (mean1[:-1] - mean2[1:]) ** 2
     if variance12.size == 0:
@@ -6360,9 +6506,7 @@ def _minimum_value(
         raise RuntimeError("Maximum iteration reached for histogram smoothing")
     if progress is not None:
         progress.report(iteration + 1, iteration_limit, "Threshold histogram ready")
-    valley_offset = int(
-        np.argmin(smooth_histogram[maxima[0] : maxima[1] + 1])
-    )
+    valley_offset = int(np.argmin(smooth_histogram[maxima[0] : maxima[1] + 1]))
     centers, integer_offset = _threshold_histogram_centers(arr, summary)
     return _restore_histogram_threshold(
         centers[maxima[0] + valley_offset],
@@ -6400,9 +6544,7 @@ def _validated_threshold_pair(
             f"{operation} low and high thresholds must be finite numbers."
         ) from exc
     if not np.isfinite(low_value) or not np.isfinite(high_value):
-        raise ValueError(
-            f"{operation} low and high thresholds must be finite numbers."
-        )
+        raise ValueError(f"{operation} low and high thresholds must be finite numbers.")
     if minimum is not None and (low_value < minimum or high_value < minimum):
         raise ValueError(
             f"{operation} low and high thresholds must be at least {minimum:g}."
@@ -6724,8 +6866,7 @@ def _resolved_spatial_ndim(
         requested = max(arr.ndim, 1)
     if requested > max(arr.ndim, 1):
         raise ValueError(
-            f"{requested}D spatial processing cannot be applied to a "
-            f"{arr.ndim}D array."
+            f"{requested}D spatial processing cannot be applied to a {arr.ndim}D array."
         )
     return requested
 
@@ -6763,9 +6904,7 @@ def _deconvolution_inputs(inputs) -> tuple[np.ndarray, np.ndarray]:
     try:
         image, psf = list(inputs)[:2]
     except Exception as exc:
-        raise ValueError(
-            "Deconvolution requires two inputs: Image and PSF."
-        ) from exc
+        raise ValueError("Deconvolution requires two inputs: Image and PSF.") from exc
     if image is None or psf is None:
         raise ValueError("Deconvolution requires connected Image and PSF inputs.")
     return np.asarray(image), np.asarray(psf)
@@ -6782,9 +6921,7 @@ def _resolved_deconvolution_spatial_ndim(
         resolved_spatial_ndim,
     )
     if spatial_ndim not in {2, 3}:
-        raise ValueError(
-            "Deconvolution requires 2D YX or 3D ZYX spatial processing."
-        )
+        raise ValueError("Deconvolution requires 2D YX or 3D ZYX spatial processing.")
     return spatial_ndim
 
 
@@ -6839,10 +6976,7 @@ def _crop_empty_psf_border(psf: np.ndarray) -> np.ndarray:
 
 
 def _force_odd_psf_shape(psf: np.ndarray) -> np.ndarray:
-    pad_width = [
-        (0, 1) if int(size) % 2 == 0 else (0, 0)
-        for size in psf.shape
-    ]
+    pad_width = [(0, 1) if int(size) % 2 == 0 else (0, 0) for size in psf.shape]
     if not any(after for _, after in pad_width):
         return psf
     return np.pad(psf, pad_width, mode="constant", constant_values=0)
@@ -7284,8 +7418,7 @@ def _skeleton_adjacency(
         coord = tuple(int(value) for value in coord_array)
         for offset in _half_neighbor_offsets(component.ndim):
             neighbor = tuple(
-                coord[axis] + offset[axis]
-                for axis in range(component.ndim)
+                coord[axis] + offset[axis] for axis in range(component.ndim)
             )
             neighbor_index = index_by_coord.get(neighbor)
             if neighbor_index is None:
@@ -7597,9 +7730,7 @@ def _skeleton_table_context(
         tuple(range(mask.ndim - spatial_ndim, mask.ndim)),
     )
     moved_axis_names = tuple(
-        axis_names[index]
-        for index in range(mask.ndim)
-        if index not in spatial_axes
+        axis_names[index] for index in range(mask.ndim) if index not in spatial_axes
     ) + tuple(axis_names[index] for index in spatial_axes)
     moved_axis_scales = _reordered_axis_values(axis_scales, mask.ndim, spatial_axes)
     moved_axis_units = _reordered_axis_values(axis_units, mask.ndim, spatial_axes)
@@ -7703,9 +7834,7 @@ def _analyze_skeleton_block(
         columns["component_id"].append(component_id)
         columns["component_count_in_block"].append(int(component_count))
         columns["component_voxel_fraction"].append(
-            float(graph.voxel_count / total_voxel_count)
-            if total_voxel_count
-            else 0.0
+            float(graph.voxel_count / total_voxel_count) if total_voxel_count else 0.0
         )
         columns["skeleton_voxel_count"].append(graph.voxel_count)
         columns["endpoint_voxel_count"].append(graph.endpoint_count)
@@ -7776,9 +7905,7 @@ def _measure_skeleton_branches_block(
             )
             denominator = trace.euclidean_pixel_distance
             columns["branch_tortuosity"].append(
-                float(trace.pixel_length / denominator)
-                if denominator > 0
-                else 0.0
+                float(trace.pixel_length / denominator) if denominator > 0 else 0.0
             )
             if units.physical_column:
                 columns["branch_length_physical"].append(trace.physical_length)
@@ -7903,9 +8030,7 @@ def _skeleton_graph_tables_block(
             )
             denominator = trace.euclidean_pixel_distance
             edge_columns["branch_tortuosity"].append(
-                float(trace.pixel_length / denominator)
-                if denominator > 0
-                else 0.0
+                float(trace.pixel_length / denominator) if denominator > 0 else 0.0
             )
             if units.physical_column:
                 edge_columns["branch_length_physical"].append(trace.physical_length)
@@ -8555,9 +8680,10 @@ def _valid_skeleton_edge(
             for axis in axes:
                 intermediate[axis] += offset[axis]
             intermediate_tuple = tuple(intermediate)
-            if _coord_in_bounds(intermediate_tuple, component.shape) and component[
-                intermediate_tuple
-            ]:
+            if (
+                _coord_in_bounds(intermediate_tuple, component.shape)
+                and component[intermediate_tuple]
+            ):
                 return False
     return True
 
@@ -8580,9 +8706,7 @@ def _skeleton_units(
     axis_units: Sequence[str | None],
 ) -> _SkeletonUnits:
     length_column = (
-        "skeleton_length_voxels"
-        if spatial_ndim >= 3
-        else "skeleton_length_pixels"
+        "skeleton_length_voxels" if spatial_ndim >= 3 else "skeleton_length_pixels"
     )
     physical_column = "skeleton_length_physical"
     scales = _normalized_spatial_scales(spatial_ndim, axis_scales)
@@ -8662,16 +8786,20 @@ def _measure_label_block(
     )
     raw = measure.regionprops_table(block, properties=properties)
     scales = _normalized_spatial_scales(spatial_ndim, axis_scales)
-    physical_raw = _calibrated_regionprops_table(
-        block,
-        spatial_ndim,
-        scales,
-        include_shape_descriptors=include_shape_descriptors,
-        include_axis_descriptors=include_axis_descriptors,
-        include_2d_boundary_descriptors=include_2d_boundary_descriptors,
-        include_derived_shape_ratios=include_derived_shape_ratios,
-        include_2d_shape_moments=include_2d_shape_moments,
-    ) if has_physical_calibration else {}
+    physical_raw = (
+        _calibrated_regionprops_table(
+            block,
+            spatial_ndim,
+            scales,
+            include_shape_descriptors=include_shape_descriptors,
+            include_axis_descriptors=include_axis_descriptors,
+            include_2d_boundary_descriptors=include_2d_boundary_descriptors,
+            include_derived_shape_ratios=include_derived_shape_ratios,
+            include_2d_shape_moments=include_2d_shape_moments,
+        )
+        if has_physical_calibration
+        else {}
+    )
     units = _measurement_units(spatial_ndim, (), ())
     result: dict[str, list[object]] = {
         "label_id": [int(value) for value in raw.get("label", [])],
@@ -8708,9 +8836,7 @@ def _measure_label_block(
             include_2d_shape_moments=include_2d_shape_moments,
         )
     result["extent"] = [float(value) for value in raw.get("extent", [])]
-    result["euler_number"] = [
-        int(value) for value in raw.get("euler_number", [])
-    ]
+    result["euler_number"] = [int(value) for value in raw.get("euler_number", [])]
     if include_shape_descriptors:
         _add_shape_descriptor_measurements(result, raw, spatial_ndim)
     if include_axis_descriptors:
@@ -9345,8 +9471,7 @@ def _mesh_metrics_for_label_mask(
     minimum = coords.min(axis=0)
     maximum = coords.max(axis=0) + 1
     slices = tuple(
-        slice(int(lo), int(hi))
-        for lo, hi in zip(minimum, maximum, strict=True)
+        slice(int(lo), int(hi)) for lo, hi in zip(minimum, maximum, strict=True)
     )
     local = mask[slices]
     padded = np.pad(local.astype(np.float32, copy=False), 1, mode="constant")
@@ -9479,9 +9604,7 @@ def _sphericity(volume: float, surface_area: float) -> float:
     if volume <= 0 or surface_area <= 0:
         return float("nan")
     return float(
-        (np.pi ** (1.0 / 3.0))
-        * ((6.0 * volume) ** (2.0 / 3.0))
-        / surface_area
+        (np.pi ** (1.0 / 3.0)) * ((6.0 * volume) ** (2.0 / 3.0)) / surface_area
     )
 
 
@@ -9559,9 +9682,9 @@ def _measurement_empty_columns(
             columns[f"inertia_tensor_eigval_{axis_index}"] = []
             if units.physical_column:
                 columns[f"inertia_tensor_eigval_{axis_index}_physical"] = []
-                units.column_units[
-                    f"inertia_tensor_eigval_{axis_index}_physical"
-                ] = units.area_unit
+                units.column_units[f"inertia_tensor_eigval_{axis_index}_physical"] = (
+                    units.area_unit
+                )
         if spatial_ndim == 2:
             columns["eccentricity"] = []
             columns["orientation_radians"] = []
@@ -9580,9 +9703,9 @@ def _measurement_empty_columns(
             columns[f"bbox_axis_{axis_index}_length_{suffix}"] = []
             if units.physical_column:
                 columns[f"bbox_axis_{axis_index}_length_physical"] = []
-                units.column_units[
-                    f"bbox_axis_{axis_index}_length_physical"
-                ] = units.length_unit
+                units.column_units[f"bbox_axis_{axis_index}_length_physical"] = (
+                    units.length_unit
+                )
         for left in range(spatial_ndim):
             for right in range(left + 1, spatial_ndim):
                 columns[f"bbox_axis_ratio_{left}_{right}"] = []
@@ -9595,9 +9718,9 @@ def _measurement_empty_columns(
         columns["perimeter_area_ratio"] = []
         if units.physical_column:
             columns["perimeter_area_ratio_physical"] = []
-            units.column_units[
-                "perimeter_area_ratio_physical"
-            ] = f"1/{units.length_unit}"
+            units.column_units["perimeter_area_ratio_physical"] = (
+                f"1/{units.length_unit}"
+            )
         for index in range(7):
             columns[f"hu_moment_{index}"] = []
     if include_intensity:
@@ -9793,9 +9916,7 @@ def _measurement_spatial_axes(
     if all(axis_names.count(name) == 1 for name in desired_names):
         return tuple(axis_names.index(name) for name in desired_names)
     spatial = tuple(
-        index
-        for index, axis_type in enumerate(axis_types)
-        if axis_type == "space"
+        index for index, axis_type in enumerate(axis_types) if axis_type == "space"
     )
     if len(spatial) >= spatial_ndim:
         return spatial[-spatial_ndim:]
@@ -9857,8 +9978,7 @@ def _resolved_psf_spatial_ndim(
         requested = _validated_resolved_spatial_ndim(resolved_spatial_ndim)
     if requested is None:
         spatial_count = sum(
-            str(axis_type).strip().lower() == "space"
-            for axis_type in axis_types
+            str(axis_type).strip().lower() == "space" for axis_type in axis_types
         )
         if spatial_count:
             requested = 3 if spatial_count >= 3 else 2
@@ -9943,7 +10063,8 @@ def resolve_born_wolf_psf_parameters(
         add(
             "channel",
             int(channel_index),
-            "metadata" if _psf_channel_count(
+            "metadata"
+            if _psf_channel_count(
                 channel_emission_wavelengths,
                 channel_excitation_wavelengths,
             )
@@ -10337,9 +10458,7 @@ def _xy_axes(
     if axis_names:
         names = tuple(str(name).strip().casefold() for name in axis_names)
         if len(names) != arr.ndim:
-            raise ValueError(
-                "Declared axis names must match the input array rank."
-            )
+            raise ValueError("Declared axis names must match the input array rank.")
         if names.count("y") != 1 or names.count("x") != 1:
             raise ValueError(
                 "A Y/X operation requires exactly one declared y axis and "
@@ -10512,9 +10631,7 @@ def _parse_axis_ranges(value, shape: tuple[int, ...]) -> dict[int, tuple[int, in
             start = int(pieces[1])
             end = int(pieces[2])
         except ValueError as exc:
-            raise ValueError(
-                "Select Axis Slice ranges must contain integers."
-            ) from exc
+            raise ValueError("Select Axis Slice ranges must contain integers.") from exc
         axis = _validated_axis_index(
             requested_axis,
             len(shape),
@@ -10528,9 +10645,7 @@ def _parse_axis_ranges(value, shape: tuple[int, ...]) -> dict[int, tuple[int, in
                 f"axis {requested_axis} with size {shape[axis]}."
             )
         if start > end:
-            raise ValueError(
-                "Select Axis Slice range start must not exceed its end."
-            )
+            raise ValueError("Select Axis Slice range start must not exceed its end.")
         ranges[axis] = (start, end)
     return ranges
 
@@ -10682,9 +10797,7 @@ def _projection_axis_tokens(axes) -> list[str]:
     else:
         values = (axes,)
     return [
-        token
-        for token in (_projection_axis_token(value) for value in values)
-        if token
+        token for token in (_projection_axis_token(value) for value in values) if token
     ]
 
 
@@ -10833,9 +10946,7 @@ def _metadata_spatial_axis_indices(
 ) -> list[int]:
     types = [str(axis_type).strip().lower() for axis_type in axis_types]
     spatial = [
-        index
-        for index, axis_type in enumerate(types[:ndim])
-        if axis_type == "space"
+        index for index, axis_type in enumerate(types[:ndim]) if axis_type == "space"
     ]
     if spatial:
         return spatial
@@ -10852,9 +10963,7 @@ def _fallback_projection_spatial_indices(
 ) -> list[int]:
     names = _fallback_axis_names(ndim, shape)
     spatial = [
-        index
-        for index, axis_name in enumerate(names)
-        if axis_name in {"z", "y", "x"}
+        index for index, axis_name in enumerate(names) if axis_name in {"z", "y", "x"}
     ]
     if spatial:
         return spatial
@@ -10901,11 +11010,7 @@ def _xyz_axis_indices(
     shape: Sequence[int] = (),
 ) -> dict[str, int]:
     names = _normalized_axis_names(ndim, axis_names, shape)
-    axis_map = {
-        name: names.index(name)
-        for name in ("x", "y", "z")
-        if name in names
-    }
+    axis_map = {name: names.index(name) for name in ("x", "y", "z") if name in names}
     spatial_axes = _metadata_spatial_axis_indices(
         ndim,
         axis_types=axis_types,
@@ -11025,8 +11130,7 @@ def _orthogonal_display_sizes(
     z_size, y_size, x_size = shape
     z_scale, y_scale, x_scale = display_scales
     if any(
-        value <= 0 or not np.isfinite(value)
-        for value in (z_scale, y_scale, x_scale)
+        value <= 0 or not np.isfinite(value) for value in (z_scale, y_scale, x_scale)
     ):
         return z_size, z_size, y_size, x_size
     display_z_y = max(int(round(z_size * z_scale / y_scale)), 1)
@@ -11437,9 +11541,7 @@ def _validated_filter_scale(
     valid = resolved >= minimum if inclusive else resolved > minimum
     if not valid:
         comparison = "at least" if inclusive else "greater than"
-        raise ValueError(
-            f"{operation} {name} must be {comparison} {minimum:g}."
-        )
+        raise ValueError(f"{operation} {name} must be {comparison} {minimum:g}.")
     return resolved
 
 
@@ -11505,14 +11607,12 @@ def _validated_composite_channel_axis(value, ndim: int) -> int:
         )
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise ValueError(
-            "Composite → RGB requires an explicit non-negative integer "
-            "channel axis."
+            "Composite → RGB requires an explicit non-negative integer channel axis."
         )
     axis = int(value)
     if axis < 0 or axis >= ndim:
         raise ValueError(
-            f"Composite → RGB channel axis {axis} is out of range for "
-            f"{ndim}D input."
+            f"Composite → RGB channel axis {axis} is out of range for {ndim}D input."
         )
     return axis
 
@@ -11685,8 +11785,7 @@ def _composite_has_serialized_channel_assignments(
     if isinstance(channel_colors, (list, tuple)):
         return bool(channel_colors)
     raise ValueError(
-        "Composite → RGB channel colours must be comma-separated text "
-        "or a sequence."
+        "Composite → RGB channel colours must be comma-separated text or a sequence."
     )
 
 
@@ -11702,8 +11801,7 @@ def _composite_channel_assignment_values(
     if isinstance(channel_colors, (list, tuple)):
         return list(channel_colors)
     raise ValueError(
-        "Composite → RGB channel colours must be comma-separated text "
-        "or a sequence."
+        "Composite → RGB channel colours must be comma-separated text or a sequence."
     )
 
 
@@ -11792,11 +11890,7 @@ def _coloc_normalized_inputs_and_mask(
         raise ValueError("Colocalization nodes require two image inputs.")
     ch1 = _coloc_reduce_to_intensity(values[0])
     ch2 = _coloc_reduce_to_intensity(values[1])
-    ch1, ch2, warnings = _normalize_coloc_channels(
-        ch1,
-        ch2,
-        output_max=intensity_max,
-    )
+    ch1, ch2, warnings = _prepare_coloc_channels(ch1, ch2)
     roi_mask = None
     if len(values) >= 3 and values[2] is not None:
         roi_mask = np.asarray(values[2]) > 0
@@ -11811,9 +11905,32 @@ def _coloc_reduce_to_intensity(data) -> np.ndarray:
     arr = np.asarray(data)
     if arr.ndim < 2:
         raise ValueError("Colocalization nodes require at least 2D image data.")
-    if arr.ndim >= 3 and arr.shape[-1] in RGB_CHANNELS:
-        return np.max(arr[..., :3], axis=-1)
+    if np.iscomplexobj(arr) or not (
+        np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.bool_)
+    ):
+        raise ValueError("Colocalization nodes require scalar numeric image data.")
     return arr
+
+
+def _prepare_coloc_channels(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
+    """Validate and retain two scalar channels in their native intensity units."""
+    ch1 = np.asarray(channel_1)
+    ch2 = np.asarray(channel_2)
+    if ch1.shape != ch2.shape:
+        raise ValueError(f"Input shapes differ: {ch1.shape} vs {ch2.shape}.")
+    if not np.isfinite(ch1).all() or not np.isfinite(ch2).all():
+        raise ValueError("Both channels must contain only finite values.")
+
+    warnings: list[str] = []
+    if (ch1.size and float(np.min(ch1)) < 0) or (ch2.size and float(np.min(ch2)) < 0):
+        warnings.append(
+            "Negative intensities were retained; Fiji Coloc 2 may report "
+            "threshold or coefficient warnings for background-offset data."
+        )
+    return ch1, ch2, tuple(warnings)
 
 
 def _normalize_coloc_channels(
@@ -11822,45 +11939,9 @@ def _normalize_coloc_channels(
     *,
     output_max: float,
 ) -> tuple[np.ndarray, np.ndarray, tuple[str, ...]]:
-    ch1 = np.asarray(channel_1, dtype=np.float32)
-    ch2 = np.asarray(channel_2, dtype=np.float32)
-    if ch1.shape != ch2.shape:
-        raise ValueError(f"Input shapes differ: {ch1.shape} vs {ch2.shape}.")
-    if not np.isfinite(ch1).any() or not np.isfinite(ch2).any():
-        raise ValueError("Both channels must contain finite values.")
-
-    output_max = max(float(output_max), 1.0)
-    warnings: list[str] = []
-    max_intensity = float(np.nanmax([np.nanmax(ch1), np.nanmax(ch2)]))
-    min_intensity = float(np.nanmin([np.nanmin(ch1), np.nanmin(ch2)]))
-    if min_intensity < 0:
-        warnings.append("Negative intensities were clipped to zero.")
-        ch1 = np.clip(ch1, 0.0, None)
-        ch2 = np.clip(ch2, 0.0, None)
-        max_intensity = float(np.nanmax([np.nanmax(ch1), np.nanmax(ch2)]))
-    if max_intensity <= 0:
-        raise ValueError("Both channels are empty or zero-valued.")
-    if max_intensity <= 1.0:
-        scale = output_max
-        warnings.append(
-            f"Input appeared normalized; scaled jointly to 0..{output_max:g}."
-        )
-    elif max_intensity > output_max:
-        scale = output_max / max_intensity
-        warnings.append(
-            f"Input maximum {max_intensity:g} exceeded {output_max:g}; "
-            f"scaled jointly to 0..{output_max:g}."
-        )
-    else:
-        scale = 1.0
-
-    ch1 = np.nan_to_num(ch1 * scale, nan=0.0, posinf=output_max, neginf=0.0)
-    ch2 = np.nan_to_num(ch2 * scale, nan=0.0, posinf=output_max, neginf=0.0)
-    return (
-        np.clip(ch1, 0.0, output_max).astype(np.float32, copy=False),
-        np.clip(ch2, 0.0, output_max).astype(np.float32, copy=False),
-        tuple(warnings),
-    )
+    """Compatibility wrapper returning native, unscaled colocalization inputs."""
+    del output_max
+    return _prepare_coloc_channels(channel_1, channel_2)
 
 
 def _coloc_thresholds(
@@ -11880,12 +11961,12 @@ def _coloc_thresholds(
         costes = _costes_thresholds(
             threshold_ch1,
             threshold_ch2,
-            intensity_max=float(intensity_max),
         )
         return costes["threshold_1"], costes["threshold_2"], costes
+    del intensity_max
     return (
-        _clamp(float(channel_1_threshold), 0.0, float(intensity_max)),
-        _clamp(float(channel_2_threshold), 0.0, float(intensity_max)),
+        float(channel_1_threshold),
+        float(channel_2_threshold),
         None,
     )
 
@@ -12073,6 +12154,104 @@ def _label_binary_spatial_blocks(
     return np.moveaxis(labelled, target_axes, context.spatial_axes)
 
 
+def _coloc_metric_values(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    analysis_mask: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    total_voxel_name: str = "total_voxels",
+    pearson_all_name: str = "pearson_all",
+    overlap_all_name: str = "overlap_coefficient_all",
+) -> dict[str, object]:
+    """Calculate Fiji Coloc 2 metrics and retained VIPP overlap quantities."""
+    ch1 = np.asarray(ch1, dtype=np.float64)
+    ch2 = np.asarray(ch2, dtype=np.float64)
+    analysis_mask = np.asarray(analysis_mask, dtype=bool)
+    roi_voxels = int(np.count_nonzero(analysis_mask))
+    positive_1 = analysis_mask & (ch1 >= threshold_1)
+    positive_2 = analysis_mask & (ch2 >= threshold_2)
+    both_above = positive_1 & positive_2
+    below_threshold = analysis_mask & ((ch1 < threshold_1) | (ch2 < threshold_2))
+    above_threshold = analysis_mask & ((ch1 > threshold_1) | (ch2 > threshold_2))
+
+    sum_1_positive = _coloc_sum(ch1, positive_1)
+    sum_2_positive = _coloc_sum(ch2, positive_2)
+    sum_1_both_above = _coloc_sum(ch1, both_above)
+    sum_2_both_above = _coloc_sum(ch2, both_above)
+    sum_1_total = _coloc_sum(ch1, analysis_mask)
+    sum_2_total = _coloc_sum(ch2, analysis_mask)
+
+    m1_numerator = _coloc_sum(ch1, analysis_mask & (ch2 > 0))
+    m2_numerator = _coloc_sum(ch2, analysis_mask & (ch1 > 0))
+    tm1_numerator = _coloc_sum(
+        ch1,
+        analysis_mask & (ch2 > 0) & (ch2 >= threshold_2),
+    )
+    tm2_numerator = _coloc_sum(
+        ch2,
+        analysis_mask & (ch1 > 0) & (ch1 >= threshold_1),
+    )
+    manders_m1_no_threshold = _safe_signed_fraction(m1_numerator, sum_1_total)
+    manders_m2_no_threshold = _safe_signed_fraction(m2_numerator, sum_2_total)
+    manders_tm1 = _safe_signed_fraction(tm1_numerator, sum_1_total)
+    manders_tm2 = _safe_signed_fraction(tm2_numerator, sum_2_total)
+
+    pearson_no_threshold = _pearson(ch1[analysis_mask], ch2[analysis_mask])
+    pearson_both_above = _pearson(ch1[both_above], ch2[both_above])
+    overlap_all = _overlap_coefficient(ch1[analysis_mask], ch2[analysis_mask])
+    overlap_both_above = _overlap_coefficient(
+        ch1[both_above],
+        ch2[both_above],
+    )
+    both_above_voxels = int(np.count_nonzero(both_above))
+    return {
+        total_voxel_name: roi_voxels,
+        "channel_1_positive_voxels": int(np.count_nonzero(positive_1)),
+        "channel_2_positive_voxels": int(np.count_nonzero(positive_2)),
+        "colocalized_voxels": both_above_voxels,
+        "colocalized_fraction": _safe_fraction(both_above_voxels, roi_voxels),
+        pearson_all_name: pearson_no_threshold,
+        "pearson_no_threshold": pearson_no_threshold,
+        "pearson_below_threshold": _pearson(
+            ch1[below_threshold],
+            ch2[below_threshold],
+        ),
+        "pearson_above_threshold": _pearson(
+            ch1[above_threshold],
+            ch2[above_threshold],
+        ),
+        "pearson_both_above_threshold": pearson_both_above,
+        # Retained output alias; the explicit name above states its AND domain.
+        "pearson_colocalized": pearson_both_above,
+        # Existing workflows consume manders_m1/m2.  They now carry the Fiji
+        # thresholded Manders values; explicit tM columns remove ambiguity.
+        "manders_m1": manders_tm1,
+        "manders_m2": manders_tm2,
+        "manders_m1_no_threshold": manders_m1_no_threshold,
+        "manders_m2_no_threshold": manders_m2_no_threshold,
+        "manders_tm1": manders_tm1,
+        "manders_tm2": manders_tm2,
+        "fraction_ch1_above_threshold_intensity_in_both_above": (
+            _safe_signed_fraction(sum_1_both_above, sum_1_positive)
+        ),
+        "fraction_ch2_above_threshold_intensity_in_both_above": (
+            _safe_signed_fraction(sum_2_both_above, sum_2_positive)
+        ),
+        overlap_all_name: overlap_all,
+        "overlap_coefficient_colocalized": overlap_both_above,
+        "channel_1_positive_sum": sum_1_positive,
+        "channel_2_positive_sum": sum_2_positive,
+        "colocalized_channel_1_sum": sum_1_both_above,
+        "colocalized_channel_2_sum": sum_2_both_above,
+    }
+
+
+def _coloc_sum(values: np.ndarray, mask: np.ndarray) -> float:
+    return float(np.sum(np.asarray(values, dtype=np.float64)[mask], dtype=np.float64))
+
+
 def _object_colocalization_columns(
     leading_axis_names: tuple[str, ...],
 ) -> dict[str, list[object]]:
@@ -12084,15 +12263,26 @@ def _object_colocalization_columns(
             "channel_1_threshold": [],
             "channel_2_threshold": [],
             "threshold_units": [],
+            "coloc_semantics": [],
             "object_voxels": [],
             "channel_1_positive_voxels": [],
             "channel_2_positive_voxels": [],
             "colocalized_voxels": [],
             "colocalized_fraction": [],
             "pearson_object": [],
+            "pearson_no_threshold": [],
+            "pearson_below_threshold": [],
+            "pearson_above_threshold": [],
+            "pearson_both_above_threshold": [],
             "pearson_colocalized": [],
             "manders_m1": [],
             "manders_m2": [],
+            "manders_m1_no_threshold": [],
+            "manders_m2_no_threshold": [],
+            "manders_tm1": [],
+            "manders_tm2": [],
+            "fraction_ch1_above_threshold_intensity_in_both_above": [],
+            "fraction_ch2_above_threshold_intensity_in_both_above": [],
             "overlap_coefficient_object": [],
             "overlap_coefficient_colocalized": [],
             "channel_1_positive_sum": [],
@@ -12120,49 +12310,31 @@ def _append_object_colocalization_rows(
     threshold_mode: str,
     threshold_1: float,
     threshold_2: float,
-    intensity_max: float,
     costes: dict[str, float] | None,
     warnings: tuple[str, ...],
 ) -> None:
-    threshold_units = f"normalized_0_{_format_coloc_max(intensity_max)}"
     warning_text = "; ".join(warnings)
     for label_id in _positive_label_ids(labels):
         object_mask = labels == label_id
-        object_voxels = int(np.count_nonzero(object_mask))
-        positive_1 = object_mask & (ch1 >= threshold_1)
-        positive_2 = object_mask & (ch2 >= threshold_2)
-        overlap = positive_1 & positive_2
-        sum_1_positive = float(np.sum(ch1[positive_1], dtype=np.float64))
-        sum_2_positive = float(np.sum(ch2[positive_2], dtype=np.float64))
-        sum_1_overlap = float(np.sum(ch1[overlap], dtype=np.float64))
-        sum_2_overlap = float(np.sum(ch2[overlap], dtype=np.float64))
+        metrics = _coloc_metric_values(
+            ch1,
+            ch2,
+            object_mask,
+            threshold_1=threshold_1,
+            threshold_2=threshold_2,
+            total_voxel_name="object_voxels",
+            pearson_all_name="pearson_object",
+            overlap_all_name="overlap_coefficient_object",
+        )
         _append_leading_index_values(columns, leading_axis_names, block_index)
         columns["label_id"].append(int(label_id))
         columns["threshold_mode"].append(str(threshold_mode))
         columns["channel_1_threshold"].append(float(threshold_1))
         columns["channel_2_threshold"].append(float(threshold_2))
-        columns["threshold_units"].append(threshold_units)
-        columns["object_voxels"].append(object_voxels)
-        columns["channel_1_positive_voxels"].append(int(np.count_nonzero(positive_1)))
-        columns["channel_2_positive_voxels"].append(int(np.count_nonzero(positive_2)))
-        columns["colocalized_voxels"].append(int(np.count_nonzero(overlap)))
-        columns["colocalized_fraction"].append(
-            _safe_fraction(np.count_nonzero(overlap), object_voxels)
-        )
-        columns["pearson_object"].append(_pearson(ch1[object_mask], ch2[object_mask]))
-        columns["pearson_colocalized"].append(_pearson(ch1[overlap], ch2[overlap]))
-        columns["manders_m1"].append(_safe_fraction(sum_1_overlap, sum_1_positive))
-        columns["manders_m2"].append(_safe_fraction(sum_2_overlap, sum_2_positive))
-        columns["overlap_coefficient_object"].append(
-            _overlap_coefficient(ch1[object_mask], ch2[object_mask])
-        )
-        columns["overlap_coefficient_colocalized"].append(
-            _overlap_coefficient(ch1[overlap], ch2[overlap])
-        )
-        columns["channel_1_positive_sum"].append(sum_1_positive)
-        columns["channel_2_positive_sum"].append(sum_2_positive)
-        columns["colocalized_channel_1_sum"].append(sum_1_overlap)
-        columns["colocalized_channel_2_sum"].append(sum_2_overlap)
+        columns["threshold_units"].append("native_intensity")
+        columns["coloc_semantics"].append("fiji_coloc2_3.1")
+        for name, value in metrics.items():
+            columns[name].append(value)
         columns["costes_slope"].append(
             float("nan") if costes is None else float(costes["slope"])
         )
@@ -12390,13 +12562,23 @@ def _label_centroids(block: np.ndarray) -> dict[int, np.ndarray]:
 def _costes_thresholds(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
-    *,
-    intensity_max: float,
-    max_iterations: int = 100,
-    tolerance: float = 1.0,
 ) -> dict[str, float]:
-    if channel_1.size < 2:
-        raise ValueError("Costes thresholding requires at least two voxels.")
+    """Return Fiji Coloc 2's classic Costes/SimpleStepper thresholds.
+
+    This follows Colocalisation_Analysis 3.1.0: thresholds are walked in native
+    intensity units, mapped through the orthogonal regression, rounded with
+    Java ``Math.round`` semantics, and tested with the OR-defined below set.
+    """
+    channel_1 = np.asarray(channel_1)
+    channel_2 = np.asarray(channel_2)
+    if channel_1.shape != channel_2.shape:
+        raise ValueError(
+            f"Input shapes differ: {channel_1.shape} vs {channel_2.shape}."
+        )
+    if channel_1.size < 3:
+        raise ValueError("Costes thresholding requires at least three voxels.")
+    if not np.isfinite(channel_1).all() or not np.isfinite(channel_2).all():
+        raise ValueError("Costes thresholding requires finite channel values.")
     mean_x, mean_y, var_xx, var_yy, var_xy = _channel_moments(
         channel_1,
         channel_2,
@@ -12404,56 +12586,62 @@ def _costes_thresholds(
     slope = _costes_regression_slope(var_xx, var_yy, var_xy)
     intercept = mean_y - slope * mean_x
 
-    max_x = float(np.nanmax(channel_1))
-    max_y = float(np.nanmax(channel_2))
-    min_x = float(np.nanmin(channel_1))
-    min_y = float(np.nanmin(channel_2))
+    max_x = float(np.max(channel_1))
+    max_y = float(np.max(channel_2))
 
     if -1.0 < slope < 1.0:
-        threshold = abs(max_x + min_x) * 0.5
-        previous_threshold = max_x
+        working_threshold = max_x
 
         def map_threshold(value: float) -> tuple[float, float]:
             return value, value * slope + intercept
 
     else:
-        threshold = abs(max_y + min_y) * 0.5
-        previous_threshold = max_y
+        working_threshold = max_y
 
         def map_threshold(value: float) -> tuple[float, float]:
             return (value - intercept) / slope, value
 
-    diff = abs(threshold - previous_threshold)
+    lower_1, upper_1 = _coloc_dtype_limits(channel_1.dtype)
+    lower_2, upper_2 = _coloc_dtype_limits(channel_2.dtype)
+    previous_value = 1.0
     pearson_below = float("nan")
     iterations = 0
     threshold_1 = threshold_2 = 0.0
-    while iterations <= max_iterations and diff >= tolerance:
-        threshold_1, threshold_2 = map_threshold(threshold)
-        threshold_1 = _clamp(threshold_1, 0.0, intensity_max)
-        threshold_2 = _clamp(threshold_2, 0.0, intensity_max)
+    while True:
+        mapped_1, mapped_2 = map_threshold(working_threshold)
+        threshold_1 = _typed_java_rounded_threshold(
+            mapped_1,
+            channel_1.dtype,
+            lower_1,
+            upper_1,
+        )
+        threshold_2 = _typed_java_rounded_threshold(
+            mapped_2,
+            channel_2.dtype,
+            lower_2,
+            upper_2,
+        )
         pearson_below = _pearson_below_threshold(
             channel_1,
             channel_2,
             threshold_1,
             threshold_2,
         )
-        previous_threshold, old_diff = threshold, diff
-        if np.isfinite(pearson_below) and pearson_below > 0:
-            threshold -= old_diff * 0.5
-        else:
-            threshold += old_diff * 0.5
-        diff = abs(threshold - previous_threshold)
         iterations += 1
+        working_threshold -= 1.0
 
-    threshold_1, threshold_2 = map_threshold(threshold)
-    threshold_1 = float(_round_and_clamp(threshold_1, 0.0, intensity_max))
-    threshold_2 = float(_round_and_clamp(threshold_2, 0.0, intensity_max))
-    pearson_below = _pearson_below_threshold(
-        channel_1,
-        channel_2,
-        threshold_1,
-        threshold_2,
-    )
+        # SimpleStepper.java compares NaN with ``Double.NaN == value``.  That
+        # expression is always false, so a NaN correlation only stops once the
+        # decremented threshold crosses one.  The explicit finite guard below
+        # intentionally preserves that 3.1.0 behaviour.
+        correlation_finished = bool(
+            np.isfinite(pearson_below)
+            and (pearson_below < 0.0001 or pearson_below > previous_value)
+        )
+        if working_threshold < 1.0 or correlation_finished:
+            break
+        previous_value = pearson_below
+
     return {
         "threshold_1": threshold_1,
         "threshold_2": threshold_2,
@@ -12468,26 +12656,50 @@ def _channel_moments(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
 ) -> tuple[float, float, float, float, float]:
-    n = float(channel_1.size)
-    sum_x = float(np.sum(channel_1, dtype=np.float64))
-    sum_y = float(np.sum(channel_2, dtype=np.float64))
-    mean_x = sum_x / n
-    mean_y = sum_y / n
-    sum_xx = float(np.sum(channel_1 * channel_1, dtype=np.float64))
-    sum_yy = float(np.sum(channel_2 * channel_2, dtype=np.float64))
-    sum_xy = float(np.sum(channel_1 * channel_2, dtype=np.float64))
-    var_xx = max(sum_xx / n - mean_x * mean_x, 0.0)
-    var_yy = max(sum_yy / n - mean_y * mean_y, 0.0)
-    var_xy = sum_xy / n - mean_x * mean_y
+    """Reproduce Coloc 2 3.1.0's cursor-offset regression moments.
+
+    Coloc 2 obtains the full-population means before calling ``getFirst()`` on
+    its twin cursor. That call advances the cursor, so the subsequent variance
+    loop starts at the second ROI sample. The combined-channel variance is then
+    used to derive covariance. This compatibility quirk is required for exact
+    Fiji regression output.
+    """
+    x = np.asarray(channel_1, dtype=np.float64).ravel()
+    y = np.asarray(channel_2, dtype=np.float64).ravel()
+    if x.size != y.size or x.size < 3:
+        raise ValueError("Channel moments require at least three paired inputs.")
+    mean_x = float(np.mean(x, dtype=np.float64))
+    mean_y = float(np.mean(y, dtype=np.float64))
+    regression_x = x[1:]
+    regression_y = y[1:]
+    denominator = float(regression_x.size - 1)
+    var_xx = _fiji_sequential_variance(regression_x, mean_x, denominator)
+    var_yy = _fiji_sequential_variance(regression_y, mean_y, denominator)
+    var_sum = _fiji_sequential_variance(
+        regression_x + regression_y,
+        mean_x + mean_y,
+        denominator,
+    )
+    var_xy = 0.5 * (var_sum - var_xx - var_yy)
     return mean_x, mean_y, var_xx, var_yy, var_xy
+
+
+def _fiji_sequential_variance(
+    values: np.ndarray,
+    mean: float,
+    denominator: float,
+) -> float:
+    """Match the left-to-right double accumulation used by Coloc 2."""
+    deviations = np.asarray(values, dtype=np.float64) - float(mean)
+    squared = deviations * deviations
+    total = float(np.cumsum(squared, dtype=np.float64)[-1])
+    return total / float(denominator)
 
 
 def _costes_regression_slope(var_xx: float, var_yy: float, var_xy: float) -> float:
     eps = np.finfo(float).eps
     if abs(var_xy) <= eps:
-        if var_xx > eps and var_yy > eps:
-            return float(np.sqrt(var_yy / var_xx))
-        return 1.0
+        raise ValueError("Could not fit a Costes regression with zero covariance.")
     delta = var_yy - var_xx
     root = float(np.sqrt(delta * delta + 4.0 * var_xy * var_xy))
     slope = (delta + root) / (2.0 * var_xy)
@@ -12496,22 +12708,54 @@ def _costes_regression_slope(var_xx: float, var_yy: float, var_xy: float) -> flo
     return float(slope)
 
 
+def _coloc_dtype_limits(dtype: np.dtype) -> tuple[float, float]:
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.bool_):
+        return 0.0, 1.0
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        return float(info.min), float(info.max)
+    if np.issubdtype(dtype, np.floating):
+        info = np.finfo(dtype)
+        return float(info.min), float(info.max)
+    raise ValueError(f"Unsupported colocalization dtype: {dtype}.")
+
+
+def _java_round(value: float) -> float:
+    """Match ``java.lang.Math.round(double)`` for finite threshold values."""
+    if not np.isfinite(value):
+        raise ValueError("Costes regression produced a non-finite threshold.")
+    return float(np.floor(float(value) + 0.5))
+
+
+def _typed_java_rounded_threshold(
+    value: float,
+    dtype: np.dtype,
+    lower: float,
+    upper: float,
+) -> float:
+    rounded = _clamp(_java_round(value), lower, upper)
+    return float(np.asarray(rounded, dtype=dtype).item())
+
+
 def _pearson_below_threshold(
     channel_1: np.ndarray,
     channel_2: np.ndarray,
     threshold_1: float,
     threshold_2: float,
 ) -> float:
-    mask = (channel_1 < threshold_1) | (channel_2 < threshold_2)
+    x = np.asarray(channel_1, dtype=np.float64)
+    y = np.asarray(channel_2, dtype=np.float64)
+    mask = (x < threshold_1) | (y < threshold_2)
     count = int(np.count_nonzero(mask))
     if count < 2:
         return float("nan")
     inv_count = 1.0 / count
-    sum_x = float(np.sum(channel_1, where=mask, dtype=np.float64))
-    sum_y = float(np.sum(channel_2, where=mask, dtype=np.float64))
-    sum_xx = float(np.sum(channel_1 * channel_1, where=mask, dtype=np.float64))
-    sum_yy = float(np.sum(channel_2 * channel_2, where=mask, dtype=np.float64))
-    sum_xy = float(np.sum(channel_1 * channel_2, where=mask, dtype=np.float64))
+    sum_x = float(np.sum(x, where=mask, dtype=np.float64))
+    sum_y = float(np.sum(y, where=mask, dtype=np.float64))
+    sum_xx = float(np.sum(x * x, where=mask, dtype=np.float64))
+    sum_yy = float(np.sum(y * y, where=mask, dtype=np.float64))
+    sum_xy = float(np.sum(x * y, where=mask, dtype=np.float64))
     numerator = sum_xy - sum_x * sum_y * inv_count
     denom_x = sum_xx - sum_x * sum_x * inv_count
     denom_y = sum_yy - sum_y * sum_y * inv_count
@@ -12552,6 +12796,13 @@ def _safe_fraction(numerator, denominator) -> float:
     return float(numerator) / denominator
 
 
+def _safe_signed_fraction(numerator, denominator) -> float:
+    denominator = float(denominator)
+    if abs(denominator) <= np.finfo(float).eps:
+        return float("nan")
+    return float(numerator) / denominator
+
+
 def _format_coloc_max(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else f"{float(value):g}"
 
@@ -12571,14 +12822,12 @@ def _coloc_voxel_overlay(
     if roi_mask is None:
         roi_mask = np.ones(ch1.shape, dtype=bool)
     mask = (ch1 >= threshold_1) & (ch2 >= threshold_2) & roi_mask
-    ch1_unit = np.clip(ch1 / float(intensity_max), 0.0, 1.0)
-    ch2_unit = np.clip(ch2 / float(intensity_max), 0.0, 1.0)
+    display_max = _coloc_analysis_intensity_max(ch1, ch2, intensity_max)
+    ch1_unit = np.clip(ch1 / display_max, 0.0, 1.0)
+    ch2_unit = np.clip(ch2 / display_max, 0.0, 1.0)
     color_1 = _coloc_color(channel_1_color, fallback="red")
     color_2 = _coloc_color(channel_2_color, fallback="green")
-    colored = (
-        ch1_unit[..., np.newaxis] * color_1
-        + ch2_unit[..., np.newaxis] * color_2
-    )
+    colored = ch1_unit[..., np.newaxis] * color_1 + ch2_unit[..., np.newaxis] * color_2
     colored = np.clip(colored, 0.0, 1.0).astype(np.float32, copy=False)
     colored[~roi_mask] = 0.0
 
@@ -12620,11 +12869,17 @@ def _coloc_scatter_plot_image(
     bins = int(np.clip(int(bins), 32, 512))
     values_1 = ch1[roi_mask] if roi_mask is not None else np.ravel(ch1)
     values_2 = ch2[roi_mask] if roi_mask is not None else np.ravel(ch2)
+    display_min, display_max = colocalization_display_range(
+        ch1,
+        ch2,
+        configured_max=intensity_max,
+        thresholds=(threshold_1, threshold_2),
+    )
     hist, _, _ = np.histogram2d(
         np.ravel(values_1),
         np.ravel(values_2),
         bins=bins,
-        range=((0.0, float(intensity_max)), (0.0, float(intensity_max))),
+        range=((display_min, display_max), (display_min, display_max)),
     )
     counts = hist.T
     if bool(log_counts):
@@ -12639,15 +12894,24 @@ def _coloc_scatter_plot_image(
     image[..., 0] = 0.75 * np.sqrt(values)
     image[values <= 0] = (0.02, 0.03, 0.07)
 
+    display_span = display_max - display_min
     x_pos = int(
         np.clip(
-            round(threshold_1 / float(intensity_max) * (bins - 1)),
+            round((threshold_1 - display_min) / display_span * (bins - 1)),
             0,
             bins - 1,
         )
     )
-    y_pos = bins - 1 - int(
-        np.clip(round(threshold_2 / float(intensity_max) * (bins - 1)), 0, bins - 1)
+    y_pos = (
+        bins
+        - 1
+        - int(
+            np.clip(
+                round((threshold_2 - display_min) / display_span * (bins - 1)),
+                0,
+                bins - 1,
+            )
+        )
     )
     image[:, x_pos : x_pos + 1] = (1.0, 0.20, 0.20)
     image[y_pos : y_pos + 1, :] = (0.20, 1.0, 0.20)
@@ -12688,6 +12952,7 @@ def _racc_index_image(
 
     if roi_mask is None:
         roi_mask = np.ones(ch1.shape, dtype=bool)
+    analysis_max = _coloc_analysis_intensity_max(ch1, ch2, intensity_max)
     mask = (ch1 >= threshold_1) & (ch2 >= threshold_2) & roi_mask
     overlap_voxels = int(np.count_nonzero(mask))
     if overlap_voxels < 2:
@@ -12707,10 +12972,10 @@ def _racc_index_image(
     intercept = mean_y - slope * mean_x
 
     p0 = _line_threshold_intersection(threshold_1, threshold_2, slope, intercept)
-    p1 = _line_intensity_intersection(float(intensity_max), slope, intercept)
+    p1 = _line_intensity_intersection(analysis_max, slope, intercept)
     points = np.column_stack((x, y))
     t_full = _projection_fraction(points, p0, p1)
-    distances = _normalized_line_distance(points, p0, p1, float(intensity_max))
+    distances = _normalized_line_distance(points, p0, p1, analysis_max)
 
     percentile_fraction = include_percentile / 100.0
     t_max = float(np.quantile(t_full, percentile_fraction))
@@ -12727,8 +12992,22 @@ def _racc_index_image(
         pmax,
         distance_threshold,
         theta_degrees,
-        float(intensity_max),
+        analysis_max,
     )
+
+
+def _coloc_analysis_intensity_max(
+    ch1: np.ndarray,
+    ch2: np.ndarray,
+    configured_max: float,
+) -> float:
+    """Map native inputs to the legacy display/RACC extent without clipping."""
+    _display_min, display_max = colocalization_display_range(
+        ch1,
+        ch2,
+        configured_max=configured_max,
+    )
+    return display_max
 
 
 def _positive_deming_slope(var_xx: float, var_yy: float, var_xy: float) -> float:
@@ -12840,8 +13119,7 @@ def _is_true_rgb_channel_axis(
 ) -> bool:
     semantic = str(channel_axis_semantics or "").lower()
     return bool(
-        (semantic == "rgb" and count == 3)
-        or (semantic == "rgba" and count == 4)
+        (semantic == "rgb" and count == 3) or (semantic == "rgba" and count == 4)
     )
 
 
@@ -12859,9 +13137,8 @@ def _composite_to_rgb_by_color_table(
     )
     additive_components = np.count_nonzero(color_table[:, :3], axis=0) > 1
     accumulator_dtype = output_dtype
-    if (
-        intensity_mapping == COMPOSITE_RGB_PRESERVE_VALUES
-        and bool(np.any(additive_components))
+    if intensity_mapping == COMPOSITE_RGB_PRESERVE_VALUES and bool(
+        np.any(additive_components)
     ):
         accumulator_dtype = np.dtype(np.result_type(output_dtype, np.float64))
     rgb = np.zeros(moved.shape[:-1] + (3,), dtype=accumulator_dtype)

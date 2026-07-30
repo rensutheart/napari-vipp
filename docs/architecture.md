@@ -383,8 +383,8 @@ The current high-level groups are:
     axes, including automatic Z projection, explicit axis choices, and an
     all-non-YX-spatial option for stack-style reductions.
 - `Segmentation`
-  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, Binary,
-    Hysteresis thresholding
+  - `Global Thresholds`: Otsu, Triangle, Li, Yen, Isodata, Minimum, ImageJ Auto
+    Threshold (8-bit), Binary, Hysteresis thresholding
   - `Local Thresholds`: Adaptive Mean, Adaptive Gaussian, Sauvola, Niblack
     thresholding
 
@@ -397,6 +397,14 @@ each cutoff. On 2D inputs the control is hidden because stack versus slice is
 not meaningful. Fixed `Binary Threshold` and local threshold nodes do not expose
 this control. Global automatic threshold nodes also show the selected input
 histogram with a marker at the computed cutoff.
+
+ImageJ Auto Threshold (8-bit) is an explicit exception to the generic histogram
+contract below. It is fixed to per-YX-plane ImageJ 1.x 8-bit conversion and the
+ImageJ `Default` or `Triangle` AutoThresholder for reproducibility with legacy
+macros. Its generic raw-stack histogram inspector is hidden because it would
+not represent the plane-local converted histogram or cutoff actually used.
+Finite supported inputs match ImageJ; infinite float inputs are rejected as a
+deliberate safety divergence instead of preserving ImageJ's collapsed plane.
 
 Otsu, Triangle, Yen, Isodata, and Minimum count every finite input value, with
 no data-size-dependent sampling or silent rebinning. Their bin contract is
