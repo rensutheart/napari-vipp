@@ -145,6 +145,70 @@ The `layer_name` parameter already exists on the input node for this purpose but
 
 ---
 
+## FEATURE-003 — Inserting a node into an existing connection and re-routing tunnel sources via drag
+
+**Reported:** 2026-07-30  
+**Status:** Open  
+**Version:** 0.12.0a3
+
+### Description
+
+Two related graph-editing interactions are currently not supported:
+
+**3a — Insert a node into an existing wire by dragging**
+
+When a new node is dragged from the node palette and dropped onto an existing connection wire (the line between two nodes), it should be inserted into that connection automatically. The incoming wire should connect to the new node's first input port and the outgoing wire should connect from the new node's first output port to the original downstream node. This avoids the current workflow of: manually disconnect → place node → reconnect both ends.
+
+This is especially useful when inserting preprocessing steps (e.g. a `subtract_background` or `set_pixel_size` node) into an already-wired pipeline.
+
+**3b — Re-route a tunnel by dragging its source**
+
+Tunnels (the long-distance labelled connections that skip the canvas) currently have a fixed source node and port defined in the workflow. There is no way to change which node a tunnel originates from without editing the JSON directly. A drag handle on the tunnel source end (or in the tunnel label chip on the canvas) should allow the user to re-route the tunnel to a different node's output port interactively.
+
+### Expected behaviour
+
+- Dropping a node onto a wire inserts it in-line; the original connection is split and re-wired automatically.
+- Dragging the source end of a tunnel re-routes it to the newly released output port, updating the tunnel definition live.
+- Both operations should be undoable.
+
+### Notes
+
+Both interactions are standard in node-graph editors (e.g. Blender Compositor, Unreal Blueprint, DaVinci Resolve Fusion). The insert-on-drop interaction in particular would significantly reduce the friction of iteratively refining a workflow that is already connected.
+
+---
+
+## FEATURE-004 — No tab bar for switching between multiple open workflows
+
+**Reported:** 2026-07-30  
+**Status:** Open  
+**Version:** 0.12.0a3
+
+### Description
+
+When multiple workflows are loaded or created during a session, there is no way to switch between them quickly. Each workflow occupies the entire canvas and the only way to work with a second workflow is to close the current one and re-open the other, losing any unsaved canvas state.
+
+This becomes a significant friction point when:
+- Comparing two workflow variants side by side (e.g. with and without background subtraction)
+- Running one workflow while editing another
+- Keeping a reference workflow open alongside an experimental one
+
+### Expected behaviour
+
+A tab bar above (or below) the canvas should list all currently open workflows by name, with the filename stem or a user-editable label as the tab title. Clicking a tab switches the canvas to that workflow instantly. Standard tab interactions should be supported:
+
+- **New tab** — open a blank workflow or load a file into a new tab
+- **Close tab** — with an unsaved-changes prompt if applicable
+- **Rename tab** — double-click the tab label to set a display name
+- **Reorder tabs** — drag to reorder
+
+The run/preview state of each workflow should be preserved independently when switching tabs so that a running batch in one tab is not interrupted by switching to another.
+
+### Notes
+
+This is analogous to the tab model used in VS Code, Jupyter, and most modern IDEs. Even a minimal implementation (open N workflows, click to switch, no persistent state between sessions) would substantially improve the multi-workflow development experience.
+
+---
+
 ## FEATURE-001 — Scatter plot resolution is too low for wide-range intensity data; no high-resolution export or interactive pop-out
 
 **Reported:** 2026-07-30  
