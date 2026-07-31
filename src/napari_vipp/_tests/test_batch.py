@@ -282,6 +282,18 @@ def test_scientific_workflow_hash_ignores_layout_notes_and_ui_metadata():
                 "inspector": {
                     "selected_node_id": "threshold",
                     "right_panel_visible": False,
+                    "display_profiles": [
+                        {
+                            "node_id": "gaussian",
+                            "output_port": 0,
+                            "data_kind": "image",
+                            "display_kind": "image",
+                            "display_rgb": False,
+                            "display_rgb_as_channels": False,
+                            "display_ndim": 3,
+                            "settings": {"colormap": "magma"},
+                        }
+                    ],
                 },
                 "thumbnails": {"disabled_node_ids": ["gaussian"]},
             }

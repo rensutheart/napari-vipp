@@ -498,7 +498,226 @@ def _inspector_metadata_to_dict(
                 "boolean."
             )
         result["right_panel_visible"] = right_panel_visible
+    if "display_profiles" in raw_inspector:
+        profiles = _inspect_display_profiles_to_list(
+            raw_inspector.get("display_profiles"),
+            node_id_set,
+        )
+        if profiles:
+            result["display_profiles"] = profiles
     return result
+
+
+def _inspect_display_profiles_to_list(
+    raw_profiles: Any,
+    node_id_set: set[str],
+) -> list[dict[str, Any]]:
+    if raw_profiles is None:
+        return []
+    if not isinstance(raw_profiles, list):
+        raise ValueError(
+            "Workflow inspector metadata 'display_profiles' must be a list."
+        )
+    profiles: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+    for index, raw in enumerate(raw_profiles):
+        context = f"workflow Inspect display profile {index}"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{context.capitalize()} must be an object.")
+        node_id = _optional_node_id(raw, "node_id", context, node_id_set)
+        if not node_id:
+            raise ValueError(f"{context.capitalize()} requires 'node_id'.")
+        output_port = _required_non_negative_int(raw, "output_port", context)
+        data_kind = _required_text(raw, "data_kind", context).strip()
+        display_kind = _required_text(raw, "display_kind", context).strip()
+        display_ndim = _required_non_negative_int(raw, "display_ndim", context)
+        if display_ndim < 1:
+            raise ValueError(f"{context.capitalize()} display_ndim must be positive.")
+        display_rgb = _required_profile_bool(raw, "display_rgb", context)
+        display_rgb_as_channels = _required_profile_bool(
+            raw,
+            "display_rgb_as_channels",
+            context,
+        )
+        channel_index = None
+        if "display_rgb_channel_index" in raw:
+            channel_index = _required_non_negative_int(
+                raw,
+                "display_rgb_channel_index",
+                context,
+            )
+        if display_rgb_as_channels and not display_rgb:
+            raise ValueError(
+                f"{context.capitalize()} RGB channel surfaces require "
+                "display_rgb to be true."
+            )
+        if display_rgb_as_channels != (channel_index is not None):
+            raise ValueError(
+                f"{context.capitalize()} display_rgb_channel_index is required "
+                "exactly for RGB channel surfaces."
+            )
+        if channel_index is not None and channel_index not in {0, 1, 2}:
+            raise ValueError(
+                f"{context.capitalize()} display_rgb_channel_index must be 0, "
+                "1, or 2."
+            )
+        key = (
+            node_id,
+            output_port,
+            data_kind,
+            display_kind,
+            display_rgb,
+            display_rgb_as_channels,
+            channel_index,
+            display_ndim,
+        )
+        if key in seen:
+            raise ValueError(
+                f"Workflow inspector metadata contains duplicate display profile "
+                f"for node {node_id!r}."
+            )
+        seen.add(key)
+        profile: dict[str, Any] = {
+            "node_id": node_id,
+            "output_port": output_port,
+            "data_kind": data_kind,
+            "display_kind": display_kind,
+            "display_rgb": display_rgb,
+            "display_rgb_as_channels": display_rgb_as_channels,
+            "display_ndim": display_ndim,
+        }
+        if channel_index is not None:
+            profile["display_rgb_channel_index"] = channel_index
+        profile["settings"] = _inspect_general_display_settings_to_dict(
+            raw.get("settings", {}),
+            context,
+        )
+        intensity_settings = _inspect_intensity_settings_to_dict(
+            raw.get("intensity_settings", {}),
+            context,
+        )
+        if intensity_settings:
+            profile["intensity_settings"] = intensity_settings
+        profiles.append(profile)
+    return profiles
+
+
+def _inspect_general_display_settings_to_dict(
+    raw_settings: Any,
+    context: str,
+) -> dict[str, Any]:
+    if not isinstance(raw_settings, dict):
+        raise ValueError(f"{context.capitalize()} settings must be an object.")
+    result: dict[str, Any] = {}
+    text_keys = (
+        "colormap",
+        "blending",
+        "interpolation2d",
+        "interpolation3d",
+        "projection_mode",
+        "rendering",
+        "depiction",
+    )
+    for key in text_keys:
+        if key not in raw_settings:
+            continue
+        value = raw_settings.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{context.capitalize()} setting {key!r} must be non-empty text."
+            )
+        result[key] = value.strip()
+    if "visible" in raw_settings:
+        result["visible"] = _required_profile_bool(
+            raw_settings,
+            "visible",
+            f"{context} settings",
+        )
+    for key in ("opacity", "gamma", "attenuation"):
+        if key not in raw_settings:
+            continue
+        value = _finite_profile_number(raw_settings.get(key), key, context)
+        if key in {"opacity", "attenuation"} and not 0.0 <= value <= 1.0:
+            raise ValueError(
+                f"{context.capitalize()} setting {key!r} must be between 0 and 1."
+            )
+        if key == "gamma" and value <= 0.0:
+            raise ValueError(
+                f"{context.capitalize()} setting 'gamma' must be positive."
+            )
+        result[key] = value
+    return result
+
+
+def _inspect_intensity_settings_to_dict(
+    raw_by_dtype: Any,
+    context: str,
+) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw_by_dtype, dict):
+        raise ValueError(
+            f"{context.capitalize()} intensity_settings must be an object."
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for raw_dtype, raw_settings in raw_by_dtype.items():
+        if not isinstance(raw_dtype, str) or not raw_dtype.strip():
+            raise ValueError(
+                f"{context.capitalize()} intensity dtype keys must be non-empty "
+                "text."
+            )
+        dtype = raw_dtype.strip()
+        if not isinstance(raw_settings, dict):
+            raise ValueError(
+                f"{context.capitalize()} intensity settings for {dtype!r} must "
+                "be an object."
+            )
+        settings: dict[str, Any] = {}
+        if "iso_threshold" in raw_settings:
+            settings["iso_threshold"] = _finite_profile_number(
+                raw_settings.get("iso_threshold"),
+                "iso_threshold",
+                context,
+            )
+        if "contrast_limits" in raw_settings:
+            limits = raw_settings.get("contrast_limits")
+            if not isinstance(limits, list) or len(limits) != 2:
+                raise ValueError(
+                    f"{context.capitalize()} contrast_limits must contain two "
+                    "finite numbers."
+                )
+            lower = _finite_profile_number(limits[0], "contrast_limits", context)
+            upper = _finite_profile_number(limits[1], "contrast_limits", context)
+            if lower >= upper:
+                raise ValueError(
+                    f"{context.capitalize()} contrast_limits must be increasing."
+                )
+            settings["contrast_limits"] = [lower, upper]
+        result[dtype] = settings
+    return result
+
+
+def _required_profile_bool(data: dict[str, Any], key: str, context: str) -> bool:
+    value = data.get(key)
+    if not isinstance(value, bool):
+        raise ValueError(f"{context.capitalize()} {key!r} must be a boolean.")
+    return value
+
+
+def _finite_profile_number(value: Any, key: str, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"{context.capitalize()} setting {key!r} must be a finite number."
+        )
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{context.capitalize()} setting {key!r} must be a finite number."
+        ) from exc
+    if not math.isfinite(number):
+        raise ValueError(
+            f"{context.capitalize()} setting {key!r} must be a finite number."
+        )
+    return number
 
 
 def _thumbnail_metadata_to_dict(

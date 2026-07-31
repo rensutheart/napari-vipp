@@ -44,3 +44,34 @@ def test_widget_scatter_density_facade_preserves_extracted_result():
 
     np.testing.assert_array_equal(facade_result[0], extracted_result[0])
     assert facade_result[1:] == extracted_result[1:]
+
+
+def test_scatter_pending_thresholds_preserve_only_compatible_density(qtbot):
+    plot = plots.ColocalizationScatterPlot()
+    qtbot.addWidget(plot)
+    plot.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=25.0,
+        threshold_2=30.0,
+    )
+    density_image = plot._image
+
+    plot.set_pending_thresholds(
+        threshold_1=70.0,
+        threshold_2=80.0,
+        preserve_density=True,
+    )
+
+    assert plot._image is density_image
+    assert plot._threshold_1 == 70.0
+    assert plot._threshold_2 == 80.0
+    assert plot._summary == "Calculating exact count..."
+
+    plot.set_pending_thresholds(
+        threshold_1=90.0,
+        threshold_2=100.0,
+        preserve_density=False,
+    )
+
+    assert plot._image is None
+    assert plot._summary == "Calculating exact count..."

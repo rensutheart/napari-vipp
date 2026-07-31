@@ -448,6 +448,22 @@ _GENERATED_LAYER_CONTRAST_METADATA_KEYS = (
     "vipp_exact_finite_data_range",
     "_vipp_display_contrast_key",
     "_vipp_display_contrast_initial_limits",
+    "_vipp_display_iso_initial_threshold",
+    "_vipp_display_iso_user_preserved",
+)
+
+_INSPECT_LAYER_DISPLAY_ATTRIBUTES = (
+    "colormap",
+    "visible",
+    "opacity",
+    "blending",
+    "gamma",
+    "interpolation2d",
+    "interpolation3d",
+    "projection_mode",
+    "rendering",
+    "depiction",
+    "attenuation",
 )
 
 COMPOSITE_CHANNEL_ASSIGNMENT_CHOICES = (
@@ -956,6 +972,7 @@ class VippWidget(QWidget):
         self._workflow_load_selection_in_progress = False
         self._active_pinned_node_id: str | None = None
         self._inspect_layer_name = "VIPP Inspect"
+        self._inspect_display_profiles: dict[tuple, dict[str, object]] = {}
         self._preview_disabled_node_ids: set[str] = set()
         self._hidden_input_layer_states: dict[int, tuple[object, bool]] = {}
         self._sample_payload_cache: dict[str, SourcePayload] | None = None
@@ -1048,6 +1065,7 @@ class VippWidget(QWidget):
             ColocalizationScatterRequest | None
         ) = None
         self._current_colocalization_scatter_key: tuple | None = None
+        self._displayed_colocalization_scatter_density_key: tuple | None = None
         self._colocalization_scatter_cache: dict[
             tuple,
             ColocalizationScatterResult,
@@ -1341,6 +1359,17 @@ class VippWidget(QWidget):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
+        self.reset_inspect_display_button = QToolButton()
+        self.reset_inspect_display_button.setIcon(_toolbar_icon("reset"))
+        self.reset_inspect_display_button.setIconSize(QSize(18, 18))
+        self.reset_inspect_display_button.setFixedSize(24, 24)
+        self.reset_inspect_display_button.setAccessibleName(
+            "Reset Inspect display"
+        )
+        self.reset_inspect_display_button.setToolTip(
+            "Reset this node's VIPP Inspect napari display settings to defaults."
+        )
+        self.reset_inspect_display_button.setVisible(False)
         self.thumbnail_checkbox = QCheckBox("Show thumbnail preview")
         self.thumbnail_checkbox.setChecked(True)
         self.keep_cached_checkbox = QCheckBox("Keep output cached")
@@ -2092,7 +2121,10 @@ class VippWidget(QWidget):
         content.setMinimumHeight(0)
         self.inspector_content = content
         layout = QVBoxLayout(content)
-        layout.addWidget(self.selected_title)
+        inspector_header = QHBoxLayout()
+        inspector_header.addWidget(self.selected_title, 1)
+        inspector_header.addWidget(self.reset_inspect_display_button)
+        layout.addLayout(inspector_header)
         layout.addWidget(self.thumbnail_checkbox)
         layout.addWidget(self.keep_cached_checkbox)
         layout.addWidget(self.isolated_tuning_checkbox)
@@ -2254,6 +2286,9 @@ class VippWidget(QWidget):
             self._on_auto_recalculate_toggled
         )
         self.pin_button.clicked.connect(lambda: self.pin_node(self._selected_node_id))
+        self.reset_inspect_display_button.clicked.connect(
+            self._reset_selected_inspect_display
+        )
         self.thumbnail_checkbox.toggled.connect(
             self._on_selected_preview_toggled,
         )
@@ -2535,6 +2570,9 @@ class VippWidget(QWidget):
                 sorted(self._preview_disabled_node_ids & valid_node_ids)
             ),
             active_pinned_node_id=active_pin,
+            inspect_display_profiles=tuple(
+                self._inspect_display_profile_documents(valid_node_ids)
+            ),
         )
 
     def _push_undo_snapshot(
@@ -2607,6 +2645,8 @@ class VippWidget(QWidget):
         self._clear_interactive_collection_batch_session()
         with self._history.suspend_recording():
             workflow = snapshot.workflow
+            self._remember_current_inspect_display_profiles()
+            self._discard_inspect_layers()
             pinned_layer = self._active_pinned_layer()
             if pinned_layer is not None:
                 self._remove_layer(pinned_layer)
@@ -2615,6 +2655,10 @@ class VippWidget(QWidget):
                 note.to_mapping() for note in workflow.notes
             )
             valid_node_ids = set(self.pipeline.nodes)
+            self._load_inspect_display_profiles(
+                snapshot.inspect_display_profiles,
+                valid_node_ids,
+            )
             self._preview_disabled_node_ids = (
                 set(snapshot.preview_disabled_node_ids) & valid_node_ids
             )
@@ -3848,6 +3892,8 @@ class VippWidget(QWidget):
         self._finish_parameter_history_group()
         self._clear_interactive_collection_batch_session()
         before = self._current_history_snapshot()
+        self._discard_inspect_layers()
+        self._inspect_display_profiles.clear()
         self.pipeline.reset_empty_graph()
         self._preview_disabled_node_ids.clear()
         self._rescale_auto_output_ranges.clear()
@@ -3883,6 +3929,9 @@ class VippWidget(QWidget):
         }
         if self._selected_node_id in valid_node_ids:
             inspector["selected_node_id"] = self._selected_node_id
+        display_profiles = self._inspect_display_profile_documents(valid_node_ids)
+        if display_profiles:
+            inspector["display_profiles"] = display_profiles
 
         vipp: dict[str, object] = {"inspector": inspector}
         if self.save_thumbnail_visibility_checkbox.isChecked():
@@ -4068,6 +4117,8 @@ class VippWidget(QWidget):
         before = self._current_history_snapshot()
         source = Path(path).expanduser()
         workflow = load_workflow(source)
+        self._discard_inspect_layers()
+        self._inspect_display_profiles.clear()
         self.pipeline.restore_graph(
             workflow["nodes"],
             workflow["connections"],
@@ -4085,6 +4136,10 @@ class VippWidget(QWidget):
         inspector_metadata = vipp_metadata.get("inspector")
         if not isinstance(inspector_metadata, dict):
             inspector_metadata = {}
+        self._load_inspect_display_profiles(
+            inspector_metadata.get("display_profiles", ()),
+            valid_node_ids,
+        )
         selected_node_id = str(inspector_metadata.get("selected_node_id", "") or "")
         if selected_node_id not in valid_node_ids:
             selected_node_id = ""
@@ -5360,12 +5415,28 @@ class VippWidget(QWidget):
         self._active_source_load_id = None
         self._source_load_pending = False
 
-    def _mark_pipeline_dirty(self, node_id: str) -> bool:
+    def _mark_pipeline_dirty(
+        self,
+        node_id: str,
+        *,
+        preserve_colocalization_scatter: bool = False,
+    ) -> bool:
         if node_id == self._isolated_tuning_node_id:
-            return self._mark_isolated_tuning_dirty(node_id)
-        return self._mark_pipeline_branches_dirty({node_id})
+            return self._mark_isolated_tuning_dirty(
+                node_id,
+                preserve_colocalization_scatter=preserve_colocalization_scatter,
+            )
+        return self._mark_pipeline_branches_dirty(
+            {node_id},
+            preserve_colocalization_scatter=preserve_colocalization_scatter,
+        )
 
-    def _mark_pipeline_branches_dirty(self, node_ids) -> bool:
+    def _mark_pipeline_branches_dirty(
+        self,
+        node_ids,
+        *,
+        preserve_colocalization_scatter: bool = False,
+    ) -> bool:
         valid_node_ids = {
             str(node_id) for node_id in node_ids if str(node_id) in self.pipeline.nodes
         }
@@ -5378,7 +5449,8 @@ class VippWidget(QWidget):
         cleared_overrides = self._discard_background_node_result_overrides(
             affected_node_ids
         )
-        self._clear_colocalization_scatter_cache()
+        if not preserve_colocalization_scatter:
+            self._clear_colocalization_scatter_cache()
         self._pending_dirty_node_ids.update(valid_node_ids)
         self.pipeline.mark_manual_descendants_stale(valid_node_ids)
         self._sync_execution_ui()
@@ -5386,10 +5458,16 @@ class VippWidget(QWidget):
         self._mark_collection_batch_workflow_stale_if_needed()
         return True
 
-    def _mark_isolated_tuning_dirty(self, node_id: str) -> bool:
+    def _mark_isolated_tuning_dirty(
+        self,
+        node_id: str,
+        *,
+        preserve_colocalization_scatter: bool = False,
+    ) -> bool:
         if node_id not in self.pipeline.nodes:
             return False
-        self._clear_colocalization_scatter_cache()
+        if not preserve_colocalization_scatter:
+            self._clear_colocalization_scatter_cache()
         self._pending_dirty_node_ids.add(node_id)
         self.pipeline.mark_nodes_stale(
             {node_id},
@@ -6091,6 +6169,7 @@ class VippWidget(QWidget):
     def _on_viewer_layers_changed(self, _event=None) -> None:
         if self._closing:
             return
+        self._sync_inspect_display_reset_ui()
         changed_node_ids = self._autobind_default_image_sources()
         changed_node_ids.update(self._changed_live_source_bindings())
         self._refresh_image_source_controls()
@@ -7167,6 +7246,7 @@ class VippWidget(QWidget):
         self.parameter_group.setHidden(True)
         self.auto_contrast_group.setHidden(True)
         self.pin_button.setHidden(True)
+        self.reset_inspect_display_button.setHidden(True)
         with QSignalBlocker(self.thumbnail_checkbox):
             self.thumbnail_checkbox.setChecked(False)
         self._clear_empty_inspector()
@@ -7183,6 +7263,7 @@ class VippWidget(QWidget):
         self.colocalization_scatter_group.setHidden(True)
         self.colocalization_scatter_summary.setText("Connect two channel inputs.")
         self.colocalization_scatter_plot.clear()
+        self._displayed_colocalization_scatter_density_key = None
         self.rescale_input_histogram_group.setHidden(True)
         self.rescale_input_histogram_scope_row.setHidden(True)
         self.rescale_input_histogram_plot.set_histogram(None, log_scale=False)
@@ -12200,7 +12281,19 @@ class VippWidget(QWidget):
             return
         if name == "tag":
             self._refresh_graph_search_matches(reset_index=True)
-        self._mark_pipeline_dirty(self._selected_node_id)
+        preserve_colocalization_scatter = (
+            node.operation_id in COLOCALIZATION_THRESHOLD_OPERATIONS
+            and name
+            in {
+                "threshold_mode",
+                "channel_1_threshold",
+                "channel_2_threshold",
+            }
+        )
+        self._mark_pipeline_dirty(
+            self._selected_node_id,
+            preserve_colocalization_scatter=preserve_colocalization_scatter,
+        )
         if node.operation_id == "gaussian_blur_3d":
             if name == "lock_xy" and bool(value):
                 self._sync_gaussian_blur_3d_xy_lock(
@@ -14122,6 +14215,7 @@ class VippWidget(QWidget):
         if not visible or node is None:
             self._current_colocalization_scatter_key = None
             self._pending_colocalization_scatter_request = None
+            self._displayed_colocalization_scatter_density_key = None
             self.colocalization_scatter_summary.setText("Connect two channel inputs.")
             self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear()
@@ -14132,6 +14226,7 @@ class VippWidget(QWidget):
         if inputs is None:
             self._current_colocalization_scatter_key = None
             self._pending_colocalization_scatter_request = None
+            self._displayed_colocalization_scatter_density_key = None
             self.colocalization_scatter_summary.setText(
                 "Connect all required channel and ROI inputs."
             )
@@ -14156,6 +14251,11 @@ class VippWidget(QWidget):
             threshold_2=threshold_2,
             intensity_max=intensity_max,
         )
+        density_key = self._colocalization_scatter_density_key(
+            node.id,
+            inputs,
+            intensity_max=intensity_max,
+        )
         self._current_colocalization_scatter_key = key
         cached = self._colocalization_scatter_cache.get(key)
         if cached is not None:
@@ -14173,6 +14273,7 @@ class VippWidget(QWidget):
                     threshold_1,
                     threshold_2,
                     intensity_max=intensity_max,
+                    density_key=density_key,
                 )
             )
             return
@@ -14211,6 +14312,7 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setText(message)
             self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
+            self._displayed_colocalization_scatter_density_key = None
             self.colocalization_scatter_plot.setToolTip(message)
             return
         result = ColocalizationScatterResult(
@@ -14225,6 +14327,7 @@ class VippWidget(QWidget):
             roi_voxels=roi_voxels,
             colocalized_voxels=coloc_voxels,
             warnings=tuple(warnings),
+            density_key=density_key,
         )
         self._cache_colocalization_scatter_result(result)
         self._apply_colocalization_scatter_result(result)
@@ -14261,6 +14364,29 @@ class VippWidget(QWidget):
             COLOCALIZATION_SCATTER_BINS,
         )
 
+    @staticmethod
+    def _colocalization_scatter_density_key(
+        node_id: str,
+        inputs: list[object] | tuple[object, ...],
+        *,
+        intensity_max: float,
+    ) -> tuple:
+        """Identify density data independently from movable thresholds."""
+        identities = tuple(
+            (
+                id(value),
+                tuple(getattr(value, "shape", ())),
+                str(getattr(value, "dtype", "")),
+            )
+            for value in inputs
+        )
+        return (
+            str(node_id),
+            identities,
+            float(intensity_max),
+            COLOCALIZATION_SCATTER_BINS,
+        )
+
     def _queue_colocalization_scatter(
         self,
         request: ColocalizationScatterRequest,
@@ -14275,7 +14401,19 @@ class VippWidget(QWidget):
         )
         self.colocalization_scatter_summary.setText(summary)
         self.colocalization_scatter_summary.setToolTip(detail)
-        self.colocalization_scatter_plot.clear("Calculating exact counts...")
+        preserve_density = bool(
+            request.density_key
+            and request.density_key
+            == self._displayed_colocalization_scatter_density_key
+        )
+        self.colocalization_scatter_plot.set_pending_thresholds(
+            threshold_1=request.threshold_1,
+            threshold_2=request.threshold_2,
+            intensity_max=request.intensity_max,
+            preserve_density=preserve_density,
+        )
+        if not preserve_density:
+            self._displayed_colocalization_scatter_density_key = None
         self.colocalization_scatter_plot.setToolTip(detail)
         if self._active_colocalization_scatter_run_id is not None:
             if self._active_colocalization_scatter_key == request.key:
@@ -14365,6 +14503,7 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setText(message)
             self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
+            self._displayed_colocalization_scatter_density_key = None
             self.colocalization_scatter_plot.setToolTip(message)
             return
         if (
@@ -14402,6 +14541,9 @@ class VippWidget(QWidget):
             colormap=self.colocalization_scatter_colormap_combo.currentText(),
             log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
             summary=f"Exact: {count_detail}",
+        )
+        self._displayed_colocalization_scatter_density_key = (
+            result.density_key or None
         )
         summary = (
             f"{result.threshold_mode} thresholds. Exact colocalized count: "
@@ -14519,7 +14661,10 @@ class VippWidget(QWidget):
             changed = True
         if not changed:
             return
-        self._mark_pipeline_dirty(self._selected_node_id)
+        self._mark_pipeline_dirty(
+            self._selected_node_id,
+            preserve_colocalization_scatter=True,
+        )
         self._update_colocalization_scatter()
         self._debounce_timer.start()
 
@@ -15579,6 +15724,7 @@ class VippWidget(QWidget):
             role="inspect",
         )
         self._keep_active_pin_on_top()
+        self._sync_inspect_display_reset_ui()
         self.status_label.setText(f"Inspecting '{title}' in napari.")
 
     def _inspect_selected_node(self) -> None:
@@ -15588,12 +15734,39 @@ class VippWidget(QWidget):
         if data is not None and not is_table_data(data):
             self.inspect_node(self._selected_node_id)
             return
-        layer = self._layer_by_name(self._inspect_layer_name)
-        metadata = getattr(layer, "metadata", {}) if layer is not None else {}
+        layers = self._generated_layers_for_name(self._inspect_layer_name)
+        metadata = getattr(layers[0], "metadata", {}) if layers else {}
         if isinstance(metadata, dict) and metadata.get("node_id") == (
             self._selected_node_id
         ):
-            self._remove_layer(layer)
+            self._remember_current_inspect_display_profiles()
+            self._discard_inspect_layers()
+        self._sync_inspect_display_reset_ui()
+
+    def _reset_selected_inspect_display(self) -> None:
+        node_id = self._selected_node_id
+        data, _state, output_port = self._node_display_payload(node_id)
+        if data is None or is_table_data(data):
+            self.status_label.setText(
+                "The selected node has no image display to reset."
+            )
+            self._sync_inspect_display_reset_ui()
+            return
+        self._inspect_display_profiles = {
+            key: profile
+            for key, profile in self._inspect_display_profiles.items()
+            if not (key[0] == node_id and key[1] == int(output_port))
+        }
+        saved_step = self._raw_current_step()
+        saved_nsteps = self._viewer_nsteps()
+        self._discard_inspect_layers()
+        self.inspect_node(node_id)
+        self._restore_viewer_step(saved_step, saved_nsteps)
+        self._keep_active_pin_on_top()
+        self._sync_inspect_display_reset_ui()
+        self.status_label.setText(
+            f"Reset '{self._node_title(node_id)}' Inspect display to defaults."
+        )
 
     def pin_node(self, node_id: str) -> None:
         if not self._node_can_pin(node_id):
@@ -15659,14 +15832,16 @@ class VippWidget(QWidget):
             self.status_label.setText(f"Unpinned '{title}'.")
 
     def _refresh_inspection_layer_if_active(self) -> None:
-        layer = self._layer_by_name(self._inspect_layer_name)
-        if layer is None:
+        layers = self._generated_layers_for_name(self._inspect_layer_name)
+        if not layers:
             return
-        node_id = getattr(layer, "metadata", {}).get("node_id")
+        node_id = getattr(layers[0], "metadata", {}).get("node_id")
         if node_id in self.pipeline.outputs:
             data, state, output_port = self._node_display_payload(node_id)
             if data is None or is_table_data(data):
-                self._remove_layer(layer)
+                self._remember_current_inspect_display_profiles()
+                self._discard_inspect_layers()
+                self._sync_inspect_display_reset_ui()
                 return
             self._set_or_add_generated_layer(
                 self._inspect_layer_name,
@@ -15712,6 +15887,8 @@ class VippWidget(QWidget):
         metadata: dict,
         role: str,
     ) -> None:
+        if role == "inspect" and name == self._inspect_layer_name:
+            self._remember_current_inspect_display_profiles()
         saved_step = self._raw_current_step()
         saved_nsteps = self._viewer_nsteps()
         output_port = int(metadata.get("output_port", 0) or 0)
@@ -15729,6 +15906,7 @@ class VippWidget(QWidget):
             **metadata,
             "data_kind": data_kind,
             "display_kind": display_kind,
+            "display_dtype": str(np.asarray(display_data).dtype),
             "display_ndim": np.asarray(display_data).ndim,
             "display_shape": tuple(np.asarray(display_data).shape),
             "display_rgb": self._display_rgb(
@@ -15742,24 +15920,44 @@ class VippWidget(QWidget):
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
         self._remove_rgb_channel_layers(name)
-        layer = self._layer_by_name(name)
+        preserved_display = self._inspect_display_settings_for_metadata(metadata)
+        if role == "inspect" and name == self._inspect_layer_name:
+            inspect_layers = self._generated_layers_for_name(name)
+            layer = inspect_layers[0] if inspect_layers else None
+        else:
+            layer = self._layer_by_name(name)
         if layer is None:
-            self._add_image_or_labels(
+            layer = self._add_image_or_labels(
                 name,
                 data,
                 metadata=metadata,
                 display_data=display_data,
             )
+            self._restore_inspect_layer_display_settings(
+                layer,
+                preserved_display,
+            )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
-        if self._generated_layer_needs_replacement(layer, metadata):
+        replace_layer = self._generated_layer_needs_replacement(layer, metadata)
+        if (
+            role == "inspect"
+            and metadata["display_kind"] != "image"
+            and not self._same_inspect_layer_output(layer, metadata)
+        ):
+            replace_layer = True
+        if replace_layer:
             self._invalidate_generated_layer_contrast(layer)
             self._remove_layer(layer)
-            self._add_image_or_labels(
+            layer = self._add_image_or_labels(
                 name,
                 data,
                 metadata=metadata,
                 display_data=display_data,
+            )
+            self._restore_inspect_layer_display_settings(
+                layer,
+                preserved_display,
             )
             self._restore_viewer_step(saved_step, saved_nsteps)
             return
@@ -15768,6 +15966,7 @@ class VippWidget(QWidget):
         layer.metadata.update(metadata)
         layer.visible = True
         self._configure_generated_layer(layer, data, metadata)
+        self._restore_inspect_layer_display_settings(layer, preserved_display)
         self._restore_viewer_step(saved_step, saved_nsteps)
 
     def _viewer_nsteps(self) -> tuple[int, ...] | None:
@@ -15872,6 +16071,11 @@ class VippWidget(QWidget):
             metadata.update(self._generated_layer_contrast_metadata(plan))
             kwargs["contrast_limits"] = plan.limits
         layer = self.viewer.add_image(presentation_data, **kwargs)
+        self._apply_image_layer_display_defaults(layer)
+        self._set_layer_iso_threshold_default(
+            layer,
+            kwargs.get("contrast_limits"),
+        )
         self._make_generated_layer_noneditable(layer)
         return layer
 
@@ -15891,11 +16095,32 @@ class VippWidget(QWidget):
     ) -> None:
         arr = np.asarray(display_data)
         base_layer = self._layer_by_name(name)
-        if base_layer is not None and not bool(
-            base_layer.metadata.get("display_rgb_as_channels")
-        ):
+        try:
+            base_is_owned_scalar = (
+                base_layer is not None
+                and base_layer.metadata.get("napari_vipp_kind")
+                == metadata.get("napari_vipp_kind")
+                and not bool(base_layer.metadata.get("display_rgb_as_channels"))
+            )
+        except Exception:
+            base_is_owned_scalar = False
+        if not base_is_owned_scalar and name == self._inspect_layer_name:
+            base_layer = None
+            for candidate in list(self.viewer.layers):
+                try:
+                    if (
+                        candidate.metadata.get("napari_vipp_kind") == "inspect"
+                        and not candidate.metadata.get("display_rgb_as_channels")
+                    ):
+                        base_layer = candidate
+                        base_is_owned_scalar = True
+                        break
+                except Exception:
+                    continue
+        if base_is_owned_scalar:
             self._invalidate_generated_layer_contrast(base_layer)
             self._remove_layer(base_layer)
+        active_layers = []
         for index, channel_name, colormap in _RGB_VOLUME_CHANNELS:
             channel_data = _read_only_presentation_array(arr[..., index])
             layer_name = _rgb_channel_layer_name(name, index)
@@ -15905,10 +16130,26 @@ class VippWidget(QWidget):
                 "display_rgb_group": name,
                 "display_rgb_channel": channel_name,
                 "display_rgb_channel_index": index,
+                "display_dtype": str(channel_data.dtype),
                 "display_ndim": channel_data.ndim,
                 "display_shape": tuple(channel_data.shape),
             }
-            layer = self._layer_by_name(layer_name)
+            layer = None
+            for candidate in self._rgb_channel_layers(name):
+                try:
+                    candidate_metadata = candidate.metadata
+                    if (
+                        candidate_metadata.get("napari_vipp_kind")
+                        == metadata.get("napari_vipp_kind")
+                        and int(
+                            candidate_metadata.get("display_rgb_channel_index", -1)
+                        )
+                        == index
+                    ):
+                        layer = candidate
+                        break
+                except (AttributeError, TypeError, ValueError):
+                    continue
             if layer is not None and self._generated_layer_needs_replacement(
                 layer,
                 channel_metadata,
@@ -15916,8 +16157,11 @@ class VippWidget(QWidget):
                 self._invalidate_generated_layer_contrast(layer)
                 self._remove_layer(layer)
                 layer = None
+            preserved_display = self._inspect_display_settings_for_metadata(
+                channel_metadata
+            )
             if layer is None:
-                self._add_rgb_channel_layer(
+                layer = self._add_rgb_channel_layer(
                     layer_name,
                     channel_data,
                     channel_metadata,
@@ -15925,6 +16169,11 @@ class VippWidget(QWidget):
                     identity_data=arr,
                     channel_index=index,
                 )
+                self._restore_inspect_layer_display_settings(
+                    layer,
+                    preserved_display,
+                )
+                active_layers.append(layer)
                 continue
             self._invalidate_generated_layer_contrast(layer)
             layer.data = channel_data
@@ -15937,7 +16186,12 @@ class VippWidget(QWidget):
                 identity_data=arr,
                 channel_index=index,
             )
-        self._remove_extra_rgb_channel_layers(name)
+            self._restore_inspect_layer_display_settings(
+                layer,
+                preserved_display,
+            )
+            active_layers.append(layer)
+        self._remove_extra_rgb_channel_layers(name, active_layers)
 
     def _add_rgb_channel_layer(
         self,
@@ -15967,6 +16221,8 @@ class VippWidget(QWidget):
         metadata.update(self._generated_layer_contrast_metadata(plan))
         kwargs["contrast_limits"] = plan.limits
         layer = self.viewer.add_image(data, **kwargs)
+        self._apply_image_layer_display_defaults(layer)
+        self._set_layer_iso_threshold_default(layer, plan.limits)
         self._make_generated_layer_noneditable(layer)
         return layer
 
@@ -15981,6 +16237,9 @@ class VippWidget(QWidget):
     ) -> None:
         channel_index = int(metadata["display_rgb_channel_index"])
         colormap = _RGB_VOLUME_CHANNELS[channel_index][2]
+        is_inspect = metadata.get("napari_vipp_kind") == "inspect"
+        if is_inspect:
+            self._apply_image_layer_display_defaults(layer)
         for attr, value in (
             ("colormap", colormap),
             ("blending", "additive"),
@@ -16006,6 +16265,8 @@ class VippWidget(QWidget):
             layer.contrast_limits = plan.limits
         except Exception:
             pass
+        if is_inspect:
+            self._set_layer_iso_threshold_default(layer, plan.limits)
         self._make_generated_layer_noneditable(layer)
 
     def _rgb_channel_layers(self, group_name: str) -> list:
@@ -16023,13 +16284,13 @@ class VippWidget(QWidget):
             self._invalidate_generated_layer_contrast(layer)
             self._remove_layer(layer)
 
-    def _remove_extra_rgb_channel_layers(self, group_name: str) -> None:
-        expected = {
-            _rgb_channel_layer_name(group_name, index)
-            for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
-        }
+    def _remove_extra_rgb_channel_layers(
+        self,
+        group_name: str,
+        active_layers: list,
+    ) -> None:
         for layer in self._rgb_channel_layers(group_name):
-            if layer.name not in expected:
+            if not any(layer is active for active in active_layers):
                 self._invalidate_generated_layer_contrast(layer)
                 self._remove_layer(layer)
 
@@ -16041,8 +16302,30 @@ class VippWidget(QWidget):
                 for index, _channel_name, _colormap in _RGB_VOLUME_CHANNELS
             }
             return sorted(layers, key=lambda layer: ordered.get(layer.name, 99))
+        if name == self._inspect_layer_name:
+            for candidate in list(self.viewer.layers):
+                try:
+                    metadata = candidate.metadata
+                    if (
+                        metadata.get("napari_vipp_kind") == "inspect"
+                        and not metadata.get("display_rgb_as_channels")
+                    ):
+                        return [candidate]
+                except Exception:
+                    continue
+            # The Inspect name is user-visible and therefore not an ownership
+            # token.  An unrelated layer may legitimately use it; only VIPP's
+            # metadata identifies a layer that we are allowed to mutate.
+            return []
         layer = self._layer_by_name(name)
         return [layer] if layer is not None else []
+
+    def _discard_inspect_layers(self) -> None:
+        """Remove only the generated Inspect scalar or RGB layer group."""
+        for layer in self._generated_layers_for_name(self._inspect_layer_name):
+            self._invalidate_generated_layer_contrast(layer)
+            self._remove_layer(layer)
+        self._sync_inspect_display_reset_ui()
 
     def _move_generated_layers_to_top(self, name: str) -> None:
         for layer in self._generated_layers_for_name(name):
@@ -16060,6 +16343,293 @@ class VippWidget(QWidget):
             != metadata.get("display_rgb_channel_index")
         )
 
+    @staticmethod
+    def _same_inspect_layer_output(layer, metadata: dict) -> bool:
+        """Return whether a refresh represents the same logical Inspect output."""
+        try:
+            current = layer.metadata
+            return (
+                current.get("napari_vipp_kind") == "inspect"
+                and metadata.get("napari_vipp_kind") == "inspect"
+                and current.get("node_id") == metadata.get("node_id")
+                and int(current.get("output_port", 0) or 0)
+                == int(metadata.get("output_port", 0) or 0)
+                and current.get("data_kind") == metadata.get("data_kind")
+                and current.get("display_kind") == metadata.get("display_kind")
+                and bool(current.get("display_rgb"))
+                == bool(metadata.get("display_rgb"))
+                and bool(current.get("display_rgb_as_channels"))
+                == bool(metadata.get("display_rgb_as_channels"))
+                and current.get("display_rgb_channel_index")
+                == metadata.get("display_rgb_channel_index")
+                and int(current.get("display_ndim", 0) or 0)
+                == int(metadata.get("display_ndim", 0) or 0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _user_adjusted_layer_contrast(layer) -> tuple[float, float] | None:
+        """Return display limits only when they differ from VIPP's last default."""
+        try:
+            current = tuple(float(value) for value in layer.contrast_limits)
+            metadata = layer.metadata
+        except (AttributeError, TypeError, ValueError):
+            return None
+        reference = metadata.get("vipp_exact_finite_data_range")
+        if reference is None:
+            reference = metadata.get("_vipp_display_contrast_initial_limits")
+        if reference is None and metadata.get("data_kind") == "mask":
+            reference = (0.0, 1.0)
+        try:
+            reference = tuple(float(value) for value in reference)
+        except (TypeError, ValueError):
+            return None
+        if len(current) != 2 or len(reference) != 2 or current == reference:
+            return None
+        return current
+
+    @staticmethod
+    def _user_adjusted_layer_iso_threshold(layer) -> float | None:
+        """Return an iso threshold only when it differs from display midpoint."""
+        try:
+            current = float(layer.iso_threshold)
+            lower, upper = (float(value) for value in layer.contrast_limits)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        midpoint = lower + (upper - lower) * 0.5
+        if np.isclose(current, midpoint, rtol=1e-12, atol=1e-12):
+            return None
+        return current
+
+    @staticmethod
+    def _inspect_display_profile_key(metadata: dict) -> tuple | None:
+        """Return the logical Inspect display surface represented by metadata."""
+        try:
+            kind = metadata.get("napari_vipp_kind")
+            if kind is not None and kind != "inspect":
+                return None
+            node_id = str(metadata.get("node_id", "") or "").strip()
+            if not node_id:
+                return None
+            channel_index = metadata.get("display_rgb_channel_index")
+            if channel_index is not None:
+                channel_index = int(channel_index)
+            return (
+                node_id,
+                int(metadata.get("output_port", 0) or 0),
+                str(metadata.get("data_kind", "")),
+                str(metadata.get("display_kind", "")),
+                bool(metadata.get("display_rgb")),
+                bool(metadata.get("display_rgb_as_channels")),
+                channel_index,
+                int(metadata.get("display_ndim", 0) or 0),
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _inspect_display_profile_identity(key: tuple) -> dict[str, object]:
+        profile: dict[str, object] = {
+            "node_id": key[0],
+            "output_port": key[1],
+            "data_kind": key[2],
+            "display_kind": key[3],
+            "display_rgb": key[4],
+            "display_rgb_as_channels": key[5],
+            "display_ndim": key[7],
+        }
+        if key[6] is not None:
+            profile["display_rgb_channel_index"] = key[6]
+        return profile
+
+    @staticmethod
+    def _serialized_inspect_display_value(attr: str, value):
+        if attr == "colormap":
+            value = getattr(value, "name", value)
+        else:
+            value = getattr(value, "value", value)
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)) and np.isfinite(value):
+            return float(value)
+        return None
+
+    def _remember_inspect_layer_display_profile(self, layer) -> None:
+        try:
+            metadata = layer.metadata
+        except Exception:
+            return
+        if not isinstance(metadata, dict) or metadata.get("napari_vipp_kind") != (
+            "inspect"
+        ):
+            return
+        key = self._inspect_display_profile_key(metadata)
+        if key is None:
+            return
+        general: dict[str, object] = {}
+        for attr in _INSPECT_LAYER_DISPLAY_ATTRIBUTES:
+            if attr == "colormap" and metadata.get("display_kind") != "image":
+                # Labels colormaps are structured categorical models; their
+                # name alone is not a valid round-trip representation.
+                continue
+            try:
+                value = self._serialized_inspect_display_value(
+                    attr,
+                    getattr(layer, attr),
+                )
+            except Exception:
+                continue
+            if value is not None:
+                general[attr] = value
+
+        dtype = str(metadata.get("display_dtype", "") or "").strip()
+        if not dtype:
+            try:
+                dtype = str(np.asarray(layer.data).dtype)
+            except Exception:
+                dtype = ""
+        intensity: dict[str, object] = {}
+        iso_threshold = self._user_adjusted_layer_iso_threshold(layer)
+        if iso_threshold is not None:
+            intensity["iso_threshold"] = iso_threshold
+        contrast_limits = self._user_adjusted_layer_contrast(layer)
+        if contrast_limits is not None:
+            intensity["contrast_limits"] = [
+                float(contrast_limits[0]),
+                float(contrast_limits[1]),
+            ]
+
+        existing_profile = self._inspect_display_profiles.get(key)
+        if not isinstance(existing_profile, dict):
+            existing_profile = self._inspect_display_profile_identity(key)
+        profile = deepcopy(existing_profile)
+        profile["settings"] = general
+        stored_intensity = profile.get("intensity_settings", {})
+        intensity_by_dtype = (
+            dict(stored_intensity) if isinstance(stored_intensity, dict) else {}
+        )
+        if dtype:
+            # Replace, rather than merge, so returning contrast to automatic
+            # cannot resurrect a previously saved custom range.
+            intensity_by_dtype[dtype] = intensity
+        if intensity_by_dtype:
+            profile["intensity_settings"] = intensity_by_dtype
+        else:
+            profile.pop("intensity_settings", None)
+        self._inspect_display_profiles[key] = profile
+
+    def _remember_current_inspect_display_profiles(self) -> None:
+        for layer in self._generated_layers_for_name(self._inspect_layer_name):
+            self._remember_inspect_layer_display_profile(layer)
+
+    def _inspect_display_settings_for_metadata(
+        self,
+        metadata: dict,
+    ) -> dict[str, object]:
+        key = self._inspect_display_profile_key(metadata)
+        if key is None:
+            return {}
+        profile = self._inspect_display_profiles.get(key)
+        if not isinstance(profile, dict):
+            return {}
+        stored_settings = profile.get("settings", {})
+        settings = (
+            deepcopy(stored_settings) if isinstance(stored_settings, dict) else {}
+        )
+        dtype = str(metadata.get("display_dtype", "") or "").strip()
+        intensity_by_dtype = profile.get("intensity_settings", {})
+        if dtype and isinstance(intensity_by_dtype, dict):
+            intensity = intensity_by_dtype.get(dtype, {})
+            if isinstance(intensity, dict):
+                settings.update(deepcopy(intensity))
+        contrast_limits = settings.get("contrast_limits")
+        if isinstance(contrast_limits, list) and len(contrast_limits) == 2:
+            settings["contrast_limits"] = tuple(contrast_limits)
+        return settings
+
+    def _inspect_display_profile_documents(
+        self,
+        valid_node_ids: set[str],
+    ) -> list[dict[str, object]]:
+        self._remember_current_inspect_display_profiles()
+        profiles = [
+            deepcopy(profile)
+            for key, profile in self._inspect_display_profiles.items()
+            if key[0] in valid_node_ids
+        ]
+        return sorted(
+            profiles,
+            key=lambda profile: repr(self._inspect_display_profile_key(profile)),
+        )
+
+    def _load_inspect_display_profiles(
+        self,
+        profiles,
+        valid_node_ids: set[str],
+    ) -> None:
+        self._inspect_display_profiles.clear()
+        for profile in profiles if isinstance(profiles, (list, tuple)) else ():
+            if not isinstance(profile, dict):
+                continue
+            key = self._inspect_display_profile_key(profile)
+            if key is None or key[0] not in valid_node_ids:
+                continue
+            self._inspect_display_profiles[key] = deepcopy(profile)
+
+    @staticmethod
+    def _restore_inspect_layer_display_settings(
+        layer,
+        settings: dict[str, object],
+    ) -> None:
+        """Restore preserved styling after VIPP refreshes data and defaults."""
+        if not settings:
+            return
+        contrast_restored = False
+        iso_restored = False
+        for attr, value in settings.items():
+            try:
+                setattr(layer, attr, value)
+            except Exception:
+                continue
+            if attr == "contrast_limits":
+                contrast_restored = True
+            elif attr == "iso_threshold":
+                iso_restored = True
+        if iso_restored:
+            try:
+                layer.metadata["_vipp_display_iso_user_preserved"] = True
+            except Exception:
+                pass
+        elif contrast_restored:
+            VippWidget._set_layer_iso_threshold_default(
+                layer,
+                getattr(layer, "contrast_limits", None),
+            )
+        if not contrast_restored:
+            return
+        try:
+            if "_vipp_display_contrast_key" not in layer.metadata:
+                return
+            pending = bool(layer.metadata.get("vipp_display_contrast_pending"))
+            exact_range = layer.metadata.get("vipp_exact_finite_data_range")
+            if pending:
+                basis = "User-preserved display limits; exact full-data scan pending"
+            elif exact_range is not None:
+                basis = (
+                    "User-preserved display limits; exact full finite data "
+                    "range retained in metadata"
+                )
+            else:
+                basis = "User-preserved display limits; no finite values available"
+            layer.metadata["vipp_display_contrast_basis"] = basis
+        except Exception:
+            pass
+
     def _configure_generated_layer(self, layer, data, metadata: dict) -> None:
         scale = _layer_scale_from_metadata(metadata)
         if scale is not None:
@@ -16070,6 +16640,10 @@ class VippWidget(QWidget):
         if metadata["display_kind"] != "image":
             self._make_generated_layer_noneditable(layer)
             return
+        is_inspect = metadata.get("napari_vipp_kind") == "inspect"
+        if is_inspect:
+            self._apply_image_layer_display_defaults(layer)
+
         if metadata["data_kind"] == "mask":
             for attr, value in (
                 ("blending", "opaque"),
@@ -16080,6 +16654,8 @@ class VippWidget(QWidget):
                     setattr(layer, attr, value)
                 except Exception:
                     pass
+            if is_inspect:
+                self._set_layer_iso_threshold_default(layer, (0.0, 1.0))
         else:
             for attr, value in (("blending", "translucent"),):
                 try:
@@ -16097,7 +16673,36 @@ class VippWidget(QWidget):
                 layer.contrast_limits = plan.limits
             except Exception:
                 pass
+            if is_inspect:
+                self._set_layer_iso_threshold_default(layer, plan.limits)
         self._make_generated_layer_noneditable(layer)
+
+    @staticmethod
+    def _apply_image_layer_display_defaults(layer) -> None:
+        """Apply napari/VIPP defaults before an optional node profile."""
+        for attr, value in (
+            ("visible", True),
+            ("opacity", 1.0),
+            ("gamma", 1.0),
+            ("interpolation2d", "nearest"),
+            ("interpolation3d", "linear"),
+            ("projection_mode", "mean"),
+            ("rendering", "mip"),
+            ("depiction", "volume"),
+            ("attenuation", 0.05),
+        ):
+            try:
+                setattr(layer, attr, value)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _set_layer_iso_threshold_default(layer, contrast_limits) -> None:
+        try:
+            lower, upper = (float(value) for value in contrast_limits)
+            layer.iso_threshold = lower + (upper - lower) * 0.5
+        except (AttributeError, TypeError, ValueError):
+            pass
 
     @staticmethod
     def _make_generated_layer_noneditable(layer) -> None:
@@ -16118,6 +16723,11 @@ class VippWidget(QWidget):
             metadata = layer.metadata
         except Exception:
             return
+        if metadata.get("napari_vipp_kind") == "inspect":
+            self._generated_layer_contrast_keys.pop(
+                self._inspect_layer_name,
+                None,
+            )
         for key in _GENERATED_LAYER_CONTRAST_METADATA_KEYS:
             try:
                 metadata.pop(key, None)
@@ -16211,6 +16821,11 @@ class VippWidget(QWidget):
             "vipp_display_contrast_adjustable": True,
             "_vipp_display_contrast_key": plan.key,
             "_vipp_display_contrast_initial_limits": plan.limits,
+            "_vipp_display_iso_initial_threshold": (
+                float(plan.limits[0])
+                + (float(plan.limits[1]) - float(plan.limits[0])) * 0.5
+            ),
+            "_vipp_display_iso_user_preserved": False,
         }
         if plan.exact:
             metadata["vipp_exact_finite_data_range"] = plan.limits
@@ -16254,19 +16869,54 @@ class VippWidget(QWidget):
         if self._generated_layer_contrast_keys.get(result.layer_name) != result.key:
             return
         layer = self._layer_by_name(result.layer_name)
+        try:
+            layer_matches = (
+                layer is not None
+                and layer.metadata.get("_vipp_display_contrast_key") == result.key
+            )
+        except Exception:
+            layer_matches = False
+        if not layer_matches:
+            layer = None
+            for candidate in list(self.viewer.layers):
+                try:
+                    if (
+                        candidate.metadata.get("_vipp_display_contrast_key")
+                        == result.key
+                    ):
+                        layer = candidate
+                        break
+                except Exception:
+                    continue
         if layer is None:
             return
+
         try:
-            if layer.metadata.get("_vipp_display_contrast_key") != result.key:
-                return
-        except Exception:
-            return
+            initial_iso = float(
+                layer.metadata.get("_vipp_display_iso_initial_threshold")
+            )
+            current_iso = float(layer.iso_threshold)
+            iso_is_automatic = not bool(
+                layer.metadata.get("_vipp_display_iso_user_preserved")
+            ) and bool(
+                np.isclose(
+                    current_iso,
+                    initial_iso,
+                    rtol=1e-12,
+                    atol=1e-12,
+                )
+            )
+        except (AttributeError, TypeError, ValueError):
+            iso_is_automatic = False
 
         if result.error:
+            user_adjusted = self._user_adjusted_layer_contrast(layer) is not None
             layer.metadata.update(
                 {
                     "vipp_display_contrast_basis": (
-                        "Provisional dtype range; exact full-data scan failed"
+                        "User-adjusted display limits; exact full-data scan failed"
+                        if user_adjusted
+                        else "Provisional dtype range; exact full-data scan failed"
                     ),
                     "vipp_display_contrast_pending": False,
                 }
@@ -16276,10 +16926,13 @@ class VippWidget(QWidget):
             )
             return
         if result.limits is None:
+            user_adjusted = self._user_adjusted_layer_contrast(layer) is not None
             layer.metadata.update(
                 {
                     "vipp_display_contrast_basis": (
-                        "Provisional dtype range; no finite values available"
+                        "User-adjusted display limits; no finite values available"
+                        if user_adjusted
+                        else "Provisional dtype range; no finite values available"
                     ),
                     "vipp_display_contrast_pending": False,
                 }
@@ -16317,6 +16970,8 @@ class VippWidget(QWidget):
             layer.contrast_limits = result.limits
         except Exception:
             return
+        if iso_is_automatic:
+            self._set_layer_iso_threshold_default(layer, result.limits)
         layer.metadata.update(
             {
                 "vipp_display_contrast_basis": (
@@ -16430,6 +17085,34 @@ class VippWidget(QWidget):
             self.pin_button.setText("Unpin selected")
         else:
             self.pin_button.setText("Pin selected")
+        self._sync_inspect_display_reset_ui()
+
+    def _sync_inspect_display_reset_ui(self) -> None:
+        button = getattr(self, "reset_inspect_display_button", None)
+        if button is None:
+            return
+        data, _state, output_port = self._node_display_payload(
+            self._selected_node_id
+        )
+        matching_layer = False
+        if data is not None and not is_table_data(data):
+            for layer in self._generated_layers_for_name(
+                self._inspect_layer_name
+            ):
+                try:
+                    metadata = layer.metadata
+                    if (
+                        metadata.get("napari_vipp_kind") == "inspect"
+                        and metadata.get("node_id") == self._selected_node_id
+                        and int(metadata.get("output_port", 0) or 0)
+                        == int(output_port)
+                    ):
+                        matching_layer = True
+                        break
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        button.setVisible(matching_layer)
+        button.setEnabled(matching_layer)
 
     def _sync_preview_ui(self) -> None:
         previewable = self._node_output_type(self._selected_node_id) != "table"

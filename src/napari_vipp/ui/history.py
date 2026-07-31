@@ -17,6 +17,7 @@ class WorkflowHistorySnapshot:
     selected_node_id: str
     preview_disabled_node_ids: tuple[str, ...] = ()
     active_pinned_node_id: str | None = None
+    inspect_display_profiles: tuple[dict[str, object], ...] = ()
 
 
 class WorkflowHistory:
