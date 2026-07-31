@@ -115,6 +115,44 @@ None. The plot must be released before it reappears.
 
 ---
 
+## BUG-004 — Missing CPU parity target for `masked_colocalization_metrics` blocks exact validation during optimization
+
+**Reported:** 2026-07-30  
+**Status:** Open  
+**Version:** 0.12.0a3  
+**Affected node:** `masked_colocalization_metrics`
+
+### Description
+
+During optimization/parity validation, the pipeline reports:
+
+```
+masked_colocalization_metrics_1: Private current parity requested 'cpu-masked_colocalization_metrics-v1' but reported 'missing'; exact validation cannot continue.
+```
+
+This causes exact validation to stop instead of handling the missing parity implementation gracefully.
+
+### Expected behaviour
+
+If a requested parity target is unavailable, the system should degrade gracefully:
+
+1. Emit a clear warning identifying the missing target, and
+2. Fall back to a supported execution/validation path (or allow non-exact validation) so pipeline execution can continue.
+
+### Suggested fix
+
+Add/restore registration for `cpu-masked_colocalization_metrics-v1`, or implement robust fallback logic in parity selection so missing private parity targets do not hard-stop validation.
+
+### Relationship to other issues
+
+Likely related to the broader CPU/GPU optimization behavior in batch workflows: this appears to be a specific optimizer/parity-path failure that may contribute to optimization non-functionality.
+
+### Workaround
+
+No robust workaround identified in UI. Temporary mitigation may require disabling exact parity validation for affected nodes/workflows until parity registration is fixed.
+
+---
+
 ## FEATURE-002 — Input nodes do not display the filename or sample name on the node tile, making multi-input graphs hard to read
 
 **Reported:** 2026-07-30  
@@ -188,6 +226,7 @@ Both interactions are standard in node-graph editors (e.g. Blender Compositor, U
 When multiple workflows are loaded or created during a session, there is no way to switch between them quickly. Each workflow occupies the entire canvas and the only way to work with a second workflow is to close the current one and re-open the other, losing any unsaved canvas state.
 
 This becomes a significant friction point when:
+
 - Comparing two workflow variants side by side (e.g. with and without background subtraction)
 - Running one workflow while editing another
 - Keeping a reference workflow open alongside an experimental one
