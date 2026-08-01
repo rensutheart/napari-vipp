@@ -49,6 +49,19 @@
 - Consolidated VIPP feedback into one severity-aware message-strip component.
   Routine status remains lightweight, while only actionable errors receive a
   filled full-width alert.
+### Colocalization Inspector
+
+- Threshold scrubbing now keeps a compatible scatter density visible and moves
+  its guides immediately while exact counts are recalculated. Stale counts are
+  replaced with a calculating state, rapid requests are coalesced, and a density
+  is retained only while the channel, ROI, and intensity context still matches.
+- Recalculating the same VIPP Inspect output now preserves user-selected napari
+  display styling, including its colormap. Switching to a different output or
+  an incompatible layer representation still initializes VIPP's safe defaults.
+- VIPP Inspect display styling is now remembered independently for each node,
+  output port, and RGB display surface, and is restored from saved workflows.
+  Intensity-domain settings remain dtype-specific, and the inspector header now
+  provides an explicit reset-to-defaults action for the selected node.
 
 ## 0.12.0a3 - 2026-07-20
 

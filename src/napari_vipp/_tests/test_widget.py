@@ -5230,6 +5230,131 @@ def test_large_colocalization_scatter_returns_immediately_and_is_exact(
     assert int(np.asarray(result.density_counts).sum()) == 10_000
 
 
+def test_colocalization_scatter_keeps_density_during_threshold_scrubbing(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((100, 100), dtype=np.uint8)
+    data.ravel()[::2] = 200
+    viewer = _Viewer(data, metadata={"axes": "YX"})
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("racc_index")
+    widget.pipeline.set_param(coloc.id, "threshold_mode", "Manual")
+    widget.pipeline.set_param(coloc.id, "channel_1_threshold", 100.0)
+    widget.pipeline.set_param(coloc.id, "channel_2_threshold", 100.0)
+    widget._connect_nodes("input", coloc.id, target_port=0)
+    widget._connect_nodes("input", coloc.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(coloc.id)
+
+    density_image = widget.colocalization_scatter_plot._image
+    density_key = widget._displayed_colocalization_scatter_density_key
+    assert density_image is not None
+    assert density_key is not None
+    assert widget.colocalization_scatter_plot._summary == (
+        "Exact: 5,000/10,000 (50.0%)"
+    )
+
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    import napari_vipp._widget as widget_module
+
+    real_normalize = widget_module.colocalization_normalized_inputs
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_normalize(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.colocalization_normalized_inputs",
+        blocking_normalize,
+    )
+
+    widget._on_colocalization_scatter_threshold_changed(1, 150.0)
+    widget._debounce_timer.stop()
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    active_run_id = widget._active_colocalization_scatter_run_id
+
+    widget._on_colocalization_scatter_threshold_changed(1, 210.0)
+    widget._debounce_timer.stop()
+
+    try:
+        assert widget._active_colocalization_scatter_run_id == active_run_id
+        assert widget._active_colocalization_scatter_cancel_event.is_set()
+        assert widget._pending_colocalization_scatter_request is not None
+        assert widget._pending_colocalization_scatter_request.threshold_1 == 210.0
+        assert widget.colocalization_scatter_plot._image is density_image
+        assert (
+            widget._displayed_colocalization_scatter_density_key == density_key
+        )
+        assert widget.colocalization_scatter_plot._threshold_1 == 210.0
+        assert (
+            widget.colocalization_scatter_plot._summary
+            == "Calculating exact count..."
+        )
+        assert "Calculating the exact" in (
+            widget.colocalization_scatter_summary.text()
+        )
+    finally:
+        release.set()
+
+    qtbot.waitUntil(
+        lambda: widget._active_colocalization_scatter_run_id is None,
+        timeout=5_000,
+    )
+    assert widget._pending_colocalization_scatter_request is None
+    assert widget.colocalization_scatter_plot._image is not None
+    assert widget.colocalization_scatter_plot._summary == (
+        "Exact: 0/10,000 (0.0%)"
+    )
+    assert "Exact colocalized count: 0/10,000 (0.0%)" in (
+        widget.colocalization_scatter_summary.text()
+    )
+
+
+def test_colocalization_scatter_clears_density_for_different_inputs(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.colocalization_scatter_plot.set_density(
+        np.ones((16, 16), dtype=np.float64),
+        threshold_1=25.0,
+        threshold_2=25.0,
+    )
+    widget._displayed_colocalization_scatter_density_key = ("old-inputs",)
+    monkeypatch.setattr(
+        widget,
+        "_start_colocalization_scatter_request",
+        lambda request: None,
+    )
+
+    widget._queue_colocalization_scatter(
+        ColocalizationScatterRequest(
+            0,
+            ("new-result",),
+            "coloc",
+            (np.zeros((2, 2)), np.zeros((2, 2))),
+            "Manual",
+            40.0,
+            50.0,
+            density_key=("new-inputs",),
+        )
+    )
+
+    assert widget.colocalization_scatter_plot._image is None
+    assert widget._displayed_colocalization_scatter_density_key is None
+    assert widget.colocalization_scatter_plot._summary == (
+        "Calculating exact count..."
+    )
+
+
 def test_colocalization_scatter_zero_roi_reports_percentage_unavailable(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -7984,10 +8109,13 @@ def test_workflow_roundtrip_restores_inspector_and_optional_thumbnails(
     document = json.loads(path.read_text(encoding="utf-8"))
 
     vipp_metadata = document["metadata"]["vipp"]
-    assert vipp_metadata["inspector"] == {
-        "right_panel_visible": False,
-        "selected_node_id": "threshold",
-    }
+    inspector_metadata = vipp_metadata["inspector"]
+    assert inspector_metadata["right_panel_visible"] is False
+    assert inspector_metadata["selected_node_id"] == "threshold"
+    assert {
+        profile["node_id"]
+        for profile in inspector_metadata["display_profiles"]
+    } == {"gaussian", "threshold"}
     assert "thumbnails" not in vipp_metadata
 
     widget.save_thumbnail_visibility_checkbox.setChecked(True)
@@ -8040,6 +8168,8 @@ def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
 
     restored = VippWidget(_Viewer())
     qtbot.addWidget(restored)
+    restored.viewer.layers["VIPP Inspect"].colormap = "magma"
+    restored._workflow_metadata()
     restored._preview_disabled_node_ids.add("threshold")
     restored._set_right_panel_visible(False)
     run_calls = []
@@ -8055,6 +8185,13 @@ def test_workflow_load_without_thumbnail_metadata_clears_preview_state(
     assert restored._selected_node_id == "gaussian"
     assert not restored.inspector_panel.isHidden()
     assert restored._preview_disabled_node_ids == set()
+    assert all(
+        key[0] == "gaussian" for key in restored._inspect_display_profiles
+    )
+    assert all(
+        profile["settings"].get("colormap") == "gray"
+        for profile in restored._inspect_display_profiles.values()
+    )
     assert run_calls == [((), {})]
 
 
@@ -14753,10 +14890,55 @@ def test_large_float_inspect_contrast_is_calculated_in_background(
     )
 
     assert inspect.contrast_limits == (-7.0, 42.0)
+    assert inspect.iso_threshold == 17.5
     assert inspect.metadata["vipp_display_contrast_pending"] is False
     assert inspect.metadata["vipp_display_contrast_basis"] == (
         "Exact full finite data range (display only)"
     )
+
+
+def test_renamed_inspect_receives_background_contrast_despite_name_collision(
+    qtbot,
+    monkeypatch,
+):
+    viewer = _Viewer()
+    source = viewer.layers[0]
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    data = np.linspace(-7.0, 42.0, 200, dtype=np.float32).reshape(2, 10, 10)
+    widget.pipeline.outputs["gaussian"] = data
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_exact_limits(values):
+        assert values is data
+        started.set()
+        assert release.wait(5)
+        return (-7.0, 42.0)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget._exact_generated_layer_contrast_limits",
+        blocking_exact_limits,
+    )
+
+    widget.inspect_node("gaussian")
+    inspect = viewer.layers["VIPP Inspect"]
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    inspect.name = "Renamed Inspect"
+    source.name = "VIPP Inspect"
+
+    release.set()
+    qtbot.waitUntil(
+        lambda: not widget._generated_layer_contrast_pending,
+        timeout=5_000,
+    )
+
+    assert inspect.contrast_limits == (-7.0, 42.0)
+    assert inspect.iso_threshold == 17.5
+    assert inspect.metadata["vipp_display_contrast_pending"] is False
+    assert source.contrast_limits is None
 
 
 def test_reused_mask_layer_ignores_stale_float_contrast(qtbot, monkeypatch):
@@ -14935,6 +15117,557 @@ def test_rescaled_float_inspect_refreshes_reused_contrast_limits(qtbot):
     assert viewer.layers["VIPP Inspect"] is inspect
     assert np.isclose(float(np.max(inspect.data)), 1.0)
     assert inspect.contrast_limits == (0.0, 1.0)
+
+
+def test_racc_recalculation_preserves_user_inspect_display_settings(qtbot):
+    channel_1 = np.zeros((5, 6), dtype=np.uint16)
+    channel_2 = np.zeros((5, 6), dtype=np.uint16)
+    channel_1[1:3, 1:3] = np.asarray(
+        [[80, 100], [120, 140]],
+        dtype=np.uint16,
+    )
+    channel_2[1:3, 1:3] = np.asarray(
+        [[90, 110], [130, 150]],
+        dtype=np.uint16,
+    )
+    channel_1[3, 1] = 150
+    channel_2[3, 4] = 150
+    viewer = _Viewer(
+        np.stack((channel_1, channel_2)),
+        metadata={"axes": "CYX"},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    split = widget.add_node_from_palette("split_channels")
+    racc = widget.add_node_from_palette("racc_index")
+    widget.pipeline.set_param(racc.id, "channel_1_threshold", 20.0)
+    widget.pipeline.set_param(racc.id, "channel_2_threshold", 20.0)
+    widget._connect_nodes("input", split.id)
+    widget._connect_nodes(split.id, racc.id, source_port=0, target_port=0)
+    widget._connect_nodes(split.id, racc.id, source_port=1, target_port=1)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+    widget.graph_view.select_node(racc.id)
+
+    inspect = viewer.layers["VIPP Inspect"]
+    old_data = inspect.data
+    inspect.colormap = "magma"
+    inspect.visible = False
+    inspect.blending = "additive"
+    inspect.opacity = 0.4
+    inspect.gamma = 1.7
+    inspect.interpolation2d = "linear"
+    inspect.contrast_limits = (0.15, 0.65)
+
+    widget.pipeline.set_param(racc.id, "channel_1_threshold", 90.0)
+    widget._mark_pipeline_dirty(racc.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+
+    refreshed = viewer.layers["VIPP Inspect"]
+    assert refreshed is inspect
+    assert refreshed.data is not old_data
+    assert np.shares_memory(refreshed.data, widget.pipeline.outputs[racc.id])
+    assert refreshed.colormap == "magma"
+    assert refreshed.visible is False
+    assert refreshed.blending == "additive"
+    assert refreshed.opacity == 0.4
+    assert refreshed.gamma == 1.7
+    assert refreshed.interpolation2d == "linear"
+    assert refreshed.contrast_limits == (0.15, 0.65)
+    assert "User-preserved" in refreshed.metadata["vipp_display_contrast_basis"]
+
+
+def test_inspect_display_settings_are_remembered_per_node(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+
+    widget.graph_view.select_node("gaussian")
+    gaussian = widget.viewer.layers["VIPP Inspect"]
+    gaussian.colormap = "magma"
+    gaussian.opacity = 0.4
+    gaussian.gamma = 1.7
+    gaussian.interpolation2d = "linear"
+
+    widget.graph_view.select_node("threshold")
+    threshold = widget.viewer.layers["VIPP Inspect"]
+    assert threshold.colormap == "gray"
+    assert threshold.opacity == 1.0
+    assert threshold.gamma == 1.0
+    threshold.colormap = "viridis"
+    threshold.opacity = 0.65
+
+    widget.graph_view.select_node("gaussian")
+    restored_gaussian = widget.viewer.layers["VIPP Inspect"]
+    assert restored_gaussian.colormap == "magma"
+    assert restored_gaussian.opacity == 0.4
+    assert restored_gaussian.gamma == 1.7
+    assert restored_gaussian.interpolation2d == "linear"
+
+    widget.graph_view.select_node("threshold")
+    restored_threshold = widget.viewer.layers["VIPP Inspect"]
+    assert restored_threshold.colormap == "viridis"
+    assert restored_threshold.opacity == 0.65
+
+
+def test_workflow_roundtrip_restores_node_inspect_display_profile(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    inspect.colormap = "magma"
+    inspect.visible = False
+    inspect.opacity = 0.4
+    inspect.gamma = 1.7
+    inspect.contrast_limits = (0.2, 0.8)
+
+    path = save_workflow(
+        tmp_path / "inspect-display.json",
+        widget.pipeline,
+        widget.graph_view.node_positions(),
+        widget._graph_note_documents(),
+        widget._workflow_metadata(),
+    )
+
+    restored = VippWidget(_Viewer())
+    restored._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(restored)
+    restored.load_workflow_file(path)
+
+    restored_inspect = restored.viewer.layers["VIPP Inspect"]
+    assert restored._selected_node_id == "gaussian"
+    assert restored_inspect.metadata["node_id"] == "gaussian"
+    assert restored_inspect.colormap == "magma"
+    assert restored_inspect.visible is False
+    assert restored_inspect.opacity == 0.4
+    assert restored_inspect.gamma == 1.7
+    assert restored_inspect.contrast_limits == (0.2, 0.8)
+
+
+def test_reset_selected_inspect_display_restores_defaults_without_rerun(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    output = widget.pipeline.outputs["gaussian"]
+    inspect.colormap = "magma"
+    inspect.visible = False
+    inspect.opacity = 0.4
+    inspect.blending = "additive"
+    inspect.gamma = 1.7
+    inspect.contrast_limits = (0.2, 0.8)
+
+    assert not widget.reset_inspect_display_button.isHidden()
+    widget.reset_inspect_display_button.click()
+
+    reset = widget.viewer.layers["VIPP Inspect"]
+    assert reset is not inspect
+    assert widget.pipeline.outputs["gaussian"] is output
+    assert np.shares_memory(reset.data, output)
+    assert not reset.data.flags.writeable
+    assert reset.colormap == "gray"
+    assert reset.visible is True
+    assert reset.opacity == 1.0
+    assert reset.blending == "translucent"
+    assert reset.gamma == 1.0
+    assert reset.contrast_limits == tuple(
+        reset.metadata["vipp_exact_finite_data_range"]
+    )
+    assert all(key[0] != "gaussian" for key in widget._inspect_display_profiles)
+    assert "Reset 'Gaussian Blur' Inspect display" in widget.status_label.text()
+
+
+def test_history_restore_does_not_leak_profile_to_reused_node_id(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    before_add = widget._current_history_snapshot()
+    added = widget.add_node_from_palette("mip")
+    key = (
+        added.id,
+        0,
+        "image",
+        "image",
+        False,
+        False,
+        None,
+        2,
+    )
+    widget._inspect_display_profiles[key] = {
+        **widget._inspect_display_profile_identity(key),
+        "settings": {"colormap": "magma"},
+    }
+
+    widget._restore_history_snapshot(before_add)
+
+    assert key not in widget._inspect_display_profiles
+    readded = widget.add_node_from_palette("mip")
+    assert readded.id == added.id
+    assert all(
+        profile_key[0] != readded.id
+        for profile_key in widget._inspect_display_profiles
+    )
+
+
+def test_history_snapshots_restore_inspect_display_profiles(qtbot):
+    widget = VippWidget(_Viewer())
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    inspect.colormap = "magma"
+    inspect.opacity = 0.4
+    magma_snapshot = widget._current_history_snapshot()
+
+    inspect.colormap = "viridis"
+    inspect.opacity = 0.7
+    viridis_snapshot = widget._current_history_snapshot()
+
+    widget._restore_history_snapshot(magma_snapshot)
+    restored = widget.viewer.layers["VIPP Inspect"]
+    assert restored.colormap == "magma"
+    assert restored.opacity == 0.4
+
+    widget._restore_history_snapshot(viridis_snapshot)
+    restored = widget.viewer.layers["VIPP Inspect"]
+    assert restored.colormap == "viridis"
+    assert restored.opacity == 0.7
+
+
+def test_manual_inspect_layer_removal_hides_reset_control(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    inspect = viewer.layers["VIPP Inspect"]
+    assert not widget.reset_inspect_display_button.isHidden()
+
+    viewer.layers.remove(inspect)
+    widget._on_viewer_layers_changed()
+
+    assert widget.reset_inspect_display_button.isHidden()
+    assert not widget.reset_inspect_display_button.isEnabled()
+
+
+def test_renamed_inspect_layer_is_reused_and_reset_without_duplicate(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("gaussian")
+    inspect = viewer.layers["VIPP Inspect"]
+    inspect.name = "My Inspect View"
+    inspect.colormap = "magma"
+
+    widget.inspect_node("gaussian")
+
+    inspect_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "inspect"
+    ]
+    assert inspect_layers == [inspect]
+    assert inspect.name == "My Inspect View"
+    assert inspect.colormap == "magma"
+
+    widget.reset_inspect_display_button.click()
+
+    assert all(layer is not inspect for layer in viewer.layers)
+    assert viewer.layers["VIPP Inspect"].colormap == "gray"
+    assert sum(
+        layer.metadata.get("napari_vipp_kind") == "inspect"
+        for layer in viewer.layers
+    ) == 1
+
+
+def test_inspect_name_collision_does_not_mutate_unrelated_layer(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    source = viewer.layers[0]
+    source_data = source.data
+    source.name = "VIPP Inspect"
+
+    widget.inspect_node("gaussian")
+
+    inspect_layers = [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "inspect"
+    ]
+    assert len(inspect_layers) == 1
+    generated = inspect_layers[0]
+    assert generated is not source
+    assert source in viewer.layers
+    assert source.data is source_data
+    assert source.metadata.get("napari_vipp_kind") is None
+
+    widget.inspect_node("gaussian")
+
+    assert source in viewer.layers
+    assert [
+        layer
+        for layer in viewer.layers
+        if layer.metadata.get("napari_vipp_kind") == "inspect"
+    ] == [generated]
+
+
+def test_rgb_inspect_name_collisions_do_not_mutate_unrelated_layers(qtbot):
+    data = np.zeros((3, 4, 5, 6), dtype=np.uint16)
+    viewer = _Viewer(data, metadata={"axes": "CZYX"})
+    base_collision = viewer.layers[0]
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("composite_to_rgb")
+    widget._connect_nodes("input", node.id)
+    widget.run_pipeline()
+    widget._discard_inspect_layers()
+    base_data = base_collision.data
+    base_collision.name = "VIPP Inspect"
+    green_data = np.ones((3, 3), dtype=np.float32)
+    green_collision = viewer.add_image(
+        green_data,
+        name="VIPP Inspect Green",
+        metadata={},
+    )
+
+    widget.inspect_node(node.id)
+
+    generated = widget._rgb_channel_layers("VIPP Inspect")
+    assert len(generated) == 3
+    assert base_collision in viewer.layers
+    assert green_collision in viewer.layers
+    assert base_collision.data is base_data
+    assert green_collision.data is green_data
+    assert {
+        layer.metadata["display_rgb_channel_index"] for layer in generated
+    } == {0, 1, 2}
+
+    widget.inspect_node(node.id)
+
+    assert base_collision in viewer.layers
+    assert green_collision in viewer.layers
+    assert widget._rgb_channel_layers("VIPP Inspect") == generated
+
+
+def test_pinned_refresh_does_not_reset_unmanaged_display_settings(qtbot):
+    viewer = _Viewer()
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.pin_node("gaussian")
+    pinned = viewer.layers["VIPP Pinned: Gaussian Blur"]
+    pinned.opacity = 0.4
+    pinned.gamma = 1.7
+    pinned.visible = False
+
+    widget._refresh_pinned_layer_if_active()
+
+    assert viewer.layers["VIPP Pinned: Gaussian Blur"] is pinned
+    assert pinned.opacity == 0.4
+    assert pinned.gamma == 1.7
+    assert pinned.visible is True
+
+
+def test_racc_dtype_change_resets_only_intensity_domain_display_settings(qtbot):
+    channel_1 = np.asarray(
+        [[0, 0, 0], [0, 80, 140], [0, 150, 0]],
+        dtype=np.uint16,
+    )
+    channel_2 = np.asarray(
+        [[0, 0, 0], [0, 90, 150], [0, 0, 150]],
+        dtype=np.uint16,
+    )
+    viewer = _Viewer(
+        np.stack((channel_1, channel_2)),
+        metadata={"axes": "CYX"},
+    )
+    widget = VippWidget(viewer)
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    split = widget.add_node_from_palette("split_channels")
+    racc = widget.add_node_from_palette("racc_index")
+    widget._connect_nodes("input", split.id)
+    widget._connect_nodes(split.id, racc.id, source_port=0, target_port=0)
+    widget._connect_nodes(split.id, racc.id, source_port=1, target_port=1)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+    widget.graph_view.select_node(racc.id)
+
+    inspect = viewer.layers["VIPP Inspect"]
+    inspect.colormap = "magma"
+    inspect.opacity = 0.4
+    inspect.contrast_limits = (0.15, 0.65)
+    inspect.iso_threshold = 0.3
+
+    widget.pipeline.set_param(racc.id, "output_dtype", "uint8")
+    widget._mark_pipeline_dirty(racc.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+
+    refreshed = viewer.layers["VIPP Inspect"]
+    assert refreshed is inspect
+    assert refreshed.data.dtype == np.uint8
+    assert refreshed.metadata["display_dtype"] == "uint8"
+    assert refreshed.colormap == "magma"
+    assert refreshed.opacity == 0.4
+    assert refreshed.contrast_limits != (0.15, 0.65)
+    assert refreshed.contrast_limits == tuple(
+        refreshed.metadata["vipp_exact_finite_data_range"]
+    )
+    assert refreshed.iso_threshold == pytest.approx(
+        sum(refreshed.contrast_limits) * 0.5
+    )
+
+    widget.pipeline.set_param(racc.id, "output_dtype", "float32")
+    widget._mark_pipeline_dirty(racc.id)
+    widget.run_pipeline(force_sync=True, manual_node_ids={racc.id})
+
+    float_again = viewer.layers["VIPP Inspect"]
+    assert float_again is inspect
+    assert float_again.data.dtype == np.float32
+    assert float_again.colormap == "magma"
+    assert float_again.opacity == 0.4
+    assert float_again.contrast_limits == (0.15, 0.65)
+    assert float_again.iso_threshold == 0.3
+
+
+def test_same_inspect_output_refreshes_unmodified_automatic_contrast(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    metadata = {"napari_vipp_kind": "inspect", "node_id": "manual"}
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.linspace(0.0, 1.0, 16, dtype=np.float32).reshape(4, 4),
+        metadata=metadata,
+        role="inspect",
+    )
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    assert inspect.contrast_limits == (0.0, 1.0)
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.linspace(-2.0, 5.0, 16, dtype=np.float32).reshape(4, 4),
+        metadata=metadata,
+        role="inspect",
+    )
+
+    assert widget.viewer.layers["VIPP Inspect"] is inspect
+    assert inspect.contrast_limits == (-2.0, 5.0)
+
+
+def test_same_inspect_refresh_keeps_user_contrast_after_exact_scan(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    metadata = {"napari_vipp_kind": "inspect", "node_id": "manual"}
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.linspace(0.0, 1.0, 16, dtype=np.float32).reshape(4, 4),
+        metadata=metadata,
+        role="inspect",
+    )
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    inspect.contrast_limits = (0.2, 0.8)
+
+    refreshed_data = np.linspace(-7.0, 42.0, 200, dtype=np.float32).reshape(
+        20,
+        10,
+    )
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_BYTES", 100)
+    monkeypatch.setattr("napari_vipp._widget.AUTO_BACKGROUND_MIN_ELEMENTS", 100)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_exact_limits(values):
+        assert values is refreshed_data
+        started.set()
+        assert release.wait(5)
+        return (-7.0, 42.0)
+
+    monkeypatch.setattr(
+        "napari_vipp._widget._exact_generated_layer_contrast_limits",
+        blocking_exact_limits,
+    )
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        refreshed_data,
+        metadata=metadata,
+        role="inspect",
+    )
+
+    try:
+        assert widget.viewer.layers["VIPP Inspect"] is inspect
+        assert inspect.contrast_limits == (0.2, 0.8)
+        assert inspect.metadata["vipp_display_contrast_pending"] is True
+        qtbot.waitUntil(started.is_set, timeout=5_000)
+    finally:
+        release.set()
+
+    qtbot.waitUntil(
+        lambda: not widget._generated_layer_contrast_pending,
+        timeout=5_000,
+    )
+    assert inspect.contrast_limits == (0.2, 0.8)
+    assert inspect.metadata["vipp_exact_finite_data_range"] == (-7.0, 42.0)
+    assert "User-adjusted" in inspect.metadata["vipp_display_contrast_basis"]
+
+
+def test_same_inspect_refresh_keeps_truthful_contrast_for_nonfinite_data(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    metadata = {"napari_vipp_kind": "inspect", "node_id": "manual"}
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.linspace(0.0, 1.0, 16, dtype=np.float32).reshape(4, 4),
+        metadata=metadata,
+        role="inspect",
+    )
+    inspect = widget.viewer.layers["VIPP Inspect"]
+    inspect.contrast_limits = (0.2, 0.8)
+
+    widget._set_or_add_generated_layer(
+        "VIPP Inspect",
+        np.full((4, 4), np.nan, dtype=np.float32),
+        metadata=metadata,
+        role="inspect",
+    )
+
+    assert widget.viewer.layers["VIPP Inspect"] is inspect
+    assert inspect.contrast_limits == (0.2, 0.8)
+    assert "vipp_exact_finite_data_range" not in inspect.metadata
+    assert inspect.metadata["vipp_display_contrast_basis"] == (
+        "User-preserved display limits; no finite values available"
+    )
+
+
+def test_generated_layer_contrast_failure_keeps_user_basis_truthful(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    layer = widget.viewer.layers[0]
+    layer.name = "VIPP Inspect"
+    key = (widget._generated_layer_contrast_generation, "current")
+    layer.metadata.update(
+        {
+            "_vipp_display_contrast_key": key,
+            "_vipp_display_contrast_initial_limits": (0.0, 1.0),
+        }
+    )
+    layer.contrast_limits = (0.2, 0.8)
+    widget._generated_layer_contrast_keys[layer.name] = key
+
+    widget._on_generated_layer_contrast_finished(
+        GeneratedLayerContrastResult(
+            key,
+            layer.name,
+            error="scan failed",
+        )
+    )
+
+    assert layer.contrast_limits == (0.2, 0.8)
+    assert layer.metadata["vipp_display_contrast_basis"] == (
+        "User-adjusted display limits; exact full-data scan failed"
+    )
 
 
 def test_inspecting_input_after_mask_resets_inspect_display(qtbot):

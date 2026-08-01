@@ -836,6 +836,29 @@ def test_workflow_preserves_vipp_metadata(tmp_path):
             "inspector": {
                 "selected_node_id": "gaussian",
                 "right_panel_visible": False,
+                "display_profiles": [
+                    {
+                        "node_id": "gaussian",
+                        "output_port": 0,
+                        "data_kind": "image",
+                        "display_kind": "image",
+                        "display_rgb": False,
+                        "display_rgb_as_channels": False,
+                        "display_ndim": 3,
+                        "settings": {
+                            "colormap": "magma",
+                            "visible": True,
+                            "opacity": 0.4,
+                            "gamma": 1.7,
+                        },
+                        "intensity_settings": {
+                            "float32": {
+                                "iso_threshold": 0.3,
+                                "contrast_limits": [0.15, 0.65],
+                            }
+                        },
+                    }
+                ],
             },
             "thumbnails": {
                 "disabled_node_ids": ["median_filter_1"],
@@ -955,6 +978,152 @@ def test_workflow_metadata_node_references_must_exist():
     }
 
     with pytest.raises(ValueError, match="references missing node"):
+        deserialize_workflow(document)
+
+
+def test_workflow_inspect_display_profile_node_must_exist():
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "inspector": {
+                "display_profiles": [
+                    {
+                        "node_id": "ghost",
+                        "output_port": 0,
+                        "data_kind": "image",
+                        "display_kind": "image",
+                        "display_rgb": False,
+                        "display_rgb_as_channels": False,
+                        "display_ndim": 2,
+                        "settings": {},
+                    }
+                ]
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="references missing node"):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("opacity", float("nan"), "finite number"),
+        ("opacity", 1.5, "between 0 and 1"),
+        ("gamma", 0.0, "must be positive"),
+    ],
+)
+def test_workflow_rejects_invalid_inspect_display_setting(field, value, match):
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "inspector": {
+                "display_profiles": [
+                    {
+                        "node_id": "gaussian",
+                        "output_port": 0,
+                        "data_kind": "image",
+                        "display_kind": "image",
+                        "display_rgb": False,
+                        "display_rgb_as_channels": False,
+                        "display_ndim": 3,
+                        "settings": {field: value},
+                    }
+                ]
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match=match):
+        deserialize_workflow(document)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {
+            "display_rgb": False,
+            "display_rgb_as_channels": True,
+            "display_rgb_channel_index": 0,
+        },
+        {
+            "display_rgb": True,
+            "display_rgb_as_channels": True,
+        },
+        {
+            "display_rgb": True,
+            "display_rgb_as_channels": False,
+            "display_rgb_channel_index": 0,
+        },
+    ],
+)
+def test_workflow_rejects_impossible_inspect_rgb_profile(identity):
+    document = serialize_workflow(_build_pipeline())
+    profile = {
+        "node_id": "gaussian",
+        "output_port": 0,
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_ndim": 3,
+        "settings": {},
+        **identity,
+    }
+    document["metadata"] = {
+        "vipp": {"inspector": {"display_profiles": [profile]}}
+    }
+
+    with pytest.raises(ValueError, match="RGB|channel_index"):
+        deserialize_workflow(document)
+
+
+def test_workflow_rejects_overflowing_inspect_display_number():
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "inspector": {
+                "display_profiles": [
+                    {
+                        "node_id": "gaussian",
+                        "output_port": 0,
+                        "data_kind": "image",
+                        "display_kind": "image",
+                        "display_rgb": False,
+                        "display_rgb_as_channels": False,
+                        "display_ndim": 3,
+                        "settings": {"gamma": 10**1000},
+                    }
+                ]
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="finite number"):
+        deserialize_workflow(document)
+
+
+def test_workflow_rejects_non_object_inspect_profile_settings():
+    document = serialize_workflow(_build_pipeline())
+    document["metadata"] = {
+        "vipp": {
+            "inspector": {
+                "display_profiles": [
+                    {
+                        "node_id": "gaussian",
+                        "output_port": 0,
+                        "data_kind": "image",
+                        "display_kind": "image",
+                        "display_rgb": False,
+                        "display_rgb_as_channels": False,
+                        "display_ndim": 3,
+                        "settings": None,
+                    }
+                ]
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="settings must be an object"):
         deserialize_workflow(document)
 
 

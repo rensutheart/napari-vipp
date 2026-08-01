@@ -470,6 +470,25 @@ class ColocalizationScatterPlot(QWidget):
         self._summary = message
         self.update()
 
+    def set_pending_thresholds(
+        self,
+        *,
+        threshold_1: float,
+        threshold_2: float,
+        intensity_max: float = 255.0,
+        preserve_density: bool,
+        summary: str = "Calculating exact count...",
+    ) -> None:
+        """Move guides and mark exact counts pending without stale values."""
+        self._threshold_1 = float(threshold_1)
+        self._threshold_2 = float(threshold_2)
+        self._summary = str(summary)
+        if not preserve_density:
+            self._intensity_min = 0.0
+            self._intensity_max = max(float(intensity_max), 1.0)
+            self._image = None
+        self.update()
+
     def paintEvent(self, event):  # noqa: N802
         super().paintEvent(event)
         painter = QPainter(self)

@@ -100,6 +100,7 @@ class ColocalizationScatterRequest:
     intensity_max: float = 255.0
     bins: int = COLOCALIZATION_SCATTER_BINS
     cancel_event: threading.Event | None = None
+    density_key: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ class ColocalizationScatterResult:
     colocalized_voxels: int = 0
     warnings: tuple[str, ...] = ()
     error: str = ""
+    density_key: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -454,6 +456,7 @@ class ColocalizationScatterWorker(QRunnable):
                     threshold_2,
                     intensity_max=request.intensity_max,
                     error=str(exc),
+                    density_key=request.density_key,
                 )
             )
             return
@@ -471,6 +474,7 @@ class ColocalizationScatterWorker(QRunnable):
                 roi_voxels=roi_voxels,
                 colocalized_voxels=colocalized_voxels,
                 warnings=tuple(warnings),
+                density_key=request.density_key,
             )
         )
 
