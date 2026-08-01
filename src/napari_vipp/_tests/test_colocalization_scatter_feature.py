@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import gc
+import weakref
+
 import numpy as np
 import pytest
 
+from napari_vipp.core import operations as operations_module
 from napari_vipp.core.metadata import (
     AxisMetadata,
     image_state_from_array,
@@ -10,6 +14,7 @@ from napari_vipp.core.metadata import (
 )
 from napari_vipp.core.operations import (
     _coloc_scatter_density_for_output,
+    _coloc_scatter_plot_image,
     colocalization_populated_ranges,
     colocalization_scatter_plot,
 )
@@ -81,6 +86,164 @@ def test_scatter_downsampling_aggregates_all_bins_and_preserves_total():
     assert reduced[0, 0] == 7.0
     assert reduced[-1, -1] == 5.0
     assert float(reduced.sum()) == 12.0
+
+
+def test_scatter_upsampling_preserves_bin_values_and_log_contrast():
+    density = np.asarray(
+        [
+            [0.0, 1.0, 2.0],
+            [3.0, 5.0, 8.0],
+            [13.0, 21.0, 34.0],
+        ]
+    )
+
+    doubled = _coloc_scatter_density_for_output(density, 6)
+    arbitrary = _coloc_scatter_density_for_output(density, 5)
+
+    np.testing.assert_array_equal(doubled[::2, ::2], density)
+    np.testing.assert_array_equal(doubled[1::2, 1::2], density)
+    assert set(np.unique(arbitrary)) <= set(np.unique(density))
+    assert float(arbitrary.max()) == float(density.max())
+    source_contrast = np.log1p(density) / np.log1p(density).max()
+    doubled_contrast = np.log1p(doubled) / np.log1p(doubled).max()
+    np.testing.assert_array_equal(doubled_contrast[::2, ::2], source_contrast)
+
+
+def test_masked_full_populated_ranges_do_not_gather_entire_axes(monkeypatch):
+    channel_1 = np.arange(24, dtype=np.float32).reshape(4, 6)
+    channel_2 = channel_1 + 100.0
+    roi = channel_1 % 3 == 0
+
+    def reject_gathered_axis(*_args, **_kwargs):
+        raise AssertionError("100% masked ranges must use chunked extrema")
+
+    monkeypatch.setattr(
+        operations_module,
+        "_coloc_populated_axis_range",
+        reject_gathered_axis,
+    )
+
+    range_1, range_2 = colocalization_populated_ranges(
+        channel_1,
+        channel_2,
+        roi_mask=roi,
+        percentile=100.0,
+    )
+
+    assert range_1 == (0.0, 21.0)
+    assert range_2 == (100.0, 121.0)
+
+
+def test_masked_percentile_axes_are_materialized_sequentially(monkeypatch):
+    channel_1 = np.arange(100, dtype=np.float64).reshape(10, 10)
+    channel_2 = channel_1 + 1_000.0
+    roi = channel_1 % 2 == 0
+    real_axis_range = operations_module._coloc_populated_axis_range
+    previous: list[weakref.ReferenceType[np.ndarray]] = []
+    calls = 0
+
+    def tracked_axis_range(values, percentile):
+        nonlocal calls
+        calls += 1
+        if previous:
+            gc.collect()
+            assert previous[-1]() is None
+        previous.append(weakref.ref(values))
+        return real_axis_range(values, percentile)
+
+    monkeypatch.setattr(
+        operations_module,
+        "_coloc_populated_axis_range",
+        tracked_axis_range,
+    )
+
+    range_1, range_2 = colocalization_populated_ranges(
+        channel_1,
+        channel_2,
+        roi_mask=roi,
+        percentile=90.0,
+    )
+
+    assert calls == 2
+    assert range_1[0] < range_1[1]
+    assert range_2[0] < range_2[1]
+
+
+def test_masked_graph_histogram_is_accumulated_in_bounded_chunks(monkeypatch):
+    channel_1 = np.arange(20, dtype=np.float32).reshape(4, 5)
+    channel_2 = channel_1[::-1].copy()
+    roi = np.ones_like(channel_1, dtype=bool)
+    histogram_sizes = []
+    histogram_refs: list[weakref.ReferenceType[np.ndarray]] = []
+    real_histogram2d = np.histogram2d
+
+    def tracked_histogram2d(values_1, values_2, *args, **kwargs):
+        if histogram_refs:
+            gc.collect()
+            assert histogram_refs[-1]() is None
+        histogram_sizes.append((np.size(values_1), np.size(values_2)))
+        result = real_histogram2d(values_1, values_2, *args, **kwargs)
+        histogram_refs.append(weakref.ref(result[0]))
+        return result
+
+    monkeypatch.setattr(
+        operations_module,
+        "_COLOCALIZATION_SCATTER_CHUNK_SIZE",
+        4,
+    )
+    monkeypatch.setattr(operations_module.np, "histogram2d", tracked_histogram2d)
+
+    image = colocalization_scatter_plot(
+        [channel_1, channel_2, roi],
+        threshold_mode="Manual",
+        bins=32,
+        output_size=64,
+    )
+
+    assert image.shape == (64, 64, 3)
+    assert len(histogram_sizes) == 5
+    assert max(max(sizes) for sizes in histogram_sizes) <= 4
+
+
+def test_graph_render_releases_histogram_and_logs_density_in_place(monkeypatch):
+    channel_1 = np.arange(64, dtype=np.float32).reshape(8, 8)
+    channel_2 = channel_1[::-1].copy()
+    histogram_ref: weakref.ReferenceType[np.ndarray] | None = None
+    real_resample = operations_module._coloc_scatter_density_for_output
+    real_log1p = np.log1p
+
+    def independent_resample(density_counts, output_size):
+        nonlocal histogram_ref
+        histogram_ref = weakref.ref(density_counts.base)
+        return real_resample(density_counts, output_size).copy()
+
+    def tracked_log1p(values, *args, **kwargs):
+        gc.collect()
+        assert histogram_ref is not None
+        assert histogram_ref() is None
+        assert kwargs.get("out") is values
+        return real_log1p(values, *args, **kwargs)
+
+    monkeypatch.setattr(
+        operations_module,
+        "_coloc_scatter_density_for_output",
+        independent_resample,
+    )
+    monkeypatch.setattr(operations_module.np, "log1p", tracked_log1p)
+
+    image = _coloc_scatter_plot_image(
+        channel_1,
+        channel_2,
+        threshold_1=25.0,
+        threshold_2=25.0,
+        bins=32,
+        output_size=64,
+        range_percentile=100.0,
+        log_counts=True,
+        intensity_max=255.0,
+    )
+
+    assert image.shape == (64, 64, 3)
 
 
 def test_scatter_guides_survive_large_bin_downsampling_with_asymmetric_ranges():

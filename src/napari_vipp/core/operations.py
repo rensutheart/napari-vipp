@@ -58,6 +58,7 @@ BORN_WOLF_PSF_MANUAL_DEFAULTS = {
 
 _GLOBAL_THRESHOLD_HISTOGRAM_BINS = 256
 _THRESHOLD_CHUNK_SIZE = 1_048_576
+_COLOCALIZATION_SCATTER_CHUNK_SIZE = 1_048_576
 _MAX_NATIVE_INTEGER_HISTOGRAM_BINS = 65_536
 _FLOAT64_EXACT_INTEGER_LIMIT = 2**53
 
@@ -4129,23 +4130,61 @@ def colocalization_populated_ranges(
         raise ValueError("Scatter range percentile must satisfy 0 < p <= 100.")
 
     if roi_mask is None:
-        values_1 = np.ravel(ch1)
-        values_2 = np.ravel(ch2)
-    else:
-        roi = np.asarray(roi_mask, dtype=bool)
-        if roi.shape != ch1.shape:
-            raise ValueError(
-                f"ROI mask shape {roi.shape} does not match channels {ch1.shape}."
-            )
-        values_1 = ch1[roi]
-        values_2 = ch2[roi]
+        return (
+            _coloc_populated_axis_range(ch1, percentile),
+            _coloc_populated_axis_range(ch2, percentile),
+        )
 
-    if values_1.size == 0:
+    roi = np.asarray(roi_mask, dtype=bool)
+    if roi.shape != ch1.shape:
+        raise ValueError(
+            f"ROI mask shape {roi.shape} does not match channels {ch1.shape}."
+        )
+    if not np.any(roi):
         return (0.0, 1.0), (0.0, 1.0)
-    return (
-        _coloc_populated_axis_range(values_1, percentile),
-        _coloc_populated_axis_range(values_2, percentile),
+    if percentile == 100.0:
+        return (
+            _coloc_masked_axis_range(ch1, roi),
+            _coloc_masked_axis_range(ch2, roi),
+        )
+
+    # Exact percentiles require the selected population. Materialize only one
+    # axis at a time so two large masked copies never coexist.
+    range_1 = _coloc_populated_axis_range(ch1[roi], percentile)
+    range_2 = _coloc_populated_axis_range(ch2[roi], percentile)
+    return range_1, range_2
+
+
+def _coloc_masked_axis_range(
+    values: np.ndarray,
+    roi_mask: np.ndarray,
+    *,
+    chunk_elements: int = _COLOCALIZATION_SCATTER_CHUNK_SIZE,
+) -> tuple[float, float]:
+    """Return exact masked extrema without materializing the ROI population."""
+    chunk_elements = max(int(chunk_elements), 1)
+    minimum = math.inf
+    maximum = -math.inf
+    iterator = np.nditer(
+        [values, roi_mask],
+        flags=["external_loop", "buffered", "zerosize_ok"],
+        op_flags=[["readonly"], ["readonly"]],
+        order="C",
+        buffersize=chunk_elements,
     )
+    for value_chunk, roi_chunk in iterator:
+        selected = np.asarray(roi_chunk, dtype=bool)
+        if not np.any(selected):
+            continue
+        chunk = np.asarray(value_chunk)
+        seed = chunk[int(np.argmax(selected))]
+        chunk_min = float(np.min(chunk, where=selected, initial=seed))
+        chunk_max = float(np.max(chunk, where=selected, initial=seed))
+        minimum = min(minimum, chunk_min)
+        maximum = max(maximum, chunk_max)
+    if not np.isfinite(minimum) or not np.isfinite(maximum):
+        return 0.0, 1.0
+    return _coloc_finalize_axis_range(minimum, maximum)
 
 
 def _coloc_populated_axis_range(
@@ -4161,6 +4200,13 @@ def _coloc_populated_axis_range(
             float(value)
             for value in np.percentile(values, (tail, 100.0 - tail))
         )
+    return _coloc_finalize_axis_range(minimum, maximum)
+
+
+def _coloc_finalize_axis_range(
+    minimum: float,
+    maximum: float,
+) -> tuple[float, float]:
     if maximum <= minimum:
         padding = max(abs(minimum) * 0.01, 0.5)
         minimum -= padding
@@ -12952,8 +12998,6 @@ def _coloc_scatter_plot_image(
         raise ValueError("Scatter bins must be between 32 and 4096.")
     if not 64 <= output_size <= 4_096:
         raise ValueError("Scatter output size must be between 64 and 4096 pixels.")
-    values_1 = ch1[roi_mask] if roi_mask is not None else np.ravel(ch1)
-    values_2 = ch2[roi_mask] if roi_mask is not None else np.ravel(ch2)
     range_1, range_2 = colocalization_populated_ranges(
         ch1,
         ch2,
@@ -12963,17 +13007,23 @@ def _coloc_scatter_plot_image(
     # Retained in the public signature for workflow compatibility.  Scatter
     # display ranges are now data-derived and never use this legacy ceiling.
     del intensity_max
-    hist, _, _ = np.histogram2d(
-        np.ravel(values_1),
-        np.ravel(values_2),
-        bins=bins,
-        range=(range_1, range_2),
+    edges_1 = np.linspace(range_1[0], range_1[1], bins + 1)
+    edges_2 = np.linspace(range_2[0], range_2[1], bins + 1)
+    hist = _coloc_scatter_histogram(
+        ch1,
+        ch2,
+        roi_mask=roi_mask,
+        edges_1=edges_1,
+        edges_2=edges_2,
     )
     counts = _coloc_scatter_density_for_output(hist.T, output_size)
+    del hist
     if bool(log_counts):
-        counts = np.log1p(counts)
+        np.log1p(counts, out=counts)
     max_count = float(np.max(counts))
-    values = counts / max_count if max_count > 0 else counts
+    if max_count > 0:
+        counts /= max_count
+    values = counts
     values = np.flipud(values)
 
     image = np.zeros((output_size, output_size, 3), dtype=np.float32)
@@ -13025,11 +13075,57 @@ def _coloc_scatter_plot_image(
     return image.astype(np.float32, copy=False)
 
 
+def _coloc_scatter_histogram(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    roi_mask: np.ndarray | None,
+    edges_1: np.ndarray,
+    edges_2: np.ndarray,
+    chunk_elements: int | None = None,
+) -> np.ndarray:
+    """Accumulate a 2-D histogram without full masked channel copies."""
+    if chunk_elements is None:
+        chunk_elements = _COLOCALIZATION_SCATTER_CHUNK_SIZE
+    chunk_elements = max(int(chunk_elements), 1)
+    histogram = np.zeros(
+        (int(edges_1.size) - 1, int(edges_2.size) - 1),
+        dtype=np.float64,
+    )
+    operands = [channel_1, channel_2]
+    if roi_mask is not None:
+        operands.append(roi_mask)
+    iterator = np.nditer(
+        operands,
+        flags=["external_loop", "buffered", "zerosize_ok"],
+        op_flags=[["readonly"] for _operand in operands],
+        order="C",
+        buffersize=chunk_elements,
+    )
+    for chunks in iterator:
+        values_1 = np.asarray(chunks[0])
+        values_2 = np.asarray(chunks[1])
+        if roi_mask is not None:
+            selected = np.asarray(chunks[2], dtype=bool)
+            if not np.any(selected):
+                continue
+            values_1 = values_1[selected]
+            values_2 = values_2[selected]
+        chunk_histogram, _x_edges, _y_edges = np.histogram2d(
+            values_1,
+            values_2,
+            bins=(edges_1, edges_2),
+        )
+        histogram += chunk_histogram
+        del chunk_histogram
+    return histogram
+
+
 def _coloc_scatter_density_for_output(
     density_counts: np.ndarray,
     output_size: int,
 ) -> np.ndarray:
-    """Area-resample raw density without discarding populated source bins."""
+    """Preserve bin values on upsample and bin mass on downsample."""
     counts = np.asarray(density_counts, dtype=np.float64)
     if counts.ndim != 2 or counts.shape[0] != counts.shape[1]:
         raise ValueError("Scatter density must be a square 2-D array.")
@@ -13049,9 +13145,18 @@ def _coloc_scatter_density_for_output(
         ).sum(axis=(1, 3))
     if output_size > input_size and output_size % input_size == 0:
         factor = output_size // input_size
-        return (
-            np.repeat(np.repeat(counts, factor, axis=0), factor, axis=1)
-            / float(factor * factor)
+        return np.repeat(
+            np.repeat(counts, factor, axis=0),
+            factor,
+            axis=1,
+        )
+    if output_size > input_size:
+        return transform.resize(
+            counts,
+            (output_size, output_size),
+            order=0,
+            preserve_range=True,
+            anti_aliasing=False,
         )
     resized = transform.resize_local_mean(
         counts,

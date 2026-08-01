@@ -465,6 +465,7 @@ def _prepare_colocalization_scatter_density(
                 bins=(edges_1, edges_2),
             )
             density_counts += chunk_density
+            del chunk_density
 
     return (
         density_counts,
