@@ -52,7 +52,11 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.execution import PipelineRunResult
-from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.pipeline import (
+    MANUAL_RUN_SKIP,
+    PrototypePipeline,
+    SourcePayload,
+)
 from napari_vipp.core.workflow import deserialize_workflow, serialize_workflow
 
 
@@ -866,6 +870,140 @@ def test_pipeline_validation_checks_unchanged_observable_downstream_output(
     assert "Threshold" in validation.detail
     assert len(retained_sets) == 2
     assert all(threshold.id in node_ids for node_ids in retained_sets)
+
+
+def test_pipeline_validation_stops_at_skipped_manual_barrier(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    source_id = next(iter(pipeline.nodes))
+    median = pipeline.add_node("median_filter")
+    threshold = pipeline.add_node("binary_threshold")
+    metrics = pipeline.add_node("masked_colocalization_metrics")
+    assert pipeline.connect(source_id, median.id).success
+    assert pipeline.connect(source_id, threshold.id).success
+    assert pipeline.connect(median.id, metrics.id, target_port=0).success
+    assert pipeline.connect(source_id, metrics.id, target_port=1).success
+    assert pipeline.connect(threshold.id, metrics.id, target_port=2).success
+    document = serialize_workflow(pipeline)
+    registry = ComputeRegistry()
+    gpu_spec = registry.implementations_for_operation(
+        "median_filter",
+        allow_experimental=True,
+    )[0]
+    clock = _ManualClock()
+    decision_sets = []
+    retained_sets = []
+
+    def executor(request, **_kwargs):
+        restored = deserialize_workflow(request.workflow)
+        result_pipeline = PrototypePipeline()
+        result_pipeline.restore_graph(
+            restored["nodes"],
+            restored["connections"],
+            restored.get("output_tunnels", ()),
+        )
+        schedule = result_pipeline.plan_execution(
+            request.dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            target_node_ids=request.target_node_ids,
+        )
+        payload = request.source_payloads[source_id]
+        result_pipeline.run(
+            payload.data,
+            input_metadata=payload.metadata,
+            input_name=payload.name,
+            source_payloads=request.source_payloads,
+            dirty_node_ids=request.dirty_node_ids,
+            manual_mode=MANUAL_RUN_SKIP,
+            target_node_ids=request.target_node_ids,
+            retain_node_ids=request.retain_node_ids,
+            prune_unretained=request.prune_unretained,
+        )
+        decisions = []
+        requested_gpu = (
+            request.compute_request.preference_for(median.id).kind
+            is NodePreferenceKind.IMPLEMENTATION
+        )
+        for node_id in result_pipeline.topological_order():
+            node = result_pipeline.nodes[node_id]
+            if node_id not in schedule.runnable_node_ids or not node.has_input:
+                continue
+            cpu_spec = compute_specs_for(node.operation_id)[0]
+            selected = gpu_spec if node_id == median.id and requested_gpu else cpu_spec
+            decisions.append(
+                NodeExecutionDecision(
+                    node_id,
+                    node.operation_id,
+                    request.compute_request.preference_for(node_id),
+                    selected.runtime_id,
+                    selected.implementation_library_id,
+                    selected.implementation_id,
+                    (
+                        DecisionKind.SELECTED
+                        if selected is gpu_spec
+                        else DecisionKind.POLICY_CPU
+                    ),
+                    (
+                        DecisionReason.SELECTED_IMPLEMENTATION
+                        if selected is gpu_spec
+                        else DecisionReason.EXPLICIT_CPU
+                    ),
+                    "Private validation executed only the runnable subgraph.",
+                )
+            )
+        decision_sets.append(frozenset(item.node_id for item in decisions))
+        retained_sets.append(frozenset(request.retain_node_ids))
+        clock.advance(0.01 if requested_gpu else 0.1)
+        return PipelineRunResult(
+            request.run_id,
+            request.workflow,
+            pipeline=result_pipeline,
+            execution_report=ExecutionReport(
+                request.compute_request,
+                _environment(),
+                actual_decisions=tuple(decisions),
+            ),
+        )
+
+    coordinator = ApplicationPipelineOptimizerCoordinator(
+        registry,
+        tmp_path / "benchmarks.json",
+        clock=clock,
+        executor=executor,
+    )
+    current = tuple(
+        (
+            node_id,
+            compute_specs_for(node.operation_id)[0].implementation_id,
+        )
+        for node_id, node in pipeline.nodes.items()
+    )
+    proposed = tuple(
+        (
+            node_id,
+            gpu_spec.implementation_id if node_id == median.id else implementation_id,
+        )
+        for node_id, implementation_id in current
+    )
+
+    validation = coordinator._validate_assignments(
+        document,
+        {source_id: SourcePayload(np.arange(64, dtype=np.uint16).reshape(8, 8))},
+        ComputeRequest("selective", allow_experimental=True),
+        _environment(),
+        pipeline,
+        frozenset(pipeline.nodes),
+        frozenset(),
+        PipelineValidationRequest("identity", current, proposed),
+        deadline=clock() + 30.0,
+        cancelled=None,
+    )
+
+    assert validation.parity_passed
+    assert decision_sets
+    assert all(metrics.id not in node_ids for node_ids in decision_sets)
+    assert all(metrics.id not in node_ids for node_ids in retained_sets)
+    assert all(median.id in node_ids for node_ids in retained_sets)
 
 
 @pytest.mark.parametrize(

@@ -77,7 +77,11 @@ from napari_vipp.core.execution import (
     PipelineRunResult,
     execute_pipeline_request,
 )
-from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.pipeline import (
+    MANUAL_RUN_SKIP,
+    PrototypePipeline,
+    SourcePayload,
+)
 from napari_vipp.core.workflow import deserialize_workflow
 
 ProgressCallback = Callable[["PipelineOptimizerProgress"], None]
@@ -925,9 +929,13 @@ class ApplicationPipelineOptimizerCoordinator:
 
         current_map = dict(validation.current_assignment)
         proposed_map = dict(validation.proposed_assignment)
+        validation_node_ids = _optimizer_validation_node_ids(
+            baseline_pipeline,
+            safe_ids,
+        )
         changed = tuple(
             node_id
-            for node_id in safe_ids
+            for node_id in validation_node_ids
             if current_map.get(node_id) != proposed_map.get(node_id)
             and baseline_pipeline.nodes[node_id].has_input
         )
@@ -938,7 +946,7 @@ class ApplicationPipelineOptimizerCoordinator:
             )
         observable_boundaries = _observable_pipeline_boundaries(
             baseline_pipeline,
-            safe_ids,
+            validation_node_ids,
             retained,
         )
         affected = baseline_pipeline.descendants_inclusive(changed)
@@ -988,7 +996,7 @@ class ApplicationPipelineOptimizerCoordinator:
             expected_request=current_request,
             expected_assignment=current_map,
             reference_pipeline=baseline_pipeline,
-            node_ids=safe_ids,
+            node_ids=validation_node_ids,
             environment=environment,
         )
         proposed_pipeline = _successful_exact_pipeline(
@@ -997,7 +1005,7 @@ class ApplicationPipelineOptimizerCoordinator:
             expected_request=proposed_request,
             expected_assignment=proposed_map,
             reference_pipeline=baseline_pipeline,
-            node_ids=safe_ids,
+            node_ids=validation_node_ids,
             environment=environment,
         )
         for node_id in baseline_pipeline.topological_order():
@@ -1080,7 +1088,7 @@ class ApplicationPipelineOptimizerCoordinator:
                         current_map if label == "current" else proposed_map
                     ),
                     reference_pipeline=baseline_pipeline,
-                    node_ids=safe_ids,
+                    node_ids=validation_node_ids,
                     environment=environment,
                 )
                 ended = _read_clock(self.clock)
@@ -1149,6 +1157,27 @@ class ApplicationPipelineOptimizerCoordinator:
             len(current_times),
             reverse.lower_confidence_bound,
         )
+
+
+def _optimizer_validation_node_ids(
+    pipeline: PrototypePipeline,
+    safe_ids: frozenset[str],
+) -> frozenset[str]:
+    """Return nodes that a private run can execute without crossing manual barriers.
+
+    Optimizer runs deliberately use the ordinary ``MANUAL_RUN_SKIP`` contract.
+    A skipped manual node has no execution decision, so exact validation must
+    stop at its executable predecessors instead of demanding provenance for an
+    operation that did not run.  Terminals in this induced subgraph become the
+    observable parity boundaries.
+    """
+
+    plan = pipeline.plan_execution(
+        safe_ids,
+        manual_mode=MANUAL_RUN_SKIP,
+        target_node_ids=safe_ids,
+    )
+    return frozenset(set(plan.runnable_node_ids) & set(safe_ids))
 
 
 def _observable_pipeline_boundaries(
