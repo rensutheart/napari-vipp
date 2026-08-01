@@ -317,6 +317,9 @@ from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
+from napari_vipp.ui.colocalization_scatter_dialog import (
+    ColocalizationScatterDialog,
+)
 from napari_vipp.ui.compute import (
     COMPUTE_MODE_OPTIONS,
     ComputePresentationTone,
@@ -369,6 +372,7 @@ from napari_vipp.ui.diagnostic_workers import (
 )
 from napari_vipp.ui.diagnostic_workers import (
     AutoContrastWorker,
+    ColocalizationScatterDensity,
     ColocalizationScatterWorker,
     GeneratedLayerContrastWorker,
     InputHistogramWorker,
@@ -438,12 +442,20 @@ from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_BINS as COLOCALIZATION_SCATTER_BINS,
 )
 from napari_vipp.ui.plots import (
+    COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES,
+    colocalization_scatter_inspector_bins,
+    colocalization_scatter_requires_background,
+)
+from napari_vipp.ui.plots import (
     COLOCALIZATION_SCATTER_COLORMAPS as COLOCALIZATION_SCATTER_COLORMAPS,
 )
 from napari_vipp.ui.plots import (
     ColocalizationScatterPlot as ColocalizationScatterPlot,
 )
 from napari_vipp.ui.plots import HistogramPlot as HistogramPlot
+from napari_vipp.ui.plots import (
+    _count_colocalization_thresholds as _count_scatter_thresholds,
+)
 from napari_vipp.ui.plots import _event_position as _event_position
 from napari_vipp.ui.plots import (
     _format_histogram_label as _format_histogram_label,
@@ -581,6 +593,8 @@ INPUT_HISTOGRAM_OPERATIONS = {
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
+    "colocalization_scatter_plot",
+    "masked_colocalization_scatter_plot",
     "colocalized_voxels",
     "masked_colocalized_voxels",
     "racc_index",
@@ -922,8 +936,9 @@ def _prepare_colocalization_scatter_density(
     roi_mask: np.ndarray | None,
     intensity_max: float,
     bins: int,
+    range_percentile: float = 100.0,
     progress=None,
-) -> tuple[np.ndarray, int, int, float, float]:
+) -> tuple[np.ndarray, int, int, float, float, float, float]:
     """Compatibility facade for the extracted scatter-density calculation."""
     return _prepare_scatter_density(
         channel_1,
@@ -933,6 +948,28 @@ def _prepare_colocalization_scatter_density(
         roi_mask=roi_mask,
         intensity_max=intensity_max,
         bins=bins,
+        range_percentile=range_percentile,
+        progress=progress,
+        chunk_elements=INSPECTOR_STATISTICS_CHUNK_ELEMENTS,
+    )
+
+
+def _count_colocalization_scatter_thresholds(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    roi_mask: np.ndarray | None,
+    progress=None,
+) -> tuple[int, int]:
+    """Compatibility facade for exact counts without density recomputation."""
+    return _count_scatter_thresholds(
+        channel_1,
+        channel_2,
+        threshold_1=threshold_1,
+        threshold_2=threshold_2,
+        roi_mask=roi_mask,
         progress=progress,
         chunk_elements=INSPECTOR_STATISTICS_CHUNK_ELEMENTS,
     )
@@ -1122,6 +1159,13 @@ class VippWidget(QWidget):
             tuple,
             ColocalizationScatterResult,
         ] = {}
+        self._colocalization_scatter_density_cache: dict[
+            tuple,
+            ColocalizationScatterDensity,
+        ] = {}
+        self._colocalization_scatter_dialog: (
+            ColocalizationScatterDialog | None
+        ) = None
         self._auto_contrast_serial = 0
         self._active_auto_contrast_run_id: int | None = None
         self._active_auto_contrast_key: tuple | None = None
@@ -1432,6 +1476,9 @@ class VippWidget(QWidget):
         self.graph_view.set_connection_insert_validator(
             self._connection_insert_preview_state
         )
+        self.graph_view.set_tunnel_reroute_validator(
+            self._tunnel_reroute_preview_state
+        )
         self.graph_view.setMinimumHeight(80)
         self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
         self.left_panel_toggle = SidePanelToggleButton("left")
@@ -1646,6 +1693,8 @@ class VippWidget(QWidget):
         )
         self.colocalization_scatter_log_checkbox = QCheckBox("Log count scale")
         self.colocalization_scatter_log_checkbox.setChecked(True)
+        self.colocalization_scatter_popout_button = QPushButton("Open in window")
+        self.colocalization_scatter_popout_button.setEnabled(False)
         self.colocalization_scatter_plot = ColocalizationScatterPlot()
         self.colocalization_scatter_group.setHidden(True)
 
@@ -1673,6 +1722,8 @@ class VippWidget(QWidget):
         self._sync_history_actions()
 
     def closeEvent(self, event):  # noqa: N802
+        if self._colocalization_scatter_dialog is not None:
+            self._colocalization_scatter_dialog.close()
         self._lifecycle.shutdown()
         self._restore_hidden_input_layers()
         super().closeEvent(event)
@@ -2452,6 +2503,9 @@ class VippWidget(QWidget):
         colocalization_scatter_controls_layout.addWidget(
             self.colocalization_scatter_log_checkbox
         )
+        colocalization_scatter_controls_layout.addWidget(
+            self.colocalization_scatter_popout_button
+        )
         colocalization_scatter_controls_layout.addStretch(1)
         colocalization_scatter_layout.addWidget(colocalization_scatter_controls)
         colocalization_scatter_layout.addWidget(self.colocalization_scatter_plot)
@@ -2616,6 +2670,9 @@ class VippWidget(QWidget):
         self.colocalization_scatter_plot.thresholdChanged.connect(
             self._on_colocalization_scatter_threshold_changed
         )
+        self.colocalization_scatter_popout_button.clicked.connect(
+            self._open_colocalization_scatter_dialog
+        )
         self.auto_contrast_button.clicked.connect(self._apply_auto_contrast)
         self.save_button.clicked.connect(self._save_selected_output_dialog)
         self.left_panel_toggle.clicked.connect(self._toggle_left_panel)
@@ -2651,6 +2708,9 @@ class VippWidget(QWidget):
         self.graph_view.connection_removed.connect(self._disconnect_nodes)
         self.graph_view.port_context_requested.connect(self._show_port_context_menu)
         self.graph_view.tunnel_selected.connect(self._on_graph_tunnel_selected)
+        self.graph_view.tunnel_reroute_requested.connect(
+            self._reroute_output_tunnel
+        )
         self.graph_view.note_moved.connect(self._on_graph_note_moved)
         self.graph_view.note_edit_requested.connect(self._edit_graph_note)
         self.graph_view.note_delete_requested.connect(self._delete_graph_note)
@@ -4377,6 +4437,7 @@ class VippWidget(QWidget):
         self.graph_view.add_node(node, position)
         self._sync_node_input_ports(node.id)
         self._sync_node_output_ports(node.id)
+        self._sync_input_node_subtitle(node.id)
         self._sync_pin_ui()
         self._refresh_graph_search_matches(reset_index=True)
         self.graph_view.select_node(node.id)
@@ -5326,6 +5387,7 @@ class VippWidget(QWidget):
         self.graph_view.add_node(clone, position)
         self._sync_node_input_ports(clone.id)
         self._sync_node_output_ports(clone.id)
+        self._sync_input_node_subtitle(clone.id)
         self._sync_pin_ui()
         self.graph_view.select_node(clone.id)
         if original.operation_id == "input" and (
@@ -6328,6 +6390,7 @@ class VippWidget(QWidget):
         index = int(initial_index)
         if not 0 <= index < len(planned_items):
             raise ValueError("The representative batch index is out of range.")
+        subtitle_node_ids = self._interactive_collection_source_node_ids()
         representative_paths = {
             node_id: Path(path).expanduser().resolve()
             for node_id, path in planned_items[index].source_paths.items()
@@ -6362,6 +6425,8 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_workflow_stale = False
         self.batch_navigator.set_session_stale(False)
         self.batch_navigator.reset_batch_progress()
+        subtitle_node_ids.update(self._interactive_collection_source_node_ids())
+        self._sync_input_node_subtitles(subtitle_node_ids)
         if reuse_representative:
             self._sync_interactive_collection_batch_navigator()
             return
@@ -6447,7 +6512,10 @@ class VippWidget(QWidget):
 
         # Replace the complete paired mapping in one assignment. Downstream
         # execution can therefore never observe a half-switched source pair.
+        subtitle_node_ids = set(self._interactive_collection_source_paths)
         self._interactive_collection_source_paths = representative_paths
+        subtitle_node_ids.update(representative_paths)
+        self._sync_input_node_subtitles(subtitle_node_ids)
         self._interactive_collection_batch_requested_index = index
         self._interactive_collection_batch_failed_index = -1
         self._sync_interactive_collection_batch_navigator(index=index)
@@ -6519,6 +6587,7 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_index = index
         self._interactive_collection_batch_requested_index = -1
         self._interactive_collection_batch_failed_index = -1
+        self._sync_input_node_subtitles(expected_paths)
         self._sync_interactive_collection_batch_navigator()
         # The ordinary completion refresh ran while the prior representative
         # was still the committed one. Refresh card captions now that this
@@ -6562,6 +6631,7 @@ class VippWidget(QWidget):
         requested = self._interactive_collection_batch_requested_index
         if requested < 0 and int(index) < 0:
             return
+        subtitle_node_ids = self._interactive_collection_source_node_ids()
         failed_index = int(index if requested < 0 else requested)
         self._interactive_collection_batch_requested_index = -1
         committed = self._interactive_collection_batch_index
@@ -6581,6 +6651,8 @@ class VippWidget(QWidget):
             self._interactive_collection_source_paths.clear()
             self._interactive_collection_batch_failed_index = -1
             self._sync_interactive_collection_batch_navigator(index=failed_index)
+        subtitle_node_ids.update(self._interactive_collection_source_node_ids())
+        self._sync_input_node_subtitles(subtitle_node_ids)
         self.batch_navigator.show_representative_error(message)
         dialog = self._active_collection_batch_dialog
         if dialog is not None:
@@ -6646,6 +6718,7 @@ class VippWidget(QWidget):
         """Clear representative paths and all UI-only batch session state."""
         if self._collection_batch_running:
             close_workspace = False
+        subtitle_node_ids = self._interactive_collection_source_node_ids()
         self._interactive_collection_source_paths.clear()
         self._prune_file_source_payload_cache()
         self._interactive_collection_batch_items = ()
@@ -6657,6 +6730,7 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_plan_stale = False
         self._interactive_collection_batch_workflow_stale = False
         self.batch_navigator.clear_session()
+        self._sync_input_node_subtitles(subtitle_node_ids)
         if self._active_source_load_id is not None:
             self._source_load_serial += 1
             self._active_source_load_id = None
@@ -8728,6 +8802,73 @@ class VippWidget(QWidget):
         self.status_label.setText(f"Renamed tunnel '{old_name}' to '{tunnel.name}'.")
         return True
 
+    def _reroute_output_tunnel(
+        self,
+        name: str,
+        node_id: str,
+        port_index: int,
+    ) -> bool:
+        current = self.pipeline.output_tunnel(name)
+        if current is None:
+            self.status_label.setText(f"Unknown tunnel '{name}'.")
+            return False
+        if current.source_id == node_id and current.source_port == int(port_index):
+            return False
+
+        self._finish_parameter_history_group()
+        before = self._current_history_snapshot()
+        subscriber_ids = {
+            connection.target_id
+            for connection in self.pipeline.connections
+            if connection.tunnel_name == current.name
+        }
+        try:
+            tunnel = self.pipeline.reroute_output_tunnel(
+                current.name,
+                node_id,
+                port_index,
+            )
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            return False
+
+        self._sync_port_tunnels()
+        self._refresh_split_channel_display_surfaces(
+            {current.source_id, tunnel.source_id}
+        )
+        relevant_node_ids = subscriber_ids | {
+            current.source_id,
+            tunnel.source_id,
+        }
+        if self._selected_node_id in relevant_node_ids:
+            self._refresh_selected_parameter_controls()
+        if self._mark_pipeline_branches_dirty(subscriber_ids):
+            self.run_pipeline()
+        self._push_undo_if_changed(before)
+        self._highlight_output_tunnel(tunnel.name)
+        self.status_label.setText(
+            f"Rerouted tunnel '{tunnel.name}' to "
+            f"'{self._node_title(node_id)}' output {int(port_index) + 1}."
+        )
+        return True
+
+    def _tunnel_reroute_preview_state(
+        self,
+        name: str,
+        node_id: str,
+        port_index: int,
+    ) -> tuple[str, str]:
+        """Validate a tunnel drag against the authoritative pipeline topology."""
+        try:
+            self.pipeline.validate_output_tunnel_reroute(
+                name,
+                node_id,
+                port_index,
+            )
+        except ValueError as exc:
+            return "incompatible", str(exc)
+        return "compatible", f"Release to reroute tunnel '{name}'."
+
     def _remove_output_tunnel(self, name: str) -> None:
         self._finish_parameter_history_group()
         before = self._current_history_snapshot()
@@ -8972,6 +9113,7 @@ class VippWidget(QWidget):
         self.label_volume_group.setHidden(True)
         self.label_volume_plot.set_histogram(None, log_scale=False)
         self.colocalization_scatter_group.setHidden(True)
+        self.colocalization_scatter_popout_button.setEnabled(False)
         self.colocalization_scatter_summary.setText("Connect two channel inputs.")
         self.colocalization_scatter_plot.clear()
         self._displayed_colocalization_scatter_density_key = None
@@ -11046,6 +11188,82 @@ class VippWidget(QWidget):
             "binding_mode",
         ):
             node.params[name] = value.get(name, "")
+        self._sync_input_node_subtitle(node_id)
+
+    def _interactive_collection_source_node_ids(self) -> set[str]:
+        node_ids = set(self._interactive_collection_source_paths)
+        config = self._interactive_collection_batch_config
+        if config is not None:
+            node_ids.update(source.node_id for source in config.sources)
+        return node_ids
+
+    def _sync_input_node_subtitles(self, node_ids: Iterable[str]) -> None:
+        for node_id in sorted({str(value) for value in node_ids}):
+            self._sync_input_node_subtitle(node_id)
+
+    def _interactive_collection_source_binding(
+        self,
+        node_id: str,
+    ) -> tuple[Path, str] | None:
+        config = self._interactive_collection_batch_config
+        if config is None:
+            return None
+        for source in config.sources:
+            if source.node_id == node_id:
+                return config.resolve_path(source.input_dir), source.pattern
+        return None
+
+    def _sync_input_node_subtitle(self, node_id: str) -> None:
+        node = self.pipeline.nodes.get(node_id)
+        if node is None or node.operation_id != "input":
+            return
+
+        mode = str(node.params.get("source_mode", "napari layer")).strip()
+        mode_key = mode.casefold()
+        subtitle = ""
+        tooltip = ""
+        collection_binding = self._interactive_collection_source_binding(node_id)
+        representative = self._interactive_collection_source_paths.get(node_id)
+        if collection_binding is not None:
+            directory, pattern = collection_binding
+            identifier = directory.name or str(directory)
+            subtitle = f"Collection · {identifier} · {pattern}"
+            tooltip = f"Collection source: {directory}\nPattern: {pattern}"
+        elif representative is not None:
+            identifier = representative.name or str(representative)
+            subtitle = f"Collection · {identifier}"
+            tooltip = f"Representative collection item: {representative}"
+        elif mode_key == "napari layer":
+            layer_name = str(node.params.get("layer_name", "")).strip()
+            if not layer_name:
+                layer_name = self._default_input_layer_name() or ""
+            if layer_name:
+                subtitle = f"Layer · {layer_name}"
+                tooltip = f"Napari layer: {layer_name}"
+        elif mode_key == "sample":
+            sample_name = str(node.params.get("sample_name", "")).strip()
+            if sample_name:
+                subtitle = f"Sample · {sample_name}"
+                tooltip = f"Bundled sample: {sample_name}"
+        elif mode_key == "file path":
+            path_text = str(node.params.get("file_path", "")).strip()
+            if path_text:
+                source_path = Path(path_text)
+                binding_mode = str(
+                    node.params.get("binding_mode", "single item")
+                ).casefold()
+                if binding_mode == "collection":
+                    collection_path = (
+                        source_path.parent if source_path.suffix else source_path
+                    )
+                    identifier = collection_path.name or source_path.name
+                    subtitle = f"Collection · {identifier}"
+                    tooltip = f"Collection source: {path_text}"
+                else:
+                    identifier = source_path.stem or source_path.name
+                    subtitle = f"File · {identifier}"
+                    tooltip = f"File source: {path_text}"
+        self.graph_view.set_node_subtitle(node_id, subtitle, tooltip)
 
     def _render_channel_color_controls(self, node_id: str) -> None:
         count = self._channel_color_control_count(node_id)
@@ -12836,6 +13054,7 @@ class VippWidget(QWidget):
     def _sync_all_input_ports(self) -> None:
         for node_id in self.pipeline.nodes:
             self._sync_node_input_ports(node_id)
+            self._sync_input_node_subtitle(node_id)
         self._sync_port_tunnels()
 
     def _refresh_dynamic_output_ports(self) -> None:
@@ -13115,6 +13334,12 @@ class VippWidget(QWidget):
         self._pending_colocalization_scatter_request = None
         self._current_colocalization_scatter_key = None
         self._colocalization_scatter_cache.clear()
+        self._colocalization_scatter_density_cache.clear()
+        self._displayed_colocalization_scatter_density_key = None
+        if hasattr(self, "colocalization_scatter_popout_button"):
+            self.colocalization_scatter_popout_button.setEnabled(False)
+        if self._colocalization_scatter_dialog is not None:
+            self._colocalization_scatter_dialog.close()
 
     def _clear_generated_layer_contrast_state(self) -> None:
         """Invalidate cached and in-flight generated-layer display statistics."""
@@ -16106,10 +16331,13 @@ class VippWidget(QWidget):
             self._current_colocalization_scatter_key = None
             self._pending_colocalization_scatter_request = None
             self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
             self.colocalization_scatter_summary.setText("Connect two channel inputs.")
             self.colocalization_scatter_summary.setToolTip("")
             self.colocalization_scatter_plot.clear()
             self.colocalization_scatter_plot.setToolTip("")
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
             return
 
         inputs = self._colocalization_inputs_for_node(node.id)
@@ -16117,6 +16345,7 @@ class VippWidget(QWidget):
             self._current_colocalization_scatter_key = None
             self._pending_colocalization_scatter_request = None
             self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
             self.colocalization_scatter_summary.setText(
                 "Connect all required channel and ROI inputs."
             )
@@ -16125,6 +16354,8 @@ class VippWidget(QWidget):
                 "Connect all required channel and ROI inputs."
             )
             self.colocalization_scatter_plot.setToolTip("")
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
             return
         mode = str(node.params.get("threshold_mode", "Manual"))
         threshold_1 = _safe_float(node.params.get("channel_1_threshold"), 25.0)
@@ -16133,6 +16364,7 @@ class VippWidget(QWidget):
             _safe_float(node.params.get("intensity_max"), 255.0),
             1.0,
         )
+        bins, range_percentile = self._colocalization_scatter_display_settings(node)
         key = self._colocalization_scatter_key(
             node.id,
             inputs,
@@ -16140,11 +16372,15 @@ class VippWidget(QWidget):
             threshold_1=threshold_1,
             threshold_2=threshold_2,
             intensity_max=intensity_max,
+            bins=bins,
+            range_percentile=range_percentile,
         )
         density_key = self._colocalization_scatter_density_key(
             node.id,
             inputs,
             intensity_max=intensity_max,
+            bins=bins,
+            range_percentile=range_percentile,
         )
         self._current_colocalization_scatter_key = key
         cached = self._colocalization_scatter_cache.get(key)
@@ -16152,7 +16388,9 @@ class VippWidget(QWidget):
             self._apply_colocalization_scatter_result(cached)
             return
 
-        if any(_should_auto_background_data(value) for value in inputs):
+        if colocalization_scatter_requires_background(bins) or any(
+            _should_auto_background_data(value) for value in inputs
+        ):
             self._queue_colocalization_scatter(
                 ColocalizationScatterRequest(
                     0,
@@ -16163,6 +16401,8 @@ class VippWidget(QWidget):
                     threshold_1,
                     threshold_2,
                     intensity_max=intensity_max,
+                    bins=bins,
+                    range_percentile=range_percentile,
                     density_key=density_key,
                 )
             )
@@ -16186,29 +16426,55 @@ class VippWidget(QWidget):
                     node.params.get("channel_2_threshold"),
                     threshold_2,
                 )
-            (
-                density_counts,
-                roi_voxels,
-                coloc_voxels,
-                display_min,
-                display_max,
-            ) = _prepare_colocalization_scatter_density(
-                ch1,
-                ch2,
-                threshold_1=threshold_1,
-                threshold_2=threshold_2,
-                roi_mask=roi_mask,
-                intensity_max=intensity_max,
-                bins=COLOCALIZATION_SCATTER_BINS,
-            )
+            reusable = self._colocalization_scatter_density_cache.get(density_key)
+            density_reused = reusable is not None
+            if reusable is None:
+                (
+                    density_counts,
+                    roi_voxels,
+                    coloc_voxels,
+                    channel_1_min,
+                    channel_1_max,
+                    channel_2_min,
+                    channel_2_max,
+                ) = _prepare_colocalization_scatter_density(
+                    ch1,
+                    ch2,
+                    threshold_1=threshold_1,
+                    threshold_2=threshold_2,
+                    roi_mask=roi_mask,
+                    intensity_max=intensity_max,
+                    bins=bins,
+                    range_percentile=range_percentile,
+                )
+            else:
+                roi_voxels, coloc_voxels = (
+                    _count_colocalization_scatter_thresholds(
+                        ch1,
+                        ch2,
+                        threshold_1=threshold_1,
+                        threshold_2=threshold_2,
+                        roi_mask=roi_mask,
+                    )
+                )
+                density_counts = reusable.density_counts
+                channel_1_min = reusable.channel_1_min
+                channel_1_max = reusable.channel_1_max
+                channel_2_min = reusable.channel_2_min
+                channel_2_max = reusable.channel_2_max
         except Exception as exc:
             message = f"Scatter unavailable: {exc}"
             self.colocalization_scatter_summary.setText(message)
             self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
             self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
             self.colocalization_scatter_plot.setToolTip(message)
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
             return
+        display_min = min(channel_1_min, channel_2_min)
+        display_max = max(channel_1_max, channel_2_max)
         result = ColocalizationScatterResult(
             0,
             key,
@@ -16223,8 +16489,14 @@ class VippWidget(QWidget):
             colocalized_voxels=coloc_voxels,
             warnings=tuple(warnings),
             density_key=density_key,
+            channel_1_min=channel_1_min,
+            channel_1_max=channel_1_max,
+            channel_2_min=channel_2_min,
+            channel_2_max=channel_2_max,
+            range_percentile=range_percentile,
+            density_reused=density_reused,
         )
-        self._cache_colocalization_scatter_result(result)
+        result = self._cache_colocalization_scatter_result(result)
         self._apply_colocalization_scatter_result(result)
 
     @staticmethod
@@ -16236,6 +16508,8 @@ class VippWidget(QWidget):
         threshold_1: float,
         threshold_2: float,
         intensity_max: float,
+        bins: int,
+        range_percentile: float,
     ) -> tuple:
         identities = tuple(
             (
@@ -16256,7 +16530,8 @@ class VippWidget(QWidget):
             str(threshold_mode).strip().lower(),
             thresholds,
             float(intensity_max),
-            COLOCALIZATION_SCATTER_BINS,
+            int(bins),
+            float(range_percentile),
         )
 
     @staticmethod
@@ -16265,6 +16540,8 @@ class VippWidget(QWidget):
         inputs: list[object] | tuple[object, ...],
         *,
         intensity_max: float,
+        bins: int,
+        range_percentile: float,
     ) -> tuple:
         """Identify density data independently from movable thresholds."""
         identities = tuple(
@@ -16279,21 +16556,74 @@ class VippWidget(QWidget):
             str(node_id),
             identities,
             float(intensity_max),
-            COLOCALIZATION_SCATTER_BINS,
+            int(bins),
+            float(range_percentile),
+        )
+
+    @staticmethod
+    def _colocalization_scatter_display_settings(node) -> tuple[int, float]:
+        if node.operation_id not in {
+            "colocalization_scatter_plot",
+            "masked_colocalization_scatter_plot",
+        }:
+            return COLOCALIZATION_SCATTER_BINS, 100.0
+        requested_bins = int(
+            np.clip(int(node.params.get("bins", 128)), 32, 4_096)
+        )
+        bins = colocalization_scatter_inspector_bins(requested_bins)
+        percentile = float(
+            np.clip(float(node.params.get("range_percentile", 100.0)), 50.0, 100.0)
+        )
+        return bins, percentile
+
+    @staticmethod
+    def _colocalization_scatter_inspector_cap_detail(node, bins: int) -> str:
+        """Describe the GUI-only density cap for high-resolution graph nodes."""
+        if node is None or node.operation_id not in {
+            "colocalization_scatter_plot",
+            "masked_colocalization_scatter_plot",
+        }:
+            return ""
+        requested_bins = int(
+            np.clip(int(node.params.get("bins", bins)), 32, 4_096)
+        )
+        if requested_bins <= int(bins):
+            return ""
+        return (
+            f"Inspector/popout density is capped at {int(bins):,} x "
+            f"{int(bins):,} bins for responsive rendering; the graph operation "
+            f"keeps its requested {requested_bins:,}-bin histogram."
         )
 
     def _queue_colocalization_scatter(
         self,
         request: ColocalizationScatterRequest,
     ) -> None:
+        node = self.pipeline.nodes.get(request.node_id)
+        cap_detail = self._colocalization_scatter_inspector_cap_detail(
+            node,
+            request.bins,
+        )
         summary = (
-            f"{request.threshold_mode} thresholds. Calculating the exact scatter "
-            "density, ROI count, and colocalized count in the background..."
+            f"{request.threshold_mode} thresholds. Calculating the exact full-ROI "
+            "counts and visible scatter density in the background..."
         )
-        detail = (
-            "Every ROI voxel contributes to the scatter density and summary counts. "
-            "The exact calculation uses bounded-memory chunks."
-        )
+        if cap_detail:
+            summary += f" {cap_detail}"
+        if request.range_percentile < 100.0:
+            detail = (
+                f"Exact counts use every ROI voxel. The visible density uses the "
+                f"central {request.range_percentile:g}% populated range on each "
+                "axis, so tail voxels may be omitted from display only. The "
+                "bounded-memory calculation does not clip metrics."
+            )
+        else:
+            detail = (
+                "Every ROI voxel contributes to the visible density and exact "
+                "counts. The calculation uses bounded-memory chunks."
+            )
+        if cap_detail:
+            detail += f" {cap_detail}"
         self.colocalization_scatter_summary.setText(summary)
         self.colocalization_scatter_summary.setToolTip(detail)
         preserve_density = bool(
@@ -16307,8 +16637,21 @@ class VippWidget(QWidget):
             intensity_max=request.intensity_max,
             preserve_density=preserve_density,
         )
-        if not preserve_density:
+        if preserve_density:
+            self.colocalization_scatter_popout_button.setEnabled(True)
+            if (
+                self._colocalization_scatter_dialog is not None
+                and self._colocalization_scatter_dialog.isVisible()
+            ):
+                self._colocalization_scatter_dialog.set_pending_thresholds(
+                    threshold_1=request.threshold_1,
+                    threshold_2=request.threshold_2,
+                )
+        else:
             self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
         self.colocalization_scatter_plot.setToolTip(detail)
         if self._active_colocalization_scatter_run_id is not None:
             if self._active_colocalization_scatter_key == request.key:
@@ -16336,6 +16679,9 @@ class VippWidget(QWidget):
             request,
             run_id=self._colocalization_scatter_serial,
             cancel_event=cancel_event,
+            reusable_density=self._colocalization_scatter_density_cache.get(
+                request.density_key
+            ),
         )
         self._active_colocalization_scatter_run_id = request.run_id
         self._active_colocalization_scatter_key = request.key
@@ -16345,6 +16691,7 @@ class VippWidget(QWidget):
             normalized_inputs=colocalization_normalized_inputs,
             threshold_values=colocalization_threshold_values,
             scatter_density=_prepare_colocalization_scatter_density,
+            scatter_counts=_count_colocalization_scatter_thresholds,
         )
         worker.signals.finished.connect(self._on_colocalization_scatter_finished)
         self._pipeline_thread_pool.start(worker, -1)
@@ -16359,7 +16706,7 @@ class VippWidget(QWidget):
         self._active_colocalization_scatter_key = None
         self._active_colocalization_scatter_cancel_event = None
         if not result.error:
-            self._cache_colocalization_scatter_result(result)
+            result = self._cache_colocalization_scatter_result(result)
         if (
             result.key == self._current_colocalization_scatter_key
             and result.node_id == self._selected_node_id
@@ -16377,12 +16724,70 @@ class VippWidget(QWidget):
     def _cache_colocalization_scatter_result(
         self,
         result: ColocalizationScatterResult,
-    ) -> None:
+    ) -> ColocalizationScatterResult:
+        density = self._colocalization_scatter_density_cache.pop(
+            result.density_key,
+            None,
+        )
+        if density is None and self._scatter_result_has_density(result):
+            density = ColocalizationScatterDensity(
+                density_key=result.density_key,
+                density_counts=result.density_counts,
+                channel_1_min=float(result.channel_1_min),
+                channel_1_max=float(result.channel_1_max),
+                channel_2_min=float(result.channel_2_min),
+                channel_2_max=float(result.channel_2_max),
+                range_percentile=float(result.range_percentile),
+            )
+        if density is not None:
+            self._colocalization_scatter_density_cache[result.density_key] = density
+            result = replace(
+                result,
+                density_counts=density.density_counts,
+                channel_1_min=density.channel_1_min,
+                channel_1_max=density.channel_1_max,
+                channel_2_min=density.channel_2_min,
+                channel_2_max=density.channel_2_max,
+                range_percentile=density.range_percentile,
+            )
         self._colocalization_scatter_cache[result.key] = result
         while len(self._colocalization_scatter_cache) > 16:
             self._colocalization_scatter_cache.pop(
                 next(iter(self._colocalization_scatter_cache))
             )
+        while (
+            self._colocalization_scatter_density_cache_bytes()
+            > COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES
+            and self._colocalization_scatter_density_cache
+        ):
+            oldest_density_key = next(
+                iter(self._colocalization_scatter_density_cache)
+            )
+            self._colocalization_scatter_density_cache.pop(oldest_density_key)
+            self._colocalization_scatter_cache = {
+                key: cached
+                for key, cached in self._colocalization_scatter_cache.items()
+                if cached.density_key != oldest_density_key
+            }
+        return result
+
+    @staticmethod
+    def _scatter_result_has_density(result: ColocalizationScatterResult) -> bool:
+        return bool(
+            result.density_key
+            and result.density_counts is not None
+            and result.channel_1_min is not None
+            and result.channel_1_max is not None
+            and result.channel_2_min is not None
+            and result.channel_2_max is not None
+        )
+
+    def _colocalization_scatter_density_cache_bytes(self) -> int:
+        """Return retained density bytes, counting shared arrays once."""
+        return sum(
+            density.nbytes
+            for density in self._colocalization_scatter_density_cache.values()
+        )
 
     def _apply_colocalization_scatter_result(
         self,
@@ -16399,7 +16804,10 @@ class VippWidget(QWidget):
             self.colocalization_scatter_summary.setToolTip(message)
             self.colocalization_scatter_plot.clear(message)
             self._displayed_colocalization_scatter_density_key = None
+            self.colocalization_scatter_popout_button.setEnabled(False)
             self.colocalization_scatter_plot.setToolTip(message)
+            if self._colocalization_scatter_dialog is not None:
+                self._colocalization_scatter_dialog.close()
             return
         if (
             str(result.threshold_mode).lower().startswith("costes")
@@ -16414,9 +16822,28 @@ class VippWidget(QWidget):
                 node.params[name] = float(value)
                 self._set_parameter_control_value(node.id, name, float(value))
 
-        display_detail = (
-            f"Exact scatter density from all {result.roi_voxels:,} ROI voxels."
+        visible_voxels = int(
+            np.rint(float(np.sum(np.asarray(result.density_counts))))
         )
+        dropped_voxels = max(int(result.roi_voxels) - visible_voxels, 0)
+        density_is_clipped = result.range_percentile < 100.0 or dropped_voxels > 0
+        if density_is_clipped:
+            display_detail = (
+                f"Visible scatter density contains {visible_voxels:,}/"
+                f"{result.roi_voxels:,} ROI voxels; {dropped_voxels:,} tail voxels "
+                f"are hidden by the {result.range_percentile:g}% display range. "
+                "This display clip does not change exact counts or metrics."
+            )
+        else:
+            display_detail = (
+                f"Exact scatter density from all {result.roi_voxels:,} ROI voxels."
+            )
+        cap_detail = self._colocalization_scatter_inspector_cap_detail(
+            node,
+            int(np.asarray(result.density_counts).shape[0]),
+        )
+        if cap_detail:
+            display_detail += f" {cap_detail}"
         colocalized_percentage = (
             f"{100.0 * result.colocalized_voxels / result.roi_voxels:.1f}%"
             if result.roi_voxels
@@ -16426,12 +16853,15 @@ class VippWidget(QWidget):
             f"{result.colocalized_voxels:,}/{result.roi_voxels:,} "
             f"({colocalized_percentage})"
         )
+        channel_1_range, channel_2_range = self._scatter_result_axis_ranges(result)
         self.colocalization_scatter_plot.set_density(
             result.density_counts,
             threshold_1=result.threshold_1,
             threshold_2=result.threshold_2,
             intensity_min=result.intensity_min,
             intensity_max=result.intensity_max,
+            channel_1_range=channel_1_range,
+            channel_2_range=channel_2_range,
             channel_1_color=node.params.get("channel_1_color", "Red"),
             channel_2_color=node.params.get("channel_2_color", "Green"),
             colormap=self.colocalization_scatter_colormap_combo.currentText(),
@@ -16441,6 +16871,9 @@ class VippWidget(QWidget):
         self._displayed_colocalization_scatter_density_key = (
             result.density_key or None
         )
+        self.colocalization_scatter_popout_button.setEnabled(
+            result.density_counts is not None
+        )
         summary = (
             f"{result.threshold_mode} thresholds. Exact colocalized count: "
             f"{count_detail}. {display_detail}"
@@ -16448,15 +16881,101 @@ class VippWidget(QWidget):
         if result.warnings:
             summary += " " + "; ".join(result.warnings)
         tooltip = (
-            f"Exact summary and scatter density from all {result.roi_voxels:,} "
-            "ROI voxels; "
-            f"{count_detail} meet both thresholds. {display_detail} "
-            "Every ROI voxel contributes. Drag a threshold line to switch to manual "
-            "thresholds."
+            f"Exact full-ROI summary: {count_detail} meet both thresholds across "
+            f"{result.roi_voxels:,} ROI voxels. {display_detail} "
         )
+        if not density_is_clipped:
+            tooltip += "Every ROI voxel contributes to the density. "
+        tooltip += "Drag a threshold line to switch to manual thresholds."
         self.colocalization_scatter_summary.setText(summary)
         self.colocalization_scatter_summary.setToolTip(tooltip)
         self.colocalization_scatter_plot.setToolTip(tooltip)
+        if self._colocalization_scatter_dialog is not None:
+            self._sync_colocalization_scatter_dialog(result, node)
+
+    @staticmethod
+    def _scatter_result_axis_ranges(
+        result: ColocalizationScatterResult,
+    ) -> tuple[tuple[float, float], tuple[float, float]]:
+        channel_1_range = (
+            result.intensity_min
+            if result.channel_1_min is None
+            else result.channel_1_min,
+            result.intensity_max
+            if result.channel_1_max is None
+            else result.channel_1_max,
+        )
+        channel_2_range = (
+            result.intensity_min
+            if result.channel_2_min is None
+            else result.channel_2_min,
+            result.intensity_max
+            if result.channel_2_max is None
+            else result.channel_2_max,
+        )
+        return channel_1_range, channel_2_range
+
+    def _open_colocalization_scatter_dialog(self) -> None:
+        result = self._colocalization_scatter_cache.get(
+            self._current_colocalization_scatter_key
+        )
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if (
+            result is None
+            or result.error
+            or result.density_counts is None
+            or node is None
+        ):
+            self.status_label.setText(
+                "Calculate the selected colocalization scatter before opening it."
+            )
+            return
+        if self._colocalization_scatter_dialog is None:
+            dialog = ColocalizationScatterDialog(self)
+            dialog.thresholdChanged.connect(
+                self._on_colocalization_scatter_threshold_changed
+            )
+            dialog.exportCompleted.connect(
+                lambda path: self.status_label.setText(
+                    f"Exported colocalization scatter to {path}."
+                )
+            )
+            self._colocalization_scatter_dialog = dialog
+        self._sync_colocalization_scatter_dialog(result, node)
+        self._colocalization_scatter_dialog.show()
+        self._colocalization_scatter_dialog.raise_()
+        self._colocalization_scatter_dialog.activateWindow()
+
+    def _sync_colocalization_scatter_dialog(
+        self,
+        result: ColocalizationScatterResult,
+        node,
+    ) -> None:
+        dialog = self._colocalization_scatter_dialog
+        if dialog is None or result.density_counts is None:
+            return
+        channel_1_range, channel_2_range = self._scatter_result_axis_ranges(result)
+        display_note = self._colocalization_scatter_inspector_cap_detail(
+            node,
+            int(np.asarray(result.density_counts).shape[0]),
+        )
+        dialog.set_density(
+            np.asarray(result.density_counts),
+            threshold_1=result.threshold_1,
+            threshold_2=result.threshold_2,
+            intensity_min=result.intensity_min,
+            intensity_max=result.intensity_max,
+            channel_1_range=channel_1_range,
+            channel_2_range=channel_2_range,
+            roi_voxels=result.roi_voxels,
+            colocalized_voxels=result.colocalized_voxels,
+            range_percentile=result.range_percentile,
+            channel_1_color=node.params.get("channel_1_color", "Red"),
+            channel_2_color=node.params.get("channel_2_color", "Green"),
+            colormap=self.colocalization_scatter_colormap_combo.currentText(),
+            log_counts=self.colocalization_scatter_log_checkbox.isChecked(),
+            display_note=display_note,
+        )
 
     def _colocalization_inputs_for_node(self, node_id: str) -> list[object] | None:
         ports = self.pipeline.input_ports(node_id)

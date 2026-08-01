@@ -1057,22 +1057,43 @@ Colocalization nodes live under `Colocalization & Spatial Analysis`. Connect
 two same-shaped channel images, usually from `Split Channels`, into the named
 `Channel 1 image` and `Channel 2 image` ports.
 
-Manual thresholds are normalized `0..255` values. VIPP jointly scales the two
-input channels into this range before calculating metrics, scatter views,
-colocalized-voxel images, or RACC. `Costes auto` stores its calculated
-thresholds and shows them as scatter guides/status; the manual threshold rows
-reappear with those stored values when you switch back to `Manual`.
+Manual thresholds use the input images' native intensity units. VIPP does not
+rescale or clip channel values before calculating metrics. `Costes auto` stores
+its calculated native thresholds and shows them as scatter guides/status; the
+manual threshold rows reappear with those stored values when you switch back
+to `Manual`.
 
 When a colocalization threshold node is selected, the inspector shows a scatter
 density panel with threshold guide lines. Dragging a guide switches the node to
 manual thresholds and updates the corresponding threshold value. Masked
 variants add a third `ROI mask` input.
 
-The 255 x 255 scatter-density grid and its ROI/colocalized counts include every
-ROI voxel.
-Large inputs are accumulated in bounded chunks on a background worker; VIPP
-does not substitute a sampled scatter view. The inspector result is cached and
-discarded if its inputs or thresholds become stale.
+Legacy metric nodes use a 255 x 255 scatter-density grid. Scatter graph nodes
+use their configured populated range and up to 1024 bins per axis in the
+interactive inspector/popout; a visible notice appears when the graph's larger
+requested histogram is capped for GUI rendering. Large or high-bin densities
+are accumulated in bounded chunks on a background worker. VIPP does not
+substitute sampled source pixels. Threshold changes reuse a compatible density
+but rescan the complete ROI for exact ROI/colocalized counts. Cached densities
+are shared across threshold results, byte-budgeted, and discarded when their
+input context becomes stale.
+
+Use `Colocalization Scatter Plot` (or its masked variant) for a durable graph
+output. `Histogram bins per axis` controls density detail independently of the
+square `Output size`; both can be raised as far as 4096 for a publication
+render. Each axis automatically uses its own populated native min/max. The
+`Populated range percentile` defaults to the exact 100% range and can be
+lowered to symmetrically clip sparse outliers that would otherwise compress the
+main distribution. Tail voxels outside that visible range are omitted only
+from the rendered density; exact threshold counts and metrics still use the
+complete ROI population.
+The 1024-bin interactive cap does not affect this durable graph output: its
+histogram and output raster settings still accept values through 4096.
+
+The inspector's `Open in window` action uses the same interactive threshold
+guides in a larger resizable dialog. It shows an immediate histogram estimate
+while the authoritative exact count is recalculated, and exports the visible
+plot as PNG or TIFF at the window's current plot resolution.
 
 Reference workflows:
 

@@ -62,6 +62,18 @@
   output port, and RGB display surface, and is restored from saved workflows.
   Intensity-domain settings remain dtype-specific, and the inspector header now
   provides an explicit reset-to-defaults action for the selected node.
+- Added real `Colocalization Scatter Plot` and masked graph nodes with
+  independently configurable histogram bins and square output size up to 4096,
+  independent native populated axis ranges, and optional symmetric percentile
+  clipping. A reusable resizable scatter dialog provides live threshold
+  feedback plus PNG/TIFF export at the current display resolution.
+- High-resolution scatter inspectors now schedule by histogram memory cost,
+  reuse threshold-independent densities while recounting the exact full ROI,
+  and enforce a byte-budgeted cache. Interactive rendering is explicitly
+  capped at 1024 bins per axis (and reports that cap); graph nodes retain their
+  requested resolution up to 4096. Graph renders aggregate density before
+  downsampling and draw threshold guides afterward so neither sparse bins nor
+  guides disappear.
 
 ## 0.12.0a3 - 2026-07-20
 

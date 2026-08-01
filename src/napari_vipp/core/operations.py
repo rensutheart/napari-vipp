@@ -4099,6 +4099,75 @@ def colocalization_display_range(
     return float(display_min), float(display_max)
 
 
+def colocalization_populated_ranges(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    roi_mask: np.ndarray | None = None,
+    percentile: float = 100.0,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return independent native-intensity ranges for a scatter population.
+
+    Unlike :func:`colocalization_display_range`, this helper does not retain a
+    legacy configured maximum or force both axes to share one extent.  Each
+    axis therefore fills the available scatter area.  ``percentile`` applies
+    a symmetric tail clip (100 means the exact populated min/max), which lets
+    publication renders avoid being dominated by a very small number of
+    outliers.
+    """
+    ch1 = np.asarray(channel_1)
+    ch2 = np.asarray(channel_2)
+    if ch1.shape != ch2.shape or ch1.size == 0:
+        raise ValueError(
+            "Scatter channels must be non-empty and have matching shapes."
+        )
+    if not np.isfinite(ch1).all() or not np.isfinite(ch2).all():
+        raise ValueError("Scatter ranges require finite channel intensities.")
+
+    percentile = float(percentile)
+    if not np.isfinite(percentile) or not 0.0 < percentile <= 100.0:
+        raise ValueError("Scatter range percentile must satisfy 0 < p <= 100.")
+
+    if roi_mask is None:
+        values_1 = np.ravel(ch1)
+        values_2 = np.ravel(ch2)
+    else:
+        roi = np.asarray(roi_mask, dtype=bool)
+        if roi.shape != ch1.shape:
+            raise ValueError(
+                f"ROI mask shape {roi.shape} does not match channels {ch1.shape}."
+            )
+        values_1 = ch1[roi]
+        values_2 = ch2[roi]
+
+    if values_1.size == 0:
+        return (0.0, 1.0), (0.0, 1.0)
+    return (
+        _coloc_populated_axis_range(values_1, percentile),
+        _coloc_populated_axis_range(values_2, percentile),
+    )
+
+
+def _coloc_populated_axis_range(
+    values: np.ndarray,
+    percentile: float,
+) -> tuple[float, float]:
+    tail = (100.0 - percentile) / 2.0
+    if tail <= 0.0:
+        minimum = float(np.min(values))
+        maximum = float(np.max(values))
+    else:
+        minimum, maximum = (
+            float(value)
+            for value in np.percentile(values, (tail, 100.0 - tail))
+        )
+    if maximum <= minimum:
+        padding = max(abs(minimum) * 0.01, 0.5)
+        minimum -= padding
+        maximum += padding
+    return minimum, maximum
+
+
 def colocalization_metrics(
     inputs,
     threshold_mode: str = "Manual",
@@ -4547,10 +4616,17 @@ def colocalization_scatter_plot(
     channel_1_threshold: float = 25.0,
     channel_2_threshold: float = 25.0,
     bins: int = 128,
+    output_size: int = 512,
+    range_percentile: float = 100.0,
     log_counts: bool = True,
     intensity_max: float = 255.0,
 ) -> np.ndarray:
-    """Render a two-channel scatter-density image with threshold guides."""
+    """Render an export-ready two-channel scatter-density image.
+
+    Histogram resolution and raster resolution are independent.  Both axes
+    use their own native populated range instead of a fixed 0..255 display
+    extent; ``range_percentile`` can symmetrically clip sparse outliers.
+    """
     ch1, ch2, roi_mask, _warnings = _coloc_normalized_inputs_and_mask(
         inputs,
         intensity_max=intensity_max,
@@ -4570,6 +4646,8 @@ def colocalization_scatter_plot(
         threshold_1=threshold_1,
         threshold_2=threshold_2,
         bins=bins,
+        output_size=output_size,
+        range_percentile=range_percentile,
         log_counts=log_counts,
         intensity_max=intensity_max,
         roi_mask=roi_mask,
@@ -12862,74 +12940,126 @@ def _coloc_scatter_plot_image(
     threshold_1: float,
     threshold_2: float,
     bins: int,
+    output_size: int,
+    range_percentile: float,
     log_counts: bool,
     intensity_max: float,
     roi_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    bins = int(np.clip(int(bins), 32, 512))
+    bins = int(bins)
+    output_size = int(output_size)
+    if not 32 <= bins <= 4_096:
+        raise ValueError("Scatter bins must be between 32 and 4096.")
+    if not 64 <= output_size <= 4_096:
+        raise ValueError("Scatter output size must be between 64 and 4096 pixels.")
     values_1 = ch1[roi_mask] if roi_mask is not None else np.ravel(ch1)
     values_2 = ch2[roi_mask] if roi_mask is not None else np.ravel(ch2)
-    display_min, display_max = colocalization_display_range(
+    range_1, range_2 = colocalization_populated_ranges(
         ch1,
         ch2,
-        configured_max=intensity_max,
-        thresholds=(threshold_1, threshold_2),
+        roi_mask=roi_mask,
+        percentile=range_percentile,
     )
+    # Retained in the public signature for workflow compatibility.  Scatter
+    # display ranges are now data-derived and never use this legacy ceiling.
+    del intensity_max
     hist, _, _ = np.histogram2d(
         np.ravel(values_1),
         np.ravel(values_2),
         bins=bins,
-        range=((display_min, display_max), (display_min, display_max)),
+        range=(range_1, range_2),
     )
-    counts = hist.T
+    counts = _coloc_scatter_density_for_output(hist.T, output_size)
     if bool(log_counts):
         counts = np.log1p(counts)
     max_count = float(np.max(counts))
     values = counts / max_count if max_count > 0 else counts
     values = np.flipud(values)
 
-    image = np.zeros((bins, bins, 3), dtype=np.float32)
+    image = np.zeros((output_size, output_size, 3), dtype=np.float32)
     image[..., 2] = 0.20 + 0.65 * values
     image[..., 1] = 0.08 + 0.90 * values
     image[..., 0] = 0.75 * np.sqrt(values)
     image[values <= 0] = (0.02, 0.03, 0.07)
 
-    display_span = display_max - display_min
+    display_min_1, display_max_1 = range_1
+    display_min_2, display_max_2 = range_2
+    display_span_1 = display_max_1 - display_min_1
+    display_span_2 = display_max_2 - display_min_2
     x_pos = int(
         np.clip(
-            round((threshold_1 - display_min) / display_span * (bins - 1)),
+            round(
+                (threshold_1 - display_min_1)
+                / display_span_1
+                * (output_size - 1)
+            ),
             0,
-            bins - 1,
+            output_size - 1,
         )
     )
     y_pos = (
-        bins
+        output_size
         - 1
         - int(
             np.clip(
-                round((threshold_2 - display_min) / display_span * (bins - 1)),
+                round(
+                    (threshold_2 - display_min_2)
+                    / display_span_2
+                    * (output_size - 1)
+                ),
                 0,
-                bins - 1,
+                output_size - 1,
             )
         )
     )
-    image[:, x_pos : x_pos + 1] = (1.0, 0.20, 0.20)
-    image[y_pos : y_pos + 1, :] = (0.20, 1.0, 0.20)
-    image[max(y_pos - 1, 0) : y_pos + 2, max(x_pos - 1, 0) : x_pos + 2] = (
+    guide_width = max(1, int(round(output_size / 512.0)))
+    x_stop = min(x_pos + guide_width, output_size)
+    y_stop = min(y_pos + guide_width, output_size)
+    image[:, x_pos:x_stop] = (1.0, 0.20, 0.20)
+    image[y_pos:y_stop, :] = (0.20, 1.0, 0.20)
+    image[max(y_pos - 1, 0) : y_stop + 1, max(x_pos - 1, 0) : x_stop + 1] = (
         1.0,
         1.0,
         1.0,
     )
-
-    if image.shape[:2] != (512, 512):
-        image = transform.resize(
-            image,
-            (512, 512, 3),
-            order=0,
-            preserve_range=True,
-            anti_aliasing=False,
-        )
     return image.astype(np.float32, copy=False)
+
+
+def _coloc_scatter_density_for_output(
+    density_counts: np.ndarray,
+    output_size: int,
+) -> np.ndarray:
+    """Area-resample raw density without discarding populated source bins."""
+    counts = np.asarray(density_counts, dtype=np.float64)
+    if counts.ndim != 2 or counts.shape[0] != counts.shape[1]:
+        raise ValueError("Scatter density must be a square 2-D array.")
+    input_size = int(counts.shape[0])
+    output_size = int(output_size)
+    if output_size <= 0:
+        raise ValueError("Scatter density output size must be positive.")
+    if input_size == output_size:
+        return counts
+    if input_size > output_size and input_size % output_size == 0:
+        factor = input_size // output_size
+        return counts.reshape(
+            output_size,
+            factor,
+            output_size,
+            factor,
+        ).sum(axis=(1, 3))
+    if output_size > input_size and output_size % input_size == 0:
+        factor = output_size // input_size
+        return (
+            np.repeat(np.repeat(counts, factor, axis=0), factor, axis=1)
+            / float(factor * factor)
+        )
+    resized = transform.resize_local_mean(
+        counts,
+        (output_size, output_size),
+        preserve_range=True,
+    )
+    resized *= float(counts.size) / float(resized.size)
+    return np.maximum(resized, 0.0)
 
 
 def _racc_index_image(

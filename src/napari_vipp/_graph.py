@@ -162,6 +162,37 @@ class ProcessingBadge(QWidget):
             painter.drawEllipse(QPointF(15.0, 15.0), 2.4, 2.4)
 
 
+class ElidedSubtitleLabel(QLabel):
+    """One-line subtitle that keeps its complete value in a tooltip."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+
+    def set_full_text(self, text: str, tooltip: str | None = None) -> None:
+        self._full_text = str(text or "").strip()
+        detail = self._full_text if tooltip is None else str(tooltip or "").strip()
+        self.setToolTip(detail)
+        self.setAccessibleName(
+            f"Input binding: {self._full_text}" if self._full_text else ""
+        )
+        self.setVisible(bool(self._full_text))
+        self._refresh_elision()
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_elision()
+
+    def _refresh_elision(self) -> None:
+        available = max(self.contentsRect().width(), 0)
+        elided = self.fontMetrics().elidedText(
+            self._full_text,
+            Qt.ElideMiddle,
+            available,
+        )
+        super().setText(elided)
+
+
 class NodeCard(QFrame):
     """Small embedded node UI with a thumbnail and graph actions."""
 
@@ -228,6 +259,12 @@ class NodeCard(QFrame):
         title_layout.addWidget(self.compute_badge, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.category_label = QLabel(category)
         self.category_label.setObjectName("NodeCategory")
+        self.subtitle_label = ElidedSubtitleLabel()
+        self.subtitle_label.setObjectName("NodeSubtitle")
+        self.subtitle_label.setStyleSheet(
+            "color: #93c5fd; font-size: 10px; padding-bottom: 1px;"
+        )
+        self.subtitle_label.hide()
 
         self.preview = ClickablePreview()
         self.preview.setAlignment(Qt.AlignCenter)
@@ -261,6 +298,7 @@ class NodeCard(QFrame):
         self.card_layout.addWidget(self.accent_bar)
         self.card_layout.addWidget(self.category_label)
         self.card_layout.addWidget(self.title_row)
+        self.card_layout.addWidget(self.subtitle_label)
         self.card_layout.addWidget(self.preview)
         self.card_layout.addWidget(self.metadata_label)
         self.card_layout.addWidget(self.execution_label)
@@ -471,6 +509,9 @@ class NodeCard(QFrame):
 
     def set_metadata_summary(self, text: str) -> None:
         self.metadata_label.setText(text)
+
+    def set_subtitle(self, text: str, tooltip: str | None = None) -> None:
+        self.subtitle_label.set_full_text(text, tooltip)
 
     def set_compute_badge(
         self,
@@ -1841,6 +1882,7 @@ class PipelineGraphView(QGraphicsView):
     connection_removed = Signal(str, str, int)
     port_context_requested = Signal(str, str, int, object)
     tunnel_selected = Signal(str)
+    tunnel_reroute_requested = Signal(str, str, int)
     note_moved = Signal(str, object, object)
     note_edit_requested = Signal(str)
     note_delete_requested = Signal(str)
@@ -1871,6 +1913,10 @@ class PipelineGraphView(QGraphicsView):
             [str, tuple[str, str, int, int]],
             tuple[str, str],
         ] | None = None
+        self._tunnel_reroute_validator: Callable[
+            [str, str, int],
+            tuple[str, str],
+        ] | None = None
         self._connection_dragging = False
         self._panning = False
         self._pan_start = QPoint()
@@ -1892,6 +1938,11 @@ class PipelineGraphView(QGraphicsView):
         self._tunnel_subscriber_ports: dict[str, list[PortItem]] = {}
         self._active_tunnel_name = ""
         self._hover_tunnel_name = ""
+        self._pending_tunnel_name = ""
+        self._pending_tunnel_source: PortItem | None = None
+        self._pending_tunnel_wire: PendingConnectionItem | None = None
+        self._highlighted_tunnel_output_port: PortItem | None = None
+        self._tunnel_reroute_dragging = False
         self._search_match_node_ids: set[str] = set()
         self._notes: dict[str, GraphNoteItem] = {}
         self._port_label_mode = PortLabelMode.AMBIGUOUS_ONLY
@@ -1919,6 +1970,11 @@ class PipelineGraphView(QGraphicsView):
         self._pending_source = None
         self._pending_wire = None
         self._highlighted_input_port = None
+        self._pending_tunnel_name = ""
+        self._pending_tunnel_source = None
+        self._pending_tunnel_wire = None
+        self._highlighted_tunnel_output_port = None
+        self._tunnel_reroute_dragging = False
         self._clear_connection_insert_preview()
         self._tunnel_source_ports.clear()
         self._tunnel_subscriber_ports.clear()
@@ -2280,6 +2336,13 @@ class PipelineGraphView(QGraphicsView):
     ) -> None:
         self._connection_insert_validator = validator
 
+    def set_tunnel_reroute_validator(
+        self,
+        validator: Callable[[str, str, int], tuple[str, str]] | None,
+    ) -> None:
+        """Set the topology-aware validator used during tunnel source drags."""
+        self._tunnel_reroute_validator = validator
+
     def finish_loose_node_drag(
         self,
         node_id: str,
@@ -2455,6 +2518,7 @@ class PipelineGraphView(QGraphicsView):
         item.update_path()
 
     def set_port_tunnels(self, output_tunnels=(), connections=()) -> None:
+        self._cancel_pending_tunnel_reroute()
         self._tunnel_source_ports.clear()
         self._tunnel_subscriber_ports.clear()
         for proxy in self._proxies.values():
@@ -2523,6 +2587,55 @@ class PipelineGraphView(QGraphicsView):
                 rect = rect.united(parent.sceneBoundingRect())
         self._ensure_scene_space_for_rect(rect.adjusted(-160, -120, 160, 120))
         self.centerOn(rect.center())
+
+    def begin_tunnel_reroute(self, name: str, scene_pos: QPointF) -> None:
+        """Arm a source-badge drag for one named tunnel."""
+        tunnel_name = str(name or "").strip()
+        source = self._tunnel_source_ports.get(tunnel_name)
+        if source is None:
+            return
+        self._cancel_pending_connection()
+        self._cancel_pending_tunnel_reroute()
+        self.highlight_tunnel(tunnel_name, sticky=True)
+        self._pending_tunnel_name = tunnel_name
+        self._pending_tunnel_source = source
+        self._tunnel_reroute_dragging = False
+        self.status_message.emit(
+            f"Drag tunnel '{tunnel_name}' to another compatible output."
+        )
+
+    def update_pending_tunnel_reroute(
+        self,
+        scene_pos: QPointF,
+        *,
+        dragging: bool,
+    ) -> None:
+        if self._pending_tunnel_source is None:
+            return
+        self._tunnel_reroute_dragging = self._tunnel_reroute_dragging or dragging
+        if self._pending_tunnel_wire is None:
+            self._pending_tunnel_wire = PendingConnectionItem(
+                self._pending_tunnel_source,
+                scene_pos,
+            )
+            self.scene.addItem(self._pending_tunnel_wire)
+        else:
+            self._pending_tunnel_wire.update_end(scene_pos)
+        self._update_tunnel_reroute_feedback(scene_pos)
+
+    def release_tunnel_reroute(self, scene_pos: QPointF) -> None:
+        tunnel_name = self._pending_tunnel_name
+        target = self._output_port_at(scene_pos)
+        state, _message = self._tunnel_reroute_target_feedback(target)
+        dragged = self._tunnel_reroute_dragging
+        self._cancel_pending_tunnel_reroute()
+        if not dragged or target is None or state != "compatible":
+            return
+        self.tunnel_reroute_requested.emit(
+            tunnel_name,
+            target.node_id,
+            target.port_index,
+        )
 
     def focus_node(self, node_id: str) -> None:
         proxy = self._proxies.get(node_id)
@@ -2703,6 +2816,28 @@ class PipelineGraphView(QGraphicsView):
             return
         for connection in proxy.connections:
             connection.update_path()
+
+    def set_node_subtitle(
+        self,
+        node_id: str,
+        text: str,
+        tooltip: str | None = None,
+    ) -> None:
+        """Set compact secondary text without changing the node title."""
+        card = self._cards.get(node_id)
+        proxy = self._proxies.get(node_id)
+        if card is None or proxy is None:
+            return
+        before = proxy.sceneBoundingRect()
+        card.set_subtitle(text, tooltip)
+        card.adjustSize()
+        proxy.refresh_ports()
+        after = proxy.sceneBoundingRect()
+        if _rect_changed(before, after):
+            self._mark_graph_geometry_changed()
+            self.reroute_connections(affected_rect=before.united(after))
+            return
+        proxy.update()
 
     def set_node_compute_badge(
         self,
@@ -2985,6 +3120,10 @@ class PipelineGraphView(QGraphicsView):
         super().dropEvent(event)
 
     def keyPressEvent(self, event):  # noqa: N802
+        if event.key() == Qt.Key_Escape and self._pending_tunnel_source is not None:
+            self._cancel_pending_tunnel_reroute()
+            event.accept()
+            return
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
             selected_connections = [
                 item
@@ -3049,9 +3188,13 @@ class PipelineGraphView(QGraphicsView):
         pos = _point_from_event(event)
         background_click = self.itemAt(pos) is None
         if event.button() == Qt.LeftButton:
-            tunnel_name = self._tunnel_badge_name_at_view_pos(pos)
-            if tunnel_name:
-                self.highlight_tunnel(tunnel_name, sticky=True)
+            tunnel_badge = self._tunnel_badge_port_at_view_pos(pos)
+            if tunnel_badge is not None:
+                tunnel_name, port = tunnel_badge
+                if port.kind == "output":
+                    self.begin_tunnel_reroute(tunnel_name, self.mapToScene(pos))
+                else:
+                    self.highlight_tunnel(tunnel_name, sticky=True)
                 event.accept()
                 return
             if background_click and self._active_tunnel_name:
@@ -3093,6 +3236,14 @@ class PipelineGraphView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):  # noqa: N802
+        if self._pending_tunnel_source is not None:
+            if event.buttons() & Qt.LeftButton:
+                self.update_pending_tunnel_reroute(
+                    self.mapToScene(_point_from_event(event)),
+                    dragging=True,
+                )
+            event.accept()
+            return
         if self._panning:
             pos = _point_from_event(event)
             delta = pos - self._pan_start
@@ -3108,6 +3259,15 @@ class PipelineGraphView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):  # noqa: N802
+        if (
+            self._pending_tunnel_source is not None
+            and event.button() == Qt.LeftButton
+        ):
+            self.release_tunnel_reroute(
+                self.mapToScene(_point_from_event(event)),
+            )
+            event.accept()
+            return
         if self._panning and event.button() in (
             Qt.LeftButton,
             Qt.MiddleButton,
@@ -3193,6 +3353,12 @@ class PipelineGraphView(QGraphicsView):
                 return item
         return None
 
+    def _output_port_at(self, scene_pos: QPointF) -> PortItem | None:
+        for item in self.scene.items(scene_pos):
+            if isinstance(item, PortItem) and item.kind == "output":
+                return item
+        return None
+
     def _port_at_view_pos(self, pos: QPoint) -> PortItem | None:
         scene_pos = self.mapToScene(pos)
         for item in self.scene.items(scene_pos):
@@ -3210,16 +3376,33 @@ class PipelineGraphView(QGraphicsView):
         return str(getattr(port, "_tunnel_label", "") or "").strip()
 
     def _tunnel_badge_name_at_view_pos(self, pos: QPoint) -> str:
+        match = self._tunnel_badge_port_at_view_pos(pos)
+        return match[0] if match is not None else ""
+
+    def _tunnel_badge_port_at_view_pos(
+        self,
+        pos: QPoint,
+    ) -> tuple[str, PortItem] | None:
         scene_pos = self.mapToScene(pos)
+        subscriber_match: tuple[str, PortItem] | None = None
         for item in self.scene.items(scene_pos):
             if not isinstance(item, TunnelBadgeItem):
                 continue
             current = item.parentItem()
             while current is not None:
                 if isinstance(current, PortItem):
-                    return str(getattr(current, "_tunnel_label", "") or "").strip()
+                    name = str(
+                        getattr(current, "_tunnel_label", "") or ""
+                    ).strip()
+                    if not name:
+                        break
+                    match = (name, current)
+                    if current.kind == "output":
+                        return match
+                    subscriber_match = match
+                    break
                 current = current.parentItem()
-        return ""
+        return subscriber_match
 
     def _connection_at(self, scene_pos: QPointF) -> ConnectionItem | None:
         candidates: list[tuple[float, ConnectionItem]] = []
@@ -3330,6 +3513,81 @@ class PipelineGraphView(QGraphicsView):
         return _types_compatible(
             self._pending_source.data_type, target_port.data_type
         )
+
+    def _update_tunnel_reroute_feedback(self, scene_pos: QPointF) -> None:
+        target = self._output_port_at(scene_pos)
+        if target is self._highlighted_tunnel_output_port:
+            return
+        if self._highlighted_tunnel_output_port is not None:
+            self._highlighted_tunnel_output_port.set_drop_state(None)
+        self._highlighted_tunnel_output_port = target
+        if target is None:
+            return
+        state, message = self._tunnel_reroute_target_feedback(target)
+        target.set_drop_state(state)
+        self.status_message.emit(message)
+
+    def _tunnel_reroute_target_state(
+        self,
+        target: PortItem | None,
+    ) -> str | None:
+        state, _message = self._tunnel_reroute_target_feedback(target)
+        return state
+
+    def _tunnel_reroute_target_feedback(
+        self,
+        target: PortItem | None,
+    ) -> tuple[str | None, str]:
+        source = self._pending_tunnel_source
+        if source is None or target is None or target.kind != "output":
+            return None, ""
+        generic_error = (
+            "That output cannot source this tunnel or all of its subscribers."
+        )
+        if target is source:
+            return "incompatible", "That output already sources this tunnel."
+        if any(
+            port is target and name != self._pending_tunnel_name
+            for name, port in self._tunnel_source_ports.items()
+        ):
+            return "incompatible", "That output already has another tunnel."
+        subscribers = self._tunnel_subscriber_ports.get(
+            self._pending_tunnel_name,
+            (),
+        )
+        if any(target.node_id == subscriber.node_id for subscriber in subscribers):
+            return "incompatible", generic_error
+        if any(
+            not _types_compatible(target.data_type, subscriber.data_type)
+            for subscriber in subscribers
+        ):
+            return "incompatible", generic_error
+        if self._tunnel_reroute_validator is not None:
+            try:
+                state, message = self._tunnel_reroute_validator(
+                    self._pending_tunnel_name,
+                    target.node_id,
+                    target.port_index,
+                )
+            except Exception as exc:
+                return "incompatible", str(exc) or generic_error
+            if state != "compatible":
+                return "incompatible", str(message or generic_error)
+        return (
+            "compatible",
+            f"Release to reroute tunnel '{self._pending_tunnel_name}'.",
+        )
+
+    def _cancel_pending_tunnel_reroute(self) -> None:
+        if self._highlighted_tunnel_output_port is not None:
+            self._highlighted_tunnel_output_port.set_drop_state(None)
+        if self._pending_tunnel_wire is not None:
+            self.scene.removeItem(self._pending_tunnel_wire)
+        self._pending_tunnel_name = ""
+        self._pending_tunnel_source = None
+        self._pending_tunnel_wire = None
+        self._highlighted_tunnel_output_port = None
+        self._tunnel_reroute_dragging = False
 
     def _cancel_pending_connection(self) -> None:
         if self._pending_source is not None:

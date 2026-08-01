@@ -1947,6 +1947,44 @@ def test_image_source_node_can_select_napari_layer(qtbot):
     assert _metadata_value(widget, "Dimensions") == "z=3, y=6, x=7"
 
 
+def test_input_node_tile_binding_subtitle_updates_live(qtbot, tmp_path):
+    viewer = _Viewer()
+    viewer.layers.append(_Layer(np.ones((4, 5), dtype=np.uint8), "second layer"))
+    widget = VippWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    card = widget.graph_view._cards["input"]
+
+    assert card.subtitle_label._full_text == "Layer · input volume"
+    control = widget._parameter_widgets["image_source"]
+    control.layer_combo.setCurrentText("second layer")
+    assert card.subtitle_label._full_text == "Layer · second layer"
+    assert card.subtitle_label.toolTip() == "Napari layer: second layer"
+
+    file_path = tmp_path / "P-tau_MAGENTA.tif"
+    value = widget._image_source_value(widget.pipeline.nodes["input"])
+    value.update(
+        source_mode="file path",
+        file_path=str(file_path),
+        binding_mode="single item",
+    )
+    widget._on_image_source_changed(value)
+    assert card.subtitle_label._full_text == "File · P-tau_MAGENTA"
+    assert card.subtitle_label.toolTip() == f"File source: {file_path}"
+
+    value.update(
+        source_mode="sample",
+        sample_name="VIPP synthetic colocalization",
+    )
+    widget._on_image_source_changed(value)
+    assert card.subtitle_label._full_text == (
+        "Sample · VIPP synthetic colocalization"
+    )
+    assert card.subtitle_label.toolTip() == (
+        "Bundled sample: VIPP synthetic colocalization"
+    )
+
+
 def test_live_napari_source_uses_one_owned_read_only_revision(qtbot):
     data = np.arange(20, dtype=np.uint16).reshape(4, 5)
     viewer = _Viewer(data, metadata={"axes": "YX"})
@@ -5058,6 +5096,51 @@ def test_colocalization_inspector_scatter_syncs_thresholds(qtbot):
     assert widget.colocalization_scatter_plot._colormap == "Magma"
 
 
+def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    offset = widget.add_node_from_palette("linear_scale_offset")
+    scatter = widget.add_node_from_palette("colocalization_scatter_plot")
+    widget.pipeline.set_param(offset.id, "alpha", 1.0)
+    widget.pipeline.set_param(offset.id, "beta", 500.0)
+    widget.pipeline.set_param(scatter.id, "bins", 64)
+    widget.pipeline.set_param(scatter.id, "range_percentile", 100.0)
+    widget._connect_nodes("input", offset.id)
+    widget._connect_nodes("input", scatter.id, target_port=0)
+    widget._connect_nodes(offset.id, scatter.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(scatter.id)
+
+    plot = widget.colocalization_scatter_plot
+    assert (plot._channel_1_min, plot._channel_1_max) == (0.0, 15.0)
+    assert (plot._channel_2_min, plot._channel_2_max) == (500.0, 515.0)
+    result = widget._colocalization_scatter_cache[
+        widget._current_colocalization_scatter_key
+    ]
+    assert np.asarray(result.density_counts).shape == (64, 64)
+    assert widget.colocalization_scatter_popout_button.isEnabled()
+
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
+    assert (dialog.plot._channel_1_min, dialog.plot._channel_1_max) == (0.0, 15.0)
+    assert (dialog.plot._channel_2_min, dialog.plot._channel_2_max) == (
+        500.0,
+        515.0,
+    )
+    plot_rect = dialog.plot._plot_rect()
+    assert abs(dialog.plot._x_from_value(7.5, plot_rect) - plot_rect.center().x()) <= 1
+    assert (
+        abs(dialog.plot._y_from_value(507.5, plot_rect) - plot_rect.center().y())
+        <= 1
+    )
+
+
 def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     size = 600_123
     indices = np.arange(size, dtype=np.uint32)
@@ -5065,7 +5148,7 @@ def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     channel_2 = ((indices * 37 + 11) % 256).astype(np.float32)
     roi = indices % 11 != 0
 
-    density, roi_voxels, colocalized_voxels, display_min, display_max = (
+    density, roi_voxels, colocalized_voxels, x_min, x_max, y_min, y_max = (
         _prepare_colocalization_scatter_density(
             channel_1,
             channel_2,
@@ -5089,8 +5172,8 @@ def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     assert roi_voxels > 500_000
     assert roi_voxels == int(np.count_nonzero(roi))
     assert colocalized_voxels == int(expected_colocalized)
-    assert display_min == 0.0
-    assert display_max == 255.0
+    assert (x_min, x_max) == (0.0, 255.0)
+    assert (y_min, y_max) == (0.0, 255.0)
     np.testing.assert_array_equal(density, expected_density)
     assert int(density.sum()) == roi_voxels
 
@@ -5099,7 +5182,7 @@ def test_colocalization_scatter_expands_to_native_intensity_range():
     channel_1 = np.array([-20.0, 255.0, 2_000.0], dtype=np.float32)
     channel_2 = np.array([4_000.0, 300.0, -10.0], dtype=np.float32)
 
-    density, roi_voxels, _colocalized_voxels, display_min, display_max = (
+    density, roi_voxels, _colocalized_voxels, x_min, x_max, y_min, y_max = (
         _prepare_colocalization_scatter_density(
             channel_1,
             channel_2,
@@ -5111,8 +5194,8 @@ def test_colocalization_scatter_expands_to_native_intensity_range():
         )
     )
 
-    assert display_min == -20.0
-    assert display_max == 4_000.0
+    assert (x_min, x_max) == (-20.0, 2_000.0)
+    assert (y_min, y_max) == (-10.0, 4_000.0)
     assert roi_voxels == 3
     assert int(density.sum()) == roi_voxels
 
@@ -5121,7 +5204,7 @@ def test_colocalization_scatter_uses_unit_extent_for_normalized_floats():
     channel_1 = np.array([0.0, 0.25, 1.0], dtype=np.float32)
     channel_2 = np.array([0.1, 0.5, 0.75], dtype=np.float32)
 
-    density, roi_voxels, _colocalized_voxels, display_min, display_max = (
+    density, roi_voxels, _colocalized_voxels, x_min, x_max, y_min, y_max = (
         _prepare_colocalization_scatter_density(
             channel_1,
             channel_2,
@@ -5133,8 +5216,31 @@ def test_colocalization_scatter_uses_unit_extent_for_normalized_floats():
         )
     )
 
-    assert (display_min, display_max) == (0.0, 1.0)
+    assert (x_min, x_max) == (0.0, 1.0)
+    assert np.allclose((y_min, y_max), (0.1, 0.75))
     assert int(density.sum()) == roi_voxels == 3
+
+
+def test_colocalization_scatter_percentile_clips_density_not_exact_counts():
+    channel_1 = np.asarray([0.0, 1.0, 2.0, 3.0, 10_000.0])
+    channel_2 = np.asarray([-10_000.0, 100.0, 101.0, 102.0, 103.0])
+
+    density, roi_voxels, colocalized_voxels, *_ranges = (
+        _prepare_colocalization_scatter_density(
+            channel_1,
+            channel_2,
+            threshold_1=0.0,
+            threshold_2=0.0,
+            roi_mask=None,
+            intensity_max=255.0,
+            bins=32,
+            range_percentile=80.0,
+        )
+    )
+
+    assert roi_voxels == 5
+    assert colocalized_voxels == 4
+    assert int(density.sum()) < roi_voxels
 
 
 def test_colocalization_scatter_density_is_cooperatively_cancellable(monkeypatch):
@@ -5386,6 +5492,38 @@ def test_colocalization_scatter_zero_roi_reports_percentage_unavailable(qtbot):
     )
 
 
+def test_clipped_scatter_summary_separates_density_from_exact_counts(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget.graph_view.select_node(coloc.id)
+    key = ("clipped-density",)
+    widget._current_colocalization_scatter_key = key
+    density = np.zeros((10, 10), dtype=np.float64)
+    density.ravel()[:80] = 1.0
+
+    widget._apply_colocalization_scatter_result(
+        ColocalizationScatterResult(
+            0,
+            key,
+            coloc.id,
+            "Manual",
+            25.0,
+            25.0,
+            density_counts=density,
+            roi_voxels=100,
+            colocalized_voxels=30,
+            range_percentile=90.0,
+        )
+    )
+
+    summary = widget.colocalization_scatter_summary.text()
+    assert "Exact colocalized count: 30/100 (30.0%)" in summary
+    assert "Visible scatter density contains 80/100 ROI voxels" in summary
+    assert "20 tail voxels are hidden by the 90% display range" in summary
+    assert "display clip does not change exact counts or metrics" in summary
+
+
 def test_colocalization_scatter_rejects_result_for_superseded_key(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -5475,6 +5613,127 @@ def test_pipeline_edit_invalidates_colocalization_scatter_cache(qtbot):
     assert widget._active_colocalization_scatter_run_id is None
     assert cancel_event.is_set()
     assert widget._colocalization_scatter_serial == old_serial + 1
+
+
+def test_4096_bin_node_queues_capped_inspector_density_with_visible_notice(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    scatter = widget.add_node_from_palette("colocalization_scatter_plot")
+    widget.pipeline.set_param(scatter.id, "bins", 4_096)
+    widget.graph_view.select_node(scatter.id)
+    widget._clear_colocalization_scatter_cache()
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    monkeypatch.setattr(
+        widget,
+        "_colocalization_inputs_for_node",
+        lambda _node_id: [data, data],
+    )
+    monkeypatch.setattr(
+        widget,
+        "_start_colocalization_scatter_request",
+        lambda _request: None,
+    )
+    queued = []
+    original_queue = widget._queue_colocalization_scatter
+
+    def record_queue(request):
+        queued.append(request)
+        original_queue(request)
+
+    monkeypatch.setattr(widget, "_queue_colocalization_scatter", record_queue)
+
+    widget._update_colocalization_scatter()
+
+    assert len(queued) == 1
+    assert queued[0].bins == 1_024
+    assert scatter.params["bins"] == 4_096
+    assert "capped at 1,024 x 1,024 bins" in (
+        widget.colocalization_scatter_summary.text()
+    )
+    assert "graph operation keeps its requested 4,096-bin histogram" in (
+        widget.colocalization_scatter_summary.toolTip()
+    )
+
+
+def test_scatter_cache_shares_density_across_threshold_results(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    density_key = ("same-inputs", 64)
+    cached_results = []
+
+    for index in range(16):
+        density = np.full((64, 64), index + 1.0, dtype=np.float64)
+        cached_results.append(
+            widget._cache_colocalization_scatter_result(
+                ColocalizationScatterResult(
+                    run_id=index,
+                    key=("threshold", index),
+                    node_id="scatter",
+                    threshold_mode="Manual",
+                    threshold_1=float(index),
+                    threshold_2=25.0,
+                    density_counts=density,
+                    roi_voxels=100,
+                    colocalized_voxels=50,
+                    density_key=density_key,
+                    channel_1_min=0.0,
+                    channel_1_max=255.0,
+                    channel_2_min=0.0,
+                    channel_2_max=255.0,
+                )
+            )
+        )
+
+    retained = {
+        id(result.density_counts)
+        for result in widget._colocalization_scatter_cache.values()
+    }
+    assert len(widget._colocalization_scatter_density_cache) == 1
+    assert len(retained) == 1
+    assert all(
+        result.density_counts is cached_results[0].density_counts
+        for result in cached_results
+    )
+    assert widget._colocalization_scatter_density_cache_bytes() == 64 * 64 * 8
+
+
+def test_scatter_density_cache_enforces_explicit_byte_budget(qtbot, monkeypatch):
+    import napari_vipp._widget as widget_module
+
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        widget_module,
+        "COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES",
+        600,
+    )
+
+    for index in range(2):
+        widget._cache_colocalization_scatter_result(
+            ColocalizationScatterResult(
+                run_id=index,
+                key=("result", index),
+                node_id="scatter",
+                threshold_mode="Manual",
+                threshold_1=25.0,
+                threshold_2=25.0,
+                density_counts=np.ones((8, 8), dtype=np.float64),
+                density_key=("density", index),
+                channel_1_min=0.0,
+                channel_1_max=255.0,
+                channel_2_min=0.0,
+                channel_2_max=255.0,
+            )
+        )
+
+    assert list(widget._colocalization_scatter_density_cache) == [
+        ("density", 1)
+    ]
+    assert list(widget._colocalization_scatter_cache) == [("result", 1)]
+    assert widget._colocalization_scatter_density_cache_bytes() == 512
 
 
 def test_palette_search_filters_nodes_fuzzily(qtbot):
@@ -10247,6 +10506,52 @@ def test_named_tunnel_replaces_visible_wire_and_is_undoable(qtbot, monkeypatch):
     assert widget.pipeline.output_tunnel("Raw") is None
 
 
+def test_rerouting_tunnel_source_is_undoable_and_updates_badges(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "_prompt_tunnel_name", lambda *_args: "Raw")
+    widget._create_output_tunnel("input", 0)
+    widget._connect_input_to_tunnel("Raw", "threshold", 0)
+
+    assert widget._reroute_output_tunnel("Raw", "gaussian", 0)
+
+    tunnel = widget.pipeline.output_tunnel("Raw")
+    assert tunnel == OutputTunnel("Raw", "gaussian", 0)
+    connection = widget.pipeline.tunnel_connection_for_input("threshold", 0)
+    assert connection is not None
+    assert connection.source_id == "gaussian"
+    assert widget.graph_view._proxies["input"].output_port_at(0)._tunnel_label == ""
+    assert (
+        widget.graph_view._proxies["gaussian"].output_port_at(0)._tunnel_label
+        == "Raw"
+    )
+
+    widget.undo()
+
+    tunnel = widget.pipeline.output_tunnel("Raw")
+    assert tunnel == OutputTunnel("Raw", "input", 0)
+    connection = widget.pipeline.tunnel_connection_for_input("threshold", 0)
+    assert connection is not None
+    assert connection.source_id == "input"
+
+    widget.redo()
+
+    assert widget.pipeline.output_tunnel("Raw") == OutputTunnel("Raw", "gaussian", 0)
+
+
+def test_tunnel_reroute_preview_rejects_cycle(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(widget, "_prompt_tunnel_name", lambda *_args: "Raw")
+    widget._create_output_tunnel("input", 0)
+    widget._connect_input_to_tunnel("Raw", "gaussian", 0)
+
+    state, message = widget._tunnel_reroute_preview_state("Raw", "threshold", 0)
+
+    assert state == "incompatible"
+    assert "cycle" in message.casefold()
+
+
 def test_tunnel_management_summary_highlight_and_rename(qtbot, monkeypatch):
     viewer = _Viewer()
     widget = VippWidget(viewer)
@@ -12694,6 +12999,46 @@ def test_collection_batch_demo_auto_loads_first_pair_without_rebinding(
     assert widget.batch_navigator.isHidden()
     assert widget.pipeline.outputs["input"] is None
     assert widget.pipeline.outputs["input_2"] is None
+
+
+def test_collection_input_subtitles_track_active_bindings_and_representatives(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    config = load_batch_config(demo.config_path)
+
+    for source in config.sources:
+        directory = config.resolve_path(source.input_dir)
+        label = widget.graph_view._cards[source.node_id].subtitle_label
+        assert label._full_text == (
+            f"Collection · {directory.name} · {source.pattern}"
+        )
+        assert label.toolTip() == (
+            f"Collection source: {directory}\nPattern: {source.pattern}"
+        )
+
+    assert widget._preview_interactive_collection_batch_item(1, force_sync=True)
+    representatives = dict(widget._interactive_collection_source_paths)
+    for source in config.sources:
+        directory = config.resolve_path(source.input_dir)
+        label = widget.graph_view._cards[source.node_id].subtitle_label
+        assert label._full_text == (
+            f"Collection · {directory.name} · {source.pattern}"
+        )
+
+    widget._clear_interactive_collection_batch_session(close_workspace=False)
+    for source in config.sources:
+        assert widget.graph_view._cards[source.node_id].subtitle_label._full_text == ""
+
+    widget._interactive_collection_source_paths = representatives
+    widget._sync_input_node_subtitles(representatives)
+    for node_id, path in representatives.items():
+        label = widget.graph_view._cards[node_id].subtitle_label
+        assert label._full_text == f"Collection · {path.name}"
+        assert label.toolTip() == f"Representative collection item: {path}"
 
 
 def test_collection_batch_navigator_switches_the_complete_representative_pair(

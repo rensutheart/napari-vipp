@@ -799,6 +799,57 @@ def test_workflow_preserves_named_tunnels(tmp_path):
     assert outputs[median.id] is not None
 
 
+def test_output_tunnel_reroute_moves_all_subscribers_atomically():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    median = pipeline.add_node("median_filter")
+    rescale = pipeline.add_node("rescale_intensity")
+    pipeline.add_output_tunnel("Reference", "input", 0)
+    assert pipeline.connect_to_tunnel("Reference", median.id).success
+    assert pipeline.connect_to_tunnel("Reference", rescale.id).success
+
+    rerouted = pipeline.reroute_output_tunnel("Reference", "gaussian", 0)
+
+    assert rerouted.source_id == "gaussian"
+    assert {
+        (connection.source_id, connection.target_id, connection.tunnel_name)
+        for connection in pipeline.connections
+        if connection.tunnel_name == "Reference"
+    } == {
+        ("gaussian", median.id, "Reference"),
+        ("gaussian", rescale.id, "Reference"),
+    }
+
+
+def test_output_tunnel_reroute_failure_restores_tunnel_and_connections():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    median = pipeline.add_node("median_filter")
+    original = pipeline.add_output_tunnel("Reference", "input", 0)
+    assert pipeline.connect_to_tunnel("Reference", median.id).success
+    original_connections = tuple(pipeline.connections)
+
+    with pytest.raises(ValueError, match="Cannot connect a node to itself"):
+        pipeline.reroute_output_tunnel("Reference", median.id, 0)
+
+    assert pipeline.output_tunnel("Reference") == original
+    assert tuple(pipeline.connections) == original_connections
+
+
+def test_output_tunnel_reroute_validation_rejects_cycle_without_mutation():
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    original = pipeline.add_output_tunnel("Reference", "input", 0)
+    assert pipeline.connect_to_tunnel("Reference", "gaussian").success
+    original_connections = tuple(pipeline.connections)
+
+    with pytest.raises(ValueError, match="cycle"):
+        pipeline.validate_output_tunnel_reroute("Reference", "threshold", 0)
+
+    assert pipeline.output_tunnel("Reference") == original
+    assert tuple(pipeline.connections) == original_connections
+
+
 def test_workflow_preserves_graph_notes(tmp_path):
     pipeline = _build_pipeline()
     notes = [

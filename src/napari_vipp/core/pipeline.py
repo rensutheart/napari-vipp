@@ -61,6 +61,7 @@ from napari_vipp.core.operations import (
     clip_intensity,
     closing,
     colocalization_metrics,
+    colocalization_scatter_plot,
     colocalization_threshold_values,
     colocalized_voxels,
     combine_channels,
@@ -979,6 +980,8 @@ GLOBAL_THRESHOLD_OPERATIONS = {
 COLOCALIZATION_THRESHOLD_OPERATIONS = {
     "colocalization_metrics",
     "masked_colocalization_metrics",
+    "colocalization_scatter_plot",
+    "masked_colocalization_scatter_plot",
     "colocalized_voxels",
     "masked_colocalized_voxels",
     "racc_index",
@@ -996,6 +999,7 @@ SAME_SHAPE_GRID_OPERATIONS = {
     "add_images",
     "calculate_weighted_image",
     "colocalization_metrics",
+    "colocalization_scatter_plot",
     "colocalized_voxels",
     "combine_channels",
     "event_localization",
@@ -1006,6 +1010,7 @@ SAME_SHAPE_GRID_OPERATIONS = {
     "marker_controlled_watershed",
     "mask_image",
     "masked_colocalization_metrics",
+    "masked_colocalization_scatter_plot",
     "masked_colocalized_voxels",
     "masked_racc_index",
     "measure_objects_intensity",
@@ -1319,6 +1324,92 @@ def operation_call_parameter_value(
 
 DEFAULT_DYNAMIC_OUTPUT_PORTS = 3
 DYNAMIC_OUTPUT_COUNT_PARAM = "_vipp_dynamic_output_count"
+
+
+COLOCALIZATION_SCATTER_PARAMETERS = (
+    ParameterSpec(
+        "threshold_mode",
+        "Thresholds",
+        "choice",
+        "Manual",
+        0,
+        0,
+        1,
+        choices=("Manual", "Costes auto"),
+    ),
+    ParameterSpec(
+        "channel_1_threshold",
+        "Channel 1 threshold (native intensity)",
+        "float",
+        25.0,
+        -1_000_000_000.0,
+        1_000_000_000.0,
+        1.0,
+        2,
+        visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+        visibility_parameter="threshold_mode",
+        visibility_values=("Manual",),
+    ),
+    ParameterSpec(
+        "channel_2_threshold",
+        "Channel 2 threshold (native intensity)",
+        "float",
+        25.0,
+        -1_000_000_000.0,
+        1_000_000_000.0,
+        1.0,
+        2,
+        visibility=PARAMETER_VISIBILITY_PARAMETER_IN,
+        visibility_parameter="threshold_mode",
+        visibility_values=("Manual",),
+    ),
+    ParameterSpec(
+        "bins",
+        "Histogram bins per axis",
+        "int",
+        128,
+        32,
+        4_096,
+        1,
+        tooltip=(
+            "Controls density detail independently of the exported raster size. "
+            "Large values require proportionally more memory."
+        ),
+    ),
+    ParameterSpec(
+        "output_size",
+        "Output size (pixels)",
+        "int",
+        512,
+        64,
+        4_096,
+        64,
+        tooltip="Width and height of the square RGB output image.",
+    ),
+    ParameterSpec(
+        "range_percentile",
+        "Populated range percentile",
+        "float",
+        100.0,
+        50.0,
+        100.0,
+        0.1,
+        1,
+        tooltip=(
+            "100 uses the exact ROI min/max independently on each axis. Lower "
+            "values symmetrically clip sparse intensity outliers."
+        ),
+    ),
+    ParameterSpec(
+        "log_counts",
+        "Log density",
+        "bool",
+        True,
+        0,
+        1,
+        1,
+    ),
+)
 
 
 def _split_channels_outputs(count: int) -> tuple[OutputSpec, ...]:
@@ -3703,6 +3794,37 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         execution_policy="manual",
     ),
     OperationSpec(
+        "colocalization_scatter_plot",
+        "Colocalization Scatter Plot",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        COLOCALIZATION_SCATTER_PARAMETERS,
+        colocalization_scatter_plot,
+        max_inputs=2,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
+        "masked_colocalization_scatter_plot",
+        "Masked Colocalization Scatter Plot",
+        COLOCALIZATION_CATEGORY,
+        "array",
+        "image",
+        COLOCALIZATION_SCATTER_PARAMETERS,
+        colocalization_scatter_plot,
+        max_inputs=3,
+        inputs=(
+            InputSpec("channel_1", "array", "Channel 1 image"),
+            InputSpec("channel_2", "array", "Channel 2 image"),
+            InputSpec("roi_mask", "mask_or_labels", "ROI mask"),
+        ),
+        execution_policy="manual",
+    ),
+    OperationSpec(
         "colocalized_voxels",
         "Colocalized Voxels",
         COLOCALIZATION_CATEGORY,
@@ -5335,6 +5457,93 @@ class PrototypePipeline:
         ]
         return renamed
 
+    def reroute_output_tunnel(
+        self,
+        name: str,
+        source_id: str,
+        source_port: int = 0,
+    ) -> OutputTunnel:
+        """Move a tunnel and all of its subscribers to another output.
+
+        The update is atomic: every existing subscriber must accept the new
+        output without introducing a cycle.  If validation fails, both the
+        tunnel declaration and its connections are restored unchanged.
+        """
+        rerouted = self.validate_output_tunnel_reroute(
+            name,
+            source_id,
+            source_port,
+        )
+        key = _tunnel_key(name)
+        current = self.output_tunnels[key]
+        if rerouted == current:
+            return current
+        self.output_tunnels[key] = rerouted
+        self.connections = [
+            replace(
+                connection,
+                source_id=rerouted.source_id,
+                source_port=rerouted.source_port,
+            )
+            if connection.tunnel_name == current.name
+            else connection
+            for connection in self.connections
+        ]
+        return rerouted
+
+    def validate_output_tunnel_reroute(
+        self,
+        name: str,
+        source_id: str,
+        source_port: int = 0,
+    ) -> OutputTunnel:
+        """Return the proposed tunnel or raise without changing graph state."""
+        key = _tunnel_key(name)
+        current = self.output_tunnels.get(key)
+        if current is None:
+            raise ValueError(f"Unknown tunnel '{_clean_tunnel_name(name)}'.")
+        rerouted = OutputTunnel(current.name, source_id, int(source_port))
+        if rerouted == current:
+            return current
+        self._validate_new_output_tunnel(rerouted, allow_replace_key=key)
+
+        source_type = self.output_ports(rerouted.source_id)[
+            rerouted.source_port
+        ].output_type
+        candidate_connections: list[GraphConnection] = []
+        for connection in self.connections:
+            if connection.tunnel_name != current.name:
+                candidate_connections.append(connection)
+                continue
+            if rerouted.source_id == connection.target_id:
+                raise ValueError(
+                    f"Cannot reroute tunnel '{rerouted.name}': "
+                    "Cannot connect a node to itself."
+                )
+            target = self.nodes[connection.target_id]
+            expected_type = self._input_type_for_port(
+                target,
+                connection.target_port,
+            )
+            if not self._types_compatible(source_type, expected_type):
+                raise ValueError(
+                    f"Cannot reroute tunnel '{rerouted.name}': Cannot connect "
+                    f"{source_type} output to {expected_type} input."
+                )
+            candidate_connections.append(
+                replace(
+                    connection,
+                    source_id=rerouted.source_id,
+                    source_port=rerouted.source_port,
+                )
+            )
+        if self._connections_contain_cycle(candidate_connections):
+            raise ValueError(
+                f"Cannot reroute tunnel '{rerouted.name}': "
+                "Cannot connect nodes in a cycle."
+            )
+        return rerouted
+
     def remove_output_tunnel(self, name: str) -> tuple[GraphConnection, ...]:
         key = _tunnel_key(name)
         tunnel = self.output_tunnels.pop(key, None)
@@ -5612,9 +5821,21 @@ class PrototypePipeline:
                 node.params[DYNAMIC_OUTPUT_COUNT_PARAM] = required
 
     def _cyclic_node_ids(self) -> tuple[str, ...]:
+        return self._cyclic_node_ids_for_connections(self.connections)
+
+    def _connections_contain_cycle(
+        self,
+        connections: Iterable[GraphConnection],
+    ) -> bool:
+        return bool(self._cyclic_node_ids_for_connections(connections))
+
+    def _cyclic_node_ids_for_connections(
+        self,
+        connections: Iterable[GraphConnection],
+    ) -> tuple[str, ...]:
         indegree = {node_id: 0 for node_id in self.nodes}
         downstream: dict[str, list[str]] = {node_id: [] for node_id in self.nodes}
-        for connection in self.connections:
+        for connection in connections:
             indegree[connection.target_id] += 1
             downstream[connection.source_id].append(connection.target_id)
         ready = [node_id for node_id in self.nodes if indegree[node_id] == 0]

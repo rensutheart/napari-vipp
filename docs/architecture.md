@@ -911,13 +911,29 @@ sides are clamped to the dtype limit, and `np.clip` never promotes the image to
 float. These rules prevent large int64/uint64 offsets from collapsing adjacent
 levels.
 
-Colocalization threshold nodes build the inspector's 2-D scatter density by
-accumulating a 255 x 255 histogram over every ROI voxel in bounded chunks.
-ROI and colocalized counts are accumulated in the same exact pass. Large inputs
-run on a stale-safe background worker and cache only the compact density/result;
-there is no separate sampled display population. This exact computational
-helper still resides in `ui/plots.py`, rather than the Qt-free diagnostics
-module, and is a known remaining boundary seam.
+Colocalization threshold nodes normally build the inspector's 2-D scatter
+density by accumulating a 255 x 255 histogram over every ROI voxel in bounded
+chunks. A Scatter Plot node with a populated-range percentile below 100 can
+omit tail voxels from this visible histogram only; its exact ROI and
+colocalized counts still use the full population. Histogram memory cost as well
+as input size selects the stale-safe background worker. Threshold-only requests
+share the compatible density and run a counts-only full-ROI scan; a 192 MiB
+byte budget bounds the density cache. Interactive preparation and the Qt render
+conversion are capped at 1024 bins per axis, while the graph operation retains
+its independent 4096-bin limit. There is no sampled source population. These
+exact computational helpers still reside in `ui/plots.py`, rather than the
+Qt-free diagnostics module, and remain a known boundary seam.
+
+The separate `colocalization_scatter_plot` graph operation produces a durable
+RGB render. It derives independent native populated ranges for X and Y,
+supports symmetric percentile clipping, and separates histogram resolution
+from output raster resolution. Its output metadata uses fresh unit-scale
+Y/X pixel axes plus RGB; source micrometer calibration is not attached to plot
+pixels. `ui/colocalization_scatter_dialog.py` owns the
+resizable interactive presentation and PNG/TIFF export. It emits threshold
+changes back to the workflow host and does not own source arrays or scientific
+state, so the established stale-safe worker remains authoritative for exact
+counts.
 
 When `Filter Labels By Volume` is selected, a second histogram above the
 general histogram shows the object-volume distribution from the unfiltered

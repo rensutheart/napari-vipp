@@ -588,6 +588,14 @@ def transform_multi_input_image_state(
         acquisition=first.acquisition,
         source=first.source,
     )
+    if operation_id in {
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    }:
+        state = replace(
+            state,
+            axes=tuple(replace(axis, source_axis=None) for axis in state.axes),
+        )
     return _with_operation_kind(state, operation_id)
 
 
@@ -1246,9 +1254,44 @@ def _multi_input_axes(
             ),
         )
         return tuple(axes)
-    if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
+    if operation_id in {
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    }:
+        return _scatter_plot_axes(arr.ndim)
+    if operation_id in {
+        "colocalized_voxels",
+        "masked_colocalized_voxels",
+    }:
         return _composite_to_rgb_axes(first_axes, arr.ndim)
     return first_axes if arr.ndim == len(first_axes) else infer_axis_metadata(arr)
+
+
+def _scatter_plot_axes(output_ndim: int) -> tuple[AxisMetadata, ...]:
+    """Describe plot raster coordinates without acquisition calibration."""
+    if output_ndim != 3:
+        raise ValueError(
+            "A colocalization scatter plot must have Y, X, and RGB dimensions."
+        )
+    return (
+        AxisMetadata(
+            name="y",
+            type="space",
+            unit="pixel",
+            confidence=AXIS_CONFIDENCE_EXPLICIT,
+        ),
+        AxisMetadata(
+            name="x",
+            type="space",
+            unit="pixel",
+            confidence=AXIS_CONFIDENCE_EXPLICIT,
+        ),
+        AxisMetadata(
+            name="rgb",
+            type="channel",
+            confidence=AXIS_CONFIDENCE_EXPLICIT,
+        ),
+    )
 
 
 def _composite_to_rgb_axes(
@@ -1375,7 +1418,12 @@ def _multi_input_channels(
     operation_id: str,
     params: dict[str, Any],
 ) -> tuple[ChannelMetadata, ...]:
-    if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
+    if operation_id in {
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+        "colocalized_voxels",
+        "masked_colocalized_voxels",
+    }:
         return ()
     if operation_id != "combine_channels":
         return states[0].channels
@@ -2327,6 +2375,18 @@ def _multi_input_history(
     if operation_id in {"colocalization_metrics", "masked_colocalization_metrics"}:
         mode = str(params.get("threshold_mode", "Manual"))
         return f"{operation_title}: two-channel metrics, {mode} thresholds"
+    if operation_id in {
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+    }:
+        mode = str(params.get("threshold_mode", "Manual"))
+        bins = int(params.get("bins", 128))
+        size = int(params.get("output_size", 512))
+        percentile = float(params.get("range_percentile", 100.0))
+        return (
+            f"{operation_title}: {bins} bins, {size} x {size} RGB, "
+            f"{percentile:g}% populated range, {mode} thresholds"
+        )
     if operation_id in {"colocalized_voxels", "masked_colocalized_voxels"}:
         mode = str(params.get("threshold_mode", "Manual"))
         display = str(params.get("display_mode", "White overlay on channels"))

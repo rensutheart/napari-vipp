@@ -231,6 +231,23 @@ Dragging either guide line switches the node back to manual thresholds and
 updates the corresponding threshold parameter. The scatter plot is therefore a
 threshold review and tuning view, not an additional metric.
 
+`Colocalization Scatter Plot` and `Masked Colocalization Scatter Plot` expose
+the density as an RGB workflow output. Histogram bins and output pixels are
+separate parameters (up to 4096 on each axis). The rendered axes use
+independent native-intensity populated ranges, with an optional symmetric
+percentile clip; the default 100% setting includes the exact ROI min/max. This
+display-only clipping never changes a metric population or threshold.
+
+The inspector can open its prepared density in a resizable interactive dialog.
+Threshold movement is reflected immediately with a labelled histogram count
+estimate while the normal asynchronous calculation supplies the exact count.
+PNG and TIFF export render the plot at its current on-screen pixel dimensions.
+For bounded GUI memory, inspector and popout densities use at most 1024 bins per
+axis; the UI reports when a graph node requested more. This presentation cap
+does not alter the graph operation, which still supports 4096 histogram bins.
+Threshold-only updates reuse the compatible density and rescan the full ROI for
+authoritative counts. Density caches have an explicit byte budget.
+
 ## RACC-Like Index
 
 The `RACC Index` and `Masked RACC Index` nodes calculate a scalar image over

@@ -14,7 +14,7 @@ from napari_vipp.core.channel_colors import (
     FLUORESCENCE_COLORS,
     color_value_to_rgb,
 )
-from napari_vipp.core.operations import colocalization_display_range
+from napari_vipp.core.operations import colocalization_populated_ranges
 from napari_vipp.core.preview import _apply_monochrome_colormap
 
 COLOCALIZATION_SCATTER_BINS = 255
@@ -27,6 +27,61 @@ COLOCALIZATION_SCATTER_COLORMAPS = (
     "Gray",
 )
 SCATTER_DENSITY_CHUNK_ELEMENTS = 1_048_576
+SCATTER_DENSITY_BACKGROUND_COST_BYTES = 16 * 1024 * 1024
+COLOCALIZATION_SCATTER_CACHE_BUDGET_BYTES = 192 * 1024 * 1024
+# Plot conversion happens on Qt's GUI thread. Keep its largest float working
+# arrays near 8 MiB while the graph operation/export remains available at 4096.
+COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS = 1_024
+
+
+def colocalization_scatter_density_bytes(bins: int) -> int:
+    """Return the retained float64 density footprint for a square histogram."""
+    bins = max(int(bins), 0)
+    return bins * bins * np.dtype(np.float64).itemsize
+
+
+def colocalization_scatter_peak_bytes(bins: int) -> int:
+    """Estimate peak density accumulation memory, excluding source arrays."""
+    # The retained accumulator and np.histogram2d's temporary chunk histogram
+    # coexist during accumulation.
+    return 2 * colocalization_scatter_density_bytes(bins)
+
+
+def colocalization_scatter_requires_background(bins: int) -> bool:
+    """Whether histogram allocation alone warrants worker execution."""
+    return (
+        colocalization_scatter_peak_bytes(bins)
+        >= SCATTER_DENSITY_BACKGROUND_COST_BYTES
+    )
+
+
+def colocalization_scatter_inspector_bins(bins: int) -> int:
+    """Clamp requested graph bins to the GUI inspector's safe density limit."""
+    return int(
+        np.clip(
+            int(bins),
+            32,
+            COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS,
+        )
+    )
+
+
+def cap_colocalization_scatter_density_for_display(
+    density_counts: np.ndarray,
+) -> np.ndarray:
+    """Sum adjacent cells so GUI rendering never exceeds its bin limit."""
+    density = np.asarray(density_counts)
+    if density.ndim != 2:
+        return density
+    max_bins = COLOCALIZATION_SCATTER_INSPECTOR_MAX_BINS
+    if density.shape[0] <= max_bins and density.shape[1] <= max_bins:
+        return density
+    row_step = max(int(np.ceil(density.shape[0] / max_bins)), 1)
+    col_step = max(int(np.ceil(density.shape[1] / max_bins)), 1)
+    row_starts = np.arange(0, density.shape[0], row_step)
+    col_starts = np.arange(0, density.shape[1], col_step)
+    reduced = np.add.reduceat(density, row_starts, axis=0)
+    return np.add.reduceat(reduced, col_starts, axis=1)
 
 
 class HistogramPlot(QWidget):
@@ -348,10 +403,11 @@ def _prepare_colocalization_scatter_density(
     roi_mask: np.ndarray | None,
     intensity_max: float,
     bins: int,
+    range_percentile: float = 100.0,
     progress=None,
     chunk_elements: int = SCATTER_DENSITY_CHUNK_ELEMENTS,
-) -> tuple[np.ndarray, int, int, float, float]:
-    """Return exact density/counts and the complete native display range."""
+) -> tuple[np.ndarray, int, int, float, float, float, float]:
+    """Return exact density/counts and independent populated axis ranges."""
     ch1 = np.asarray(channel_1)
     ch2 = np.asarray(channel_2)
     if ch1.shape != ch2.shape or ch1.size == 0:
@@ -367,15 +423,17 @@ def _prepare_colocalization_scatter_density(
             )
         flat_roi = roi.reshape(-1)
 
-    bins = int(np.clip(int(bins), 32, 512))
+    bins = int(np.clip(int(bins), 32, 4_096))
     chunk_elements = int(chunk_elements)
-    display_min, display_max = colocalization_display_range(
+    range_1, range_2 = colocalization_populated_ranges(
         ch1,
         ch2,
-        configured_max=intensity_max,
-        thresholds=(threshold_1, threshold_2),
+        roi_mask=roi_mask,
+        percentile=range_percentile,
     )
-    edges = np.linspace(display_min, display_max, bins + 1)
+    del intensity_max
+    edges_1 = np.linspace(range_1[0], range_1[1], bins + 1)
+    edges_2 = np.linspace(range_2[0], range_2[1], bins + 1)
     density_counts = np.zeros((bins, bins), dtype=np.float64)
     roi_voxels = 0
     colocalized_voxels = 0
@@ -404,11 +462,69 @@ def _prepare_colocalization_scatter_density(
             chunk_density, _x_edges, _y_edges = np.histogram2d(
                 density_values_1,
                 density_values_2,
-                bins=(edges, edges),
+                bins=(edges_1, edges_2),
             )
             density_counts += chunk_density
 
-    return density_counts, roi_voxels, colocalized_voxels, display_min, display_max
+    return (
+        density_counts,
+        roi_voxels,
+        colocalized_voxels,
+        range_1[0],
+        range_1[1],
+        range_2[0],
+        range_2[1],
+    )
+
+
+def _count_colocalization_thresholds(
+    channel_1: np.ndarray,
+    channel_2: np.ndarray,
+    *,
+    threshold_1: float,
+    threshold_2: float,
+    roi_mask: np.ndarray | None,
+    progress=None,
+    chunk_elements: int = SCATTER_DENSITY_CHUNK_ELEMENTS,
+) -> tuple[int, int]:
+    """Count the complete ROI and threshold intersection without a histogram."""
+    ch1 = np.asarray(channel_1)
+    ch2 = np.asarray(channel_2)
+    if ch1.shape != ch2.shape or ch1.size == 0:
+        raise ValueError("Scatter channels must be non-empty and have matching shapes.")
+    flat_1 = ch1.reshape(-1)
+    flat_2 = ch2.reshape(-1)
+    flat_roi: np.ndarray | None = None
+    if roi_mask is not None:
+        roi = np.asarray(roi_mask, dtype=bool)
+        if roi.shape != ch1.shape:
+            raise ValueError(
+                f"ROI mask shape {roi.shape} does not match channels {ch1.shape}."
+            )
+        flat_roi = roi.reshape(-1)
+    chunk_elements = max(int(chunk_elements), 1)
+    threshold_1 = float(threshold_1)
+    threshold_2 = float(threshold_2)
+    roi_voxels = 0
+    colocalized_voxels = 0
+    for start in range(0, int(flat_1.size), chunk_elements):
+        if progress is not None:
+            progress.check_cancelled()
+        stop = min(start + chunk_elements, int(flat_1.size))
+        positive = np.greater_equal(flat_1[start:stop], threshold_1)
+        np.logical_and(
+            positive,
+            flat_2[start:stop] >= threshold_2,
+            out=positive,
+        )
+        if flat_roi is None:
+            roi_voxels += stop - start
+        else:
+            chunk_roi = flat_roi[start:stop]
+            roi_voxels += int(np.count_nonzero(chunk_roi))
+            np.logical_and(positive, chunk_roi, out=positive)
+        colocalized_voxels += int(np.count_nonzero(positive))
+    return roi_voxels, colocalized_voxels
 
 
 class ColocalizationScatterPlot(QWidget):
@@ -423,6 +539,10 @@ class ColocalizationScatterPlot(QWidget):
         self._threshold_2 = 25.0
         self._intensity_min = 0.0
         self._intensity_max = 255.0
+        self._channel_1_min = 0.0
+        self._channel_1_max = 255.0
+        self._channel_2_min = 0.0
+        self._channel_2_max = 255.0
         self._channel_1_color = QColor("#ef4444")
         self._channel_2_color = QColor("#22c55e")
         self._colormap = "Viridis"
@@ -439,6 +559,8 @@ class ColocalizationScatterPlot(QWidget):
         threshold_2: float,
         intensity_min: float = 0.0,
         intensity_max: float = 255.0,
+        channel_1_range: tuple[float, float] | None = None,
+        channel_2_range: tuple[float, float] | None = None,
         channel_1_color: object = "Red",
         channel_2_color: object = "Green",
         colormap: str = "Viridis",
@@ -448,10 +570,17 @@ class ColocalizationScatterPlot(QWidget):
         """Render worker-prepared density counts without touching source images."""
         self._threshold_1 = float(threshold_1)
         self._threshold_2 = float(threshold_2)
-        self._intensity_min = float(intensity_min)
-        self._intensity_max = float(intensity_max)
-        if self._intensity_max <= self._intensity_min:
-            self._intensity_max = self._intensity_min + 1.0
+        shared_range = (float(intensity_min), float(intensity_max))
+        self._channel_1_min, self._channel_1_max = _valid_scatter_axis_range(
+            channel_1_range or shared_range
+        )
+        self._channel_2_min, self._channel_2_max = _valid_scatter_axis_range(
+            channel_2_range or shared_range
+        )
+        # Backward-compatible union used by older callers/tests that inspect
+        # these presentation fields directly.
+        self._intensity_min = min(self._channel_1_min, self._channel_2_min)
+        self._intensity_max = max(self._channel_1_max, self._channel_2_max)
         self._channel_1_color = _qcolor_from_channel_color(
             channel_1_color,
             fallback="#ef4444",
@@ -486,6 +615,10 @@ class ColocalizationScatterPlot(QWidget):
         if not preserve_density:
             self._intensity_min = 0.0
             self._intensity_max = max(float(intensity_max), 1.0)
+            self._channel_1_min = self._intensity_min
+            self._channel_1_max = self._intensity_max
+            self._channel_2_min = self._intensity_min
+            self._channel_2_max = self._intensity_max
             self._image = None
         self.update()
 
@@ -559,6 +692,7 @@ class ColocalizationScatterPlot(QWidget):
         hist = np.asarray(density_counts)
         if hist.ndim != 2 or hist.size == 0:
             return None
+        hist = cap_colocalization_scatter_density_for_display(hist)
         values = hist.T
         if bool(log_counts):
             values = np.log1p(values)
@@ -590,16 +724,18 @@ class ColocalizationScatterPlot(QWidget):
     def _draw_labels(self, painter: QPainter, rect: QRect, plot_rect: QRect) -> None:
         metrics = painter.fontMetrics()
         axis_color = QColor("#9ca3af")
-        min_label = _format_histogram_label(self._intensity_min)
-        max_label = _format_histogram_label(self._intensity_max)
+        x_min_label = _format_histogram_label(self._channel_1_min)
+        x_max_label = _format_histogram_label(self._channel_1_max)
+        y_min_label = _format_histogram_label(self._channel_2_min)
+        y_max_label = _format_histogram_label(self._channel_2_max)
 
         painter.setPen(axis_color)
         axis_value_y = plot_rect.bottom() + metrics.ascent() + 6
-        painter.drawText(plot_rect.left(), axis_value_y, min_label)
+        painter.drawText(plot_rect.left(), axis_value_y, x_min_label)
         painter.drawText(
-            plot_rect.right() - metrics.horizontalAdvance(max_label),
+            plot_rect.right() - metrics.horizontalAdvance(x_max_label),
             axis_value_y,
-            max_label,
+            x_max_label,
         )
 
         x_label = "Ch 1 intensity"
@@ -609,12 +745,12 @@ class ColocalizationScatterPlot(QWidget):
             x_label,
         )
 
-        y_value_x = plot_rect.left() - metrics.horizontalAdvance(max_label) - 8
-        painter.drawText(y_value_x, plot_rect.top() + metrics.ascent(), max_label)
+        y_value_x = plot_rect.left() - metrics.horizontalAdvance(y_max_label) - 8
+        painter.drawText(y_value_x, plot_rect.top() + metrics.ascent(), y_max_label)
         painter.drawText(
-            plot_rect.left() - metrics.horizontalAdvance(min_label) - 8,
+            plot_rect.left() - metrics.horizontalAdvance(y_min_label) - 8,
             plot_rect.bottom(),
-            min_label,
+            y_min_label,
         )
 
         y_label = "Ch 2 intensity"
@@ -667,11 +803,14 @@ class ColocalizationScatterPlot(QWidget):
     def _plot_rect(self) -> QRect:
         rect = self.rect().adjusted(8, 8, -8, -8)
         metrics = self.fontMetrics()
-        min_label = _format_histogram_label(self._intensity_min)
-        max_label = _format_histogram_label(self._intensity_max)
+        range_labels = (
+            _format_histogram_label(self._channel_1_min),
+            _format_histogram_label(self._channel_1_max),
+            _format_histogram_label(self._channel_2_min),
+            _format_histogram_label(self._channel_2_max),
+        )
         value_width = max(
-            metrics.horizontalAdvance(min_label),
-            metrics.horizontalAdvance(max_label),
+            *(metrics.horizontalAdvance(label) for label in range_labels),
         )
         left_margin = max(56, value_width + 22)
         right_margin = 10
@@ -685,28 +824,43 @@ class ColocalizationScatterPlot(QWidget):
         return QRect(x, y, side, side)
 
     def _x_from_value(self, value: float, plot_rect: QRect) -> int:
-        span = self._intensity_max - self._intensity_min
+        span = self._channel_1_max - self._channel_1_min
         fraction = float(
-            np.clip((value - self._intensity_min) / span, 0.0, 1.0)
+            np.clip((value - self._channel_1_min) / span, 0.0, 1.0)
         )
         return plot_rect.left() + int(round(fraction * max(plot_rect.width(), 1)))
 
     def _y_from_value(self, value: float, plot_rect: QRect) -> int:
-        span = self._intensity_max - self._intensity_min
+        span = self._channel_2_max - self._channel_2_min
         fraction = float(
-            np.clip((value - self._intensity_min) / span, 0.0, 1.0)
+            np.clip((value - self._channel_2_min) / span, 0.0, 1.0)
         )
         return plot_rect.bottom() - int(round(fraction * max(plot_rect.height(), 1)))
 
     def _value_from_x(self, x: int, plot_rect: QRect) -> float:
         fraction = (float(x) - plot_rect.left()) / max(plot_rect.width(), 1)
-        span = self._intensity_max - self._intensity_min
-        return float(self._intensity_min + np.clip(fraction, 0.0, 1.0) * span)
+        span = self._channel_1_max - self._channel_1_min
+        return float(
+            self._channel_1_min + np.clip(fraction, 0.0, 1.0) * span
+        )
 
     def _value_from_y(self, y: int, plot_rect: QRect) -> float:
         fraction = (plot_rect.bottom() - float(y)) / max(plot_rect.height(), 1)
-        span = self._intensity_max - self._intensity_min
-        return float(self._intensity_min + np.clip(fraction, 0.0, 1.0) * span)
+        span = self._channel_2_max - self._channel_2_min
+        return float(
+            self._channel_2_min + np.clip(fraction, 0.0, 1.0) * span
+        )
+
+
+def _valid_scatter_axis_range(
+    values: tuple[float, float],
+) -> tuple[float, float]:
+    minimum, maximum = (float(value) for value in values)
+    if not np.isfinite(minimum) or not np.isfinite(maximum):
+        raise ValueError("Scatter axis ranges must be finite.")
+    if maximum <= minimum:
+        maximum = minimum + 1.0
+    return minimum, maximum
 
 
 def _event_position(event):

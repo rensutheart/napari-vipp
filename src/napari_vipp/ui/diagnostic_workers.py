@@ -89,6 +89,24 @@ class InputHistogramResult:
 
 
 @dataclass(frozen=True)
+class ColocalizationScatterDensity:
+    """Threshold-independent density data shared by inspector results."""
+
+    density_key: tuple
+    density_counts: object
+    channel_1_min: float
+    channel_1_max: float
+    channel_2_min: float
+    channel_2_max: float
+    range_percentile: float = 100.0
+
+    @property
+    def nbytes(self) -> int:
+        """Return the retained ndarray footprint used by the cache budget."""
+        return int(np.asarray(self.density_counts).nbytes)
+
+
+@dataclass(frozen=True)
 class ColocalizationScatterRequest:
     run_id: int
     key: tuple
@@ -99,8 +117,10 @@ class ColocalizationScatterRequest:
     threshold_2: float
     intensity_max: float = 255.0
     bins: int = COLOCALIZATION_SCATTER_BINS
+    range_percentile: float = 100.0
     cancel_event: threading.Event | None = None
     density_key: tuple = ()
+    reusable_density: ColocalizationScatterDensity | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +139,12 @@ class ColocalizationScatterResult:
     warnings: tuple[str, ...] = ()
     error: str = ""
     density_key: tuple = ()
+    channel_1_min: float | None = None
+    channel_1_max: float | None = None
+    channel_2_min: float | None = None
+    channel_2_max: float | None = None
+    range_percentile: float = 100.0
+    density_reused: bool = False
 
 
 @dataclass(frozen=True)
@@ -391,12 +417,14 @@ class ColocalizationScatterWorker(QRunnable):
         normalized_inputs: Callable[..., object],
         threshold_values: Callable[..., object],
         scatter_density: Callable[..., object],
+        scatter_counts: Callable[..., object],
     ):
         super().__init__()
         self.request = request
         self._normalized_inputs = normalized_inputs
         self._threshold_values = threshold_values
         self._scatter_density = scatter_density
+        self._scatter_counts = scatter_counts
         self.signals = _ColocalizationScatterSignals()
 
     def run(self) -> None:
@@ -405,6 +433,10 @@ class ColocalizationScatterWorker(QRunnable):
         threshold_2 = float(request.threshold_2)
         display_min = 0.0
         display_max = float(request.intensity_max)
+        channel_1_min = display_min
+        channel_1_max = display_max
+        channel_2_min = display_min
+        channel_2_max = display_max
         progress = (
             ProgressContext(cancelled=request.cancel_event.is_set)
             if request.cancel_event is not None
@@ -429,22 +461,58 @@ class ColocalizationScatterWorker(QRunnable):
             )
             if progress is not None:
                 progress.check_cancelled()
-            (
-                density_counts,
-                roi_voxels,
-                colocalized_voxels,
-                display_min,
-                display_max,
-            ) = self._scatter_density(
-                ch1,
-                ch2,
-                threshold_1=threshold_1,
-                threshold_2=threshold_2,
-                roi_mask=roi_mask,
-                intensity_max=request.intensity_max,
-                bins=request.bins,
-                progress=progress,
-            )
+            reusable = request.reusable_density
+            density_reused = reusable is not None
+            if reusable is not None:
+                density = np.asarray(reusable.density_counts)
+                if reusable.density_key != request.density_key:
+                    raise ValueError("Reusable scatter density key does not match.")
+                if density.shape != (int(request.bins), int(request.bins)):
+                    raise ValueError(
+                        "Reusable scatter density shape does not match the request."
+                    )
+                if not np.isclose(
+                    reusable.range_percentile,
+                    request.range_percentile,
+                ):
+                    raise ValueError(
+                        "Reusable scatter density range does not match the request."
+                    )
+                roi_voxels, colocalized_voxels = self._scatter_counts(
+                    ch1,
+                    ch2,
+                    threshold_1=threshold_1,
+                    threshold_2=threshold_2,
+                    roi_mask=roi_mask,
+                    progress=progress,
+                )
+                density_counts = reusable.density_counts
+                channel_1_min = float(reusable.channel_1_min)
+                channel_1_max = float(reusable.channel_1_max)
+                channel_2_min = float(reusable.channel_2_min)
+                channel_2_max = float(reusable.channel_2_max)
+            else:
+                (
+                    density_counts,
+                    roi_voxels,
+                    colocalized_voxels,
+                    channel_1_min,
+                    channel_1_max,
+                    channel_2_min,
+                    channel_2_max,
+                ) = self._scatter_density(
+                    ch1,
+                    ch2,
+                    threshold_1=threshold_1,
+                    threshold_2=threshold_2,
+                    roi_mask=roi_mask,
+                    intensity_max=request.intensity_max,
+                    bins=request.bins,
+                    range_percentile=request.range_percentile,
+                    progress=progress,
+                )
+            display_min = min(channel_1_min, channel_2_min)
+            display_max = max(channel_1_max, channel_2_max)
         except Exception as exc:
             self.signals.finished.emit(
                 ColocalizationScatterResult(
@@ -475,6 +543,12 @@ class ColocalizationScatterWorker(QRunnable):
                 colocalized_voxels=colocalized_voxels,
                 warnings=tuple(warnings),
                 density_key=request.density_key,
+                channel_1_min=channel_1_min,
+                channel_1_max=channel_1_max,
+                channel_2_min=channel_2_min,
+                channel_2_max=channel_2_max,
+                range_percentile=request.range_percentile,
+                density_reused=density_reused,
             )
         )
 
@@ -572,6 +646,7 @@ __all__ = [
     "AutoContrastRequest",
     "AutoContrastResult",
     "AutoContrastWorker",
+    "ColocalizationScatterDensity",
     "ColocalizationScatterRequest",
     "ColocalizationScatterResult",
     "ColocalizationScatterWorker",

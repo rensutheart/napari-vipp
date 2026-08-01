@@ -23,6 +23,105 @@ def _build_view() -> tuple[PipelineGraphView, PrototypePipeline]:
     return view, pipeline
 
 
+def test_node_subtitle_is_elided_but_keeps_complete_binding_tooltip(qtbot):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    binding = "very-long-acquisition-name-" * 12 + "MAGENTA.ome.tif"
+
+    view.set_node_subtitle("input", binding)
+
+    label = view._cards["input"].subtitle_label
+    assert label._full_text == binding
+    assert label.toolTip() == binding
+    assert label.isVisible()
+    assert label.text() != binding
+    assert "…" in label.text()
+
+
+def test_dragging_output_tunnel_badge_requests_source_reroute(qtbot):
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    median = pipeline.add_node("median_filter")
+    pipeline.add_output_tunnel("Raw", "input", 0)
+    assert pipeline.connect_to_tunnel("Raw", "gaussian", 0).success
+    view = PipelineGraphView()
+    view.resize(980, 520)
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        output_tunnels=pipeline.output_tunnel_list(),
+    )
+    qtbot.addWidget(view)
+    view.show()
+    qtbot.waitExposed(view)
+    requests = []
+    view.tunnel_reroute_requested.connect(
+        lambda name, node_id, port: requests.append((name, node_id, port))
+    )
+
+    source = view._proxies["input"].output_port_at(0)
+    target = view._proxies[median.id].output_port_at(0)
+    badge = source._tunnel_badge
+    start = view.mapFromScene(badge.mapToScene(badge.boundingRect().center()))
+    end = view.mapFromScene(target.mapToScene(QPointF(0, 0)))
+    qtbot.mousePress(view.viewport(), Qt.LeftButton, pos=start)
+    qtbot.mouseMove(view.viewport(), pos=end)
+
+    assert view._pending_tunnel_wire is not None
+    assert target._drop_state == "compatible"
+
+    qtbot.mouseRelease(view.viewport(), Qt.LeftButton, pos=end)
+
+    assert requests == [("Raw", median.id, 0)]
+    assert view._pending_tunnel_wire is None
+    assert target._drop_state is None
+
+
+def test_tunnel_drag_marks_cycle_producing_output_incompatible(qtbot):
+    pipeline = PrototypePipeline()
+    pipeline.reset_starter_graph()
+    pipeline.add_output_tunnel("Raw", "input", 0)
+    assert pipeline.connect_to_tunnel("Raw", "gaussian", 0).success
+    view = PipelineGraphView()
+    view.build_graph(
+        pipeline.nodes.values(),
+        pipeline.connections,
+        output_tunnels=pipeline.output_tunnel_list(),
+    )
+    qtbot.addWidget(view)
+
+    def validate(name, node_id, port_index):
+        try:
+            pipeline.validate_output_tunnel_reroute(name, node_id, port_index)
+        except ValueError as exc:
+            return "incompatible", str(exc)
+        return "compatible", ""
+
+    view.set_tunnel_reroute_validator(validate)
+    requests = []
+    messages = []
+    view.tunnel_reroute_requested.connect(
+        lambda name, node_id, port: requests.append((name, node_id, port))
+    )
+    view.status_message.connect(messages.append)
+    source = view._proxies["input"].output_port_at(0)
+    target = view._proxies["threshold"].output_port_at(0)
+    target_pos = target.mapToScene(QPointF(0, 0))
+
+    view.begin_tunnel_reroute("Raw", source.mapToScene(QPointF(0, 0)))
+    view.update_pending_tunnel_reroute(target_pos, dragging=True)
+
+    assert target._drop_state == "incompatible"
+    assert "cycle" in messages[-1]
+
+    view.release_tunnel_reroute(target_pos)
+
+    assert requests == []
+    assert pipeline.output_tunnel("Raw").source_id == "input"
+
+
 def test_center_graph_recovers_far_canvas_position_without_changing_zoom(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
