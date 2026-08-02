@@ -317,6 +317,12 @@ from napari_vipp.ui.batch import CollectionBatchActions
 from napari_vipp.ui.batch import CollectionBatchDialog as CollectionBatchDialog
 from napari_vipp.ui.batch_controller import CollectionBatchController
 from napari_vipp.ui.batch_navigator import BatchNavigator
+from napari_vipp.ui.batch_workers import (
+    CollectionBatchProgress,
+    CollectionBatchWorker,
+    CollectionBatchWorkerOutcome,
+    PreparedCollectionBatchRun,
+)
 from napari_vipp.ui.colocalization_scatter_dialog import (
     ColocalizationScatterDialog,
 )
@@ -487,6 +493,11 @@ from napari_vipp.ui.view_dims import ViewDimAxis as ViewDimAxis
 from napari_vipp.ui.view_dims import ViewDimAxisControl as ViewDimAxisControl
 from napari_vipp.ui.view_dims import ViewDimsBar as ViewDimsBar
 from napari_vipp.ui.workers import PipelineRunWorker as PipelineRunWorker
+from napari_vipp.ui.workflow_tabs import (
+    WorkflowTabBar,
+    WorkflowTabModel,
+    WorkflowTabSession,
+)
 
 _provisional_generated_layer_contrast_limits = (
     provisional_generated_layer_contrast_limits
@@ -578,6 +589,18 @@ class _IsolatedTuningSnapshot:
     undo_stack: tuple[WorkflowHistorySnapshot, ...]
     redo_stack: tuple[WorkflowHistorySnapshot, ...]
     batch_workflow_stale: bool
+
+
+@dataclass(slots=True)
+class _CollectionBatchJobContext:
+    """GUI-owned state for one detached collection batch."""
+
+    job_id: int
+    origin_session_id: str
+    dialog: CollectionBatchDialog
+    validation_config_path: Path | None
+    total: int
+    graph_refresh_pending: bool = False
 
 RESCALE_VALUE_PARAMETERS = {"in_low_value", "in_high_value"}
 RESCALE_PERCENTILE_PARAMETERS = {"in_low_percentile", "in_high_percentile"}
@@ -1046,11 +1069,54 @@ class VippWidget(QWidget):
     TOOLBAR_HIDE_ZOOM_WIDTH = 1100
     TOOLBAR_HIDE_COMPUTE_WIDTH = 1350
     TOOLBAR_HIDE_COMPUTE_STATUS_WIDTH = 1500
+    WORKFLOW_TAB_RUNTIME_FIELDS = (
+        "_source_inspection_cache",
+        "_psf_preflight_cache",
+        "_file_source_payload_cache",
+        "_file_source_path_identities",
+        "_interactive_collection_source_paths",
+        "_interactive_collection_batch_items",
+        "_interactive_collection_batch_config",
+        "_interactive_collection_batch_config_path",
+        "_interactive_collection_batch_index",
+        "_interactive_collection_batch_requested_index",
+        "_interactive_collection_batch_failed_index",
+        "_interactive_collection_batch_plan_stale",
+        "_interactive_collection_batch_workflow_stale",
+        "_active_collection_batch_dialog",
+        "_collection_batch_graph_refresh_pending",
+        "_rescale_auto_output_ranges",
+        "_pending_dirty_node_ids",
+        "_pending_manual_node_ids",
+        "_last_pipeline_source_signature",
+        "_recent_cache_node_ids",
+        "_thumbnail_contrast_limit_cache",
+        "_input_histogram_cache",
+        "_input_histogram_distribution_cache",
+        "_label_volume_cache",
+        "_output_histogram_cache",
+        "_colocalization_scatter_cache",
+        "_colocalization_scatter_density_cache",
+        "_accepted_compute_decisions",
+        "_compute_decision_environments",
+        "_stale_compute_badge_node_ids",
+        "_last_execution_report",
+        "_vipp_current_step",
+        "_vipp_current_nsteps",
+        "_node_benchmark_dialog",
+        "_node_benchmark_baseline",
+        "_pipeline_optimizer_dialog",
+        "_pipeline_optimizer_baseline",
+        "_pipeline_optimizer_source_signature",
+        "_colocalization_scatter_dialog",
+        "_tunnel_manager_dialog",
+    )
 
     def __init__(self, viewer: napari.viewer.Viewer, parent=None):
         super().__init__(parent)
         self.viewer = viewer
         self._closing = False
+        self._was_ever_visible = False
         self._lifecycle = WidgetLifecycle(self)
         self._live_source_adapter = LiveLayerSourceAdapter(
             self._on_live_source_invalidated
@@ -1087,6 +1153,9 @@ class VippWidget(QWidget):
         self._active_collection_batch_dialog: CollectionBatchDialog | None = None
         self._collection_batch_running = False
         self._collection_batch_graph_refresh_pending = False
+        self._collection_batch_job_serial = 0
+        self._active_collection_batch_job: _CollectionBatchJobContext | None = None
+        self._collection_batch_workers: dict[int, CollectionBatchWorker] = {}
         self._last_workflow_load_detail = ""
         self._active_source_load_id: int | None = None
         self._source_load_serial = 0
@@ -1095,6 +1164,7 @@ class VippWidget(QWidget):
         self._dock_window_behavior_configured = False
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
+        self._workflow_tabs = WorkflowTabModel()
         # Kept as aliases while downstream tests and integrations transition to
         # the explicit session-history component.
         self._undo_stack = self._history.undo_stack
@@ -1147,6 +1217,7 @@ class VippWidget(QWidget):
         self._colocalization_scatter_serial = 0
         self._active_colocalization_scatter_run_id: int | None = None
         self._active_colocalization_scatter_key: tuple | None = None
+        self._active_colocalization_scatter_density_key: tuple | None = None
         self._active_colocalization_scatter_cancel_event: (
             threading.Event | None
         ) = None
@@ -1481,6 +1552,7 @@ class VippWidget(QWidget):
         )
         self.graph_view.setMinimumHeight(80)
         self.graph_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        self.workflow_tab_bar = WorkflowTabBar(self)
         self.left_panel_toggle = SidePanelToggleButton("left")
         self.left_panel_toggle.setObjectName("LeftPanelToggle")
         self.right_panel_toggle = SidePanelToggleButton("right")
@@ -1490,6 +1562,8 @@ class VippWidget(QWidget):
         self._right_panel_last_width = self._default_splitter_sizes[2]
         self._pipeline_thread_pool = QThreadPool(self)
         self._pipeline_thread_pool.setMaxThreadCount(1)
+        self._collection_batch_thread_pool = QThreadPool(self)
+        self._collection_batch_thread_pool.setMaxThreadCount(1)
         self._compute_setup_thread_pool = QThreadPool(self)
         self._compute_setup_thread_pool.setMaxThreadCount(1)
         self._node_benchmark_thread_pool = QThreadPool(self)
@@ -1713,6 +1787,7 @@ class VippWidget(QWidget):
         self._sync_toolbar_responsive_mode()
         self._autobind_default_image_sources()
         self._build_graph_from_pipeline()
+        self._initialize_workflow_tabs()
         self._collection_batch_controller = CollectionBatchController(
             workflow_document_provider=self._batch_workflow_document,
             pipeline_provider=lambda: self.pipeline,
@@ -1720,13 +1795,97 @@ class VippWidget(QWidget):
         self._select_node(self._selected_node_id)
         self.run_pipeline()
         self._sync_history_actions()
+        initial_session = self._workflow_tabs.current
+        if initial_session is not None:
+            initial_session.mark_clean(
+                self._current_history_snapshot(),
+                persistence_token=self._workflow_tab_persistence_token(),
+            )
+            self._store_workflow_tab_runtime(initial_session)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
 
     def closeEvent(self, event):  # noqa: N802
+        if self._closing:
+            super().closeEvent(event)
+            return
+        if self._collection_batch_running:
+            self._set_status(
+                "Wait for the collection batch to finish before closing VIPP.",
+                severity=MessageSeverity.INFO,
+            )
+            event.ignore()
+            return
+        if not self._confirm_close_dirty_workflow_tabs():
+            event.ignore()
+            return
         if self._colocalization_scatter_dialog is not None:
             self._colocalization_scatter_dialog.close()
+        for session in self._workflow_tabs:
+            adapter = session.runtime_cache.get("_live_source_adapter")
+            if isinstance(adapter, LiveLayerSourceAdapter):
+                adapter.shutdown()
         self._lifecycle.shutdown()
         self._restore_hidden_input_layers()
         super().closeEvent(event)
+
+    def _confirm_close_dirty_workflow_tabs(self) -> bool:
+        """Resolve every unsaved tab before allowing terminal widget shutdown."""
+        current = self._workflow_tabs.current
+        if current is not None and current.pipeline is self.pipeline:
+            self._finish_parameter_history_group()
+            self._remember_current_inspect_display_profiles()
+            self._sync_current_workflow_tab_state()
+            self._store_workflow_tab_runtime(current)
+
+        dirty_ids = [
+            session.session_id for session in self._workflow_tabs if session.dirty
+        ]
+        if not dirty_ids:
+            return True
+
+        # A never-presented standalone widget has no user-authored editor
+        # session. Allow deterministic headless-test teardown, but retain close
+        # protection after a real widget has merely been hidden.
+        if not self._was_ever_visible:
+            return True
+
+        for session_id in dirty_ids:
+            session = self._workflow_tab_session(session_id)
+            if session is None or not session.dirty:
+                continue
+            answer = QMessageBox.question(
+                self,
+                "Unsaved workflow",
+                f"Save changes to '{session.title}' before closing VIPP?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Cancel:
+                self.status_label.setText("VIPP close cancelled.")
+                return False
+            if answer == QMessageBox.Discard:
+                continue
+            if answer != QMessageBox.Save:
+                self.status_label.setText("VIPP close cancelled.")
+                return False
+
+            try:
+                index = self._workflow_tabs.index_of(session_id)
+            except KeyError:
+                continue
+            if not self._workflow_tab_is_active(session_id):
+                if not self._activate_workflow_tab(index):
+                    self.status_label.setText(
+                        "Could not safely activate an unsaved workflow for saving; "
+                        "VIPP remains open."
+                    )
+                    return False
+            if not self._save_workflow_dialog():
+                self.status_label.setText(
+                    f"VIPP remains open because '{session.title}' was not saved."
+                )
+                return False
+        return True
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
@@ -1749,6 +1908,7 @@ class VippWidget(QWidget):
         return super().eventFilter(watched, event)
 
     def showEvent(self, event):  # noqa: N802
+        self._was_ever_visible = True
         super().showEvent(event)
         if self._closing:
             return
@@ -2427,6 +2587,7 @@ class VippWidget(QWidget):
         panel_controls.addWidget(self.graph_search_status)
         panel_controls.addStretch(1)
         panel_controls.addWidget(self.right_panel_toggle)
+        layout.addWidget(self.workflow_tab_bar)
         layout.addLayout(panel_controls)
         layout.addWidget(self.graph_view, 1)
         return panel
@@ -2568,6 +2729,19 @@ class VippWidget(QWidget):
 
     def _connect_signals(self) -> None:
         self.new_workflow_button.clicked.connect(self._new_workflow_dialog)
+        self.workflow_tab_bar.newTabRequested.connect(self._new_workflow_dialog)
+        self.workflow_tab_bar.activateTabRequested.connect(
+            self._on_workflow_tab_activation_requested
+        )
+        self.workflow_tab_bar.closeTabRequested.connect(
+            self._close_workflow_tab
+        )
+        self.workflow_tab_bar.renameTabRequested.connect(
+            self._rename_workflow_tab
+        )
+        self.workflow_tab_bar.tabsReordered.connect(
+            self._reorder_workflow_tabs
+        )
         self.open_example_button.clicked.connect(self._open_example_workflow_dialog)
         self.auto_structure_button.clicked.connect(self._auto_structure_graph)
         self.refresh_button.clicked.connect(self._refresh_and_run)
@@ -2748,6 +2922,7 @@ class VippWidget(QWidget):
 
     def _toggle_right_panel(self) -> None:
         self._set_right_panel_visible(self.inspector_panel.isHidden())
+        self._sync_current_workflow_tab_state()
 
     def _on_graph_zoom_slider_changed(self, value: int) -> None:
         self.graph_view.set_zoom_percent(float(value))
@@ -4101,6 +4276,501 @@ class VippWidget(QWidget):
         self._update_histogram()
         self._sync_view_dims_bar()
 
+    def _initialize_workflow_tabs(self) -> None:
+        """Wrap the initial live editor in the first retained tab session."""
+        snapshot = self._current_history_snapshot()
+        persistence_token = self._workflow_tab_persistence_token()
+        session = WorkflowTabSession(
+            self.pipeline,
+            snapshot,
+            history=self._history,
+            title="Untitled",
+            title_is_custom=False,
+            persistence_token=persistence_token,
+        )
+        self._workflow_tabs.add(session)
+
+        # The constructor's temporary adapter predates the session id. Replace
+        # it before the first run so callbacks can never target another tab
+        # that happens to reuse an input node id.
+        self._live_source_adapter.shutdown()
+        self._live_source_adapter = self._new_tab_live_source_adapter(
+            session.session_id
+        )
+        self._live_source_node_layers = {}
+        self._store_workflow_tab_runtime(session)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+
+    def _workflow_tab_persistence_token(self) -> str:
+        """Fingerprint state that a workflow save may persist outside history."""
+        batch_values = None
+        dialog = self._active_collection_batch_dialog
+        if dialog is not None:
+            try:
+                batch_values = dialog.values()
+            except Exception:
+                batch_values = {"workspace": "unavailable"}
+        return canonical_digest(
+            {
+                "metadata": self._workflow_metadata(),
+                "batch_workspace": batch_values,
+            }
+        )
+
+    def _sync_current_workflow_tab_state(self) -> None:
+        """Capture dirty/editor state and refresh its tab marker immediately."""
+        session = self._workflow_tabs.current
+        if session is None or session.pipeline is not self.pipeline:
+            return
+        session.capture_editor_snapshot(
+            self._current_history_snapshot(),
+            persistence_token=self._workflow_tab_persistence_token(),
+        )
+        try:
+            index = self._workflow_tabs.index_of(session.session_id)
+            self.workflow_tab_bar.refresh_session(index, session)
+        except (IndexError, KeyError, ValueError):
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+
+    def _store_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
+        """Move no state: retain references to this tab's live runtime objects."""
+        for name in self.WORKFLOW_TAB_RUNTIME_FIELDS:
+            session.runtime_cache[name] = getattr(self, name)
+        session.runtime_cache["_live_source_adapter"] = self._live_source_adapter
+        session.runtime_cache["_live_source_node_layers"] = (
+            self._live_source_node_layers
+        )
+        session.runtime_cache["_right_panel_visible"] = not (
+            self.inspector_panel.isHidden()
+        )
+
+    def _fresh_workflow_tab_runtime(
+        self,
+        session: WorkflowTabSession,
+    ) -> dict[str, object]:
+        return {
+            "_source_inspection_cache": {},
+            "_psf_preflight_cache": {},
+            "_file_source_payload_cache": {},
+            "_file_source_path_identities": {},
+            "_interactive_collection_source_paths": {},
+            "_interactive_collection_batch_items": (),
+            "_interactive_collection_batch_config": None,
+            "_interactive_collection_batch_config_path": None,
+            "_interactive_collection_batch_index": -1,
+            "_interactive_collection_batch_requested_index": -1,
+            "_interactive_collection_batch_failed_index": -1,
+            "_interactive_collection_batch_plan_stale": False,
+            "_interactive_collection_batch_workflow_stale": False,
+            "_active_collection_batch_dialog": None,
+            "_collection_batch_graph_refresh_pending": False,
+            "_rescale_auto_output_ranges": {},
+            "_pending_dirty_node_ids": set(),
+            "_pending_manual_node_ids": set(),
+            "_last_pipeline_source_signature": None,
+            "_recent_cache_node_ids": [],
+            "_thumbnail_contrast_limit_cache": {},
+            "_input_histogram_cache": {},
+            "_input_histogram_distribution_cache": {},
+            "_label_volume_cache": {},
+            "_output_histogram_cache": {},
+            "_colocalization_scatter_cache": {},
+            "_colocalization_scatter_density_cache": {},
+            "_accepted_compute_decisions": {},
+            "_compute_decision_environments": {},
+            "_stale_compute_badge_node_ids": set(),
+            "_last_execution_report": None,
+            "_vipp_current_step": None,
+            "_vipp_current_nsteps": None,
+            "_node_benchmark_dialog": None,
+            "_node_benchmark_baseline": None,
+            "_pipeline_optimizer_dialog": None,
+            "_pipeline_optimizer_baseline": None,
+            "_pipeline_optimizer_source_signature": None,
+            "_colocalization_scatter_dialog": None,
+            "_tunnel_manager_dialog": None,
+            "_live_source_adapter": self._new_tab_live_source_adapter(
+                session.session_id
+            ),
+            "_live_source_node_layers": {},
+            "_right_panel_visible": True,
+        }
+
+    def _restore_workflow_tab_runtime(self, session: WorkflowTabSession) -> None:
+        runtime = session.runtime_cache
+        if not runtime:
+            runtime.update(self._fresh_workflow_tab_runtime(session))
+        for name in self.WORKFLOW_TAB_RUNTIME_FIELDS:
+            setattr(self, name, runtime[name])
+        self._live_source_adapter = runtime["_live_source_adapter"]
+        self._live_source_node_layers = runtime["_live_source_node_layers"]
+        self._set_right_panel_visible(bool(runtime["_right_panel_visible"]))
+
+    def _new_tab_live_source_adapter(
+        self,
+        session_id: str,
+    ) -> LiveLayerSourceAdapter:
+        return LiveLayerSourceAdapter(
+            lambda layer, tab_id=session_id: (
+                self._on_workflow_tab_live_source_invalidated(tab_id, layer)
+            )
+        )
+
+    def _on_workflow_tab_live_source_invalidated(
+        self,
+        session_id: str,
+        layer,
+    ) -> None:
+        current = self._workflow_tabs.current
+        if current is not None and current.session_id == session_id:
+            self._on_live_source_invalidated(layer)
+            return
+        try:
+            session = self._workflow_tabs[
+                self._workflow_tabs.index_of(session_id)
+            ]
+        except (IndexError, KeyError):
+            return
+        bindings = session.runtime_cache.get("_live_source_node_layers", {})
+        node_ids = {
+            node_id
+            for node_id, bound_layer in dict(bindings).items()
+            if bound_layer is layer and node_id in session.pipeline.nodes
+        }
+        if not node_ids:
+            return
+        affected = session.pipeline.descendants_inclusive(node_ids)
+        session.pipeline.mark_nodes_stale(
+            affected,
+            message=(
+                "Live source changed while this workflow tab was inactive. "
+                "Calculate to refresh the retained result."
+            ),
+        )
+        pending = session.runtime_cache.get("_pending_dirty_node_ids")
+        if isinstance(pending, set):
+            pending.update(node_ids)
+        session.runtime_cache["_last_pipeline_source_signature"] = None
+
+    def _workflow_tab_switch_block_reason(self) -> str:
+        # Requests not yet handed to a worker are disposable presentation work.
+        # Dropping them is safer than making a newly opened widget appear
+        # permanently busy before Qt has had an opportunity to dispatch them.
+        if self._active_thumbnail_contrast_run_id is None:
+            self._queued_thumbnail_contrast_limit_requests.clear()
+            self._pending_thumbnail_contrast_limit_keys.clear()
+            self._thumbnail_contrast_busy_visible = False
+        if self._active_input_histogram_run_id is None:
+            self._pending_input_histogram_request = None
+        if self._active_output_histogram_run_id is None:
+            self._pending_output_histogram_request = None
+        if self._active_colocalization_scatter_run_id is None:
+            self._pending_colocalization_scatter_request = None
+        if self._debounce_timer.isActive():
+            return "the pending parameter edit is calculated"
+        if self._isolated_tuning_node_id is not None:
+            return "isolated tuning is applied or cancelled"
+        if self._active_pipeline_run_id is not None or self._pipeline_run_pending:
+            return "the graph calculation finishes"
+        if self._active_source_load_id is not None or self._source_load_pending:
+            return "the source load finishes"
+        if self._active_thumbnail_contrast_run_id is not None:
+            return "thumbnail contrast calculation finishes"
+        if (
+            self._active_input_histogram_run_id is not None
+            or self._pending_input_histogram_request is not None
+            or self._active_output_histogram_run_id is not None
+            or self._pending_output_histogram_request is not None
+        ):
+            return "the histogram calculation finishes"
+        if (
+            self._active_colocalization_scatter_run_id is not None
+            or self._pending_colocalization_scatter_request is not None
+        ):
+            return "the colocalization plot calculation finishes"
+        if self._active_auto_contrast_run_id is not None:
+            return "auto contrast finishes"
+        if self._generated_layer_contrast_pending:
+            return "display contrast calculation finishes"
+        if (
+            self._compute_setup_dialog is not None
+            and self._compute_setup_dialog.checking
+        ):
+            return "compute diagnostics finish"
+        if (
+            self._node_benchmark_dialog is not None
+            and self._node_benchmark_dialog.running
+        ):
+            return "the node benchmark finishes"
+        if (
+            self._pipeline_optimizer_dialog is not None
+            and self._pipeline_optimizer_dialog.running
+        ):
+            return "pipeline optimization finishes"
+        return ""
+
+    def _reset_workflow_tab_bar_selection(self) -> None:
+        with QSignalBlocker(self.workflow_tab_bar):
+            self.workflow_tab_bar.setCurrentIndex(
+                self._workflow_tabs.current_index
+            )
+
+    def _on_workflow_tab_activation_requested(self, bar_index: int) -> None:
+        if bar_index < 0:
+            self._reset_workflow_tab_bar_selection()
+            return
+        session_id = self.workflow_tab_bar.tabData(bar_index)
+        try:
+            target_index = self._workflow_tabs.index_of(str(session_id))
+        except KeyError:
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
+        if target_index == self._workflow_tabs.current_index:
+            return
+        if not self._activate_workflow_tab(target_index):
+            self._reset_workflow_tab_bar_selection()
+
+    def _activate_workflow_tab(
+        self,
+        target_index: int,
+        *,
+        check_safety: bool = True,
+    ) -> bool:
+        if not 0 <= target_index < len(self._workflow_tabs):
+            return False
+        if target_index == self._workflow_tabs.current_index:
+            return True
+        reason = self._workflow_tab_switch_block_reason() if check_safety else ""
+        if reason:
+            self.status_label.setText(
+                f"Wait until {reason} before switching workflow tabs."
+            )
+            return False
+
+        current = self._workflow_tabs.current
+        if current is not None:
+            self._finish_parameter_history_group()
+            self._remember_current_inspect_display_profiles()
+            self._sync_current_workflow_tab_state()
+            self._store_workflow_tab_runtime(current)
+            for name in (
+                "_active_collection_batch_dialog",
+                "_node_benchmark_dialog",
+                "_pipeline_optimizer_dialog",
+                "_colocalization_scatter_dialog",
+                "_tunnel_manager_dialog",
+            ):
+                dialog = getattr(self, name, None)
+                if dialog is not None:
+                    dialog.hide()
+        self._discard_inspect_layers()
+        pinned_layer = self._active_pinned_layer()
+        if pinned_layer is not None:
+            self._remove_layer(pinned_layer)
+        self._restore_hidden_input_layers()
+
+        session = self._workflow_tabs.activate(target_index)
+        batch_outcome_presented = self._install_workflow_tab_session(session)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        if not batch_outcome_presented:
+            self.status_label.setText(f"Switched to workflow '{session.title}'.")
+        return True
+
+    def _install_workflow_tab_session(
+        self,
+        session: WorkflowTabSession,
+    ) -> bool:
+        """Atomically bind widget aliases and presentation to ``session``."""
+        self.pipeline = session.pipeline
+        self._history = session.history
+        self._undo_stack = self._history.undo_stack
+        self._redo_stack = self._history.redo_stack
+        self._restore_workflow_tab_runtime(session)
+        self._present_workflow_tab_editor(session.editor_snapshot)
+        batch_job = self._active_collection_batch_job
+        batch_still_owns_session = (
+            self._collection_batch_running
+            and batch_job is not None
+            and batch_job.origin_session_id == session.session_id
+        )
+        if (
+            self._collection_batch_graph_refresh_pending
+            and not batch_still_owns_session
+        ):
+            self._collection_batch_graph_refresh_pending = False
+            session.runtime_cache[
+                "_collection_batch_graph_refresh_pending"
+            ] = False
+            self._queue_workflow_tab_pipeline_refresh(session.session_id)
+        if batch_still_owns_session:
+            self.batch_navigator.set_navigation_enabled(False)
+            return False
+        return self._consume_workflow_tab_batch_outcome(session)
+
+    def _consume_workflow_tab_batch_outcome(
+        self,
+        session: WorkflowTabSession,
+    ) -> bool:
+        """Present one terminal batch result retained while its tab was inactive."""
+        runtime = session.runtime_cache
+        error = str(runtime.pop("_collection_batch_last_error", "") or "")
+        summary = str(runtime.pop("_collection_batch_last_summary", "") or "")
+        total = int(runtime.pop("_collection_batch_last_total", 0) or 0)
+        if total > 0:
+            self.batch_navigator.begin_batch_progress(total)
+        if error:
+            self.batch_navigator.set_navigation_enabled(True)
+            self.batch_navigator.fail_batch_progress(f"Batch failed: {error}")
+            self._set_status(
+                f"Batch failed: {error}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+            return True
+        if summary:
+            self.batch_navigator.set_navigation_enabled(True)
+            self.batch_navigator.finish_batch_progress(summary)
+            self.status_label.setText(summary)
+            return True
+        return False
+
+    def _queue_workflow_tab_pipeline_refresh(self, session_id: str) -> None:
+        QTimer.singleShot(
+            0,
+            lambda origin_id=session_id: (
+                self._run_queued_workflow_tab_pipeline_refresh(origin_id)
+            ),
+        )
+
+    def _run_queued_workflow_tab_pipeline_refresh(self, session_id: str) -> None:
+        """Run a deferred refresh only in the tab that requested it."""
+        session = self._workflow_tab_session(session_id)
+        if session is None:
+            return
+        if not self._workflow_tab_is_active(session_id):
+            session.runtime_cache[
+                "_collection_batch_graph_refresh_pending"
+            ] = True
+            return
+        self._collection_batch_graph_refresh_pending = False
+        session.runtime_cache["_collection_batch_graph_refresh_pending"] = False
+        self.run_pipeline()
+
+    def _present_workflow_tab_editor(
+        self,
+        snapshot: WorkflowHistorySnapshot,
+    ) -> None:
+        """Rebuild Qt presentation around retained state without recomputing."""
+        workflow = snapshot.workflow
+        valid_node_ids = set(self.pipeline.nodes)
+        self._compute_mode = ComputeMode.parse(snapshot.compute_mode)
+        self._compute_fallback_policy = FallbackPolicy.parse(
+            snapshot.compute_fallback_policy
+        )
+        self._compute_node_preferences = {
+            node_id: NodeComputePreference(kind, value)
+            for node_id, kind, value in snapshot.compute_node_preferences
+            if node_id in valid_node_ids
+        }
+        self._compute_optimizer_locked_node_ids = {
+            node_id
+            for node_id in snapshot.compute_optimizer_locked_node_ids
+            if node_id in self._compute_node_preferences
+        }
+        self._compute_precision_policy_id = (
+            workflow.compute_request.precision_policy_id
+        )
+        self._compute_workload_policy_id = (
+            workflow.compute_request.workload_policy_id
+        )
+        with QSignalBlocker(self.compute_mode_combo):
+            self.compute_mode_combo.setCurrentIndex(
+                self.compute_mode_combo.findData(self._compute_mode.value)
+            )
+        with QSignalBlocker(self.strict_compute_checkbox):
+            self.strict_compute_checkbox.setChecked(
+                self._compute_fallback_policy is FallbackPolicy.STRICT
+            )
+
+        self._load_inspect_display_profiles(
+            snapshot.inspect_display_profiles,
+            valid_node_ids,
+        )
+        self._preview_disabled_node_ids = (
+            set(snapshot.preview_disabled_node_ids) & valid_node_ids
+        )
+        self._active_pinned_node_id = (
+            snapshot.active_pinned_node_id
+            if snapshot.active_pinned_node_id in valid_node_ids
+            else None
+        )
+        selected = (
+            snapshot.selected_node_id
+            if snapshot.selected_node_id in valid_node_ids
+            else (next(iter(self.pipeline.nodes), ""))
+        )
+        self._selected_node_id = selected
+        self._restore_graph_notes(note.to_mapping() for note in workflow.notes)
+        self.graph_view.build_graph(
+            self.pipeline.nodes.values(),
+            self.pipeline.connections,
+            workflow.positions_dict(),
+            output_tunnels=self.pipeline.output_tunnel_list(),
+            notes=self._graph_note_documents(use_view_positions=False),
+        )
+        self._sync_all_input_ports()
+        self._sync_all_output_ports()
+        self._sync_all_compute_badges()
+        self._refresh_graph_search_matches(reset_index=True)
+
+        # These are presentation-only generations. Unsafe workers are blocked
+        # before switching, so discarding them cannot affect scientific output.
+        self._queued_thumbnail_contrast_limit_requests = {}
+        self._pending_thumbnail_contrast_limit_keys = set()
+        self._active_thumbnail_contrast_run_id = None
+        self._thumbnail_contrast_busy_visible = False
+        self._active_input_histogram_run_id = None
+        self._pending_input_histogram_request = None
+        self._current_input_histogram_key = None
+        self._active_output_histogram_run_id = None
+        self._pending_output_histogram_request = None
+        self._current_output_histogram_key = None
+        self._active_colocalization_scatter_run_id = None
+        self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_density_key = None
+        self._active_colocalization_scatter_cancel_event = None
+        self._pending_colocalization_scatter_request = None
+        self._current_colocalization_scatter_key = None
+        self._displayed_colocalization_scatter_density_key = None
+        self._generated_layer_contrast_generation += 1
+        self._generated_layer_contrast_cache = {}
+        self._generated_layer_contrast_pending = set()
+        self._generated_layer_contrast_keys = {}
+        self._background_execution_state_overrides = {}
+        self._background_node_result_overrides = {}
+        self._inflight_dirty_node_ids = None
+        self._pipeline_run_pending = False
+
+        self._workflow_load_selection_in_progress = True
+        try:
+            if selected:
+                self.graph_view.select_node(selected)
+            else:
+                self._select_first_available_node()
+        finally:
+            self._workflow_load_selection_in_progress = False
+        self._sync_pin_ui()
+        self._refresh_pinned_layer_if_active()
+        self._update_thumbnails()
+        self._sync_interactive_collection_batch_navigator()
+        self._sync_view_dims_bar()
+        self._update_metadata_panel()
+        self._update_histogram()
+        self._sync_execution_ui()
+        self._sync_compute_toolbar_summary()
+        self._refresh_cache_status()
+        self._sync_history_actions()
+
     def undo(self) -> None:
         """Restore the previous workflow graph snapshot."""
         if self._isolated_tuning_node_id is not None:
@@ -4114,6 +4784,7 @@ class VippWidget(QWidget):
             return
         self._restore_history_snapshot(snapshot)
         self._sync_history_actions()
+        self._sync_current_workflow_tab_state()
         self.status_label.setText("Undid last workflow edit.")
 
     def redo(self) -> None:
@@ -4127,6 +4798,7 @@ class VippWidget(QWidget):
             return
         self._restore_history_snapshot(snapshot)
         self._sync_history_actions()
+        self._sync_current_workflow_tab_state()
         self.status_label.setText("Redid workflow edit.")
 
     def _current_history_snapshot(
@@ -4188,6 +4860,7 @@ class VippWidget(QWidget):
         snapshot = snapshot or self._current_history_snapshot()
         if self._history.push(snapshot):
             self._sync_history_actions()
+        self._sync_current_workflow_tab_state()
 
     def _push_undo_if_changed(self, before: WorkflowHistorySnapshot) -> None:
         if before != self._current_history_snapshot():
@@ -5524,40 +6197,182 @@ class VippWidget(QWidget):
         return ref
 
     def _new_workflow_dialog(self) -> None:
-        answer = QMessageBox.question(
-            self,
-            "New workflow",
-            "Create a new empty workflow? This will erase the current graph and "
-            "any unsaved changes.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
         self._new_workflow()
 
     def _new_workflow(self) -> None:
-        if self._isolated_tuning_node_id is not None:
-            self._apply_isolated_tuning(run=False, announce=False)
-        self._finish_parameter_history_group()
-        self._clear_interactive_collection_batch_session()
-        before = self._current_history_snapshot()
-        self._discard_inspect_layers()
-        self._inspect_display_profiles.clear()
-        self.pipeline.reset_empty_graph()
-        self._compute_node_preferences.clear()
-        self._compute_optimizer_locked_node_ids.clear()
-        self._reset_compute_decisions()
-        self._preview_disabled_node_ids.clear()
-        self._rescale_auto_output_ranges.clear()
-        self._graph_notes.clear()
-        self._clear_active_pin(status=False)
-        self._build_graph_from_pipeline()
-        self._select_node("input")
-        self._invalidate_pipeline_cache()
-        self.run_pipeline()
-        self._push_undo_if_changed(before)
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            self.status_label.setText(
+                f"Wait until {reason} before creating a workflow tab."
+            )
+            return
+        session = self._workflow_tabs.create_blank(make_current=False)
+        session.pipeline.outputs["input"] = None
+        session.pipeline.output_states["input"] = None
+        target_index = self._workflow_tabs.index_of(session.session_id)
+        if not self._activate_workflow_tab(target_index, check_safety=False):
+            self._workflow_tabs.close(target_index, discard_unsaved=True)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
+        snapshot = self._current_history_snapshot()
+        persistence_token = self._workflow_tab_persistence_token()
+        session.mark_clean(
+            snapshot,
+            persistence_token=persistence_token,
+        )
+        self._store_workflow_tab_runtime(session)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         self.status_label.setText("New empty workflow created.")
+
+    def _close_workflow_tab(self, bar_index: int) -> None:
+        if bar_index < 0:
+            self._reset_workflow_tab_bar_selection()
+            return
+        session_id = self.workflow_tab_bar.tabData(bar_index)
+        try:
+            index = self._workflow_tabs.index_of(str(session_id))
+        except KeyError:
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
+        batch_job = self._active_collection_batch_job
+        if batch_job is not None and batch_job.origin_session_id == str(session_id):
+            self.status_label.setText(
+                "Wait for this workflow's collection batch to finish before "
+                "closing its tab."
+            )
+            self._reset_workflow_tab_bar_selection()
+            return
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            self.status_label.setText(
+                f"Wait until {reason} before closing a workflow tab."
+            )
+            self._reset_workflow_tab_bar_selection()
+            return
+
+        original_session = self._workflow_tabs.current
+        session = self._workflow_tabs[index]
+        if session is self._workflow_tabs.current:
+            self._sync_current_workflow_tab_state()
+            self._store_workflow_tab_runtime(session)
+        if session.dirty:
+            answer = QMessageBox.question(
+                self,
+                "Unsaved workflow",
+                f"Save changes to '{session.title}' before closing its tab?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+            if answer == QMessageBox.Cancel:
+                self._reset_workflow_tab_bar_selection()
+                return
+            if answer == QMessageBox.Save:
+                restore_original = session is not original_session
+                if session is not self._workflow_tabs.current:
+                    if not self._activate_workflow_tab(index, check_safety=False):
+                        return
+                saved = self._save_workflow_dialog()
+                if restore_original and original_session is not None:
+                    try:
+                        original_index = self._workflow_tabs.index_of(
+                            original_session.session_id
+                        )
+                    except KeyError:
+                        original_index = -1
+                    if original_index < 0 or not self._activate_workflow_tab(
+                        original_index,
+                        check_safety=False,
+                    ):
+                        self.status_label.setText(
+                            "Could not restore the active workflow after saving; "
+                            "the tab remains open."
+                        )
+                        self._reset_workflow_tab_bar_selection()
+                        return
+                if not saved:
+                    self._reset_workflow_tab_bar_selection()
+                    return
+                index = self._workflow_tabs.index_of(session.session_id)
+
+        closing_current = session is self._workflow_tabs.current
+        replacement: WorkflowTabSession | None = None
+        if closing_current:
+            self._remember_current_inspect_display_profiles()
+            self._discard_inspect_layers()
+            pinned_layer = self._active_pinned_layer()
+            if pinned_layer is not None:
+                self._remove_layer(pinned_layer)
+            self._restore_hidden_input_layers()
+            if len(self._workflow_tabs) == 1:
+                replacement = self._workflow_tabs.create_blank(make_current=False)
+                replacement.pipeline.outputs["input"] = None
+                replacement.pipeline.output_states["input"] = None
+
+        closed = self._workflow_tabs.close(index, discard_unsaved=True)
+        self._dispose_workflow_tab_session(closed)
+        if closing_current:
+            active = self._workflow_tabs.current
+            if active is None:
+                raise RuntimeError("Closing a workflow tab left no active session.")
+            self._install_workflow_tab_session(active)
+            if replacement is active:
+                replacement.mark_clean(
+                    self._current_history_snapshot(),
+                    persistence_token=self._workflow_tab_persistence_token(),
+                )
+                self._store_workflow_tab_runtime(replacement)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self.status_label.setText(f"Closed workflow '{closed.title}'.")
+
+    def _dispose_workflow_tab_session(
+        self,
+        session: WorkflowTabSession,
+    ) -> None:
+        adapter = session.runtime_cache.get("_live_source_adapter")
+        if isinstance(adapter, LiveLayerSourceAdapter):
+            adapter.shutdown()
+        for name in (
+            "_active_collection_batch_dialog",
+            "_node_benchmark_dialog",
+            "_pipeline_optimizer_dialog",
+            "_colocalization_scatter_dialog",
+            "_tunnel_manager_dialog",
+        ):
+            dialog = session.runtime_cache.get(name)
+            if dialog is None:
+                continue
+            try:
+                dialog.close()
+                dialog.deleteLater()
+            except Exception:
+                pass
+
+    def _rename_workflow_tab(self, bar_index: int, title: str) -> None:
+        if bar_index < 0:
+            return
+        session_id = self.workflow_tab_bar.tabData(bar_index)
+        try:
+            index = self._workflow_tabs.index_of(str(session_id))
+        except KeyError:
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
+        session = self._workflow_tabs.rename(index, title)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        self.status_label.setText(f"Renamed workflow tab to '{session.title}'.")
+
+    def _reorder_workflow_tabs(
+        self,
+        source_index: int,
+        target_index: int,
+    ) -> None:
+        if not (
+            0 <= source_index < len(self._workflow_tabs)
+            and 0 <= target_index < len(self._workflow_tabs)
+        ):
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
+        self._workflow_tabs.move(source_index, target_index)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
 
     def _build_graph_from_pipeline(self) -> None:
         self.graph_view.build_graph(
@@ -5657,19 +6472,25 @@ class VippWidget(QWidget):
         )
         return workflow
 
-    def _save_workflow_dialog(self) -> None:
+    def _save_workflow_dialog(self) -> bool:
         include_batch = self._include_batch_workspace_with_workflow()
         if include_batch is None:
             self.status_label.setText("Workflow save cancelled.")
-            return
+            return False
+        session = self._workflow_tabs.current
+        default_path = (
+            str(session.path)
+            if session is not None and session.path is not None
+            else "vipp_workflow.json"
+        )
         path, _filter = QFileDialog.getSaveFileName(
             self,
             "Save VIPP workflow",
-            "vipp_workflow.json",
+            default_path,
             "VIPP workflow (*.json);;All files (*.*)",
         )
         if not path:
-            return
+            return False
         if not path.lower().endswith(".json"):
             path += ".json"
         try:
@@ -5695,12 +6516,21 @@ class VippWidget(QWidget):
                 severity=MessageSeverity.ERROR,
                 actionable=True,
             )
-            return
+            return False
+        if session is not None:
+            session.mark_saved(
+                saved,
+                self._current_history_snapshot(),
+                persistence_token=self._workflow_tab_persistence_token(),
+            )
+            self._store_workflow_tab_runtime(session)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
         detail = " with its Batch workspace" if include_batch else ""
         self._set_status(
             f"Workflow{detail} saved to {saved.name}.",
             severity=MessageSeverity.SUCCESS,
         )
+        return True
 
     def _load_workflow_dialog(self) -> None:
         path, _filter = QFileDialog.getOpenFileName(
@@ -5773,7 +6603,115 @@ class VippWidget(QWidget):
         prefer_image_source: bool = False,
         preserve_batch_workspace: bool = False,
     ) -> Path:
-        """Load a workflow file into the widget and recompute the graph.
+        """Open an ordinary workflow in an independent retained tab.
+
+        The synthetic Batch workspace replacement path deliberately remains an
+        in-place load because that dialog owns the current representative
+        session. User-facing Load and Open example calls create a new tab.
+        """
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            raise RuntimeError(
+                f"Wait until {reason} before loading another workflow."
+            )
+        if preserve_batch_workspace:
+            loaded = self._load_workflow_file_into_active_tab(
+                path,
+                prefer_image_source=prefer_image_source,
+                preserve_batch_workspace=True,
+            )
+            session = self._workflow_tabs.current
+            if session is not None:
+                snapshot = self._current_history_snapshot()
+                session.mark_saved(
+                    loaded,
+                    snapshot,
+                    persistence_token=self._workflow_tab_persistence_token(),
+                )
+                self._store_workflow_tab_runtime(session)
+                self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return loaded
+
+        current = self._workflow_tabs.current
+        if current is None:
+            raise RuntimeError("No active workflow tab is available.")
+        self._sync_current_workflow_tab_state()
+        self._store_workflow_tab_runtime(current)
+        source_snapshot = current.editor_snapshot
+        pipeline = source_snapshot.workflow.graph.to_pipeline()
+        session = WorkflowTabSession(
+            pipeline,
+            WorkflowHistorySnapshot(
+                workflow=source_snapshot.workflow,
+                selected_node_id=source_snapshot.selected_node_id,
+                preview_disabled_node_ids=(
+                    source_snapshot.preview_disabled_node_ids
+                ),
+                active_pinned_node_id=source_snapshot.active_pinned_node_id,
+                compute_mode=source_snapshot.compute_mode,
+                compute_fallback_policy=(
+                    source_snapshot.compute_fallback_policy
+                ),
+                compute_node_preferences=(
+                    source_snapshot.compute_node_preferences
+                ),
+                compute_optimizer_locked_node_ids=(
+                    source_snapshot.compute_optimizer_locked_node_ids
+                ),
+                inspect_display_profiles=(
+                    source_snapshot.inspect_display_profiles
+                ),
+            ),
+            history=WorkflowHistory(limit=self.HISTORY_LIMIT),
+            title=f"Untitled {len(self._workflow_tabs) + 1}",
+            title_is_custom=False,
+            persistence_token=current.persistence_token,
+        )
+        self._workflow_tabs.add(session, make_current=False)
+        target_index = self._workflow_tabs.index_of(session.session_id)
+        if not self._activate_workflow_tab(target_index, check_safety=False):
+            self._workflow_tabs.close(target_index, discard_unsaved=True)
+            raise RuntimeError("Could not activate a new workflow tab.")
+        try:
+            loaded = self._load_workflow_file_into_active_tab(
+                path,
+                prefer_image_source=prefer_image_source,
+                preserve_batch_workspace=False,
+            )
+        except Exception:
+            old_index = self._workflow_tabs.index_of(current.session_id)
+            self._activate_workflow_tab(old_index, check_safety=False)
+            failed_index = self._workflow_tabs.index_of(session.session_id)
+            failed_runtime = session.runtime_cache
+            adapter = failed_runtime.get("_live_source_adapter")
+            if isinstance(adapter, LiveLayerSourceAdapter):
+                adapter.shutdown()
+            self._workflow_tabs.close(failed_index, discard_unsaved=True)
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            raise
+
+        snapshot = self._current_history_snapshot()
+        # Loading into a newly created tab is the tab's baseline, not an edit
+        # whose Undo target is a clone of the previously active workflow.
+        session.history.clear()
+        self._sync_history_actions()
+        session.mark_saved(
+            loaded,
+            snapshot,
+            persistence_token=self._workflow_tab_persistence_token(),
+        )
+        self._store_workflow_tab_runtime(session)
+        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        return loaded
+
+    def _load_workflow_file_into_active_tab(
+        self,
+        path: str | Path,
+        *,
+        prefer_image_source: bool = False,
+        preserve_batch_workspace: bool = False,
+    ) -> Path:
+        """Replace only the active tab's graph and recompute it.
 
         Ordinary workflows restore an explicitly saved inspector selection.
         Bundled examples request ``prefer_image_source`` so they open at the
@@ -5978,11 +6916,34 @@ class VippWidget(QWidget):
         preview_config: bool = True,
     ) -> CollectionBatchDialog | None:
         if self._collection_batch_running:
+            batch_job = self._active_collection_batch_job
             self.status_label.setText(
                 "A collection batch is already running. Its progress remains "
                 "visible in the batch workspace."
             )
-            active_dialog = self._active_collection_batch_dialog
+            if (
+                batch_job is not None
+                and not self._workflow_tab_is_active(
+                    batch_job.origin_session_id
+                )
+            ):
+                try:
+                    origin_index = self._workflow_tabs.index_of(
+                        batch_job.origin_session_id
+                    )
+                except KeyError:
+                    origin_index = -1
+                if origin_index >= 0:
+                    self._activate_workflow_tab(origin_index)
+                if not self._workflow_tab_is_active(
+                    batch_job.origin_session_id
+                ):
+                    return batch_job.dialog
+            active_dialog = (
+                batch_job.dialog
+                if batch_job is not None
+                else self._active_collection_batch_dialog
+            )
             if active_dialog is not None:
                 active_dialog.show()
                 active_dialog.raise_()
@@ -6043,6 +7004,7 @@ class VippWidget(QWidget):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+        self._sync_current_workflow_tab_state()
         return dialog
 
     def _discard_collection_batch_dialog(
@@ -6054,6 +7016,7 @@ class VippWidget(QWidget):
             self._active_collection_batch_dialog = None
         dialog.close()
         dialog.deleteLater()
+        self._sync_current_workflow_tab_state()
 
     def _run_collection_batch_from_workspace(
         self,
@@ -6181,9 +7144,8 @@ class VippWidget(QWidget):
             dialog.show_run_error("The batch plan contains no items to run.")
             return
 
-        # Batch execution owns the GUI-thread progress surface. Supersede any
-        # representative calculation so late interactive results cannot update
-        # the graph or toolbar while the detached headless batch is running.
+        # Supersede representative work before freezing this tab's workflow and
+        # configuration for the detached headless run.
         self._debounce_timer.stop()
         if self._interactive_collection_batch_requested_index >= 0:
             self._show_interactive_collection_batch_preview_error(
@@ -6197,6 +7159,59 @@ class VippWidget(QWidget):
             self._active_source_load_id = None
             self._source_load_pending = False
             self._set_pipeline_busy(False)
+        try:
+            self._start_collection_batch_worker(
+                dialog,
+                total=total,
+                expected_items=preview.items,
+                **values,
+            )
+        except Exception as exc:
+            dialog.show_run_error(str(exc))
+            self.batch_navigator.set_navigation_enabled(True)
+            self.batch_navigator.fail_batch_progress(f"Batch failed: {exc}")
+            self._set_status(
+                f"Batch failed: {exc}",
+                severity=MessageSeverity.ERROR,
+                actionable=True,
+            )
+
+    def _start_collection_batch_worker(
+        self,
+        dialog: CollectionBatchDialog,
+        *,
+        total: int,
+        expected_items: tuple[BatchItemPlan, ...],
+        **values,
+    ) -> None:
+        """Freeze the active tab's batch request and start one headless worker."""
+        session = self._workflow_tabs.current
+        if session is None:
+            raise RuntimeError("No workflow tab is available for this batch.")
+        if self._collection_batch_running:
+            raise RuntimeError("A collection batch is already running.")
+
+        self._collection_batch_job_serial += 1
+        job_id = self._collection_batch_job_serial
+        prepared = self._prepare_collection_batch_run(
+            job_id=job_id,
+            origin_session_id=session.session_id,
+            expected_items=expected_items,
+            **values,
+        )
+        context = _CollectionBatchJobContext(
+            job_id=job_id,
+            origin_session_id=session.session_id,
+            dialog=dialog,
+            validation_config_path=dialog._loaded_config_path,
+            total=int(total),
+        )
+        worker = CollectionBatchWorker(prepared)
+        worker.signals.progress.connect(self._on_collection_batch_worker_progress)
+        worker.signals.finished.connect(self._on_collection_batch_worker_finished)
+
+        self._active_collection_batch_job = context
+        self._collection_batch_workers[job_id] = worker
         self._collection_batch_running = True
         dialog.begin_run(total)
         self.batch_navigator.set_navigation_enabled(False)
@@ -6204,41 +7219,67 @@ class VippWidget(QWidget):
             total,
             "Preparing full batch run...",
         )
-        try:
-            result = self._run_collection_batch(
-                **values,
-                expected_items=preview.items,
+        self._collection_batch_thread_pool.start(worker)
+
+    def _on_collection_batch_worker_progress(
+        self,
+        progress: CollectionBatchProgress,
+    ) -> None:
+        context = self._active_collection_batch_job
+        if context is None or progress.job_id != context.job_id:
+            return
+        if self._workflow_tab_is_active(context.origin_session_id):
+            self._collection_batch_progress(
+                progress.index,
+                progress.total,
+                progress.batch_id,
+                progress.status,
             )
-        except Exception as exc:
-            self._set_pipeline_busy(False)
-            if dialog is self._active_collection_batch_dialog:
-                dialog.show_run_error(
-                    str(exc),
-                    defer_control_restore=True,
+        else:
+            context.dialog.update_run_progress(
+                progress.index,
+                progress.total,
+                progress.batch_id,
+                progress.status,
+            )
+
+    def _on_collection_batch_worker_finished(
+        self,
+        outcome: CollectionBatchWorkerOutcome,
+    ) -> None:
+        self._collection_batch_workers.pop(outcome.job_id, None)
+        context = self._active_collection_batch_job
+        if context is None or outcome.job_id != context.job_id:
+            return
+        self._active_collection_batch_job = None
+        self._collection_batch_running = False
+        origin_active = self._workflow_tab_is_active(context.origin_session_id)
+        origin_session = self._workflow_tab_session(context.origin_session_id)
+
+        if outcome.error or outcome.result is None:
+            message = outcome.error or "The batch worker returned no result."
+            context.dialog.show_run_error(
+                message,
+                defer_control_restore=True,
+            )
+            if origin_active:
+                self.batch_navigator.set_navigation_enabled(True)
+                self.batch_navigator.fail_batch_progress(f"Batch failed: {message}")
+                self._set_status(
+                    f"Batch failed: {message}",
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
                 )
-            self.batch_navigator.fail_batch_progress(
-                f"Batch failed: {exc}",
-            )
-            self._set_status(
-                f"Batch failed: {exc}",
-                severity=MessageSeverity.ERROR,
-                actionable=True,
-            )
+            elif origin_session is not None:
+                runtime = origin_session.runtime_cache
+                runtime["_collection_batch_last_error"] = message
+                runtime["_collection_batch_last_total"] = context.total
+            self._resume_origin_graph_after_batch(context, origin_session)
             return
-        finally:
-            self._collection_batch_running = False
-            self.batch_navigator.set_navigation_enabled(True)
-            if self._collection_batch_graph_refresh_pending:
-                self._collection_batch_graph_refresh_pending = False
-                QTimer.singleShot(0, self.run_pipeline)
-        if dialog is not self._active_collection_batch_dialog:
-            self.status_label.setText(
-                "Batch finished, but its workspace was replaced before the "
-                "result could be displayed."
-            )
-            return
+
+        result = outcome.result
         validation_text = self._validate_collection_batch_demo_result(
-            dialog._loaded_config_path,
+            context.validation_config_path,
             result,
         )
         summary = result.summary
@@ -6248,33 +7289,78 @@ class VippWidget(QWidget):
             f"{summary['failed']} failed; {len(result.saved_paths)} output(s) "
             f"saved. Manifest: {result.manifest_path}."
         )
-        self.status_label.setText(
-            summary_text + (f" {validation_text}" if validation_text else "")
-        )
-        dialog.finish_run(
+        context.dialog.finish_run(
             result,
             validation_text,
             defer_control_restore=True,
         )
-        self.batch_navigator.finish_batch_progress(
-            f"Batch finished: {summary['completed']} completed, "
-            f"{summary['partial']} partial, {summary['skipped']} skipped, "
-            f"{summary['failed']} failed.",
-        )
-        dialog.mark_plan_historical_after_run()
-        if (
-            self._interactive_collection_batch_items
-            and self._interactive_collection_batch_index >= 0
-        ):
-            self._interactive_collection_batch_plan_stale = True
-            self.batch_navigator.set_session_stale(
-                True,
-                message=(
-                    "The displayed representative belongs to the completed "
-                    "run. Run batch will freshly preflight current inputs and "
-                    "destinations before replaying; Preview batch is optional."
-                ),
+        context.dialog.mark_plan_historical_after_run()
+        if origin_active:
+            self.batch_navigator.set_navigation_enabled(True)
+            self.status_label.setText(
+                summary_text + (f" {validation_text}" if validation_text else "")
             )
+            self.batch_navigator.finish_batch_progress(
+                f"Batch finished: {summary['completed']} completed, "
+                f"{summary['partial']} partial, {summary['skipped']} skipped, "
+                f"{summary['failed']} failed.",
+            )
+            if (
+                self._interactive_collection_batch_items
+                and self._interactive_collection_batch_index >= 0
+            ):
+                self._interactive_collection_batch_plan_stale = True
+                self.batch_navigator.set_session_stale(
+                    True,
+                    message=(
+                        "The displayed representative belongs to the completed "
+                        "run. Run batch will freshly preflight current inputs and "
+                        "destinations before replaying; Preview batch is optional."
+                    ),
+                )
+        elif origin_session is not None:
+            runtime = origin_session.runtime_cache
+            runtime["_collection_batch_last_summary"] = summary_text
+            runtime["_collection_batch_last_total"] = context.total
+            if (
+                runtime.get("_interactive_collection_batch_items")
+                and int(runtime.get("_interactive_collection_batch_index", -1)) >= 0
+            ):
+                runtime["_interactive_collection_batch_plan_stale"] = True
+        self._resume_origin_graph_after_batch(context, origin_session)
+
+    def _resume_origin_graph_after_batch(
+        self,
+        context: _CollectionBatchJobContext,
+        origin_session: WorkflowTabSession | None,
+    ) -> None:
+        refresh_pending = context.graph_refresh_pending
+        if not refresh_pending:
+            return
+        if self._workflow_tab_is_active(context.origin_session_id):
+            self._collection_batch_graph_refresh_pending = False
+            self._queue_workflow_tab_pipeline_refresh(
+                context.origin_session_id
+            )
+        elif origin_session is not None:
+            origin_session.runtime_cache[
+                "_collection_batch_graph_refresh_pending"
+            ] = True
+
+    def _workflow_tab_is_active(self, session_id: str) -> bool:
+        session = self._workflow_tabs.current
+        return session is not None and session.session_id == session_id
+
+    def _workflow_tab_session(
+        self,
+        session_id: str,
+    ) -> WorkflowTabSession | None:
+        try:
+            return self._workflow_tabs[
+                self._workflow_tabs.index_of(session_id)
+            ]
+        except (IndexError, KeyError):
+            return None
 
     def _reviewed_batch_source_change(
         self,
@@ -6442,7 +7528,12 @@ class VippWidget(QWidget):
         force_sync: bool = False,
     ) -> bool:
         """Calculate one representative item through the complete live graph."""
-        if self._collection_batch_running:
+        batch_job = self._active_collection_batch_job
+        if (
+            self._collection_batch_running
+            and batch_job is not None
+            and self._workflow_tab_is_active(batch_job.origin_session_id)
+        ):
             self.status_label.setText(
                 "The batch is running; representative navigation is temporarily "
                 "disabled."
@@ -6680,6 +7771,7 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_plan_stale = True
         if self._interactive_collection_batch_items:
             self.batch_navigator.set_session_stale(True)
+        self._sync_current_workflow_tab_state()
 
     def _mark_collection_batch_workflow_stale_if_needed(self) -> None:
         """Invalidate a retained runnable plan after a scientific graph edit."""
@@ -6716,7 +7808,12 @@ class VippWidget(QWidget):
         close_workspace: bool = True,
     ) -> None:
         """Clear representative paths and all UI-only batch session state."""
-        if self._collection_batch_running:
+        batch_job = self._active_collection_batch_job
+        if (
+            self._collection_batch_running
+            and batch_job is not None
+            and self._workflow_tab_is_active(batch_job.origin_session_id)
+        ):
             close_workspace = False
         subtitle_node_ids = self._interactive_collection_source_node_ids()
         self._interactive_collection_source_paths.clear()
@@ -6740,6 +7837,7 @@ class VippWidget(QWidget):
             self._discard_collection_batch_dialog(
                 self._active_collection_batch_dialog,
             )
+        self._sync_current_workflow_tab_state()
 
     def _load_collection_batch_demo_preview(
         self,
@@ -6828,7 +7926,7 @@ class VippWidget(QWidget):
             dialog.setDetailedText("\n".join(details))
         dialog.exec()
 
-    def _run_collection_batch(
+    def _prepare_collection_batch_run(
         self,
         input_dir: str | Path,
         output_dir: str | Path,
@@ -6840,7 +7938,11 @@ class VippWidget(QWidget):
         existing_file_policy: str = ExistingFilePolicy.ERROR.value,
         continue_on_error: bool = True,
         expected_items: tuple[BatchItemPlan, ...] | None = None,
-    ) -> BatchRunResult:
+        *,
+        job_id: int,
+        origin_session_id: str,
+    ) -> PreparedCollectionBatchRun:
+        """Create and persist immutable inputs before any worker starts."""
         del save_workflow_snapshot
         positions = self.graph_view.node_positions()
         workflow = self._batch_workflow_document(positions)
@@ -6868,9 +7970,7 @@ class VippWidget(QWidget):
                 "then run again."
             )
         output_path.mkdir(parents=True, exist_ok=True)
-        artifact_paths: list[Path] = [
-            atomic_write_json(workflow_path, workflow)
-        ]
+        artifact_paths: list[Path] = [atomic_write_json(workflow_path, workflow)]
         if save_python_script:
             atomic_write_text(
                 script_path,
@@ -6878,22 +7978,62 @@ class VippWidget(QWidget):
             )
             artifact_paths.append(script_path)
         save_batch_config(config_path, config)
+        return PreparedCollectionBatchRun(
+            job_id=job_id,
+            origin_session_id=origin_session_id,
+            workflow=workflow,
+            config=config,
+            workflow_path=workflow_path,
+            config_path=config_path,
+            plan=plan,
+            artifact_paths=tuple(artifact_paths),
+        )
+
+    def _run_collection_batch(
+        self,
+        input_dir: str | Path,
+        output_dir: str | Path,
+        pattern: str = "*.tif",
+        image_format: str = "ome-tiff",
+        save_workflow_snapshot: bool = True,
+        save_python_script: bool = True,
+        source_bindings: list[dict] | None = None,
+        existing_file_policy: str = ExistingFilePolicy.ERROR.value,
+        continue_on_error: bool = True,
+        expected_items: tuple[BatchItemPlan, ...] | None = None,
+    ) -> BatchRunResult:
+        """Run a batch synchronously for the public API and focused tests."""
+        session = self._workflow_tabs.current
+        prepared = self._prepare_collection_batch_run(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            pattern=pattern,
+            image_format=image_format,
+            save_workflow_snapshot=save_workflow_snapshot,
+            save_python_script=save_python_script,
+            source_bindings=source_bindings,
+            existing_file_policy=existing_file_policy,
+            continue_on_error=continue_on_error,
+            expected_items=expected_items,
+            job_id=0,
+            origin_session_id=(session.session_id if session is not None else ""),
+        )
 
         self._set_pipeline_busy(True, cancelable=False)
         try:
             result = run_batch(
-                workflow,
-                config,
-                workflow_path=workflow_path,
-                config_path=config_path,
-                plan=plan,
+                prepared.workflow,
+                prepared.config,
+                workflow_path=prepared.workflow_path,
+                config_path=prepared.config_path,
+                plan=prepared.plan,
                 progress_callback=self._collection_batch_progress,
             )
         finally:
             self._set_pipeline_busy(False)
         return replace(
             result,
-            artifact_paths=tuple(artifact_paths),
+            artifact_paths=prepared.artifact_paths,
         )
 
     def _collection_batch_progress(
@@ -7277,7 +8417,13 @@ class VippWidget(QWidget):
         if (
             self._active_pipeline_run_id is not None
             or self._active_source_load_id is not None
-            or self._collection_batch_running
+            or (
+                self._collection_batch_running
+                and self._active_collection_batch_job is not None
+                and self._workflow_tab_is_active(
+                    self._active_collection_batch_job.origin_session_id
+                )
+            )
         ):
             self.status_label.setText(
                 "Wait for the current calculation or source load to finish before "
@@ -9154,6 +10300,7 @@ class VippWidget(QWidget):
         self._sync_execution_ui()
         self._sync_isolated_tuning_ui()
         self._sync_node_compute_control()
+        self._sync_current_workflow_tab_state()
 
     def _restore_selected_output_for_interactive_cache(self, node_id: str) -> None:
         if self._workflow_load_selection_in_progress:
@@ -10318,6 +11465,7 @@ class VippWidget(QWidget):
         self._render_parameters(node_id)
         self._sync_node_output_ports(node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_born_wolf_rerender_param_changed(self, name: str, value) -> None:
         self._on_param_changed(name, value)
@@ -11399,6 +12547,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_image_source_changed(self, value: dict[str, object]) -> None:
         value = self._normalized_image_source_value(value)
@@ -11423,6 +12572,7 @@ class VippWidget(QWidget):
             QTimer.singleShot(0, self._refresh_image_source_options)
         self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _refresh_image_source_options(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
@@ -12443,6 +13593,7 @@ class VippWidget(QWidget):
         self._apply_select_axis_slice_params(self._selected_node_id, value)
         self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _apply_reorder_axes_params(self, node_id: str, value: str) -> None:
         self.pipeline.nodes[node_id].params["order"] = str(value)
@@ -12455,6 +13606,7 @@ class VippWidget(QWidget):
         self._apply_reorder_axes_params(self._selected_node_id, value)
         self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _input_table_columns_for(self, node_id: str) -> list[str]:
         data = self.pipeline.input_data_for_node(node_id)
@@ -12478,6 +13630,7 @@ class VippWidget(QWidget):
         self._apply_select_table_columns_params(self._selected_node_id, value)
         self._mark_pipeline_dirty(self._selected_node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     @staticmethod
     def _composite_channel_axis_mode(node) -> str:
@@ -12831,6 +13984,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._render_parameters(node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_composite_channel_axis_changed(self, value) -> None:
         node_id = self._selected_node_id
@@ -12865,6 +14019,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._render_parameters(node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_composite_mapping_mode_changed(self, value) -> None:
         node_id = self._selected_node_id
@@ -12900,6 +14055,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._render_parameters(node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_composite_channel_color_changed(self, slot: int, value) -> None:
         node_id = self._selected_node_id
@@ -12938,6 +14094,7 @@ class VippWidget(QWidget):
         self._render_parameters(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_combine_channels_input_count_changed(self, value) -> None:
         node_id = self._selected_node_id
@@ -12961,6 +14118,7 @@ class VippWidget(QWidget):
         self._render_parameters(node_id)
         self._mark_pipeline_dirty(node_id)
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_channel_color_changed(self, slot: int, value) -> None:
         node_id = self._selected_node_id
@@ -12979,6 +14137,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._update_thumbnails()
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _sync_combine_channels_graph_ports(self, node_id: str) -> None:
         node = self.pipeline.nodes.get(node_id)
@@ -13330,6 +14489,7 @@ class VippWidget(QWidget):
         self._colocalization_scatter_serial += 1
         self._active_colocalization_scatter_run_id = None
         self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_density_key = None
         self._active_colocalization_scatter_cancel_event = None
         self._pending_colocalization_scatter_request = None
         self._current_colocalization_scatter_key = None
@@ -13340,6 +14500,63 @@ class VippWidget(QWidget):
             self.colocalization_scatter_popout_button.setEnabled(False)
         if self._colocalization_scatter_dialog is not None:
             self._colocalization_scatter_dialog.close()
+
+    def _retain_compatible_colocalization_scatter_density(self) -> bool:
+        """Keep threshold-independent scatter state across a compatible run."""
+        node = self.pipeline.nodes.get(self._selected_node_id)
+        if node is None or node.operation_id not in COLOCALIZATION_SCATTER_OPERATIONS:
+            return False
+        inputs = self._colocalization_inputs_for_node(node.id)
+        if inputs is None:
+            return False
+        intensity_max = max(
+            _safe_float(node.params.get("intensity_max"), 255.0),
+            1.0,
+        )
+        bins, range_percentile = self._colocalization_scatter_display_settings(node)
+        density_key = self._colocalization_scatter_density_key(
+            node.id,
+            inputs,
+            intensity_max=intensity_max,
+            bins=bins,
+            range_percentile=range_percentile,
+        )
+        density = self._colocalization_scatter_density_cache.get(density_key)
+        if density is None:
+            return False
+        if self._displayed_colocalization_scatter_density_key not in {
+            None,
+            density_key,
+        }:
+            return False
+        dialog = self._colocalization_scatter_dialog
+        if (
+            dialog is not None
+            and dialog.isVisible()
+            and self._displayed_colocalization_scatter_density_key != density_key
+        ):
+            return False
+
+        self._colocalization_scatter_density_cache = {density_key: density}
+        self._colocalization_scatter_cache = {
+            key: result
+            for key, result in self._colocalization_scatter_cache.items()
+            if result.density_key == density_key
+        }
+        pending = self._pending_colocalization_scatter_request
+        if pending is not None and pending.density_key != density_key:
+            self._pending_colocalization_scatter_request = None
+        if (
+            self._active_colocalization_scatter_run_id is not None
+            and self._active_colocalization_scatter_density_key != density_key
+        ):
+            if self._active_colocalization_scatter_cancel_event is not None:
+                self._active_colocalization_scatter_cancel_event.set()
+            self._active_colocalization_scatter_run_id = None
+            self._active_colocalization_scatter_key = None
+            self._active_colocalization_scatter_density_key = None
+            self._active_colocalization_scatter_cancel_event = None
+        return True
 
     def _clear_generated_layer_contrast_state(self) -> None:
         """Invalidate cached and in-flight generated-layer display statistics."""
@@ -14224,6 +15441,7 @@ class VippWidget(QWidget):
             self.status_label.setText(
                 f"Showing channel {int(value) + 1} for '{node.title}'."
             )
+            self._sync_current_workflow_tab_state()
             return
         if name == "tag":
             self._refresh_graph_search_matches(reset_index=True)
@@ -14382,6 +15600,7 @@ class VippWidget(QWidget):
                 self._current_step(),
             )
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _update_fill_holes_scope_note(self) -> None:
         note = self._parameter_widgets.get("fill_holes_scope_note")
@@ -14593,8 +15812,14 @@ class VippWidget(QWidget):
         if self._closing:
             return
         if self._collection_batch_running:
-            self._collection_batch_graph_refresh_pending = True
-            return
+            batch_job = self._active_collection_batch_job
+            if batch_job is None or self._workflow_tab_is_active(
+                batch_job.origin_session_id
+            ):
+                self._collection_batch_graph_refresh_pending = True
+                if batch_job is not None:
+                    batch_job.graph_refresh_pending = True
+                return
         optimizer_dialog = self._pipeline_optimizer_dialog
         if optimizer_dialog is not None and optimizer_dialog.running:
             self._pipeline_run_pending = True
@@ -14915,7 +16140,8 @@ class VippWidget(QWidget):
         self._set_pipeline_busy(True, None, cancelable=False)
         self.pipeline_busy_label.setText("Preparing result display...")
         self._clear_output_histogram_cache()
-        self._clear_colocalization_scatter_cache()
+        if not self._retain_compatible_colocalization_scatter_density():
+            self._clear_colocalization_scatter_cache()
         self._hide_input_layer_for_inspection(primary_layer)
         self._apply_cache_retention()
         self._refresh_dynamic_output_ports()
@@ -16685,6 +17911,7 @@ class VippWidget(QWidget):
         )
         self._active_colocalization_scatter_run_id = request.run_id
         self._active_colocalization_scatter_key = request.key
+        self._active_colocalization_scatter_density_key = request.density_key
         self._active_colocalization_scatter_cancel_event = cancel_event
         worker = ColocalizationScatterWorker(
             request,
@@ -16704,6 +17931,7 @@ class VippWidget(QWidget):
             return
         self._active_colocalization_scatter_run_id = None
         self._active_colocalization_scatter_key = None
+        self._active_colocalization_scatter_density_key = None
         self._active_colocalization_scatter_cancel_event = None
         if not result.error:
             result = self._cache_colocalization_scatter_result(result)
@@ -17082,6 +18310,7 @@ class VippWidget(QWidget):
         )
         self._update_colocalization_scatter()
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _on_input_histogram_marker_changed(self, label: str, value: float) -> None:
         node_id = self._selected_node_id
@@ -17134,6 +18363,7 @@ class VippWidget(QWidget):
             self._current_step(),
         )
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _switch_rescale_histogram_to_value_cutoffs(
         self,
@@ -17181,6 +18411,7 @@ class VippWidget(QWidget):
         self._mark_pipeline_dirty(node_id)
         self._update_label_volume_histogram()
         self._debounce_timer.start()
+        self._sync_current_workflow_tab_state()
 
     def _set_histogram_parameter_value(self, node_id: str, name: str, value) -> bool:
         node = self.pipeline.nodes.get(node_id)
@@ -19571,6 +20802,7 @@ class VippWidget(QWidget):
         self.status_label.setText(
             f"Cache retention for '{node.title}' is {state}."
         )
+        self._sync_current_workflow_tab_state()
 
     def _sync_auto_contrast_ui(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)

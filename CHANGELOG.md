@@ -32,6 +32,28 @@
   supports Fiji-mask parity without changing VIPP's generic scikit-image
   threshold nodes.
 
+### Graph Authoring
+
+- Image Source cards now show a live, elided binding subtitle for napari layers,
+  files, samples, and collection representatives. The complete binding remains
+  available in the card tooltip and follows collection-item changes.
+- Named output tunnels can now be rerouted by dragging their source badge to a
+  different compatible output. Preview and commit share the same type, cycle,
+  and topology validation; the atomic edit is undoable.
+- Existing insert-on-wire support remains the in-canvas path for splitting a
+  connection around a newly dropped compatible node.
+
+### Workflow Sessions
+
+- Added a movable workflow tab bar with independent live pipelines, calculated
+  results, ancillary caches, undo/redo histories, inspector state, paths, and
+  dirty baselines. New and Load create sessions without replacing another open
+  workflow; tabs support rename, reorder, and Save/Discard/Cancel close handling.
+- A collection batch now runs in a single background worker tagged to its
+  originating workflow. Other tabs remain editable while it runs, progress and
+  completion return only to the origin, and closing the origin, launching a
+  second batch, or closing VIPP is blocked until the uncancellable run finishes.
+
 ### Experimental GPU Development UI
 
 - Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
@@ -49,6 +71,9 @@
 - Consolidated VIPP feedback into one severity-aware message-strip component.
   Routine status remains lightweight, while only actionable errors receive a
   filled full-width alert.
+- Exact optimizer validation now evaluates the runnable frontier before manual
+  barriers. Nodes beyond a deliberately skipped manual/cache boundary no longer
+  request a nonexistent private CPU parity target.
 ### Colocalization Inspector
 
 - Threshold scrubbing now keeps a compatible scatter density visible and moves
@@ -74,6 +99,10 @@
   requested resolution up to 4096. Graph renders aggregate density before
   downsampling and draw threshold guides afterward so neither sparse bins nor
   guides disappear.
+- Masked high-resolution graph renders now accumulate their histogram in bounded
+  chunks, avoid simultaneous full-ROI channel copies, release intermediate
+  density buffers promptly, and preserve native log-density contrast when a
+  histogram is enlarged for output.
 
 ## 0.12.0a3 - 2026-07-20
 
