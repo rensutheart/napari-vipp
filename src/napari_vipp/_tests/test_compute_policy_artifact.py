@@ -44,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 4
+    assert policy.policy_version == 5
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -53,7 +53,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 4  # type: ignore[misc]
+        policy.policy_version = 5  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -65,6 +65,7 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "gaussian_blur": "cupyx-gaussian-blur-v1",
         "gaussian_blur_3d": "cupyx-gaussian-blur-3d-v1",
         "sigma_filter": "cupy-sigma-filter-v1",
+        "label_connected_components": "cupyx-connected-components-v1",
     }
 
     assert {
@@ -213,8 +214,53 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
         "minimum_pixel_fraction": (0.0, 1.0),
     }
 
+    connected = policy.operation("label_connected_components")
+    assert connected.admission_tier == "public_auto_candidate"
+    assert connected.implementation_version == "1"
+    assert connected.runtime_id == "cuda-cupy"
+    assert connected.implementation_library_id == "cupyx"
+    assert connected.environment_policy_id == (
+        "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+    )
+    assert connected.parameter_policy_id == "connected-components-parameters-v1"
+    assert connected.workload_policy_id == "connected-components-bool-2d-3d-v1"
+    assert connected.parity_policy_id == "labels-bitwise-int32-v1"
+    assert connected.memory_model_id == "cupyx-connected-components-memory-v1"
+    assert connected.supported_spatial_ndims == (2, 3)
+    assert connected.supports_device_residency
+    assert connected.support_summary.public_dtypes == ("bool",)
+    assert connected.support_summary.spatial_semantics_id == (
+        "connected-components-independent-leading-blocks-2d-3d-v1"
+    )
+    assert connected.support_summary.required_facts == (
+        "boolean-mask-input-v1",
+        "scipy-face-or-full-connectivity-v1",
+        "independent-leading-block-labeling-v1",
+        "exact-int32-label-id-order-v1",
+        "spatial-block-elements-under-2147483646-v1",
+    )
+    assert connected.support_summary.explicit_cpu_regions == (
+        "numeric-nonzero-mask-input-v1",
+        "resolved-spatial-rank-one-v1",
+        "spatial-block-at-least-2147483646-v1",
+    )
+    connected_bound = connected.support_summary.parameter_bounds[0]
+    assert (
+        connected_bound.parameter,
+        connected_bound.minimum,
+        connected_bound.maximum,
+        connected_bound.scope,
+        connected_bound.canonicalization_policy_id,
+    ) == (
+        "resolved_spatial_ndim",
+        2.0,
+        3.0,
+        "derived-spatial-rank",
+        "axis-metadata-or-explicit-mode-v1",
+    )
 
-def test_v4_is_a_strict_extension_of_v3_and_legacy_resources_are_byte_stable():
+
+def test_v5_is_a_strict_extension_of_v4_and_legacy_resources_are_byte_stable():
     package = resources.files("napari_vipp.compute_policies")
     historical_sha256 = {
         "phase1-gpu-developer-v1.json": (
@@ -226,6 +272,9 @@ def test_v4_is_a_strict_extension_of_v3_and_legacy_resources_are_byte_stable():
         "phase1-gpu-public-v3.json": (
             "b6696c5f50121831711dbeba50f61585df8cbc32ec22f3e35a439f7e536f4968"
         ),
+        "phase1-gpu-public-v4.json": (
+            "37198cf8f22950ab824ccbcd3fd91a10bfd07ac1d31f1da5ac142a8a031ea333"
+        ),
     }
     for name, expected_digest in historical_sha256.items():
         resource = package.joinpath(name)
@@ -233,14 +282,26 @@ def test_v4_is_a_strict_extension_of_v3_and_legacy_resources_are_byte_stable():
         assert hashlib.sha256(resource.read_bytes()).hexdigest() == expected_digest
 
     v3 = json.loads(package.joinpath("phase1-gpu-public-v3.json").read_bytes())
-    v4 = _resource_document()
-    assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]  # type: ignore[index]
-    sigma = v4["policy"]["operations"][-1]  # type: ignore[index]
+    v4 = json.loads(package.joinpath("phase1-gpu-public-v4.json").read_bytes())
+    v5 = _resource_document()
+    assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]
+    sigma = v4["policy"]["operations"][-1]
     assert sigma["operation_id"] == "sigma_filter"
     assert sigma["implementation_id"] == "cupy-sigma-filter-v1"
+    assert v5["policy"]["operations"][:-1] == v4["policy"]["operations"]  # type: ignore[index]
+    connected = v5["policy"]["operations"][-1]  # type: ignore[index]
+    assert connected["operation_id"] == "label_connected_components"
+    assert connected["implementation_id"] == "cupyx-connected-components-v1"
+
+    v5_as_v4 = copy.deepcopy(v5)
+    v5_as_v4["policy_id"] = v4["policy_id"]
+    v5_as_v4["policy_version"] = v4["policy_version"]
+    v5_as_v4["content_sha256"] = v4["content_sha256"]
+    v5_as_v4["policy"]["operations"].pop()  # type: ignore[index]
+    assert v5_as_v4 == v4
 
     v3_platform = copy.deepcopy(v3["policy"]["platform_admission"])
-    v4_platform = copy.deepcopy(v4["policy"]["platform_admission"])  # type: ignore[index]
+    v4_platform = copy.deepcopy(v4["policy"]["platform_admission"])
     rawkernel_policy = v4_platform["validated_environment_policy_ids"].pop()
     assert rawkernel_policy == (
         "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
@@ -270,23 +331,23 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_loader_accepts_only_the_pinned_v4_identity_and_version():
+def test_loader_accepts_only_the_pinned_v5_identity_and_version():
     package = resources.files("napari_vipp.compute_policies")
-    signed_v3 = package.joinpath("phase1-gpu-public-v3.json").read_bytes()
+    signed_v4 = package.joinpath("phase1-gpu-public-v4.json").read_bytes()
     with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
-        parse_compute_policy_artifact(signed_v3)
+        parse_compute_policy_artifact(signed_v4)
 
     wrong_version = copy.deepcopy(_resource_document())
-    wrong_version["policy_version"] = 5
+    wrong_version["policy_version"] = 6
     _resign(wrong_version)
     with pytest.raises(
         ComputePolicyArtifactError,
-        match="Unsupported Phase 1 policy version 5",
+        match="Unsupported Phase 1 policy version 6",
     ):
         parse_compute_policy_artifact(_encoded(wrong_version))
 
 
-def test_valid_but_changed_v4_record_cannot_be_resigned_in_place():
+def test_valid_but_changed_v5_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)
