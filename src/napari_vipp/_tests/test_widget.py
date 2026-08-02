@@ -16,7 +16,7 @@ import pytest
 import tifffile
 from napari.components import ViewerModel
 from qtpy.QtCore import QEvent, QPoint, QPointF, QSignalBlocker, Qt, QTimer
-from qtpy.QtGui import QColor, QKeySequence, QMouseEvent
+from qtpy.QtGui import QCloseEvent, QColor, QKeySequence, QMouseEvent
 from qtpy.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -1440,14 +1440,22 @@ def test_loading_legacy_workflow_stays_cpu_until_user_opts_in(qtbot, tmp_path):
     widget.strict_compute_checkbox.blockSignals(True)
     widget.strict_compute_checkbox.setChecked(True)
     widget.strict_compute_checkbox.blockSignals(False)
+    original_session = widget._workflow_tabs.current
+    assert original_session is not None
 
     widget.load_workflow_file(path)
 
     assert widget.compute_mode_combo.currentData() == "cpu"
     assert widget._compute_mode is ComputeMode.CPU
     assert widget.compute_status_label.text().startswith("CPU")
+    assert not widget._history.can_undo
 
     widget.undo()
+
+    assert widget.compute_mode_combo.currentData() == "cpu"
+    widget._activate_workflow_tab(
+        widget._workflow_tabs.index_of(original_session.session_id)
+    )
 
     assert widget.compute_mode_combo.currentData() == "selective"
     assert widget._compute_fallback_policy is FallbackPolicy.STRICT
@@ -5423,6 +5431,81 @@ def test_colocalization_scatter_keeps_density_during_threshold_scrubbing(
     )
 
 
+def test_scatter_popout_survives_real_debounced_threshold_pipeline_run(
+    qtbot,
+    monkeypatch,
+):
+    data = np.zeros((100, 100), dtype=np.uint8)
+    data.ravel()[::2] = 200
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+    coloc = widget.add_node_from_palette("colocalized_voxels")
+    widget.pipeline.set_param(coloc.id, "threshold_mode", "Manual")
+    widget.pipeline.set_param(coloc.id, "channel_1_threshold", 100.0)
+    widget.pipeline.set_param(coloc.id, "channel_2_threshold", 100.0)
+    widget._connect_nodes("input", coloc.id, target_port=0)
+    widget._connect_nodes("input", coloc.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(coloc.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    dialog = widget._colocalization_scatter_dialog
+    density_key = widget._displayed_colocalization_scatter_density_key
+    assert dialog is not None and dialog.isVisible()
+    assert density_key is not None
+    density = widget._colocalization_scatter_density_cache[
+        density_key
+    ].density_counts
+    assert dialog._colocalized_voxels == 5_000
+
+    finish_calls = []
+    real_finish = widget._finish_pipeline_update
+
+    def tracked_finish(primary_layer, source_label):
+        real_finish(primary_layer, source_label)
+        finish_calls.append(True)
+
+    density_recomputations = 0
+
+    def reject_density_recomputation(*_args, **_kwargs):
+        nonlocal density_recomputations
+        density_recomputations += 1
+        raise AssertionError("compatible threshold edits must reuse density")
+
+    monkeypatch.setattr(widget, "_finish_pipeline_update", tracked_finish)
+    monkeypatch.setattr(
+        "napari_vipp._widget._prepare_colocalization_scatter_density",
+        reject_density_recomputation,
+    )
+
+    dialog._on_threshold_changed(1, 210.0)
+
+    assert widget._debounce_timer.isActive()
+    qtbot.waitUntil(
+        lambda: bool(finish_calls)
+        and not widget._debounce_timer.isActive()
+        and widget._active_pipeline_run_id is None,
+        timeout=5_000,
+    )
+
+    assert density_recomputations == 0
+    assert dialog.isVisible()
+    assert widget._colocalization_scatter_dialog is dialog
+    assert widget._displayed_colocalization_scatter_density_key == density_key
+    assert (
+        widget._colocalization_scatter_density_cache[density_key].density_counts
+        is density
+    )
+    result = widget._colocalization_scatter_cache[
+        widget._current_colocalization_scatter_key
+    ]
+    assert result.colocalized_voxels == 0
+    assert result.roi_voxels == 10_000
+    assert dialog._colocalized_voxels == 0
+    assert "Exact: 0/10,000 (0.0%)" in dialog.summary_label.text()
+
+
 def test_colocalization_scatter_clears_density_for_different_inputs(
     qtbot,
     monkeypatch,
@@ -9053,6 +9136,13 @@ def test_richardson_lucy_note_reserves_wrapped_height_without_group_stretch(qtbo
         widget.parameter_group.sizePolicy().verticalPolicy()
         == QSizePolicy.Maximum
     )
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.hide()
 
 
 def test_parallel_branch_queues_behind_active_deconvolution(qtbot):
@@ -13362,23 +13452,27 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     plan_calls = []
     expected_plans = []
     original_preview = widget._collection_batch_controller.preview
-    original_run = widget._run_collection_batch
+    original_prepare = widget._prepare_collection_batch_run
 
     def tracked_preview(**kwargs):
         result = original_preview(**kwargs)
         plan_calls.append(result)
         return result
 
-    def tracked_run(**kwargs):
+    def tracked_prepare(**kwargs):
         expected_plans.append(kwargs.get("expected_items"))
-        return original_run(**kwargs)
+        return original_prepare(**kwargs)
 
     monkeypatch.setattr(
         widget._collection_batch_controller,
         "preview",
         tracked_preview,
     )
-    monkeypatch.setattr(widget, "_run_collection_batch", tracked_run)
+    monkeypatch.setattr(
+        widget,
+        "_prepare_collection_batch_run",
+        tracked_prepare,
+    )
     monkeypatch.setattr(
         dialog,
         "_preview_batch",
@@ -13393,6 +13487,7 @@ def test_loaded_batch_config_runs_on_first_click_without_graph_preview(
     )
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert len(plan_calls) == 1
     assert expected_plans == [plan_calls[0].items]
@@ -13424,6 +13519,7 @@ def test_edited_batch_settings_run_on_first_click_without_repreview(
     )
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert (edited_output / BATCH_MANIFEST_FILENAME).is_file()
     assert "3 completed" in dialog.run_progress_label.text()
@@ -13464,6 +13560,7 @@ def test_run_stops_when_reviewed_fixed_batch_source_changes(qtbot, tmp_path):
 
     np.save(fixed_path, np.full((4, 5), 99, dtype=np.uint16))
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert dialog._preview_result is None
     assert "Press Refresh" in dialog.preview_status.text()
@@ -13509,12 +13606,14 @@ def test_source_refresh_blocks_batch_until_representative_is_recalculated(
     assert dialog._preview_result is None
     assert not np.array_equal(widget.pipeline.outputs["batch_output_1"], previous)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
     assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
     assert "3 completed" in dialog.run_progress_label.text()
 
 
-def test_batch_progress_survives_non_user_workflow_reset_event(
+def test_batch_continues_in_origin_tab_while_new_workflow_is_edited(
     qtbot,
+    monkeypatch,
     tmp_path,
 ):
     widget = VippWidget(_Viewer())
@@ -13523,16 +13622,121 @@ def test_batch_progress_survives_non_user_workflow_reset_event(
     widget._batch_collection_dialog(config_path=demo.config_path)
     dialog = widget._active_collection_batch_dialog
     assert dialog is not None
-    QTimer.singleShot(0, widget._new_workflow)
+    origin = widget._workflow_tabs.current
+    assert origin is not None
+    started = threading.Event()
+    release = threading.Event()
+    from napari_vipp.ui import batch_workers
+
+    original_run_batch = batch_workers.run_batch
+
+    def gated_run_batch(*args, **kwargs):
+        started.set()
+        assert release.wait(timeout=10)
+        return original_run_batch(*args, **kwargs)
+
+    monkeypatch.setattr(batch_workers, "run_batch", gated_run_batch)
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: not widget._workflow_tab_switch_block_reason(),
+        timeout=5_000,
+    )
+    widget._new_workflow()
 
-    assert widget._active_collection_batch_dialog is dialog
+    assert len(widget._workflow_tabs) == 2
+    assert widget._workflow_tabs.current is not origin
+    assert widget._active_collection_batch_dialog is None
+    assert widget._collection_batch_running
+    widget.pipeline.set_param("input", "file_path", "edited-in-workflow-b.tif")
+    assert origin.pipeline.nodes["input"].params["file_path"] != (
+        "edited-in-workflow-b.tif"
+    )
+
+    origin_index = widget._workflow_tabs.index_of(origin.session_id)
+    widget.workflow_tab_bar.setCurrentIndex(origin_index)
+    assert widget._workflow_tabs.current is origin
+    assert not widget.batch_navigator._navigation_enabled
+    assert not widget.batch_navigator.slider.isEnabled()
+
+    other_index = next(
+        index
+        for index, session in enumerate(widget._workflow_tabs)
+        if session is not origin
+    )
+    widget.workflow_tab_bar.setCurrentIndex(other_index)
+    assert widget._workflow_tabs.current is not origin
+
+    release.set()
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
     assert dialog.run_progress_bar.value() == 3
     assert "3 completed" in dialog.run_progress_label.text()
     assert widget._interactive_collection_batch_items == ()
     assert set(widget.pipeline.nodes) == {"input"}
     assert widget.pipeline.nodes["input"].operation_id == "input"
+
+    widget.workflow_tab_bar.setCurrentIndex(origin_index)
+    assert widget._active_collection_batch_dialog is dialog
+    assert "3 completed" in dialog.run_progress_label.text()
+    assert "Batch finished: 3 completed" in widget.status_label.text()
+    assert widget.batch_navigator.progress_bar.value() == 3
+    assert "Batch finished: 3 completed" in (
+        widget.batch_navigator.progress_label.text()
+    )
+    assert "_collection_batch_last_summary" not in origin.runtime_cache
+    assert "_collection_batch_last_total" not in origin.runtime_cache
+
+
+def test_inactive_batch_failure_is_presented_when_origin_tab_is_reactivated(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    origin = widget._workflow_tabs.current
+    assert origin is not None
+    started = threading.Event()
+    release = threading.Event()
+    from napari_vipp.ui import batch_workers
+
+    def failing_run_batch(*_args, **_kwargs):
+        started.set()
+        assert release.wait(timeout=10)
+        raise RuntimeError("synthetic inactive failure")
+
+    monkeypatch.setattr(batch_workers, "run_batch", failing_run_batch)
+
+    qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(started.is_set, timeout=5_000)
+    qtbot.waitUntil(
+        lambda: not widget._workflow_tab_switch_block_reason(),
+        timeout=5_000,
+    )
+    widget._new_workflow()
+    assert widget._workflow_tabs.current is not origin
+
+    release.set()
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
+    assert "Batch failed" in dialog.run_progress_label.text()
+    assert "synthetic inactive failure" in dialog.run_result_label.text()
+
+    origin_index = widget._workflow_tabs.index_of(origin.session_id)
+    widget.workflow_tab_bar.setCurrentIndex(origin_index)
+
+    assert widget._active_collection_batch_dialog is dialog
+    assert "Batch failed: synthetic inactive failure" in widget.status_label.text()
+    assert widget.batch_navigator.progress_bar.format().startswith("Failed")
+    assert "synthetic inactive failure" in (
+        widget.batch_navigator.progress_label.text()
+    )
+    assert "_collection_batch_last_error" not in origin.runtime_cache
+    assert "_collection_batch_last_total" not in origin.runtime_cache
 
 
 def test_scientific_graph_edit_invalidates_plan_but_keeps_slider_useful(
@@ -13647,6 +13851,7 @@ def test_run_refreshes_changed_filesystem_plan_and_requires_review(
     assert not (demo.root / "results" / BATCH_MANIFEST_FILENAME).exists()
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert preview_calls == 2
     assert (demo.root / "results" / BATCH_MANIFEST_FILENAME).is_file()
@@ -13671,6 +13876,7 @@ def test_preflight_failure_does_not_fill_batch_progress(qtbot, tmp_path):
     # the reviewed Error-policy plan and fails before item one.
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert widget.batch_navigator.progress_bar.value() == 0
     assert widget.batch_navigator.progress_bar.format().startswith("Failed")
@@ -13707,6 +13913,7 @@ def test_batch_workspace_row_navigation_progress_and_reopen_are_persistent(
     )
 
     qtbot.mouseClick(dialog.run_button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not widget._collection_batch_running, timeout=10_000)
 
     assert dialog.isVisible()
     assert dialog.run_progress_bar.value() == 3
@@ -14651,7 +14858,7 @@ def test_save_image_node_writes_png_for_2d_output(qtbot, tmp_path):
     assert iio.imread(path).shape == (6, 7)
 
 
-def test_new_workflow_prompts_and_creates_empty_source_graph(
+def test_new_workflow_action_creates_empty_source_graph_without_prompt(
     qtbot,
     monkeypatch,
 ):
@@ -14662,23 +14869,562 @@ def test_new_workflow_prompts_and_creates_empty_source_graph(
 
     monkeypatch.setattr(
         "napari_vipp._widget.QMessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.No,
-    )
-    widget._new_workflow_dialog()
-    assert node.id in widget.pipeline.nodes
-
-    monkeypatch.setattr(
-        "napari_vipp._widget.QMessageBox.question",
-        lambda *_args, **_kwargs: QMessageBox.Yes,
+        lambda *_args, **_kwargs: pytest.fail(
+            "opening a non-destructive workflow tab must not prompt"
+        ),
     )
     widget._new_workflow_dialog()
 
+    assert node.id in widget._workflow_tabs[0].pipeline.nodes
     assert list(widget.pipeline.nodes) == ["input"]
     assert widget.pipeline.connections == []
     assert widget.pipeline.nodes["input"].params["source_mode"] == "file path"
     assert widget.pipeline.nodes["input"].params["file_path"] == ""
     assert widget.pipeline.outputs["input"] is None
     assert widget.status_label.text() == "New empty workflow created."
+
+
+def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.graph_view.select_node("input")
+    pipeline_a = widget.pipeline
+    history_a = widget._history
+    cached = np.arange(9, dtype=np.float32).reshape(3, 3)
+    pipeline_a.outputs["gaussian"] = cached
+    pipeline_a.node_outputs["gaussian"] = [cached]
+    widget._set_right_panel_visible(False)
+    profile_key = ("gaussian", 0, "image", "image", False, False, None, 2)
+    widget._inspect_display_profiles[profile_key] = {
+        "node_id": "gaussian",
+        "output_port": 0,
+        "data_kind": "image",
+        "display_kind": "image",
+        "display_rgb": False,
+        "display_rgb_as_channels": False,
+        "display_ndim": 2,
+        "settings": {"opacity": 0.42},
+    }
+    before = widget._current_history_snapshot()
+    pipeline_a.set_param("gaussian", "sigma", 3.25)
+    widget._push_undo_snapshot(before)
+    assert history_a.can_undo
+
+    widget._new_workflow()
+    pipeline_b = widget.pipeline
+    history_b = widget._history
+    assert pipeline_b is not pipeline_a
+    assert history_b is not history_a
+    assert not widget.inspector_panel.isHidden()
+
+    monkeypatch.setattr(
+        widget,
+        "_invalidate_pipeline_cache",
+        lambda: pytest.fail("tab activation must not invalidate node caches"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "run_pipeline",
+        lambda *args, **kwargs: pytest.fail(
+            "tab activation must not recompute the graph"
+        ),
+    )
+
+    first_id = widget._workflow_tabs[0].session_id
+    first_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == first_id
+    )
+    widget.workflow_tab_bar.setCurrentIndex(first_bar_index)
+
+    assert widget.pipeline is pipeline_a
+    assert widget.pipeline.outputs["gaussian"] is cached
+    assert widget.inspector_panel.isHidden()
+    assert widget._inspect_display_profiles[profile_key]["settings"]["opacity"] == 0.42
+    assert widget._history is history_a
+    assert widget._undo_stack is history_a.undo_stack
+    assert widget._redo_stack is history_a.redo_stack
+    assert widget._history.can_undo
+
+    second_id = next(
+        session.session_id
+        for session in widget._workflow_tabs
+        if session.pipeline is pipeline_b
+    )
+    second_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == second_id
+    )
+    widget.workflow_tab_bar.setCurrentIndex(second_bar_index)
+    assert widget.pipeline is pipeline_b
+    assert widget._history is history_b
+    assert not widget.inspector_panel.isHidden()
+
+
+def test_loading_workflow_opens_new_tab_and_retains_previous_session(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    old_pipeline = widget.pipeline
+    old_pipeline.outputs["input"] = "retained cache"
+    path = save_workflow(
+        tmp_path / "loaded-variant.json",
+        old_pipeline,
+        widget.graph_view.node_positions(),
+    )
+
+    widget.run_pipeline = lambda *args, **kwargs: None
+    loaded = widget.load_workflow_file(path)
+
+    assert loaded == path
+    assert len(widget._workflow_tabs) == 2
+    assert widget._workflow_tabs[0].pipeline is old_pipeline
+    assert old_pipeline.outputs["input"] == "retained cache"
+    assert widget.pipeline is not old_pipeline
+    assert widget._workflow_tabs.current.path == path.resolve()
+    assert widget._workflow_tabs.current.title == "loaded-variant"
+    assert not widget._workflow_tabs.current.dirty
+    assert not widget._history.can_undo
+    loaded_pipeline = widget.pipeline
+    widget.undo()
+    assert widget.pipeline is loaded_pipeline
+    assert widget.pipeline is not old_pipeline
+
+
+def test_parameter_handler_immediately_marks_workflow_tab_dirty(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    node = widget.add_node_from_palette("gaussian_blur")
+    widget.graph_view.select_node(node.id)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+
+    widget._on_param_changed("sigma", float(node.params["sigma"]) + 0.5)
+    widget._debounce_timer.stop()
+
+    assert session.dirty
+    assert widget.workflow_tab_bar.tabText(
+        widget.workflow_tab_bar.currentIndex()
+    ).endswith(" *")
+
+
+def test_split_preview_channel_handler_immediately_marks_tab_dirty(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((2, 8, 8)), metadata={"axes": "CYX"}))
+    qtbot.addWidget(widget)
+    split = widget.add_node_from_palette("split_channels")
+    widget.graph_view.select_node(split.id)
+    monkeypatch.setattr(
+        widget,
+        "_refresh_split_channel_display_surfaces",
+        lambda *_args, **_kwargs: None,
+    )
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+    old_value = int(split.params["preview_channel"])
+
+    widget._on_param_changed("preview_channel", 1 if old_value == 0 else 0)
+
+    assert session.dirty
+    assert widget.workflow_tab_bar.tabText(
+        widget.workflow_tab_bar.currentIndex()
+    ).endswith(" *")
+
+
+def test_scatter_threshold_guide_immediately_marks_workflow_tab_dirty(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8)), metadata={"axes": "YX"}))
+    qtbot.addWidget(widget)
+    monkeypatch.setattr(
+        widget,
+        "_update_colocalization_scatter",
+        lambda *_args, **_kwargs: None,
+    )
+    coloc = widget.add_node_from_palette("racc_index")
+    widget.graph_view.select_node(coloc.id)
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+    widget.workflow_tab_bar.sync_from_model(widget._workflow_tabs)
+
+    widget._on_colocalization_scatter_threshold_changed(1, 12.5)
+    widget._debounce_timer.stop()
+
+    assert coloc.params["threshold_mode"] == "Manual"
+    assert session.dirty
+    assert widget.workflow_tab_bar.tabText(
+        widget.workflow_tab_bar.currentIndex()
+    ).endswith(" *")
+
+
+def test_deferred_pipeline_refresh_remains_owned_by_origin_workflow_tab(
+    qtbot,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    origin = widget._workflow_tabs.current
+    assert origin is not None
+    calls: list[str] = []
+    widget.run_pipeline = lambda *_args, **_kwargs: calls.append(
+        widget._workflow_tabs.current.session_id
+    )
+    widget._collection_batch_graph_refresh_pending = True
+    origin.runtime_cache["_collection_batch_graph_refresh_pending"] = True
+
+    widget._install_workflow_tab_session(origin)
+    other = widget._workflow_tabs.create_blank(make_current=False)
+    other.pipeline.outputs["input"] = None
+    other.pipeline.output_states["input"] = None
+    other_index = widget._workflow_tabs.index_of(other.session_id)
+    assert widget._activate_workflow_tab(other_index, check_safety=False)
+
+    QApplication.processEvents()
+
+    assert calls == []
+    assert origin.runtime_cache["_collection_batch_graph_refresh_pending"]
+
+    origin_index = widget._workflow_tabs.index_of(origin.session_id)
+    assert widget._activate_workflow_tab(origin_index, check_safety=False)
+    QApplication.processEvents()
+
+    assert calls == [origin.session_id]
+    assert not widget._collection_batch_graph_refresh_pending
+    assert not origin.runtime_cache["_collection_batch_graph_refresh_pending"]
+
+
+def test_terminal_close_checks_active_batch_before_dirty_tabs(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget.show()
+    widget._collection_batch_running = True
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: pytest.fail(
+            "dirty-tab prompts must not run while a batch owns the widget"
+        ),
+    )
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert "batch to finish" in widget.status_label.text()
+    widget._collection_batch_running = False
+    widget.hide()
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+
+def test_terminal_close_cancel_keeps_all_workflow_tabs_open(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget.show()
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Cancel,
+    )
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert not widget._closing
+    assert len(widget._workflow_tabs) == 1
+    widget.hide()
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+
+def test_terminal_close_save_dialog_failure_keeps_widget_open(qtbot, monkeypatch):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget.show()
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Save,
+    )
+    monkeypatch.setattr(widget, "_save_workflow_dialog", lambda: False)
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert not widget._closing
+    assert "was not saved" in widget.status_label.text()
+    widget.hide()
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+
+def test_terminal_close_hidden_after_show_still_checks_dirty_tabs(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget.show()
+    QApplication.processEvents()
+    widget.hide()
+    session = widget._workflow_tabs.current
+    assert session is not None
+    assert widget._was_ever_visible
+    assert session.dirty
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda _parent, _title, message, *_args, **_kwargs: (
+            prompts.append(str(message)) or QMessageBox.Cancel
+        ),
+    )
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert not event.isAccepted()
+    assert len(prompts) == 1
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+
+def test_terminal_close_resolves_each_dirty_tab_before_shutdown(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    first = widget._workflow_tabs.current
+    assert first is not None
+    widget.pipeline.set_param("input", "file_path", "first-unsaved.tif")
+    widget._sync_current_workflow_tab_state()
+    widget._new_workflow()
+    second = widget._workflow_tabs.current
+    assert second is not None and second is not first
+    widget.pipeline.set_param("input", "file_path", "second-unsaved.tif")
+    widget._sync_current_workflow_tab_state()
+    assert first.dirty and second.dirty
+    widget.show()
+    responses = [QMessageBox.Save, QMessageBox.Discard]
+    prompts: list[str] = []
+    saved: list[str] = []
+
+    def answer(_parent, _title, message, *_args, **_kwargs):
+        prompts.append(str(message))
+        return responses.pop(0)
+
+    def save_current():
+        session = widget._workflow_tabs.current
+        assert session is not None
+        saved.append(session.session_id)
+        session.mark_clean(
+            widget._current_history_snapshot(),
+            persistence_token=widget._workflow_tab_persistence_token(),
+        )
+        return True
+
+    monkeypatch.setattr("napari_vipp._widget.QMessageBox.question", answer)
+    monkeypatch.setattr(widget, "_save_workflow_dialog", save_current)
+    event = QCloseEvent()
+
+    widget.closeEvent(event)
+
+    assert event.isAccepted()
+    assert widget._closing
+    assert saved == [first.session_id]
+    assert len(prompts) == 2
+    assert first.title in prompts[0]
+    assert second.title in prompts[1]
+    assert responses == []
+    repeated_event = QCloseEvent()
+    widget.closeEvent(repeated_event)
+    assert repeated_event.isAccepted()
+    widget.hide()
+
+
+def test_closing_inactive_dirty_tab_restores_active_tab_after_save_failure(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    closing = widget._workflow_tabs.current
+    assert closing is not None
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget._new_workflow()
+    original = widget._workflow_tabs.current
+    assert original is not None and original is not closing
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Save,
+    )
+    monkeypatch.setattr(widget, "_save_workflow_dialog", lambda: False)
+
+    closing_index = widget._workflow_tabs.index_of(closing.session_id)
+    widget._close_workflow_tab(closing_index)
+
+    assert len(widget._workflow_tabs) == 2
+    assert widget._workflow_tabs.current is original
+    assert widget.pipeline is original.pipeline
+
+
+def test_closing_inactive_dirty_tab_restores_active_tab_after_save(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    closing = widget._workflow_tabs.current
+    assert closing is not None
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._sync_current_workflow_tab_state()
+    widget._new_workflow()
+    original = widget._workflow_tabs.current
+    assert original is not None and original is not closing
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Save,
+    )
+
+    def save_current():
+        session = widget._workflow_tabs.current
+        assert session is closing
+        session.mark_clean(
+            widget._current_history_snapshot(),
+            persistence_token=widget._workflow_tab_persistence_token(),
+        )
+        return True
+
+    monkeypatch.setattr(widget, "_save_workflow_dialog", save_current)
+
+    closing_index = widget._workflow_tabs.index_of(closing.session_id)
+    widget._close_workflow_tab(closing_index)
+
+    assert len(widget._workflow_tabs) == 1
+    assert widget._workflow_tabs.current is original
+    assert widget.pipeline is original.pipeline
+
+
+def test_dirty_workflow_tab_close_supports_cancel_then_discard(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._new_workflow()
+    before = widget._current_history_snapshot()
+    widget.pipeline.set_param("input", "file_path", "unsaved-source.tif")
+    widget._push_undo_snapshot(before)
+    assert widget._workflow_tabs.current.dirty
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda _parent, title, *_args, **_kwargs: (
+            calls.append(title) or QMessageBox.Cancel
+        ),
+    )
+    widget._close_workflow_tab(widget.workflow_tab_bar.currentIndex())
+    assert len(widget._workflow_tabs) == 2
+    assert calls == ["Unsaved workflow"]
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: QMessageBox.Discard,
+    )
+    widget._close_workflow_tab(widget.workflow_tab_bar.currentIndex())
+    assert len(widget._workflow_tabs) == 1
+    assert widget.pipeline is widget._workflow_tabs.current.pipeline
+
+
+def test_workflow_tab_rename_reorder_and_last_close_keep_valid_session(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._new_workflow()
+    widget._new_workflow()
+    original_ids = tuple(session.session_id for session in widget._workflow_tabs)
+
+    widget._rename_workflow_tab(1, "Reference")
+    assert widget._workflow_tabs[1].title == "Reference"
+    assert not widget._workflow_tabs[1].dirty
+
+    widget.workflow_tab_bar.moveTab(0, 2)
+    assert tuple(session.session_id for session in widget._workflow_tabs) == (
+        original_ids[1],
+        original_ids[2],
+        original_ids[0],
+    )
+    assert tuple(
+        widget.workflow_tab_bar.tabData(index)
+        for index in range(widget.workflow_tab_bar.count())
+    ) == tuple(session.session_id for session in widget._workflow_tabs)
+
+    for session in widget._workflow_tabs:
+        session.mark_clean()
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: pytest.fail(
+            "clean workflow tabs do not need a close prompt"
+        ),
+    )
+    while len(widget._workflow_tabs) > 1:
+        widget._close_workflow_tab(widget.workflow_tab_bar.currentIndex())
+    previous = widget._workflow_tabs.current
+    widget._close_workflow_tab(widget.workflow_tab_bar.currentIndex())
+    assert len(widget._workflow_tabs) == 1
+    assert widget._workflow_tabs.current is not previous
+    assert list(widget.pipeline.nodes) == ["input"]
 
 
 def test_optional_reader_error_uses_reader_dialog(qtbot, monkeypatch):

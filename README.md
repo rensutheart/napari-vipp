@@ -62,12 +62,12 @@ self-contained working copy and opens it already configured and previewed.
 
 | Area | Current alpha capabilities |
 | --- | --- |
-| Graph authoring | Searchable node palette, typed ports, dynamic outputs, cycle prevention, undo/redo, graph notes, named tunnels, auto-layout, and saved positions. |
+| Graph authoring | Searchable node palette, typed ports, dynamic outputs, cycle prevention, undo/redo, graph notes, draggable named tunnels, insert-on-wire, live source subtitles, auto-layout, and saved positions. |
 | Images and metadata | Semantic T/C/Z/Y/X axes, scale/units/origin, channel and acquisition metadata, source identity, and operation history. |
 | Image processing | Intensity transforms, filters, background correction, thresholding, watershed, binary/label morphology, channels, axes, masks, and composites. |
 | Measurements | Object and intensity tables, calibrated morphology, 3D mesh morphology, skeleton/network analysis, colocalization, object association, and table composition. |
 | Restoration | Born-Wolf PSF generation, measured-PSF preparation, and manual/cached 2D or 3D Richardson-Lucy and RL-TV deconvolution. |
-| Reuse and automation | Workflow JSON, generated headless Python, explicit batch outputs, reviewed collection plans, representative navigation, retained batch results, and workflow/config/manifest artifacts. |
+| Reuse and automation | Independent workflow tabs, workflow JSON, generated headless Python, explicit batch outputs, background collection runs, reviewed plans, representative navigation, retained batch results, and workflow/config/manifest artifacts. |
 | I/O | OME-TIFF, ImageJ TIFF, TIFF, local OME-Zarr 0.4/0.5, NPY/NPZ, common 2D raster formats, and optional microscope readers. |
 
 Most graph operations are still eager. Large z-stacks and OME-Zarr datasets

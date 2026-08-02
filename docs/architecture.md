@@ -873,6 +873,13 @@ precision/overflow hazards, and rejects unsafe inputs. The legacy per-channel
 1st/99th-percentile normalization is available only as an explicitly labelled
 lossy choice.
 
+Semantic `channel_colors` therefore requires an explicitly declared channel
+axis. A scalar image has no channel record to annotate: silently accepting and
+discarding a configured colour would make saved provenance disagree with the
+calculation. Use napari/VIPP Inspect display styling for a scalar pseudocolour,
+or explicitly declare/split/combine a channel axis before assigning semantic
+channel colours.
+
 Composite authoring separates `channel_axis_mode` and `mapping_mode`; both are
 persisted `Auto`/`Manual` choices. Auto axis mode resolves only an explicit
 carried channel axis and presents the resolved axis read-only. Manual axis mode
@@ -1122,6 +1129,8 @@ The implemented decomposition is:
 | `ui/source_adapter.py`, `ui/file_sources.py` | Live-layer revision tracking and Qt scheduling for verified file snapshots. |
 | `core/execution.py`, `ui/workers.py` | Headless pipeline request/result service and its thin Qt runnable. |
 | `core/batch_setup.py`, `ui/batch.py`, `ui/batch_controller.py`, `ui/batch_navigator.py` | Headless batch configuration, retained collection workspace, application controller, and representative/progress navigator. |
+| `ui/workflow_tabs.py` | Qt-free retained workflow-session model plus the thin movable tab-bar presentation. |
+| `ui/batch_workers.py` | Origin-tagged Qt runnable around the otherwise headless collection batch engine. |
 | `ui/history.py`, `ui/lifecycle.py` | Undo/redo state and terminal shutdown of external callbacks/background work. |
 
 `_widget.py` still owns the three-pane/toolbar/inspector assembly, graph-editing
@@ -1131,6 +1140,17 @@ coordination, generated napari layer presentation, and save/load/export command
 wiring. Those are candidates for later controller extraction when a cohesive
 boundary and a focused test can be named. Moving code solely to reduce line
 count is not an architectural goal.
+
+Every open workflow tab retains one `PrototypePipeline` instance, including its
+calculated output dictionaries, together with an independent `WorkflowHistory`,
+captured editor snapshot, path/title/clean baseline, and ancillary runtime cache.
+Tab activation rebuilds Qt presentation around those retained objects; it does
+not restore the graph into a shared pipeline or calculate it again. Unsafe
+short-lived diagnostic workers block tab switching, while a collection batch is
+different: its workflow/config/plan are frozen on the GUI thread and its
+Qt-free `run_batch` call executes in a max-one background pool tagged with the
+origin session ID. Late progress and terminal results are routed only to that
+origin session.
 
 The main route through `run_pipeline()` is:
 

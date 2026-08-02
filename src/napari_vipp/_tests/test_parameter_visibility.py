@@ -393,7 +393,21 @@ def test_all_costes_threshold_parameters_have_manual_mode_dependency():
         for parameter in operation.parameters
         if parameter.name in {"channel_1_threshold", "channel_2_threshold"}
     ]
-    assert len(threshold_parameters) == 14
+    expected_operations = {
+        "colocalization_metrics",
+        "masked_colocalization_metrics",
+        "colocalized_voxels",
+        "masked_colocalized_voxels",
+        "colocalization_scatter_plot",
+        "masked_colocalization_scatter_plot",
+        "racc_index",
+        "masked_racc_index",
+        "object_colocalization_metrics",
+    }
+    assert {operation_id for operation_id, _ in threshold_parameters} == (
+        expected_operations
+    )
+    assert len(threshold_parameters) == 2 * len(expected_operations)
     assert all(
         parameter.visibility == "parameter_in"
         and parameter.visibility_parameter == "threshold_mode"

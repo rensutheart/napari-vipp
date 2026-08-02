@@ -208,6 +208,27 @@ over all foreground voxels in the supplied label image and then reused for each
 object. This makes object rows comparable and avoids unstable per-object
 threshold estimates for small objects.
 
+### Fiji Coloc 2 output scope
+
+For the metrics that both applications emit, VIPP is intended to reproduce
+Fiji Coloc 2's deterministic threshold, regression, Pearson, and Manders
+semantics. This is numerical-method parity, not a claim that the two
+applications produce the same complete report bundle.
+
+VIPP does not currently emit Coloc 2's zero-zero and saturation percentages,
+per-channel min/max/mean/full-sum rows, intercept-to-mean warning text, Li ICQ,
+Spearman statistics, randomized Costes significance test, or Fiji's projection,
+histogram, log, and PDF artifacts. In particular,
+`costes_pearson_below` is the correlation used during threshold search; it is
+not the shuffled Costes P-value. The descriptive
+`fraction_ch*_above_threshold_intensity_in_both_above` fields are also not
+Manders tM1/tM2; use `manders_tm1` and `manders_tm2` for that comparison.
+
+Randomized Costes significance is inherently a separately parameterized,
+stochastic calculation. If added in a future release, its PSF/block size,
+randomization count, and reproducibility policy must be recorded and validated
+statistically rather than described as bitwise Fiji output parity.
+
 ## Colocalized-Voxel Visual Outputs
 
 `Colocalized Voxels` and `Masked Colocalized Voxels` are visual feedback nodes.

@@ -426,6 +426,11 @@ VIPP rejects incompatible port types and cycles. When a node can be inserted on
 an existing wire in more than one way, VIPP asks which input/output mapping to
 use.
 
+Image Source cards show their current layer, file stem, sample, or collection
+binding below the node title. Long bindings are elided on the card; hover it to
+read the complete source. Collection bindings follow the active item and return
+to their representative description when the collection run finishes.
+
 ### Search And Focus
 
 Use `Search graph` above the canvas to find nodes, operation IDs, named
@@ -452,6 +457,11 @@ Use a tunnel:
 The `Tunnels...` toolbar button opens a manager where you can filter, focus,
 rename, or delete tunnels.
 
+To change a tunnel's source without editing JSON, drag the source badge on its
+current output port and release it over another compatible output. VIPP previews
+type/cycle validity, moves every subscriber atomically, and records one undoable
+graph edit.
+
 ### Graph Notes
 
 Right-click a node and choose `Add note` to attach a movable annotation. Notes
@@ -469,7 +479,23 @@ The same node menu also contains `Tune node in isolation`. It is a transient
 interactive execution control: it does not change or serialize the scientific
 workflow graph.
 
-## Workflow Save, Load, And Export
+## Workflow Tabs, Save, Load, And Export
+
+### Work With Multiple Workflows
+
+Each tab owns a separate live workflow: its calculated results and caches,
+undo/redo history, inspector state, filename, and dirty baseline remain intact
+when another tab is selected. `New` opens a clean workflow in a new tab, and
+`Load workflow...` opens the chosen file in a new tab. Double-click a tab to
+rename it, drag tabs to reorder them, and use the close button or middle-click
+to close one. A dirty tab asks for Save, Discard, or Cancel; closing the last tab
+immediately creates a valid blank replacement.
+
+Collection batches run for the tab that launched them. Because the headless
+batch engine runs on one background worker, another tab can be selected and
+edited while the batch continues. Progress and completion stay associated with
+the originating tab. A second batch, closing the origin tab, or closing VIPP is
+blocked until that uncancellable batch run completes.
 
 ### Save Workflow JSON
 
