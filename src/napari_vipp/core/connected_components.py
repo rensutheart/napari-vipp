@@ -46,6 +46,7 @@ def label_connected_components(
     message = "Connected-component blocks"
 
     if progress is not None:
+        progress.check_cancelled()
         progress.report(0, total, message)
     for completed, index in enumerate(indexes, start=1):
         if progress is not None:
@@ -54,16 +55,21 @@ def label_connected_components(
         # Request the public dtype from SciPy itself. SciPy then raises instead
         # of allowing a silent narrowing wrap if a block ever contains more
         # components than int32 can represent.
-        labels, _count = ndi.label(
+        target_block = output if index is None else output[index]
+        ndi.label(
             source_block,
             structure=structure,
-            output=np.int32,
+            output=target_block,
         )
-        target_block = output if index is None else output[index]
-        target_block[...] = labels.astype(np.int32, copy=False)
         if progress is not None:
+            # The SciPy call is an atomic block boundary.  Cancellation that
+            # arrived while it ran must not turn into a successful result.
+            progress.check_cancelled()
             progress.report(completed, total, message)
     if block_count == 0 and progress is not None:
+        # In an empty batch there is no loop boundary at which a reporter's
+        # cancellation request can otherwise be observed.
+        progress.check_cancelled()
         progress.report(1, 1, message)
     return output
 

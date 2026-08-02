@@ -64,15 +64,19 @@ class _FakeCuPyXNdimage:
 @dataclass
 class _Progress:
     cancel_on_check: int | None = None
+    cancel_after_completed: int | None = None
+    cancelled: bool = False
     checks: int = 0
     reports: list[tuple[int, int, str]] = field(default_factory=list)
 
     def report(self, current: int, total: int, message: str) -> None:
         self.reports.append((current, total, message))
+        if current == self.cancel_after_completed:
+            self.cancelled = True
 
     def check_cancelled(self) -> None:
         self.checks += 1
-        if self.checks == self.cancel_on_check:
+        if self.cancelled or self.checks == self.cancel_on_check:
             raise RuntimeError("cancelled")
 
 
@@ -189,7 +193,7 @@ def test_fake_progress_and_cancellation_are_complete_block_boundaries(
         progress=progress,
     )
 
-    assert progress.checks == 3
+    assert progress.checks >= 2 * 3
     assert progress.reports == [
         (0, 3, "Connected-component blocks"),
         (1, 3, "Connected-component blocks"),
@@ -198,7 +202,9 @@ def test_fake_progress_and_cancellation_are_complete_block_boundaries(
     ]
     assert stream.synchronize_count == 3
 
-    cancelled = _Progress(cancel_on_check=2)
+    calls_before_cancel = len(cupyx_ndimage.calls)
+    syncs_before_cancel = stream.synchronize_count
+    cancelled = _Progress(cancel_after_completed=1)
     with pytest.raises(RuntimeError, match="cancelled"):
         provider.label_connected_components(
             mask,
@@ -209,8 +215,34 @@ def test_fake_progress_and_cancellation_are_complete_block_boundaries(
         (0, 3, "Connected-component blocks"),
         (1, 3, "Connected-component blocks"),
     ]
-    assert len(cupyx_ndimage.calls) == 4
-    assert stream.synchronize_count == 4
+    assert len(cupyx_ndimage.calls) - calls_before_cancel == 1
+    assert stream.synchronize_count - syncs_before_cancel == 1
+
+
+def test_cancellation_requested_during_only_gpu_block_is_observed(
+    fake_runtime,
+) -> None:
+    _cupy, cupyx_ndimage, stream = fake_runtime
+    original_label = cupyx_ndimage.label
+    progress = _Progress()
+
+    def cancelling_label(*args, **kwargs):
+        result = original_label(*args, **kwargs)
+        progress.cancelled = True
+        return result
+
+    cupyx_ndimage.label = cancelling_label
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        provider.label_connected_components(
+            np.eye(6, dtype=bool),
+            spatial_mode="2D YX",
+            progress=progress,
+        )
+
+    assert len(cupyx_ndimage.calls) == 1
+    assert stream.synchronize_count == 1
+    assert progress.reports == [(0, 1, "Connected-component blocks")]
 
 
 def test_per_block_int32_safety_rejects_before_output_allocation(

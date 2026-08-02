@@ -94,6 +94,7 @@ def label_connected_components(
     total = max(block_count, 1)
 
     if progress is not None:
+        progress.check_cancelled()
         progress.report(0, total, _PROGRESS_MESSAGE)
     for completed, index in enumerate(indexes, start=1):
         if progress is not None:
@@ -107,8 +108,14 @@ def label_connected_components(
         )
         if progress is not None:
             cupy.cuda.get_current_stream().synchronize()
+            # The CuPyX primitive is atomic.  Honour cancellation requested
+            # while it was running at the first truthful block boundary.
+            progress.check_cancelled()
             progress.report(completed, total, _PROGRESS_MESSAGE)
     if block_count == 0 and progress is not None:
+        # Empty leading batches have no loop boundary at which to observe a
+        # cancellation request made by the initial reporter.
+        progress.check_cancelled()
         progress.report(1, 1, _PROGRESS_MESSAGE)
     return output
 

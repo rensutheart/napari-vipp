@@ -249,7 +249,7 @@ def test_direct_spatial_errors_are_stable():
 
 def test_scipy_is_required_to_produce_int32_and_overflow_errors_propagate(monkeypatch):
     def overflowing_label(data, *, structure, output):
-        assert np.dtype(output) == np.dtype(np.int32)
+        assert np.asarray(output).dtype == np.dtype(np.int32)
         raise RuntimeError("insufficient bit-depth in requested output type")
 
     monkeypatch.setattr(connected_components.ndi, "label", overflowing_label)
@@ -258,6 +258,46 @@ def test_scipy_is_required_to_produce_int32_and_overflow_errors_propagate(monkey
         connected_components.label_connected_components(
             np.ones((3, 3), dtype=bool),
             spatial_mode="2D YX",
+        )
+
+
+def test_scipy_writes_directly_into_the_single_public_output(monkeypatch):
+    original_label = connected_components.ndi.label
+    output_ids = []
+
+    def direct_label(data, *, structure, output):
+        output_ids.append(id(output))
+        return original_label(data, structure=structure, output=output)
+
+    monkeypatch.setattr(connected_components.ndi, "label", direct_label)
+    labels = connected_components.label_connected_components(
+        np.eye(5, dtype=bool),
+        spatial_mode="2D YX",
+        connectivity="Face connected",
+    )
+
+    assert output_ids == [id(labels)]
+    assert labels.dtype == np.int32
+
+
+def test_cancellation_requested_during_only_cpu_block_is_observed(monkeypatch):
+    original_label = connected_components.ndi.label
+    cancelled = False
+
+    def cancelling_label(*args, **kwargs):
+        nonlocal cancelled
+        result = original_label(*args, **kwargs)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(connected_components.ndi, "label", cancelling_label)
+    progress = ProgressContext(cancelled=lambda: cancelled)
+
+    with pytest.raises(OperationCancelled, match="Operation cancelled"):
+        label_connected_components(
+            np.eye(5, dtype=bool),
+            spatial_mode="2D YX",
+            progress=progress,
         )
 
 
