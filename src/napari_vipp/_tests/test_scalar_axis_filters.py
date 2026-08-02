@@ -14,6 +14,7 @@ from napari_vipp.core.operations import (
     gaussian_blur_3d,
     median_filter,
     rolling_ball_background,
+    sigma_filter,
     subtract_background,
 )
 from napari_vipp.core.pipeline import (
@@ -34,6 +35,7 @@ XY_FILTERS: tuple[tuple[str, Operation, dict[str, object]], ...] = (
         {"low_sigma": 0.6, "high_sigma": 1.2},
     ),
     ("median_filter", median_filter, {"size": 3}),
+    ("sigma_filter", sigma_filter, {"radius": 1.5}),
 )
 
 ROLLING_BALL_OPERATIONS: tuple[tuple[str, Operation, dict[str, object]], ...] = (

@@ -134,6 +134,7 @@ from napari_vipp.core.operations import (
     select_axis_slice,
     select_table_columns,
     set_pixel_size,
+    sigma_filter,
     skeleton_graph_overlay,
     skeleton_graph_tables,
     skeleton_keypoints,
@@ -1210,6 +1211,7 @@ _POSITIONAL_YX_OPERATIONS = frozenset(
         "average_blur",
         "gaussian_blur",
         "median_filter",
+        "sigma_filter",
         "difference_of_gaussians",
         "bilateral_filter",
         "unsharp_mask",
@@ -1286,6 +1288,7 @@ SCALAR_DEFAULT_CHANNEL_AXIS_OPERATIONS = frozenset(
         "li_threshold",
         "minimum_threshold",
         "median_filter",
+        "sigma_filter",
         "niblack_threshold",
         "non_local_means_filter",
         "otsu_threshold",
@@ -1947,6 +1950,78 @@ NODE_LIBRARY: tuple[OperationSpec, ...] = (
         median_filter,
         subcategory=SMOOTHING_DENOISING_GROUP,
         stack_processing_note=SLICE_WISE_STACK_NOTICE,
+    ),
+    OperationSpec(
+        "sigma_filter",
+        "Sigma Filter",
+        FILTERING_CATEGORY,
+        "array",
+        "image",
+        (
+            ParameterSpec(
+                "radius",
+                "Radius",
+                "float",
+                2.0,
+                0.5,
+                10.0,
+                0.05,
+                2,
+                tooltip=(
+                    "Radius of Fiji Sigma Filter Plus' circular YX footprint. "
+                    "The documented 1.5–1.75 and 2.5–2.85 footprint plateaus "
+                    "are reproduced exactly."
+                ),
+            ),
+            ParameterSpec(
+                "sigma_width",
+                "Sigma width",
+                "float",
+                2.0,
+                0.0,
+                1_000_000.0,
+                0.1,
+                3,
+                tooltip=(
+                    "Keep neighborhood samples inside center ± this many "
+                    "population standard deviations. The interval is inclusive."
+                ),
+            ),
+            ParameterSpec(
+                "minimum_pixel_fraction",
+                "Minimum pixel fraction",
+                "float",
+                0.2,
+                0.0,
+                1.0,
+                0.01,
+                3,
+                tooltip=(
+                    "Required selected-sample fraction. If too few pixels pass, "
+                    "the configured fallback is used."
+                ),
+            ),
+            ParameterSpec(
+                "outlier_aware",
+                "Exclude center in fallback",
+                "bool",
+                True,
+                0,
+                1,
+                1,
+                tooltip=(
+                    "When too few samples pass, average the full footprint "
+                    "without the center pixel. Turn off to use the full mean."
+                ),
+            ),
+            SCALAR_CHANNEL_AXIS_PARAMETER,
+        ),
+        sigma_filter,
+        subcategory=SMOOTHING_DENOISING_GROUP,
+        stack_processing_note=(
+            "Edge-preserving Lee sigma filter compatible with the documented "
+            "behavior of Fiji Sigma Filter Plus. " + SLICE_WISE_STACK_NOTICE
+        ),
     ),
     OperationSpec(
         "bilateral_filter",

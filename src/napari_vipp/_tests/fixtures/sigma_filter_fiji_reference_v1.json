@@ -1,0 +1,955 @@
+{
+  "cases": [
+    {
+      "coverage": [
+        "constant",
+        "tiny-plane",
+        "clamped-border",
+        "radius-10"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "bbf3f11cb5b43e700273a78d12de55e4a7eab741ed2abf13787a4d2dc832b8ec",
+      "external_output_values": [
+        37
+      ],
+      "id": "u8_constant_tiny_radius10",
+      "input_id": "u8_constant_tiny",
+      "parameters": {
+        "minimum_pixel_fraction": 0.2,
+        "outlier_aware": true,
+        "radius": 10.0,
+        "sigma_width": 2.0
+      }
+    },
+    {
+      "coverage": [
+        "constant",
+        "uint16-high",
+        "clamped-border",
+        "radius-10"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "8688d249e9d047b4fc2fb89ce05afe9ec89252ffccdd969de6eef260dd7ffb21",
+      "external_output_values": [
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "id": "u16_constant_high_radius10",
+      "input_id": "u16_constant_high",
+      "parameters": {
+        "minimum_pixel_fraction": 0.2,
+        "outlier_aware": true,
+        "radius": 10.0,
+        "sigma_width": 2.0
+      }
+    },
+    {
+      "coverage": [
+        "gradient",
+        "clamped-border",
+        "radius-0.5"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "aa927406c6de3001749612dbcf9717c7c4680a7002cdbb8dd1e139625a23dec9",
+      "external_output_values": [
+        2,
+        7,
+        14,
+        21,
+        28,
+        33,
+        33,
+        38,
+        45,
+        52,
+        59,
+        64,
+        64,
+        69,
+        76,
+        83,
+        90,
+        95,
+        95,
+        100,
+        107,
+        114,
+        121,
+        126
+      ],
+      "id": "u8_gradient_radius_half",
+      "input_id": "u8_gradient",
+      "parameters": {
+        "minimum_pixel_fraction": 0.2,
+        "outlier_aware": false,
+        "radius": 0.5,
+        "sigma_width": 1.0
+      }
+    },
+    {
+      "coverage": [
+        "gradient",
+        "uint16",
+        "radius-2"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "dc7741f547b5861ae4909eb7b06e28150e404f1113b3269e775c4ab62be8ee90",
+      "external_output_values": [
+        2807,
+        3416,
+        4247,
+        5244,
+        6241,
+        7072,
+        7681,
+        9792,
+        10409,
+        11264,
+        12261,
+        13258,
+        14112,
+        14729,
+        16744,
+        17361,
+        18216,
+        19213,
+        20210,
+        21065,
+        21682,
+        23697,
+        24314,
+        25168,
+        26165,
+        27162,
+        28017,
+        28634,
+        30745,
+        31354,
+        32185,
+        33182,
+        34179,
+        35010,
+        35619
+      ],
+      "id": "u16_gradient_radius2",
+      "input_id": "u16_gradient",
+      "parameters": {
+        "minimum_pixel_fraction": 0.8,
+        "outlier_aware": false,
+        "radius": 2.0,
+        "sigma_width": 2.0
+      }
+    },
+    {
+      "coverage": [
+        "hard-edge",
+        "edge-preservation"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "a593b0ad5cc5fca399ba3510c4f3cc6b92890f788bfe8c964fbd56d90fc4bfed",
+      "external_output_values": [
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240
+      ],
+      "id": "u8_hard_edge",
+      "input_id": "u8_hard_edge",
+      "parameters": {
+        "minimum_pixel_fraction": 0.2,
+        "outlier_aware": true,
+        "radius": 2.0,
+        "sigma_width": 1.0
+      }
+    },
+    {
+      "coverage": [
+        "hot-pixel",
+        "dead-pixel",
+        "exclude-center-fallback"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "b8d018b8b72f95dee5f7e0e3b3d23734eced9fe31850402e7b20eb7867aabab2",
+      "external_output_values": [
+        1046,
+        1054,
+        1065,
+        1073,
+        1087,
+        1099,
+        1107,
+        1089,
+        1097,
+        1100,
+        1057,
+        1070,
+        1145,
+        1153,
+        1149,
+        1152,
+        1164,
+        1121,
+        1134,
+        1146,
+        1217,
+        1220,
+        1227,
+        1238,
+        1252,
+        1209,
+        1221,
+        1292,
+        1291,
+        1301,
+        1313,
+        1327,
+        1340,
+        1352,
+        1355,
+        1352,
+        1359,
+        1377,
+        1390,
+        1404,
+        1407,
+        1415,
+        1394,
+        1402,
+        1413,
+        1426,
+        1439,
+        1450,
+        1458
+      ],
+      "id": "u16_hot_dead_outlier_aware",
+      "input_id": "u16_hot_dead",
+      "parameters": {
+        "minimum_pixel_fraction": 0.8,
+        "outlier_aware": true,
+        "radius": 2.0,
+        "sigma_width": 1.0
+      }
+    },
+    {
+      "coverage": [
+        "hot-pixel",
+        "dead-pixel",
+        "full-mean-fallback"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "24a3639622d05314efee1cf5d9ebe8377fd4d0ba95489bc42ce3ca3f6c166be3",
+      "external_output_values": [
+        1044,
+        1052,
+        1063,
+        1073,
+        1087,
+        1099,
+        1107,
+        1088,
+        1096,
+        1100,
+        1057,
+        1070,
+        1090,
+        1153,
+        1149,
+        1152,
+        1164,
+        1121,
+        1134,
+        1146,
+        1217,
+        1220,
+        1227,
+        1238,
+        4313,
+        1209,
+        1221,
+        1292,
+        1291,
+        1301,
+        1313,
+        1327,
+        1340,
+        1352,
+        1355,
+        1352,
+        1360,
+        1377,
+        1390,
+        1404,
+        1408,
+        1416,
+        1396,
+        1404,
+        1415,
+        1428,
+        1441,
+        1452,
+        1460
+      ],
+      "id": "u16_hot_dead_full_mean",
+      "input_id": "u16_hot_dead",
+      "parameters": {
+        "minimum_pixel_fraction": 0.8,
+        "outlier_aware": false,
+        "radius": 2.0,
+        "sigma_width": 1.0
+      }
+    },
+    {
+      "coverage": [
+        "full-mean-fallback",
+        "integer-restoration"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "91f76cee6a808b0374b3ef91c125584390304cd9c34fffed107d890fd40d97d7",
+      "external_output_values": [
+        0,
+        20,
+        0,
+        20,
+        21,
+        20,
+        0,
+        20,
+        0
+      ],
+      "id": "u8_full_mean_fallback_rounds_20_8_to_21",
+      "input_id": "u8_fallback_21",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": false,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "exclude-center-fallback",
+        "half-up-restoration"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "2ccc9ed261a710c5c38c794ee69eb90818248abdcf69e68cd2eed4e6698e4b5f",
+      "external_output_values": [
+        0,
+        25,
+        0,
+        25,
+        1,
+        25,
+        0,
+        25,
+        0
+      ],
+      "id": "u8_exclude_center_half_up",
+      "input_id": "u8_half_up",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "exclude-center-fallback",
+        "half-up-restoration",
+        "uint16"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "842404c084b7ddbfe0dfe8bc280134a821e09e0e2d4028df98f965935fe7770b",
+      "external_output_values": [
+        0,
+        25,
+        0,
+        25,
+        1,
+        25,
+        0,
+        25,
+        0
+      ],
+      "id": "u16_exclude_center_half_up",
+      "input_id": "u16_half_up",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "clamped-border",
+        "repeated-alias",
+        "exclude-center-fallback"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "03a55f17e00f442e23b73ab44830b7296f873ef297cf1cc6eea3a9aa3c3640f9",
+      "external_output_values": [
+        50,
+        25,
+        25,
+        0
+      ],
+      "id": "u8_border_alias_exclude_one_center",
+      "input_id": "u8_border_alias",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "clamped-border",
+        "repeated-alias",
+        "full-mean-fallback"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "1fe64b2b043bd8ff1ad6d6b50bd05ebad6106ec94ec5a0041e2ae73182926179",
+      "external_output_values": [
+        60,
+        20,
+        20,
+        0
+      ],
+      "id": "u8_border_alias_full_mean",
+      "input_id": "u8_border_alias",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": false,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "inclusive-threshold",
+        "branch-decision"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "4a75850b2b76c13cc4de03cb5d70a2106d2e50452057008db41e95c7279d26bf",
+      "external_output_values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "id": "u8_inclusive_threshold_equality",
+      "input_id": "u8_threshold",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 2.5
+      }
+    },
+    {
+      "coverage": [
+        "inclusive-threshold",
+        "branch-decision",
+        "next-below"
+      ],
+      "expectation": "fiji_parity",
+      "external_output_sha256": "889b457d34998d9683f3b0c15d3e7176c9eceeea5e1498fa9870ce3e157198fb",
+      "external_output_values": [
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1
+      ],
+      "id": "u8_threshold_next_sigma_below",
+      "input_id": "u8_threshold",
+      "parameters": {
+        "minimum_pixel_fraction": 1.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 2.4999999999999996
+      }
+    },
+    {
+      "coverage": [
+        "minimum-count",
+        "reviewed-divergence"
+      ],
+      "deviation_id": "exact_ceil",
+      "expectation": "intentional_vipp_divergence",
+      "external_output_sha256": "4a75850b2b76c13cc4de03cb5d70a2106d2e50452057008db41e95c7279d26bf",
+      "external_output_values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "id": "u8_exact_ceil_reviewed_divergence",
+      "input_id": "u8_threshold",
+      "parameters": {
+        "minimum_pixel_fraction": 0.8000001,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 0.0
+      }
+    },
+    {
+      "coverage": [
+        "negative-variance",
+        "reviewed-divergence"
+      ],
+      "deviation_id": "negative_variance_clamp",
+      "expectation": "intentional_vipp_divergence",
+      "external_output_sha256": "60daa3a5f7dbfa200f8c82840ecf5b42640b70f3b7218a4c6bbd67db542e75a4",
+      "external_output_values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "id": "u16_negative_variance_fraction_zero_reviewed_divergence",
+      "input_id": "u16_negative_variance",
+      "parameters": {
+        "minimum_pixel_fraction": 0.0,
+        "outlier_aware": true,
+        "radius": 0.5,
+        "sigma_width": 2.0
+      }
+    }
+  ],
+  "generation": {
+    "adapter_scope": "Calls official Sigma_Filter_Plus.doFiltering and ImageJ unsigned restoration; bypasses dialog, ROI, and stack orchestration only.",
+    "compile_stdout": "",
+    "execution_environment": {
+      "imagej_version": "1.54p",
+      "java_vendor": "Oracle Corporation",
+      "java_version": "23.0.2",
+      "os_arch": "amd64",
+      "os_name": "Windows 10"
+    },
+    "harness": "scripts/sigma_reference/SigmaGoldenRunner.java",
+    "harness_sha256": "4e3e14822ad93fce8e8ec3e9e108099e280cc66b41d3f3ce4e34d6c769d37202",
+    "host_python": "3.12.9",
+    "javac_version": "javac 23.0.2",
+    "script": "scripts/generate_sigma_fiji_reference.py",
+    "script_sha256": "914968d16e9592018d29872ed096b9087e78c2f0e6ed915797c209ce01f02068"
+  },
+  "inputs": {
+    "u16_constant_high": {
+      "dtype": "uint16",
+      "input_sha256": "8688d249e9d047b4fc2fb89ce05afe9ec89252ffccdd969de6eef260dd7ffb21",
+      "shape": [
+        2,
+        3
+      ],
+      "values": [
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535
+      ]
+    },
+    "u16_gradient": {
+      "dtype": "uint16",
+      "input_sha256": "06e9bde4058c54cbc9ce82067874f7b1f48f1e3d7237524107ec31028b082feb",
+      "shape": [
+        5,
+        7
+      ],
+      "values": [
+        0,
+        997,
+        1994,
+        2991,
+        3988,
+        4985,
+        5982,
+        8111,
+        9108,
+        10105,
+        11102,
+        12099,
+        13096,
+        14093,
+        16222,
+        17219,
+        18216,
+        19213,
+        20210,
+        21207,
+        22204,
+        24333,
+        25330,
+        26327,
+        27324,
+        28321,
+        29318,
+        30315,
+        32444,
+        33441,
+        34438,
+        35435,
+        36432,
+        37429,
+        38426
+      ]
+    },
+    "u16_half_up": {
+      "dtype": "uint16",
+      "input_sha256": "298d62205b787b6e170c87121daecd21f79898882f881dab7954e7e4bb4cef3e",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        0,
+        1,
+        0,
+        0,
+        100,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "u16_hot_dead": {
+      "dtype": "uint16",
+      "input_sha256": "458c88f3623cc19ffa094e20a43f741e732b65f9c9d56766bf9cb9cff467110a",
+      "shape": [
+        7,
+        7
+      ],
+      "values": [
+        1000,
+        1013,
+        1026,
+        1039,
+        1052,
+        1065,
+        1078,
+        1071,
+        1084,
+        1097,
+        1110,
+        1123,
+        0,
+        1149,
+        1142,
+        1155,
+        1168,
+        1181,
+        1194,
+        1207,
+        1220,
+        1213,
+        1226,
+        1239,
+        65535,
+        1265,
+        1278,
+        1291,
+        1284,
+        1297,
+        1310,
+        1323,
+        1336,
+        1349,
+        1362,
+        1355,
+        1368,
+        1381,
+        1394,
+        1407,
+        1420,
+        1433,
+        1426,
+        1439,
+        1452,
+        1465,
+        1478,
+        1491,
+        1504
+      ]
+    },
+    "u16_negative_variance": {
+      "dtype": "uint16",
+      "input_sha256": "6acf95f515743e1c0485d811685cbf247857ba14c40318f2142915fe89a666f6",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535
+      ]
+    },
+    "u8_border_alias": {
+      "dtype": "uint8",
+      "input_sha256": "40e736c02a102a050e1555781b4171020a4279adaa7ed9ca3cc9633a0ade9c37",
+      "shape": [
+        2,
+        2
+      ],
+      "values": [
+        100,
+        0,
+        0,
+        0
+      ]
+    },
+    "u8_constant_tiny": {
+      "dtype": "uint8",
+      "input_sha256": "bbf3f11cb5b43e700273a78d12de55e4a7eab741ed2abf13787a4d2dc832b8ec",
+      "shape": [
+        1,
+        1
+      ],
+      "values": [
+        37
+      ]
+    },
+    "u8_fallback_21": {
+      "dtype": "uint8",
+      "input_sha256": "3ba75d0de43055e1a6c79bd40601614b0a23c02bebcf919ec84a13011708501c",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        0,
+        1,
+        0,
+        1,
+        100,
+        1,
+        0,
+        1,
+        0
+      ]
+    },
+    "u8_gradient": {
+      "dtype": "uint8",
+      "input_sha256": "ec3a6e4710fdf661063debbed3f166d82df4d849303de31ba0cc84c721d529d1",
+      "shape": [
+        4,
+        6
+      ],
+      "values": [
+        0,
+        7,
+        14,
+        21,
+        28,
+        35,
+        31,
+        38,
+        45,
+        52,
+        59,
+        66,
+        62,
+        69,
+        76,
+        83,
+        90,
+        97,
+        93,
+        100,
+        107,
+        114,
+        121,
+        128
+      ]
+    },
+    "u8_half_up": {
+      "dtype": "uint8",
+      "input_sha256": "0da0336d813a130cdca56f60ff26ce892d370d847cdbc3f2f36e7c2fda3a98a9",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        0,
+        1,
+        0,
+        0,
+        100,
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "u8_hard_edge": {
+      "dtype": "uint8",
+      "input_sha256": "a593b0ad5cc5fca399ba3510c4f3cc6b92890f788bfe8c964fbd56d90fc4bfed",
+      "shape": [
+        5,
+        8
+      ],
+      "values": [
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240,
+        10,
+        10,
+        10,
+        10,
+        240,
+        240,
+        240,
+        240
+      ]
+    },
+    "u8_threshold": {
+      "dtype": "uint8",
+      "input_sha256": "544a3ffcca8646c0b2ef83bb970c53e021cb99b8e1c78f00f0dd9969d468cefa",
+      "shape": [
+        3,
+        3
+      ],
+      "values": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "observed_date": "2026-08-02",
+  "provenance": {
+    "imagej_jar": {
+      "bytes": 2586953,
+      "filename": "ij-1.54p.jar",
+      "sha256": "2e1a09961dfb41cee66ddc821b2577a41a072566ce45a49bae69267099741e20",
+      "url": "https://repo1.maven.org/maven2/net/imagej/ij/1.54p/ij-1.54p.jar",
+      "version": "1.54p"
+    },
+    "plugin_class": {
+      "bytes": 5174,
+      "filename": "Sigma_Filter_Plus.class",
+      "last_modified": "2022-10-14T11:27:23Z",
+      "sha256": "fc1292bb06ac21e21e81b3a26401fa7f3b70cc90752938da37f3d9135d114e2c",
+      "url": "https://imagej.net/ij/plugins/download/Sigma_Filter_Plus.class"
+    },
+    "plugin_source": {
+      "bytes": 14823,
+      "filename": "Sigma_Filter_Plus.java",
+      "last_modified": "2022-10-14T11:27:23Z",
+      "sha256": "d1ae5b9c6ed9f41117f691f3661b73553315055624bce39564422f57c2d6dce1",
+      "url": "https://imagej.net/ij/plugins/download/Sigma_Filter_Plus.java"
+    }
+  },
+  "reference_kind": "independently executed official ImageJ Sigma Filter Plus bytecode; not the VIPP Python oracle",
+  "reviewed_contract_deviations": {
+    "exact_ceil": "VIPP uses exact ceil(N*fraction). The published Java plugin uses (int)(N*fraction+0.999999), which differs in a narrow boundary region.",
+    "negative_variance_clamp": "VIPP clamps cancellation-induced negative population variance to +0. Published Java can form a NaN interval; at fraction 0 it may restore NaN to unsigned zero. VIPP's stabilized result is intentional.",
+    "roi": "Fiji ROI/mask behavior is outside the VIPP v1 node contract."
+  },
+  "schema": "napari-vipp-sigma-fiji-reference-v1"
+}
