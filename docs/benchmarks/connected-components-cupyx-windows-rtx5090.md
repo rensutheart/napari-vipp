@@ -1,6 +1,6 @@
 # Connected Components CPU/CuPyX evidence
 
-Generated: `2026-08-02T11:33:09.562601+00:00`
+Generated: `2026-08-02T11:53:22.696209+00:00`
 
 This is machine-local screening evidence, not a portable performance claim.
 
@@ -25,24 +25,24 @@ This is machine-local screening evidence, not a portable performance claim.
 
 | Workload | Shape | Pattern / connectivity | CPU median | GPU resident | GPU transfer-inclusive | E2E speedup | VRAM observed / estimated | Choice |
 |---|---:|---|---:|---:|---:|---:|---:|---|
-| plane-256-sparse-face | 256×256 | sparse / Face connected | 253 µs | 566 µs | 793 µs | 0.32× | 0.34 MiB / 0.75 MiB | CPU |
-| plane-256-dense-full | 256×256 | dense / Full connectivity | 659 µs | 595 µs | 864 µs | 0.76× | 0.32 MiB / 0.75 MiB | CPU |
-| plane-256-checkerboard-face | 256×256 | checkerboard / Face connected | 311 µs | 596 µs | 1.09 ms | 0.29× | 0.70 MiB / 0.75 MiB | CPU |
-| plane-512-sparse-face | 512×512 | sparse / Face connected | 1.16 ms | 593 µs | 1.19 ms | 0.97× | 1.35 MiB / 3.00 MiB | CPU |
-| plane-512-dense-full | 512×512 | dense / Full connectivity | 3.14 ms | 790 µs | 1.17 ms | 2.68× | 1.25 MiB / 3.00 MiB | GPU-CuPyX |
-| plane-512-checkerboard-face | 512×512 | checkerboard / Face connected | 2.86 ms | 1.04 ms | 1.28 ms | 2.23× | 2.78 MiB / 3.00 MiB | GPU-CuPyX |
-| plane-1024-sparse-face | 1024×1024 | sparse / Face connected | 5.64 ms | 1.01 ms | 3.46 ms | 1.63× | 5.35 MiB / 12.00 MiB | GPU-CuPyX |
-| plane-1024-dense-full | 1024×1024 | dense / Full connectivity | 15.11 ms | 1.17 ms | 3.75 ms | 4.03× | 5.00 MiB / 12.00 MiB | GPU-CuPyX |
-| plane-1024-checkerboard-face | 1024×1024 | checkerboard / Face connected | 11.50 ms | 751 µs | 2.38 ms | 4.84× | 11.08 MiB / 12.00 MiB | GPU-CuPyX |
-| plane-2048-sparse-face | 2048×2048 | sparse / Face connected | 21.49 ms | 779 µs | 8.56 ms | 2.51× | 21.38 MiB / 48.00 MiB | GPU-CuPyX |
-| plane-2048-dense-full | 2048×2048 | dense / Full connectivity | 47.05 ms | 1.33 ms | 7.82 ms | 6.02× | 20.01 MiB / 48.00 MiB | GPU-CuPyX |
-| plane-2048-checkerboard-face | 2048×2048 | checkerboard / Face connected | 60.77 ms | 1.41 ms | 11.61 ms | 5.24× | 44.29 MiB / 48.00 MiB | GPU-CuPyX |
-| volume-48x128x128-sparse-face | 48×128×128 | sparse / Face connected | 7.73 ms | 921 µs | 2.92 ms | 2.65× | 4.01 MiB / 9.00 MiB | GPU-CuPyX |
-| volume-64x192x192-dense-full | 64×192×192 | dense / Full connectivity | 91.19 ms | 1.72 ms | 7.21 ms | 12.64× | 11.25 MiB / 27.00 MiB | GPU-CuPyX |
-| volume-32x256x256-checkerboard-face | 32×256×256 | checkerboard / Face connected | 24.50 ms | 725 µs | 4.36 ms | 5.62× | 22.15 MiB / 24.00 MiB | GPU-CuPyX |
-| volume-64x512x512-sparse-face | 64×512×512 | sparse / Face connected | 140.38 ms | 1.47 ms | 37.54 ms | 3.74× | 85.31 MiB / 192.00 MiB | GPU-CuPyX |
-| stack-8x512x512-sparse-face | 8×512×512 | sparse / Face connected | 9.35 ms | 6.75 ms | 8.48 ms | 1.10× | 10.16 MiB / 11.75 MiB | GPU-CuPyX |
-| stack-4x1024x1024-dense-full | 4×1024×1024 | dense / Full connectivity | 64.18 ms | 6.61 ms | 13.55 ms | 4.74× | 20.00 MiB / 27.00 MiB | GPU-CuPyX |
+| plane-256-sparse-face | 256×256 | sparse / Face connected | 242 µs | 576 µs | 736 µs | 0.33× | 0.34 MiB / 0.75 MiB | CPU |
+| plane-256-dense-full | 256×256 | dense / Full connectivity | 651 µs | 600 µs | 778 µs | 0.84× | 0.32 MiB / 0.75 MiB | CPU |
+| plane-256-checkerboard-face | 256×256 | checkerboard / Face connected | 287 µs | 650 µs | 762 µs | 0.38× | 0.70 MiB / 0.75 MiB | CPU |
+| plane-512-sparse-face | 512×512 | sparse / Face connected | 1.62 ms | 1.09 ms | 1.79 ms | 0.90× | 1.35 MiB / 3.00 MiB | CPU |
+| plane-512-dense-full | 512×512 | dense / Full connectivity | 2.57 ms | 760 µs | 1.39 ms | 1.85× | 1.25 MiB / 3.00 MiB | GPU-CuPyX |
+| plane-512-checkerboard-face | 512×512 | checkerboard / Face connected | 1.79 ms | 601 µs | 1.32 ms | 1.35× | 2.78 MiB / 3.00 MiB | GPU-CuPyX |
+| plane-1024-sparse-face | 1024×1024 | sparse / Face connected | 3.47 ms | 598 µs | 2.36 ms | 1.47× | 5.35 MiB / 12.00 MiB | GPU-CuPyX |
+| plane-1024-dense-full | 1024×1024 | dense / Full connectivity | 9.71 ms | 811 µs | 3.07 ms | 3.16× | 5.00 MiB / 12.00 MiB | GPU-CuPyX |
+| plane-1024-checkerboard-face | 1024×1024 | checkerboard / Face connected | 9.92 ms | 789 µs | 3.12 ms | 3.18× | 11.08 MiB / 12.00 MiB | GPU-CuPyX |
+| plane-2048-sparse-face | 2048×2048 | sparse / Face connected | 19.80 ms | 1.27 ms | 7.65 ms | 2.59× | 21.38 MiB / 48.00 MiB | GPU-CuPyX |
+| plane-2048-dense-full | 2048×2048 | dense / Full connectivity | 40.49 ms | 1.29 ms | 7.67 ms | 5.28× | 20.01 MiB / 48.00 MiB | GPU-CuPyX |
+| plane-2048-checkerboard-face | 2048×2048 | checkerboard / Face connected | 27.71 ms | 820 µs | 6.40 ms | 4.33× | 44.29 MiB / 48.00 MiB | GPU-CuPyX |
+| volume-48x128x128-sparse-face | 48×128×128 | sparse / Face connected | 7.08 ms | 692 µs | 1.83 ms | 3.87× | 4.01 MiB / 9.00 MiB | GPU-CuPyX |
+| volume-64x192x192-dense-full | 64×192×192 | dense / Full connectivity | 75.60 ms | 897 µs | 5.02 ms | 15.05× | 11.25 MiB / 27.00 MiB | GPU-CuPyX |
+| volume-32x256x256-checkerboard-face | 32×256×256 | checkerboard / Face connected | 21.35 ms | 913 µs | 4.17 ms | 5.12× | 22.15 MiB / 24.00 MiB | GPU-CuPyX |
+| volume-64x512x512-sparse-face | 64×512×512 | sparse / Face connected | 107.68 ms | 1.22 ms | 28.50 ms | 3.78× | 85.31 MiB / 192.00 MiB | GPU-CuPyX |
+| stack-8x512x512-sparse-face | 8×512×512 | sparse / Face connected | 8.32 ms | 4.91 ms | 8.09 ms | 1.03× | 10.16 MiB / 11.75 MiB | GPU-CuPyX |
+| stack-4x1024x1024-dense-full | 4×1024×1024 | dense / Full connectivity | 40.24 ms | 2.91 ms | 10.69 ms | 3.77× | 20.00 MiB / 27.00 MiB | GPU-CuPyX |
 
 ## Plane crossover screening
 
