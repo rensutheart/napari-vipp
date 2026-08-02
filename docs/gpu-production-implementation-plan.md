@@ -462,12 +462,13 @@ rejections, 18 bitwise-exact timed workloads, synchronized cancellation, and
 zero-residue cleanup. The implementation and v4 policy artifact now both
 declare `public_auto_candidate`: the exact region is visible in ordinary
 Selective pipelines and can participate in Auto. Representative end-to-end
-speedups were 44.80x at 1024²/radius 0.5, 49.78x at 512²/radius 2, 173.68x at
-2048²/radius 10, and 95.33x for an 8×512²/radius-2 stack. Radius 0.5 first
-cleared both gates at 1024² because the 512² call saved only 19.27 ms; radius 2
-cleared at 512², and radii 5/10 at the smallest tested 256². Broader dtypes,
-values, runtimes, and platforms stay on CPU, and these crossovers are
-machine-local. See the
+speedups were 23.57x at 512²/radius 0.5, 55.23x at 512²/radius 2, 170.95x at
+2048²/radius 10, and 93.62x for an 8×512²/radius-2 stack. Radius 0.5 first
+cleared both gates at 512²: its 20.13-ms saving exceeded the 20-ms material gate
+and its paired 95% speedup lower bound was 19.58x against the 1.20x confidence
+gate. Radius 2 also cleared at 512², and radii 5/10 at the smallest tested 256².
+Broader dtypes, values, runtimes, and platforms stay on CPU, and these crossovers
+are machine-local. See the
 [Phase 4 implementation record](gpu-phase4-sigma-filter-implementation-report.md)
 and [canonical evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
 

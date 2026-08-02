@@ -105,6 +105,43 @@ def test_full_profile_has_required_radius_size_grid_and_stacks(
     assert evidence_script.BOOTSTRAP_SAMPLES == 2_000
 
 
+def test_source_provenance_allowlist_tracks_the_extracted_cpu_module(
+    evidence_script,
+) -> None:
+    paths = tuple(path.as_posix() for path in evidence_script.SOURCE_PROVENANCE_PATHS)
+
+    assert "src/napari_vipp/core/sigma_filter.py" in paths
+    assert "src/napari_vipp/core/operations.py" not in paths
+
+
+def test_source_provenance_ignores_unrelated_operations_but_tracks_every_owner(
+    evidence_script,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tracked_paths = tuple(evidence_script.SOURCE_PROVENANCE_PATHS)
+    operations_path = Path("src/napari_vipp/core/operations.py")
+    for relative_path in (*tracked_paths, operations_path):
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((PROJECT_ROOT / relative_path).read_bytes())
+
+    monkeypatch.setattr(evidence_script, "PROJECT_ROOT", tmp_path)
+    baseline = evidence_script._source_provenance()
+
+    unrelated = tmp_path / operations_path
+    unrelated.write_bytes(unrelated.read_bytes() + b"\n# unrelated operation\n")
+    assert evidence_script._source_provenance() == baseline
+
+    for relative_path in tracked_paths:
+        owner = tmp_path / relative_path
+        original = owner.read_bytes()
+        owner.write_bytes(original + b"\n# provenance mutation\n")
+        assert evidence_script._source_provenance() != baseline
+        owner.write_bytes(original)
+        assert evidence_script._source_provenance() == baseline
+
+
 def test_synthetic_generator_is_deterministic_structured_and_read_only(
     evidence_script,
 ) -> None:

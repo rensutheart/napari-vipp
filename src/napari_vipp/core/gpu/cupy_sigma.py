@@ -387,7 +387,7 @@ def _validate_float32_input(values, *, cupy: ModuleType) -> None:
 def _shared_footprint(radius):
     """Load the authoritative footprint helper without eager CPU dependencies."""
 
-    from napari_vipp.core.operations import sigma_filter_footprint
+    from napari_vipp.core.sigma_filter import sigma_filter_footprint
 
     return sigma_filter_footprint(radius)
 
