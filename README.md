@@ -161,7 +161,9 @@ headless vertical slice for Rolling-Ball/Subtract Background, median, and
 Richardson-Lucy, Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data and
 leading blocks while preserving the existing CPU formula and defaults, and
 Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Phase 4 adds
-the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider. Their
+the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider.
+Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks, including
+SciPy-identical `int32` label IDs and independent leading-block resets. Their
 validated regions are normal public `Auto`/`Selective` candidates on this
 branch; unsupported regions visibly use CPU.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
@@ -419,7 +421,11 @@ Canny route, lifecycle policies, and real-device evidence protocol. The
 [Sigma Filter implementation record](docs/gpu-phase4-sigma-filter-implementation-report.md)
 records its clean-room CPU contract, independently frozen Fiji evidence, fused
 CuPy implementation, exact public region, lifecycle evidence, and measured
-crossovers. The machine-local
+crossovers. The
+[Connected Components implementation record](docs/gpu-phase5-connected-components-implementation-report.md)
+records exact SciPy `int32` IDs, the resident CuPyX path, block-boundary
+lifecycle, memory model, CPU fallbacks, and machine-local timing interpretation.
+The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
 representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with

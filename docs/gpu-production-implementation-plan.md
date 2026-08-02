@@ -19,6 +19,11 @@ RTX 5090 record passed 10 exact admission cases, 10 matched rejections, 18
 bitwise-exact timed workloads, cancellation, and cleanup. Canonical Canny/Otsu
 numerical evidence for this source revision records 28/28 exact admission cases,
 memory/lifecycle proof, and separate synthetic/real-acquisition timings.
+Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks. Its
+source-current record passed 16/16 exact native-`int32` admission cases,
+deterministic leading-block resets, synchronized block-boundary cancellation,
+cleanup, and conservative memory coverage. The strict v5 packaged policy
+artifact appends this public candidate without changing historical v1-v4 bytes.
 `developer_hidden` is reserved for unfinished or
 unvalidated work, while named release/platform gates remain region-specific.
 Cross-platform review: 2026-07-15
@@ -69,9 +74,9 @@ The following constraints and approved product directions are non-negotiable:
   universal `Auto` policy. Unknown workload-policy regions resolve to CPU.
 - GPU work is introduced behind contracts and promotion gates. The first
   headless vertical slice covers Subtract Background/Rolling-Ball Background,
-  median, and 2D/3D Gaussian. The next completed operation slices add ordinary
-  RL and RL-TV; Otsu, Canny, connected components, region measurements, and
-  other reasonable nodes follow quickly in evidence-driven families.
+  median, and 2D/3D Gaussian. Subsequent completed slices add ordinary RL,
+  RL-TV, Otsu, Canny, Sigma Filter, and Connected Components. The Measurements
+  slice is next; other reasonable nodes follow in evidence-driven families.
 - Admission and visibility are region-specific. Once a provider region has
   passed its scientific-parity and required memory, progress, cancellation,
   cleanup, and runtime gates, it is visible as a normal `Selective` candidate;
@@ -459,9 +464,10 @@ imports remain lazy, runtime cleanup is transactional, and missing packages or
 out-of-region calls retain a visible CPU decision/fallback. The source-current
 full-profile RTX 5090 record passed all 10 exact admission cases, 10 matched
 rejections, 18 bitwise-exact timed workloads, synchronized cancellation, and
-zero-residue cleanup. The implementation and v4 policy artifact now both
-declare `public_auto_candidate`: the exact region is visible in ordinary
-Selective pipelines and can participate in Auto. Representative end-to-end
+zero-residue cleanup. The implementation and immutable v4 policy artifact both
+declared `public_auto_candidate`; current artifact v5 retains that record. The
+exact region is visible in ordinary Selective pipelines and can participate in
+Auto. Representative end-to-end
 speedups were 23.57x at 512²/radius 0.5, 55.23x at 512²/radius 2, 170.95x at
 2048²/radius 10, and 93.62x for an 8×512²/radius-2 stack. Radius 0.5 first
 cleared both gates at 512²: its 20.13-ms saving exceeded the 20-ms material gate
@@ -471,6 +477,51 @@ Broader dtypes, values, runtimes, and platforms stay on CPU, and these crossover
 are machine-local. See the
 [Phase 4 implementation record](gpu-phase4-sigma-filter-implementation-report.md)
 and [canonical evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
+
+### Phase 5 Connected Components status (2026-08-02)
+
+Phase 5 promotes the existing public `label_connected_components` node through
+an exact CuPyX adapter (`cupyx-connected-components-v1`). The authoritative CPU
+contract remains nonzero foreground, SciPy face/full binary connectivity,
+shape-preserving native `int32` output, and independent leading spatial blocks
+whose deterministic IDs restart at one. GPU parity requires those actual IDs
+bit for bit; equivalence only after relabeling fails, and the admitted CuPyX
+path needs no canonicalizer.
+
+The public accelerator region is boolean input with resolved 2D or 3D spatial
+rank, valid face/full connectivity, fewer than 2,147,483,646 elements per
+spatial block, and the pinned native-Windows CuPyX/CPU-reference environment.
+Numeric nonzero-mask conversion, 1D labeling, oversized blocks, and unqualified
+environments remain visible CPU decisions. Invalid authored rank/mode or
+connectivity retains the CPU error contract instead of being mislabeled as a
+fallback.
+
+The provider labels each spatial block directly into one resident `int32`
+output and can remain in the same CuPy domain as an upstream Otsu mask. The
+memory model holds the complete bool input plus `int32` output and seven bytes
+of workspace for one active block: 12 bytes per element for a single plane or
+volume. Every canonical private-pool high-water observation stayed below that
+provider estimate, and cleanup returned used and reserved pool bytes to zero.
+
+Progress and cancellation occur at synchronized leading-block boundaries. This
+is useful for stacks, but one plane or one 3D volume is a single atomic CuPyX
+call: it cannot truthfully report intermediate completion or cancel mid-volume.
+A chunked implementation would need new seam-merging and exact label-order
+evidence.
+
+The source-current RTX 5090 record passed all 16 exact admission cases across
+2D/3D, face/full connectivity, patterns, leading blocks, deterministic repeats,
+and `int32` ID resets. Its timing matrix demonstrates workload-dependent CPU/
+GPU choices rather than a size-only rule. The table's faster-median label is
+machine-local screening, not a durable optimizer record or direct Auto
+assignment; production Auto still requires exact workload/environment,
+confidence, absolute-saving, transfer, and neighboring-residency evidence.
+
+The implementation and immutable packaged compute-policy artifact v5 declare
+the region `public_auto_candidate`; v5 is a strict v4 extension and historical
+v1-v4 resource hashes are unchanged. See the
+[Phase 5 implementation record](gpu-phase5-connected-components-implementation-report.md)
+and [canonical evidence](benchmarks/connected-components-cupyx-windows-rtx5090.md).
 
 Immediate hardening before this optimizer can support broader operation and
 platform claims:
@@ -628,7 +679,7 @@ rows is production-node admission.
 | Rolling ball 2D / 3D | scikit-image CPU primitive | **265.46x / 528.66x** | Fixture matched; advance to complete VIPP-adapter validation |
 | Canny 2D | scikit-image CPU primitive | **17.03x** | Fixture matched; advance to complete VIPP-adapter validation |
 | Region-properties table | scikit-image CPU primitive | **10.49x** | Fixture values matched; full VIPP schema/overflow adapter required |
-| Connected components 2D / 3D | scikit-image CPU primitive | **2.87x / 2.84x** | Fixture values and `int32` output matched; advance to complete adapter validation |
+| Connected components 2D / 3D | scikit-image CPU primitive | **2.87x / 2.84x** | Primitive fixture matched; the later exact CuPyX production adapter is implemented, while cuCIM remains a possible complete-adapter comparator |
 | Otsu threshold 2D | scikit-image CPU primitive | **2.38x** | Fixture `float32` scalar matched; advance to VIPP histogram/mask validation |
 | uint16 31x31 histogram median | CuPyX median | 1.42x | Exact primitive result; map the production-adapter crossover before Auto admission |
 | Gaussian 2D / 3D | CuPyX Gaussian | 1.03x / 0.95x | Exact; keep CuPy |
@@ -643,8 +694,10 @@ requires a dense rectangular footprint. Both constraints must remain explicit
 support-policy checks rather than silent behavior changes.
 
 This evidence changes cuCIM from “Windows feasibility unknown” to “promising
-narrow Windows implementation-library candidate.” It does not admit a
-production dependency or a VIPP node.
+narrow Windows implementation-library candidate.” It does not itself admit a
+production dependency or a cuCIM-backed VIPP node. Connected Components was
+later promoted through an independently validated CuPyX adapter; cuCIM would
+still have to pass that complete contract before competing with it.
 Pass 9 still requires supported-Linux builds, another Windows GPU tier, CUDA
 policy, clean-install/JIT and memory measurements, cancellation behavior,
 schema adapters, and optional-extra/CI maintenance. The upstream-versus-
@@ -2192,13 +2245,27 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   adversarial final masks diverged; a raw default fixture cannot establish this
   contract.
 
-#### Connected components — `connected-components-*-v1`
+#### Connected components — `cupyx-connected-components-v1`
 
-- Preserve the current SciPy connectivity structure, independent leading-block
-  labeling, foreground rules, `int32` public output, and overflow/error policy.
-- Require identical public label IDs/order. If a provider emits an equivalent
-  partition with different IDs, apply and time a deterministic canonicalizer;
-  partition equivalence alone is not sufficient for downstream measurements.
+- Implemented as an exact-profile public candidate in Phase 5. The CPU
+  operation remains authoritative: nonzero foreground, SciPy rank-one/full-rank
+  connectivity, independent leading-block labeling with IDs restarted at one,
+  native shape-preserving `int32`, and existing overflow/error behavior.
+- The admitted GPU region is boolean 2D/3D, face/full connectivity, fewer than
+  2,147,483,646 elements in each spatial block, and the pinned CuPyX/runtime/
+  CPU-reference environment. Numeric mask conversion, 1D, oversized blocks,
+  and unqualified environments retain CPU without an implicit cast or axis
+  reinterpretation.
+- `labels-bitwise-int32-v1` requires identical public label IDs/order. The
+  CuPyX adapter passes directly and therefore adds no canonicalizer. Any future
+  cuCIM or other provider with an equivalent partition but different IDs must
+  canonicalize deterministically and include that work in parity, memory, and
+  timing.
+- `cupyx-connected-components-memory-v1` counts the full one-byte bool input
+  and four-byte output plus seven bytes of workspace for one active block. A
+  single-block workload is therefore 12 bytes per element. Progress is truthful
+  only after a synchronized leading block; a single plane/volume remains one
+  atomic call with cancel-after-return behavior.
 
 #### Measurements — `measurements-*-v1`
 
@@ -2366,8 +2433,9 @@ permission to rewrite adjacent code.
   a small explicitly scoped wave of inexpensive residency-bridge nodes in
   parallel where file ownership is disjoint.
 - **Phase 3 — segmentation/measurement wave and cuCIM completeness review:**
-  Otsu, Canny, connected components, then production-schema measurements;
-  time-box the full cuCIM/Clara Windows investigation and Apple M1 Max provider
+  Otsu, Canny, and Connected Components are implemented; the production-schema
+  Measurements slice is next. Time-box the full cuCIM/Clara
+  Windows investigation and Apple M1 Max provider
   feasibility.
 - **Phase 4 — remaining durable execution surfaces:** Passes 5 and 8 add batch,
   generated Python/CLI overrides, effective-config/artifact hash and provenance
@@ -2921,8 +2989,9 @@ declaration, memory/workload/parity policy, tests, benchmark artifacts, and docs
 **Public contracts:** no new generic contract unless an operation proves the
 existing one insufficient. A small Phase 2 bridge wave covers only inexpensive
 pointwise/arithmetic/mask operations needed to preserve useful residency. The
-Phase 3 scientific wave is Otsu, Canny, connected components, and production-
-schema measurements. Phase 5 then adds remaining filters, morphology,
+Phase 3 scientific wave has completed Otsu, Canny, and Connected Components;
+the production-schema Measurements slice is next. The later broad-coverage
+phase adds remaining filters, morphology,
 segmentation, label cleanup, colocalization, and other reasonable nodes. For
 each node, benchmark all scientifically admitted CuPyX, cuCIM, and future
 runtime/library implementations rather than assuming one library is universally best.
@@ -3106,36 +3175,36 @@ not reasons to redesign Phase 1.
 
 ## Ordered next suggested steps (maintained 2026-08-02)
 
-This is the implementation queue after the Sigma Filter vertical slice. Update this
+This is the implementation queue after the Connected Components vertical slice. Update this
 section when a wave lands so the branch and handoff report retain one explicit
 order. The completed public Canny/Otsu contracts and their separate evidence
 protocol are recorded in
 the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md); Sigma's
 contract, external Fiji evidence, fused public CuPy provider, and canonical
 timing crossovers are recorded in the
-[Phase 4 report](gpu-phase4-sigma-filter-implementation-report.md).
+[Phase 4 report](gpu-phase4-sigma-filter-implementation-report.md). Connected
+Components' exact IDs, resident CuPyX path, lifecycle/memory limits, and
+machine-local screening are recorded in the
+[Phase 5 report](gpu-phase5-connected-components-implementation-report.md).
 
-1. **Connected components:** preserve the CPU connectivity and independent
-   leading-block rules, public `int32` output, and exact label-ID ordering; time
-   any required deterministic canonicalization.
-2. **Measurements:** introduce the typed labels-plus-intensity inputs and
+1. **Measurements:** introduce the typed labels-plus-intensity inputs and
    host-table finalizer while preserving schema, row/column order, units,
    calibration, missing values, and public scalar types.
-3. **Convert Dtype and inexpensive residency bridges:** support only explicit
+2. **Convert Dtype and inexpensive residency bridges:** support only explicit
    authored conversions and scientifically faithful low-cost operations that can
    keep useful segments resident. Never insert a cast or bridge merely to improve
    a benchmark.
-4. **Native platform evidence:** validate supported native Linux targets and the
+3. **Native platform evidence:** validate supported native Linux targets and the
    available Windows RTX 40-series laptops, including clean setup, real kernels,
    parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
    secondary evidence, not a substitute for native Windows/Linux claims.
-5. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+4. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
    with unified-memory accounting. Keep the CPU path as the honest fallback
    unless an operation family passes scientific and performance gates.
-6. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+5. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
    time-boxed packaging/upstream review. Prefer a maintainable feature-complete
    cuCIM route; do not normalize a permanently hobbled skimage-only fork.
-7. **Durable execution surfaces:** add batch, generated Python/CLI, and export
+6. **Durable execution surfaces:** add batch, generated Python/CLI, and export
    GPU execution and provenance after the core interactive operation coverage
    and lifecycle contracts are stable.
 
@@ -3163,9 +3232,11 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    intent, setup/memory diagnostics, selected-node benchmark review, the
    conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
    implemented. RL-TV, exact-mask Canny/Otsu, and the Sigma Filter vertical
-   slice are now implemented too.
-   Continue in the maintained order above: connected components; measurements;
-   explicit Convert Dtype/residency bridges;
+   slice are now implemented too. Connected Components is also complete with
+   exact native-`int32` IDs, resident CuPyX execution, block-boundary lifecycle,
+   and packaged policy artifact v5.
+   Continue in the maintained order above: Measurements; explicit Convert
+   Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
    cleanup, and runtime evidence make a region a normal public Selective

@@ -167,6 +167,16 @@ implemented, exact-mask CuPy/CuPyX Canny and Otsu providers with explicit luma,
 stack/slice, progress, cancellation, memory, and CPU-fallback contracts. Their
 validated regions are normal public `Auto`/`Selective` candidates;
 `developer_hidden` is reserved for incomplete or unvalidated work.
+Phase 4 adds the public clean-room Sigma Filter and its fused CuPy provider.
+Phase 5 completes Connected Components with an exact CuPyX provider for boolean
+2D/3D masks. It preserves SciPy-identical native `int32` IDs for face and full
+connectivity, restarts IDs in every independent leading block, keeps compatible
+segments resident, and exposes truthful block-boundary progress/cancellation.
+Numeric nonzero-mask conversion, 1D labeling, oversized blocks, and unvalidated
+environments visibly remain on CPU. A single plane or volume is currently one
+atomic CuPyX call, so finer mid-volume progress/cancellation remains explicit
+future work. Both phases are normal public candidates only inside their pinned
+validated regions.
 Normal public admission currently fails closed to the exact recorded
 native-Windows CUDA runtime API 13.2 (`13020`), driver API 13.3 (`13030`), and
 RTX 5090 (compute capability 12.0) region. CUDA 12 is qualification-only and
@@ -193,10 +203,12 @@ single-host descriptive measurements, not portable Auto choices.
 The toolbar now has the CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
-lifecycle/snapshot hardening, connected components, measurements,
-explicit residency bridges, platform/provider evidence, batch, and
-generated-Python integration follow in the maintained order in the
-[GPU production plan](gpu-production-implementation-plan.md).
+lifecycle/snapshot hardening continues alongside the maintained next order:
+Measurements first, then explicit Convert Dtype/residency bridges, native
+platform evidence, the Apple provider study, cuCIM/Clara completeness, and
+durable batch/generated/export execution. See the
+[GPU production plan](gpu-production-implementation-plan.md) and
+[Phase 5 record](gpu-phase5-connected-components-implementation-report.md).
 
 ### 1. PSF Generation And Deconvolution
 

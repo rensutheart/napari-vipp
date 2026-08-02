@@ -52,8 +52,11 @@ primary array/runtime layer or importing all cuCIM APIs wholesale.
 These timings compare optional-library primitives, not complete VIPP nodes.
 Rolling-Ball/Subtract Background must additionally preserve VIPP's smoothing,
 inversion, clipping, block/channel, non-finite, dtype-restoration, progress, and
-metadata behavior. Canny, Otsu, connected-components, and measurement adapters
-likewise need their complete VIPP parameter and output-schema contracts. The
+metadata behavior. Canny and Otsu now have separate exact CuPy/CuPyX adapters,
+and Connected Components now has an exact CuPyX adapter; those later production
+records supersede these primitive screens for admission. A future cuCIM
+Connected Components comparator and measurement adapters still need their
+complete VIPP parameter, label-ID, lifecycle, and output-schema contracts. The
 "exact" labels below therefore describe only the recorded fixtures and cannot
 admit a production implementation by themselves.
 
@@ -233,7 +236,7 @@ provider dependency on their own.
 |---|---|---|
 | Rolling ball/background subtraction | **Public candidate in the exact recorded environment** | The complete wrapper preserves smoothing, inversion, clipping, blocks/channels, non-finite handling, dtype restoration, cancellation boundaries, and metadata across 98 adapter tests and 45 real RTX cases. Integer output is exact and float32 uses bounded v2 parity. Unsupported environments and regions visibly remain on CPU; ordinary packaging and wider-platform qualification remain open. |
 | Canny | **Raw cuCIM route rejected; exact CuPyX adapter implemented** | Later adversarial testing found raw cuCIM mask disagreements. VIPP now uses its exact CuPyX implementation and retains raw cuCIM only as rejected feasibility evidence. |
-| Connected components | **Advance to VIPP-adapter validation** | Primitive output/schema matched with 2.8x benefit in both 2D and 3D. |
+| Connected components | **Exact CuPyX adapter implemented; retain cuCIM as a later comparator** | The complete CuPyX adapter now preserves SciPy-identical `int32` IDs, connectivity, independent leading-block resets, residency, memory, progress/cancellation, fallback, and provenance in the validated bool 2D/3D region. The 2.8x cuCIM primitive screen remains useful evidence for a future complete-adapter comparison, not grounds to replace CuPyX. |
 | Otsu threshold | **Exact CuPy adapter implemented** | GPU histogram/mask work plus the bounded authoritative host finalizer preserve VIPP's bool, integer, floating, non-finite, luma, scope, and exact-mask contract. |
 | Region-properties table | **Advance with schema work** | 10x primitive benefit, but output dtypes and VIPP's production table schema need an explicit adapter/overflow policy. |
 | Histogram median | **Map production crossover** | The 1.42x primitive result is worth retaining as a Selective candidate study; compare the complete adapter and neighboring-node residency before any Auto policy. |

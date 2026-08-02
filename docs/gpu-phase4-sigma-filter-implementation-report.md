@@ -26,10 +26,11 @@ region visibly use CPU; VIPP does not change authored data or parameters to
 make them eligible.
 
 The source-current full-profile RTX 5090 record passed exact parity, matched
-rejection, cancellation, cleanup, and timing review. The implementation and v4
-policy artifact therefore both declare `public_auto_candidate`: the exact
-region appears in ordinary Selective pipelines and can be selected by Auto when
-the workload clears its conservative performance gate. This does not wait for
+rejection, cancellation, cleanup, and timing review. The implementation entered
+the immutable v4 policy artifact as `public_auto_candidate`, and current v5
+retains that record unchanged: the exact region appears in ordinary Selective
+pipelines and can be selected by Auto when the workload clears its conservative
+performance gate. This does not wait for
 every CPU dtype or operating system to gain a GPU implementation, and branch
 visibility is not a released-package or universal-GPU support claim.
 
@@ -380,22 +381,24 @@ and CPU execution must not import them.
 
 ## Ordered next suggested steps
 
-1. **Connected components** — preserve CPU connectivity, independent leading
-   blocks, public `int32` output, and exact deterministic label numbering;
-   include any canonicalizer in parity, memory, and timing.
-2. **Measurements** — support ordered labels-plus-intensity inputs and an exact
+Connected Components is now complete as Phase 5, including exact SciPy `int32`
+label IDs, independent leading-block resets, resident CuPyX execution, lifecycle
+evidence, and packaged compute-policy artifact v5. See the
+[Phase 5 implementation record](gpu-phase5-connected-components-implementation-report.md).
+
+1. **Measurements** — support ordered labels-plus-intensity inputs and an exact
    typed host-table finalizer preserving schema, order, units, calibration,
    public scalar types, and missing values.
-3. **Convert Dtype and inexpensive residency bridges** — accelerate only
+2. **Convert Dtype and inexpensive residency bridges** — accelerate only
    explicit authored operations that preserve their CPU semantics; never
    synthesize a cast to improve a benchmark.
-4. **Native Linux and Windows laptop evidence** — collect clean-install,
+3. **Native Linux and Windows laptop evidence** — collect clean-install,
    parity, memory, cancellation, cleanup, and end-to-end evidence on supported
    Linux hosts and available RTX 40-series Windows laptops.
-5. **Apple M1 Max study** — evaluate Metal/MPS/MLX with unified-memory
+4. **Apple M1 Max study** — evaluate Metal/MPS/MLX with unified-memory
    accounting and retain CPU fallback unless operation-level gates pass.
-6. **cuCIM/Clara feature-complete investigation** — perform the named
+5. **cuCIM/Clara feature-complete investigation** — perform the named
    time-boxed packaging/upstream review toward a maintainable complete route.
-7. **Batch, generated Python/CLI, and export** — add durable GPU execution and
+6. **Batch, generated Python/CLI, and export** — add durable GPU execution and
    provenance only after core interactive coverage and lifecycle contracts are
    stable.

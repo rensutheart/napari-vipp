@@ -532,10 +532,11 @@ GPU visibility is evidence-driven and region-specific. Sigma's source-current
 RTX 5090 record passed exact parity, matched rejection, synchronized progress,
 cancellation, cleanup, runtime, and timing review. Its declared region is
 therefore a normal public `Selective` candidate and participates in
-evidence-backed `Auto`; the implementation and v4 policy artifact both declare
-`public_auto_candidate`. Non-native-endian arrays and other unsupported dtypes,
-parameters, values, runtimes, and
-platforms visibly use CPU. This branch rule does not imply support for every
+evidence-backed `Auto`; the implementation entered immutable artifact v4 as
+`public_auto_candidate`, and current artifact v5 retains it unchanged.
+Non-native-endian arrays and other unsupported dtypes,
+parameters, values, runtimes, and platforms visibly use CPU. This branch rule
+does not imply support for every
 released package, OS, or GPU, and the recorded timing crossovers are
 machine-local rather than portable guarantees. The full matrix is retained in
 the [canonical Sigma Filter evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
@@ -565,6 +566,34 @@ from carried axis metadata and stores the resolved spatial dimensionality for
 Python export. Leading non-spatial axes are processed independently, so `TCZYX`
 data is processed per timepoint and channel while each `ZYX` block is treated
 as one volume.
+
+`Label Connected Components` now has one exact public GPU region. The CPU path
+remains authoritative: nonzero is foreground, face/full choices use SciPy's
+rank-one/full-rank binary structures, zero is background, output is native
+shape-preserving `int32`, and every independent leading block restarts IDs at
+one. `cupyx-connected-components-v1` accepts reviewed boolean 2D/3D masks and
+writes each spatial block directly into a resident `int32` CuPy output. Parity
+requires the exact SciPy IDs bit for bit; an equivalent partition with different
+numbering fails, and no canonicalizer was needed for the admitted provider.
+
+The provider's exact initial region additionally requires each spatial block to
+contain fewer than 2,147,483,646 elements and the pinned native-Windows
+CuPyX/CPU-reference environment. Numeric nonzero-mask conversion, 1D labeling,
+larger blocks, and unqualified environments visibly remain on CPU. The memory
+model holds the complete one-byte bool input plus four-byte `int32` output and
+seven bytes of workspace for one active block—12 bytes per element for a
+single-plane or single-volume workload. Leading-block progress is reported only
+after a CUDA stream synchronization and cancellation is checked between blocks.
+One plane/volume is therefore an indivisible CuPyX call with no truthful
+mid-volume progress or cancellation boundary.
+
+The source-current exact-label, lifecycle, memory, and timing matrix makes this
+region a normal public Selective/Auto candidate in the pinned environment and
+is recorded in the
+[Phase 5 implementation report](gpu-phase5-connected-components-implementation-report.md).
+Packaged compute-policy artifact v5 appends this declaration while preserving
+historical v1-v4 resources. Machine-local timing evidence is not itself a
+portable Auto assignment.
 
 `Clear Border Objects` accepts only masks or labels, preserves the connected
 semantic output type and retained label IDs. For 3D inputs it can examine all

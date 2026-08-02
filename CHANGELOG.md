@@ -32,6 +32,29 @@
   supports Fiji-mask parity without changing VIPP's generic scikit-image
   threshold nodes.
 
+### Connected Components CPU/GPU Vertical Slice
+
+- Promoted `Label Connected Components` as a complete CPU/GPU vertical slice.
+  The authoritative CPU path retains nonzero foreground semantics, SciPy face
+  or full connectivity, independent 2D/3D leading blocks whose IDs restart at
+  one, and shape-preserving native `int32` output.
+- Added lazy `cupyx-connected-components-v1` execution for the exact reviewed
+  boolean-mask 2D/3D region. GPU output must match SciPy label IDs bit for bit;
+  partition equivalence with different numbering is rejected. Numeric-mask
+  conversion, 1D labeling, oversized blocks, and unqualified environments
+  visibly remain on CPU.
+- Added resident Otsu-to-label planning, exact output/fact projection, distinct
+  scientific cache identity, synchronized leading-block progress and
+  cancellation, transactional cleanup, and a conservative memory model that
+  holds the full bool input plus `int32` output and one active block's workspace.
+  A single plane or volume is one atomic CuPyX operation, so it cannot report
+  finer progress or cancel mid-volume in this implementation.
+- Added immutable compute-policy artifact v5 and source-current RTX 5090
+  admission/performance evidence. The validated region is a normal public
+  `Auto`/`Selective` candidate in the pinned environment; the timing matrix is
+  machine-local screening rather than a portable speed promise or durable Auto
+  assignment.
+
 ### Sigma Filter CPU/GPU Vertical Slice
 
 - Added `Sigma Filter` under `Filtering > Smoothing & Denoising` as a public,
