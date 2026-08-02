@@ -82,6 +82,7 @@ override the current planning documents above.
 - [GPU Phase 2B Richardson-Lucy implementation record](gpu-phase2b-rl-implementation-report.md)
 - [GPU Phase 2C Richardson-Lucy TV implementation record](gpu-phase2c-rl-tv-implementation-report.md)
 - [GPU Phase 3A Canny and Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md)
+- [GPU Phase 4 Sigma Filter implementation record](gpu-phase4-sigma-filter-implementation-report.md)
 - [Representative real-acquisition ND2 GPU benchmark](benchmarks/representative-nd2-phase1-benchmark.md)
 - [Richardson-Lucy large-stack CPU/GPU timing](benchmarks/rl-cupy-performance-windows-rtx5090.md)
 - [Richardson-Lucy TV admission matrix](benchmarks/rl-tv-cupy-admission-windows-rtx5090.md)

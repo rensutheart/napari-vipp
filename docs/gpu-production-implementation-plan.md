@@ -1,7 +1,7 @@
 # Production GPU implementation plan
 
-Date: 2026-07-29
-Product-direction revision: 2026-07-29
+Date: 2026-08-02
+Product-direction revision: 2026-08-02
 Status: Phase 1 is implemented headlessly on
 `codex/gpu-cross-platform-support`; the Pass 4 application slice now
 includes workflow-v4 compute intent, setup/memory diagnostics, selected-node
@@ -12,7 +12,11 @@ per-device accelerator lease. Phase 2C adds CuPy/CuPyX
 Richardson-Lucy TV with separate lambda-zero and positive-TV scientific
 profiles. Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu. The validated
 regions for all of these providers are normal public Auto/Selective candidates
-on this branch; unsupported regions visibly use CPU. Canonical Canny/Otsu
+on this branch; unsupported regions visibly use CPU. Phase 4 adds the public
+CPU Sigma Filter and a clean-room CuPy RawKernel provider whose exact reviewed
+region is also a normal public Auto/Selective candidate. Its source-current
+RTX 5090 record passed 10 exact admission cases, 10 matched rejections, 18
+bitwise-exact timed workloads, cancellation, and cleanup. Canonical Canny/Otsu
 numerical evidence for this source revision records 28/28 exact admission cases,
 memory/lifecycle proof, and separate synthetic/real-acquisition timings.
 `developer_hidden` is reserved for unfinished or
@@ -405,6 +409,67 @@ contract. These are machine-local screens, not portable performance or
 universal Auto claims. See the
 [Canny/Otsu implementation record](gpu-phase3-canny-otsu-implementation-report.md)
 and [canonical evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md).
+
+### Phase 4 Sigma Filter status (2026-08-02)
+
+Phase 4 adds the public `sigma_filter` node under `Filtering > Smoothing &
+Denoising` and a public CuPy provider (`cupy-sigma-filter-v1`). The
+authoritative CPU operation is a clean-room Lee sigma filter compatible with
+the documented behavior of Fiji Sigma Filter Plus. It processes resolved `YX`
+planes independently over every channel and leading stack index, uses
+nearest/clamped borders, keeps the input immutable, and preserves finite
+`uint8`, `uint16`, or `float32` shape/dtype. Version 1 deliberately has no
+ROI/mask input.
+
+The scientific contract freezes Fiji's two radius plateaus and circular
+footprint, float32 samples and squares widened into ordered float64 sums,
+population variance, the inclusive center-relative sigma interval, exact
+minimum-count ceiling, both fallback modes, and unsigned half-up restoration.
+It has two narrow reviewed differences from the published plugin: VIPP uses
+exact `ceil(N * fraction)` instead of the Java approximation, and clamps any
+cancellation-induced negative variance to positive zero rather than allowing a
+NaN-dependent result. Fourteen independently generated unsigned fixtures from
+the official plugin bytecode match exactly; two additional frozen cases prove
+and label those intentional deviations.
+
+The GPU provider is a fused, lazy-imported CuPy `RawKernel`, not a CuPyX or
+cuCIM primitive. Each output thread scans the ordered footprint twice. One
+explicit contiguous float32 staging array handles arbitrary channel positions
+and non-contiguous inputs; no host image round-trip and no image-by-footprint
+tensor is used. Kernel options disable fused multiply-add and request precise
+division/square-root. Explicit bit conversion preserves subnormal float32
+samples, squares, and outputs even if NVRTC forces flush-to-zero. Sixty-four-row
+tiles bound launch duration, synchronize truthful progress, and provide
+cancellation boundaries.
+
+The exact public region is non-empty finite native-endian `uint8`, `uint16`, or `float32`,
+radius 0.5–10, finite non-negative sigma width, minimum fraction 0–1, boolean
+fallback mode, and a valid optional channel axis leaving two resolved YX axes.
+Float32 also requires complete finite extrema and magnitude no greater than the
+float32-square-safe bound. Unsigned output requires bitwise parity. Float32 uses
+the versioned NRMSE `<= 2e-6` and
+`max_abs <= 1e-6 + 4*eps(float32)*max(1,input_peak,CPU_peak)` gate, plus exact
+finite/zero/sign masks and separate adversarial selection/fallback decisions.
+No CPU/GPU cache-equivalence group is declared.
+
+Memory admission includes resident input/output, complete float32 staging, a
+worst-case typed axis-restoration buffer, the bounded 325-offset table, status,
+and uncertainty; there is no image-sized neighborhood expansion. Optional CUDA
+imports remain lazy, runtime cleanup is transactional, and missing packages or
+out-of-region calls retain a visible CPU decision/fallback. The source-current
+full-profile RTX 5090 record passed all 10 exact admission cases, 10 matched
+rejections, 18 bitwise-exact timed workloads, synchronized cancellation, and
+zero-residue cleanup. The implementation and v4 policy artifact now both
+declare `public_auto_candidate`: the exact region is visible in ordinary
+Selective pipelines and can participate in Auto. Representative end-to-end
+speedups were 44.80x at 1024²/radius 0.5, 49.78x at 512²/radius 2, 173.68x at
+2048²/radius 10, and 95.33x for an 8×512²/radius-2 stack. Radius 0.5 first
+cleared both gates at 1024² because the 512² call saved only 19.27 ms; radius 2
+cleared at 512², and radii 5/10 at the smallest tested 256². Broader dtypes,
+values, runtimes, and platforms stay on CPU, and these crossovers are
+machine-local. See the
+[Phase 4 implementation record](gpu-phase4-sigma-filter-implementation-report.md)
+and [canonical evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
 
 Immediate hardening before this optimizer can support broader operation and
 platform claims:
@@ -2067,6 +2132,43 @@ multi-input RL, labels-plus-intensity operations, and dtype-changing outputs.
   leading blocks, explicit channel axes, and scalar trailing 3/4 axes.
 - Non-finite and unpromoted dtype regions remain CPU until separately validated.
 
+#### Sigma Filter — `sigma-dtype-parity-v1`
+
+- Preserve the clean-room CPU operation, not merely a similarly named denoiser:
+  Fiji's radius plateaus and circular footprint, fixed row-major offset order,
+  nearest/clamped YX borders, immutable source, independent channels/leading
+  planes, float32 sample/square boundaries, ordered float64 accumulation,
+  center-relative inclusive selection, exact minimum-count ceiling, both
+  fallback modes, and dtype restoration are all scientific behavior.
+- Initial CPU and GPU types are finite native-endian `uint8`, `uint16`, and
+  `float32` only. Non-native byte order fails closed before device transfer.
+  Radius is 0.5–10, sigma width is finite/non-negative, minimum fraction is
+  0–1, outlier awareness is boolean, and the optional channel axis must leave
+  two resolved YX axes. Float32 requires complete finite extrema and a
+  square-safe magnitude. ROI/mask behavior is absent in version 1.
+- Require identical shape/dtype. Unsigned output must be bitwise exact after
+  the node's float32 cast, clip, and half-up restoration. Float32 requires
+  equal finite/zero/sign masks, NRMSE `<= 2e-6`, and
+  `max_abs <= 1e-6 + 4*eps(float32)*max(1,input_peak,CPU_peak)`. ULP remains
+  diagnostic. Adversarial fixtures must separately prove the same inclusive
+  selection and fallback branches; an aggregate tolerance cannot excuse a
+  branch change.
+- Freeze the deliberate numerical stabilizations: use exact
+  `ceil(footprint_count * minimum_fraction)` and clamp every negative computed
+  population variance to positive zero. Do not copy the plugin's approximate
+  ceiling or NaN-dependent negative-variance behavior merely to call the result
+  exact Fiji parity.
+- The CuPy provider uses a fused two-pass `RawKernel` with `--fmad=false`,
+  precise divide/square-root, explicit subnormal-safe float conversion, bounded
+  synchronized row tiles, and no image-sized sliding-window tensor. Attribute
+  it to CuPy, not CuPyX. Include any contiguous input/axis-restoration staging in
+  the memory estimate and timing.
+- Pin independently executed official-plugin fixtures and their source/class,
+  ImageJ jar, generator, and harness hashes. The source-current real-device
+  parity/lifecycle record passed, so the exact region is now public in Selective
+  and available to evidence-backed Auto. Future widened regions repeat this
+  gate; they do not inherit admission from the current matrix.
+
 #### Otsu — `cupy-otsu-threshold-exact-v1`
 
 - The implemented CuPy adapter reproduces VIPP's complete finite-value
@@ -3001,13 +3103,16 @@ not reasons to redesign Phase 1.
   registries and each of `pipeline.py`, `_widget.py`, `batch.py`, and
   `workflow.py`; split operation-family declarations before parallel promotion.
 
-## Ordered next suggested steps (maintained 2026-07-29)
+## Ordered next suggested steps (maintained 2026-08-02)
 
-This is the implementation queue after the Canny/Otsu slice. Update this
+This is the implementation queue after the Sigma Filter vertical slice. Update this
 section when a wave lands so the branch and handoff report retain one explicit
 order. The completed public Canny/Otsu contracts and their separate evidence
 protocol are recorded in
-the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md).
+the [Phase 3A report](gpu-phase3-canny-otsu-implementation-report.md); Sigma's
+contract, external Fiji evidence, fused public CuPy provider, and canonical
+timing crossovers are recorded in the
+[Phase 4 report](gpu-phase4-sigma-filter-implementation-report.md).
 
 1. **Connected components:** preserve the CPU connectivity and independent
    leading-block rules, public `int32` output, and exact label-ID ordering; time
@@ -3056,7 +3161,8 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
 4. **Next wave:** the initial toolbar/inspector/badge slice, workflow-v4 compute
    intent, setup/memory diagnostics, selected-node benchmark review, the
    conservative Selective whole-pipeline optimizer, and ordinary GPU RL are
-   implemented. RL-TV and exact-mask Canny/Otsu are now implemented too.
+   implemented. RL-TV, exact-mask Canny/Otsu, and the Sigma Filter vertical
+   slice are now implemented too.
    Continue in the maintained order above: connected components; measurements;
    explicit Convert Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.

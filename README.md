@@ -160,7 +160,8 @@ headless vertical slice for Rolling-Ball/Subtract Background, median, and
 2D/3D Gaussian. Phase 2B adds ordinary CuPy/CuPyX
 Richardson-Lucy, Phase 2C adds Richardson-Lucy TV for 2D/3D spatial data and
 leading blocks while preserving the existing CPU formula and defaults, and
-Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Their
+Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Phase 4 adds
+the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider. Their
 validated regions are normal public `Auto`/`Selective` candidates on this
 branch; unsupported regions visibly use CPU.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The branch
@@ -236,6 +237,54 @@ work. Promotion is region-specific: data types, parameters, shapes, or platforms
 outside a provider's reviewed region remain on CPU with a visible CPU decision
 or fallback. Public visibility on the development branch does not imply that
 every GPU, operating system, or released VIPP package has been qualified.
+
+**Sigma Filter** is an edge-preserving Lee filter compatible with the documented
+behavior of Fiji's
+[Sigma Filter Plus](https://imagej.net/ij/plugins/sigma-filter.html). It works
+slice-wise over the resolved `YX` axes, uses nearest/clamped borders, and treats
+every channel and leading stack index as an independent plane.
+`channel_axis=None` follows VIPP's scalar-default convention; no ROI or mask
+input is part of the version-1 node. The public CPU contract accepts finite
+native-endian `uint8`, `uint16`, and `float32` data, preserves shape and dtype,
+and exposes radius 0.5–10, non-negative sigma width, minimum-pixel fraction
+0–1, and the documented outlier-aware fallback. Unsigned results use
+Fiji-compatible half-up rounding.
+
+The CuPy implementation scans each circular footprint twice in one fused
+`RawKernel`, keeps image-sized data resident, and does not build an image-by-
+footprint sliding-window tensor. Its exact public region is the same native-
+endian finite `uint8`/`uint16`/`float32` parameter and axis surface, with
+complete finite extrema facts and a float32-square overflow guard for
+`float32`. Non-native byte order fails closed before accelerator transfer.
+Integer output must be bitwise equal; float32 uses a tight versioned gate plus
+explicit adversarial selection/fallback tests. Kernel arithmetic disables fused
+multiply-add and requests precise divide/square-root. Because NVRTC can still
+force flush-to-zero behavior, explicit bit conversions preserve float32
+subnormal samples, squares, and outputs rather than silently changing a
+threshold decision. GPU progress advances only after each 64-row tile is
+synchronized; cancellation occurs between tiles. Calls outside the reviewed
+region, missing CUDA/CuPy, and unqualified platforms visibly remain on CPU.
+
+The source-current full-profile RTX 5090 record passed all 10 exact admission
+cases, all 10 matched rejection cases, cancellation/cleanup, and bitwise parity
+for all 18 timed workloads. Representative transfer-inclusive speedups were
+44.80x for a 1024² radius-0.5 plane, 49.78x for a 512² radius-2 plane, 173.68x
+for a 2048² radius-10 plane, and 95.33x for an 8×512² radius-2 stack. On this
+host, radius 0.5 first cleared both Auto gates at 1024²: the 512² call remained
+on CPU because its 19.27-ms absolute saving missed the 20-ms gate. Radius 2
+cleared at 512²; radii 5 and 10 cleared at the smallest tested 256². These are
+machine-local observations, not portable speed promises; see the
+[canonical Sigma Filter evidence](docs/benchmarks/sigma-filter-cupy-windows-rtx5090.md).
+
+The scientific reference is the Lee 1983 sigma-filter algorithm. Frozen
+unsigned-integer fixtures were generated independently by executing the
+published ImageJ plugin bytecode, rather than by reusing VIPP's Python oracle.
+VIPP intentionally differs from the published plugin in two narrow, tested
+places: it uses exact `ceil(footprint_count * minimum_fraction)`, and clamps a
+cancellation-induced negative population variance to positive zero before the
+square root. See the
+[Sigma Filter implementation record](docs/gpu-phase4-sigma-filter-implementation-report.md)
+for formulas, provenance, evidence, limitations, and timings.
 
 Canny preserves VIPP's float32 plane conversion, constant-boundary Gaussian and
 Sobel arithmetic, bilinear non-maximum suppression, eight-connected hysteresis,
@@ -365,7 +414,11 @@ records the preserved nonlinear contract, separate lambda-zero and positive-TV
 profiles, validation evidence, and remaining promotion gates. The
 [Canny and Otsu implementation record](docs/gpu-phase3-canny-otsu-implementation-report.md)
 records the exact-mask contracts, initial public regions, rejected raw cuCIM
-Canny route, lifecycle policies, and real-device evidence protocol. The machine-local
+Canny route, lifecycle policies, and real-device evidence protocol. The
+[Sigma Filter implementation record](docs/gpu-phase4-sigma-filter-implementation-report.md)
+records its clean-room CPU contract, independently frozen Fiji evidence, fused
+CuPy implementation, exact public region, lifecycle evidence, and measured
+crossovers. The machine-local
 [large-stack Richardson-Lucy timing summary](docs/benchmarks/rl-cupy-performance-windows-rtx5090.md)
 compares synchronized CPU and transfer-inclusive CuPy execution on the private
 representative ND2 volume and 16.8/67.1-million-voxel 3D shape stresses, with

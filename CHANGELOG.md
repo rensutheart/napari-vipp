@@ -32,6 +32,38 @@
   supports Fiji-mask parity without changing VIPP's generic scikit-image
   threshold nodes.
 
+### Sigma Filter CPU/GPU Vertical Slice
+
+- Added `Sigma Filter` under `Filtering > Smoothing & Denoising` as a public,
+  edge-preserving Lee filter compatible with the documented behavior of Fiji
+  Sigma Filter Plus. The node processes resolved `YX` planes slice-wise,
+  handles channels and leading axes independently, uses nearest/clamped borders,
+  and preserves finite native-endian `uint8`, `uint16`, or `float32` shape and
+  dtype; non-native-endian arrays fail closed before accelerator transfer.
+- Froze the radius-dependent circular footprint, float32 sample/square and
+  ordered float64 accumulation rules, inclusive center-relative sigma interval,
+  exact minimum-count ceiling, both fallback modes, and Fiji-compatible
+  unsigned half-up restoration. ROI/mask behavior remains explicitly outside
+  the version-1 node contract.
+- Added independently generated unsigned-integer fixtures from the official
+  ImageJ Sigma Filter Plus bytecode. Two narrow VIPP stabilizations are recorded
+  as intentional differences rather than mislabeled as Fiji parity: exact
+  `ceil(N * fraction)` and deterministic clamping of negative floating-point
+  variance to positive zero.
+- Added a lazy CuPy `RawKernel` implementation with resident device execution,
+  explicit contiguous-axis staging, bounded 64-row launches, synchronized
+  progress, cooperative cancellation, subnormal-preserving float conversions,
+  conservative memory admission, dtype-specific parity, exact provenance, and
+  visible CPU decisions outside the validated region. The source-current RTX
+  5090 record passed 10 exact admission cases, 10 matched rejections, all 18
+  timed workloads bitwise, synchronized cancellation, and zero-residue cleanup,
+  so the exact region is now a normal public `Auto`/`Selective` candidate.
+  Transfer-inclusive examples ranged from 44.80x for a 1024² radius-0.5 plane
+  to 173.68x for a 2048² radius-10 plane. Radius 0.5 first cleared both gates at
+  1024² because the tested 512² call saved only 19.27 ms; radius 2 cleared at
+  512², and radii 5/10 at the smallest tested 256². Timings are machine-local
+  rather than portable guarantees.
+
 ### Experimental GPU Development UI
 
 - Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
