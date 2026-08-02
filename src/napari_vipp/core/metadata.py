@@ -2253,6 +2253,30 @@ def _operation_history(
         else:
             polarity = ""
         return f"{operation_title}: radius {radius} px{polarity}, {spatial_mode}"
+    if operation_id == "sigma_filter":
+        radius = _format_number(params.get("radius", 2.0))
+        sigma_width = _format_number(params.get("sigma_width", 2.0))
+        minimum_fraction = _format_number(
+            100.0 * float(params.get("minimum_pixel_fraction", 0.2))
+        )
+        fallback = (
+            "exclude-center fallback"
+            if bool(params.get("outlier_aware", True))
+            else "full-mean fallback"
+        )
+        channel_axis = _explicit_channel_axis_parameter(
+            params,
+            len(input_state.axes),
+        )
+        channel_semantics = (
+            "scalar planes"
+            if channel_axis is None
+            else f"independent channel axis {channel_axis}"
+        )
+        return (
+            f"{operation_title}: radius {radius} px, sigma width {sigma_width}, "
+            f"minimum {minimum_fraction}%, {fallback}, {channel_semantics}"
+        )
     if operation_id == "euclidean_distance_transform":
         return f"{operation_title}: {params.get('spatial_mode', 'Auto from axes')}"
     if operation_id == "h_maxima_markers":

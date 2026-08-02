@@ -375,7 +375,7 @@ The current high-level groups are:
   Intensity, Normalize, Clip
 - `Filtering`
   - `Smoothing & Denoising`: Average Blur, Gaussian Blur, Gaussian Blur 3D,
-    Median Filter, Bilateral Filtering, Non-Local Means
+    Median Filter, Sigma Filter, Bilateral Filtering, Non-Local Means
   - `Edge & Detail`: Difference of Gaussians, Unsharp Mask, Sobel Edges,
     Canny Edges, Laplace Filter
 - `Projection`: Maximum Projection, Project Image, Orthogonal Projection
@@ -452,6 +452,94 @@ planes. With explicit metadata, positional kernels require a canonical `YX`
 suffix (or `ZYX` suffix for 3D) and fail clearly otherwise. `Reorder Axes` can
 restore canonical storage order, but does not relabel `ZX` as `YX`; such a
 reinterpretation would need its own explicit, provenance-recorded operation.
+
+### Sigma Filter scientific contract
+
+`Sigma Filter` (`sigma_filter`) is a clean-room implementation of the
+edge-preserving sigma filter described by Jong-Sen Lee in 1983
+([DOI 10.1016/0734-189X(83)90047-6](https://doi.org/10.1016/0734-189X(83)90047-6)).
+Its public behavior is compatible with the documented ImageJ/Fiji
+[Sigma Filter Plus](https://imagej.net/ij/plugins/sigma-filter.html), originally
+by Michael Schmid with the outlier-aware extension credited to Tony Collins.
+The published
+[plugin source](https://imagej.net/ij/plugins/download/Sigma_Filter_Plus.java)
+is a behavioral reference and external-fixture generator, not code translated
+into VIPP.
+
+The version-1 node accepts only non-empty, finite native-endian `uint8`,
+`uint16`, or `float32` arrays and preserves their shape and dtype. Parameters are radius
+0.5–10 (default 2), non-negative sigma width (default 2), minimum-pixel
+fraction 0–1 (default 0.2), an outlier-aware switch (default on), and an
+optional channel axis. `channel_axis=None` uses VIPP's scalar-default
+convention. The resolved final two non-channel spatial axes are `YX`; every
+channel and every other leading index is processed as a separate plane. Border
+coordinates are clamped independently to the nearest Y/X sample, and repeated
+clamped aliases remain distinct footprint samples. The source is immutable and
+the destination is separate, so a newly filtered pixel never feeds a later
+neighborhood. Version 1 has no ROI/mask input and therefore does not claim
+Fiji's ROI behavior.
+
+For an authored radius `r`, VIPP maps `1.5 <= r < 1.75` to 1.75 and
+`2.5 <= r < 2.85` to 2.85, then sets `r2 = floor(r * r) + 1`. Integer `(dy,
+dx)` offsets satisfying `dx² + dy² <= r2` are traversed in fixed row-major
+order; radius 2 has 21 samples and radius 10 has 325. Each sample and its square
+are formed in `float32`; the ordered sums are widened into `float64`. The
+population variance is `mean(square) - mean²`. Any cancellation-induced
+negative result is clamped to positive zero before the square root.
+
+The second footprint pass selects samples in the inclusive interval
+`center ± sigma_width * sqrt(variance)`, where `center` is the immutable source
+pixel. `minimum_count` is exactly `ceil(footprint_count *
+minimum_pixel_fraction)`. Enough selected samples produce their mean. Otherwise
+the node uses the full-footprint mean when outlier-aware mode is off, or removes
+one logical center sample with `(full_sum - center) / (footprint_count - 1)`
+when it is on. Repeated border aliases are not all removed. Unsigned output is
+first cast to `float32`, then clipped and rounded half-up; it does not use
+NumPy's ties-to-even rounding. Float32 output is restored directly.
+
+Independent frozen reference fixtures execute the official published Sigma
+Filter Plus bytecode under ImageJ 1.54p and use ImageJ's own unsigned
+restoration. Fourteen cases match those external outputs exactly. Two further
+cases name deliberate VIPP deviations: exact `ceil` replaces the plugin's
+`(int)(N*fraction + 0.999999)` approximation, and deterministic negative-
+variance clamping replaces a NaN-dependent unsigned-zero result. Fixture,
+plugin, ImageJ jar, generator, and Java harness hashes make the evidence
+auditable without treating the VIPP Python implementation as its own oracle.
+
+The CUDA candidate is a lazy CuPy `RawKernel`, not a CuPyX or cuCIM primitive.
+It stages arbitrary axis layouts and non-contiguous inputs into one contiguous
+`float32` device workspace, allocates a distinct typed output, and scans the
+footprint twice per output thread without an image-sized sliding-window tensor.
+The memory model includes resident input/output, the complete float32 staging
+copy, a worst-case typed axis-restoration buffer, the radius-10 offset table,
+and validation status. `--fmad=false`, precise divide/square-root, and explicit
+bit-level float32 conversion preserve CPU arithmetic boundaries. The bit path
+also preserves subnormal inputs, squares, and outputs if NVRTC appends
+flush-to-zero despite the requested `--ftz=false` option.
+
+CPU work validates and calculates in bounded 64-row blocks with cancellation
+checks during footprint scans. GPU work launches 64-row tiles; it synchronizes
+before reporting each completed tile and checks cancellation between tiles.
+Optional CuPy imports remain lazy, public caches remain host-only, and every
+device segment follows transactional cleanup/fallback rules. The accelerator's
+exact initial region is finite native-endian `uint8`, `uint16`, and `float32`, the complete
+parameter/axis contract above, and—on float32—complete finite extrema facts
+within the float32-square-safe magnitude. Unsigned parity is bitwise exact;
+float32 uses the tight versioned aggregate gate plus separate adversarial branch
+tests. No CPU/GPU cache-equivalence group is claimed.
+
+GPU visibility is evidence-driven and region-specific. Sigma's source-current
+RTX 5090 record passed exact parity, matched rejection, synchronized progress,
+cancellation, cleanup, runtime, and timing review. Its declared region is
+therefore a normal public `Selective` candidate and participates in
+evidence-backed `Auto`; the implementation and v4 policy artifact both declare
+`public_auto_candidate`. Non-native-endian arrays and other unsupported dtypes,
+parameters, values, runtimes, and
+platforms visibly use CPU. This branch rule does not imply support for every
+released package, OS, or GPU, and the recorded timing crossovers are
+machine-local rather than portable guarantees. The full matrix is retained in
+the [canonical Sigma Filter evidence](benchmarks/sigma-filter-cupy-windows-rtx5090.md).
+
 - `Morphology`: Dilation, Erosion, Opening, Closing, Top Hat, Black Hat,
   Morphological Gradient, Fill Holes, Remove Small Objects, Skeletonize,
   Skeleton Keypoints, Skeleton Graph Overlay, Prune Skeleton Branches

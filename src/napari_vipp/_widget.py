@@ -10420,6 +10420,14 @@ class VippWidget(QWidget):
                 "- Markers: non-negative integer seed labels.\n"
                 "- Mask: foreground constraint region (>0 = inside)."
             )
+        if node.operation_id == "sigma_filter":
+            return (
+                "Edge-preserving Lee sigma filter compatible with the documented "
+                "behavior of Fiji Sigma Filter Plus. It processes resolved YX "
+                "planes independently with clamped edges and supports finite "
+                "uint8, uint16, and float32 images. ROI/mask behavior is not part "
+                "of this v1 node."
+            )
         if node.operation_id == "measure_3d_mesh_morphology":
             return (
                 "3D mesh morphology requires true 3D label input. It uses "

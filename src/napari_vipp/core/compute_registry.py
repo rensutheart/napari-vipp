@@ -439,6 +439,16 @@ CUDA_CUPY_RUNTIME = RuntimeDescriptor(
     interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
 )
 
+CUPY_LIBRARY = ImplementationLibraryDescriptor(
+    library_id="cupy",
+    display_name="CuPy custom kernels",
+    runtime_ids=("cuda-cupy",),
+    array_domain="cuda-cupy",
+    supported_os_families=("Windows", "Linux"),
+    probe_ref="napari_vipp.core.compute_registry:_probe_cupy_library",
+    interoperability_claims=("cupy-array-stream-device-lifetime-v1",),
+)
+
 CUPYX_LIBRARY = ImplementationLibraryDescriptor(
     library_id="cupyx",
     display_name="CuPyX SciPy-compatible ndimage",
@@ -460,7 +470,11 @@ CUCIM_SKIMAGE_LIBRARY = ImplementationLibraryDescriptor(
 )
 
 DEFAULT_RUNTIME_DESCRIPTORS = (CUDA_CUPY_RUNTIME,)
-DEFAULT_LIBRARY_DESCRIPTORS = (CUPYX_LIBRARY, CUCIM_SKIMAGE_LIBRARY)
+DEFAULT_LIBRARY_DESCRIPTORS = (
+    CUPY_LIBRARY,
+    CUPYX_LIBRARY,
+    CUCIM_SKIMAGE_LIBRARY,
+)
 
 
 class ComputeRegistryError(RuntimeError):
@@ -959,6 +973,72 @@ class ComputeRegistry:
             return mapping[identifier]
         except KeyError as exc:
             raise KeyError(f"Unknown {description} {identifier!r}.") from exc
+
+
+def _probe_cupy_library() -> ImplementationLibraryProbeResult:
+    """Import CuPy lazily and exercise compilation of a custom RawKernel."""
+
+    cupy = importlib.import_module("cupy")
+    if not callable(getattr(cupy, "RawKernel", None)):
+        return ImplementationLibraryProbeResult(
+            "cupy",
+            False,
+            version=str(getattr(cupy, "__version__", "")),
+            reason_code="cupy_rawkernel_missing",
+            message="CuPy does not expose the RawKernel API required by VIPP.",
+        )
+    device_id = _cupy_current_device_id(cupy)
+    with accelerator_lease("cuda-cupy", device_id):
+        return _exercise_cupy_library(cupy)
+
+
+def _exercise_cupy_library(cupy: object) -> ImplementationLibraryProbeResult:
+    pool = cupy.cuda.MemoryPool()
+    values = output = None
+    probe_error: BaseException | None = None
+    try:
+        kernel = cupy.RawKernel(
+            r"""
+            extern "C" __global__
+            void vipp_cupy_probe(
+                const float* values,
+                float* output,
+                const unsigned long long size)
+            {
+                const unsigned long long index =
+                    (unsigned long long)blockDim.x * blockIdx.x + threadIdx.x;
+                if (index < size) {
+                    output[index] = values[index] + 1.0f;
+                }
+            }
+            """,
+            "vipp_cupy_probe",
+            options=("--std=c++11", "--fmad=false"),
+        )
+        with cupy.cuda.using_allocator(pool.malloc):
+            values = cupy.arange(32, dtype=cupy.float32)
+            output = cupy.empty_like(values)
+            kernel((1,), (32,), (values, output, values.size))
+            if float(output.sum().item()) != 528.0:
+                raise RuntimeError("CuPy RawKernel probe produced an invalid result.")
+            cupy.cuda.get_current_stream().synchronize()
+        return ImplementationLibraryProbeResult(
+            "cupy",
+            True,
+            version=str(getattr(cupy, "__version__", "")),
+            message="CuPy compiled and synchronized a VIPP custom RawKernel probe.",
+        )
+    except BaseException as exc:
+        probe_error = exc
+        raise
+    finally:
+        values = output = None
+        _drain_private_probe_pool(
+            cupy,
+            pool,
+            library_id="cupy",
+            suppress_errors=probe_error is not None,
+        )
 
 
 def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
@@ -1498,6 +1578,7 @@ def _close_quietly(instance: object) -> None:
 __all__ = [
     "CUCIM_SKIMAGE_LIBRARY",
     "CUDA_CUPY_RUNTIME",
+    "CUPY_LIBRARY",
     "CUPYX_LIBRARY",
     "ComputeRegistry",
     "ComputeRegistryClosed",

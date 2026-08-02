@@ -699,6 +699,57 @@ def _otsu_spec() -> OperationComputeSpec:
     )
 
 
+def _sigma_filter_spec() -> OperationComputeSpec:
+    """Return the clean-room VIPP CuPy RawKernel Sigma Filter contract."""
+
+    port_values = {
+        "public_dtypes": _MICROSCOPY_DTYPES,
+        "internal_dtypes": ("float32", "float64"),
+        "conversion_policy_id": "sigma-float32-workspace-restore-v1",
+        "nonfinite_policy_id": "sigma-finite-only-v1",
+        "rounding_policy_id": "sigma-half-up-u8-u16-f32-identity-v1",
+        "overflow_policy_id": "sigma-float32-square-safe-v1",
+        "boundary_policy_id": "sigma-nearest-circular-footprint-v1",
+        "precision_policy_id": "sigma-ordered-f32-square-f64-accum-v1",
+    }
+    return OperationComputeSpec(
+        operation_id="sigma_filter",
+        implementation_id="cupy-sigma-filter-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupy",
+        callable_ref="napari_vipp.core.gpu.cupy_sigma:sigma_filter",
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+        ),
+        input_ports=(_gpu_image_port(0, name="image", **port_values),),
+        output_ports=(_gpu_image_port(0, name="image", output=True, **port_values),),
+        parameter_policy_id="sigma-filter-parameters-v1",
+        workload_policy_id="sigma-u8-u16-finite-f32-v1",
+        parity_policy_id="sigma-dtype-parity-v1",
+        memory_model_id="cupy-sigma-filter-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id="sigma-nearest-circular-footprint-v1",
+        precision_policy_id="sigma-ordered-f32-square-f64-accum-v1",
+        progress_policy_id="sigma-row-tile-sync-progress-v1",
+        cancellation_policy_id="sigma-row-tile-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2,),
+        supports_device_residency=True,
+        limitations=(
+            "finite-only-v1",
+            "uint8-uint16-float32-only-v1",
+            "native-endian-only-v1",
+            "float32-requires-complete-magnitude-facts-v1",
+            "radius-half-through-ten-v1",
+            "no-roi-mask-input-v1",
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -709,6 +760,7 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _richardson_lucy_tv_spec(),
     _canny_spec(),
     _otsu_spec(),
+    _sigma_filter_spec(),
 )
 
 
