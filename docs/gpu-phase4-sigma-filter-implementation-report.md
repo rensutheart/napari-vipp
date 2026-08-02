@@ -321,22 +321,23 @@ Seven-round machine-local medians from selected cases are:
 
 | Workload | Radius | CPU | GPU end-to-end | GPU resident | E2E speedup | Screen |
 |---|---:|---:|---:|---:|---:|:---|
-| 256² plane | 0.5 | 0.004604 s | 0.000672 s | 0.000374 s | 6.85x | CPU |
-| 512² plane | 0.5 | 0.020366 s | 0.001095 s | 0.000546 s | 18.60x | CPU |
-| 1024² plane | 0.5 | 0.084091 s | 0.001877 s | 0.000722 s | 44.80x | GPU-CuPy |
-| 256² plane | 2 | 0.017010 s | 0.000772 s | 0.000461 s | 22.03x | CPU |
-| 512² plane | 2 | 0.055378 s | 0.001112 s | 0.000622 s | 49.78x | GPU-CuPy |
-| 2048² plane | 10 | 10.467474 s | 0.060270 s | 0.048785 s | 173.68x | GPU-CuPy |
-| 8×512² stack | 2 | 0.464511 s | 0.004873 s | 0.002269 s | 95.33x | GPU-CuPy |
-| 4×1024² stack | 10 | 10.301479 s | 0.055703 s | 0.048089 s | 184.93x | GPU-CuPy |
+| 256² plane | 0.5 | 0.004669 s | 0.000671 s | 0.000342 s | 6.96x | CPU |
+| 512² plane | 0.5 | 0.021025 s | 0.000892 s | 0.000473 s | 23.57x | GPU-CuPy |
+| 1024² plane | 0.5 | 0.097682 s | 0.001922 s | 0.001096 s | 50.83x | GPU-CuPy |
+| 256² plane | 2 | 0.015812 s | 0.000682 s | 0.000455 s | 23.17x | CPU |
+| 512² plane | 2 | 0.057129 s | 0.001034 s | 0.000640 s | 55.23x | GPU-CuPy |
+| 2048² plane | 10 | 10.266807 s | 0.060059 s | 0.049125 s | 170.95x | GPU-CuPy |
+| 8×512² stack | 2 | 0.449594 s | 0.004802 s | 0.002303 s | 93.62x | GPU-CuPy |
+| 4×1024² stack | 10 | 10.174047 s | 0.055786 s | 0.047831 s | 182.38x | GPU-CuPy |
 
-The 256² and 512² radius-0.5 cases and 256² radius-2 case are deliberately CPU
-choices despite large timing ratios: their absolute median savings were only
-3.93 ms, 19.27 ms, and 16.24 ms, below the 20-ms material-saving gate. On this
-host, radius 0.5 first cleared both Auto gates at 1024²; radius 2 cleared them at
-512²; radii 5 and 10 cleared them at the smallest tested 256² extent. Both stack
-cases selected GPU. These are bounded observations over the tested grid, not
-permission to extrapolate below it.
+The 256² radius-0.5 and radius-2 cases are deliberately CPU choices despite
+large timing ratios: their 4.00-ms and 15.13-ms absolute median savings remained
+below the 20-ms material-saving gate. Radius 0.5 first cleared both Auto gates at
+512²: its 20.13-ms saving exceeded the material gate, while its paired 95%
+speedup lower bound was 19.58x against the 1.20x confidence gate. Radius 2 also
+cleared at 512²; radii 5 and 10 cleared at the smallest tested 256² extent. Both
+stack cases selected GPU. These are bounded observations over the tested grid,
+not permission to extrapolate below it.
 
 The full artifact passed 10/10 exact admission cases and all 18 timed workloads
 bit for bit, including float32 signed zero and subnormal arithmetic. All ten

@@ -58,11 +58,13 @@
   5090 record passed 10 exact admission cases, 10 matched rejections, all 18
   timed workloads bitwise, synchronized cancellation, and zero-residue cleanup,
   so the exact region is now a normal public `Auto`/`Selective` candidate.
-  Transfer-inclusive examples ranged from 44.80x for a 1024² radius-0.5 plane
-  to 173.68x for a 2048² radius-10 plane. Radius 0.5 first cleared both gates at
-  1024² because the tested 512² call saved only 19.27 ms; radius 2 cleared at
-  512², and radii 5/10 at the smallest tested 256². Timings are machine-local
-  rather than portable guarantees.
+  Transfer-inclusive examples ranged from 23.57x for a 512² radius-0.5 plane to
+  170.95x for a 2048² radius-10 plane. Radius 0.5 first cleared both gates at
+  512²: its 20.13-ms saving exceeded the 20-ms gate and its paired 95% speedup
+  lower bound was 19.58x against the 1.20x gate. Radius 2 also cleared at 512²,
+  and radii 5/10 at the smallest tested 256². Timings are machine-local rather
+  than portable guarantees.
+
 ### Graph Authoring
 
 - Image Source cards now show a live, elided binding subtitle for napari layers,
@@ -84,6 +86,7 @@
   originating workflow. Other tabs remain editable while it runs, progress and
   completion return only to the origin, and closing the origin, launching a
   second batch, or closing VIPP is blocked until the uncancellable run finishes.
+
 ### Experimental GPU Development UI
 
 - Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
@@ -104,6 +107,7 @@
 - Exact optimizer validation now evaluates the runnable frontier before manual
   barriers. Nodes beyond a deliberately skipped manual/cache boundary no longer
   request a nonexistent private CPU parity target.
+
 ### Colocalization Inspector
 
 - Threshold scrubbing now keeps a compatible scatter density visible and moves

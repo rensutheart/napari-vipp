@@ -66,7 +66,7 @@ RADII = (0.5, 2.0, 5.0, 10.0)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = PROJECT_ROOT / "docs/benchmarks/sigma-filter-cupy-windows-rtx5090.json"
 SOURCE_PROVENANCE_PATHS = (
-    Path("src/napari_vipp/core/operations.py"),
+    Path("src/napari_vipp/core/sigma_filter.py"),
     Path("src/napari_vipp/core/gpu/cupy_sigma.py"),
     Path("scripts/benchmark_gpu_sigma.py"),
 )
@@ -275,7 +275,7 @@ def run_evidence(
     import cupy
 
     from napari_vipp.core.gpu.cupy_sigma import sigma_filter as gpu_sigma
-    from napari_vipp.core.operations import sigma_filter as cpu_sigma
+    from napari_vipp.core.sigma_filter import sigma_filter as cpu_sigma
 
     with cupy.cuda.Device(int(device_index)):
         platform_record = _platform_record(cupy, int(device_index))

@@ -268,12 +268,13 @@ region, missing CUDA/CuPy, and unqualified platforms visibly remain on CPU.
 The source-current full-profile RTX 5090 record passed all 10 exact admission
 cases, all 10 matched rejection cases, cancellation/cleanup, and bitwise parity
 for all 18 timed workloads. Representative transfer-inclusive speedups were
-44.80x for a 1024² radius-0.5 plane, 49.78x for a 512² radius-2 plane, 173.68x
-for a 2048² radius-10 plane, and 95.33x for an 8×512² radius-2 stack. On this
-host, radius 0.5 first cleared both Auto gates at 1024²: the 512² call remained
-on CPU because its 19.27-ms absolute saving missed the 20-ms gate. Radius 2
-cleared at 512²; radii 5 and 10 cleared at the smallest tested 256². These are
-machine-local observations, not portable speed promises; see the
+23.57x for a 512² radius-0.5 plane, 55.23x for a 512² radius-2 plane, 170.95x
+for a 2048² radius-10 plane, and 93.62x for an 8×512² radius-2 stack. On this
+host, radius 0.5 first cleared both Auto gates at 512²: its 20.13-ms absolute
+saving just exceeded the 20-ms gate, while its paired 95% speedup lower bound
+was 19.58x against the 1.20x gate. Radius 2 also cleared at 512²; radii 5 and 10
+cleared at the smallest tested 256². These are machine-local observations, not
+portable speed promises; see the
 [canonical Sigma Filter evidence](docs/benchmarks/sigma-filter-cupy-windows-rtx5090.md).
 
 The scientific reference is the Lee 1983 sigma-filter algorithm. Frozen
