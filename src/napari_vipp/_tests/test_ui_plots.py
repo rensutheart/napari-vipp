@@ -79,3 +79,31 @@ def test_scatter_pending_thresholds_preserve_only_compatible_density(qtbot):
 
     assert plot._image is None
     assert plot._summary == "Calculating exact count..."
+
+
+def test_scatter_colormap_recolors_retained_density_without_state_change(qtbot):
+    plot = plots.ColocalizationScatterPlot()
+    qtbot.addWidget(plot)
+    density = np.zeros((16, 16), dtype=np.float64)
+    density[3:10, 5:12] = np.arange(49, dtype=np.float64).reshape(7, 7)
+    plot.set_density(
+        density,
+        threshold_1=25.0,
+        threshold_2=30.0,
+        intensity_min=0.0,
+        intensity_max=255.0,
+        colormap="Viridis",
+        summary="Calculating exact count...",
+    )
+    retained_density = plot._density_counts
+    original_image = plot._image
+
+    plot.set_colormap("Gray")
+
+    assert plot._density_counts is retained_density
+    assert plot._image is not original_image
+    assert plot._image != original_image
+    assert plot._threshold_1 == 25.0
+    assert plot._threshold_2 == 30.0
+    assert plot._summary == "Calculating exact count..."
+    assert plot._colormap == "Gray"

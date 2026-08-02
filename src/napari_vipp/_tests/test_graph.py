@@ -269,6 +269,34 @@ def test_pin_button_is_not_shown_on_node_cards(qtbot):
     assert view._cards["threshold"]._can_pin
 
 
+def test_unchanged_node_card_states_do_not_refresh_styles(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    refreshes = []
+    monkeypatch.setattr(card, "_refresh_style", lambda: refreshes.append(True))
+
+    card.set_selected(False)
+    card.set_pinned(False)
+    card.set_search_highlight(False)
+    card.set_can_pin(True)
+
+    assert refreshes == []
+
+    card.set_selected(True)
+    card.set_selected(True)
+    card.set_pinned(True)
+    card.set_pinned(True)
+    card.set_search_highlight(True)
+    card.set_search_highlight(True)
+    card.set_can_pin(False)
+    card.set_can_pin(False)
+
+    assert len(refreshes) == 4
+    assert not card._pinned
+    assert card.pin_button.text() == "Pin"
+
+
 def test_compute_badge_is_hidden_until_an_accepted_identity_is_supplied(qtbot):
     view, _pipeline = _build_view()
     qtbot.addWidget(view)
@@ -378,6 +406,37 @@ def test_compute_badge_rejects_unknown_presentation_identity(qtbot):
 
     with pytest.raises(ValueError, match="Unknown compute badge kind"):
         view.set_node_compute_badge("gaussian", "mystery-accelerator")
+
+
+def test_unchanged_compute_badge_skips_card_geometry_refresh(qtbot, monkeypatch):
+    view, _pipeline = _build_view()
+    qtbot.addWidget(view)
+    card = view._cards["gaussian"]
+    proxy = view._proxies["gaussian"]
+    view.set_node_compute_badge(
+        "gaussian",
+        "cpu",
+        tooltip="Used cpu-numpy.",
+    )
+    refreshes = []
+    monkeypatch.setattr(card, "adjustSize", lambda: refreshes.append("card"))
+    monkeypatch.setattr(proxy, "refresh_ports", lambda: refreshes.append("ports"))
+
+    view.set_node_compute_badge(
+        "gaussian",
+        ComputeBadgeKind.CPU,
+        tooltip=" Used cpu-numpy. ",
+    )
+
+    assert refreshes == []
+
+    view.set_node_compute_badge(
+        "gaussian",
+        "cpu",
+        tooltip="Used cpu-numpy on another environment.",
+    )
+
+    assert refreshes == ["card", "ports"]
 
 
 def test_automatic_stale_node_is_visibly_amber(qtbot):

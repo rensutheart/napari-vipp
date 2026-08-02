@@ -347,19 +347,32 @@ class NodeCard(QFrame):
         self._position_processing_badge()
 
     def set_selected(self, selected: bool) -> None:
+        selected = bool(selected)
+        if self._selected == selected:
+            return
         self._selected = selected
         self._refresh_style()
 
     def set_pinned(self, pinned: bool) -> None:
+        pinned = bool(pinned)
+        if self._pinned == pinned:
+            return
         self._pinned = pinned
         self.pin_button.setText("Unpin" if pinned else "Pin")
         self._refresh_style()
 
     def set_search_highlight(self, highlighted: bool) -> None:
-        self._search_highlight = bool(highlighted)
+        highlighted = bool(highlighted)
+        if self._search_highlight == highlighted:
+            return
+        self._search_highlight = highlighted
         self._refresh_style()
 
     def set_can_pin(self, can_pin: bool) -> None:
+        can_pin = bool(can_pin)
+        pinned = self._pinned if can_pin else False
+        if self._can_pin == can_pin and self._pinned == pinned:
+            return
         self._can_pin = can_pin
         if not can_pin:
             self._pinned = False
@@ -519,14 +532,21 @@ class NodeCard(QFrame):
         *,
         tooltip: str = "",
         stale: bool = False,
-    ) -> None:
+    ) -> bool:
         """Show one compact, presentation-only accepted-compute badge.
 
         The graph deliberately does not interpret execution reports. Its owner
         supplies an already resolved identity and may mark it stale while a
-        replacement result is pending. Passing ``None`` clears the badge.
+        replacement result is pending. Passing ``None`` clears the badge. The
+        return value reports whether the card presentation changed.
         """
         if kind is None:
+            if (
+                self._compute_badge_kind is None
+                and not self._compute_badge_stale
+                and not self._compute_badge_tooltip
+            ):
+                return False
             self._compute_badge_kind = None
             self._compute_badge_stale = False
             self._compute_badge_tooltip = ""
@@ -535,11 +555,17 @@ class NodeCard(QFrame):
             self.title_row.setToolTip("")
             self.compute_badge.setAccessibleName("")
             self.compute_badge.hide()
-            return
+            return True
 
         resolved = _coerce_compute_badge_kind(kind)
         is_stale = bool(stale)
         detail = str(tooltip or "").strip()
+        if (
+            self._compute_badge_kind is resolved
+            and self._compute_badge_stale == is_stale
+            and self._compute_badge_tooltip == detail
+        ):
+            return False
         label = _COMPUTE_BADGE_LABELS[resolved]
         if is_stale:
             background, foreground, border = ("#292524", "#a8a29e", "#78716c")
@@ -568,6 +594,7 @@ class NodeCard(QFrame):
             "}"
         )
         self.compute_badge.show()
+        return True
 
     def _refresh_style(self) -> None:
         border = "#4b5563"
@@ -2853,7 +2880,8 @@ class PipelineGraphView(QGraphicsView):
         if card is None or proxy is None:
             return
         before = proxy.sceneBoundingRect()
-        card.set_compute_badge(kind, tooltip=tooltip, stale=stale)
+        if not card.set_compute_badge(kind, tooltip=tooltip, stale=stale):
+            return
         card.adjustSize()
         proxy.refresh_ports()
         after = proxy.sceneBoundingRect()
@@ -3283,17 +3311,18 @@ class PipelineGraphView(QGraphicsView):
         for note in self._notes.values():
             note.setSelected(False)
         for card_id, card in self._cards.items():
-            card.set_selected(card_id == node_id)
+            selected = card_id == node_id
+            card.set_selected(selected)
             proxy = self._proxies.get(card_id)
-            if proxy is not None:
-                proxy.setSelected(card_id == node_id)
+            if proxy is not None and proxy.isSelected() != selected:
+                proxy.setSelected(selected)
         self.node_selected.emit(node_id)
 
     def _clear_node_selection(self) -> None:
         for card_id, card in self._cards.items():
             card.set_selected(False)
             proxy = self._proxies.get(card_id)
-            if proxy is not None:
+            if proxy is not None and proxy.isSelected():
                 proxy.setSelected(False)
 
     def _node_id_at_view_pos(self, pos: QPoint) -> str | None:

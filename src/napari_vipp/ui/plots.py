@@ -536,6 +536,8 @@ class ColocalizationScatterPlot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image: QImage | None = None
+        self._density_counts: np.ndarray | None = None
+        self._log_counts = True
         self._threshold_1 = 25.0
         self._threshold_2 = 25.0
         self._intensity_min = 0.0
@@ -591,12 +593,33 @@ class ColocalizationScatterPlot(QWidget):
             fallback="#22c55e",
         )
         self._colormap = str(colormap or "Viridis")
+        self._density_counts = (
+            None
+            if density_counts is None
+            else cap_colocalization_scatter_density_for_display(
+                np.asarray(density_counts)
+            )
+        )
+        self._log_counts = bool(log_counts)
         self._summary = str(summary)
-        self._image = self._density_image(density_counts, log_counts=log_counts)
+        self._image = self._density_image(
+            self._density_counts,
+            log_counts=self._log_counts,
+        )
+        self.update()
+
+    def set_colormap(self, colormap: str) -> None:
+        """Recolor the retained presentation density without recomputing it."""
+        self._colormap = str(colormap or "Viridis")
+        self._image = self._density_image(
+            self._density_counts,
+            log_counts=self._log_counts,
+        )
         self.update()
 
     def clear(self, message: str = "Connect two channel inputs.") -> None:
         self._image = None
+        self._density_counts = None
         self._summary = message
         self.update()
 
@@ -621,6 +644,7 @@ class ColocalizationScatterPlot(QWidget):
             self._channel_2_min = self._intensity_min
             self._channel_2_max = self._intensity_max
             self._image = None
+            self._density_counts = None
         self.update()
 
     def paintEvent(self, event):  # noqa: N802
@@ -702,7 +726,12 @@ class ColocalizationScatterPlot(QWidget):
             values = values / maximum
         values = np.flipud(values)
         gray = np.clip(np.rint(np.sqrt(values) * 255.0), 0, 255).astype(np.uint8)
-        rgb = _apply_monochrome_colormap(gray, self._colormap)
+        # The Gray mapping preserves the flipped source's non-contiguous
+        # strides. PyQt6 cannot construct QImage from that memoryview, so make
+        # every colormap cross the Qt boundary with the same packed RGB layout.
+        rgb = np.ascontiguousarray(
+            _apply_monochrome_colormap(gray, self._colormap)
+        )
         rgb[values <= 0] = (4, 7, 15)
         return QImage(
             rgb.data,

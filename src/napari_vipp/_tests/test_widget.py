@@ -5149,6 +5149,103 @@ def test_scatter_node_popout_uses_independent_native_ranges(qtbot):
     )
 
 
+def test_scatter_popout_colormap_is_linked_without_recomputing_density(
+    qtbot,
+    monkeypatch,
+):
+    data = np.arange(16, dtype=np.float32).reshape(4, 4)
+    widget = VippWidget(_Viewer(data, metadata={"axes": "YX"}))
+    widget._should_run_pipeline_in_background = lambda *args, **kwargs: False
+    qtbot.addWidget(widget)
+
+    offset = widget.add_node_from_palette("linear_scale_offset")
+    scatter = widget.add_node_from_palette("colocalization_scatter_plot")
+    widget.pipeline.set_param(offset.id, "alpha", 1.0)
+    widget.pipeline.set_param(offset.id, "beta", 500.0)
+    widget.pipeline.set_param(scatter.id, "bins", 64)
+    widget.pipeline.set_param(scatter.id, "range_percentile", 100.0)
+    widget._connect_nodes("input", offset.id)
+    widget._connect_nodes("input", scatter.id, target_port=0)
+    widget._connect_nodes(offset.id, scatter.id, target_port=1)
+    widget.run_pipeline(force_sync=True)
+    widget.graph_view.select_node(scatter.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
+    original_key = widget._current_colocalization_scatter_key
+    original_result = widget._colocalization_scatter_cache[original_key]
+    original_density = original_result.density_counts
+    original_density_key = original_result.density_key
+    session = widget._workflow_tabs.current
+    assert session is not None
+    session.mark_clean(
+        widget._current_history_snapshot(),
+        persistence_token=widget._workflow_tab_persistence_token(),
+    )
+
+    def fail_if_density_is_recomputed(*_args, **_kwargs):
+        raise AssertionError("A colormap change must reuse the cached density.")
+
+    monkeypatch.setattr(
+        "napari_vipp._widget._prepare_colocalization_scatter_density",
+        fail_if_density_is_recomputed,
+    )
+
+    def fail_if_scientific_state_is_refreshed():
+        raise AssertionError(
+            "A colormap change must not refresh scientific state."
+        )
+
+    monkeypatch.setattr(
+        widget,
+        "_update_colocalization_scatter",
+        fail_if_scientific_state_is_refreshed,
+    )
+    inspector_image = widget.colocalization_scatter_plot._image
+    dialog_image = dialog.plot._image
+
+    widget.colocalization_scatter_colormap_combo.setCurrentText("Magma")
+
+    assert dialog.colormap_combo.currentText() == "Magma"
+    assert widget.colocalization_scatter_plot._colormap == "Magma"
+    assert dialog.plot._colormap == "Magma"
+    assert widget.colocalization_scatter_plot._image is not inspector_image
+    assert dialog.plot._image is not dialog_image
+
+    inspector_image = widget.colocalization_scatter_plot._image
+    dialog_image = dialog.plot._image
+    dialog.colormap_combo.setCurrentText("Cividis")
+
+    assert widget.colocalization_scatter_colormap_combo.currentText() == "Cividis"
+    assert widget.colocalization_scatter_plot._colormap == "Cividis"
+    assert dialog.plot._colormap == "Cividis"
+    assert widget.colocalization_scatter_plot._image is not inspector_image
+    assert dialog.plot._image is not dialog_image
+    assert widget._current_colocalization_scatter_key == original_key
+    assert widget._colocalization_scatter_cache[original_key] is original_result
+    assert (
+        widget._colocalization_scatter_density_cache[
+            original_density_key
+        ].density_counts
+        is original_density
+    )
+    assert not session.dirty
+
+    dialog.close()
+    assert not dialog.isVisible()
+    widget.colocalization_scatter_colormap_combo.setCurrentText("Gray")
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
+
+    assert widget._colocalization_scatter_dialog is dialog
+    assert dialog.isVisible()
+    assert dialog.colormap_combo.currentText() == "Gray"
+    assert widget.colocalization_scatter_plot._colormap == "Gray"
+    assert dialog.plot._colormap == "Gray"
+    assert not session.dirty
+
+
 def test_colocalization_scatter_density_and_counts_are_exact_beyond_old_cap():
     size = 600_123
     indices = np.arange(size, dtype=np.uint32)
@@ -5362,10 +5459,17 @@ def test_colocalization_scatter_keeps_density_during_threshold_scrubbing(
     widget._connect_nodes("input", coloc.id, target_port=1)
     widget.run_pipeline(force_sync=True)
     widget.graph_view.select_node(coloc.id)
+    qtbot.mouseClick(widget.colocalization_scatter_popout_button, Qt.LeftButton)
 
     density_image = widget.colocalization_scatter_plot._image
+    density_counts = widget.colocalization_scatter_plot._density_counts
     density_key = widget._displayed_colocalization_scatter_density_key
+    dialog = widget._colocalization_scatter_dialog
+    assert dialog is not None and dialog.isVisible()
+    dialog_density_counts = dialog._density_counts
     assert density_image is not None
+    assert density_counts is not None
+    assert dialog_density_counts is not None
     assert density_key is not None
     assert widget.colocalization_scatter_plot._summary == (
         "Exact: 5,000/10,000 (50.0%)"
@@ -5413,6 +5517,35 @@ def test_colocalization_scatter_keeps_density_during_threshold_scrubbing(
         )
         assert "Calculating the exact" in (
             widget.colocalization_scatter_summary.text()
+        )
+
+        pending_request = widget._pending_colocalization_scatter_request
+        pending_cancel_event = widget._active_colocalization_scatter_cancel_event
+        inspector_image = widget.colocalization_scatter_plot._image
+        dialog_image = dialog.plot._image
+        dialog.colormap_combo.setCurrentText("Gray")
+
+        assert widget.colocalization_scatter_colormap_combo.currentText() == "Gray"
+        assert widget.colocalization_scatter_plot._colormap == "Gray"
+        assert dialog.plot._colormap == "Gray"
+        assert widget.colocalization_scatter_plot._image is not inspector_image
+        assert widget.colocalization_scatter_plot._image != inspector_image
+        assert dialog.plot._image is not dialog_image
+        assert dialog.plot._image != dialog_image
+        assert widget.colocalization_scatter_plot._density_counts is density_counts
+        assert dialog._density_counts is dialog_density_counts
+        assert widget._active_colocalization_scatter_run_id == active_run_id
+        assert (
+            widget._active_colocalization_scatter_cancel_event
+            is pending_cancel_event
+        )
+        assert widget._pending_colocalization_scatter_request is pending_request
+        assert (
+            widget._displayed_colocalization_scatter_density_key == density_key
+        )
+        assert (
+            widget.colocalization_scatter_plot._summary
+            == "Calculating exact count..."
         )
     finally:
         release.set()
@@ -14882,6 +15015,202 @@ def test_new_workflow_action_creates_empty_source_graph_without_prompt(
     assert widget.pipeline.nodes["input"].params["file_path"] == ""
     assert widget.pipeline.outputs["input"] is None
     assert widget.status_label.text() == "New empty workflow created."
+
+
+def test_workflow_tab_switch_shows_loading_feedback_during_install(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = widget._workflow_tabs.current
+    assert target is not None
+    widget._new_workflow()
+
+    target_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == target.session_id
+    )
+    original_install = widget._install_workflow_tab_session
+    observed: list[str] = []
+
+    def observe_install(session):
+        observed.append(session.session_id)
+        assert session is target
+        assert widget.workflow_tab_bar.currentIndex() == target_bar_index
+        assert (
+            widget.workflow_tab_bar.tabData(target_bar_index)
+            == target.session_id
+        )
+        assert widget._workflow_tab_loading_visible
+        assert not widget.pipeline_busy_label.isHidden()
+        assert not widget.pipeline_busy_bar.isHidden()
+        assert widget.pipeline_busy_bar.minimum() == 0
+        assert widget.pipeline_busy_bar.maximum() == 0
+        assert not widget.pipeline_busy_bar.isTextVisible()
+        assert widget.pipeline_busy_label.text() == (
+            f"Switching workflow: {target.title}"
+        )
+        assert widget.pipeline_cancel_button.isHidden()
+        return original_install(session)
+
+    monkeypatch.setattr(widget, "_install_workflow_tab_session", observe_install)
+
+    widget.workflow_tab_bar.setCurrentIndex(target_bar_index)
+
+    assert observed == [target.session_id]
+    assert widget._workflow_tabs.current is target
+    assert not widget._workflow_tab_loading_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+    assert widget.pipeline_busy_label.text() == "Processing"
+    assert widget.pipeline_busy_label.toolTip() == ""
+    assert widget.pipeline_busy_bar.toolTip() == ""
+
+
+def test_blocked_workflow_tab_switch_restores_selection_without_loading_feedback(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = widget._workflow_tabs.current
+    assert target is not None
+    widget._new_workflow()
+    current = widget._workflow_tabs.current
+    assert current is not None and current is not target
+
+    target_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == target.session_id
+    )
+    current_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == current.session_id
+    )
+    loading_calls: list[tuple[bool, str]] = []
+    original_set_loading = widget._set_workflow_tab_loading
+
+    def record_loading(loading, title=""):
+        loading_calls.append((bool(loading), str(title)))
+        original_set_loading(loading, title)
+
+    monkeypatch.setattr(
+        widget,
+        "_workflow_tab_switch_block_reason",
+        lambda: "the test operation finishes",
+    )
+    monkeypatch.setattr(widget, "_set_workflow_tab_loading", record_loading)
+    busy_label_hidden_before = widget.pipeline_busy_label.isHidden()
+    busy_bar_hidden_before = widget.pipeline_busy_bar.isHidden()
+
+    widget.workflow_tab_bar.setCurrentIndex(target_bar_index)
+
+    assert widget._workflow_tabs.current is current
+    assert widget.workflow_tab_bar.currentIndex() == current_bar_index
+    assert loading_calls == []
+    assert not widget._workflow_tab_loading_visible
+    assert widget.pipeline_busy_label.isHidden() is busy_label_hidden_before
+    assert widget.pipeline_busy_bar.isHidden() is busy_bar_hidden_before
+    assert widget.status_label.text() == (
+        "Wait until the test operation finishes before switching workflow tabs."
+    )
+
+
+def test_workflow_tab_switch_rolls_back_and_clears_loading_when_install_raises(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = widget._workflow_tabs.current
+    assert target is not None
+    widget._new_workflow()
+    current = widget._workflow_tabs.current
+    assert current is not None and current is not target
+    target_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == target.session_id
+    )
+
+    original_install = widget._install_workflow_tab_session
+    install_calls: list[str] = []
+
+    def fail_target_install(session):
+        install_calls.append(session.session_id)
+        if session is target:
+            assert widget._workflow_tab_loading_visible
+            assert not widget.pipeline_busy_label.isHidden()
+            assert not widget.pipeline_busy_bar.isHidden()
+            raise RuntimeError("synthetic tab activation failure")
+        return original_install(session)
+
+    monkeypatch.setattr(
+        widget,
+        "_install_workflow_tab_session",
+        fail_target_install,
+    )
+
+    widget.workflow_tab_bar.setCurrentIndex(target_bar_index)
+
+    assert widget._workflow_tabs.current is current
+    assert widget.pipeline is current.pipeline
+    assert install_calls == [target.session_id, current.session_id]
+    assert not widget._workflow_tab_loading_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    assert widget.pipeline_cancel_button.isHidden()
+    assert widget.pipeline_busy_label.text() == "Processing"
+    assert widget.pipeline_busy_label.toolTip() == ""
+    assert widget.pipeline_busy_bar.toolTip() == ""
+    assert "Could not switch" in widget.status_label.text()
+    assert "synthetic tab activation failure" in widget.status_label.text()
+
+
+def test_tab_loader_is_not_retained_by_workers_that_do_not_own_busy_strip(
+    qtbot,
+    monkeypatch,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = widget._workflow_tabs.current
+    assert target is not None
+    widget._new_workflow()
+    target_bar_index = next(
+        index
+        for index in range(widget.workflow_tab_bar.count())
+        if widget.workflow_tab_bar.tabData(index) == target.session_id
+    )
+    original_install = widget._install_workflow_tab_session
+
+    def install_with_plot_workers(session):
+        result = original_install(session)
+        widget._active_input_histogram_run_id = 101
+        widget._active_output_histogram_run_id = 102
+        widget._active_colocalization_scatter_run_id = 103
+        widget._generated_layer_contrast_pending = {("synthetic",)}
+        return result
+
+    monkeypatch.setattr(
+        widget,
+        "_install_workflow_tab_session",
+        install_with_plot_workers,
+    )
+
+    widget.workflow_tab_bar.setCurrentIndex(target_bar_index)
+
+    assert not widget._workflow_tab_loading_visible
+    assert widget.pipeline_busy_label.isHidden()
+    assert widget.pipeline_busy_bar.isHidden()
+    widget._active_input_histogram_run_id = None
+    widget._active_output_histogram_run_id = None
+    widget._active_colocalization_scatter_run_id = None
+    widget._generated_layer_contrast_pending.clear()
 
 
 def test_workflow_tabs_restore_pipeline_cache_and_history_without_recompute(

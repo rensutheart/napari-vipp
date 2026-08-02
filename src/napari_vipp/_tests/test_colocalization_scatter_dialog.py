@@ -9,6 +9,7 @@ from napari_vipp.ui.colocalization_scatter_dialog import (
     ColocalizationScatterDialog,
     qimage_rgb_array,
 )
+from napari_vipp.ui.plots import COLOCALIZATION_SCATTER_COLORMAPS
 
 
 def _populate_dialog(dialog: ColocalizationScatterDialog) -> None:
@@ -24,6 +25,59 @@ def _populate_dialog(dialog: ColocalizationScatterDialog) -> None:
         channel_2_color="Green",
         colormap="Magma",
     )
+
+
+def test_scatter_dialog_colormap_control_is_shared_and_programmatic_sync_is_quiet(
+    qtbot,
+):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    emitted: list[str] = []
+    dialog.colormapChanged.connect(emitted.append)
+
+    assert [
+        dialog.colormap_combo.itemText(index)
+        for index in range(dialog.colormap_combo.count())
+    ] == list(COLOCALIZATION_SCATTER_COLORMAPS)
+    assert dialog.colormap_combo.currentText() == "Viridis"
+
+    _populate_dialog(dialog)
+
+    assert emitted == []
+    assert dialog.colormap_combo.currentText() == "Magma"
+    assert dialog.plot._colormap == "Magma"
+
+    with qtbot.waitSignal(dialog.colormapChanged) as changed:
+        dialog.colormap_combo.setCurrentText("Inferno")
+
+    assert changed.args == ["Inferno"]
+    assert emitted == ["Inferno"]
+
+    dialog.set_colormap("Plasma")
+
+    assert emitted == ["Inferno"]
+    assert dialog.colormap_combo.currentText() == "Plasma"
+    assert dialog.plot._colormap == "Plasma"
+
+
+def test_scatter_dialog_normalizes_unsupported_colormap(qtbot):
+    dialog = ColocalizationScatterDialog()
+    qtbot.addWidget(dialog)
+    _populate_dialog(dialog)
+
+    dialog.set_density(
+        np.ones((4, 4), dtype=np.float64),
+        threshold_1=1.0,
+        threshold_2=2.0,
+        intensity_min=0.0,
+        intensity_max=10.0,
+        roi_voxels=16,
+        colocalized_voxels=4,
+        colormap="not-a-colormap",
+    )
+
+    assert dialog.colormap_combo.currentText() == "Viridis"
+    assert dialog.plot._colormap == "Viridis"
 
 
 def test_scatter_dialog_updates_estimate_immediately_then_exact_count(qtbot):

@@ -1165,6 +1165,7 @@ class VippWidget(QWidget):
         self._initial_dock_size_applied = False
         self._history = WorkflowHistory(limit=self.HISTORY_LIMIT)
         self._workflow_tabs = WorkflowTabModel()
+        self._workflow_tab_loading_visible = False
         # Kept as aliases while downstream tests and integrations transition to
         # the explicit session-history component.
         self._undo_stack = self._history.undo_stack
@@ -2839,7 +2840,7 @@ class VippWidget(QWidget):
             self._update_colocalization_scatter
         )
         self.colocalization_scatter_colormap_combo.currentTextChanged.connect(
-            self._update_colocalization_scatter
+            self._on_colocalization_scatter_colormap_changed
         )
         self.colocalization_scatter_plot.thresholdChanged.connect(
             self._on_colocalization_scatter_threshold_changed
@@ -4510,10 +4511,77 @@ class VippWidget(QWidget):
         return ""
 
     def _reset_workflow_tab_bar_selection(self) -> None:
+        current = self._workflow_tabs.current
+        current_index = self._workflow_tabs.current_index
+        if (
+            current is None
+            or self.workflow_tab_bar.count() != len(self._workflow_tabs)
+            or not 0 <= current_index < self.workflow_tab_bar.count()
+            or self.workflow_tab_bar.tabData(current_index) != current.session_id
+        ):
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return
         with QSignalBlocker(self.workflow_tab_bar):
-            self.workflow_tab_bar.setCurrentIndex(
-                self._workflow_tabs.current_index
+            self.workflow_tab_bar.setCurrentIndex(current_index)
+
+    def _set_workflow_tab_loading(
+        self,
+        loading: bool,
+        title: str = "",
+    ) -> None:
+        """Show tab-presentation feedback without changing execution state."""
+        self._workflow_tab_loading_visible = bool(loading)
+        if loading:
+            normalized_title = str(title).strip() or "workflow"
+            text = f"Switching workflow: {normalized_title}"
+            tooltip = (
+                "Restoring the retained graph, inspector, thumbnails, and "
+                "cached results. This does not recalculate the workflow."
             )
+            self.pipeline_busy_label.setText(text)
+            self.pipeline_busy_label.setToolTip(tooltip)
+            self.pipeline_busy_bar.setRange(0, 0)
+            self.pipeline_busy_bar.setTextVisible(False)
+            self.pipeline_busy_bar.setToolTip(tooltip)
+            self.pipeline_busy_label.setVisible(True)
+            self.pipeline_busy_bar.setVisible(True)
+            self.pipeline_cancel_button.setVisible(False)
+            self.status_label.setText(f"Switching to workflow '{normalized_title}'…")
+            return
+
+        # Tab activation does not launch scientific computation. Presentation
+        # helpers may, however, have started their own worker while restoring
+        # the target inspector. In that case their busy presentation owns these
+        # widgets now and must not be hidden by the tab-loader cleanup.
+        presentation_busy = bool(
+            self._active_pipeline_run_id is not None
+            or self._pipeline_run_pending
+            or self._active_source_load_id is not None
+            or self._source_load_pending
+            or self._thumbnail_contrast_busy_visible
+            or self._auto_contrast_busy_visible
+        )
+        if presentation_busy:
+            return
+        self.pipeline_busy_label.setVisible(False)
+        self.pipeline_busy_bar.setVisible(False)
+        self.pipeline_cancel_button.setVisible(False)
+        self.pipeline_busy_label.setText("Processing")
+        self.pipeline_busy_label.setToolTip("")
+        self.pipeline_busy_bar.setRange(0, 0)
+        self.pipeline_busy_bar.setTextVisible(False)
+        self.pipeline_busy_bar.setToolTip("")
+
+    def _repaint_workflow_tab_loading(self) -> None:
+        """Paint tab-switch acknowledgement before the synchronous rebuild."""
+        self.workflow_toolbar_layout.activate()
+        for widget in (
+            self.workflow_tab_bar,
+            self.pipeline_busy_label,
+            self.pipeline_busy_bar,
+            self.status_label,
+        ):
+            widget.repaint()
 
     def _on_workflow_tab_activation_requested(self, bar_index: int) -> None:
         if bar_index < 0:
@@ -4527,8 +4595,64 @@ class VippWidget(QWidget):
             return
         if target_index == self._workflow_tabs.current_index:
             return
-        if not self._activate_workflow_tab(target_index):
+        reason = self._workflow_tab_switch_block_reason()
+        if reason:
+            self.status_label.setText(
+                f"Wait until {reason} before switching workflow tabs."
+            )
             self._reset_workflow_tab_bar_selection()
+            return
+
+        session = self._workflow_tabs[target_index]
+        source_session = self._workflow_tabs.current
+        self._set_workflow_tab_loading(True, session.title)
+        self._repaint_workflow_tab_loading()
+        try:
+            try:
+                activated = self._activate_workflow_tab(
+                    target_index,
+                    check_safety=False,
+                )
+            except Exception as exc:
+                rollback_error = self._restore_workflow_tab_after_failed_activation(
+                    source_session
+                )
+                message = (
+                    f"Could not switch to workflow '{session.title}': {exc}."
+                )
+                if rollback_error is not None:
+                    message += (
+                        " Could not restore the previous tab: "
+                        f"{rollback_error}"
+                    )
+                self._set_status(
+                    message,
+                    severity=MessageSeverity.ERROR,
+                    actionable=True,
+                )
+                activated = False
+        finally:
+            self._set_workflow_tab_loading(False)
+        if not activated:
+            self._reset_workflow_tab_bar_selection()
+
+    def _restore_workflow_tab_after_failed_activation(
+        self,
+        source_session: WorkflowTabSession | None,
+    ) -> Exception | None:
+        """Best-effort rollback after a target presentation fails to install."""
+        if source_session is None:
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return None
+        try:
+            source_index = self._workflow_tabs.index_of(source_session.session_id)
+            self._workflow_tabs.activate(source_index)
+            self._install_workflow_tab_session(source_session)
+            self._reset_workflow_tab_bar_selection()
+        except Exception as exc:  # pragma: no cover - catastrophic Qt recovery
+            self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+            return exc
+        return None
 
     def _activate_workflow_tab(
         self,
@@ -4571,7 +4695,10 @@ class VippWidget(QWidget):
 
         session = self._workflow_tabs.activate(target_index)
         batch_outcome_presented = self._install_workflow_tab_session(session)
-        self.workflow_tab_bar.sync_from_model(self._workflow_tabs)
+        # The tab set and order did not change, so selecting the model's active
+        # index is sufficient. Rebuilding every tab here made large tab sets
+        # flicker and discarded their current scroll presentation.
+        self._reset_workflow_tab_bar_selection()
         if not batch_outcome_presented:
             self.status_label.setText(f"Switched to workflow '{session.title}'.")
         return True
@@ -17554,6 +17681,30 @@ class VippWidget(QWidget):
             ),
         )
 
+    def _on_colocalization_scatter_colormap_changed(self, colormap: str) -> None:
+        """Keep inspector and active pop-out presentation colors synchronized."""
+        sender = self.sender()
+        if (
+            isinstance(sender, ColocalizationScatterDialog)
+            and sender is not self._colocalization_scatter_dialog
+        ):
+            return
+        requested = str(colormap or "").strip().casefold()
+        resolved = next(
+            (
+                option
+                for option in COLOCALIZATION_SCATTER_COLORMAPS
+                if option.casefold() == requested
+            ),
+            COLOCALIZATION_SCATTER_COLORMAPS[0],
+        )
+        if self.colocalization_scatter_colormap_combo.currentText() != resolved:
+            with QSignalBlocker(self.colocalization_scatter_colormap_combo):
+                self.colocalization_scatter_colormap_combo.setCurrentText(resolved)
+        self.colocalization_scatter_plot.set_colormap(resolved)
+        if self._colocalization_scatter_dialog is not None:
+            self._colocalization_scatter_dialog.set_colormap(resolved)
+
     def _update_colocalization_scatter(self) -> None:
         node = self.pipeline.nodes.get(self._selected_node_id)
         visible = (
@@ -18170,6 +18321,9 @@ class VippWidget(QWidget):
             dialog = ColocalizationScatterDialog(self)
             dialog.thresholdChanged.connect(
                 self._on_colocalization_scatter_threshold_changed
+            )
+            dialog.colormapChanged.connect(
+                self._on_colocalization_scatter_colormap_changed
             )
             dialog.exportCompleted.connect(
                 lambda path: self.status_label.setText(

@@ -6,9 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QColor, QImage, QPainter
 from qtpy.QtWidgets import (
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.ui.plots import (
+    COLOCALIZATION_SCATTER_COLORMAPS,
     ColocalizationScatterPlot,
     cap_colocalization_scatter_density_for_display,
 )
@@ -35,6 +37,7 @@ class ColocalizationScatterDialog(QDialog):
     """
 
     thresholdChanged = Signal(int, float)
+    colormapChanged = Signal(str)
     exportCompleted = Signal(str)
 
     def __init__(self, parent=None):
@@ -45,6 +48,13 @@ class ColocalizationScatterDialog(QDialog):
 
         self.plot = ColocalizationScatterPlot(self)
         self.plot.setMinimumSize(360, 360)
+        self.colormap_combo = QComboBox(self)
+        self.colormap_combo.setAccessibleName("Scatter colormap")
+        self.colormap_combo.addItems(COLOCALIZATION_SCATTER_COLORMAPS)
+        colormap_row = QHBoxLayout()
+        colormap_row.addWidget(QLabel("Colormap", self))
+        colormap_row.addWidget(self.colormap_combo)
+        colormap_row.addStretch(1)
         self.summary_label = QLabel("No scatter density is available.", self)
         self.summary_label.setWordWrap(True)
         self.summary_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -62,6 +72,7 @@ class ColocalizationScatterDialog(QDialog):
         button_row.addWidget(self.close_button)
 
         layout = QVBoxLayout(self)
+        layout.addLayout(colormap_row)
         layout.addWidget(self.plot, 1)
         layout.addWidget(self.summary_label)
         layout.addLayout(button_row)
@@ -81,6 +92,9 @@ class ColocalizationScatterDialog(QDialog):
         self._display_note = ""
 
         self.plot.thresholdChanged.connect(self._on_threshold_changed)
+        self.colormap_combo.currentTextChanged.connect(
+            self.colormapChanged.emit
+        )
         self.export_button.clicked.connect(self.request_export)
         self.close_button.clicked.connect(self.close)
 
@@ -134,6 +148,9 @@ class ColocalizationScatterDialog(QDialog):
             0.0 < self._range_percentile <= 100.0
         ):
             raise ValueError("Scatter range percentile must satisfy 0 < p <= 100.")
+        resolved_colormap = _resolved_colormap(colormap)
+        with QSignalBlocker(self.colormap_combo):
+            self.colormap_combo.setCurrentText(resolved_colormap)
         summary = self._summary_with_note(self._exact_summary())
         self.plot.set_density(
             self._density_counts,
@@ -145,7 +162,7 @@ class ColocalizationScatterDialog(QDialog):
             channel_2_range=(self._channel_2_min, self._channel_2_max),
             channel_1_color=channel_1_color,
             channel_2_color=channel_2_color,
-            colormap=colormap,
+            colormap=resolved_colormap,
             log_counts=log_counts,
             summary=summary,
         )
@@ -173,6 +190,13 @@ class ColocalizationScatterDialog(QDialog):
             summary=summary,
         )
         self.summary_label.setText(summary)
+
+    def set_colormap(self, colormap: str) -> None:
+        """Recolor the current density while keeping scientific state intact."""
+        resolved_colormap = _resolved_colormap(colormap)
+        with QSignalBlocker(self.colormap_combo):
+            self.colormap_combo.setCurrentText(resolved_colormap)
+        self.plot.set_colormap(resolved_colormap)
 
     def set_pending_thresholds(
         self,
@@ -314,6 +338,18 @@ def _validated_axis_range(
     if maximum <= minimum:
         raise ValueError(f"{label} scatter maximum must exceed its minimum.")
     return minimum, maximum
+
+
+def _resolved_colormap(value: object) -> str:
+    requested = str(value or "").strip().casefold()
+    return next(
+        (
+            option
+            for option in COLOCALIZATION_SCATTER_COLORMAPS
+            if option.casefold() == requested
+        ),
+        COLOCALIZATION_SCATTER_COLORMAPS[0],
+    )
 
 
 def render_widget_image(widget) -> QImage:
