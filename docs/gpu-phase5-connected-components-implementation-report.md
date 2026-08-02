@@ -154,10 +154,12 @@ bytes to zero.
 
 CPU and GPU progress use complete leading spatial blocks as truthful work
 units. Both report zero before the first block and check cancellation before
-starting each subsequent block. The GPU path synchronizes the current CUDA
-stream before it reports a block complete, so a displayed increment never
-claims unfinished device work. Cancellation, error, parity failure, benchmark
-exit, and success all use the shared transactional cleanup contract.
+starting every block and again after each atomic block finishes. The GPU path
+synchronizes the current CUDA stream before that post-block check and before it
+reports completion, so a displayed increment never claims unfinished device
+work and a cancellation requested during the final block cannot become a
+successful result. Cancellation, error, parity failure, benchmark exit, and
+success all use the shared transactional cleanup contract.
 
 `cupyx.scipy.ndimage.label` is monolithic for one spatial block. Consequently,
 a single 2D plane or single 3D volume has one atomic progress unit: its progress
@@ -194,10 +196,10 @@ can favor CuPyX; sparse masks with many isolated components can cross over at a
 different point. A size-only rule is therefore not justified.
 
 For the largest tested sparse volume (`64×512×512`), the case-cold CPU call was
-117.5 ms and the case-cold transfer-inclusive GPU call was 35.0 ms, a 3.35x
+87.76 ms and the case-cold transfer-inclusive GPU call was 22.36 ms, a 3.92x
 speedup after process-level CUDA warmup with an empty private allocator pool.
-Warm medians were 140.38 ms on CPU, 37.54 ms GPU transfer-inclusive (3.74x),
-and 1.47 ms for resident GPU compute. The large gap between resident and
+Warm medians were 107.68 ms on CPU, 28.50 ms GPU transfer-inclusive (3.78x),
+and 1.22 ms for resident GPU compute. The large gap between resident and
 transfer-inclusive timing is why complete-pipeline residency must remain part
 of selection. Among the tested plane extents, the first transfer-inclusive GPU
 crossover was 512² for dense/full and checkerboard/face masks, but 1024² for
