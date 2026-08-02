@@ -213,6 +213,19 @@ environment, and complete pipeline, including transfers and neighboring-node
 residency. CPU remains a correct and expected Auto result for small or
 insufficiently decisive calls.
 
+### Historical evidence provenance note
+
+The older RL and RL-TV evidence schemas fingerprint whole shared dispatch,
+policy, specification, registry, and operation files. Additive Sigma Filter and
+Connected Components registration therefore made their current-source checks
+fail even though an operation-scoped diff audit found no change to the RL/RL-TV
+CPU kernels, GPU providers, parity gates, admission region, or memory formula.
+Their source fingerprints were refreshed without changing any scientific or
+timing samples, and their validators were rerun. Before the next shared compute
+family expands these files, RL/RL-TV should adopt operation-owned CPU, parity,
+and compute-contract modules like Sigma Filter so unrelated registrations no
+longer create provenance churn while real RL changes still fail closed.
+
 ## Packaged compute-policy artifact
 
 `phase1-gpu-public-v5.json` is the current immutable packaged compute-policy
@@ -256,9 +269,11 @@ must continue to work without CuPy.
 
 ## Ordered next suggested steps
 
-1. **Measurements** — support ordered labels-plus-intensity inputs and an exact
-   typed host-table finalizer preserving schema, row/column order, units,
-   calibration, missing values, and public scalar/storage types.
+1. **Measurements, preceded by the operation-owned RL provenance boundary** —
+   isolate the inherited RL/RL-TV evidence owners described above, then support
+   ordered labels-plus-intensity inputs and an exact typed host-table finalizer
+   preserving schema, row/column order, units, calibration, missing values, and
+   public scalar/storage types.
 2. **Convert Dtype and inexpensive residency bridges** — accelerate only
    explicit authored operations that preserve CPU semantics; never synthesize
    a cast or bridge to improve a benchmark.
