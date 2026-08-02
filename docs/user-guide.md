@@ -491,6 +491,13 @@ rename it, drag tabs to reorder them, and use the close button or middle-click
 to close one. A dirty tab asks for Save, Discard, or Cancel; closing the last tab
 immediately creates a valid blank replacement.
 
+Selecting a tab acknowledges the new selection immediately and shows
+`Switching workflow` while VIPP restores that tab's retained graph, inspector,
+thumbnails, and cached results. This is presentation loading, not scientific
+recalculation. A short-lived pipeline, source, histogram, scatter, or contrast
+worker must still finish before VIPP can switch safely; the status strip names
+the work that is currently blocking the request.
+
 Collection batches run for the tab that launched them. Because the headless
 batch engine runs on one background worker, another tab can be selected and
 edited while the batch continues. Progress and completion stay associated with
@@ -1135,7 +1142,10 @@ histogram and output raster settings still accept values through 4096.
 The inspector's `Open in window` action uses the same interactive threshold
 guides in a larger resizable dialog. It shows an immediate histogram estimate
 while the authoritative exact count is recalculated, and exports the visible
-plot as PNG or TIFF at the window's current plot resolution.
+plot as PNG or TIFF at the window's current plot resolution. The inspector and
+pop-out expose the same `Colormap` selector: changing either one updates both
+plots immediately from the cached density and does not recalculate thresholds,
+counts, or colocalization metrics.
 
 Reference workflows:
 

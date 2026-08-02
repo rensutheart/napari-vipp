@@ -105,6 +105,10 @@
   results, ancillary caches, undo/redo histories, inspector state, paths, and
   dirty baselines. New and Load create sessions without replacing another open
   workflow; tabs support rename, reorder, and Save/Discard/Cancel close handling.
+- Tab clicks now acknowledge the selected workflow immediately with a dedicated
+  indeterminate loading state while VIPP restores its retained graph, inspector,
+  thumbnails, and cached results. Switching no longer rebuilds the entire tab
+  bar, and the loading text makes clear that no scientific recalculation occurs.
 - A collection batch now runs in a single background worker tagged to its
   originating workflow. Other tabs remain editable while it runs, progress and
   completion return only to the origin, and closing the origin, launching a
@@ -133,6 +137,9 @@
 
 ### Colocalization Inspector
 
+- Added a colormap selector to the resizable scatter pop-out. It is linked in
+  both directions with the inspector selector and redraws from cached density
+  without changing or recalculating scientific results.
 - Threshold scrubbing now keeps a compatible scatter density visible and moves
   its guides immediately while exact counts are recalculated. Stale counts are
   replaced with a calculating state, rapid requests are coalesced, and a density
