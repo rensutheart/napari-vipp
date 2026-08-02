@@ -713,6 +713,11 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
             events.append("median")
             return values.copy()
 
+        @staticmethod
+        def label(_values, **_kwargs):
+            events.append("label")
+            return np.asarray([[1, 0], [0, 2]], dtype=np.int32), 2
+
     class Signal:
         @staticmethod
         def convolve(values, _kernel, **_kwargs):
@@ -774,6 +779,7 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     ]
     assert "gaussian" in events
     assert "median" in events
+    assert "label" in events
     assert "convolve" in events
     assert "rolling-ball" in events
 
@@ -865,6 +871,10 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
         @staticmethod
         def median_filter(values, **_kwargs):
             return values.copy()
+
+        @staticmethod
+        def label(_values, **_kwargs):
+            return np.asarray([[1, 0], [0, 2]], dtype=np.int32), 2
 
     class Signal:
         @staticmethod
@@ -1266,6 +1276,10 @@ def test_library_probe_does_not_mask_operation_failure_with_cleanup_failure(
         @staticmethod
         def median_filter(values, **_kwargs):
             return values
+
+        @staticmethod
+        def label(_values, **_kwargs):
+            return np.asarray([[1, 0], [0, 2]], dtype=np.int32), 2
 
     class Signal:
         @staticmethod

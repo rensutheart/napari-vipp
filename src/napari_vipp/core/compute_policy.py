@@ -35,6 +35,7 @@ RICHARDSON_LUCY_TV_EPSILON = 1e-6
 RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR = 0.05
 OTSU_DEFAULT_HISTOGRAM_BINS = 256
 OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
+CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
     np.float32(math.sqrt(float(np.finfo(np.float32).max)))
 )
@@ -945,6 +946,26 @@ def estimate_candidate_memory(
         # host to retain NumPy's exact cumulative arithmetic and first-argmax
         # tie break.  Reserve counts plus both authored edges and centers.
         host_workspace = bounded_histogram_bytes + 2 * edge_bytes
+    elif spec.memory_model_id == "cupyx-connected-components-memory-v1":
+        spatial_ndim = workload.resolved_spatial_ndim
+        if spatial_ndim not in {2, 3}:
+            raise ValueError(
+                "Connected-components memory estimation requires a resolved "
+                "2D or 3D spatial rank."
+            )
+        shape = workload.input_shapes[0]
+        if len(shape) < spatial_ndim:
+            raise ValueError(
+                "Connected-components spatial rank exceeds the input rank."
+            )
+        block_elements = math.prod(shape[-spatial_ndim:])
+        # CuPyX processes leading blocks sequentially. Real-device high-label
+        # checkerboards retained about 11.1 bytes per spatial element including
+        # the one-byte mask and four-byte result. The generic input/output terms
+        # below already count those five bytes for the complete authored array;
+        # reserve seven additional bytes for the largest active block to cover
+        # union-find roots, sorting, and a non-contiguous block copy.
+        workspace = block_elements * 7
     elif spec.memory_model_id in {
         "cupyx-richardson-lucy-fft-memory-v2",
         "cupyx-richardson-lucy-tv-fft-memory-v1",
@@ -1459,6 +1480,68 @@ def _otsu_region_policy(
     return None
 
 
+def _connected_components_region_policy(
+    workload: WorkloadDescriptor,
+    _array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    if len(workload.input_shapes) != 1 or len(workload.input_dtypes) != 1:
+        return _workload_rejection(
+            "Connected components requires exactly one mask input.",
+            fallback_allowed=False,
+        )
+    if _dtype_name(workload.input_dtypes[0]) != "bool":
+        return _workload_rejection(
+            "The promoted connected-components GPU region requires a boolean "
+            "mask. Numeric nonzero coercion remains authoritative on CPU."
+        )
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim not in {2, 3}:
+        return _workload_rejection(
+            "Connected-components GPU execution requires a resolved 2D or 3D "
+            "spatial rank.",
+            fallback_allowed=False,
+        )
+    shape = workload.input_shapes[0]
+    if len(shape) < spatial_ndim:
+        return _workload_rejection(
+            "Connected-components spatial rank exceeds the input rank.",
+            fallback_allowed=False,
+        )
+
+    parameters = dict(workload.parameters)
+    mode = str(parameters.get("spatial_mode", "Auto from axes")).strip().casefold()
+    declared_rank = {
+        "auto from axes": spatial_ndim,
+        "2d yx": 2,
+        "2d per xy slice (advanced)": 2,
+        "3d zyx": 3,
+        "3d zyx volume": 3,
+    }.get(mode)
+    if declared_rank is None or declared_rank != spatial_ndim:
+        return _workload_rejection(
+            "Connected-components spatial parameters disagree with the resolved "
+            "rank.",
+            fallback_allowed=False,
+        )
+    connectivity = str(
+        parameters.get("connectivity", "Full connectivity")
+    ).strip().casefold()
+    if connectivity not in {"face connected", "full connectivity"}:
+        return _workload_rejection(
+            "Connectivity must be 'Face connected' or 'Full connectivity'.",
+            fallback_allowed=False,
+        )
+
+    block_elements = math.prod(shape[-spatial_ndim:])
+    if block_elements >= CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
+        return _workload_rejection(
+            "Each connected-components GPU spatial block must contain fewer than "
+            f"{CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:,} elements "
+            "so the exact CuPyX int32 label path remains valid."
+        )
+    return None
+
+
 def _deconvolution_region_policy(
     workload: WorkloadDescriptor,
     array_facts: tuple[ArrayFacts, ...],
@@ -1603,6 +1686,9 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "rl-tv-parameters-v1": _richardson_lucy_tv_region_policy,
         "canny-parameters-v1": _canny_region_policy,
         "otsu-parameters-v1": _otsu_region_policy,
+        "connected-components-parameters-v1": (
+            _connected_components_region_policy
+        ),
     }
 )
 
@@ -2197,6 +2283,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-tv-parameters-v1",
             "canny-parameters-v1",
             "otsu-parameters-v1",
+            "connected-components-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -2209,6 +2296,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-tv-finite-f32-v1",
             "canny-exact-bool-u8-u16-v2",
             "otsu-real-exact-v1",
+            "connected-components-bool-2d-3d-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
@@ -2219,6 +2307,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
             "mask-bitwise-v1",
+            "labels-bitwise-int32-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -2231,6 +2320,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-richardson-lucy-tv-fft-memory-v1",
             "cupyx-canny-exact-memory-v1",
             "cupy-otsu-histogram-memory-v1",
+            "cupyx-connected-components-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -2244,6 +2334,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "dtype-same-v1",
             "fixed:float32",
             "fixed:bool",
+            "fixed:int32",
             "cpu-dynamic-output-v1",
         },
         PolicyKind.CONVERSION: {
@@ -2255,6 +2346,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-rl-float32-identity-v1",
             "canny-plane-float32-or-luma-v1",
             "otsu-native-or-luma-v1",
+            "binary-mask-to-int32-labels-v1",
         },
         PolicyKind.NONFINITE: {
             "cpu-reference-v1",
@@ -2274,6 +2366,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
             "mask-bitwise-v1",
+            "labels-bitwise-int32-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
@@ -2284,6 +2377,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "finite-float32-workspace-v1",
             "binary-mask-v1",
             "otsu-native-span-v1",
+            "connected-components-int32-safe-v1",
         },
         PolicyKind.BOUNDARY: {
             "cpu-reference-v1",
@@ -2294,6 +2388,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-tv-zero-fill-same-central-gradient-edge1-v1",
             "skimage-canny-constant-zero-v1",
             "otsu-strict-greater-finite-mask-v1",
+            "scipy-binary-connectivity-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
@@ -2305,6 +2400,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "rl-tv-float32-v1",
             "canny-exact-mask-v1",
             "otsu-exact-mask-v1",
+            "connected-components-exact-label-order-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
@@ -2314,6 +2410,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "deconvolution-block-iteration-progress-v1",
             "scalar-plane-sync-progress-v1",
             "histogram-scope-sync-progress-v1",
+            "spatial-block-sync-progress-v1",
         },
         PolicyKind.CANCELLATION: {
             "cpu-reference-v1",
@@ -2322,6 +2419,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "sigma-row-tile-boundary-cancel-v1",
             "deconvolution-iteration-cancel-v1",
             "scalar-plane-boundary-cancel-v1",
+            "spatial-block-boundary-cancel-v1",
         },
         PolicyKind.SIDE_EFFECT: {
             "pure-or-source-v1",
@@ -2381,6 +2479,7 @@ __all__ = [
     "CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_ENVIRONMENT_POLICIES",
+    "CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS",
     "DEFAULT_POLICY_CATALOG",
     "FactCompleteness",
     "PerformanceDecision",

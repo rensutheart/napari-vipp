@@ -91,6 +91,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "sigma_filter",
         "canny_edges",
         "otsu_threshold",
+        "label_connected_components",
         "prepare_validate_psf",
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
@@ -2119,6 +2120,15 @@ def _propagate_shape_preserving_facts(
         finite_count = output_elements
         completeness = FactCompleteness.COMPLETE
         guarantees.update(("nonnegative", "no-negative-zero"))
+    elif operation_id == "label_connected_components":
+        # Successful CPU and GPU paths return an exact int32 label image.
+        # Label extrema and counts remain data-dependent, but finiteness,
+        # integrality, and sign are output theorems that require no host scan.
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        guarantees.update(
+            ("integer-labels", "nonnegative", "no-negative-zero")
+        )
 
     # Exact extrema are generally not propagated because each operation can
     # change them. Sigma Filter is the narrow exception above: its branch

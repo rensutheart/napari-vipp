@@ -59,9 +59,11 @@ EXACT_PARITY_OPERATION_IDS = frozenset(
         "canny_edges",
         "median_filter",
         "otsu_threshold",
+        "label_connected_components",
     }
 )
 EXACT_MASK_PARITY_OPERATION_IDS = frozenset({"canny_edges", "otsu_threshold"})
+EXACT_LABEL_PARITY_OPERATION_IDS = frozenset({"label_connected_components"})
 BACKGROUND_PARITY_OPERATION_IDS = frozenset(
     {"rolling_ball_background", "subtract_background"}
 )
@@ -568,9 +570,13 @@ def _validate_admitted_spec(
     )
     if call.operation_id in EXACT_PARITY_OPERATION_IDS:
         expected_parity = (
-            "mask-bitwise-v1"
-            if call.operation_id in EXACT_MASK_PARITY_OPERATION_IDS
-            else "median-production-bitwise-v1"
+            "labels-bitwise-int32-v1"
+            if call.operation_id in EXACT_LABEL_PARITY_OPERATION_IDS
+            else (
+                "mask-bitwise-v1"
+                if call.operation_id in EXACT_MASK_PARITY_OPERATION_IDS
+                else "median-production-bitwise-v1"
+            )
         )
     elif call.operation_id in BACKGROUND_PARITY_OPERATION_IDS:
         expected_parity = "background-dtype-parity-v2"
@@ -1685,6 +1691,7 @@ __all__ = [
     "BENCHMARK_WRITER_OPERATION_IDS",
     "CUSTOM_BENCHMARK_POLICY_ID",
     "EXACT_PARITY_OPERATION_IDS",
+    "EXACT_LABEL_PARITY_OPERATION_IDS",
     "GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR",
     "GAUSSIAN_FLOAT32_NRMSE_LIMIT",
     "GAUSSIAN_PARITY_OPERATION_IDS",

@@ -750,6 +750,84 @@ def _sigma_filter_spec() -> OperationComputeSpec:
     )
 
 
+def _connected_components_spec() -> OperationComputeSpec:
+    """Return the exact CuPyX connected-components contract."""
+
+    boundary_policy_id = "scipy-binary-connectivity-v1"
+    precision_policy_id = "connected-components-exact-label-order-v1"
+    input_port = ComputePortContract(
+        0,
+        ValueKind.MASK,
+        port_name="mask",
+        public_dtypes=("bool",),
+        internal_dtypes=("bool",),
+        accumulation_dtype="bool",
+        value_domain="binary-mask-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="identity-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id="mask-bitwise-v1",
+        overflow_policy_id="binary-mask-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    output_port = ComputePortContract(
+        0,
+        ValueKind.LABELS,
+        port_name="labels",
+        public_dtypes=("int32",),
+        internal_dtypes=("int32",),
+        accumulation_dtype="int32",
+        value_domain="nonnegative-labels-v1",
+        shape_policy_id="shape-preserving-v1",
+        output_dtype_policy_id="fixed:int32",
+        conversion_policy_id="binary-mask-to-int32-labels-v1",
+        nonfinite_policy_id="finite-output-v1",
+        rounding_policy_id="labels-bitwise-int32-v1",
+        overflow_policy_id="connected-components-int32-safe-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+    )
+    return OperationComputeSpec(
+        operation_id="label_connected_components",
+        implementation_id="cupyx-connected-components-v1",
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cupyx",
+        callable_ref=(
+            "napari_vipp.core.gpu.cupy_connected_components:"
+            "label_connected_components"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cpython312-windows-native-v3"
+        ),
+        input_ports=(input_port,),
+        output_ports=(output_port,),
+        parameter_policy_id="connected-components-parameters-v1",
+        workload_policy_id="connected-components-bool-2d-3d-v1",
+        parity_policy_id="labels-bitwise-int32-v1",
+        memory_model_id="cupyx-connected-components-memory-v1",
+        shape_policy_id="shape-preserving-v1",
+        boundary_policy_id=boundary_policy_id,
+        precision_policy_id=precision_policy_id,
+        progress_policy_id="spatial-block-sync-progress-v1",
+        cancellation_policy_id="spatial-block-boundary-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "bool-mask-public-v1",
+            "exact-scipy-label-ids-v1",
+            "int32-spatial-block-under-2pow31-minus-2-v1",
+            "leading-block-label-ids-restart-v1",
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -761,6 +839,7 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _canny_spec(),
     _otsu_spec(),
     _sigma_filter_spec(),
+    _connected_components_spec(),
 )
 
 

@@ -296,6 +296,7 @@ def test_compute_spec_registry_declares_only_lazy_accelerator_candidates():
         "richardson_lucy_deconvolution",
         "richardson_lucy_tv_deconvolution",
         "sigma_filter",
+        "label_connected_components",
     }
     assert all(
         spec.admission_tier is AdmissionTier.PUBLIC_AUTO_CANDIDATE

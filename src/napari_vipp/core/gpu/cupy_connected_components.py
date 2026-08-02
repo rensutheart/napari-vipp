@@ -71,6 +71,11 @@ def label_connected_components(
             "Connected-components GPU execution requires a resolved 2D or "
             "3D spatial rank."
         )
+    connectivity_name = str(connectivity).strip().casefold()
+    if connectivity_name not in {"face connected", "full connectivity"}:
+        raise ValueError(
+            "Connectivity must be 'Face connected' or 'Full connectivity'."
+        )
 
     spatial_shape = tuple(int(size) for size in mask.shape[-spatial_ndim:])
     block_elements = math.prod(spatial_shape)
@@ -85,7 +90,8 @@ def label_connected_components(
     output = cupy.empty(mask.shape, dtype=cupy.int32)
     leading_shape = tuple(int(size) for size in mask.shape[:-spatial_ndim])
     indexes = (None,) if not leading_shape else np.ndindex(leading_shape)
-    total = 1 if not leading_shape else math.prod(leading_shape)
+    block_count = 1 if not leading_shape else math.prod(leading_shape)
+    total = max(block_count, 1)
 
     if progress is not None:
         progress.report(0, total, _PROGRESS_MESSAGE)
@@ -102,6 +108,8 @@ def label_connected_components(
         if progress is not None:
             cupy.cuda.get_current_stream().synchronize()
             progress.report(completed, total, _PROGRESS_MESSAGE)
+    if block_count == 0 and progress is not None:
+        progress.report(1, 1, _PROGRESS_MESSAGE)
     return output
 
 

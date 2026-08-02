@@ -22,6 +22,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
+import numpy as np
+
 from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import MemoryTopology
 from napari_vipp.core.compute_policy import validate_spec_policy_references
@@ -1047,17 +1049,20 @@ def _probe_cupyx_library() -> ImplementationLibraryProbeResult:
     cupy = importlib.import_module("cupy")
     ndimage = importlib.import_module("cupyx.scipy.ndimage")
     signal = importlib.import_module("cupyx.scipy.signal")
-    if not callable(getattr(ndimage, "gaussian_filter", None)) or not callable(
-        getattr(ndimage, "median_filter", None)
-    ) or not callable(getattr(signal, "convolve", None)):
+    if (
+        not callable(getattr(ndimage, "gaussian_filter", None))
+        or not callable(getattr(ndimage, "median_filter", None))
+        or not callable(getattr(ndimage, "label", None))
+        or not callable(getattr(signal, "convolve", None))
+    ):
         return ImplementationLibraryProbeResult(
             "cupyx",
             False,
             version=str(getattr(cupy, "__version__", "")),
             reason_code="cupyx_ndimage_incomplete",
             message=(
-                "CuPyX does not expose the required Gaussian, median, and "
-                "signal-convolution functions."
+                "CuPyX does not expose the required Gaussian, median, "
+                "connected-components, and signal-convolution functions."
             ),
         )
     device_id = _cupy_current_device_id(cupy)
@@ -1072,6 +1077,7 @@ def _exercise_cupyx_library(
 ) -> ImplementationLibraryProbeResult:
     pool = cupy.cuda.MemoryPool()
     values = gaussian = median = convolved = None
+    label_source = labeled = expected_labels = None
     probe_error: BaseException | None = None
     try:
         with cupy.cuda.using_allocator(pool.malloc):
@@ -1088,15 +1094,40 @@ def _exercise_cupyx_library(
                 mode="same",
                 method="fft",
             )
+            label_source = cupy.asarray(
+                [[True, False], [False, True]],
+                dtype=np.bool_,
+            )
+            labeled, label_count = ndimage.label(label_source)
+            expected_labels = cupy.asarray(
+                [[1, 0], [0, 2]],
+                dtype=np.int32,
+            )
+            exact_labels = bool((labeled == expected_labels).all().item())
             float((gaussian + median + convolved).sum().item())
             cupy.cuda.get_current_stream().synchronize()
+            if (
+                label_count != 2
+                or labeled.dtype != np.dtype(np.int32)
+                or not exact_labels
+            ):
+                return ImplementationLibraryProbeResult(
+                    "cupyx",
+                    False,
+                    version=str(getattr(cupy, "__version__", "")),
+                    reason_code="cupyx_label_semantics_mismatch",
+                    message=(
+                        "CuPyX connected-components probing did not return the "
+                        "required exact int32 labels."
+                    ),
+                )
         return ImplementationLibraryProbeResult(
             "cupyx",
             True,
             version=str(getattr(cupy, "__version__", "")),
             message=(
-                "CuPyX completed synchronized Gaussian, median, and signal "
-                "convolution probes."
+                "CuPyX completed synchronized Gaussian, median, connected-"
+                "components, and signal-convolution probes."
             ),
         )
     except BaseException as exc:
@@ -1104,6 +1135,7 @@ def _exercise_cupyx_library(
         raise
     finally:
         values = gaussian = median = convolved = None
+        label_source = labeled = expected_labels = None
         _drain_private_probe_pool(
             cupy,
             pool,

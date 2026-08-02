@@ -27,6 +27,9 @@ from skimage import (
 )
 
 from napari_vipp.core.channel_colors import channel_color_table, color_value_to_rgb
+from napari_vipp.core.connected_components import (
+    label_connected_components as label_connected_components,
+)
 from napari_vipp.core.io import write_image
 from napari_vipp.core.sigma_filter import sigma_filter as sigma_filter
 from napari_vipp.core.sigma_filter import (
@@ -1608,29 +1611,6 @@ def remove_small_objects(
         filter_block,
         dtype=objects.dtype,
     )
-
-
-def label_connected_components(
-    data,
-    spatial_mode: str = "Auto from axes",
-    connectivity: str = "Full connectivity",
-    resolved_spatial_ndim: int | None = None,
-) -> np.ndarray:
-    """Assign an integer ID to each connected foreground structure."""
-    mask = _to_bool_mask(data)
-    spatial_ndim = _resolved_spatial_ndim(
-        mask,
-        spatial_mode,
-        resolved_spatial_ndim,
-    )
-    rank = 1 if str(connectivity).lower().startswith("face") else spatial_ndim
-    structure = ndi.generate_binary_structure(spatial_ndim, rank)
-
-    def label_block(block: np.ndarray) -> np.ndarray:
-        labels, _count = ndi.label(block, structure=structure)
-        return labels.astype(np.int32, copy=False)
-
-    return _apply_spatial_blocks(mask, spatial_ndim, label_block, dtype=np.int32)
 
 
 def euclidean_distance_transform(
