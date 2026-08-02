@@ -1,0 +1,2451 @@
+{
+  "admission": {
+    "case_count": 16,
+    "cases": [
+      {
+        "block_component_counts": [
+          107
+        ],
+        "case_id": "admit-2d-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:sparse",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "a8559bc61e0a8df98179f8d3728719f0ddd90a5f78500d8ca61d582d778b8d5c",
+        "exact": true,
+        "foreground_count": 114,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "a8559bc61e0a8df98179f8d3728719f0ddd90a5f78500d8ca61d582d778b8d5c",
+        "gpu_repeat_sha256": [
+          "a8559bc61e0a8df98179f8d3728719f0ddd90a5f78500d8ca61d582d778b8d5c",
+          "a8559bc61e0a8df98179f8d3728719f0ddd90a5f78500d8ca61d582d778b8d5c",
+          "a8559bc61e0a8df98179f8d3728719f0ddd90a5f78500d8ca61d582d778b8d5c"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "1d1f58e50a530349c7036fcac82b3b55508abd91dcb42b5d418f6db4a0d5c6ff",
+        "mismatch_count": 0,
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261002,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          126
+        ],
+        "case_id": "admit-2d-sparse-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:sparse",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "b9d10831ccc22e82422d3e106e4ca4d216e61f154b12eb83ce65c6ee8923c54a",
+        "exact": true,
+        "foreground_count": 144,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "b9d10831ccc22e82422d3e106e4ca4d216e61f154b12eb83ce65c6ee8923c54a",
+        "gpu_repeat_sha256": [
+          "b9d10831ccc22e82422d3e106e4ca4d216e61f154b12eb83ce65c6ee8923c54a",
+          "b9d10831ccc22e82422d3e106e4ca4d216e61f154b12eb83ce65c6ee8923c54a",
+          "b9d10831ccc22e82422d3e106e4ca4d216e61f154b12eb83ce65c6ee8923c54a"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "bbf03222e57a4b766abc77d5352f5180ffd43b3a49c73c6ba61e6b132d8da26a",
+        "mismatch_count": 0,
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261003,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          51
+        ],
+        "case_id": "admit-2d-dense-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:dense",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "9a1c3f8d7445a4e8fecbc975e71f52c9e1598f50760a726acdab5d5a7c5acdc5",
+        "exact": true,
+        "foreground_count": 2914,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "9a1c3f8d7445a4e8fecbc975e71f52c9e1598f50760a726acdab5d5a7c5acdc5",
+        "gpu_repeat_sha256": [
+          "9a1c3f8d7445a4e8fecbc975e71f52c9e1598f50760a726acdab5d5a7c5acdc5",
+          "9a1c3f8d7445a4e8fecbc975e71f52c9e1598f50760a726acdab5d5a7c5acdc5",
+          "9a1c3f8d7445a4e8fecbc975e71f52c9e1598f50760a726acdab5d5a7c5acdc5"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "d5667b1045aa3f4a534f105868531c832d78b7aa24b87720a33be10130995fee",
+        "mismatch_count": 0,
+        "pattern": "dense",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261004,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          3
+        ],
+        "case_id": "admit-2d-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:dense",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "22559d68671f28fe1fd3a8715a3b6499b851a8027d663ace4ab7f3c1ee2ee42d",
+        "exact": true,
+        "foreground_count": 2956,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "22559d68671f28fe1fd3a8715a3b6499b851a8027d663ace4ab7f3c1ee2ee42d",
+        "gpu_repeat_sha256": [
+          "22559d68671f28fe1fd3a8715a3b6499b851a8027d663ace4ab7f3c1ee2ee42d",
+          "22559d68671f28fe1fd3a8715a3b6499b851a8027d663ace4ab7f3c1ee2ee42d",
+          "22559d68671f28fe1fd3a8715a3b6499b851a8027d663ace4ab7f3c1ee2ee42d"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "9b993223ede98c02e0b59ec1973d272194c43565a685e2f17541dc750b4bdd7d",
+        "mismatch_count": 0,
+        "pattern": "dense",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261005,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          2178
+        ],
+        "case_id": "admit-2d-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:checkerboard",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "340c45a05e7266c69affa149293fc1b0af0eb21ae05cfdb3b1734c098a247619",
+        "exact": true,
+        "foreground_count": 2178,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "340c45a05e7266c69affa149293fc1b0af0eb21ae05cfdb3b1734c098a247619",
+        "gpu_repeat_sha256": [
+          "340c45a05e7266c69affa149293fc1b0af0eb21ae05cfdb3b1734c098a247619",
+          "340c45a05e7266c69affa149293fc1b0af0eb21ae05cfdb3b1734c098a247619",
+          "340c45a05e7266c69affa149293fc1b0af0eb21ae05cfdb3b1734c098a247619"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "771a32eab63cd04f0df78e86ff4aa9572c303cdb3275453fea5339fcce874191",
+        "mismatch_count": 0,
+        "pattern": "checkerboard",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261006,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          1
+        ],
+        "case_id": "admit-2d-checkerboard-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "pattern:checkerboard",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "6d8aa5a7e652cbdf6be92acbfb2dbfcb9f355187183f3b2ca514f52ddc7cac03",
+        "exact": true,
+        "foreground_count": 2178,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "6d8aa5a7e652cbdf6be92acbfb2dbfcb9f355187183f3b2ca514f52ddc7cac03",
+        "gpu_repeat_sha256": [
+          "6d8aa5a7e652cbdf6be92acbfb2dbfcb9f355187183f3b2ca514f52ddc7cac03",
+          "6d8aa5a7e652cbdf6be92acbfb2dbfcb9f355187183f3b2ca514f52ddc7cac03",
+          "6d8aa5a7e652cbdf6be92acbfb2dbfcb9f355187183f3b2ca514f52ddc7cac03"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "771a32eab63cd04f0df78e86ff4aa9572c303cdb3275453fea5339fcce874191",
+        "mismatch_count": 0,
+        "pattern": "checkerboard",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261007,
+        "shape": [
+          65,
+          67
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          495
+        ],
+        "case_id": "admit-3d-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:sparse",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "a6b7ef20cc69256b667c87e2d89b0794b9ff875eb227a02e0071808fdc2c4c51",
+        "exact": true,
+        "foreground_count": 545,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "a6b7ef20cc69256b667c87e2d89b0794b9ff875eb227a02e0071808fdc2c4c51",
+        "gpu_repeat_sha256": [
+          "a6b7ef20cc69256b667c87e2d89b0794b9ff875eb227a02e0071808fdc2c4c51",
+          "a6b7ef20cc69256b667c87e2d89b0794b9ff875eb227a02e0071808fdc2c4c51",
+          "a6b7ef20cc69256b667c87e2d89b0794b9ff875eb227a02e0071808fdc2c4c51"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "d0488217a1df904d17b54cf7fb1b0967f38d50179abdbe61c76043c5ced94f3c",
+        "mismatch_count": 0,
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261108,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          365
+        ],
+        "case_id": "admit-3d-sparse-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:sparse",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "365ef5b3d8b1c7a81ca7e8896f259b897bd5e9f026e0cdfdade0d6a51741caf9",
+        "exact": true,
+        "foreground_count": 531,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "365ef5b3d8b1c7a81ca7e8896f259b897bd5e9f026e0cdfdade0d6a51741caf9",
+        "gpu_repeat_sha256": [
+          "365ef5b3d8b1c7a81ca7e8896f259b897bd5e9f026e0cdfdade0d6a51741caf9",
+          "365ef5b3d8b1c7a81ca7e8896f259b897bd5e9f026e0cdfdade0d6a51741caf9",
+          "365ef5b3d8b1c7a81ca7e8896f259b897bd5e9f026e0cdfdade0d6a51741caf9"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "817b92071beef528e361a7f8b304e0d57fe30d1155c61703e29bbbe2a9bcc587",
+        "mismatch_count": 0,
+        "pattern": "sparse",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261109,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          25
+        ],
+        "case_id": "admit-3d-dense-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:dense",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "e570b7ae997eaf496d12cffd671009538729260b313c54d934dc18cd1eed7b96",
+        "exact": true,
+        "foreground_count": 11807,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "e570b7ae997eaf496d12cffd671009538729260b313c54d934dc18cd1eed7b96",
+        "gpu_repeat_sha256": [
+          "e570b7ae997eaf496d12cffd671009538729260b313c54d934dc18cd1eed7b96",
+          "e570b7ae997eaf496d12cffd671009538729260b313c54d934dc18cd1eed7b96",
+          "e570b7ae997eaf496d12cffd671009538729260b313c54d934dc18cd1eed7b96"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "daa1cd445ec050c02e0fa85b6ba352017ba03af8f36aa0352601565b58a6e444",
+        "mismatch_count": 0,
+        "pattern": "dense",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261110,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          1
+        ],
+        "case_id": "admit-3d-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:dense",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "d55884fd497e1a876a58c39fed0ef08dbc134a533f92e17916c65f0f32ff2438",
+        "exact": true,
+        "foreground_count": 11707,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "d55884fd497e1a876a58c39fed0ef08dbc134a533f92e17916c65f0f32ff2438",
+        "gpu_repeat_sha256": [
+          "d55884fd497e1a876a58c39fed0ef08dbc134a533f92e17916c65f0f32ff2438",
+          "d55884fd497e1a876a58c39fed0ef08dbc134a533f92e17916c65f0f32ff2438",
+          "d55884fd497e1a876a58c39fed0ef08dbc134a533f92e17916c65f0f32ff2438"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "aebb3ba0303ae3d8a9260a0458dd850c880d2887989bb90f1da50855abeb8b9a",
+        "mismatch_count": 0,
+        "pattern": "dense",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261111,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          8696
+        ],
+        "case_id": "admit-3d-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "connectivity:face",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:checkerboard",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "c26b3f892f6e210b64a4de577b98a9bf7a1bbf799998d045bc169d903b0fcdc5",
+        "exact": true,
+        "foreground_count": 8696,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "c26b3f892f6e210b64a4de577b98a9bf7a1bbf799998d045bc169d903b0fcdc5",
+        "gpu_repeat_sha256": [
+          "c26b3f892f6e210b64a4de577b98a9bf7a1bbf799998d045bc169d903b0fcdc5",
+          "c26b3f892f6e210b64a4de577b98a9bf7a1bbf799998d045bc169d903b0fcdc5",
+          "c26b3f892f6e210b64a4de577b98a9bf7a1bbf799998d045bc169d903b0fcdc5"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "2edc3d621a6f987786c2d28d9ce75ee176ea083e099a71789aabb8d0d23a7876",
+        "mismatch_count": 0,
+        "pattern": "checkerboard",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261112,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          1
+        ],
+        "case_id": "admit-3d-checkerboard-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "connectivity:full",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "pattern:checkerboard",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "8396310b61847ed95e44c23ddd20747357b225dc8f01d07e5c74d186ec5c6a1e",
+        "exact": true,
+        "foreground_count": 8696,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "8396310b61847ed95e44c23ddd20747357b225dc8f01d07e5c74d186ec5c6a1e",
+        "gpu_repeat_sha256": [
+          "8396310b61847ed95e44c23ddd20747357b225dc8f01d07e5c74d186ec5c6a1e",
+          "8396310b61847ed95e44c23ddd20747357b225dc8f01d07e5c74d186ec5c6a1e",
+          "8396310b61847ed95e44c23ddd20747357b225dc8f01d07e5c74d186ec5c6a1e"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "2edc3d621a6f987786c2d28d9ce75ee176ea083e099a71789aabb8d0d23a7876",
+        "mismatch_count": 0,
+        "pattern": "checkerboard",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20261113,
+        "shape": [
+          17,
+          31,
+          33
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          2,
+          2,
+          2
+        ],
+        "case_id": "admit-leading-2d-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "axes:leading-blocks-2d",
+          "connectivity:face",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "labels:restart-at-one",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+        "exact": true,
+        "foreground_count": 6,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+        "gpu_repeat_sha256": [
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "964af09c6579fb19ca7dfb5681b33d66de7e990babeaf0230da8ce5261e155c8",
+        "mismatch_count": 0,
+        "pattern": "leading-reset",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20260902,
+        "shape": [
+          3,
+          41,
+          43
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          2,
+          2,
+          2
+        ],
+        "case_id": "admit-leading-2d-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "axes:leading-blocks-2d",
+          "connectivity:full",
+          "dimension:2d",
+          "labels:exact-int32-ids",
+          "labels:restart-at-one",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+        "exact": true,
+        "foreground_count": 6,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+        "gpu_repeat_sha256": [
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851",
+          "121c415b07fbbea1ac60d816283ed5bf1335444bc191de826330924156895851"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "964af09c6579fb19ca7dfb5681b33d66de7e990babeaf0230da8ce5261e155c8",
+        "mismatch_count": 0,
+        "pattern": "leading-reset",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20260902,
+        "shape": [
+          3,
+          41,
+          43
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2
+      },
+      {
+        "block_component_counts": [
+          2,
+          2
+        ],
+        "case_id": "admit-leading-3d-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "coverage": [
+          "axes:leading-blocks-3d",
+          "connectivity:face",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "labels:restart-at-one",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+        "exact": true,
+        "foreground_count": 4,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+        "gpu_repeat_sha256": [
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "a27f9dbb006a059d8e6812ba97dc4da40d2a8b743eaa5a1831a3c33e4a6ac683",
+        "mismatch_count": 0,
+        "pattern": "leading-reset",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20260903,
+        "shape": [
+          2,
+          11,
+          23,
+          25
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      },
+      {
+        "block_component_counts": [
+          2,
+          2
+        ],
+        "case_id": "admit-leading-3d-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "coverage": [
+          "axes:leading-blocks-3d",
+          "connectivity:full",
+          "dimension:3d",
+          "labels:exact-int32-ids",
+          "labels:restart-at-one",
+          "repeat:deterministic"
+        ],
+        "cpu_dtype": "int32",
+        "cpu_output_sha256": "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+        "exact": true,
+        "foreground_count": 4,
+        "gpu_dtype": "int32",
+        "gpu_output_contiguous": true,
+        "gpu_output_resident": true,
+        "gpu_output_sha256": "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+        "gpu_repeat_sha256": [
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306",
+          "3f444eb690191e0125a6222fcc8ad7300c72537b2c65f0423edd225d50292306"
+        ],
+        "ids_restart_verified": true,
+        "input_immutable": true,
+        "input_sha256": "a27f9dbb006a059d8e6812ba97dc4da40d2a8b743eaa5a1831a3c33e4a6ac683",
+        "mismatch_count": 0,
+        "pattern": "leading-reset",
+        "repeat_count": 3,
+        "repeat_deterministic": true,
+        "seed": 20260903,
+        "shape": [
+          2,
+          11,
+          23,
+          25
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3
+      }
+    ],
+    "coverage": [
+      "axes:leading-blocks-2d",
+      "axes:leading-blocks-3d",
+      "connectivity:face",
+      "connectivity:full",
+      "dimension:2d",
+      "dimension:3d",
+      "labels:exact-int32-ids",
+      "labels:restart-at-one",
+      "pattern:checkerboard",
+      "pattern:dense",
+      "pattern:sparse",
+      "repeat:deterministic"
+    ],
+    "parity_profile": "bitwise-identical-int32-label-ids-v1",
+    "repeat_count": 3,
+    "status": "pass"
+  },
+  "created_utc": "2026-08-02T11:33:09.562601+00:00",
+  "durable_optimizer_record": false,
+  "environment": {
+    "compute_capability": "12.0",
+    "cuda_driver_version": 13030,
+    "cuda_runtime_version": 13020,
+    "device_count": 1,
+    "device_index": 0,
+    "device_name": "NVIDIA GeForce RTX 5090",
+    "device_total_memory_bytes": 34190458880,
+    "machine": "AMD64",
+    "python": "3.12.9",
+    "python_executable": "C:\\Users\\rensu\\Documents\\VIPP\\napari-vipp\\.venv-gpu-cu13\\Scripts\\python.exe",
+    "release": "10",
+    "system": "Windows",
+    "version": "10.0.19045"
+  },
+  "kind": "scientific-admission-and-machine-local-performance-evidence",
+  "lifecycle": {
+    "boundary": "synchronized-leading-spatial-block-v1",
+    "cancellation_observed": true,
+    "cancellation_requested": true,
+    "device_pool_reserved_bytes_after_cleanup": 0,
+    "device_pool_used_bytes_after_cleanup": 0,
+    "post_cancellation_reuse_exact": true,
+    "reported_progress": [
+      {
+        "current": 0,
+        "message": "Connected-component blocks",
+        "total": 3
+      },
+      {
+        "current": 1,
+        "message": "Connected-component blocks",
+        "total": 3
+      }
+    ],
+    "reserved_bytes_before_cleanup": 4033536,
+    "status": "pass",
+    "used_bytes_before_cleanup": 1835008
+  },
+  "method": {
+    "admission_repeats": 3,
+    "benchmark_rounds": 5,
+    "cancellation": "synchronized-leading-spatial-block-boundary-v1",
+    "cpu_timing_scope": "case-cold-and-warm-host-scipy-v1",
+    "generator": "numpy-pcg64-connected-components-mask-v1",
+    "gpu_case_cold_scope": "empty-private-pool-allocation-and-transfers-after-runtime-warmup-v1",
+    "gpu_resident_timing_scope": "synchronized-resident-compute-v1",
+    "gpu_transfer_inclusive_timing_scope": "host-to-device-plus-compute-plus-device-to-host-synchronized-v1",
+    "memory_model": "full-input-and-int32-output-plus-seven-bytes-per-active-spatial-block",
+    "memory_observation_scope": "isolated-cupy-memory-pool-reserved-high-water-v1",
+    "parity": "bitwise-identical-int32-label-ids-v1",
+    "profile": "full"
+  },
+  "operation_contract": {
+    "sha256": "8c967b7247e876408834bdba8f479d499853f95c57b08447669ab447f5db81f0",
+    "snapshot": {
+      "admission_tier": "public_auto_candidate",
+      "array_domain": "cuda-cupy",
+      "boundary_policy_id": "scipy-binary-connectivity-v1",
+      "cache_equivalence_group": "",
+      "callable_ref": "napari_vipp.core.gpu.cupy_connected_components:label_connected_components",
+      "cancellation_policy_id": "spatial-block-boundary-cancel-v1",
+      "dynamic_output_policy_id": "static-v1",
+      "host_boundary": false,
+      "implementation_id": "cupyx-connected-components-v1",
+      "implementation_library_id": "cupyx",
+      "implementation_version": "1",
+      "input_ports": [
+        {
+          "accumulation_dtype": "bool",
+          "boundary_policy_id": "scipy-binary-connectivity-v1",
+          "conversion_policy_id": "identity-v1",
+          "internal_dtypes": [
+            "bool"
+          ],
+          "nonfinite_policy_id": "finite-only-v1",
+          "output_dtype_policy_id": "dtype-same-v1",
+          "overflow_policy_id": "binary-mask-v1",
+          "port_index": 0,
+          "port_name": "mask",
+          "precision_policy_id": "connected-components-exact-label-order-v1",
+          "public_dtypes": [
+            "bool"
+          ],
+          "rounding_policy_id": "mask-bitwise-v1",
+          "schema_id": "array-v1",
+          "shape_policy_id": "shape-preserving-v1",
+          "value_domain": "binary-mask-v1",
+          "value_kind": "mask"
+        }
+      ],
+      "limitations": [
+        "bool-mask-public-v1",
+        "exact-scipy-label-ids-v1",
+        "int32-spatial-block-under-2pow31-minus-2-v1",
+        "leading-block-label-ids-restart-v1"
+      ],
+      "memory_model_id": "cupyx-connected-components-memory-v1",
+      "operation_id": "label_connected_components",
+      "output_ports": [
+        {
+          "accumulation_dtype": "int32",
+          "boundary_policy_id": "scipy-binary-connectivity-v1",
+          "conversion_policy_id": "binary-mask-to-int32-labels-v1",
+          "internal_dtypes": [
+            "int32"
+          ],
+          "nonfinite_policy_id": "finite-output-v1",
+          "output_dtype_policy_id": "fixed:int32",
+          "overflow_policy_id": "connected-components-int32-safe-v1",
+          "port_index": 0,
+          "port_name": "labels",
+          "precision_policy_id": "connected-components-exact-label-order-v1",
+          "public_dtypes": [
+            "int32"
+          ],
+          "rounding_policy_id": "labels-bitwise-int32-v1",
+          "schema_id": "array-v1",
+          "shape_policy_id": "shape-preserving-v1",
+          "value_domain": "nonnegative-labels-v1",
+          "value_kind": "labels"
+        }
+      ],
+      "parameter_policy_id": "connected-components-parameters-v1",
+      "parity_policy_id": "labels-bitwise-int32-v1",
+      "precision_policy_id": "connected-components-exact-label-order-v1",
+      "progress_policy_id": "spatial-block-sync-progress-v1",
+      "runtime_id": "cuda-cupy",
+      "shape_policy_id": "shape-preserving-v1",
+      "side_effect_policy_id": "pure-v1",
+      "supported_spatial_ndims": [
+        2,
+        3
+      ],
+      "supports_device_residency": true,
+      "validated_environment_policy_id": "cuda-cupy-14.1.1-cpython312-windows-native-v3",
+      "workload_policy_id": "connected-components-bool-2d-3d-v1"
+    }
+  },
+  "packages": {
+    "cupy": "14.1.1",
+    "cupy-cuda13x": "14.1.1",
+    "napari-vipp": "0.12.0a3",
+    "numpy": "2.5.1",
+    "scipy": "1.18.0"
+  },
+  "performance": {
+    "all_memory_estimates_cover_observed": true,
+    "case_count": 18,
+    "crossovers": [
+      {
+        "family": "plane-checkerboard-face",
+        "first_gpu_faster_resident_extent": 512,
+        "first_gpu_faster_transfer_inclusive_extent": 512,
+        "tested_extents": [
+          256,
+          512,
+          1024,
+          2048
+        ]
+      },
+      {
+        "family": "plane-dense-full",
+        "first_gpu_faster_resident_extent": 256,
+        "first_gpu_faster_transfer_inclusive_extent": 512,
+        "tested_extents": [
+          256,
+          512,
+          1024,
+          2048
+        ]
+      },
+      {
+        "family": "plane-sparse-face",
+        "first_gpu_faster_resident_extent": 512,
+        "first_gpu_faster_transfer_inclusive_extent": 1024,
+        "tested_extents": [
+          256,
+          512,
+          1024,
+          2048
+        ]
+      }
+    ],
+    "results": [
+      {
+        "case_id": "plane-256-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 65536,
+        "family": "plane-sparse-face",
+        "foreground_count": 1990,
+        "input_bytes": 65536,
+        "input_sha256": "045ed93dc727c1d7fc1613ca6bc3d9a2972aa0bea8262bc6dcc69221b718dc56",
+        "label": "256\u00b2 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 786432,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 352256,
+          "observed_to_estimated_ratio": 0.4479166666666667,
+          "observed_used_bytes_with_input": 65536,
+          "observed_used_bytes_with_output": 327680,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "1dc973d80667eb40c066e37a8e3c3a988b43f49bdae14ee881f2d7b9d8faba3a",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "1dc973d80667eb40c066e37a8e3c3a988b43f49bdae14ee881f2d7b9d8faba3a",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.00032780000037746504,
+          "cpu_seconds": [
+            0.0002773000014713034,
+            0.00025269999605370685,
+            0.00025019999884534627,
+            0.0002547999974922277,
+            0.00024899999698391184
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.001541700003144797,
+          "gpu_resident_seconds": [
+            0.0006400999991456047,
+            0.0005708999960916117,
+            0.0005659000016748905,
+            0.000549600001249928,
+            0.0005641000025207177
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0009677999987616204,
+            0.0008426999993389472,
+            0.000727400001778733,
+            0.000709700005245395,
+            0.000793100000009872
+          ]
+        },
+        "seed": 51156,
+        "shape": [
+          256,
+          256
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.00032780000037746504,
+          "cpu_median_seconds": 0.00025269999605370685,
+          "gpu_case_cold_speedup": 0.21262242959642647,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.001541700003144797,
+          "gpu_resident_median_seconds": 0.0005659000016748905,
+          "gpu_resident_speedup": 0.44654531773421513,
+          "gpu_transfer_inclusive_median_seconds": 0.000793100000009872,
+          "gpu_transfer_inclusive_speedup": 0.3186231194686186,
+          "screening_choice": "CPU",
+          "transfer_and_allocation_overhead_seconds": 0.0002271999983349815
+        }
+      },
+      {
+        "case_id": "plane-256-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 65536,
+        "family": "plane-dense-full",
+        "foreground_count": 44685,
+        "input_bytes": 65536,
+        "input_sha256": "ed80ab7675102525fb580690c9952c9781a3a094cdc26363d536b9b571053623",
+        "label": "256\u00b2 dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 786432,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 330752,
+          "observed_to_estimated_ratio": 0.4205729166666667,
+          "observed_used_bytes_with_input": 65536,
+          "observed_used_bytes_with_output": 327680,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "2b68fffb007886a7a52976e3088185a0cca59180e8e502a204a9f3541f1802a6",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "2b68fffb007886a7a52976e3088185a0cca59180e8e502a204a9f3541f1802a6",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.0007801000028848648,
+          "cpu_seconds": [
+            0.0006995000003371388,
+            0.0006592999998247251,
+            0.0006595000013476238,
+            0.0006553999992320314,
+            0.0006461000011768192
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0014256000067689456,
+          "gpu_resident_seconds": [
+            0.0006078000005800277,
+            0.0005952999999863096,
+            0.0005917000016779639,
+            0.000610999995842576,
+            0.0005906000005779788
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0007684000011067837,
+            0.0007492000004276633,
+            0.0008641999957035296,
+            0.001144399997428991,
+            0.0009724000046844594
+          ]
+        },
+        "seed": 51157,
+        "shape": [
+          256,
+          256
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0007801000028848648,
+          "cpu_median_seconds": 0.0006592999998247251,
+          "gpu_case_cold_speedup": 0.5472081924669209,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0014256000067689456,
+          "gpu_resident_median_seconds": 0.0005952999999863096,
+          "gpu_resident_speedup": 1.1075088188138542,
+          "gpu_transfer_inclusive_median_seconds": 0.0008641999957035296,
+          "gpu_transfer_inclusive_speedup": 0.7629021095840216,
+          "screening_choice": "CPU",
+          "transfer_and_allocation_overhead_seconds": 0.00026889999571722
+        }
+      },
+      {
+        "case_id": "plane-256-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 65536,
+        "family": "plane-checkerboard-face",
+        "foreground_count": 32768,
+        "input_bytes": 65536,
+        "input_sha256": "f2093bdbf49ced5927881e9aa3c394226915ca991c067205da612142140a1e3b",
+        "label": "256\u00b2 checkerboard face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 786432,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 736256,
+          "observed_to_estimated_ratio": 0.9361979166666666,
+          "observed_used_bytes_with_input": 65536,
+          "observed_used_bytes_with_output": 327680,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "5b61734532ec70bfd49a4f5177641347309a97ae90e2ef6a1893f0e3891c5432",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "5b61734532ec70bfd49a4f5177641347309a97ae90e2ef6a1893f0e3891c5432",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "checkerboard",
+        "samples": {
+          "cpu_case_cold_seconds": 0.00039180000021588057,
+          "cpu_seconds": [
+            0.00040940000326372683,
+            0.000381499994546175,
+            0.00031149999995250255,
+            0.0002960999991046265,
+            0.0002948000037577003
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0015429000050062314,
+          "gpu_resident_seconds": [
+            0.0006281000023591332,
+            0.000596199999563396,
+            0.0005875999995623715,
+            0.0005945000011706725,
+            0.0010598000008030795
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0016717999969841912,
+            0.0012678999992203899,
+            0.00109119999979157,
+            0.0008689999958733097,
+            0.0008961000057752244
+          ]
+        },
+        "seed": 51158,
+        "shape": [
+          256,
+          256
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.00039180000021588057,
+          "cpu_median_seconds": 0.00031149999995250255,
+          "gpu_case_cold_speedup": 0.25393738994400883,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0015429000050062314,
+          "gpu_resident_median_seconds": 0.000596199999563396,
+          "gpu_resident_speedup": 0.5224756796051955,
+          "gpu_transfer_inclusive_median_seconds": 0.00109119999979157,
+          "gpu_transfer_inclusive_speedup": 0.28546554253299317,
+          "screening_choice": "CPU",
+          "transfer_and_allocation_overhead_seconds": 0.000495000000228174
+        }
+      },
+      {
+        "case_id": "plane-512-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 262144,
+        "family": "plane-sparse-face",
+        "foreground_count": 7942,
+        "input_bytes": 262144,
+        "input_sha256": "4e2b8d2944a23481248761c9d19db57cbb88bd74522ac9acc25eb337411c61ac",
+        "label": "512\u00b2 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 3145728,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 1413632,
+          "observed_to_estimated_ratio": 0.4493815104166667,
+          "observed_used_bytes_with_input": 262144,
+          "observed_used_bytes_with_output": 1310720,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "bd55531c1c1195dd9be5ecfd0bde9da9a9567d912dce0fa569414a8fabbac4f5",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "bd55531c1c1195dd9be5ecfd0bde9da9a9567d912dce0fa569414a8fabbac4f5",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.001281199998629745,
+          "cpu_seconds": [
+            0.0011929999964195304,
+            0.0011577999975997955,
+            0.001159799998276867,
+            0.0011363000012352131,
+            0.0013834999990649521
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.02428459999646293,
+          "gpu_resident_seconds": [
+            0.0006176000024424866,
+            0.0005923999997321516,
+            0.000592800002777949,
+            0.0006194000015966594,
+            0.0005906000005779788
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0012780000033671968,
+            0.0011949999970966019,
+            0.0011945000005653128,
+            0.0011325000014039688,
+            0.0011145000025862828
+          ]
+        },
+        "seed": 51415,
+        "shape": [
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.001281199998629745,
+          "cpu_median_seconds": 0.001159799998276867,
+          "gpu_case_cold_speedup": 0.05275771471699566,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.02428459999646293,
+          "gpu_resident_median_seconds": 0.000592800002777949,
+          "gpu_resident_speedup": 1.956477720718407,
+          "gpu_transfer_inclusive_median_seconds": 0.0011945000005653128,
+          "gpu_transfer_inclusive_speedup": 0.9709501864612611,
+          "screening_choice": "CPU",
+          "transfer_and_allocation_overhead_seconds": 0.0006016999977873638
+        }
+      },
+      {
+        "case_id": "plane-512-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 262144,
+        "family": "plane-dense-full",
+        "foreground_count": 178649,
+        "input_bytes": 262144,
+        "input_sha256": "53e431d5ad05a6153eaaf163ec00fc4a6a7117cff4f0a612eaf9d549570adf16",
+        "label": "512\u00b2 dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 3145728,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 1313792,
+          "observed_to_estimated_ratio": 0.4176432291666667,
+          "observed_used_bytes_with_input": 262144,
+          "observed_used_bytes_with_output": 1310720,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "e6ed462ad8e1015cd2b4706366a0ed4b77c76ff0dc54337297f251016c292987",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "e6ed462ad8e1015cd2b4706366a0ed4b77c76ff0dc54337297f251016c292987",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.0026792999997269362,
+          "cpu_seconds": [
+            0.002784800002700649,
+            0.002713699999731034,
+            0.0031362000008812174,
+            0.0032700000010663643,
+            0.003239400000893511
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0038260000001173466,
+          "gpu_resident_seconds": [
+            0.0008031000033952296,
+            0.0007594999988214113,
+            0.0006589000040548854,
+            0.0008531999992555939,
+            0.0007898999974713661
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.001345900003798306,
+            0.001162699998531025,
+            0.0011898999946424738,
+            0.0011694999993778765,
+            0.0011371000000508502
+          ]
+        },
+        "seed": 51416,
+        "shape": [
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0026792999997269362,
+          "cpu_median_seconds": 0.0031362000008812174,
+          "gpu_case_cold_speedup": 0.7002875064413905,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0038260000001173466,
+          "gpu_resident_median_seconds": 0.0007898999974713661,
+          "gpu_resident_speedup": 3.9703760107872452,
+          "gpu_transfer_inclusive_median_seconds": 0.0011694999993778765,
+          "gpu_transfer_inclusive_speedup": 2.6816588307392393,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.00037960000190651044
+        }
+      },
+      {
+        "case_id": "plane-512-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 262144,
+        "family": "plane-checkerboard-face",
+        "foreground_count": 131072,
+        "input_bytes": 262144,
+        "input_sha256": "458b4e2037a71e5d30218786afb6e6324d66677996e68a1bd1c9cab2e1452348",
+        "label": "512\u00b2 checkerboard face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 3145728,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 2912256,
+          "observed_to_estimated_ratio": 0.92578125,
+          "observed_used_bytes_with_input": 262144,
+          "observed_used_bytes_with_output": 1310720,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "a98fe608747fc71eaacc8a6c2a9661e5c38aa174e373e93008ff0752bcefeb0d",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "a98fe608747fc71eaacc8a6c2a9661e5c38aa174e373e93008ff0752bcefeb0d",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "checkerboard",
+        "samples": {
+          "cpu_case_cold_seconds": 0.0020278000010875985,
+          "cpu_seconds": [
+            0.001976499996089842,
+            0.002857100000255741,
+            0.0028430999955162406,
+            0.0029998000027262606,
+            0.0030329000001074746
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.002454499997838866,
+          "gpu_resident_seconds": [
+            0.0010780999946291558,
+            0.001175199999124743,
+            0.001036599998769816,
+            0.0009257999990950339,
+            0.0007897999967099167
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.0012795000002370216,
+            0.0012685999972745776,
+            0.0012948000003234483,
+            0.0012018999987049028,
+            0.0013625999999931082
+          ]
+        },
+        "seed": 51417,
+        "shape": [
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0020278000010875985,
+          "cpu_median_seconds": 0.002857100000255741,
+          "gpu_case_cold_speedup": 0.8261560410971817,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.002454499997838866,
+          "gpu_resident_median_seconds": 0.001036599998769816,
+          "gpu_resident_speedup": 2.7562222686150895,
+          "gpu_transfer_inclusive_median_seconds": 0.0012795000002370216,
+          "gpu_transfer_inclusive_speedup": 2.232981633236793,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.00024290000146720558
+        }
+      },
+      {
+        "case_id": "plane-1024-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 1048576,
+        "family": "plane-sparse-face",
+        "foreground_count": 31520,
+        "input_bytes": 1048576,
+        "input_sha256": "b3e5b71a7d5c99205eeb705b1a2ccda17b2e29d3fc481ea3eadbefaa7fe8a80d",
+        "label": "1024\u00b2 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 12582912,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 5613056,
+          "observed_to_estimated_ratio": 0.4460856119791667,
+          "observed_used_bytes_with_input": 1048576,
+          "observed_used_bytes_with_output": 5242880,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "aeff1ecb20a8422522ddb38d940e4120f6b24bd2a1075a7b6b6a56043cbd8f28",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "aeff1ecb20a8422522ddb38d940e4120f6b24bd2a1075a7b6b6a56043cbd8f28",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.00714430000516586,
+          "cpu_seconds": [
+            0.006680899998173118,
+            0.005642799995257519,
+            0.005489899995154701,
+            0.005502799998794217,
+            0.007207299997389782
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.003513899995596148,
+          "gpu_resident_seconds": [
+            0.0008785000027273782,
+            0.001026900004944764,
+            0.0011824999965028837,
+            0.001013999994029291,
+            0.0009115999928326346
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.003455899997788947,
+            0.002784899996186141,
+            0.0030600000027334318,
+            0.004316200000175741,
+            0.005263799997919705
+          ]
+        },
+        "seed": 51930,
+        "shape": [
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.00714430000516586,
+          "cpu_median_seconds": 0.005642799995257519,
+          "gpu_case_cold_speedup": 2.033154049380907,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.003513899995596148,
+          "gpu_resident_median_seconds": 0.001013999994029291,
+          "gpu_resident_speedup": 5.564891546828272,
+          "gpu_transfer_inclusive_median_seconds": 0.003455899997788947,
+          "gpu_transfer_inclusive_speedup": 1.6328018747266213,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.002441900003759656
+        }
+      },
+      {
+        "case_id": "plane-1024-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 1048576,
+        "family": "plane-dense-full",
+        "foreground_count": 714125,
+        "input_bytes": 1048576,
+        "input_sha256": "526f4e2c802feb23d32095f7c56c66f2868675107bd8b38af22fc8e961c0d4b7",
+        "label": "1024\u00b2 dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 12582912,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 5246464,
+          "observed_to_estimated_ratio": 0.4169514973958333,
+          "observed_used_bytes_with_input": 1048576,
+          "observed_used_bytes_with_output": 5242880,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "047e6d717b53c1d1b60700639dcff04b0c84b57d05c57e7ec7be025f61adbb70",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "047e6d717b53c1d1b60700639dcff04b0c84b57d05c57e7ec7be025f61adbb70",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.01613569999608444,
+          "cpu_seconds": [
+            0.01803490000020247,
+            0.014678200001071673,
+            0.014513800000713672,
+            0.015108200001122896,
+            0.016120599997520912
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.00466969999979483,
+          "gpu_resident_seconds": [
+            0.0011735000007320195,
+            0.0010916000028373674,
+            0.0011655999987851828,
+            0.0010996000055456534,
+            0.0036335999975563027
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.02615759999753209,
+            0.0037277999945217744,
+            0.003602699995099101,
+            0.0037505000000237487,
+            0.0038872000004630536
+          ]
+        },
+        "seed": 51931,
+        "shape": [
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.01613569999608444,
+          "cpu_median_seconds": 0.015108200001122896,
+          "gpu_case_cold_speedup": 3.4554039867214996,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.00466969999979483,
+          "gpu_resident_median_seconds": 0.0011655999987851828,
+          "gpu_resident_speedup": 12.96173645922189,
+          "gpu_transfer_inclusive_median_seconds": 0.0037505000000237487,
+          "gpu_transfer_inclusive_speedup": 4.02831622477729,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.002584900001238566
+        }
+      },
+      {
+        "case_id": "plane-1024-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 1048576,
+        "family": "plane-checkerboard-face",
+        "foreground_count": 524288,
+        "input_bytes": 1048576,
+        "input_sha256": "ab2b8d1b64a716b1bdbf92bc3b2e656e559c16593d8b92b8ebeb04ab653109ea",
+        "label": "1024\u00b2 checkerboard face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 12582912,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 11618304,
+          "observed_to_estimated_ratio": 0.92333984375,
+          "observed_used_bytes_with_input": 1048576,
+          "observed_used_bytes_with_output": 5242880,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "b71cefd4d55c58ebb621a84f0b823154af5fd03104c3cdc1d75bd045afe0f236",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "b71cefd4d55c58ebb621a84f0b823154af5fd03104c3cdc1d75bd045afe0f236",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "checkerboard",
+        "samples": {
+          "cpu_case_cold_seconds": 0.009705699994810857,
+          "cpu_seconds": [
+            0.010351600001740735,
+            0.0115968999962206,
+            0.011496200000692625,
+            0.009994700005336199,
+            0.01278479999746196
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0257086000056006,
+          "gpu_resident_seconds": [
+            0.0007190000033006072,
+            0.0007511999938287772,
+            0.0006711000023642555,
+            0.0008200000011129305,
+            0.0008251999970525503
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.002577699997345917,
+            0.0022804999971413054,
+            0.002325999994354788,
+            0.0023751999979140237,
+            0.0028025999999954365
+          ]
+        },
+        "seed": 51932,
+        "shape": [
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.009705699994810857,
+          "cpu_median_seconds": 0.011496200000692625,
+          "gpu_case_cold_speedup": 0.3775273640998139,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0257086000056006,
+          "gpu_resident_median_seconds": 0.0007511999938287772,
+          "gpu_resident_speedup": 15.303780744323303,
+          "gpu_transfer_inclusive_median_seconds": 0.0023751999979140237,
+          "gpu_transfer_inclusive_speedup": 4.840097680527515,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0016240000040852465
+        }
+      },
+      {
+        "case_id": "plane-2048-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 4194304,
+        "family": "plane-sparse-face",
+        "foreground_count": 126227,
+        "input_bytes": 4194304,
+        "input_sha256": "23e63efde7c65c914418ad181b94f41b278cb98ceeafbba400b1ef3ae7651c0a",
+        "label": "2048\u00b2 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 50331648,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 22423040,
+          "observed_to_estimated_ratio": 0.4455057779947917,
+          "observed_used_bytes_with_input": 4194304,
+          "observed_used_bytes_with_output": 20971520,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "07f2c9227ca1e7fed36886c1865129c11890d3112349039442e8e188e0c6ffc6",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "07f2c9227ca1e7fed36886c1865129c11890d3112349039442e8e188e0c6ffc6",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.018212499999208376,
+          "cpu_seconds": [
+            0.03001570000196807,
+            0.02149160000408301,
+            0.021198700000240933,
+            0.022374199994374067,
+            0.019604000000981614
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.007663099997444078,
+          "gpu_resident_seconds": [
+            0.0007792000033077784,
+            0.0007121000016923063,
+            0.0007743999958620407,
+            0.0012075999984517694,
+            0.0012933000034536235
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.008563999996113125,
+            0.00838590000057593,
+            0.008762500001466833,
+            0.009414500003913417,
+            0.006999699995503761
+          ]
+        },
+        "seed": 52957,
+        "shape": [
+          2048,
+          2048
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.018212499999208376,
+          "cpu_median_seconds": 0.02149160000408301,
+          "gpu_case_cold_speedup": 2.37664913746172,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.007663099997444078,
+          "gpu_resident_median_seconds": 0.0007792000033077784,
+          "gpu_resident_speedup": 27.58162206474476,
+          "gpu_transfer_inclusive_median_seconds": 0.008563999996113125,
+          "gpu_transfer_inclusive_speedup": 2.509528259439191,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.007784799992805347
+        }
+      },
+      {
+        "case_id": "plane-2048-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 4194304,
+        "family": "plane-dense-full",
+        "foreground_count": 2852430,
+        "input_bytes": 4194304,
+        "input_sha256": "3bbf36ae1fac6c1878cb8da6b3c09c7058190276665892ffdf2aaa0c25b54022",
+        "label": "2048\u00b2 dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 50331648,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 20979200,
+          "observed_to_estimated_ratio": 0.4168192545572917,
+          "observed_used_bytes_with_input": 4194304,
+          "observed_used_bytes_with_output": 20971520,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "f67fe1e2ecfa7fce06e8598a81fd20d79ebb8705562c9796b3ab89b93cb1db66",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "f67fe1e2ecfa7fce06e8598a81fd20d79ebb8705562c9796b3ab89b93cb1db66",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.04981979999865871,
+          "cpu_seconds": [
+            0.04295780000393279,
+            0.05791820000013104,
+            0.04380769999988843,
+            0.048637200001394376,
+            0.04704510000010487
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0075488000002224,
+          "gpu_resident_seconds": [
+            0.001260699995327741,
+            0.0012198999975225888,
+            0.001328700003796257,
+            0.0014245999991544522,
+            0.0013672000059159473
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.02119660000607837,
+            0.00733580000087386,
+            0.0070583000051556155,
+            0.007815000004484318,
+            0.008103899999696296
+          ]
+        },
+        "seed": 52958,
+        "shape": [
+          2048,
+          2048
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.04981979999865871,
+          "cpu_median_seconds": 0.04704510000010487,
+          "gpu_case_cold_speedup": 6.599697964867388,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0075488000002224,
+          "gpu_resident_median_seconds": 0.001328700003796257,
+          "gpu_resident_speedup": 35.40686375080252,
+          "gpu_transfer_inclusive_median_seconds": 0.007815000004484318,
+          "gpu_transfer_inclusive_speedup": 6.019846445695452,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.006486300000688061
+        }
+      },
+      {
+        "case_id": "plane-2048-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 4194304,
+        "family": "plane-checkerboard-face",
+        "foreground_count": 2097152,
+        "input_bytes": 4194304,
+        "input_sha256": "6d48e5d1c5f2b70d2ae81eef632b5c7ee29a6f603f9433eb918bbfb6044d11ce",
+        "label": "2048\u00b2 checkerboard face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 50331648,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 46442496,
+          "observed_to_estimated_ratio": 0.9227294921875,
+          "observed_used_bytes_with_input": 4194304,
+          "observed_used_bytes_with_output": 20971520,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "7ad5bdadd6ca2dadba5c4e583bdd05a129d8b3ae534c63c894fb1a0ab4add172",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "7ad5bdadd6ca2dadba5c4e583bdd05a129d8b3ae534c63c894fb1a0ab4add172",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "checkerboard",
+        "samples": {
+          "cpu_case_cold_seconds": 0.06673769999906654,
+          "cpu_seconds": [
+            0.06369500000437256,
+            0.05997100000240607,
+            0.06077470000309404,
+            0.06989040000189561,
+            0.05708579999918584
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.014197199998307042,
+          "gpu_resident_seconds": [
+            0.0013400000025285408,
+            0.0013255000012577511,
+            0.0014101000051596202,
+            0.001590200001373887,
+            0.0015522000030614436
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.03331189999880735,
+            0.010428400004457217,
+            0.011608200002228841,
+            0.012749399997119326,
+            0.010145799999008887
+          ]
+        },
+        "seed": 52959,
+        "shape": [
+          2048,
+          2048
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.06673769999906654,
+          "cpu_median_seconds": 0.06077470000309404,
+          "gpu_case_cold_speedup": 4.7007649400603455,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.014197199998307042,
+          "gpu_resident_median_seconds": 0.0014101000051596202,
+          "gpu_resident_speedup": 43.09956725105783,
+          "gpu_transfer_inclusive_median_seconds": 0.011608200002228841,
+          "gpu_transfer_inclusive_speedup": 5.235497320120686,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.010198099997069221
+        }
+      },
+      {
+        "case_id": "volume-48x128x128-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 786432,
+        "family": "volume-sparse-face",
+        "foreground_count": 23673,
+        "input_bytes": 786432,
+        "input_sha256": "9bb0438e15f5f9e60ca52d5b54d3f62a24975732fe1c7199b748e5d35ba8ca50",
+        "label": "48\u00d7128\u00d7128 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 9437184,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 4205056,
+          "observed_to_estimated_ratio": 0.4455837673611111,
+          "observed_used_bytes_with_input": 786432,
+          "observed_used_bytes_with_output": 3932160,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "6955369031de6186032257fe7790d2df97db49d7f5d52310c2f24f456e98b471",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "6955369031de6186032257fe7790d2df97db49d7f5d52310c2f24f456e98b471",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.008089099996141158,
+          "cpu_seconds": [
+            0.00788240000110818,
+            0.008847099998092744,
+            0.007732199999736622,
+            0.0057630000010249205,
+            0.00719359999493463
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0033939000059035607,
+          "gpu_resident_seconds": [
+            0.0010084000023198314,
+            0.0009694999971543439,
+            0.0008824000033200718,
+            0.0009070000014617108,
+            0.0009207000039168634
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.003534600000421051,
+            0.002916899997217115,
+            0.002695399998629,
+            0.003056299996387679,
+            0.0026526000001467764
+          ]
+        },
+        "seed": 51901,
+        "shape": [
+          48,
+          128,
+          128
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.008089099996141158,
+          "cpu_median_seconds": 0.007732199999736622,
+          "gpu_case_cold_speedup": 2.3834231951649945,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0033939000059035607,
+          "gpu_resident_median_seconds": 0.0009207000039168634,
+          "gpu_resident_speedup": 8.398175265387332,
+          "gpu_transfer_inclusive_median_seconds": 0.002916899997217115,
+          "gpu_transfer_inclusive_speedup": 2.6508279362040423,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0019961999933002517
+        }
+      },
+      {
+        "case_id": "volume-64x192x192-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 2359296,
+        "family": "volume-dense-full",
+        "foreground_count": 1604155,
+        "input_bytes": 2359296,
+        "input_sha256": "7c8a973ff06bd6b8192be7c56b6a30c47e29bb1df9934dd1ec408e04d3de8975",
+        "label": "64\u00d7192\u00d7192 dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 28311552,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 11799040,
+          "observed_to_estimated_ratio": 0.41675708912037035,
+          "observed_used_bytes_with_input": 2359296,
+          "observed_used_bytes_with_output": 11796480,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "ce981b68c3e833eab0f185896b1ee3881e599744de768c0f72261cbbb357b3cf",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "ce981b68c3e833eab0f185896b1ee3881e599744de768c0f72261cbbb357b3cf",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.0942808999971021,
+          "cpu_seconds": [
+            0.08865910000167787,
+            0.09236389999568928,
+            0.09084089999669231,
+            0.1008471000022837,
+            0.09118889999808744
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.03562529999908293,
+          "gpu_resident_seconds": [
+            0.001953500002855435,
+            0.00116859999980079,
+            0.0013113000022713095,
+            0.0020260999954189174,
+            0.0017184000025736168
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.007211600001028273,
+            0.006718099997669924,
+            0.007202499997220002,
+            0.009172899997793138,
+            0.00832770000124583
+          ]
+        },
+        "seed": 51902,
+        "shape": [
+          64,
+          192,
+          192
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.0942808999971021,
+          "cpu_median_seconds": 0.09118889999808744,
+          "gpu_case_cold_speedup": 2.6464591175240377,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.03562529999908293,
+          "gpu_resident_median_seconds": 0.0017184000025736168,
+          "gpu_resident_speedup": 53.06616612052808,
+          "gpu_transfer_inclusive_median_seconds": 0.007211600001028273,
+          "gpu_transfer_inclusive_speedup": 12.644752896040432,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0054931999984546565
+        }
+      },
+      {
+        "case_id": "volume-32x256x256-checkerboard-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 2097152,
+        "family": "volume-checkerboard-face",
+        "foreground_count": 1048576,
+        "input_bytes": 2097152,
+        "input_sha256": "828a0dfc03da88a150420b50624cce4166f21ca3330c261aee608a08c5e8c7c6",
+        "label": "32\u00d7256\u00d7256 checkerboard face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 25165824,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 23226368,
+          "observed_to_estimated_ratio": 0.9229329427083334,
+          "observed_used_bytes_with_input": 2097152,
+          "observed_used_bytes_with_output": 10485760,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "177bac74985f081dc562781ce0e3fd3a753da894d803a1e3988962df53e5bd67",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "177bac74985f081dc562781ce0e3fd3a753da894d803a1e3988962df53e5bd67",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "checkerboard",
+        "samples": {
+          "cpu_case_cold_seconds": 0.027455700001155492,
+          "cpu_seconds": [
+            0.024500600004103035,
+            0.027877600005012937,
+            0.02541229999769712,
+            0.022362299998349044,
+            0.023003399997833185
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.005155200000444893,
+          "gpu_resident_seconds": [
+            0.0007618000017828308,
+            0.0007382999974652193,
+            0.0007247999965329655,
+            0.0007245000015245751,
+            0.0007227999958558939
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.005007500003557652,
+            0.003994900005636737,
+            0.004006199997093063,
+            0.00436220000119647,
+            0.0044316999992588535
+          ]
+        },
+        "seed": 51903,
+        "shape": [
+          32,
+          256,
+          256
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.027455700001155492,
+          "cpu_median_seconds": 0.024500600004103035,
+          "gpu_case_cold_speedup": 5.325826349857633,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.005155200000444893,
+          "gpu_resident_median_seconds": 0.0007247999965329655,
+          "gpu_resident_speedup": 33.80325623799681,
+          "gpu_transfer_inclusive_median_seconds": 0.00436220000119647,
+          "gpu_transfer_inclusive_speedup": 5.616569620233593,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0036374000046635047
+        }
+      },
+      {
+        "case_id": "volume-64x512x512-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 16777216,
+        "family": "volume-confocal-sparse-face",
+        "foreground_count": 502478,
+        "input_bytes": 16777216,
+        "input_sha256": "30f364ccadfb80d9e788e015734af384114dc181e6e0ce8379e81a3a6fba5858",
+        "label": "64\u00d7512\u00d7512 sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 201326592,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 89456640,
+          "observed_to_estimated_ratio": 0.4443359375,
+          "observed_used_bytes_with_input": 16777216,
+          "observed_used_bytes_with_output": 83886080,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "2fc9e55977f91c18c308b2b8ed28571b741115c988b1d768c09cd20d8152ed80",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "2fc9e55977f91c18c308b2b8ed28571b741115c988b1d768c09cd20d8152ed80",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.11750000000029104,
+          "cpu_seconds": [
+            0.13225629999942612,
+            0.14037769999413285,
+            0.13499510000110604,
+            0.17871359999844572,
+            0.16907799999898998
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0350313000017195,
+          "gpu_resident_seconds": [
+            0.0015339000019594096,
+            0.0013809000010951422,
+            0.0014673000041511841,
+            0.003478000005998183,
+            0.001472500000090804
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.04032480000023497,
+            0.03801229999953648,
+            0.03754340000159573,
+            0.03454259999853093,
+            0.03626839999924414
+          ]
+        },
+        "seed": 51906,
+        "shape": [
+          64,
+          512,
+          512
+        ],
+        "spatial_mode": "3D ZYX",
+        "spatial_ndim": 3,
+        "summary": {
+          "cpu_case_cold_seconds": 0.11750000000029104,
+          "cpu_median_seconds": 0.14037769999413285,
+          "gpu_case_cold_speedup": 3.354143294554401,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.0350313000017195,
+          "gpu_resident_median_seconds": 0.001472500000090804,
+          "gpu_resident_speedup": 95.33290321594312,
+          "gpu_transfer_inclusive_median_seconds": 0.03754340000159573,
+          "gpu_transfer_inclusive_speedup": 3.7390779734431696,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.036070900001504924
+        }
+      },
+      {
+        "case_id": "stack-8x512x512-sparse-face",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Face connected",
+        "element_count": 2097152,
+        "family": "stack-sparse-face",
+        "foreground_count": 63020,
+        "input_bytes": 2097152,
+        "input_sha256": "c671a77bb5a71b341d2a9f4e309327b332bfbe441035ff966c3daa75d44e8ebd",
+        "label": "8\u00d7512\u00b2 2D sparse face",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 12320768,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 10658304,
+          "observed_to_estimated_ratio": 0.8650681515957447,
+          "observed_used_bytes_with_input": 2097152,
+          "observed_used_bytes_with_output": 10485760,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "a2ebcd3fda0344d22c34b7547bf51f34ed1893dfd2fe3574b6fed2b024f1c6c2",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "a2ebcd3fda0344d22c34b7547bf51f34ed1893dfd2fe3574b6fed2b024f1c6c2",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "sparse",
+        "samples": {
+          "cpu_case_cold_seconds": 0.009380400006193668,
+          "cpu_seconds": [
+            0.009447399999771733,
+            0.008834800006297883,
+            0.009348299994599074,
+            0.008820299997751135,
+            0.012133299998822622
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.02302590000181226,
+          "gpu_resident_seconds": [
+            0.006805500001064502,
+            0.010100599996803794,
+            0.006748600004357286,
+            0.0062060999989626,
+            0.00523819999943953
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.008007000003999565,
+            0.009188600000925362,
+            0.008556200002203695,
+            0.007835199998226017,
+            0.008478000003378838
+          ]
+        },
+        "seed": 51904,
+        "shape": [
+          8,
+          512,
+          512
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.009380400006193668,
+          "cpu_median_seconds": 0.009348299994599074,
+          "gpu_case_cold_speedup": 0.40738472786971974,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.02302590000181226,
+          "gpu_resident_median_seconds": 0.006748600004357286,
+          "gpu_resident_speedup": 1.3852206366599402,
+          "gpu_transfer_inclusive_median_seconds": 0.008478000003378838,
+          "gpu_transfer_inclusive_speedup": 1.1026539267366577,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0017293999990215525
+        }
+      },
+      {
+        "case_id": "stack-4x1024x1024-dense-full",
+        "cleanup": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0
+        },
+        "connectivity": "Full connectivity",
+        "element_count": 4194304,
+        "family": "stack-dense-full",
+        "foreground_count": 2848596,
+        "input_bytes": 4194304,
+        "input_sha256": "ddf7b998b16f7bd23d33d30f3082431d11dd132b46752f90dadb4e61a9660cab",
+        "label": "4\u00d71024\u00b2 2D dense full",
+        "memory": {
+          "device_pool_reserved_bytes_after_cleanup": 0,
+          "device_pool_used_bytes_after_cleanup": 0,
+          "estimate_covers_observed": true,
+          "estimated_peak_bytes": 28311552,
+          "model_id": "cupyx-connected-components-memory-v1",
+          "observed_reserved_bytes": 20975104,
+          "observed_to_estimated_ratio": 0.7408673321759259,
+          "observed_used_bytes_with_input": 4194304,
+          "observed_used_bytes_with_output": 20971520,
+          "scope": "isolated-cupy-memory-pool-reserved-high-water-v1"
+        },
+        "parity": {
+          "cpu_dtype": "int32",
+          "cpu_output_sha256": "26536aa6d3f1a2a833f9e6023d3a33b24e27eb3492eaf9b951d75470469cdab1",
+          "gpu_dtype": "int32",
+          "gpu_output_resident": true,
+          "gpu_output_sha256": "26536aa6d3f1a2a833f9e6023d3a33b24e27eb3492eaf9b951d75470469cdab1",
+          "mismatch_count": 0,
+          "passed": true,
+          "profile": "bitwise-identical-int32-label-ids-v1"
+        },
+        "pattern": "dense",
+        "samples": {
+          "cpu_case_cold_seconds": 0.05975829999806592,
+          "cpu_seconds": [
+            0.05617580000398448,
+            0.06712310000148136,
+            0.06418389999453211,
+            0.06759690000035334,
+            0.059190700005274266
+          ],
+          "gpu_case_cold_transfer_inclusive_seconds": 0.08640149999700952,
+          "gpu_resident_seconds": [
+            0.012724200001684949,
+            0.004903599998215213,
+            0.004952800001774449,
+            0.010348800002248026,
+            0.00660500000230968
+          ],
+          "gpu_transfer_inclusive_seconds": [
+            0.014128299997537397,
+            0.02898000000277534,
+            0.013549999996030238,
+            0.012438300000212621,
+            0.012952600001881365
+          ]
+        },
+        "seed": 51905,
+        "shape": [
+          4,
+          1024,
+          1024
+        ],
+        "spatial_mode": "2D YX",
+        "spatial_ndim": 2,
+        "summary": {
+          "cpu_case_cold_seconds": 0.05975829999806592,
+          "cpu_median_seconds": 0.06418389999453211,
+          "gpu_case_cold_speedup": 0.691634983190503,
+          "gpu_case_cold_transfer_inclusive_seconds": 0.08640149999700952,
+          "gpu_resident_median_seconds": 0.00660500000230968,
+          "gpu_resident_speedup": 9.717471608188927,
+          "gpu_transfer_inclusive_median_seconds": 0.013549999996030238,
+          "gpu_transfer_inclusive_speedup": 4.7368191891761,
+          "screening_choice": "GPU-CuPyX",
+          "transfer_and_allocation_overhead_seconds": 0.0069449999937205575
+        }
+      }
+    ],
+    "rounds": 5,
+    "status": "pass"
+  },
+  "portable_performance_claim": false,
+  "profile": "full",
+  "schema": "napari-vipp-cupyx-connected-components-evidence",
+  "schema_version": 1,
+  "source_provenance": [
+    {
+      "path": "src/napari_vipp/core/connected_components.py",
+      "sha256": "6c65cb519beb37d3c95bcfd714a592ed27f7ae9f19619feb36345516a8817684"
+    },
+    {
+      "path": "src/napari_vipp/core/gpu/cupy_connected_components.py",
+      "sha256": "f81c936d5350830ca8b8055758bedb55874ef44874174ca0792e0f4b06fbd03d"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_specs.py",
+      "sha256": "03e78b9598c116f24f1de261c1a766572183a8d794ec0e84c460d84afc81c5a5"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_policy.py",
+      "sha256": "99ddf98e5d419bb0c44a1bdfd5f45dbef2a211e5712e000b49f45cbed8550c23"
+    },
+    {
+      "path": "src/napari_vipp/core/compute_benchmark_adapter.py",
+      "sha256": "f43d8f9bdf44dc6b1785755eeba077970eb3a08faf19aac27114712e64c0b0a1"
+    },
+    {
+      "path": "scripts/benchmark_gpu_connected_components.py",
+      "sha256": "b1ddb5ad67da76260ac5591f789fdd5ab875413ed3db94c18f3f3181ae40f258"
+    }
+  ]
+}
