@@ -4231,6 +4231,9 @@ def colocalization_metrics(
         threshold_1=threshold_1,
         threshold_2=threshold_2,
     )
+    costes_pearson_any_below = (
+        float("nan") if costes is None else costes["pearson_below"]
+    )
 
     columns = {
         "threshold_mode": [str(threshold_mode)],
@@ -4242,9 +4245,11 @@ def colocalization_metrics(
         **{name: [value] for name, value in metrics.items()},
         "costes_slope": [float("nan") if costes is None else costes["slope"]],
         "costes_intercept": [float("nan") if costes is None else costes["intercept"]],
-        "costes_pearson_below": [
-            float("nan") if costes is None else costes["pearson_below"]
+        "costes_pearson_any_channel_below_threshold": [
+            costes_pearson_any_below
         ],
+        # Compatibility alias retained for existing table consumers.
+        "costes_pearson_below": [costes_pearson_any_below],
         "costes_iterations": [0 if costes is None else int(costes["iterations"])],
         "normalization_warnings": ["; ".join(warnings)],
     }
@@ -12309,6 +12314,8 @@ def _coloc_metric_values(
     manders_tm2 = _safe_signed_fraction(tm2_numerator, sum_2_total)
 
     pearson_no_threshold = _pearson(ch1[analysis_mask], ch2[analysis_mask])
+    pearson_any_below = _pearson(ch1[below_threshold], ch2[below_threshold])
+    pearson_any_above = _pearson(ch1[above_threshold], ch2[above_threshold])
     pearson_both_above = _pearson(ch1[both_above], ch2[both_above])
     overlap_all = _overlap_coefficient(ch1[analysis_mask], ch2[analysis_mask])
     overlap_both_above = _overlap_coefficient(
@@ -12324,16 +12331,14 @@ def _coloc_metric_values(
         "colocalized_fraction": _safe_fraction(both_above_voxels, roi_voxels),
         pearson_all_name: pearson_no_threshold,
         "pearson_no_threshold": pearson_no_threshold,
-        "pearson_below_threshold": _pearson(
-            ch1[below_threshold],
-            ch2[below_threshold],
-        ),
-        "pearson_above_threshold": _pearson(
-            ch1[above_threshold],
-            ch2[above_threshold],
-        ),
+        # Canonical names state the exact Boolean threshold population.
+        "pearson_any_channel_below_threshold": pearson_any_below,
+        "pearson_any_channel_above_threshold": pearson_any_above,
+        "pearson_both_channels_at_or_above_threshold": pearson_both_above,
+        # Compatibility aliases retained for existing table consumers.
+        "pearson_below_threshold": pearson_any_below,
+        "pearson_above_threshold": pearson_any_above,
         "pearson_both_above_threshold": pearson_both_above,
-        # Retained output alias; the explicit name above states its AND domain.
         "pearson_colocalized": pearson_both_above,
         # Existing workflows consume manders_m1/m2.  They now carry the Fiji
         # thresholded Manders values; explicit tM columns remove ambiguity.
@@ -12381,6 +12386,9 @@ def _object_colocalization_columns(
             "colocalized_fraction": [],
             "pearson_object": [],
             "pearson_no_threshold": [],
+            "pearson_any_channel_below_threshold": [],
+            "pearson_any_channel_above_threshold": [],
+            "pearson_both_channels_at_or_above_threshold": [],
             "pearson_below_threshold": [],
             "pearson_above_threshold": [],
             "pearson_both_above_threshold": [],
@@ -12401,6 +12409,7 @@ def _object_colocalization_columns(
             "colocalized_channel_2_sum": [],
             "costes_slope": [],
             "costes_intercept": [],
+            "costes_pearson_any_channel_below_threshold": [],
             "costes_pearson_below": [],
             "costes_iterations": [],
             "normalization_warnings": [],
@@ -12451,9 +12460,13 @@ def _append_object_colocalization_rows(
         columns["costes_intercept"].append(
             float("nan") if costes is None else float(costes["intercept"])
         )
-        columns["costes_pearson_below"].append(
+        costes_pearson_any_below = (
             float("nan") if costes is None else float(costes["pearson_below"])
         )
+        columns["costes_pearson_any_channel_below_threshold"].append(
+            costes_pearson_any_below
+        )
+        columns["costes_pearson_below"].append(costes_pearson_any_below)
         columns["costes_iterations"].append(
             0 if costes is None else int(costes["iterations"])
         )

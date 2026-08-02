@@ -84,18 +84,34 @@ voxels in the analysis population `R`. For object-restricted metrics,
 `pearson_no_threshold` is an explicit alias for the same quantity.
 
 Fiji Coloc 2's thresholded Pearson populations use OR, not the intersection of
-the two threshold-positive sets:
+the two threshold-positive sets. VIPP's canonical exported field names state
+that Boolean domain explicitly:
 
-```text
-B = {i in R | I1(i) < T1 or I2(i) < T2}
-A = {i in R | I1(i) > T1 or I2(i) > T2}
-```
+| Canonical field | Voxel population inside `R` |
+| --- | --- |
+| `pearson_no_threshold` | Every analysis voxel; thresholds are ignored. |
+| `pearson_any_channel_below_threshold` | `I1 < T1 OR I2 < T2` (one or both channels are below). |
+| `pearson_any_channel_above_threshold` | `I1 > T1 OR I2 > T2` (one or both channels are above). |
+| `pearson_both_channels_at_or_above_threshold` | `I1 >= T1 AND I2 >= T2` (the threshold-positive intersection). |
 
-VIPP reports these as `pearson_below_threshold` and
-`pearson_above_threshold`. The strict comparisons match Fiji Coloc 2 3.1.0.
-The older VIPP intersection calculation remains available under the explicit
-name `pearson_both_above_threshold`; `pearson_colocalized` is retained as a
-compatibility alias for that intersection quantity.
+`any` means *at least one*, not *exactly one*. Consequently, a mixed voxel
+with one channel strictly above and the other below belongs to both Fiji OR
+populations. They are overlapping populations, not complementary partitions.
+A voxel exactly equal to both thresholds belongs to the intersection field but
+to neither strict OR field. These comparisons match Fiji Coloc 2 3.1.0.
+
+The ambiguous older names remain as compatibility aliases only:
+
+| Compatibility alias | Canonical field |
+| --- | --- |
+| `pearson_below_threshold` | `pearson_any_channel_below_threshold` |
+| `pearson_above_threshold` | `pearson_any_channel_above_threshold` |
+| `pearson_both_above_threshold` | `pearson_both_channels_at_or_above_threshold` |
+| `pearson_colocalized` | `pearson_both_channels_at_or_above_threshold` |
+
+Likewise, `costes_pearson_any_channel_below_threshold` is the canonical name
+for the final OR-domain correlation used during Costes threshold search;
+`costes_pearson_below` remains its compatibility alias.
 
 If fewer than two voxels are available, or if either channel has effectively
 zero variance in the selected population, VIPP reports `NaN`.
@@ -197,8 +213,11 @@ The output table records:
 - `channel_2_threshold`;
 - `costes_slope`;
 - `costes_intercept`;
-- `costes_pearson_below`;
+- `costes_pearson_any_channel_below_threshold`;
 - `costes_iterations`.
+
+`costes_pearson_below` is retained as a compatibility alias for the canonical
+OR-domain field above.
 
 `threshold_units` is `native_intensity`, and `coloc_semantics` records
 `fiji_coloc2_3.1` for explicit provenance.
@@ -219,7 +238,8 @@ VIPP does not currently emit Coloc 2's zero-zero and saturation percentages,
 per-channel min/max/mean/full-sum rows, intercept-to-mean warning text, Li ICQ,
 Spearman statistics, randomized Costes significance test, or Fiji's projection,
 histogram, log, and PDF artifacts. In particular,
-`costes_pearson_below` is the correlation used during threshold search; it is
+`costes_pearson_any_channel_below_threshold` (and its compatibility alias
+`costes_pearson_below`) is the correlation used during threshold search; it is
 not the shuffled Costes P-value. The descriptive
 `fraction_ch*_above_threshold_intensity_in_both_above` fields are also not
 Manders tM1/tM2; use `manders_tm1` and `manders_tm2` for that comparison.
@@ -342,7 +362,8 @@ whole-image/ROI analysis, but restricted to the object's voxels:
 - threshold-positive voxel counts for each channel;
 - colocalized voxel count and fraction;
 - Pearson correlation over the object;
-- Pearson correlation over colocalized voxels;
+- Pearson correlation over the both-channels-at-or-above-threshold
+  intersection;
 - Manders M1 and M2;
 - intensity overlap coefficients;
 - threshold-positive and colocalized intensity sums;

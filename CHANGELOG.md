@@ -9,13 +9,13 @@
   0..255. Thresholds and intensity sums now report native units.
 - Replaced the approximate automatic-threshold search with Fiji Coloc 2
   3.1.0's classic Costes `SimpleStepper`, including Java rounding, one-unit
-  native threshold steps, OR-defined below-threshold Pearson populations, and
-  last-tested threshold retention. The regression also reproduces Coloc 2's
+  native threshold steps, any-channel-below-threshold (OR) Pearson populations,
+  and last-tested threshold retention. The regression also reproduces Coloc 2's
   cursor-offset quirk and sequential variance accumulation for exact parity.
-- Added Fiji-compatible Pearson no-threshold, below-threshold, and
-  above-threshold outputs; the above/below populations use Fiji's OR rules.
-  The former both-channels-above Pearson remains explicitly identified as an
-  intersection metric.
+- Added Fiji-compatible Pearson no-threshold and threshold-domain outputs. New
+  canonical column names explicitly distinguish `any_channel` OR populations
+  from the `both_channels` intersection; the shorter ambiguous names remain
+  compatibility aliases for existing table consumers.
 - Added Fiji Manders M1/M2 and thresholded tM1/tM2 definitions. Existing
   `manders_m1`/`manders_m2` columns now alias tM1/tM2 for workflow
   compatibility, while the previous above-threshold intersection fractions

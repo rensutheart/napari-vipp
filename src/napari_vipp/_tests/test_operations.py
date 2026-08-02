@@ -1150,23 +1150,39 @@ def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
     below = np.asarray([True, True, False, True, False])
     above = np.asarray([False, False, True, True, True])
     both_above = np.asarray([False, False, True, False, True])
+    assert np.array_equal(below & above, [False, False, False, True, False])
 
     assert record["threshold_units"] == "native_intensity"
     assert record["coloc_semantics"] == "fiji_coloc2_3.1"
     assert record["mask_restricted"] is True
     assert np.isclose(record["pearson_all"], np.corrcoef(roi_1, roi_2)[0, 1])
+    expected_any_below = np.corrcoef(roi_1[below], roi_2[below])[0, 1]
+    expected_any_above = np.corrcoef(roi_1[above], roi_2[above])[0, 1]
+    expected_both_at_or_above = np.corrcoef(
+        roi_1[both_above],
+        roi_2[both_above],
+    )[0, 1]
     assert np.isclose(
-        record["pearson_below_threshold"],
-        np.corrcoef(roi_1[below], roi_2[below])[0, 1],
+        record["pearson_any_channel_below_threshold"],
+        expected_any_below,
     )
     assert np.isclose(
-        record["pearson_above_threshold"],
-        np.corrcoef(roi_1[above], roi_2[above])[0, 1],
+        record["pearson_any_channel_above_threshold"],
+        expected_any_above,
     )
     assert np.isclose(
-        record["pearson_both_above_threshold"],
-        np.corrcoef(roi_1[both_above], roi_2[both_above])[0, 1],
+        record["pearson_both_channels_at_or_above_threshold"],
+        expected_both_at_or_above,
     )
+    assert record["pearson_below_threshold"] == record[
+        "pearson_any_channel_below_threshold"
+    ]
+    assert record["pearson_above_threshold"] == record[
+        "pearson_any_channel_above_threshold"
+    ]
+    assert record["pearson_both_above_threshold"] == record[
+        "pearson_both_channels_at_or_above_threshold"
+    ]
     assert record["pearson_colocalized"] == record["pearson_both_above_threshold"]
 
     assert np.isclose(record["manders_m1_no_threshold"], 18 / 20)
@@ -1191,6 +1207,9 @@ def test_colocalization_metrics_match_fiji_threshold_domains_and_manders():
         spatial_mode="2D YX",
     ).records()[0]
     for column in (
+        "pearson_any_channel_below_threshold",
+        "pearson_any_channel_above_threshold",
+        "pearson_both_channels_at_or_above_threshold",
         "pearson_below_threshold",
         "pearson_above_threshold",
         "pearson_both_above_threshold",
@@ -1223,6 +1242,9 @@ def test_costes_auto_matches_fiji_simple_stepper_oracle():
     assert record["costes_slope"] == 0.9144341430814114
     assert record["costes_intercept"] == -0.4355143501034231
     assert np.isclose(record["costes_pearson_below"], 0.9707253433941511)
+    assert record["costes_pearson_any_channel_below_threshold"] == record[
+        "costes_pearson_below"
+    ]
     assert record["costes_pearson_below"] == record["pearson_below_threshold"]
     assert operations._java_round(2.5) == 3.0
     assert operations._java_round(-1.5) == -1.0
@@ -1263,6 +1285,17 @@ def test_object_costes_colocalization_returns_empty_table_for_empty_labels():
 
     assert table.table_kind == "per-object colocalization metrics"
     assert table.records() == []
+    assert {
+        "pearson_any_channel_below_threshold",
+        "pearson_any_channel_above_threshold",
+        "pearson_both_channels_at_or_above_threshold",
+        "costes_pearson_any_channel_below_threshold",
+        "pearson_below_threshold",
+        "pearson_above_threshold",
+        "pearson_both_above_threshold",
+        "pearson_colocalized",
+        "costes_pearson_below",
+    } <= set(table.columns)
 
 
 def test_object_colocalization_and_association_tables():
@@ -2074,6 +2107,41 @@ def test_save_table_output_writes_csv(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert text.startswith("label_id,area_pixels")
     assert "\n1,6," in text
+
+
+def test_colocalization_csv_reports_explicit_threshold_population_fields(tmp_path):
+    channel_1 = np.asarray([[0, 2, 4], [6, 8, 10]], dtype=np.float32)
+    channel_2 = np.asarray([[1, 0, 5], [2, 9, 3]], dtype=np.float32)
+    table = colocalization_metrics(
+        [channel_1, channel_2],
+        channel_1_threshold=4,
+        channel_2_threshold=3,
+    )
+
+    saved = save_table_output(table, tmp_path / "colocalization.csv")
+    header = saved.read_text(encoding="utf-8").splitlines()[0].split(",")
+
+    for canonical, compatibility_alias in (
+        (
+            "pearson_any_channel_below_threshold",
+            "pearson_below_threshold",
+        ),
+        (
+            "pearson_any_channel_above_threshold",
+            "pearson_above_threshold",
+        ),
+        (
+            "pearson_both_channels_at_or_above_threshold",
+            "pearson_both_above_threshold",
+        ),
+        (
+            "costes_pearson_any_channel_below_threshold",
+            "costes_pearson_below",
+        ),
+    ):
+        assert canonical in header
+        assert compatibility_alias in header
+        assert header.index(canonical) < header.index(compatibility_alias)
 
 
 def test_skeletonize_mask_reduces_binary_objects_to_skeleton():

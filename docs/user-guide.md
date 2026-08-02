@@ -1089,6 +1089,22 @@ its calculated native thresholds and shows them as scatter guides/status; the
 manual threshold rows reappear with those stored values when you switch back
 to `Manual`.
 
+Thresholded Pearson fields describe different voxel populations; they are not
+fractions or correlations of binary masks:
+
+| Reported field | Included ROI voxels |
+| --- | --- |
+| `pearson_no_threshold` | All ROI voxels. |
+| `pearson_any_channel_below_threshold` | Channel 1 is below T1 **or** Channel 2 is below T2. |
+| `pearson_any_channel_above_threshold` | Channel 1 is above T1 **or** Channel 2 is above T2. |
+| `pearson_both_channels_at_or_above_threshold` | Channel 1 is at/above T1 **and** Channel 2 is at/above T2. |
+
+The two `any_channel` fields reproduce Fiji Coloc 2's OR populations and can
+overlap for a voxel that is high in one channel and low in the other. Use the
+`both_channels` field when you specifically mean the threshold-positive
+intersection. Older shorter field names remain in exported tables only as
+compatibility aliases; the method notes list the exact mapping.
+
 When a colocalization threshold node is selected, the inspector shows a scatter
 density panel with threshold guide lines. Dragging a guide switches the node to
 manual thresholds and updates the corresponding threshold value. Masked
