@@ -201,7 +201,7 @@ def test_registry_import_and_descriptor_listing_do_not_import_accelerators():
                 "registry = ComputeRegistry(); "
                 "assert registry.runtime_descriptors[0].runtime_id == 'cuda-cupy'; "
                 "assert {item.library_id for item in registry.library_descriptors} "
-                "== {'cupyx', 'cucim'}; "
+                "== {'cupy', 'cupyx', 'cucim'}; "
                 "assert 'cupy' not in sys.modules; "
                 "assert 'cupyx' not in sys.modules; "
                 "assert 'cucim' not in sys.modules"

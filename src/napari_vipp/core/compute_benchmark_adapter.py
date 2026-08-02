@@ -70,6 +70,7 @@ RICHARDSON_LUCY_PARITY_OPERATION_IDS = frozenset({"richardson_lucy_deconvolution
 RICHARDSON_LUCY_TV_PARITY_OPERATION_IDS = frozenset(
     {"richardson_lucy_tv_deconvolution"}
 )
+SIGMA_FILTER_PARITY_OPERATION_IDS = frozenset({"sigma_filter"})
 BENCHMARK_WRITER_OPERATION_IDS = frozenset({"save_output", "batch_output"})
 GAUSSIAN_FLOAT32_NRMSE_LIMIT = 2e-6
 GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR = 1e-12
@@ -81,6 +82,9 @@ RICHARDSON_LUCY_TV_FLOAT32_MAX_ABS_PEAK_FACTOR = 5e-3
 BACKGROUND_FLOAT32_NRMSE_LIMIT = 2e-6
 BACKGROUND_FLOAT32_MAX_ABS_BASE = 1e-6
 BACKGROUND_FLOAT32_SCALE_ULPS = 2.0
+SIGMA_FILTER_FLOAT32_NRMSE_LIMIT = 2e-6
+SIGMA_FILTER_FLOAT32_MAX_ABS_BASE = 1e-6
+SIGMA_FILTER_FLOAT32_SCALE_ULPS = 4.0
 _BENCHMARK_ABORT_CALLBACK_KWARG = "__vipp_benchmark_abort_callback"
 
 
@@ -413,6 +417,12 @@ def operation_parity(
             candidate,
             input_peak=input_peak,
         )
+    if operation in SIGMA_FILTER_PARITY_OPERATION_IDS:
+        return _sigma_filter_dtype_parity(
+            reference,
+            candidate,
+            input_peak=input_peak,
+        )
     if operation in EXACT_PARITY_OPERATION_IDS:
         return _exact_array_parity(reference, candidate)
     if operation in GAUSSIAN_PARITY_OPERATION_IDS:
@@ -568,6 +578,8 @@ def _validate_admitted_spec(
         expected_parity = "rl-float32-tolerance-v1"
     elif call.operation_id in RICHARDSON_LUCY_TV_PARITY_OPERATION_IDS:
         expected_parity = "rl-tv-float32-tolerance-v1"
+    elif call.operation_id in SIGMA_FILTER_PARITY_OPERATION_IDS:
+        expected_parity = "sigma-dtype-parity-v1"
     if expected_parity is None or spec.parity_policy_id != expected_parity:
         raise ValueError(
             f"Implementation {spec.implementation_id!r} has unsupported parity "
@@ -1117,7 +1129,10 @@ def workload_from_prepared_node_call(
         input_shapes=tuple(
             tuple(int(size) for size in array.shape) for array in arrays
         ),
-        input_dtypes=tuple(array.dtype.name for array in arrays),
+        input_dtypes=tuple(
+            array.dtype.name if array.dtype.isnative else array.dtype.str
+            for array in arrays
+        ),
         parameters=parameters,
         resolved_spatial_ndim=resolved,
         facts_fingerprint=_call_facts_fingerprint(
@@ -1343,6 +1358,91 @@ def _background_dtype_parity(
         f"max_abs={max_abs:.9g} (limit={max_abs_limit:.9g}); "
         f"max_ulp={max_ulp} (diagnostic; near-zero cancellation is "
         "absolute-error gated)",
+    )
+
+
+def _sigma_filter_dtype_parity(
+    reference: object,
+    candidate: object,
+    *,
+    input_peak: float | None,
+) -> ParityResult:
+    """Gate Sigma Filter output without hiding threshold-branch differences.
+
+    Unsigned restoration is part of the scientific contract, so integer output
+    must be bitwise exact.  Float32 output is allowed only a small accumulated
+    arithmetic difference.  Adversarial selection and fallback decisions are
+    validated separately by the implementation evidence suite; this aggregate
+    gate is intentionally too tight to excuse a materially different branch.
+    """
+
+    try:
+        expected = np.asarray(reference)
+        actual = np.asarray(candidate)
+    except Exception as exc:
+        return ParityResult(False, f"outputs are not host arrays: {exc}")
+    mismatch = _array_contract_mismatch(expected, actual)
+    if mismatch:
+        return ParityResult(False, mismatch)
+    if expected.dtype in {np.dtype(np.uint8), np.dtype(np.uint16)}:
+        return _exact_array_parity(expected, actual)
+    if expected.dtype != np.dtype(np.float32):
+        return ParityResult(
+            False,
+            f"Sigma Filter GPU parity has no policy for {expected.dtype}",
+        )
+
+    expected_finite = np.isfinite(expected)
+    actual_finite = np.isfinite(actual)
+    if not np.array_equal(expected_finite, actual_finite):
+        return ParityResult(False, "finite/non-finite masks differ")
+    if not bool(np.all(expected_finite)):
+        return ParityResult(
+            False,
+            "Sigma Filter admitted float32 output must be completely finite",
+        )
+    expected_zero = expected == 0
+    actual_zero = actual == 0
+    if not np.array_equal(expected_zero, actual_zero):
+        return ParityResult(False, "zero masks differ")
+    both_zero = expected_zero & actual_zero
+    signed_zero_mismatches = int(
+        np.count_nonzero(both_zero & (np.signbit(expected) != np.signbit(actual)))
+    )
+    if signed_zero_mismatches:
+        return ParityResult(
+            False,
+            f"signed-zero bits differ at {signed_zero_mismatches} values",
+        )
+
+    expected64 = expected.astype(np.float64)
+    actual64 = actual.astype(np.float64)
+    difference = actual64 - expected64
+    max_abs = float(np.max(np.abs(difference))) if difference.size else 0.0
+    reference_peak = float(np.max(np.abs(expected64))) if expected64.size else 0.0
+    normalized_input_peak = _validated_optional_peak(input_peak)
+    scale = max(1.0, normalized_input_peak, reference_peak)
+    max_abs_limit = (
+        SIGMA_FILTER_FLOAT32_MAX_ABS_BASE
+        + SIGMA_FILTER_FLOAT32_SCALE_ULPS * np.finfo(np.float32).eps * scale
+    )
+    denominator = max(
+        float(np.linalg.norm(expected64.ravel())),
+        math.sqrt(expected64.size) * GAUSSIAN_FLOAT32_ABSOLUTE_FLOOR,
+    )
+    numerator = float(np.linalg.norm(difference.ravel()))
+    nrmse = numerator / denominator if denominator else 0.0
+    max_ulp = _maximum_float32_ulp_distance(expected, actual)
+    passed = bool(
+        nrmse <= SIGMA_FILTER_FLOAT32_NRMSE_LIMIT and max_abs <= max_abs_limit
+    )
+    return ParityResult(
+        passed,
+        f"nrmse={nrmse:.9g} "
+        f"(limit={SIGMA_FILTER_FLOAT32_NRMSE_LIMIT:.9g}); "
+        f"max_abs={max_abs:.9g} (limit={max_abs_limit:.9g}); "
+        f"max_ulp={max_ulp} (diagnostic; threshold/fallback branch parity is "
+        "validated separately)",
     )
 
 
@@ -1600,6 +1700,10 @@ __all__ = [
     "RICHARDSON_LUCY_TV_FLOAT32_MAX_ABS_PEAK_FACTOR",
     "RICHARDSON_LUCY_TV_FLOAT32_NRMSE_LIMIT",
     "RICHARDSON_LUCY_TV_PARITY_OPERATION_IDS",
+    "SIGMA_FILTER_FLOAT32_MAX_ABS_BASE",
+    "SIGMA_FILTER_FLOAT32_NRMSE_LIMIT",
+    "SIGMA_FILTER_FLOAT32_SCALE_ULPS",
+    "SIGMA_FILTER_PARITY_OPERATION_IDS",
     "build_registered_node_benchmark",
     "detach_prepared_node_call",
     "operation_parity",

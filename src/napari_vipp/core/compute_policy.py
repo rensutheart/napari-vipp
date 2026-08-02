@@ -35,6 +35,9 @@ RICHARDSON_LUCY_TV_EPSILON = 1e-6
 RICHARDSON_LUCY_TV_DENOMINATOR_FLOOR = 0.05
 OTSU_DEFAULT_HISTOGRAM_BINS = 256
 OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
+SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
+    np.float32(math.sqrt(float(np.finfo(np.float32).max)))
+)
 
 _RICHARDSON_LUCY_FLOAT32_BYTES = 4
 _RICHARDSON_LUCY_COMPLEX64_BYTES = 8
@@ -344,14 +347,19 @@ CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID = (
 CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID = (
     "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
 )
+CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID = (
+    "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+)
 CUDA_ENVIRONMENT_POLICIES = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID,
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID,
+    CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID,
 }
 
 _PHASE1_CUDA_POLICY_PROVIDER = {
     CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupyx"),
     CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cucim"),
+    CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID: ("cuda-cupy", "cupy"),
 }
 
 _PHASE1_CUPY_VERSION = "14.1.1"
@@ -614,11 +622,13 @@ def _evaluate_phase1_cuda_environment(
     versions = dict(environment.runtime_versions)
     if versions.get("cuda-cupy") != _PHASE1_CUPY_VERSION:
         return rejected("Phase-1 CUDA admission requires exact CuPy 14.1.1 provenance.")
-    if spec.implementation_library_id == "cupyx" and (
-        versions.get("cupyx") != _PHASE1_CUPY_VERSION
+    if spec.implementation_library_id in {"cupy", "cupyx"} and (
+        versions.get(spec.implementation_library_id) != _PHASE1_CUPY_VERSION
     ):
+        library_name = "CuPy" if spec.implementation_library_id == "cupy" else "CuPyX"
         return rejected(
-            "Phase-1 CuPyX admission requires exact CuPyX 14.1.1 provenance."
+            f"Phase-1 {library_name} admission requires exact {library_name} "
+            "14.1.1 provenance."
         )
 
     fingerprints = dict(environment.runtime_probe_fingerprints)
@@ -824,6 +834,24 @@ def estimate_candidate_memory(
         )
         kernel_bytes = sum(2 * math.ceil(4 * sigma) + 1 for sigma in sigmas) * 8
         workspace = primary_elements * max(primary_itemsize, 4) * 5 + kernel_bytes
+    elif spec.memory_model_id == "cupy-sigma-filter-memory-v1":
+        parameters = dict(workload.parameters)
+        shape = workload.input_shapes[0]
+        active_axes = _active_axes(shape, parameters.get("channel_axis"))
+        if active_axes is None or len(active_axes) < 2:
+            raise ValueError(
+                "Sigma Filter memory estimation requires two valid non-channel YX axes."
+            )
+        # The provider scans one row tile at a time but explicitly materializes
+        # the complete authored array in canonical contiguous float32 order.
+        # A non-identity axis restoration can retain one typed intermediate
+        # alongside the final contiguous output counted below.  Reserve that
+        # worst case plus the bounded radius-10 offset table and validation
+        # status scalar; no image-sized neighbourhood tensor is constructed.
+        full_contiguous_copy = primary_elements * np.dtype(np.float32).itemsize
+        typed_axis_staging = primary_elements * primary_itemsize
+        offset_and_status_bytes = (325 * 2 * np.dtype(np.int32).itemsize) + 4
+        workspace = full_contiguous_copy + typed_axis_staging + offset_and_status_bytes
     elif spec.memory_model_id == "cupyx-canny-exact-memory-v1":
         parameters = dict(workload.parameters)
         scalar_shape, luma_itemsize = _scalar_luma_shape_and_itemsize(
@@ -1110,6 +1138,13 @@ def _median_region_policy(
     array_facts: tuple[ArrayFacts, ...],
 ) -> SupportDecision | None:
     return _evaluate_median_region(workload, array_facts=array_facts)
+
+
+def _sigma_filter_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    return _evaluate_sigma_filter_region(workload, array_facts=array_facts)
 
 
 def _gaussian_2d_region_policy(
@@ -1561,6 +1596,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
     {
         "background-parameters-v1": _background_region_policy,
         "median-parameters-v1": _median_region_policy,
+        "sigma-filter-parameters-v1": _sigma_filter_region_policy,
         "gaussian-2d-parameters-v1": _gaussian_2d_region_policy,
         "gaussian-3d-parameters-v1": _gaussian_3d_region_policy,
         "rl-parameters-v1": _richardson_lucy_region_policy,
@@ -1701,6 +1737,94 @@ def _evaluate_median_region(
             return _complete_facts_rejection(
                 "Float32 median is admitted only when complete facts prove finite "
                 "values and no negative zero."
+            )
+    return None
+
+
+def _evaluate_sigma_filter_region(
+    workload: WorkloadDescriptor,
+    *,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    try:
+        input_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Sigma Filter requires a concrete NumPy-compatible input dtype."
+        )
+    if not input_dtype.isnative:
+        return _workload_rejection(
+            "Sigma Filter GPU execution requires native-endian input so its "
+            "dtype contract matches the authoritative CPU operation."
+        )
+    dtype = input_dtype.name
+    if dtype not in {"uint8", "uint16", "float32"}:
+        return _workload_rejection(
+            f"Sigma Filter GPU execution supports uint8, uint16, and float32, "
+            f"not {dtype!r}; CPU is required."
+        )
+    shape = workload.input_shapes[0]
+    if not shape or any(size <= 0 for size in shape):
+        return _workload_rejection(
+            "Sigma Filter requires non-empty image data.",
+            fallback_allowed=False,
+        )
+    parameters = dict(workload.parameters)
+    active_axes = _active_axes(shape, parameters.get("channel_axis"))
+    if active_axes is None or len(active_axes) < 2:
+        return _workload_rejection(
+            "Sigma Filter requires two valid non-channel YX axes.",
+            fallback_allowed=False,
+        )
+
+    radius = _finite_number(parameters.get("radius", 2.0))
+    if radius is None or not 0.5 <= radius <= 10.0:
+        return _workload_rejection(
+            "Sigma Filter radius must be finite and between 0.5 and 10 inclusive.",
+            fallback_allowed=False,
+        )
+    sigma_width = _finite_number(parameters.get("sigma_width", 2.0))
+    if sigma_width is None or sigma_width < 0.0:
+        return _workload_rejection(
+            "Sigma Filter sigma_width must be finite and non-negative.",
+            fallback_allowed=False,
+        )
+    minimum_fraction = _finite_number(parameters.get("minimum_pixel_fraction", 0.2))
+    if minimum_fraction is None or not 0.0 <= minimum_fraction <= 1.0:
+        return _workload_rejection(
+            "Sigma Filter minimum_pixel_fraction must be finite and between "
+            "zero and one.",
+            fallback_allowed=False,
+        )
+    if not isinstance(parameters.get("outlier_aware", True), (bool, np.bool_)):
+        return _workload_rejection(
+            "Sigma Filter outlier_aware must be boolean.",
+            fallback_allowed=False,
+        )
+
+    if dtype == "float32":
+        if not array_facts:
+            return _complete_facts_rejection(
+                "Float32 Sigma Filter requires complete finite magnitude facts."
+            )
+        facts = array_facts[0]
+        if (
+            facts.completeness is not FactCompleteness.COMPLETE
+            or facts.all_finite is not True
+            or facts.minimum is None
+            or facts.maximum is None
+        ):
+            return _complete_facts_rejection(
+                "Float32 Sigma Filter requires complete finite extrema facts."
+            )
+        maximum_magnitude = max(
+            abs(float(facts.minimum)),
+            abs(float(facts.maximum)),
+        )
+        if maximum_magnitude > SIGMA_FILTER_FLOAT32_SQUARE_LIMIT:
+            return _workload_rejection(
+                "Float32 Sigma Filter input magnitude would overflow the "
+                "Fiji-compatible float32 square workspace."
             )
     return None
 
@@ -2066,6 +2190,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-parameters-v1",
             "background-parameters-v1",
             "median-parameters-v1",
+            "sigma-filter-parameters-v1",
             "gaussian-2d-parameters-v1",
             "gaussian-3d-parameters-v1",
             "rl-parameters-v1",
@@ -2078,6 +2203,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "vipp-best-available-v1",
             "background-u8-u16-f32-v2",
             "median-exact-u8-u16-f32-v1",
+            "sigma-u8-u16-finite-f32-v1",
             "gaussian-finite-f32-v1",
             "rl-finite-f32-v1",
             "rl-tv-finite-f32-v1",
@@ -2088,6 +2214,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "authoritative-cpu-v1",
             "background-dtype-parity-v2",
             "median-production-bitwise-v1",
+            "sigma-dtype-parity-v1",
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
@@ -2097,6 +2224,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "host-reference-v1",
             "cucim-background-memory-v1",
             "cupyx-median-memory-v1",
+            "cupy-sigma-filter-memory-v1",
             "cupyx-gaussian-2d-memory-v1",
             "cupyx-gaussian-3d-memory-v1",
             "cupyx-richardson-lucy-fft-memory-v2",
@@ -2122,6 +2250,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "identity-v1",
             "background-float-workspace-restore-v1",
             "cupyx-median-identity-v1",
+            "sigma-float32-workspace-restore-v1",
             "cupyx-gaussian-float32-v1",
             "cupyx-rl-float32-identity-v1",
             "canny-plane-float32-or-luma-v1",
@@ -2133,12 +2262,14 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "finite-no-negative-zero-v1",
             "finite-only-v1",
             "finite-output-v1",
+            "sigma-finite-only-v1",
             "otsu-finite-histogram-v1",
         },
         PolicyKind.ROUNDING: {
             "cpu-reference-v1",
             "background-bankers-round-clip-v1",
             "median-bitwise-v1",
+            "sigma-half-up-u8-u16-f32-identity-v1",
             "gaussian-float32-tolerance-v1",
             "rl-float32-tolerance-v1",
             "rl-tv-float32-tolerance-v1",
@@ -2148,6 +2279,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-clip-public-dtype-v1",
             "preserve-public-dtype-v1",
+            "sigma-float32-square-safe-v1",
             "finite-float32-cleanup-v1",
             "finite-float32-workspace-v1",
             "binary-mask-v1",
@@ -2157,6 +2289,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-nearest-rolling-ball-v1",
             "scipy-reflect-v1",
+            "sigma-nearest-circular-footprint-v1",
             "scipy-signal-zero-fill-same-v1",
             "rl-tv-zero-fill-same-central-gradient-edge1-v1",
             "skimage-canny-constant-zero-v1",
@@ -2166,6 +2299,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scientific-default-v1",
             "background-public-dtype-v2",
             "median-bitwise-v1",
+            "sigma-ordered-f32-square-f64-accum-v1",
             "gaussian-float32-v1",
             "rl-float32-v1",
             "rl-tv-float32-v1",
@@ -2176,6 +2310,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-block-progress-v1",
             "monolithic-sync-progress-v1",
+            "sigma-row-tile-sync-progress-v1",
             "deconvolution-block-iteration-progress-v1",
             "scalar-plane-sync-progress-v1",
             "histogram-scope-sync-progress-v1",
@@ -2184,6 +2319,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cpu-reference-v1",
             "background-block-cancel-v1",
             "monolithic-boundary-cancel-v1",
+            "sigma-row-tile-boundary-cancel-v1",
             "deconvolution-iteration-cancel-v1",
             "scalar-plane-boundary-cancel-v1",
         },
@@ -2242,6 +2378,7 @@ __all__ = [
     "ArrayFactsCache",
     "ArrayFactsKey",
     "CUDA_CUPY_CUCIM_WINDOWS_ENVIRONMENT_POLICY_ID",
+    "CUDA_CUPY_RAWKERNEL_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_CUPY_WINDOWS_ENVIRONMENT_POLICY_ID",
     "CUDA_ENVIRONMENT_POLICIES",
     "DEFAULT_POLICY_CATALOG",
@@ -2258,6 +2395,7 @@ __all__ = [
     "RICHARDSON_LUCY_TV_MAXIMUM_ITERATIONS",
     "RICHARDSON_LUCY_TV_POSITIVE_ITERATIONS",
     "RICHARDSON_LUCY_TV_REGULARIZATION",
+    "SIGMA_FILTER_FLOAT32_SQUARE_LIMIT",
     "SupportDecision",
     "ValueDescriptor",
     "evaluate_auto_performance",

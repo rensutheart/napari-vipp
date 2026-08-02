@@ -61,6 +61,7 @@ COMPUTE_MODE_OPTIONS = (
 _MODE_LABELS = {option.mode: option.label for option in COMPUTE_MODE_OPTIONS}
 _LIBRARY_LABELS = {
     "cpu": "CPU",
+    "cupy": "CuPy",
     "cupyx": "CuPy",
     "cucim": "cuCIM",
 }

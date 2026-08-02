@@ -368,6 +368,22 @@ def _fake_registered_benchmark(
     return clock, runtime, registry, live, built
 
 
+@pytest.mark.parametrize("dtype", (">u2", ">f4"))
+def test_workload_identity_preserves_non_native_byte_order(dtype: str) -> None:
+    values = np.arange(25, dtype=dtype).reshape(5, 5)
+    call = PreparedNodeCall(
+        "sigma-node",
+        "sigma_filter",
+        _identity_cpu,
+        (values,),
+        kwargs={"radius": 2.0, "channel_axis": None},
+    )
+
+    workload = workload_from_prepared_node_call(call)
+
+    assert workload.input_dtypes == (np.dtype(dtype).str,)
+
+
 def test_detached_capture_and_hash_are_read_only_and_promptly_abortable():
     values = np.arange(2_000_000, dtype=np.uint16).reshape(1000, 2000)
     call = PreparedNodeCall(

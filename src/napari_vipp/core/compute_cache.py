@@ -69,6 +69,16 @@ _REQUIRED_DEPENDENCIES_BY_ENVIRONMENT_POLICY = MappingProxyType(
                 "cuda-runtime",
             }
         ),
+        "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1": frozenset(
+            {
+                "napari-vipp",
+                "numpy",
+                "scipy",
+                "scikit-image",
+                "cupy",
+                "cuda-runtime",
+            }
+        ),
         "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v2": frozenset(
             {
                 "napari-vipp",

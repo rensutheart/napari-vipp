@@ -88,6 +88,7 @@ _PHASE_ONE_FACT_OPERATIONS = frozenset(
         "gaussian_blur",
         "gaussian_blur_3d",
         "median_filter",
+        "sigma_filter",
         "canny_edges",
         "otsu_threshold",
         "prepare_validate_psf",
@@ -1852,12 +1853,19 @@ def _shape_and_dtype(value: object, state: object) -> tuple[tuple[int, ...], str
         shape = tuple(int(size) for size in raw_shape)
     except (TypeError, ValueError):
         shape = ()
-    raw_dtype = getattr(state, "dtype", None)
+    # Prefer the concrete value so byte order cannot be erased by ImageState's
+    # user-facing dtype name. Native arrays retain the historical short name;
+    # a non-native array keeps its NumPy descriptor and therefore fails closed
+    # in operation-specific accelerator policy.
+    raw_dtype = getattr(value, "dtype", None)
     if raw_dtype is None:
-        raw_dtype = getattr(value, "dtype", "object")
+        raw_dtype = getattr(state, "dtype", "object")
     try:
-        dtype = np.dtype(raw_dtype).name
-    except TypeError:
+        resolved_dtype = np.dtype(raw_dtype)
+        dtype = (
+            resolved_dtype.name if resolved_dtype.isnative else resolved_dtype.str
+        )
+    except (TypeError, ValueError):
         dtype = "object"
     return shape, dtype
 
@@ -1990,6 +1998,8 @@ def _propagate_shape_preserving_facts(
     guarantees = set(facts.guarantees)
     finite_count = facts.finite_count
     completeness = facts.completeness
+    minimum = None
+    maximum = None
     resolved_shape = facts.shape if output_shape is None else tuple(output_shape)
     resolved_dtype_name = facts.dtype if output_dtype is None else str(output_dtype)
     output_elements = int(math.prod(resolved_shape))
@@ -2049,6 +2059,29 @@ def _propagate_shape_preserving_facts(
             guarantees.add("no-negative-zero")
         else:
             guarantees.discard("no-negative-zero")
+    elif operation_id == "sigma_filter":
+        # A successful Sigma Filter result is a bounded mean of finite source
+        # samples restored to the authored dtype. The operation rejects the
+        # float32 square-overflow region before calculation.
+        finite_count = output_elements
+        completeness = FactCompleteness.COMPLETE
+        if (
+            facts.completeness is FactCompleteness.COMPLETE
+            and facts.all_finite is True
+            and facts.minimum is not None
+            and facts.maximum is not None
+        ):
+            # Every result branch is a mean of source samples.  The inherited
+            # extrema are therefore a conservative enclosure (not a claim that
+            # the output still attains both values), sufficient for downstream
+            # magnitude admission without a device-to-host scan.
+            minimum = facts.minimum
+            maximum = facts.maximum
+            guarantees.add("extrema-conservative-enclosure")
+        if "nonnegative" in guarantees:
+            guarantees.add("no-negative-zero")
+        else:
+            guarantees.discard("no-negative-zero")
     elif operation_id == "prepare_validate_psf":
         normalize = bool(parameters.get("normalize_sum", True))
         clip = bool(parameters.get("clip_negatives", True))
@@ -2087,10 +2120,9 @@ def _propagate_shape_preserving_facts(
         completeness = FactCompleteness.COMPLETE
         guarantees.update(("nonnegative", "no-negative-zero"))
 
-    # Exact extrema are intentionally not propagated: each operation can
-    # change them.  Phase-1 downstream facts gates consume only completeness,
-    # finiteness, and signed-zero/nonnegative guarantees; another magnitude-
-    # sensitive transform therefore fails closed instead of using false bounds.
+    # Exact extrema are generally not propagated because each operation can
+    # change them. Sigma Filter is the narrow exception above: its branch
+    # formulas prove the inherited range is a safe conservative enclosure.
     return ArrayFacts(
         shape=resolved_shape,
         dtype=resolved_dtype_name,
@@ -2100,6 +2132,8 @@ def _propagate_shape_preserving_facts(
         ),
         completeness=completeness,
         finite_count=finite_count,
+        minimum=minimum,
+        maximum=maximum,
         guarantees=tuple(sorted(guarantees)),
         scan_seconds=facts.scan_seconds,
     )

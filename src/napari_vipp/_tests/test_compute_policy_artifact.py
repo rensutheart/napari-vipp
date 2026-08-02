@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -43,7 +44,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     policy = load_phase1_compute_policy()
 
     assert policy.policy_id == PHASE1_POLICY_ID
-    assert policy.policy_version == 3
+    assert policy.policy_version == 4
     assert policy.content_sha256 == PHASE1_POLICY_SHA256
     assert policy.phase == "phase1"
     assert policy.status == "public-validated"
@@ -52,7 +53,7 @@ def test_loads_versioned_policy_through_installed_package_resources():
     assert not policy.exposure.developer_enablement_required
 
     with pytest.raises(FrozenInstanceError):
-        policy.policy_version = 3  # type: ignore[misc]
+        policy.policy_version = 4  # type: ignore[misc]
 
 
 def test_phase1_operation_ids_and_conservative_settings_are_exact():
@@ -63,6 +64,7 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
         "median_filter": "cupyx-median-filter-v1",
         "gaussian_blur": "cupyx-gaussian-blur-v1",
         "gaussian_blur_3d": "cupyx-gaussian-blur-3d-v1",
+        "sigma_filter": "cupy-sigma-filter-v1",
     }
 
     assert {
@@ -127,6 +129,7 @@ def test_phase1_operation_ids_and_conservative_settings_are_exact():
     assert platform.validated_environment_policy_ids == (
         "cuda-cupy-14.1.1-cpython312-windows-native-v3",
         "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3",
+        "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1",
     )
     assert platform.linux_policy == "pending-native-clean-host-evidence-v1"
     assert platform.macos_policy == "cpu-only-provider-investigation-pending-v1"
@@ -185,6 +188,65 @@ def test_scientific_summary_mirrors_executable_declaration_ids_and_bounds():
             for bound in policy.operation(operation_id).support_summary.parameter_bounds
         } == {(0.0, 12.0)}
 
+    sigma = policy.operation("sigma_filter")
+    assert sigma.admission_tier == "public_auto_candidate"
+    assert sigma.implementation_library_id == "cupy"
+    assert sigma.environment_policy_id == (
+        "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+    )
+    assert sigma.support_summary.spatial_semantics_id == (
+        "sigma-slicewise-active-yx-nearest-v1"
+    )
+    assert "float32-abs-at-most-f32-sqrt-f32max-v1" in (
+        sigma.support_summary.required_facts
+    )
+    assert "native-endian-dtype-descriptor-v1" in (
+        sigma.support_summary.required_facts
+    )
+    assert "non-native-endian-v1" in sigma.support_summary.explicit_cpu_regions
+    assert {
+        bound.parameter: (bound.minimum, bound.maximum)
+        for bound in sigma.support_summary.parameter_bounds
+    } == {
+        "radius": (0.5, 10.0),
+        "sigma_width": (0.0, float.fromhex("0x1.fffffffffffffp+1023")),
+        "minimum_pixel_fraction": (0.0, 1.0),
+    }
+
+
+def test_v4_is_a_strict_extension_of_v3_and_legacy_resources_are_byte_stable():
+    package = resources.files("napari_vipp.compute_policies")
+    historical_sha256 = {
+        "phase1-gpu-developer-v1.json": (
+            "d0adace0dcd12fdf20553ab848e1abecca9a7947b44e95433b2a6becd56e82c6"
+        ),
+        "phase1-gpu-developer-v2.json": (
+            "d708845da3adda7ebb1da36c5345bb092574617770808ff8241380ea9fca71d5"
+        ),
+        "phase1-gpu-public-v3.json": (
+            "b6696c5f50121831711dbeba50f61585df8cbc32ec22f3e35a439f7e536f4968"
+        ),
+    }
+    for name, expected_digest in historical_sha256.items():
+        resource = package.joinpath(name)
+        assert resource.is_file()
+        assert hashlib.sha256(resource.read_bytes()).hexdigest() == expected_digest
+
+    v3 = json.loads(package.joinpath("phase1-gpu-public-v3.json").read_bytes())
+    v4 = _resource_document()
+    assert v4["policy"]["operations"][:-1] == v3["policy"]["operations"]  # type: ignore[index]
+    sigma = v4["policy"]["operations"][-1]  # type: ignore[index]
+    assert sigma["operation_id"] == "sigma_filter"
+    assert sigma["implementation_id"] == "cupy-sigma-filter-v1"
+
+    v3_platform = copy.deepcopy(v3["policy"]["platform_admission"])
+    v4_platform = copy.deepcopy(v4["policy"]["platform_admission"])  # type: ignore[index]
+    rawkernel_policy = v4_platform["validated_environment_policy_ids"].pop()
+    assert rawkernel_policy == (
+        "cuda-cupy-14.1.1-rawkernel-cpython312-windows-native-v1"
+    )
+    assert v4_platform == v3_platform
+
 
 def test_digest_is_canonical_stable_and_detects_tampering():
     document = _resource_document()
@@ -208,7 +270,23 @@ def test_strict_schema_rejects_invalid_resigned_content():
         parse_compute_policy_artifact(_encoded(invalid))
 
 
-def test_valid_but_changed_v3_record_cannot_be_resigned_in_place():
+def test_loader_accepts_only_the_pinned_v4_identity_and_version():
+    package = resources.files("napari_vipp.compute_policies")
+    signed_v3 = package.joinpath("phase1-gpu-public-v3.json").read_bytes()
+    with pytest.raises(ComputePolicyArtifactError, match="Unsupported Phase 1 policy"):
+        parse_compute_policy_artifact(signed_v3)
+
+    wrong_version = copy.deepcopy(_resource_document())
+    wrong_version["policy_version"] = 5
+    _resign(wrong_version)
+    with pytest.raises(
+        ComputePolicyArtifactError,
+        match="Unsupported Phase 1 policy version 5",
+    ):
+        parse_compute_policy_artifact(_encoded(wrong_version))
+
+
+def test_valid_but_changed_v4_record_cannot_be_resigned_in_place():
     changed = copy.deepcopy(_resource_document())
     changed["policy"]["auto_selection"]["non_local_minimum_saving_ms"] = 21.0  # type: ignore[index]
     _resign(changed)
