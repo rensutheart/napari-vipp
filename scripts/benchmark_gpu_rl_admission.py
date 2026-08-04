@@ -53,11 +53,10 @@ PUBLICATION_SCOPE: dict[str, bool] = {
 
 SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_rl_admission.py",
-    "src/napari_vipp/core/operations.py",
+    "src/napari_vipp/core/richardson_lucy.py",
+    "src/napari_vipp/core/richardson_lucy_compute.py",
+    "src/napari_vipp/core/richardson_lucy_parity.py",
     "src/napari_vipp/core/gpu/cupy_rl.py",
-    "src/napari_vipp/core/compute_benchmark_adapter.py",
-    "src/napari_vipp/core/compute_policy.py",
-    "src/napari_vipp/core/compute_specs.py",
     "src/napari_vipp/core/progress.py",
 )
 

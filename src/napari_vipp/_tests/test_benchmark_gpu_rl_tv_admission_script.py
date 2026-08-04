@@ -20,6 +20,49 @@ ARTIFACT = (
 )
 
 
+def test_source_provenance_is_operation_owned() -> None:
+    paths = tuple(evidence.SOURCE_PROVENANCE_PATHS)
+
+    for owner in (
+        "src/napari_vipp/core/richardson_lucy.py",
+        "src/napari_vipp/core/richardson_lucy_compute.py",
+        "src/napari_vipp/core/richardson_lucy_parity.py",
+    ):
+        assert owner in paths
+    for shared in (
+        "src/napari_vipp/core/operations.py",
+        "src/napari_vipp/core/compute_specs.py",
+        "src/napari_vipp/core/compute_policy.py",
+        "src/napari_vipp/core/compute_benchmark_adapter.py",
+    ):
+        assert shared not in paths
+
+
+def test_source_provenance_detects_each_owner_but_ignores_shared_registries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tracked = tuple(evidence.SOURCE_PROVENANCE_PATHS)
+    unrelated = Path("src/napari_vipp/core/operations.py")
+    for relative_path in (*tracked, str(unrelated)):
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((PROJECT_ROOT / relative_path).read_bytes())
+    monkeypatch.setattr(evidence, "PROJECT_ROOT", tmp_path)
+    baseline = evidence._source_provenance()
+
+    unrelated_path = tmp_path / unrelated
+    unrelated_path.write_bytes(unrelated_path.read_bytes() + b"\n# unrelated edit\n")
+    assert evidence._source_provenance() == baseline
+
+    for relative_path in tracked:
+        owner = tmp_path / relative_path
+        original = owner.read_bytes()
+        owner.write_bytes(original + b"\n# owner edit\n")
+        assert evidence._source_provenance() != baseline
+        owner.write_bytes(original)
+
+
 def test_import_is_safe_without_cupy_or_cuda_initialization() -> None:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(

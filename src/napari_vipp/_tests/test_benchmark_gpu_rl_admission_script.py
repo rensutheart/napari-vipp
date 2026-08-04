@@ -39,6 +39,60 @@ def _summaries(document, suite_name):
     }
 
 
+def test_source_provenance_is_operation_owned() -> None:
+    paths = tuple(benchmark_gpu_rl_admission.SOURCE_PROVENANCE_PATHS)
+
+    assert paths == (
+        "scripts/benchmark_gpu_rl_admission.py",
+        "src/napari_vipp/core/richardson_lucy.py",
+        "src/napari_vipp/core/richardson_lucy_compute.py",
+        "src/napari_vipp/core/richardson_lucy_parity.py",
+        "src/napari_vipp/core/gpu/cupy_rl.py",
+        "src/napari_vipp/core/progress.py",
+    )
+    assert "src/napari_vipp/core/operations.py" not in paths
+    assert "src/napari_vipp/core/compute_specs.py" not in paths
+    assert "src/napari_vipp/core/compute_policy.py" not in paths
+    assert "src/napari_vipp/core/compute_benchmark_adapter.py" not in paths
+
+
+def test_source_provenance_tracks_each_owner_but_ignores_shared_registries(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tracked = tuple(benchmark_gpu_rl_admission.SOURCE_PROVENANCE_PATHS)
+    unrelated_paths = (
+        "src/napari_vipp/core/operations.py",
+        "src/napari_vipp/core/compute_specs.py",
+        "src/napari_vipp/core/compute_policy.py",
+        "src/napari_vipp/core/compute_benchmark_adapter.py",
+    )
+    for relative_path in (*tracked, *unrelated_paths):
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((PROJECT_ROOT / relative_path).read_bytes())
+    monkeypatch.setattr(benchmark_gpu_rl_admission, "PROJECT_ROOT", tmp_path)
+    baseline = benchmark_gpu_rl_admission._source_provenance(project_root=tmp_path)
+
+    for relative_path in unrelated_paths:
+        unrelated = tmp_path / relative_path
+        unrelated.write_bytes(unrelated.read_bytes() + b"\n# unrelated edit\n")
+    assert (
+        benchmark_gpu_rl_admission._source_provenance(project_root=tmp_path)
+        == baseline
+    )
+
+    for relative_path in tracked:
+        owner = tmp_path / relative_path
+        original = owner.read_bytes()
+        owner.write_bytes(original + b"\n# owner edit\n")
+        assert (
+            benchmark_gpu_rl_admission._source_provenance(project_root=tmp_path)
+            != baseline
+        )
+        owner.write_bytes(original)
+
+
 def test_help_does_not_import_or_probe_cupy(monkeypatch, capsys):
     def unexpected_load():
         raise AssertionError("--help unexpectedly loaded CuPy")

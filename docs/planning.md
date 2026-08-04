@@ -203,8 +203,8 @@ single-host descriptive measurements, not portable Auto choices.
 The toolbar now has the CPU/Auto/Selective policy slice,
 Selective node choices, actual backend badges, and a single message-strip
 component with major/actionable paths severity-classified. Optimizer UI
-lifecycle/snapshot hardening continues alongside the maintained next order:
-first isolate RL/RL-TV evidence ownership from broad shared-file hashes, then
+lifecycle/snapshot hardening continues alongside the maintained next order.
+RL/RL-TV evidence ownership is now isolated from broad shared-file hashes; next
 implement Measurements, explicit Convert Dtype/residency bridges, native
 platform evidence, the Apple provider study, cuCIM/Clara completeness, and
 durable batch/generated/export execution. See the

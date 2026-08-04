@@ -3173,7 +3173,7 @@ not reasons to redesign Phase 1.
   registries and each of `pipeline.py`, `_widget.py`, `batch.py`, and
   `workflow.py`; split operation-family declarations before parallel promotion.
 
-## Ordered next suggested steps (maintained 2026-08-02)
+## Ordered next suggested steps (maintained 2026-08-04)
 
 This is the implementation queue after the Connected Components vertical slice. Update this
 section when a wave lands so the branch and handoff report retain one explicit
@@ -3187,13 +3187,13 @@ Components' exact IDs, resident CuPyX path, lifecycle/memory limits, and
 machine-local screening are recorded in the
 [Phase 5 report](gpu-phase5-connected-components-implementation-report.md).
 
-1. **Measurements, with operation-owned RL provenance first:** extract the
-   inherited RL/RL-TV CPU, parity, and compute-contract evidence owners from
-   broad shared-file fingerprints, then introduce the typed
-   labels-plus-intensity inputs and host-table finalizer while preserving
+1. **Measurements:** the operation-owned RL provenance prerequisite is complete.
+   RL/RL-TV CPU behavior, parity, and compute contracts now have narrow owners,
+   and all four committed RL admission/performance artifacts fingerprint those
+   owners instead of broad shared registries. Continue with typed
+   labels-plus-intensity inputs and the host-table finalizer while preserving
    schema, row/column order, units, calibration, missing values, and public
-   scalar types. This short prerequisite prevents an unrelated registration
-   from invalidating historical RL measurements again.
+   scalar types.
 2. **Convert Dtype and inexpensive residency bridges:** support only explicit
    authored conversions and scientifically faithful low-cost operations that can
    keep useful segments resident. Never insert a cast or bridge merely to improve
@@ -3239,8 +3239,8 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    slice are now implemented too. Connected Components is also complete with
    exact native-`int32` IDs, resident CuPyX execution, block-boundary lifecycle,
    and packaged policy artifact v5.
-   Continue in the maintained order above: the RL provenance-boundary
-   prerequisite plus Measurements; explicit Convert Dtype/residency bridges;
+   Continue in the maintained order above: Measurements; explicit Convert
+   Dtype/residency bridges;
    platform/provider evidence; then durable batch/generated/CLI/export surfaces.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
    cleanup, and runtime evidence make a region a normal public Selective

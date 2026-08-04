@@ -32,6 +32,52 @@ def performance_script():
         sys.modules.pop(module_name, None)
 
 
+def test_source_provenance_uses_operation_owners_not_shared_registries(
+    performance_script,
+) -> None:
+    paths = tuple(performance_script.SOURCE_PROVENANCE_PATHS)
+
+    for owner in (
+        "src/napari_vipp/core/richardson_lucy.py",
+        "src/napari_vipp/core/richardson_lucy_compute.py",
+        "src/napari_vipp/core/richardson_lucy_parity.py",
+    ):
+        assert owner in paths
+    for shared in (
+        "src/napari_vipp/core/operations.py",
+        "src/napari_vipp/core/compute_specs.py",
+        "src/napari_vipp/core/compute_policy.py",
+        "src/napari_vipp/core/compute_benchmark_adapter.py",
+    ):
+        assert shared not in paths
+
+
+def test_source_provenance_detects_each_owner_but_ignores_shared_registries(
+    performance_script,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    tracked = tuple(performance_script.SOURCE_PROVENANCE_PATHS)
+    unrelated = Path("src/napari_vipp/core/compute_benchmark_adapter.py")
+    for relative_path in (*tracked, str(unrelated)):
+        destination = tmp_path / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((PROJECT_ROOT / relative_path).read_bytes())
+    monkeypatch.setattr(performance_script, "PROJECT_ROOT", tmp_path)
+    baseline = performance_script._source_provenance()
+
+    unrelated_path = tmp_path / unrelated
+    unrelated_path.write_bytes(unrelated_path.read_bytes() + b"\n# unrelated edit\n")
+    assert performance_script._source_provenance() == baseline
+
+    for relative_path in tracked:
+        owner = tmp_path / relative_path
+        original = owner.read_bytes()
+        owner.write_bytes(original + b"\n# owner edit\n")
+        assert performance_script._source_provenance() != baseline
+        owner.write_bytes(original)
+
+
 def test_help_is_cpu_safe_in_a_fresh_process():
     command = [sys.executable, str(SCRIPT_PATH), "--help"]
     completed = subprocess.run(

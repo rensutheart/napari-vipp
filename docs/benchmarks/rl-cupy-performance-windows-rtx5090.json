@@ -697,7 +697,7 @@
   "source_provenance": [
     {
       "path": "scripts/benchmark_gpu_rl_performance.py",
-      "sha256": "f67d779e3d19525a0eabd7c0e52db4e1028b4160fd6c405fa9de5ba31c3feceb"
+      "sha256": "d57d17d009d42f7fbb65fa5a688f076067299232d0a5fca6926789d2c7d6979c"
     },
     {
       "path": "src/napari_vipp/core/compute.py",
@@ -712,36 +712,32 @@
       "sha256": "ec9fcc5ab10dedc29942924790c7071bfd13eae108db1e3631b4470bbbffbf3d"
     },
     {
-      "path": "src/napari_vipp/core/compute_benchmark_adapter.py",
-      "sha256": "f43d8f9bdf44dc6b1785755eeba077970eb3a08faf19aac27114712e64c0b0a1"
-    },
-    {
       "path": "src/napari_vipp/core/compute_planning.py",
       "sha256": "65f8bdd03b2420f99487393873069b87385ed27b5bd36f2d03cec1117f8d7c13"
-    },
-    {
-      "path": "src/napari_vipp/core/compute_policy.py",
-      "sha256": "99ddf98e5d419bb0c44a1bdfd5f45dbef2a211e5712e000b49f45cbed8550c23"
     },
     {
       "path": "src/napari_vipp/core/compute_registry.py",
       "sha256": "87059870d3faad47c1b409d75a8f88ac4d1388a89cf48c66e9d00fa62cf992f8"
     },
     {
-      "path": "src/napari_vipp/core/compute_specs.py",
-      "sha256": "03e78b9598c116f24f1de261c1a766572183a8d794ec0e84c460d84afc81c5a5"
-    },
-    {
       "path": "src/napari_vipp/core/node_execution.py",
       "sha256": "c4e2d82b1d4cfc72d8a0d6b7ca71ae7c002f5c988d6df7de619cb417c863e5bb"
     },
     {
-      "path": "src/napari_vipp/core/operations.py",
-      "sha256": "025b4110311d19227dcbc5ec7a9d83da54efd255cc632ea767ae7c83f2283234"
-    },
-    {
       "path": "src/napari_vipp/core/progress.py",
       "sha256": "ae649699a5be68095f011c5640b02157f28eaff7c8d4d390b27acadac97710f3"
+    },
+    {
+      "path": "src/napari_vipp/core/richardson_lucy.py",
+      "sha256": "5683a70aa6308be7ba298de0924e087f5a1169d6d3ef230385f8a44a40de16df"
+    },
+    {
+      "path": "src/napari_vipp/core/richardson_lucy_compute.py",
+      "sha256": "986fa9dbaab5bf83edb5ed27f1b4628e22a3d802708e24a021f852c17d338530"
+    },
+    {
+      "path": "src/napari_vipp/core/richardson_lucy_parity.py",
+      "sha256": "2d425eb07f907373db1b4f0bbb42876dc043a7725f4f3cb44c89f0fc72635fe1"
     },
     {
       "path": "src/napari_vipp/core/gpu/cupy_rl.py",

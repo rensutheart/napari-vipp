@@ -315,13 +315,12 @@
   "schema_version": 1,
   "source_provenance": {
     "files": {
-      "scripts/benchmark_gpu_rl_admission.py": "79d36355744abcabce1dbe56e3d2bf2b7f86d3c6d1e3254b506ce86d06f77f43",
-      "src/napari_vipp/core/compute_benchmark_adapter.py": "f43d8f9bdf44dc6b1785755eeba077970eb3a08faf19aac27114712e64c0b0a1",
-      "src/napari_vipp/core/compute_policy.py": "99ddf98e5d419bb0c44a1bdfd5f45dbef2a211e5712e000b49f45cbed8550c23",
-      "src/napari_vipp/core/compute_specs.py": "03e78b9598c116f24f1de261c1a766572183a8d794ec0e84c460d84afc81c5a5",
+      "scripts/benchmark_gpu_rl_admission.py": "64b205a64c98c4bfb64b93c2bd80ffaddbec066cb785a3e4e4f1c524740f6c85",
       "src/napari_vipp/core/gpu/cupy_rl.py": "57324d72ee3be40321590dc5f6c962f5f67a29354de319729f8fdb49d87fe415",
-      "src/napari_vipp/core/operations.py": "025b4110311d19227dcbc5ec7a9d83da54efd255cc632ea767ae7c83f2283234",
-      "src/napari_vipp/core/progress.py": "ae649699a5be68095f011c5640b02157f28eaff7c8d4d390b27acadac97710f3"
+      "src/napari_vipp/core/progress.py": "ae649699a5be68095f011c5640b02157f28eaff7c8d4d390b27acadac97710f3",
+      "src/napari_vipp/core/richardson_lucy.py": "5683a70aa6308be7ba298de0924e087f5a1169d6d3ef230385f8a44a40de16df",
+      "src/napari_vipp/core/richardson_lucy_compute.py": "986fa9dbaab5bf83edb5ed27f1b4628e22a3d802708e24a021f852c17d338530",
+      "src/napari_vipp/core/richardson_lucy_parity.py": "2d425eb07f907373db1b4f0bbb42876dc043a7725f4f3cb44c89f0fc72635fe1"
     },
     "git": {
       "available": true,

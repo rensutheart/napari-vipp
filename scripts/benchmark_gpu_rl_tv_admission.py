@@ -78,13 +78,12 @@ SOURCE_PROVENANCE_PATHS = (
     "scripts/benchmark_gpu_rl_tv_admission.py",
     "scripts/benchmark_gpu_rl_admission.py",
     "scripts/validate_rl_tv_phantoms.py",
-    "src/napari_vipp/core/operations.py",
+    "src/napari_vipp/core/richardson_lucy.py",
+    "src/napari_vipp/core/richardson_lucy_compute.py",
+    "src/napari_vipp/core/richardson_lucy_parity.py",
     "src/napari_vipp/core/gpu/cupy_rl.py",
     "src/napari_vipp/core/gpu/cupy_rl_tv.py",
     "src/napari_vipp/core/gpu/cupy_runtime.py",
-    "src/napari_vipp/core/compute_benchmark_adapter.py",
-    "src/napari_vipp/core/compute_policy.py",
-    "src/napari_vipp/core/compute_specs.py",
     "src/napari_vipp/core/progress.py",
 )
 

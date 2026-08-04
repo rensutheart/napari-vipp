@@ -51131,19 +51131,27 @@
     "files": [
       {
         "relative_path": "scripts/benchmark_gpu_rl_tv_admission.py",
-        "sha256": "f194c4d4aa8e222f749b56365d648b937bd4076733036d0f55dd1186733970a8"
+        "sha256": "88c5d1d1c18222b9043da5a844c9d2c010f0ac972ecb0c4ad8c02e51d6f02f6e"
       },
       {
         "relative_path": "scripts/benchmark_gpu_rl_admission.py",
-        "sha256": "79d36355744abcabce1dbe56e3d2bf2b7f86d3c6d1e3254b506ce86d06f77f43"
+        "sha256": "64b205a64c98c4bfb64b93c2bd80ffaddbec066cb785a3e4e4f1c524740f6c85"
       },
       {
         "relative_path": "scripts/validate_rl_tv_phantoms.py",
-        "sha256": "794428ae9b1dc5624369a44f8f0047ef888b7935743edac3f772dea650d2acc5"
+        "sha256": "28d723be3973433ce8209cab6fb7adefef5c00211e9f30533fb3502858fb88c6"
       },
       {
-        "relative_path": "src/napari_vipp/core/operations.py",
-        "sha256": "025b4110311d19227dcbc5ec7a9d83da54efd255cc632ea767ae7c83f2283234"
+        "relative_path": "src/napari_vipp/core/richardson_lucy.py",
+        "sha256": "5683a70aa6308be7ba298de0924e087f5a1169d6d3ef230385f8a44a40de16df"
+      },
+      {
+        "relative_path": "src/napari_vipp/core/richardson_lucy_compute.py",
+        "sha256": "986fa9dbaab5bf83edb5ed27f1b4628e22a3d802708e24a021f852c17d338530"
+      },
+      {
+        "relative_path": "src/napari_vipp/core/richardson_lucy_parity.py",
+        "sha256": "2d425eb07f907373db1b4f0bbb42876dc043a7725f4f3cb44c89f0fc72635fe1"
       },
       {
         "relative_path": "src/napari_vipp/core/gpu/cupy_rl.py",
@@ -51156,18 +51164,6 @@
       {
         "relative_path": "src/napari_vipp/core/gpu/cupy_runtime.py",
         "sha256": "abc016e71e4b61fd8646477a28b010d57a353b5dfe04fd418a9c8ec71cb95955"
-      },
-      {
-        "relative_path": "src/napari_vipp/core/compute_benchmark_adapter.py",
-        "sha256": "f43d8f9bdf44dc6b1785755eeba077970eb3a08faf19aac27114712e64c0b0a1"
-      },
-      {
-        "relative_path": "src/napari_vipp/core/compute_policy.py",
-        "sha256": "99ddf98e5d419bb0c44a1bdfd5f45dbef2a211e5712e000b49f45cbed8550c23"
-      },
-      {
-        "relative_path": "src/napari_vipp/core/compute_specs.py",
-        "sha256": "03e78b9598c116f24f1de261c1a766572183a8d794ec0e84c460d84afc81c5a5"
       },
       {
         "relative_path": "src/napari_vipp/core/progress.py",
