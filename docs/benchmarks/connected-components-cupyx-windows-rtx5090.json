@@ -819,7 +819,7 @@
     "profile": "full"
   },
   "operation_contract": {
-    "sha256": "8c967b7247e876408834bdba8f479d499853f95c57b08447669ab447f5db81f0",
+    "sha256": "c3e85ee0d401a0946446bc46ca4781b8a7b387cf2aafe48ca4a3f73ee33872de",
     "snapshot": {
       "admission_tier": "public_auto_candidate",
       "array_domain": "cuda-cupy",
@@ -829,6 +829,7 @@
       "cancellation_policy_id": "spatial-block-boundary-cancel-v1",
       "dynamic_output_policy_id": "static-v1",
       "host_boundary": false,
+      "host_finalizer_ref": "",
       "implementation_id": "cupyx-connected-components-v1",
       "implementation_library_id": "cupyx",
       "implementation_version": "1",
@@ -2433,15 +2434,15 @@
     },
     {
       "path": "src/napari_vipp/core/compute_specs.py",
-      "sha256": "03e78b9598c116f24f1de261c1a766572183a8d794ec0e84c460d84afc81c5a5"
+      "sha256": "cb20e13da47d1e19420b63a8f205b521839a93973559ccfe343575911c7673cd"
     },
     {
       "path": "src/napari_vipp/core/compute_policy.py",
-      "sha256": "99ddf98e5d419bb0c44a1bdfd5f45dbef2a211e5712e000b49f45cbed8550c23"
+      "sha256": "94c2776cc424998e5c3344e34b38a3f466bf662d25d83349af1957b1bb63780a"
     },
     {
       "path": "src/napari_vipp/core/compute_benchmark_adapter.py",
-      "sha256": "f43d8f9bdf44dc6b1785755eeba077970eb3a08faf19aac27114712e64c0b0a1"
+      "sha256": "e0e218778df5d02708b1b2801f475201be4fa4005ead6c6f66a0778848179741"
     },
     {
       "path": "scripts/benchmark_gpu_connected_components.py",

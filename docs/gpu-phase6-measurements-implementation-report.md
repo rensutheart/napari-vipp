@@ -47,8 +47,8 @@ inputs.
 The first region deliberately leaves the following on CPU with an explicit
 reason:
 
-- other label dtypes, negative labels, non-native byte order, or facts that
-  cannot prove the non-negative label contract;
+- otherwise valid non-negative integer label arrays outside native-endian
+  `int32`, or facts that cannot yet prove the non-negative label contract;
 - other intensity dtypes, non-finite float32 intensity, or mismatched label and
   intensity shapes;
 - unresolved ranks outside 2D/3D, empty spatial blocks, or a spatial block at
@@ -57,7 +57,10 @@ reason:
   group.
 
 Invalid authored shapes or parameters retain the CPU operation's error
-semantics. Missing or unqualified CUDA/CuPy/cuCIM, insufficient VRAM, and other
+semantics. Boolean or non-integer label domains and any negative label value are
+invalid for the authoritative CPU operation as well as the GPU provider; they
+raise the existing input-validation error and are not described as CPU
+fallbacks. Missing or unqualified CUDA/CuPy/cuCIM, insufficient VRAM, and other
 typed availability failures follow the existing visible/strict fallback policy;
 they do not silently coerce data or remove requested columns.
 

@@ -542,11 +542,14 @@ blocks and explicitly resolved spatial axes retain CPU row order, calibration,
 units, and independent block semantics.
 
 Extended shape, axis, 2D boundary, derived-ratio, and 2D moment columns remain
-on CPU. Other label/intensity dtypes, negative labels, incomplete non-negative
-or finite facts, invalid/mismatched layouts, empty spatial blocks, and blocks at
-or above the compact-label `int32` bound receive an explicit CPU reason. The
-provider never changes a dtype, drops requested columns, or substitutes a
-different table schema to gain GPU eligibility.
+on CPU. Otherwise valid non-negative integer label arrays outside native
+`int32`, unsupported intensity dtypes, incomplete non-negative or finite facts,
+empty spatial blocks, and blocks at or above the compact-label `int32` bound
+receive an explicit CPU reason. Boolean/non-integer labels, negative labels, and
+invalid or mismatched authored layouts are invalid for both CPU and GPU and
+retain the CPU validation error rather than appearing as fallbacks. The provider
+never changes a dtype, drops requested columns, or substitutes a different table
+schema to gain GPU eligibility.
 
 The resident provider emits a private C-contiguous packed `float64` matrix. A
 mandatory D2H transfer and operation-owned host finalizer reconstruct the exact

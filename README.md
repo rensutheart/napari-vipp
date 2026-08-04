@@ -320,10 +320,12 @@ IDs. The intensity-aware node additionally accepts a same-shape native `bool`,
 `uint8`, `uint16`, or finite `float32` image. The first promoted region covers
 the existing basic morphology and basic morphology-plus-intensity schemas;
 extended shape, axis, boundary, ratio, and moment columns visibly remain on CPU.
-Other label/intensity dtypes, negative labels, non-finite float32 intensity,
-invalid ranks/shapes, an unqualified cuCIM runtime, or insufficient VRAM also
-produce a specific CPU decision or fallback rather than an implicit cast or a
-changed table.
+Valid non-negative integer label arrays outside native `int32`, unsupported
+intensity dtypes, non-finite float32 intensity, an unqualified cuCIM runtime, or
+insufficient VRAM produce a specific CPU decision or fallback rather than an
+implicit cast or a changed table. Boolean/non-integer label domains, negative
+labels, and invalid input shapes are errors for the CPU and GPU operations; VIPP
+does not misreport those invalid inputs as fallbacks.
 
 The cuCIM provider returns a private resident packed `float64` matrix. VIPP
 copies it to the host, cleans up the CUDA scope, and only then runs the mandatory

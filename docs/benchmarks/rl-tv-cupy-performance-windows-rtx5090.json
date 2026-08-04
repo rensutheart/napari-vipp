@@ -513,7 +513,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute.py",
-      "sha256": "70c4a589739b0b826cfa355f09f2710e62c9a233815e43fc993db2f611e7e78a"
+      "sha256": "3c9a677904973bd0e8df5a76204d08ec6a8bf85ad96f51eeae891b2e657b7f66"
     },
     {
       "path": "src/napari_vipp/core/accelerator_lease.py",
@@ -521,7 +521,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute_benchmark.py",
-      "sha256": "ec9fcc5ab10dedc29942924790c7071bfd13eae108db1e3631b4470bbbffbf3d"
+      "sha256": "fc893a52e1dc16c101986afee9a6bb37e6bfe9382fe2f1e0e1d442c246764f6a"
     },
     {
       "path": "src/napari_vipp/core/compute_planning.py",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute_registry.py",
-      "sha256": "87059870d3faad47c1b409d75a8f88ac4d1388a89cf48c66e9d00fa62cf992f8"
+      "sha256": "cccac7c98695988f55c975e54fdea26c7c42c6494477dc538b58978cba4d3a3a"
     },
     {
       "path": "src/napari_vipp/core/node_execution.py",
