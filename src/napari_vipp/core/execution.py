@@ -556,6 +556,16 @@ def _pipeline_execution_failure(
             fallback_records=fallback_records,
         )
 
+    if error_type == "ComputePreflightError":
+        return PipelineExecutionFailure(
+            kind="compute_preflight",
+            error_type=error_type,
+            message=message,
+            reason_code="compute_preflight_rejected",
+            cleanup_succeeded=True,
+            fallback_records=fallback_records,
+        )
+
     failure = getattr(exc, "failure", None)
     failure_kind = getattr(getattr(failure, "kind", None), "value", "")
     if failure is not None and failure_kind:

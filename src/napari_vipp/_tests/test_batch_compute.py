@@ -37,7 +37,10 @@ from napari_vipp.core.compute import (
     MemoryTopology,
     NodeExecutionDecision,
 )
-from napari_vipp.core.execution import PipelineRunResult
+from napari_vipp.core.execution import (
+    PipelineExecutionFailure,
+    PipelineRunResult,
+)
 from napari_vipp.core.execution_provenance import serialize_execution_provenance
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
@@ -303,6 +306,49 @@ def test_cleanup_failure_blocks_staging_and_publication(tmp_path, monkeypatch):
     assert result.manifest.items[1].status is BatchStatus.SKIPPED
     assert "runtime is no longer trusted" in result.manifest.items[1].error_message
     assert not list(config.output_dir.glob("*.npy"))
+
+
+def test_compute_preflight_failure_does_not_poison_later_batch_items(
+    tmp_path,
+    monkeypatch,
+):
+    workflow, config, _output_id = _image_batch(tmp_path, item_count=2)
+    original_execute = batch_module.execute_pipeline_request
+    calls = 0
+
+    def fail_first_preflight(request, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            message = "Compute preflight rejected the first workload."
+            return PipelineRunResult(
+                request.run_id,
+                request.workflow,
+                error=message,
+                failure=PipelineExecutionFailure(
+                    kind="compute_preflight",
+                    error_type="ComputePreflightError",
+                    message=message,
+                    reason_code="compute_preflight_rejected",
+                    cleanup_succeeded=True,
+                ),
+            )
+        return original_execute(request, **kwargs)
+
+    monkeypatch.setattr(
+        batch_module,
+        "execute_pipeline_request",
+        fail_first_preflight,
+    )
+
+    result = run_batch(workflow, config)
+
+    assert calls == 2
+    assert result.manifest.items[0].status is BatchStatus.FAILED
+    assert result.manifest.items[0].error_type != "BatchRuntimeCleanupError"
+    assert result.manifest.items[0].execution["cleanup_succeeded"] is True
+    assert result.manifest.items[1].status is BatchStatus.COMPLETED
+    assert result.manifest.compute["runtime_cleanup_succeeded"] is True
 
 
 def test_pre_cancelled_batch_is_first_class_and_never_discovers_accelerator(

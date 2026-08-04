@@ -4,10 +4,16 @@ import threading
 
 import numpy as np
 
+import napari_vipp.core.execution as execution_module
 from napari_vipp.core.compute import (
     ComputeMode,
     ComputeRequest,
+    DecisionReason,
     ExecutionFallbackRecord,
+)
+from napari_vipp.core.compute_planning import (
+    ComputePreflightError,
+    ComputePreflightFailure,
 )
 from napari_vipp.core.execution import (
     PipelineExecutionFailure,
@@ -205,6 +211,24 @@ def test_terminal_failure_serializes_prior_oom_retry_attempts():
     )
 
     assert failure.as_dict()["fallback_records"] == [record.as_dict()]
+
+
+def test_compute_preflight_failure_proves_no_device_cleanup_was_required():
+    failure = ComputePreflightFailure(
+        node_id="median-1",
+        operation_id="median_filter",
+        preference=ComputeRequest(mode="selective").preference_for("median-1"),
+        reason=DecisionReason.WORKLOAD_UNSUPPORTED,
+        reason_text="The exact workload is not eligible.",
+    )
+
+    detail = execution_module._pipeline_execution_failure(
+        ComputePreflightError((failure,))
+    )
+
+    assert detail.kind == "compute_preflight"
+    assert detail.reason_code == "compute_preflight_rejected"
+    assert detail.cleanup_succeeded is True
 
 
 def test_accelerated_planning_error_preserves_only_resolved_source_boundary():
