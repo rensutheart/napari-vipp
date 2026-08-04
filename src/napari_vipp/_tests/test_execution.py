@@ -83,6 +83,45 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
     np.testing.assert_array_equal(result.pipeline.outputs["input"], data)
 
 
+def test_cpu_report_keeps_pruned_intermediate_implementation_decisions():
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.set_param(median.id, "size", 3)
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+    data = np.arange(42, dtype=np.float32).reshape(6, 7)
+
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=8,
+            workflow=serialize_workflow(pipeline),
+            input_data=data,
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            retain_node_ids=frozenset({median.id}),
+            prune_unretained=True,
+        )
+    )
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    assert tuple(
+        (decision.node_id, decision.implementation_id)
+        for decision in result.execution_report.actual_decisions
+    ) == (
+        (gaussian.id, "cpu-gaussian_blur-v1"),
+        (median.id, "cpu-median_filter-v1"),
+    )
+    assert result.pipeline.outputs[gaussian.id] is None
+    assert gaussian.id not in result.pipeline.completed_node_ids
+    assert result.pipeline.outputs[median.id] is not None
+
+
 def test_execute_pipeline_request_reports_invalid_workflow_without_raising():
     request = PipelineRunRequest(
         run_id=11,

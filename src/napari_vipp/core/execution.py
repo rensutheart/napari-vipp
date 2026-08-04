@@ -2940,13 +2940,14 @@ def _publish_cpu_compute_provenance(
     source_scientific_contexts: Mapping[str, str],
 ) -> tuple[NodeExecutionDecision, ...]:
     decisions: list[NodeExecutionDecision] = []
-    for node_id in node_ids:
+    scheduled_node_ids = frozenset(node_ids)
+    for node_id in pipeline.topological_order():
+        if node_id not in scheduled_node_ids:
+            continue
         node = pipeline.nodes.get(node_id)
         if (
             node is None
             or not pipeline.operation_spec(node.operation_id).has_input
-            or node_id not in pipeline.completed_node_ids
-            or not pipeline._has_cached_output(node_id)
         ):
             continue
         preference = request.compute_request.preference_for(node_id)
