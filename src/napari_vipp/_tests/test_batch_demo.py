@@ -147,6 +147,7 @@ def test_synthetic_batch_demo_plan_and_headless_run_match_ground_truth(
         "completed": 3,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert len(validation.checks) == 5
@@ -182,6 +183,7 @@ def test_generated_batch_runner_resolves_its_sibling_config(tmp_path):
         "completed": 3,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
 
@@ -213,6 +215,7 @@ def test_synthetic_batch_demo_error_skip_and_overwrite_replay_policies(tmp_path)
         "completed": 0,
         "partial": 0,
         "skipped": 3,
+        "cancelled": 0,
         "failed": 0,
     }
     assert not skip_result.saved_paths

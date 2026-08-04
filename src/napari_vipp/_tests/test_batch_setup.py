@@ -11,6 +11,7 @@ from napari_vipp.core.batch_setup import (
     batch_source_rows,
     build_collection_batch_config,
 )
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import serialize_workflow
 
@@ -85,6 +86,35 @@ def test_build_collection_batch_config_maps_explicit_sources_and_outputs(tmp_pat
     assert not config.save_python_script
     assert not config.continue_on_error
     assert config.workflow_sha256 == scientific_workflow_hash(workflow)
+
+
+def test_build_collection_batch_config_preserves_full_compute_request(tmp_path):
+    pipeline, _output_id = _explicit_batch_pipeline()
+    workflow = serialize_workflow(pipeline)
+    input_dir = tmp_path / "inputs"
+    input_dir.mkdir()
+    request = ComputeRequest(
+        mode="selective",
+        node_preferences={"input": "cpu"},
+        fallback_policy="strict",
+        runtime_id="cuda-cupy",
+        device_id="cuda:1",
+        precision_policy_id="scientific-default-v1",
+        workload_policy_id="vipp-best-available-v1",
+        accelerator_memory_cap_bytes=4_000_000_000,
+        accelerator_safety_reserve_bytes=500_000_000,
+        allow_experimental=True,
+    )
+
+    config = build_collection_batch_config(
+        workflow,
+        input_dir=input_dir,
+        output_dir=tmp_path / "outputs",
+        compute_request=request,
+    )
+
+    assert config.compute_request == request
+    assert config.to_dict()["compute"] == request.as_dict()
 
 
 def test_build_collection_batch_config_uses_collection_source_and_terminal_fallback(

@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -24,7 +25,7 @@ from enum import StrEnum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as package_version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from napari_vipp import __version__ as VIPP_VERSION
 from napari_vipp.core.atomic_io import (
@@ -36,10 +37,20 @@ from napari_vipp.core.atomic_io import (
 from napari_vipp.core.atomic_io import (
     atomic_write_text,
 )
-from napari_vipp.core.compute import ComputeRequest
+from napari_vipp.core.compute import ComputeMode, ComputeRequest
+from napari_vipp.core.execution import (
+    PipelineExecutionFailure,
+    PipelineRunRequest,
+    execute_pipeline_request,
+)
+from napari_vipp.core.execution_provenance import (
+    execution_provenance_digest,
+    serialize_execution_provenance,
+)
 from napari_vipp.core.io import read_image
 from napari_vipp.core.operations import save_array_output
 from napari_vipp.core.pipeline import PrototypePipeline, SourcePayload
+from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     LocalSourceIdentity,
     SourceChangedError,
@@ -49,10 +60,14 @@ from napari_vipp.core.source_identity import (
 from napari_vipp.core.tables import is_table_data, save_table_output
 from napari_vipp.core.workflow import deserialize_workflow
 
+if TYPE_CHECKING:
+    from napari_vipp.core.compute_registry import ComputeRegistry
+    from napari_vipp.core.execution import ComputePlanner
+
 BATCH_CONFIG_TYPE = "napari-vipp-batch-config"
-BATCH_CONFIG_VERSION = 1
+BATCH_CONFIG_VERSION = 2
 BATCH_MANIFEST_TYPE = "napari-vipp-batch-manifest"
-BATCH_MANIFEST_VERSION = 1
+BATCH_MANIFEST_VERSION = 2
 
 BATCH_CONFIG_FILENAME = "vipp_batch_config.json"
 BATCH_MANIFEST_FILENAME = "vipp_batch_manifest.json"
@@ -109,7 +124,30 @@ class BatchStatus(StrEnum):
     COMPLETED = "completed"
     PARTIAL = "partial"
     SKIPPED = "skipped"
+    CANCELLED = "cancelled"
     FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class BatchExecutionProgress:
+    """Nested operation progress tagged with its containing batch item."""
+
+    item_index: int
+    item_total: int
+    batch_id: str
+    node_id: str
+    operation_id: str
+    current: int
+    total: int
+    message: str = ""
+
+
+class BatchExecutionError(RuntimeError):
+    """One isolated execution service call failed for a batch item."""
+
+
+class BatchRuntimeCleanupError(RuntimeError):
+    """A batch item could not prove accelerator cleanup before publication."""
 
 
 @dataclass(frozen=True)
@@ -242,6 +280,7 @@ class BatchConfig:
     save_python_script: bool = True
     continue_on_error: bool = True
     pairing_policy: str = PAIRING_POLICY
+    compute_request: ComputeRequest = field(default_factory=ComputeRequest)
     base_dir: Path | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -269,6 +308,8 @@ class BatchConfig:
             raise ValueError(
                 f"Unsupported batch pairing policy: {self.pairing_policy!r}."
             )
+        if not isinstance(self.compute_request, ComputeRequest):
+            raise TypeError("Batch config compute_request must be a ComputeRequest.")
         for name in (
             "save_workflow_snapshot",
             "save_python_script",
@@ -302,6 +343,7 @@ class BatchConfig:
                 "save_python_script": self.save_python_script,
             },
             "continue_on_error": self.continue_on_error,
+            "compute": self.compute_request.as_dict(),
         }
 
     @classmethod
@@ -320,16 +362,22 @@ class BatchConfig:
             "defaults",
             "artifacts",
             "continue_on_error",
+            "compute",
         }
-        _reject_unknown_keys(data, allowed, "Batch config")
         if data.get("type") != BATCH_CONFIG_TYPE:
             raise ValueError("File is not a napari-vipp batch config.")
         raw_version = data.get("version")
-        if type(raw_version) is not int or raw_version != BATCH_CONFIG_VERSION:
+        if type(raw_version) is not int or raw_version not in {
+            1,
+            BATCH_CONFIG_VERSION,
+        }:
             raise ValueError(
                 f"Unsupported batch config version: {raw_version!r}. "
-                f"Expected version {BATCH_CONFIG_VERSION}."
+                f"Expected version 1 or {BATCH_CONFIG_VERSION}."
             )
+        if raw_version == 1:
+            allowed.remove("compute")
+        _reject_unknown_keys(data, allowed, "Batch config")
         workflow = _require_object(data.get("workflow"), "Batch config workflow")
         _reject_unknown_keys(workflow, {"file", "sha256"}, "Batch config workflow")
         defaults = _require_object(data.get("defaults"), "Batch config defaults")
@@ -359,6 +407,17 @@ class BatchConfig:
             raise ValueError(
                 f"Unsupported existing-file policy: {policy_text!r}."
             ) from exc
+        if raw_version == 1:
+            compute_request = ComputeRequest(mode=ComputeMode.CPU)
+        else:
+            compute_document = _require_object(
+                data.get("compute"),
+                "Batch config compute",
+            )
+            try:
+                compute_request = ComputeRequest.from_dict(compute_document)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Batch config compute is invalid: {exc}") from exc
         return cls(
             workflow_file=Path(
                 _required_text(workflow, "file", "batch config workflow")
@@ -385,6 +444,7 @@ class BatchConfig:
             ),
             continue_on_error=_required_bool(data, "continue_on_error", "batch config"),
             pairing_policy=_required_text(data, "pairing_policy", "batch config"),
+            compute_request=compute_request,
             base_dir=(
                 Path(base_dir).expanduser().resolve() if base_dir is not None else None
             ),
@@ -479,6 +539,8 @@ class BatchOutputRecord:
     size_bytes: int | None = None
     overwrote_existing: bool = False
     existing_identity: dict[str, int] = field(default_factory=dict)
+    provenance_status: str = "not_produced"
+    execution_provenance_sha256: str = ""
     error_type: str = ""
     error_message: str = ""
 
@@ -493,12 +555,17 @@ class BatchOutputRecord:
             "existing_file_policy": self.existing_file_policy.value,
             "existed_at_preflight": self.existed_at_preflight,
             "overwrote_existing": self.overwrote_existing,
+            "provenance_status": self.provenance_status,
             "status": self.status.value,
         }
         if self.existing_identity:
             result["existing_identity"] = dict(self.existing_identity)
         if self.size_bytes is not None:
             result["size_bytes"] = self.size_bytes
+        if self.execution_provenance_sha256:
+            result["execution_provenance_sha256"] = (
+                self.execution_provenance_sha256
+            )
         if self.error_type:
             result["error"] = {
                 "type": self.error_type,
@@ -518,6 +585,8 @@ class BatchItemRecord:
     status: BatchStatus = BatchStatus.PENDING
     started_at: str = ""
     finished_at: str = ""
+    execution: dict[str, object] = field(default_factory=dict)
+    execution_provenance_sha256: str = ""
     error_type: str = ""
     error_message: str = ""
 
@@ -533,6 +602,12 @@ class BatchItemRecord:
             result["started_at"] = self.started_at
         if self.finished_at:
             result["finished_at"] = self.finished_at
+        if self.execution:
+            result["execution"] = _json_safe(self.execution)
+        if self.execution_provenance_sha256:
+            result["execution_provenance_sha256"] = (
+                self.execution_provenance_sha256
+            )
         if self.error_type:
             result["error"] = {
                 "type": self.error_type,
@@ -549,12 +624,14 @@ class BatchManifest:
     started_at: str
     workflow_sha256: str
     config_sha256: str
+    effective_config_sha256: str
     workflow_file: str
     config_file: str
     output_dir: str
     runtime: dict[str, object]
     workflow_document: dict[str, object]
     config_document: dict[str, object]
+    compute: dict[str, object]
     items: tuple[BatchItemRecord, ...]
     item_records_dir: str = ""
     finished_at: str = ""
@@ -567,6 +644,7 @@ class BatchManifest:
                 BatchStatus.COMPLETED,
                 BatchStatus.PARTIAL,
                 BatchStatus.SKIPPED,
+                BatchStatus.CANCELLED,
                 BatchStatus.FAILED,
             )
         }
@@ -585,10 +663,12 @@ class BatchManifest:
             "config": {
                 "file": self.config_file,
                 "sha256": self.config_sha256,
+                "effective_sha256": self.effective_config_sha256,
                 "document": _json_safe(self.config_document),
             },
             "output_dir": self.output_dir,
             "runtime": _json_safe(self.runtime),
+            "compute": _json_safe(self.compute),
             "summary": self.summary,
             "items": [item.to_dict() for item in self.items],
         }
@@ -623,9 +703,16 @@ class BatchRunResult:
     @property
     def has_failures(self) -> bool:
         return any(
-            bool(item.error_type)
+            (bool(item.error_type) and item.status is not BatchStatus.CANCELLED)
             or item.status == BatchStatus.FAILED
             or any(output.status == BatchStatus.FAILED for output in item.outputs)
+            for item in self.manifest.items
+        ) or not bool(self.manifest.compute.get("runtime_cleanup_succeeded", True))
+
+    @property
+    def cancelled(self) -> bool:
+        return any(
+            item.status is BatchStatus.CANCELLED
             for item in self.manifest.items
         )
 
@@ -696,6 +783,33 @@ def scientific_workflow_hash(workflow: object) -> str:
 
 def batch_config_hash(config: BatchConfig) -> str:
     return _document_hash(config.to_dict())
+
+
+def effective_batch_compute_request(
+    config: BatchConfig,
+    override: ComputeRequest | None = None,
+) -> ComputeRequest:
+    """Resolve a run-scoped override without mutating durable config intent."""
+
+    if not isinstance(config, BatchConfig):
+        raise TypeError("config must be a BatchConfig.")
+    if override is None:
+        return config.compute_request
+    if not isinstance(override, ComputeRequest):
+        raise TypeError("compute_request override must be a ComputeRequest or None.")
+    return override
+
+
+def effective_batch_config_hash(
+    config: BatchConfig,
+    compute_request: ComputeRequest | None = None,
+) -> str:
+    """Hash the config as executed, including a non-mutating run override."""
+
+    effective = effective_batch_compute_request(config, compute_request)
+    document = config.to_dict()
+    document["compute"] = effective.as_dict()
+    return _document_hash(document)
 
 
 def load_batch_config(path: str | Path) -> BatchConfig:
@@ -1065,7 +1179,12 @@ def run_batch_from_files(
     workflow_path: str | Path | None,
     config_path: str | Path,
     *,
+    compute_request: ComputeRequest | None = None,
+    cancel_event: threading.Event | None = None,
     progress_callback: Callable[[int, int, str, str], None] | None = None,
+    execution_progress_callback: (
+        Callable[[BatchExecutionProgress], None] | None
+    ) = None,
 ) -> BatchRunResult:
     """Load a saved workflow/config pair and execute it headlessly."""
     if not str(config_path).strip():
@@ -1082,7 +1201,10 @@ def run_batch_from_files(
         config,
         workflow_path=workflow_source,
         config_path=config_source,
+        compute_request=compute_request,
+        cancel_event=cancel_event,
         progress_callback=progress_callback,
+        execution_progress_callback=execution_progress_callback,
     )
 
 
@@ -1093,15 +1215,28 @@ def run_batch(
     workflow_path: str | Path | None = None,
     config_path: str | Path | None = None,
     plan: BatchPlan | None = None,
+    compute_request: ComputeRequest | None = None,
+    cancel_event: threading.Event | None = None,
     progress_callback: Callable[[int, int, str, str], None] | None = None,
+    execution_progress_callback: (
+        Callable[[BatchExecutionProgress], None] | None
+    ) = None,
+    compute_registry: ComputeRegistry | None = None,
+    compute_planner: ComputePlanner | None = None,
 ) -> BatchRunResult:
     """Execute a deterministic batch plan with checkpointed provenance."""
+    effective_request = effective_batch_compute_request(config, compute_request)
     workflow_sha256 = scientific_workflow_hash(workflow)
     pipeline, fixed_source_paths = _validated_batch_pipeline(
         workflow,
         config,
         workflow_sha256,
         workflow_path=workflow_path,
+    )
+    _validate_compute_request_node_ids(
+        pipeline,
+        effective_request,
+        label="Effective batch compute request",
     )
     if plan is None:
         plan = build_batch_plan(config)
@@ -1126,11 +1261,14 @@ def run_batch(
         plan,
         workflow_sha256,
         batch_config_hash(config),
+        effective_batch_config_hash(config, effective_request),
         workflow_label,
         config_label,
         scientific_workflow_document(workflow),
         config.to_dict(),
         fixed_source_paths,
+        effective_request,
+        override_used=compute_request is not None,
     )
     manifest_archive_path = plan.output_dir / (
         f"vipp_batch_manifest_{manifest.run_id}.json"
@@ -1142,13 +1280,66 @@ def run_batch(
     saved_paths: list[Path] = []
     output_node_ids = tuple(output.node_id for output in config.outputs)
     total = len(plan.items)
+    active_registry = compute_registry
+    owns_registry = False
+    runtime_cleanup_error: Exception | None = None
+    try:
+        for item_position, item_plan in enumerate(plan.items):
+            if _cancel_requested(cancel_event):
+                manifest = _cancel_from_item(
+                    manifest,
+                    start_index=item_position,
+                    reason="Batch cancelled before this item started.",
+                    compute_request=effective_request,
+                )
+                for cancelled_item in manifest.items[item_position:]:
+                    _try_save_item_record(item_records_dir, cancelled_item)
+                break
 
-    for item_position, item_plan in enumerate(plan.items):
-        item_record = manifest.items[item_position]
-        skipped_record = _fully_skipped_item_record(item_record, item_plan)
-        if skipped_record is not None:
-            item_record = skipped_record
+            item_record = manifest.items[item_position]
+            skipped_record = _fully_skipped_item_record(item_record, item_plan)
+            if skipped_record is not None:
+                item_record = skipped_record
+                manifest = manifest.replace_item(item_record)
+                _report_progress(
+                    progress_callback,
+                    item_plan.index,
+                    total,
+                    item_plan.batch_id,
+                    "running",
+                )
+                record_error = _try_save_item_record(item_records_dir, item_record)
+                if record_error is not None:
+                    item_record = _with_item_record_write_failure(
+                        item_record,
+                        record_error,
+                    )
+                    manifest = manifest.replace_item(item_record)
+                _report_progress(
+                    progress_callback,
+                    item_plan.index,
+                    total,
+                    item_plan.batch_id,
+                    item_record.status.value,
+                )
+                if item_record.error_type and not config.continue_on_error:
+                    manifest = _skip_remaining_items(
+                        manifest,
+                        start_index=item_position + 1,
+                        reason="Not run because continue_on_error is disabled.",
+                    )
+                    for remaining_item in manifest.items[item_position + 1 :]:
+                        _try_save_item_record(item_records_dir, remaining_item)
+                    break
+                continue
+
+            item_record = replace(
+                item_record,
+                status=BatchStatus.RUNNING,
+                started_at=_timestamp(),
+            )
             manifest = manifest.replace_item(item_record)
+            _try_save_item_record(item_records_dir, item_record)
             _report_progress(
                 progress_callback,
                 item_plan.index,
@@ -1156,6 +1347,455 @@ def run_batch(
                 item_plan.batch_id,
                 "running",
             )
+
+            item_error: Exception | None = None
+            item_cancelled = False
+            publication_blocked = False
+            sources = list(item_record.sources)
+            source_paths: dict[str, Path] = {}
+            source_identities: dict[str, LocalSourceIdentity] = {}
+            item_pipeline = pipeline
+            (
+                node_started,
+                node_finished,
+                operation_progress,
+                completed_node_ids,
+            ) = _batch_execution_callbacks(
+                item_index=item_plan.index,
+                item_total=total,
+                batch_id=item_plan.batch_id,
+                pipeline=pipeline,
+                callback=execution_progress_callback,
+            )
+            try:
+                source_paths = _item_source_paths(
+                    pipeline,
+                    item_plan,
+                    fixed_source_paths,
+                )
+                source_identities = _capture_item_source_identities(
+                    source_paths,
+                    cancel_event=cancel_event,
+                    progress_callback=execution_progress_callback,
+                    item_index=item_plan.index,
+                    item_total=total,
+                    batch_id=item_plan.batch_id,
+                )
+                payloads, sources = _source_payloads_for_item(
+                    pipeline,
+                    item_plan,
+                    config,
+                    source_paths,
+                    source_identities,
+                )
+                if (
+                    effective_request.mode is not ComputeMode.CPU
+                    and active_registry is None
+                ):
+                    from napari_vipp.core.compute_registry import ComputeRegistry
+
+                    active_registry = ComputeRegistry()
+                    owns_registry = True
+
+                execution_result = execute_pipeline_request(
+                    PipelineRunRequest(
+                        run_id=item_plan.index,
+                        workflow=workflow,
+                        input_data=None,
+                        input_metadata=None,
+                        input_name="",
+                        source_payloads=payloads,
+                        compute_request=effective_request,
+                        manual_node_ids=frozenset(pipeline.manual_node_ids()),
+                        retain_node_ids=frozenset(output_node_ids),
+                        prune_unretained=True,
+                        cancel_event=cancel_event,
+                    ),
+                    node_started_callback=node_started,
+                    node_finished_callback=node_finished,
+                    progress_callback=operation_progress,
+                    compute_registry=active_registry,
+                    compute_planner=compute_planner,
+                )
+                if execution_result.pipeline is not None:
+                    item_pipeline = execution_result.pipeline
+                execution = serialize_execution_provenance(
+                    effective_request,
+                    execution_result.pipeline,
+                    execution_result.execution_report,
+                    completed_node_ids=completed_node_ids,
+                    implementation_specs=(
+                        ()
+                        if active_registry is None
+                        else active_registry.implementation_specs
+                    ),
+                    failure=execution_result.failure,
+                )
+                execution["status"] = execution["outcome"]
+                provenance_sha256 = execution_provenance_digest(execution)
+                item_record = replace(
+                    item_record,
+                    sources=tuple(sources),
+                    execution=execution,
+                    execution_provenance_sha256=provenance_sha256,
+                )
+                manifest = manifest.replace_item(item_record)
+                # Checkpoint actual decisions or typed terminal failure before
+                # any output staging or source-dependent publication begins.
+                _try_save_item_record(item_records_dir, item_record)
+                if execution.get("cleanup_succeeded") is not True:
+                    publication_blocked = True
+                if execution_result.cancelled:
+                    raise OperationCancelled(
+                        execution_result.error or "Batch execution cancelled."
+                    )
+                if execution_result.error:
+                    raise BatchExecutionError(execution_result.error)
+                if (
+                    execution_result.execution_report is not None
+                    and not execution_result.execution_report.cleanup_succeeded
+                ):
+                    publication_blocked = True
+                    raise BatchRuntimeCleanupError(
+                        "The accelerator runtime did not clean up completely; "
+                        "outputs were not published."
+                    )
+            except OperationCancelled as exc:
+                item_cancelled = True
+                item_error = exc
+                item_record = replace(item_record, sources=tuple(sources))
+            except Exception as exc:
+                item_error = exc
+                item_record = replace(item_record, sources=tuple(sources))
+            finally:
+                output_records = list(item_record.outputs)
+                staged_outputs: dict[int, _StagedBatchOutput] = {}
+                if _cancel_requested(cancel_event):
+                    item_cancelled = True
+                    if item_error is None:
+                        item_error = OperationCancelled("Batch execution cancelled.")
+
+                if publication_blocked:
+                    output_records = [
+                        replace(
+                            output_record,
+                            status=BatchStatus.FAILED,
+                            size_bytes=None,
+                            overwrote_existing=False,
+                            error_type="BatchRuntimeCleanupError",
+                            error_message=str(item_error),
+                        )
+                        for output_record in output_records
+                    ]
+                elif item_cancelled:
+                    output_records = [
+                        replace(
+                            output_record,
+                            status=BatchStatus.CANCELLED,
+                            error_type="OperationCancelled",
+                            error_message=str(item_error or "Batch cancelled."),
+                        )
+                        for output_record in output_records
+                    ]
+                else:
+                    # Fully stage every available branch first. This forces lazy
+                    # arrays to finish reading without publishing an output.
+                    for output_index, output_plan in enumerate(item_plan.outputs):
+                        _report_batch_phase(
+                            execution_progress_callback,
+                            item_index=item_plan.index,
+                            item_total=total,
+                            batch_id=item_plan.batch_id,
+                            node_id=output_plan.node_id,
+                            operation_id="batch_stage_output",
+                            current=output_index,
+                            total=len(item_plan.outputs),
+                            message=(
+                                f"Staging output {output_index + 1}/"
+                                f"{len(item_plan.outputs)} privately. The writer "
+                                "may finish its current file before cancellation "
+                                "is observed."
+                            ),
+                        )
+                        output_record = output_records[output_index]
+                        output_checkpoint_changed = False
+                        if (
+                            item_error is not None
+                            and item_pipeline.outputs.get(output_plan.node_id) is None
+                        ):
+                            output_record = replace(
+                                output_record,
+                                status=BatchStatus.FAILED,
+                                error_type=type(item_error).__name__,
+                                error_message=str(item_error),
+                            )
+                            output_checkpoint_changed = True
+                        else:
+                            try:
+                                staged = _save_planned_output(
+                                    item_pipeline,
+                                    output_plan,
+                                )
+                            except _SkippedOutput as exc:
+                                output_record = replace(
+                                    output_record,
+                                    status=BatchStatus.SKIPPED,
+                                    error_type="",
+                                    error_message=str(exc),
+                                )
+                                output_checkpoint_changed = True
+                            except Exception as exc:
+                                output_record = replace(
+                                    output_record,
+                                    status=BatchStatus.FAILED,
+                                    error_type=type(exc).__name__,
+                                    error_message=str(exc),
+                                )
+                                output_checkpoint_changed = True
+                            else:
+                                staged_outputs[output_index] = staged
+                        output_records[output_index] = output_record
+                        running_record = replace(
+                            item_record,
+                            sources=tuple(sources),
+                            outputs=tuple(output_records),
+                        )
+                        manifest = manifest.replace_item(running_record)
+                        if output_checkpoint_changed:
+                            _try_save_item_record(item_records_dir, running_record)
+                        _report_batch_phase(
+                            execution_progress_callback,
+                            item_index=item_plan.index,
+                            item_total=total,
+                            batch_id=item_plan.batch_id,
+                            node_id=output_plan.node_id,
+                            operation_id="batch_stage_output",
+                            current=output_index + 1,
+                            total=len(item_plan.outputs),
+                            message=(
+                                f"Staged output {output_index + 1}/"
+                                f"{len(item_plan.outputs)}."
+                            ),
+                        )
+                        if _cancel_requested(cancel_event):
+                            item_cancelled = True
+                            item_error = OperationCancelled(
+                                "Batch cancelled while staging private outputs."
+                            )
+                            break
+
+                if item_cancelled and not publication_blocked:
+                    for staged in staged_outputs.values():
+                        _cleanup_staged_output(staged)
+                    staged_outputs.clear()
+                    output_records = [
+                        output_record
+                        if output_record.status is BatchStatus.SKIPPED
+                        else replace(
+                            output_record,
+                            status=BatchStatus.CANCELLED,
+                            size_bytes=None,
+                            overwrote_existing=False,
+                            error_type="OperationCancelled",
+                            error_message=str(item_error or "Batch cancelled."),
+                        )
+                        for output_record in output_records
+                    ]
+
+                source_change_error: SourceChangedError | None = None
+                if (
+                    not item_cancelled
+                    and not publication_blocked
+                    and source_identities
+                ):
+                    try:
+                        _verify_item_source_identities(
+                            source_paths,
+                            source_identities,
+                            cancel_event=cancel_event,
+                            progress_callback=execution_progress_callback,
+                            item_index=item_plan.index,
+                            item_total=total,
+                            batch_id=item_plan.batch_id,
+                        )
+                    except OperationCancelled as exc:
+                        item_cancelled = True
+                        item_error = exc
+                    except SourceChangedError as exc:
+                        source_change_error = exc
+                        item_error = exc
+
+                if item_cancelled:
+                    for staged in staged_outputs.values():
+                        _cleanup_staged_output(staged)
+                    staged_outputs.clear()
+                    output_records = [
+                        output_record
+                        if output_record.status is BatchStatus.SKIPPED
+                        else replace(
+                            output_record,
+                            status=BatchStatus.CANCELLED,
+                            size_bytes=None,
+                            overwrote_existing=False,
+                            error_type="OperationCancelled",
+                            error_message=str(item_error or "Batch cancelled."),
+                        )
+                        for output_record in output_records
+                    ]
+
+                if source_change_error is not None:
+                    for staged in staged_outputs.values():
+                        _cleanup_staged_output(staged)
+                    staged_outputs.clear()
+                    output_records = [
+                        replace(
+                            output_record,
+                            status=BatchStatus.FAILED,
+                            size_bytes=None,
+                            overwrote_existing=False,
+                            error_type=type(source_change_error).__name__,
+                            error_message=str(source_change_error),
+                        )
+                        for output_record in output_records
+                    ]
+                    running_record = replace(
+                        item_record,
+                        sources=tuple(sources),
+                        outputs=tuple(output_records),
+                    )
+                    manifest = manifest.replace_item(running_record)
+                elif not item_cancelled and not publication_blocked:
+                    # All source-dependent bytes are private and stable. Do not
+                    # observe cancellation once multi-output atomic promotion
+                    # begins: stopping there would create an avoidable partial
+                    # publication set.
+                    staged_items = tuple(staged_outputs.items())
+                    for staged_position, (output_index, staged) in enumerate(
+                        staged_items
+                    ):
+                        output_record = output_records[output_index]
+                        _report_batch_phase(
+                            execution_progress_callback,
+                            item_index=item_plan.index,
+                            item_total=total,
+                            batch_id=item_plan.batch_id,
+                            node_id=staged.plan.node_id,
+                            operation_id="batch_publish_output",
+                            current=staged_position,
+                            total=len(staged_items),
+                            message=(
+                                f"Publishing output {staged_position + 1}/"
+                                f"{len(staged_items)} atomically."
+                            ),
+                        )
+                        try:
+                            saved = _promote_staged_output(staged)
+                        except _SkippedOutput as exc:
+                            output_record = replace(
+                                output_record,
+                                status=BatchStatus.SKIPPED,
+                                error_type="",
+                                error_message=str(exc),
+                            )
+                        except Exception as exc:
+                            output_record = replace(
+                                output_record,
+                                status=BatchStatus.FAILED,
+                                error_type=type(exc).__name__,
+                                error_message=str(exc),
+                            )
+                        else:
+                            saved_paths.append(saved)
+                            try:
+                                size = (
+                                    saved.stat().st_size if saved.is_file() else None
+                                )
+                            except OSError:
+                                size = None
+                            output_record = replace(
+                                output_record,
+                                status=BatchStatus.COMPLETED,
+                                size_bytes=size,
+                                provenance_status="produced",
+                                execution_provenance_sha256=(
+                                    item_record.execution_provenance_sha256
+                                ),
+                                overwrote_existing=(
+                                    output_record.existed_at_preflight
+                                    and output_record.existing_file_policy
+                                    == ExistingFilePolicy.OVERWRITE
+                                ),
+                            )
+                        output_records[output_index] = output_record
+                        running_record = replace(
+                            item_record,
+                            sources=tuple(sources),
+                            outputs=tuple(output_records),
+                        )
+                        manifest = manifest.replace_item(running_record)
+                        if staged_position + 1 < len(staged_items):
+                            _try_save_item_record(item_records_dir, running_record)
+                        _report_batch_phase(
+                            execution_progress_callback,
+                            item_index=item_plan.index,
+                            item_total=total,
+                            batch_id=item_plan.batch_id,
+                            node_id=staged.plan.node_id,
+                            operation_id="batch_publish_output",
+                            current=staged_position + 1,
+                            total=len(staged_items),
+                            message=(
+                                f"Published output {staged_position + 1}/"
+                                f"{len(staged_items)}."
+                            ),
+                        )
+                item_record = replace(
+                    item_record,
+                    sources=tuple(sources),
+                    outputs=tuple(output_records),
+                )
+                item_pipeline.prune_cached_outputs(())
+
+            if item_error is not None and not item_record.execution:
+                item_record = _with_synthetic_execution_failure(
+                    item_record,
+                    effective_request,
+                    item_error,
+                    cancelled=item_cancelled,
+                )
+            if publication_blocked:
+                item_record = replace(
+                    item_record,
+                    status=BatchStatus.FAILED,
+                    error_type="BatchRuntimeCleanupError",
+                    error_message=str(item_error),
+                )
+            elif item_cancelled:
+                item_record = replace(
+                    item_record,
+                    status=BatchStatus.CANCELLED,
+                    error_type="OperationCancelled",
+                    error_message=str(item_error or "Batch cancelled."),
+                )
+            elif item_error is not None:
+                derived_status = _item_status(item_record.outputs)
+                item_record = replace(
+                    item_record,
+                    status=(
+                        BatchStatus.FAILED
+                        if derived_status == BatchStatus.FAILED
+                        else BatchStatus.PARTIAL
+                    ),
+                    error_type=type(item_error).__name__,
+                    error_message=str(item_error),
+                )
+            else:
+                item_record = replace(
+                    item_record,
+                    status=_item_status(item_record.outputs),
+                )
+            item_record = replace(item_record, finished_at=_timestamp())
+            manifest = manifest.replace_item(item_record)
             record_error = _try_save_item_record(item_records_dir, item_record)
             if record_error is not None:
                 item_record = _with_item_record_write_failure(
@@ -1170,249 +1810,80 @@ def run_batch(
                 item_plan.batch_id,
                 item_record.status.value,
             )
-            if item_record.error_type and not config.continue_on_error:
+
+            if item_cancelled and not publication_blocked:
+                manifest = _skip_remaining_items(
+                    manifest,
+                    start_index=item_position + 1,
+                    reason="Not run because the batch was cancelled.",
+                )
+                for skipped_item in manifest.items[item_position + 1 :]:
+                    _try_save_item_record(item_records_dir, skipped_item)
+                break
+
+            if publication_blocked:
+                manifest = _skip_remaining_items(
+                    manifest,
+                    start_index=item_position + 1,
+                    reason=(
+                        "Not run because accelerator cleanup failed and the "
+                        "runtime is no longer trusted."
+                    ),
+                )
+                for skipped_item in manifest.items[item_position + 1 :]:
+                    _try_save_item_record(item_records_dir, skipped_item)
+                break
+
+            item_has_failure = bool(item_record.error_type) or (
+                item_record.status == BatchStatus.FAILED
+                or any(
+                    output.status == BatchStatus.FAILED
+                    for output in item_record.outputs
+                )
+            )
+            if item_has_failure and not config.continue_on_error:
                 manifest = _skip_remaining_items(
                     manifest,
                     start_index=item_position + 1,
                     reason="Not run because continue_on_error is disabled.",
                 )
-                for remaining_item in manifest.items[item_position + 1 :]:
-                    _try_save_item_record(item_records_dir, remaining_item)
+                for skipped_item in manifest.items[item_position + 1 :]:
+                    _try_save_item_record(item_records_dir, skipped_item)
                 break
-            continue
+    finally:
+        if owns_registry and active_registry is not None:
+            try:
+                active_registry.close()
+            except Exception as exc:
+                runtime_cleanup_error = exc
 
-        item_record = replace(
-            item_record,
-            status=BatchStatus.RUNNING,
-            started_at=_timestamp(),
+    compute_record = dict(manifest.compute)
+    actual_summary = _batch_actual_compute_summary(manifest.items)
+    compute_record["actual_summary"] = actual_summary
+    if not actual_summary["item_cleanup_succeeded"]:
+        compute_record["runtime_cleanup_succeeded"] = False
+    compute_record["item_execution_provenance"] = [
+        {
+            "index": item.index,
+            "batch_id": item.batch_id,
+            "sha256": item.execution_provenance_sha256,
+        }
+        for item in manifest.items
+        if item.execution_provenance_sha256
+    ]
+    if runtime_cleanup_error is not None:
+        compute_record["runtime_cleanup_succeeded"] = False
+        warnings = list(compute_record.get("warnings", []))
+        warnings.append(
+            "The batch accelerator runtime did not close cleanly: "
+            f"{type(runtime_cleanup_error).__name__}: {runtime_cleanup_error}"
         )
-        manifest = manifest.replace_item(item_record)
-        _try_save_item_record(item_records_dir, item_record)
-        _report_progress(
-            progress_callback,
-            item_plan.index,
-            total,
-            item_plan.batch_id,
-            "running",
-        )
-
-        item_error: Exception | None = None
-        sources = list(item_record.sources)
-        source_paths: dict[str, Path] = {}
-        source_identities: dict[str, LocalSourceIdentity] = {}
-        try:
-            source_paths = _item_source_paths(
-                pipeline,
-                item_plan,
-                fixed_source_paths,
-            )
-            source_identities = _capture_item_source_identities(source_paths)
-            payloads, sources = _source_payloads_for_item(
-                pipeline,
-                item_plan,
-                config,
-                source_paths,
-                source_identities,
-            )
-            pipeline.run(
-                None,
-                input_metadata=None,
-                input_name="",
-                source_payloads=payloads,
-                retain_node_ids=output_node_ids,
-                prune_unretained=True,
-            )
-        except Exception as exc:
-            item_error = exc
-            item_record = replace(item_record, sources=tuple(sources))
-        finally:
-            # Fully stage every available branch first. This forces lazy arrays
-            # to finish reading their sources without publishing an output.
-            output_records = list(item_record.outputs)
-            staged_outputs: dict[int, _StagedBatchOutput] = {}
-            for output_index, output_plan in enumerate(item_plan.outputs):
-                output_record = output_records[output_index]
-                output_checkpoint_changed = False
-                if (
-                    item_error is not None
-                    and pipeline.outputs.get(output_plan.node_id) is None
-                ):
-                    output_record = replace(
-                        output_record,
-                        status=BatchStatus.FAILED,
-                        error_type=type(item_error).__name__,
-                        error_message=str(item_error),
-                    )
-                    output_checkpoint_changed = True
-                else:
-                    try:
-                        staged = _save_planned_output(pipeline, output_plan)
-                    except _SkippedOutput as exc:
-                        output_record = replace(
-                            output_record,
-                            status=BatchStatus.SKIPPED,
-                            error_type="",
-                            error_message=str(exc),
-                        )
-                        output_checkpoint_changed = True
-                    except Exception as exc:
-                        output_record = replace(
-                            output_record,
-                            status=BatchStatus.FAILED,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                        )
-                        output_checkpoint_changed = True
-                    else:
-                        staged_outputs[output_index] = staged
-                output_records[output_index] = output_record
-                running_record = replace(
-                    item_record,
-                    sources=tuple(sources),
-                    outputs=tuple(output_records),
-                )
-                manifest = manifest.replace_item(running_record)
-                if output_checkpoint_changed:
-                    _try_save_item_record(item_records_dir, running_record)
-
-            source_change_error: SourceChangedError | None = None
-            if source_identities:
-                try:
-                    _verify_item_source_identities(
-                        source_paths,
-                        source_identities,
-                    )
-                except SourceChangedError as exc:
-                    source_change_error = exc
-                    item_error = exc
-
-            if source_change_error is not None:
-                for staged in staged_outputs.values():
-                    _cleanup_staged_output(staged)
-                staged_outputs.clear()
-                output_records = [
-                    replace(
-                        output_record,
-                        status=BatchStatus.FAILED,
-                        size_bytes=None,
-                        overwrote_existing=False,
-                        error_type=type(source_change_error).__name__,
-                        error_message=str(source_change_error),
-                    )
-                    for output_record in output_records
-                ]
-                running_record = replace(
-                    item_record,
-                    sources=tuple(sources),
-                    outputs=tuple(output_records),
-                )
-                manifest = manifest.replace_item(running_record)
-            else:
-                # All source-dependent bytes are now private and stable. Only
-                # atomic promotion remains; it cannot read a source again.
-                staged_items = tuple(staged_outputs.items())
-                for staged_position, (output_index, staged) in enumerate(staged_items):
-                    output_record = output_records[output_index]
-                    try:
-                        saved = _promote_staged_output(staged)
-                    except _SkippedOutput as exc:
-                        output_record = replace(
-                            output_record,
-                            status=BatchStatus.SKIPPED,
-                            error_type="",
-                            error_message=str(exc),
-                        )
-                    except Exception as exc:
-                        output_record = replace(
-                            output_record,
-                            status=BatchStatus.FAILED,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                        )
-                    else:
-                        saved_paths.append(saved)
-                        try:
-                            size = saved.stat().st_size if saved.is_file() else None
-                        except OSError:
-                            size = None
-                        output_record = replace(
-                            output_record,
-                            status=BatchStatus.COMPLETED,
-                            size_bytes=size,
-                            overwrote_existing=(
-                                output_record.existed_at_preflight
-                                and output_record.existing_file_policy
-                                == ExistingFilePolicy.OVERWRITE
-                            ),
-                        )
-                    output_records[output_index] = output_record
-                    running_record = replace(
-                        item_record,
-                        sources=tuple(sources),
-                        outputs=tuple(output_records),
-                    )
-                    manifest = manifest.replace_item(running_record)
-                    if staged_position + 1 < len(staged_items):
-                        _try_save_item_record(item_records_dir, running_record)
-            item_record = replace(
-                item_record,
-                sources=tuple(sources),
-                outputs=tuple(output_records),
-            )
-            pipeline.prune_cached_outputs(())
-
-        if item_error is not None:
-            derived_status = _item_status(item_record.outputs)
-            item_record = replace(
-                item_record,
-                status=(
-                    BatchStatus.FAILED
-                    if derived_status == BatchStatus.FAILED
-                    else BatchStatus.PARTIAL
-                ),
-                error_type=type(item_error).__name__,
-                error_message=str(item_error),
-            )
-        else:
-            item_record = replace(
-                item_record,
-                status=_item_status(item_record.outputs),
-            )
-        item_record = replace(item_record, finished_at=_timestamp())
-        manifest = manifest.replace_item(item_record)
-        record_error = _try_save_item_record(item_records_dir, item_record)
-        if record_error is not None:
-            item_record = _with_item_record_write_failure(
-                item_record,
-                record_error,
-            )
-            manifest = manifest.replace_item(item_record)
-        _report_progress(
-            progress_callback,
-            item_plan.index,
-            total,
-            item_plan.batch_id,
-            item_record.status.value,
-        )
-
-        item_has_failure = bool(item_record.error_type) or (
-            item_record.status == BatchStatus.FAILED
-            or any(
-                output.status == BatchStatus.FAILED
-                for output in item_record.outputs
-            )
-        )
-        if item_has_failure and not config.continue_on_error:
-            manifest = _skip_remaining_items(
-                manifest,
-                start_index=item_position + 1,
-                reason="Not run because continue_on_error is disabled.",
-            )
-            for skipped_item in manifest.items[item_position + 1 :]:
-                _try_save_item_record(item_records_dir, skipped_item)
-            break
-
-    manifest = replace(manifest, finished_at=_timestamp())
+        compute_record["warnings"] = warnings
+    manifest = replace(
+        manifest,
+        compute=compute_record,
+        finished_at=_timestamp(),
+    )
     _save_run_manifest(manifest_path, manifest_archive_path, manifest)
     return BatchRunResult(
         manifest,
@@ -1437,6 +1908,125 @@ def _report_progress(
         # Presentation hooks must never invalidate scientific execution or
         # provenance finalization.
         return
+
+
+def _report_execution_progress(
+    callback: Callable[[BatchExecutionProgress], None] | None,
+    update: BatchExecutionProgress,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(update)
+    except Exception:
+        # Presentation hooks must not invalidate computation or publication.
+        return
+
+
+def _report_batch_phase(
+    callback: Callable[[BatchExecutionProgress], None] | None,
+    *,
+    item_index: int,
+    item_total: int,
+    batch_id: str,
+    node_id: str,
+    operation_id: str,
+    current: int,
+    total: int,
+    message: str,
+) -> None:
+    _report_execution_progress(
+        callback,
+        BatchExecutionProgress(
+            item_index=item_index,
+            item_total=item_total,
+            batch_id=batch_id,
+            node_id=node_id,
+            operation_id=operation_id,
+            current=current,
+            total=total,
+            message=message,
+        ),
+    )
+
+
+def _batch_execution_callbacks(
+    *,
+    item_index: int,
+    item_total: int,
+    batch_id: str,
+    pipeline: PrototypePipeline,
+    callback: Callable[[BatchExecutionProgress], None] | None,
+) -> tuple[
+    Callable[[str], None],
+    Callable[[Any], None],
+    Callable[[str, int, int, str], None],
+    list[str],
+]:
+    """Build item-bound callbacks without retaining loop variables."""
+
+    state = {"node_id": ""}
+    completed_node_ids: list[str] = []
+
+    def node_started(node_id: str) -> None:
+        state["node_id"] = str(node_id)
+        node = pipeline.nodes.get(state["node_id"])
+        _report_execution_progress(
+            callback,
+            BatchExecutionProgress(
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=state["node_id"],
+                operation_id="" if node is None else str(node.operation_id),
+                current=0,
+                total=0,
+                message="Node started.",
+            ),
+        )
+
+    def node_finished(result: Any) -> None:
+        completed_node_ids.append(str(result.node_id))
+        _report_execution_progress(
+            callback,
+            BatchExecutionProgress(
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=str(result.node_id),
+                operation_id=str(result.operation_id),
+                current=1,
+                total=1,
+                message="Node completed.",
+            ),
+        )
+        state["node_id"] = ""
+
+    def operation_progress(
+        operation_id: str,
+        current: int,
+        operation_total: int,
+        message: str,
+    ) -> None:
+        _report_execution_progress(
+            callback,
+            BatchExecutionProgress(
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=state["node_id"],
+                operation_id=str(operation_id),
+                current=int(current),
+                total=int(operation_total),
+                message=str(message),
+            ),
+        )
+
+    return node_started, node_finished, operation_progress, completed_node_ids
+
+
+def _cancel_requested(cancel_event: threading.Event | None) -> bool:
+    return cancel_event is not None and cancel_event.is_set()
 
 
 def preflight_batch(
@@ -1505,13 +2095,18 @@ def _validated_batch_pipeline(
         )
     restored = deserialize_workflow(workflow)
     pipeline = PrototypePipeline()
-    # Pass 4 preserves workflow-v4 compute intent here, but batch GPU execution
-    # remains disabled until Pass 5. The legacy batch engine therefore restores
-    # only the graph and continues to execute its established CPU path.
+    # The graph and the durable batch request are validated independently.  A
+    # run-scoped override may change execution intent without mutating either
+    # the workflow document or attached batch configuration.
     pipeline.restore_graph(
         restored["nodes"],
         restored["connections"],
         restored.get("output_tunnels", ()),
+    )
+    _validate_compute_request_node_ids(
+        pipeline,
+        config.compute_request,
+        label="Batch config compute request",
     )
     fixed_source_paths = _validate_pipeline_config(
         pipeline,
@@ -1519,6 +2114,21 @@ def _validated_batch_pipeline(
         workflow_path=workflow_path,
     )
     return pipeline, fixed_source_paths
+
+
+def _validate_compute_request_node_ids(
+    pipeline: PrototypePipeline,
+    request: ComputeRequest,
+    *,
+    label: str,
+) -> None:
+    unknown = set(request.node_preferences) - set(pipeline.nodes)
+    if unknown:
+        raise ValueError(
+            f"{label} references missing node IDs: "
+            + ", ".join(sorted(unknown))
+            + "."
+        )
 
 
 def _plan_output(
@@ -1840,19 +2450,85 @@ def _item_source_paths(
 
 def _capture_item_source_identities(
     source_paths: dict[str, Path],
+    *,
+    cancel_event: threading.Event | None,
+    progress_callback: Callable[[BatchExecutionProgress], None] | None,
+    item_index: int,
+    item_total: int,
+    batch_id: str,
 ) -> dict[str, LocalSourceIdentity]:
-    return {
-        node_id: capture_local_source_identity(path)
-        for node_id, path in source_paths.items()
-    }
+    identities: dict[str, LocalSourceIdentity] = {}
+    for node_id, path in source_paths.items():
+        identities[node_id] = capture_local_source_identity(
+            path,
+            cancel_callback=(
+                None if cancel_event is None else cancel_event.is_set
+            ),
+            progress_callback=_source_identity_progress_callback(
+                callback=progress_callback,
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=node_id,
+                operation_id="batch_capture_source_identity",
+            ),
+        )
+    return identities
 
 
 def _verify_item_source_identities(
     source_paths: dict[str, Path],
     source_identities: dict[str, LocalSourceIdentity],
+    *,
+    cancel_event: threading.Event | None,
+    progress_callback: Callable[[BatchExecutionProgress], None] | None,
+    item_index: int,
+    item_total: int,
+    batch_id: str,
 ) -> None:
     for node_id, path in source_paths.items():
-        verify_local_source_identity(path, source_identities[node_id])
+        verify_local_source_identity(
+            path,
+            source_identities[node_id],
+            cancel_callback=(
+                None if cancel_event is None else cancel_event.is_set
+            ),
+            progress_callback=_source_identity_progress_callback(
+                callback=progress_callback,
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=node_id,
+                operation_id="batch_verify_source_identity",
+            ),
+        )
+
+
+def _source_identity_progress_callback(
+    *,
+    callback: Callable[[BatchExecutionProgress], None] | None,
+    item_index: int,
+    item_total: int,
+    batch_id: str,
+    node_id: str,
+    operation_id: str,
+) -> Callable[[int, int, str], None]:
+    def report(current: int, total: int, message: str) -> None:
+        _report_execution_progress(
+            callback,
+            BatchExecutionProgress(
+                item_index=item_index,
+                item_total=item_total,
+                batch_id=batch_id,
+                node_id=node_id,
+                operation_id=operation_id,
+                current=current,
+                total=total,
+                message=message,
+            ),
+        )
+
+    return report
 
 
 def _save_planned_output(
@@ -1955,11 +2631,15 @@ def _seed_manifest(
     plan: BatchPlan,
     workflow_sha256: str,
     config_sha256: str,
+    effective_config_sha256: str,
     workflow_file: str,
     config_file: str,
     workflow_document: dict[str, object],
     config_document: dict[str, object],
     fixed_source_paths: dict[str, Path],
+    effective_request: ComputeRequest,
+    *,
+    override_used: bool,
 ) -> BatchManifest:
     items = []
     for item in plan.items:
@@ -1991,12 +2671,21 @@ def _seed_manifest(
         started_at=_timestamp(),
         workflow_sha256=workflow_sha256,
         config_sha256=config_sha256,
+        effective_config_sha256=effective_config_sha256,
         workflow_file=workflow_file,
         config_file=config_file,
         output_dir=str(plan.output_dir),
         runtime=_runtime_versions(),
         workflow_document=workflow_document,
         config_document=config_document,
+        compute={
+            "configured_request": plan.config.compute_request.as_dict(),
+            "effective_request": effective_request.as_dict(),
+            "effective_request_fingerprint": effective_request.fingerprint,
+            "override_used": bool(override_used),
+            "runtime_cleanup_succeeded": True,
+            "warnings": [],
+        },
         items=tuple(items),
     )
 
@@ -2062,6 +2751,148 @@ def _skip_remaining_items(
             error_message=reason,
         )
     return replace(manifest, items=tuple(items))
+
+
+def _cancel_from_item(
+    manifest: BatchManifest,
+    *,
+    start_index: int,
+    reason: str,
+    compute_request: ComputeRequest,
+) -> BatchManifest:
+    """Mark the first unstarted item cancelled and later items not-run."""
+
+    if start_index >= len(manifest.items):
+        return manifest
+    items = list(manifest.items)
+    current = items[start_index]
+    current = _with_synthetic_execution_failure(
+        current,
+        compute_request,
+        OperationCancelled(reason),
+        cancelled=True,
+        reason_code="operation_cancelled_before_item",
+    )
+    outputs = tuple(
+        replace(
+            output,
+            status=BatchStatus.CANCELLED,
+            error_type="OperationCancelled",
+            error_message=reason,
+        )
+        for output in current.outputs
+    )
+    items[start_index] = replace(
+        current,
+        status=BatchStatus.CANCELLED,
+        outputs=outputs,
+        started_at=current.started_at or _timestamp(),
+        finished_at=_timestamp(),
+        error_type="OperationCancelled",
+        error_message=reason,
+    )
+    cancelled = replace(manifest, items=tuple(items))
+    return _skip_remaining_items(
+        cancelled,
+        start_index=start_index + 1,
+        reason="Not run because the batch was cancelled.",
+    )
+
+
+def _with_synthetic_execution_failure(
+    item: BatchItemRecord,
+    compute_request: ComputeRequest,
+    error: Exception,
+    *,
+    cancelled: bool,
+    reason_code: str = "batch_pre_execution_error",
+) -> BatchItemRecord:
+    """Attach typed evidence when no execution result could be produced."""
+
+    execution = serialize_execution_provenance(
+        compute_request,
+        None,
+        None,
+        failure=PipelineExecutionFailure(
+            kind="cancelled" if cancelled else "pre_execution_error",
+            error_type=type(error).__name__,
+            message=str(error).strip() or type(error).__name__,
+            reason_code=(
+                "operation_cancelled"
+                if cancelled and reason_code == "batch_pre_execution_error"
+                else reason_code
+            ),
+            cleanup_succeeded=True,
+        ),
+    )
+    execution["status"] = execution["outcome"]
+    provenance_sha256 = execution_provenance_digest(execution)
+    return replace(
+        item,
+        execution=execution,
+        execution_provenance_sha256=provenance_sha256,
+    )
+
+
+def _batch_actual_compute_summary(
+    items: tuple[BatchItemRecord, ...],
+) -> dict[str, object]:
+    nodes = [
+        node
+        for item in items
+        for node in item.execution.get("nodes", [])
+        if isinstance(node, dict)
+    ]
+    fallbacks = [
+        fallback
+        for item in items
+        for fallback in item.execution.get("fallback_records", [])
+        if isinstance(fallback, dict)
+    ]
+    runtime_ids = sorted(
+        {
+            str(actual.get("runtime_id", ""))
+            for node in nodes
+            if isinstance(node.get("actual_implementation"), dict)
+            for actual in (node["actual_implementation"],)
+            if str(actual.get("runtime_id", ""))
+        }
+    )
+    library_ids = sorted(
+        {
+            str(actual.get("implementation_library_id", ""))
+            for node in nodes
+            if isinstance(node.get("actual_implementation"), dict)
+            for actual in (node["actual_implementation"],)
+            if str(actual.get("implementation_library_id", ""))
+        }
+    )
+    implementation_ids = sorted(
+        {
+            str(actual.get("implementation_id", ""))
+            for node in nodes
+            if isinstance(node.get("actual_implementation"), dict)
+            for actual in (node["actual_implementation"],)
+            if str(actual.get("implementation_id", ""))
+        }
+    )
+    return {
+        "items_with_execution": sum(bool(item.execution) for item in items),
+        "nodes_executed": len(nodes),
+        "runtime_ids": runtime_ids,
+        "implementation_library_ids": library_ids,
+        "implementation_ids": implementation_ids,
+        "fallback_count": len(fallbacks),
+        "out_of_memory_fallback_count": sum(
+            fallback.get("reason") == "out_of_memory"
+            for fallback in fallbacks
+        ),
+        "item_cleanup_succeeded": all(
+            item.execution.get("cleanup_succeeded") is True
+            for item in items
+            if item.execution
+        ),
+    }
 
 
 def _runtime_versions() -> dict[str, object]:
@@ -2335,6 +3166,8 @@ __all__ = [
     "BATCH_SCRIPT_FILENAME",
     "BATCH_WORKFLOW_FILENAME",
     "BatchConfig",
+    "BatchExecutionError",
+    "BatchExecutionProgress",
     "BatchItemPlan",
     "BatchItemRecord",
     "BatchManifest",
@@ -2345,10 +3178,13 @@ __all__ = [
     "BatchRunResult",
     "BatchSourceConfig",
     "BatchStatus",
+    "BatchRuntimeCleanupError",
     "ExistingFilePolicy",
     "atomic_write_json",
     "atomic_write_text",
     "batch_config_hash",
+    "effective_batch_compute_request",
+    "effective_batch_config_hash",
     "build_batch_plan",
     "load_batch_config",
     "plan_batch",

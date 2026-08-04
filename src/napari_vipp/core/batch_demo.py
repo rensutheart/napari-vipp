@@ -367,7 +367,13 @@ def validate_synthetic_batch_demo(
     checks: list[str] = []
     _require(
         result.summary
-        == {"completed": 3, "partial": 0, "skipped": 0, "failed": 0},
+        == {
+            "completed": 3,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 0,
+        },
         f"Unexpected item summary: {result.summary}",
     )
     _require(len(result.saved_paths) == 9, "Expected exactly nine saved outputs.")

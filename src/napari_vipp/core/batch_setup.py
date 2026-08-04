@@ -21,6 +21,7 @@ from napari_vipp.core.batch import (
     scientific_workflow_hash,
     validate_batch_config,
 )
+from napari_vipp.core.compute import ComputeRequest
 from napari_vipp.core.pipeline import PrototypePipeline
 from napari_vipp.core.workflow import deserialize_workflow
 
@@ -36,13 +37,22 @@ def build_collection_batch_config(
     source_bindings: Sequence[Mapping[str, object]] | None = None,
     existing_file_policy: str = ExistingFilePolicy.ERROR.value,
     continue_on_error: bool = True,
+    compute_request: ComputeRequest | None = None,
 ) -> BatchConfig:
     """Translate one workflow and collection form into a validated config."""
     output_text = str(output_dir).strip()
     if not output_text:
         raise ValueError("Batch output folder cannot be blank.")
 
+    restored = deserialize_workflow(workflow)
     pipeline = pipeline_from_workflow(workflow)
+    effective_compute_request = (
+        restored["compute_request"]
+        if compute_request is None
+        else compute_request
+    )
+    if not isinstance(effective_compute_request, ComputeRequest):
+        raise TypeError("compute_request must be a ComputeRequest or None.")
     output_node_ids = batch_saved_node_ids(pipeline)
     if not output_node_ids:
         raise ValueError("The workflow has no outputs to save.")
@@ -75,6 +85,7 @@ def build_collection_batch_config(
         save_workflow_snapshot=True,
         save_python_script=save_python_script,
         continue_on_error=continue_on_error,
+        compute_request=effective_compute_request,
     )
     validate_batch_config(
         workflow,

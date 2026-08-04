@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 
+from napari_vipp.core.progress import OperationCancelled
 from napari_vipp.core.source_identity import (
     SourceChangedError,
     capture_local_source_identity,
@@ -63,3 +65,26 @@ def test_directory_identity_includes_regular_file_relative_path(tmp_path):
     first.rename(renamed)
 
     assert capture_local_source_identity(source).sha256 != original.sha256
+
+
+def test_source_identity_reports_byte_progress_and_cancels_between_chunks(tmp_path):
+    source = tmp_path / "large.bin"
+    source.write_bytes(b"x" * (3 * 1024 * 1024 + 17))
+    cancel_event = threading.Event()
+    updates = []
+
+    def progress(current, total, message):
+        updates.append((current, total, message))
+        if current >= 1024 * 1024:
+            cancel_event.set()
+
+    with pytest.raises(OperationCancelled, match="source identity"):
+        capture_local_source_identity(
+            source,
+            cancel_callback=cancel_event.is_set,
+            progress_callback=progress,
+        )
+
+    assert updates[0][0] == 0
+    assert updates[0][1] == source.stat().st_size
+    assert any(current >= 1024 * 1024 for current, _total, _message in updates)

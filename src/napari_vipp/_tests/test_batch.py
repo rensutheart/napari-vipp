@@ -630,6 +630,7 @@ def test_run_batch_writes_output_and_complete_provenance_manifest(tmp_path):
         "completed": 1,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert not result.has_failures
@@ -760,6 +761,7 @@ def test_zarr_chunk_change_fails_item_before_any_output_is_published(
         "completed": 0,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 1,
     }
     item = result.manifest.items[0]
@@ -868,6 +870,10 @@ def test_run_batch_executes_and_saves_table_batch_output(tmp_path):
     assert result.saved_paths == (table_path,)
     header = table_path.read_text(encoding="utf-8").splitlines()[0]
     assert "label" in header
+    actual_nodes = {
+        node["node_id"] for node in result.manifest.items[0].execution["nodes"]
+    }
+    assert measurements.id in actual_nodes
 
 
 def test_saved_workflow_and_relative_config_reproduce_output_paths(tmp_path):
@@ -965,6 +971,7 @@ def test_run_batch_continues_after_middle_source_read_failure(tmp_path):
         "completed": 2,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 1,
     }
     assert result.has_failures
@@ -1010,7 +1017,11 @@ def test_run_batch_recovers_when_a_later_item_checkpoint_succeeds(
 
     assert result.manifest.items[0].status == BatchStatus.COMPLETED
     assert not result.manifest.items[0].error_type
-    assert saved_statuses == [BatchStatus.RUNNING, BatchStatus.COMPLETED]
+    assert saved_statuses == [
+        BatchStatus.RUNNING,
+        BatchStatus.RUNNING,
+        BatchStatus.COMPLETED,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1148,6 +1159,7 @@ def test_run_batch_records_partial_item_when_one_output_save_fails(
         "completed": 0,
         "partial": 1,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert result.has_failures
@@ -1274,6 +1286,7 @@ def test_skip_rechecks_all_destinations_before_loading_or_calculating(
         output_ids,
         policy=ExistingFilePolicy.SKIP,
     )
+    config = replace(config, compute_request=ComputeRequest(mode="auto"))
     plan = build_batch_plan(config)
     destination = output_dir / "sample__output.npy"
     assert not plan.items[0].outputs[0].exists
@@ -1293,9 +1306,15 @@ def test_skip_rechecks_all_destinations_before_loading_or_calculating(
     def unexpected_run(*_args, **_kwargs):
         raise AssertionError("a fully skipped item must not calculate the graph")
 
+    def unexpected_registry(*_args, **_kwargs):
+        raise AssertionError("a fully skipped item must not discover accelerators")
+
+    import napari_vipp.core.compute_registry as registry_module
+
     monkeypatch.setattr(batch_module, "_save_item_record", record_item_status)
     monkeypatch.setattr(batch_module, "read_image", unexpected_read)
     monkeypatch.setattr(PrototypePipeline, "run", unexpected_run)
+    monkeypatch.setattr(registry_module, "ComputeRegistry", unexpected_registry)
 
     result = run_batch(workflow, config, plan=plan)
 
@@ -1349,6 +1368,7 @@ def test_mixed_completed_and_skipped_outputs_are_not_a_failure(tmp_path):
         "completed": 1,
         "partial": 1,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert not result.has_failures
