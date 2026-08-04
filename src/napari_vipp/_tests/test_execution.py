@@ -68,7 +68,9 @@ def test_execute_pipeline_request_materializes_a_detached_graph():
     assert result.error == ""
     assert not result.cancelled
     assert result.source_revisions == ("revision-1",)
-    assert result.execution_report is None
+    assert result.execution_report is not None
+    assert result.execution_report.request.mode is ComputeMode.CPU
+    assert result.execution_report.actual_decisions == ()
     assert result.pipeline is not None
     assert started == ["input"]
     assert [node.node_id for node in finished] == ["input"]

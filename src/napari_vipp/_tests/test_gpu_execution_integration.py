@@ -979,7 +979,13 @@ def test_cpu_request_does_not_construct_or_call_accelerator_services():
     )
 
     assert result.error == ""
-    assert result.execution_report is None
+    assert result.execution_report is not None
+    assert result.execution_report.request.mode is ComputeMode.CPU
+    assert result.execution_report.actual_decisions
+    assert all(
+        decision.runtime_id == "cpu-numpy"
+        for decision in result.execution_report.actual_decisions
+    )
     assert result.pipeline is not None
     np.testing.assert_array_equal(result.pipeline.outputs[gaussian.id], data)
 

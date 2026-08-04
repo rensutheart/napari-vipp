@@ -379,13 +379,17 @@ def execute_pipeline_request(
                 retain_node_ids=request.retain_node_ids,
                 prune_unretained=request.prune_unretained,
             )
-            _publish_cpu_compute_provenance(
+            actual_decisions = _publish_cpu_compute_provenance(
                 pipeline,
                 request,
                 cpu_schedule.runnable_node_ids,
                 source_scientific_contexts=source_scientific_contexts,
             )
-            execution_report = None
+            execution_report = ExecutionReport(
+                request=request.compute_request,
+                environment=ComputeEnvironment(),
+                actual_decisions=actual_decisions,
+            )
         else:
             execution_report = _execute_accelerated_pipeline(
                 pipeline,
@@ -2934,7 +2938,7 @@ def _publish_cpu_compute_provenance(
     node_ids: Sequence[str] | frozenset[str],
     *,
     source_scientific_contexts: Mapping[str, str],
-) -> None:
+) -> tuple[NodeExecutionDecision, ...]:
     decisions: list[NodeExecutionDecision] = []
     for node_id in node_ids:
         node = pipeline.nodes.get(node_id)
@@ -2972,6 +2976,7 @@ def _publish_cpu_compute_provenance(
             else None
         ),
     )
+    return tuple(decisions)
 
 
 def _publish_actual_compute_provenance(
