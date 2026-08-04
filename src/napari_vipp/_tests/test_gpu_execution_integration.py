@@ -53,6 +53,7 @@ from napari_vipp.core.compute_registry import (
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
+from napari_vipp.core.export import export_pipeline_to_python
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
 from napari_vipp.core.operations import gaussian_blur as cpu_gaussian_blur
 from napari_vipp.core.operations import median_filter as cpu_median_filter
@@ -542,7 +543,7 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         )
         if expected_device:
             assert selected is not None
-            assert expected_device.casefold() in selected.name.casefold()
+            assert expected_device.casefold() in selected.display_name.casefold()
         library = registry.probe_library("cupyx", refresh=True)
         if not library.available:
             pytest.fail(
@@ -706,6 +707,239 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
         _assert_private_cuda_scope_clean(runtime, probe.selected_device_id)
     finally:
         registry.close()
+
+
+@pytest.mark.real_cuda
+def test_real_generated_python_gpu_provenance_cancellation_and_reuse(
+    tmp_path,
+    monkeypatch,
+):
+    """Prove that exported Python preserves the shared CUDA execution contract."""
+
+    if os.environ.get("VIPP_RUN_REAL_CUDA_BATCH") != "1":
+        pytest.skip("Set VIPP_RUN_REAL_CUDA_BATCH=1 to run the real CUDA smoke.")
+    if importlib.util.find_spec("cupy") is None:
+        pytest.fail("Real CUDA smoke requested, but CuPy is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not probe.available or not probe.selected_device_id:
+            pytest.fail(
+                "Real CUDA smoke requested, but CUDA is unavailable: "
+                + (probe.message or "no selected device")
+            )
+        expected_device = os.environ.get("VIPP_EXPECT_CUDA_DEVICE", "").strip()
+        selected = next(
+            (
+                device
+                for device in probe.devices
+                if device.device_id == probe.selected_device_id
+            ),
+            None,
+        )
+        if expected_device:
+            assert selected is not None
+            assert expected_device.casefold() in selected.display_name.casefold()
+        library = registry.probe_library("cupyx", refresh=True)
+        if not library.available:
+            pytest.fail(
+                "Real CUDA smoke requested, but CuPyX is unavailable: "
+                + library.message
+            )
+    finally:
+        registry.close()
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    median = pipeline.add_node("median_filter")
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(median.id, "size", 3)
+    pipeline.set_param(gaussian.id, "sigma", 1.25)
+    assert pipeline.connect("input", median.id).success
+    assert pipeline.connect(median.id, gaussian.id).success
+
+    gpu_request = ComputeRequest(
+        mode=ComputeMode.SELECTIVE,
+        node_preferences={
+            median.id: "implementation:cupyx-median-filter-v1",
+            gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+        },
+        runtime_id="cuda-cupy",
+        device_id=probe.selected_device_id,
+        fallback_policy=FallbackPolicy.STRICT,
+    )
+    rng = np.random.default_rng(20260804)
+    source = rng.random((256, 320), dtype=np.float32) * np.float32(100.0)
+
+    cpu_request = ComputeRequest(
+        mode=ComputeMode.CPU,
+        fallback_policy=FallbackPolicy.STRICT,
+    )
+    cpu_result = execute_pipeline_request(
+        _accelerated_request(pipeline, source, cpu_request)
+    )
+    assert cpu_result.error == ""
+    assert cpu_result.pipeline is not None
+    expected = cpu_result.pipeline.outputs[gaussian.id]
+
+    script_path = tmp_path / "generated_cuda_pipeline.py"
+    script_path.write_text(
+        export_pipeline_to_python(pipeline, compute_request=gpu_request),
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location(
+        "vipp_generated_cuda_integration",
+        script_path,
+    )
+    assert spec is not None and spec.loader is not None
+    generated = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(generated)
+    embedded_request = json.loads(generated._WORKFLOW_JSON)["execution"]["compute"]
+    assert embedded_request["mode"] == "selective"
+    assert embedded_request["fallback_policy"] == "strict"
+    assert embedded_request["node_preferences"] == {
+        median.id: "implementation:cupyx-median-filter-v1",
+        gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+    }
+
+    # Generated execution owns its registry, so observe the actual provider
+    # boundary without replacing the registry or CUDA runtime itself.
+    from napari_vipp.core.gpu.cupy_runtime import CuPyRuntime
+
+    transfers = {"host_to_device": 0, "device_to_host": 0}
+    real_to_device = CuPyRuntime.to_device
+    real_to_host = CuPyRuntime.to_host
+
+    def counted_to_device(runtime, value, *, device_id=""):
+        transfers["host_to_device"] += 1
+        return real_to_device(runtime, value, device_id=device_id)
+
+    def counted_to_host(runtime, value):
+        transfers["device_to_host"] += 1
+        return real_to_host(runtime, value)
+
+    monkeypatch.setattr(CuPyRuntime, "to_device", counted_to_device)
+    monkeypatch.setattr(CuPyRuntime, "to_host", counted_to_host)
+
+    updates = []
+    gpu_results = generated.run_pipeline(
+        source,
+        input_metadata={"axes": "YX"},
+        compute_request=gpu_request,
+        progress_callback=lambda *update: updates.append(update),
+    )
+    assert gpu_results.effective_compute_request == gpu_request
+    report = gpu_results.execution_report
+    assert report is not None
+    assert report.cleanup_succeeded
+    assert report.fallback_records == ()
+    assert report.plan is not None
+    assert len(report.plan.segments) == 1
+    segment = report.plan.segments[0]
+    assert segment.node_ids == (median.id, gaussian.id)
+    assert tuple(
+        (port.node_id, port.port_index) for port in segment.entry_ports
+    ) == (("input", 0),)
+    assert transfers == {"host_to_device": 1, "device_to_host": 2}
+
+    decisions = {
+        decision.node_id: decision for decision in report.actual_decisions
+    }
+    for node_id, implementation_id in (
+        (median.id, "cupyx-median-filter-v1"),
+        (gaussian.id, "cupyx-gaussian-blur-v1"),
+    ):
+        decision = decisions[node_id]
+        assert decision.decision_kind is DecisionKind.SELECTED
+        assert decision.runtime_id == "cuda-cupy"
+        assert decision.implementation_library_id == "cupyx"
+        assert decision.implementation_id == implementation_id
+        exact = next(
+            item
+            for item in gpu_results.execution_provenance["nodes"]
+            if item["node_id"] == node_id
+        )
+        assert exact["actual_implementation"]["runtime_id"] == "cuda-cupy"
+        assert exact["actual_implementation"]["implementation_id"] == (
+            implementation_id
+        )
+        assert exact["actual_implementation"]["implementation_version"]
+
+    assert gpu_results.execution_provenance["fallback_records"] == []
+    assert gpu_results.execution_provenance["cleanup_succeeded"] is True
+    assert any(
+        update[0] == median.id and update[3].startswith("Node started")
+        for update in updates
+    )
+    parity = operation_parity(
+        "gaussian_blur",
+        expected,
+        gpu_results[gaussian.id],
+        input_dtypes=(source.dtype,),
+    )
+    assert parity.passed, parity.detail
+
+    output_path = generated.save_image(
+        gpu_results[gaussian.id],
+        tmp_path / "generated-result.npy",
+        image_state=gpu_results.image_states[gaussian.id],
+        provenance=gpu_results,
+        output_node_id=gaussian.id,
+    )
+    sidecar = json.loads(
+        Path(f"{output_path}.vipp-provenance.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["execution"]["cleanup_succeeded"] is True
+    assert sidecar["execution"]["fallback_records"] == []
+    assert sidecar["output"]["node_id"] == gaussian.id
+    assert sidecar["output"]["execution_provenance_sha256"] == (
+        gpu_results.output_provenance[gaussian.id]["output"][
+            "execution_provenance_sha256"
+        ]
+    )
+
+    cancel_event = threading.Event()
+    cancelled_updates = []
+
+    def cancel_on_second_node(node_id, current, total, message):
+        cancelled_updates.append((node_id, current, total, message))
+        if node_id == gaussian.id and message.startswith("Node started"):
+            cancel_event.set()
+
+    with pytest.raises(generated.OperationCancelled) as caught:
+        generated.run_pipeline(
+            source,
+            input_metadata={"axes": "YX"},
+            compute_request=gpu_request,
+            progress_callback=cancel_on_second_node,
+            cancel_event=cancel_event,
+        )
+    cancelled_execution = caught.value.provenance["execution"]
+    assert cancelled_execution["outcome"] == "cancelled"
+    assert cancelled_execution["failure"]["kind"] == "cancelled"
+    assert cancelled_execution["failure"]["reason_code"] == (
+        "operation_cancelled"
+    )
+    assert cancelled_execution["cleanup_succeeded"] is True
+    assert any(update[0] == gaussian.id for update in cancelled_updates)
+
+    # A successful third call proves that generated cancellation did not leave
+    # CUDA state unusable.  The exported API owns and closes each registry.
+    reusable = generated.run_pipeline(
+        source,
+        input_metadata={"axes": "YX"},
+        compute_request=gpu_request,
+    )
+    assert reusable.execution_report.cleanup_succeeded
+    assert reusable.execution_provenance["fallback_records"] == []
+    retry_parity = operation_parity(
+        "gaussian_blur",
+        expected,
+        reusable[gaussian.id],
+        input_dtypes=(source.dtype,),
+    )
+    assert retry_parity.passed, retry_parity.detail
 
 
 def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
