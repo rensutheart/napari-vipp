@@ -721,22 +721,25 @@ def build_scientific_result_key(
             "dependencies": dependencies,
             "scientifically_relevant_runtime": runtime_properties,
         }
+        implementation_contract = {
+            "runtime_id": spec.runtime_id,
+            "array_domain": spec.array_domain,
+            "implementation_library_id": spec.implementation_library_id,
+            "input_ports": [_port_payload(port) for port in spec.input_ports],
+            "output_port": _port_payload(output_contract),
+            "parameter_policy_id": spec.parameter_policy_id,
+            "parity_policy_id": spec.parity_policy_id,
+            "shape_policy_id": spec.shape_policy_id,
+            "boundary_policy_id": spec.boundary_policy_id,
+            "precision_policy_id": spec.precision_policy_id,
+            "side_effect_policy_id": spec.side_effect_policy_id,
+            "dynamic_output_policy_id": spec.dynamic_output_policy_id,
+        }
+        if spec.host_finalizer_ref:
+            implementation_contract["host_finalizer_ref"] = spec.host_finalizer_ref
         scientific_contract: object = {
             "declared_result_contract_id": declared_result_contract,
-            "implementation_contract": {
-                "runtime_id": spec.runtime_id,
-                "array_domain": spec.array_domain,
-                "implementation_library_id": spec.implementation_library_id,
-                "input_ports": [_port_payload(port) for port in spec.input_ports],
-                "output_port": _port_payload(output_contract),
-                "parameter_policy_id": spec.parameter_policy_id,
-                "parity_policy_id": spec.parity_policy_id,
-                "shape_policy_id": spec.shape_policy_id,
-                "boundary_policy_id": spec.boundary_policy_id,
-                "precision_policy_id": spec.precision_policy_id,
-                "side_effect_policy_id": spec.side_effect_policy_id,
-                "dynamic_output_policy_id": spec.dynamic_output_policy_id,
-            },
+            "implementation_contract": implementation_contract,
         }
         parameter_policy_identity: object = spec.parameter_policy_id
         resolved_output_contract_id = canonical_digest(

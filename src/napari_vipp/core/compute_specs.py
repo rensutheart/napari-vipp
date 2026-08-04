@@ -499,6 +499,145 @@ def _connected_components_spec() -> OperationComputeSpec:
     )
 
 
+def _measurement_labels_port() -> ComputePortContract:
+    """Return the exact resident-label input contract for basic measurements."""
+
+    return ComputePortContract(
+        0,
+        ValueKind.LABELS,
+        port_name="labels",
+        public_dtypes=("int32",),
+        internal_dtypes=("int32",),
+        accumulation_dtype="int32",
+        value_domain="nonnegative-labels-v1",
+        shape_policy_id="measurement-input-shape-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="measurement-native-labels-v1",
+        nonfinite_policy_id="integer-nonnegative-v1",
+        rounding_policy_id="labels-bitwise-int32-v1",
+        overflow_policy_id="measurements-int32-label-compact-v1",
+        boundary_policy_id="measurement-leading-spatial-blocks-v1",
+        precision_policy_id="basic-measurement-table-v1",
+        schema_id="labels-array-v1",
+    )
+
+
+def _measurement_intensity_port() -> ComputePortContract:
+    """Return the finite native intensity input contract."""
+
+    return ComputePortContract(
+        1,
+        ValueKind.IMAGE,
+        port_name="intensity",
+        public_dtypes=("bool", "uint8", "uint16", "float32"),
+        internal_dtypes=("same", "float64"),
+        accumulation_dtype="float64",
+        value_domain="finite-microscopy-intensity-v1",
+        shape_policy_id="measurement-input-shape-v1",
+        output_dtype_policy_id="dtype-same-v1",
+        conversion_policy_id="measurement-intensity-float64-reductions-v1",
+        nonfinite_policy_id="finite-only-v1",
+        rounding_policy_id="measurement-two-pass-reductions-v1",
+        overflow_policy_id="measurement-float64-reductions-v1",
+        boundary_policy_id="measurement-leading-spatial-blocks-v1",
+        precision_policy_id="basic-measurement-table-v1",
+        schema_id="image-array-v1",
+    )
+
+
+def _measurement_output_port(*, include_intensity: bool) -> ComputePortContract:
+    """Declare the private packed payload and its public table boundary."""
+
+    schema = (
+        "basic-morphology-intensity-table-v1"
+        if include_intensity
+        else "basic-morphology-table-v1"
+    )
+    return ComputePortContract(
+        0,
+        ValueKind.TABLE,
+        port_name="measurements",
+        public_dtypes=("table",),
+        internal_dtypes=("float64",),
+        accumulation_dtype="float64",
+        value_domain="typed-measurement-table-v1",
+        shape_policy_id="measurement-packed-rows-v1",
+        output_dtype_policy_id="fixed:float64",
+        conversion_policy_id="packed-float64-to-typed-table-v1",
+        nonfinite_policy_id="measurement-packed-finite-v1",
+        rounding_policy_id="measurement-typed-fields-v1",
+        overflow_policy_id="measurement-exact-integer-fields-v1",
+        boundary_policy_id="measurement-leading-spatial-blocks-v1",
+        precision_policy_id="basic-measurement-table-v1",
+        schema_id=schema,
+    )
+
+
+def _measurements_spec(*, include_intensity: bool) -> OperationComputeSpec:
+    operation_id = (
+        "measure_objects_intensity" if include_intensity else "measure_objects"
+    )
+    implementation_id = (
+        "cucim-measure-objects-intensity-basic-v1"
+        if include_intensity
+        else "cucim-measure-objects-basic-v1"
+    )
+    callable_name = (
+        "measure_objects_with_intensity" if include_intensity else "measure_objects"
+    )
+    inputs = (_measurement_labels_port(),)
+    if include_intensity:
+        inputs += (_measurement_intensity_port(),)
+    return OperationComputeSpec(
+        operation_id=operation_id,
+        implementation_id=implementation_id,
+        implementation_version="1",
+        runtime_id="cuda-cupy",
+        array_domain="cuda-cupy",
+        implementation_library_id="cucim",
+        callable_ref=(
+            f"napari_vipp.core.gpu.cucim_measurements:{callable_name}"
+        ),
+        host_boundary=False,
+        admission_tier=AdmissionTier.PUBLIC_AUTO_CANDIDATE,
+        validated_environment_policy_id=(
+            "cuda-cupy-14.1.1-cucim-26.6.0-cpython312-windows-native-v3"
+        ),
+        input_ports=inputs,
+        output_ports=(
+            _measurement_output_port(include_intensity=include_intensity),
+        ),
+        parameter_policy_id="basic-measurements-parameters-v1",
+        workload_policy_id=(
+            "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1"
+            if include_intensity
+            else "measurements-int32-basic-2d-3d-v1"
+        ),
+        parity_policy_id="basic-measurement-table-v1",
+        memory_model_id="cucim-basic-measurements-memory-v1",
+        shape_policy_id="measurement-packed-rows-v1",
+        boundary_policy_id="measurement-leading-spatial-blocks-v1",
+        precision_policy_id="basic-measurement-table-v1",
+        progress_policy_id="measurement-block-stage-progress-v1",
+        cancellation_policy_id="measurement-block-stage-cancel-v1",
+        side_effect_policy_id="pure-v1",
+        dynamic_output_policy_id="typed-host-table-finalizer-v1",
+        supported_spatial_ndims=(2, 3),
+        supports_device_residency=True,
+        limitations=(
+            "native-int32-nonnegative-labels-v1",
+            "arbitrary-sparse-positive-labels-v1",
+            "extended-measurement-columns-cpu-v1",
+            "float32-intensity-requires-complete-finite-facts-v1",
+            "native-endian-only-v1",
+            "typed-host-table-boundary-v1",
+        ),
+        host_finalizer_ref=(
+            "napari_vipp.core.measurements:finalize_basic_measurement_outputs"
+        ),
+    )
+
+
 _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _background_spec("rolling_ball_background"),
     _background_spec("subtract_background"),
@@ -510,6 +649,8 @@ _BUILTIN_ACCELERATOR_SPECS: tuple[OperationComputeSpec, ...] = (
     _otsu_spec(),
     _sigma_filter_spec(),
     _connected_components_spec(),
+    _measurements_spec(include_intensity=False),
+    _measurements_spec(include_intensity=True),
 )
 
 

@@ -24,6 +24,7 @@ from napari_vipp.core.compute import (
     WorkloadDescriptor,
 )
 from napari_vipp.core.compute_specs import OperationComputeSpec
+from napari_vipp.core.measurements import basic_measurement_layout
 from napari_vipp.core.richardson_lucy_compute import (
     RICHARDSON_LUCY_FILTER_EPSILON,
     RICHARDSON_LUCY_MAXIMUM_ITERATIONS,
@@ -44,6 +45,7 @@ from napari_vipp.core.richardson_lucy_compute import (
 OTSU_DEFAULT_HISTOGRAM_BINS = 256
 OTSU_MAXIMUM_NATIVE_INTEGER_LEVELS = 65_536
 CONNECTED_COMPONENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
+MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS = 2**31 - 2
 SIGMA_FILTER_FLOAT32_SQUARE_LIMIT = float(
     np.float32(math.sqrt(float(np.finfo(np.float32).max)))
 )
@@ -796,6 +798,16 @@ def estimate_candidate_memory(
         )
         for port in spec.output_ports
     )
+    if spec.memory_model_id == "cucim-basic-measurements-memory-v1":
+        measurement_layout = _basic_measurement_layout_for_workload(workload)
+        # At most one positive object can be represented by each authored
+        # label element.  The provider's private output is therefore bounded
+        # by N packed float64 rows, including across leading blocks.
+        output_bytes = (
+            primary_elements
+            * measurement_layout.packed_width
+            * np.dtype(np.float64).itemsize
+        )
     if spec.memory_model_id in RICHARDSON_LUCY_MEMORY_MODEL_IDS:
         return estimate_richardson_lucy_memory(
             spec,
@@ -804,6 +816,7 @@ def estimate_candidate_memory(
             output_bytes=output_bytes,
         )
     host_workspace = 0
+    uncertainty_floor = 8 * 1024**2
 
     if spec.memory_model_id == "host-reference-v1":
         return MemoryEstimate(
@@ -966,12 +979,31 @@ def estimate_candidate_memory(
         # reserve seven additional bytes for the largest active block to cover
         # union-find roots, sorting, and a non-contiguous block copy.
         workspace = block_elements * 7
+    elif spec.memory_model_id == "cucim-basic-measurements-memory-v1":
+        layout = _basic_measurement_layout_for_workload(workload)
+        block_elements = math.prod(layout.spatial_shape)
+        include_intensity = len(workload.input_shapes) == 2
+        # The complete authored arrays may be retained in canonical axis order.
+        # Per active block, reserve compaction/search/sort arrays, cuCIM's
+        # region-property workspace, grouped float64 reductions, and packing.
+        # Packed rows retained across blocks are already represented by
+        # ``output_bytes`` above.
+        working_copies = input_bytes
+        per_block_workspace = block_elements * (224 if include_intensity else 128)
+        workspace = working_copies + per_block_workspace
+        # D2H first materializes the packed matrix.  Typed Python rows are then
+        # constructed transactionally while that matrix is still live.  Python
+        # scalar/container overhead is implementation-dependent, so reserve a
+        # deliberately conservative multiple rather than claiming byte-exact
+        # host accounting.
+        host_workspace = output_bytes * 4
+        uncertainty_floor = 64 * 1024**2
     else:
         raise ValueError(
             f"No executable memory model is registered for {spec.memory_model_id!r}."
         )
     runtime_peak = input_bytes + output_bytes + workspace
-    uncertainty = max(8 * 1024**2, runtime_peak // 4)
+    uncertainty = max(uncertainty_floor, runtime_peak // 4)
     return MemoryEstimate(
         runtime_managed_peak_bytes=runtime_peak,
         total_device_peak_bytes=runtime_peak,
@@ -1376,6 +1408,153 @@ def _connected_components_region_policy(
     return None
 
 
+def _basic_measurements_region_policy(
+    workload: WorkloadDescriptor,
+    array_facts: tuple[ArrayFacts, ...],
+) -> SupportDecision | None:
+    include_intensity = workload.operation_id == "measure_objects_intensity"
+    expected_inputs = 2 if include_intensity else 1
+    if len(workload.input_shapes) != expected_inputs:
+        return _workload_rejection(
+            f"{workload.operation_id} requires exactly {expected_inputs} ordered "
+            "input port(s).",
+            fallback_allowed=False,
+        )
+    if include_intensity and workload.input_shapes[1] != workload.input_shapes[0]:
+        return _workload_rejection(
+            "Intensity-aware measurements require labels and intensity image "
+            "with the same shape.",
+            fallback_allowed=False,
+        )
+
+    try:
+        labels_dtype = np.dtype(workload.input_dtypes[0])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Object measurements require a valid non-boolean integer label dtype.",
+            fallback_allowed=False,
+        )
+    if labels_dtype == np.dtype(bool) or not np.issubdtype(
+        labels_dtype,
+        np.integer,
+    ):
+        return _workload_rejection(
+            "Object measurements require a non-boolean integer label image; "
+            f"{labels_dtype} is invalid for both CPU and GPU execution.",
+            fallback_allowed=False,
+        )
+    if labels_dtype != np.dtype(np.int32) or not labels_dtype.isnative:
+        return _workload_rejection(
+            "The promoted basic-measurement GPU region requires native int32 "
+            "labels. Other non-negative integer label dtypes remain on CPU."
+        )
+
+    spatial_ndim = workload.resolved_spatial_ndim
+    if spatial_ndim not in {2, 3}:
+        return _workload_rejection(
+            "Basic GPU measurements require a resolved 2D or 3D spatial rank.",
+            fallback_allowed=False,
+        )
+    parameters = dict(workload.parameters)
+    extended_options = (
+        "include_shape_descriptors",
+        "include_axis_descriptors",
+        "include_2d_boundary_descriptors",
+        "include_derived_shape_ratios",
+        "include_2d_shape_moments",
+    )
+    for name in extended_options:
+        value = parameters.get(name, False)
+        if not isinstance(value, bool):
+            return _workload_rejection(
+                f"Measurement option {name!r} must be boolean.",
+                fallback_allowed=False,
+            )
+        if value:
+            return _workload_rejection(
+                "Extended measurement columns are not yet in the promoted GPU "
+                f"region ({name} is enabled); the complete CPU schema remains "
+                "authoritative."
+            )
+    try:
+        layout = _basic_measurement_layout_for_workload(workload)
+    except (TypeError, ValueError) as exc:
+        return _workload_rejection(
+            f"The authored measurement axis layout is invalid: {exc}",
+            fallback_allowed=False,
+        )
+    spatial_elements = math.prod(layout.spatial_shape)
+    if spatial_elements == 0:
+        return _workload_rejection(
+            "Empty spatial measurement blocks remain on CPU."
+        )
+    if spatial_elements >= MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:
+        return _workload_rejection(
+            "Each GPU measurement spatial block must contain fewer than "
+            f"{MEASUREMENTS_MAXIMUM_SPATIAL_BLOCK_ELEMENTS:,} elements so "
+            "private compact labels remain int32-safe."
+        )
+
+    if not array_facts:
+        return _complete_facts_rejection(
+            "Basic GPU measurements require complete label facts proving that "
+            "all native int32 labels are non-negative."
+        )
+    label_facts = array_facts[0]
+    if label_facts.completeness is not FactCompleteness.COMPLETE:
+        return _complete_facts_rejection(
+            "Basic GPU measurements require complete non-negative label facts."
+        )
+    if "nonnegative" not in label_facts.guarantees:
+        if label_facts.minimum is not None and label_facts.minimum < 0:
+            return _workload_rejection(
+                "Object labels must contain only non-negative integers.",
+                fallback_allowed=False,
+            )
+        return _complete_facts_rejection(
+            "Complete label facts did not prove the non-negative label region."
+        )
+
+    if not include_intensity:
+        return None
+    try:
+        intensity_dtype = np.dtype(workload.input_dtypes[1])
+    except (TypeError, ValueError):
+        return _workload_rejection(
+            "Basic GPU intensity measurements require a supported native dtype."
+        )
+    supported_intensity_dtypes = {
+        np.dtype(bool),
+        np.dtype(np.uint8),
+        np.dtype(np.uint16),
+        np.dtype(np.float32),
+    }
+    if (
+        intensity_dtype not in supported_intensity_dtypes
+        or not intensity_dtype.isnative
+    ):
+        return _workload_rejection(
+            "The promoted intensity-measurement GPU region supports native bool, "
+            "uint8, uint16, and finite float32 data; this dtype remains on CPU."
+        )
+    if intensity_dtype == np.dtype(np.float32):
+        if len(array_facts) != 2:
+            return _complete_facts_rejection(
+                "GPU float32 intensity measurements require complete finite-value "
+                "facts for the intensity input."
+            )
+        intensity_facts = array_facts[1]
+        if (
+            intensity_facts.completeness is not FactCompleteness.COMPLETE
+            or intensity_facts.all_finite is not True
+        ):
+            return _complete_facts_rejection(
+                "GPU float32 intensity measurements require completely finite "
+                "intensity data."
+            )
+    return None
+
+
 _OPERATION_REGION_EVALUATORS: Mapping[
     str,
     Callable[
@@ -1394,6 +1573,7 @@ _OPERATION_REGION_EVALUATORS: Mapping[
         "canny-parameters-v1": _canny_region_policy,
         "otsu-parameters-v1": _otsu_region_policy,
         "connected-components-parameters-v1": (_connected_components_region_policy),
+        "basic-measurements-parameters-v1": _basic_measurements_region_policy,
     }
 )
 
@@ -1798,6 +1978,30 @@ def _dtype_itemsize(value: object) -> int:
         raise ValueError(f"Unsupported workload dtype {value!r}.") from exc
 
 
+def _basic_measurement_layout_for_workload(workload: WorkloadDescriptor):
+    if workload.operation_id not in {
+        "measure_objects",
+        "measure_objects_intensity",
+    }:
+        raise ValueError("workload is not a basic measurement operation.")
+    expected_inputs = 2 if workload.operation_id == "measure_objects_intensity" else 1
+    if len(workload.input_shapes) != expected_inputs:
+        raise ValueError(
+            f"{workload.operation_id} requires {expected_inputs} input shape(s)."
+        )
+    parameters = dict(workload.parameters)
+    return basic_measurement_layout(
+        workload.input_shapes[0],
+        spatial_mode=str(parameters.get("spatial_mode", "Auto from axes")),
+        resolved_spatial_ndim=workload.resolved_spatial_ndim,
+        axis_names=parameters.get("axis_names"),
+        axis_types=parameters.get("axis_types"),
+        axis_scales=parameters.get("axis_scales"),
+        axis_units=parameters.get("axis_units"),
+        include_intensity=(workload.operation_id == "measure_objects_intensity"),
+    )
+
+
 def _output_port_itemsize(policy_id: str, primary_itemsize: int) -> int:
     """Resolve static output storage without importing an implementation.
 
@@ -1968,6 +2172,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "canny-parameters-v1",
             "otsu-parameters-v1",
             "connected-components-parameters-v1",
+            "basic-measurements-parameters-v1",
         },
         PolicyKind.WORKLOAD: {
             "cpu-reference-v1",
@@ -1980,6 +2185,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "canny-exact-bool-u8-u16-v2",
             "otsu-real-exact-v1",
             "connected-components-bool-2d-3d-v1",
+            "measurements-int32-basic-2d-3d-v1",
+            "measurements-int32-bool-u8-u16-finite-f32-basic-2d-3d-v1",
         },
         PolicyKind.PARITY: {
             "authoritative-cpu-v1",
@@ -1990,6 +2197,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["parity"],
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
+            "basic-measurement-table-v1",
         },
         PolicyKind.MEMORY: {
             "host-reference-v1",
@@ -2002,6 +2210,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "cupyx-canny-exact-memory-v1",
             "cupy-otsu-histogram-memory-v1",
             "cupyx-connected-components-memory-v1",
+            "cucim-basic-measurements-memory-v1",
         },
         PolicyKind.SHAPE: {
             "cpu-reference-v1",
@@ -2010,12 +2219,15 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "shape-preserving-v1",
             "psf-spatial-kernel-v1",
             "scalar-plane-luma-mask-v1",
+            "measurement-input-shape-v1",
+            "measurement-packed-rows-v1",
         },
         PolicyKind.OUTPUT_DTYPE: {
             "dtype-same-v1",
             "fixed:float32",
             "fixed:bool",
             "fixed:int32",
+            "fixed:float64",
             "cpu-dynamic-output-v1",
         },
         PolicyKind.CONVERSION: {
@@ -2028,6 +2240,9 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "canny-plane-float32-or-luma-v1",
             "otsu-native-or-luma-v1",
             "binary-mask-to-int32-labels-v1",
+            "measurement-native-labels-v1",
+            "measurement-intensity-float64-reductions-v1",
+            "packed-float64-to-typed-table-v1",
         },
         PolicyKind.NONFINITE: {
             "cpu-reference-v1",
@@ -2037,6 +2252,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "finite-output-v1",
             "sigma-finite-only-v1",
             "otsu-finite-histogram-v1",
+            "integer-nonnegative-v1",
+            "measurement-packed-finite-v1",
         },
         PolicyKind.ROUNDING: {
             "cpu-reference-v1",
@@ -2047,6 +2264,8 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["rounding"],
             "mask-bitwise-v1",
             "labels-bitwise-int32-v1",
+            "measurement-two-pass-reductions-v1",
+            "measurement-typed-fields-v1",
         },
         PolicyKind.OVERFLOW: {
             "cpu-reference-v1",
@@ -2058,6 +2277,9 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "binary-mask-v1",
             "otsu-native-span-v1",
             "connected-components-int32-safe-v1",
+            "measurements-int32-label-compact-v1",
+            "measurement-float64-reductions-v1",
+            "measurement-exact-integer-fields-v1",
         },
         PolicyKind.BOUNDARY: {
             "cpu-reference-v1",
@@ -2068,6 +2290,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "skimage-canny-constant-zero-v1",
             "otsu-strict-greater-finite-mask-v1",
             "scipy-binary-connectivity-v1",
+            "measurement-leading-spatial-blocks-v1",
         },
         PolicyKind.PRECISION: {
             "scientific-default-v1",
@@ -2079,6 +2302,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "canny-exact-mask-v1",
             "otsu-exact-mask-v1",
             "connected-components-exact-label-order-v1",
+            "basic-measurement-table-v1",
         },
         PolicyKind.PROGRESS: {
             "cpu-reference-v1",
@@ -2089,6 +2313,7 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             "scalar-plane-sync-progress-v1",
             "histogram-scope-sync-progress-v1",
             "spatial-block-sync-progress-v1",
+            "measurement-block-stage-progress-v1",
         },
         PolicyKind.CANCELLATION: {
             "cpu-reference-v1",
@@ -2098,13 +2323,18 @@ DEFAULT_POLICY_CATALOG = PolicyCatalog(
             *RICHARDSON_LUCY_POLICY_IDS["cancellation"],
             "scalar-plane-boundary-cancel-v1",
             "spatial-block-boundary-cancel-v1",
+            "measurement-block-stage-cancel-v1",
         },
         PolicyKind.SIDE_EFFECT: {
             "pure-or-source-v1",
             "host-writer-v1",
             "pure-v1",
         },
-        PolicyKind.DYNAMIC_OUTPUT: {"static-v1", "cpu-dynamic-output-v1"},
+        PolicyKind.DYNAMIC_OUTPUT: {
+            "static-v1",
+            "cpu-dynamic-output-v1",
+            "typed-host-table-finalizer-v1",
+        },
     }
 )
 

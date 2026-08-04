@@ -917,6 +917,32 @@ def _assemble_workloads(
             facts = facts_by_port.get(port)
             input_facts.append(facts)
 
+        if (
+            node.operation_id == "measure_objects_intensity"
+            and any(facts is not None for facts in input_facts)
+            and any(facts is None for facts in input_facts)
+        ):
+            # Multi-input support policy consumes an ordered facts tuple.  Do
+            # not force an image-sized scan for an intrinsically finite integer
+            # intensity input merely because the labels need a non-negativity
+            # proof.  A metadata-only UNKNOWN record preserves port alignment;
+            # float32 intensity is still explicitly requested and scanned by
+            # _implementation_required_fact_indexes below.
+            for index, facts in enumerate(input_facts):
+                if facts is not None:
+                    continue
+                connection = connections[index]
+                input_facts[index] = ArrayFacts(
+                    shape=input_shapes[index],
+                    dtype=input_dtypes[index],
+                    element_count=int(math.prod(input_shapes[index])),
+                    revision_fingerprint=(
+                        "unscanned-input:"
+                        f"{connection.source_id}:{connection.source_port}"
+                    ),
+                    completeness=FactCompleteness.UNKNOWN,
+                )
+
         planning_call: PreparedNodeCall | None = None
         resolved_spatial_ndim: int | None = None
         if operation.has_input and input_values:
@@ -1553,6 +1579,19 @@ def _implementation_required_fact_indexes(
         and index < len(workload.input_dtypes)
         and not _dtype_intrinsically_finite(workload.input_dtypes[index])
     }
+    if getattr(implementation, "parameter_policy_id", "") == (
+        "basic-measurements-parameters-v1"
+    ):
+        # Labels always need a complete non-negativity proof unless an upstream
+        # label operation supplied the theorem. Integer intensity dtypes are
+        # intrinsically finite; float32 requires its own complete scan.
+        required.add(0)
+        if (
+            workload.operation_id == "measure_objects_intensity"
+            and len(workload.input_dtypes) > 1
+            and np.dtype(workload.input_dtypes[1]) == np.dtype(np.float32)
+        ):
+            required.add(1)
     if (
         workload.operation_id in {"gaussian_blur", "gaussian_blur_3d", "median_filter"}
         and workload.input_dtypes
