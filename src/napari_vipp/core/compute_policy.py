@@ -990,7 +990,11 @@ def estimate_candidate_memory(
         # ``output_bytes`` above.
         working_copies = input_bytes
         per_block_workspace = block_elements * (224 if include_intensity else 128)
-        workspace = working_copies + per_block_workspace
+        # The provider retains every per-block packed matrix and then allocates
+        # the final concatenated matrix. At assembly peak both complete packed
+        # representations are live, including for a single block because CuPy
+        # concatenate materializes a new allocation.
+        workspace = working_copies + per_block_workspace + output_bytes
         # D2H first materializes the packed matrix.  Typed Python rows are then
         # constructed transactionally while that matrix is still live.  Python
         # scalar/container overhead is implementation-dependent, so reserve a

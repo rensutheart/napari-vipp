@@ -270,11 +270,12 @@ def test_measurement_memory_model_covers_packed_boundary_and_active_block(
     if operation_id == "measure_objects_intensity":
         input_bytes += elements * 2
     output_bytes = elements * packed_width * 8
-    workspace = input_bytes + (10 * 20 * block_multiplier)
+    workspace = input_bytes + (10 * 20 * block_multiplier) + output_bytes
 
     assert estimate.runtime_managed_peak_bytes == (
         input_bytes + output_bytes + workspace
     )
+    assert estimate.runtime_managed_peak_bytes >= input_bytes + (2 * output_bytes)
     assert estimate.total_device_peak_bytes == estimate.runtime_managed_peak_bytes
     assert estimate.host_materialization_peak_bytes == output_bytes * 5
     assert estimate.uncertainty_bytes >= 64 * 1024**2
