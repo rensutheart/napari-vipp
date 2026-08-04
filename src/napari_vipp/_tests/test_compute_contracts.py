@@ -14,6 +14,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExecutionFallbackRecord,
     ExecutionReport,
     FallbackPolicy,
     FallbackReason,
@@ -174,6 +175,41 @@ def test_environment_fingerprint_includes_python_abi_and_is_json_safe():
     json.dumps(environment.as_dict(), allow_nan=False)
     assert ComputeEnvironment.from_dict(environment.as_dict()) == environment
     json.dumps(ExecutionReport(ComputeRequest(), environment).as_dict())
+
+
+def test_execution_report_serializes_durable_fallback_attempt_schema():
+    record = ExecutionFallbackRecord(
+        segment_id="segment-1",
+        runtime_id="cuda-cupy",
+        node_ids=("gaussian-1",),
+        reason="out_of_memory",
+        reason_code="cupy_oom",
+        exception_type="OutOfMemoryError",
+        message="allocation failed",
+        cpu_retry_succeeded=True,
+        memory_estimate=MemoryEstimate(
+            runtime_managed_peak_bytes=300,
+            total_device_peak_bytes=500,
+            host_materialization_peak_bytes=100,
+            model_id="test-model-v1",
+        ),
+        memory_topology="discrete",
+        device_total_bytes=1_000,
+        device_free_bytes=500,
+    )
+    payload = ExecutionReport(
+        ComputeRequest(mode="selective"),
+        ComputeEnvironment(),
+        fallback_records=(record,),
+    ).as_dict()
+
+    fallback = payload["fallback_records"][0]
+    assert fallback == record.as_dict()
+    assert fallback["reason"] == "out_of_memory"
+    assert fallback["cpu_retry_succeeded"] is True
+    assert fallback["memory_topology"] == "discrete"
+    assert fallback["memory_estimate"]["runtime_managed_peak_bytes"] == 300
+    json.dumps(payload, allow_nan=False)
 
 
 def test_environment_provenance_rejects_duplicate_metadata_keys():

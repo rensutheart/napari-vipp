@@ -4,8 +4,13 @@ import threading
 
 import numpy as np
 
-from napari_vipp.core.compute import ComputeMode, ComputeRequest
+from napari_vipp.core.compute import (
+    ComputeMode,
+    ComputeRequest,
+    ExecutionFallbackRecord,
+)
 from napari_vipp.core.execution import (
+    PipelineExecutionFailure,
     PipelineNodeResult,
     PipelineRunRequest,
     execute_pipeline_request,
@@ -138,6 +143,68 @@ def test_execute_pipeline_request_reports_invalid_workflow_without_raising():
     assert result.pipeline is None
     assert result.error
     assert not result.cancelled
+    assert result.failure is not None
+    assert result.failure.kind == "execution_error"
+
+
+def test_execute_pipeline_request_can_preserve_generated_api_exception_type():
+    request = PipelineRunRequest(
+        run_id=12,
+        workflow={"not": "a workflow"},
+        input_data=None,
+        input_metadata=None,
+        input_name="",
+        source_payloads={},
+    )
+
+    with np.testing.assert_raises(ValueError) as raised:
+        execute_pipeline_request(request, raise_errors=True)
+
+    detail = raised.exception.vipp_execution_failure
+    assert detail["kind"] == "execution_error"
+    assert detail["reason_code"] == "unclassified_execution_error"
+
+
+def test_cancelled_cpu_result_has_typed_cleanup_provenance():
+    cancelled = threading.Event()
+    cancelled.set()
+    result = execute_pipeline_request(
+        PipelineRunRequest(
+            run_id=13,
+            workflow=_input_only_workflow(),
+            input_data=np.zeros((3, 4), dtype=np.float32),
+            input_metadata={"axes": "YX"},
+            input_name="source",
+            source_payloads={},
+            cancel_event=cancelled,
+        )
+    )
+
+    assert result.cancelled
+    assert result.failure is not None
+    assert result.failure.kind == "cancelled"
+    assert result.failure.cleanup_succeeded is True
+    assert result.failure.as_dict()["reason_code"] == "operation_cancelled"
+
+
+def test_terminal_failure_serializes_prior_oom_retry_attempts():
+    record = ExecutionFallbackRecord(
+        segment_id="segment-1",
+        runtime_id="cuda-cupy",
+        node_ids=("gaussian-1",),
+        reason="out_of_memory",
+        reason_code="cupy_oom",
+        cpu_retry_succeeded=False,
+    )
+    failure = PipelineExecutionFailure(
+        kind="execution_error",
+        error_type="ValueError",
+        message="CPU retry failed",
+        reason_code="unclassified_execution_error",
+        fallback_records=(record,),
+    )
+
+    assert failure.as_dict()["fallback_records"] == [record.as_dict()]
 
 
 def test_accelerated_planning_error_preserves_only_resolved_source_boundary():

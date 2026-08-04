@@ -25,6 +25,7 @@ from napari_vipp.core.accelerator_lease import accelerator_lease
 from napari_vipp.core.compute import (
     ComputeMode,
     ComputeRequest,
+    ExecutionFallbackRecord,
     ExecutionSegment,
     FallbackPolicy,
     MemoryEstimate,
@@ -90,14 +91,36 @@ class DeviceExecutionError(RuntimeError):
         self,
         segment_id: str,
         failure: RuntimeExceptionInfo,
+        *,
+        runtime_id: str = "",
+        cleanup_succeeded: bool | None = None,
+        fallback_records: tuple[ExecutionFallbackRecord, ...] = (),
     ) -> None:
         self.segment_id = segment_id
+        self.runtime_id = str(runtime_id).strip()
         self.failure = failure
+        self.cleanup_succeeded = cleanup_succeeded
+        self.fallback_records = tuple(fallback_records)
         detail = failure.message or failure.reason_code
         super().__init__(
             f"Device segment {segment_id!r} failed "
             f"({failure.kind.value}: {detail})."
         )
+
+
+class DeviceExecutionCancelled(OperationCancelled):
+    """Cancellation after the device executor has completed scoped cleanup."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cleanup_succeeded: bool,
+        fallback_records: tuple[ExecutionFallbackRecord, ...] = (),
+    ) -> None:
+        self.cleanup_succeeded = bool(cleanup_succeeded)
+        self.fallback_records = tuple(fallback_records)
+        super().__init__(message)
 
 
 class _DetachedRuntimeFailure(RuntimeError):
@@ -177,6 +200,7 @@ class DeviceExecutionResult:
 
     host_values: Mapping[OutputPortKey, object] = field(repr=False)
     fallback_segment_ids: tuple[str, ...] = ()
+    fallback_records: tuple[ExecutionFallbackRecord, ...] = ()
     cleanup_succeeded: bool = True
 
     def __post_init__(self) -> None:
@@ -190,6 +214,7 @@ class DeviceExecutionResult:
             "fallback_segment_ids",
             tuple(self.fallback_segment_ids),
         )
+        object.__setattr__(self, "fallback_records", tuple(self.fallback_records))
 
 
 class PrepareNodeCall(Protocol):
@@ -657,28 +682,36 @@ def execute_device_plan(
             cancel_callback=cancel_callback,
             node_outputs_callback=node_outputs_callback,
         )
-    _check_cancelled(cancel_callback)
-    with ExitStack() as leases:
-        for runtime_id in runtime_ids:
-            runtime = registry.runtime(runtime_id)
-            device_id = _accelerator_lease_device_id(runtime, request.device_id)
-            leases.enter_context(
-                accelerator_lease(
-                    runtime_id,
-                    device_id,
-                    cancelled=cancel_callback,
+    try:
+        _check_cancelled(cancel_callback)
+        with ExitStack() as leases:
+            for runtime_id in runtime_ids:
+                runtime = registry.runtime(runtime_id)
+                device_id = _accelerator_lease_device_id(runtime, request.device_id)
+                leases.enter_context(
+                    accelerator_lease(
+                        runtime_id,
+                        device_id,
+                        cancelled=cancel_callback,
+                    )
                 )
+            return _execute_device_plan_under_leases(
+                plan,
+                pipeline,
+                registry,
+                request,
+                host_values=host_values,
+                prepare_call=prepare_call,
+                cancel_callback=cancel_callback,
+                node_outputs_callback=node_outputs_callback,
             )
-        return _execute_device_plan_under_leases(
-            plan,
-            pipeline,
-            registry,
-            request,
-            host_values=host_values,
-            prepare_call=prepare_call,
-            cancel_callback=cancel_callback,
-            node_outputs_callback=node_outputs_callback,
-        )
+    except DeviceExecutionCancelled:
+        raise
+    except OperationCancelled as exc:
+        raise DeviceExecutionCancelled(
+            str(exc),
+            cleanup_succeeded=True,
+        ) from None
 
 
 def _execute_device_plan_under_leases(
@@ -719,18 +752,36 @@ def _execute_device_plan_under_leases(
     _ensure_host_only(committed, tuple(runtimes.values()))
 
     fallback_segments: list[str] = []
+    fallback_records: list[ExecutionFallbackRecord] = []
     cleanup_succeeded = True
     for unit in plan.units:
-        _check_cancelled(cancel_callback)
+        try:
+            _check_cancelled(cancel_callback)
+        except OperationCancelled as exc:
+            raise DeviceExecutionCancelled(
+                str(exc),
+                cleanup_succeeded=cleanup_succeeded,
+                fallback_records=tuple(fallback_records),
+            ) from None
         if isinstance(unit, HostExecutionUnit):
-            _execute_host_unit(
-                unit,
-                pipeline,
-                committed,
-                prepare_call,
-                cancel_callback,
-                node_outputs_callback,
-            )
+            try:
+                _execute_host_unit(
+                    unit,
+                    pipeline,
+                    committed,
+                    prepare_call,
+                    cancel_callback,
+                    node_outputs_callback,
+                )
+            except OperationCancelled as exc:
+                raise DeviceExecutionCancelled(
+                    str(exc),
+                    cleanup_succeeded=cleanup_succeeded,
+                    fallback_records=tuple(fallback_records),
+                ) from None
+            except Exception as exc:
+                _attach_fallback_records(exc, fallback_records)
+                raise
             _ensure_host_only(committed, tuple(runtimes.values()))
             continue
 
@@ -751,8 +802,13 @@ def _execute_device_plan_under_leases(
                 segment_cleanup,
                 node_outputs_callback,
             )
-        except OperationCancelled:
-            raise
+        except OperationCancelled as exc:
+            cleanup_succeeded = cleanup_succeeded and segment_cleanup.succeeded
+            raise DeviceExecutionCancelled(
+                str(exc),
+                cleanup_succeeded=cleanup_succeeded,
+                fallback_records=tuple(fallback_records),
+            ) from None
         except _DetachedRuntimeFailure as exc:
             failure = exc.failure
         except Exception as exc:
@@ -769,18 +825,78 @@ def _execute_device_plan_under_leases(
                 and request.fallback_policy is FallbackPolicy.VISIBLE
             ):
                 _best_effort_synchronize(runtime, request.device_id)
-                provisional = _execute_cpu_segment_fallback(
-                    unit,
-                    pipeline,
-                    runtime,
-                    committed,
-                    prepare_call,
-                    cancel_callback,
-                    node_outputs_callback,
+                snapshot = _best_effort_memory_snapshot(runtime, request.device_id)
+                fallback_attempt = ExecutionFallbackRecord(
+                    segment_id=unit.segment.segment_id,
+                    runtime_id=unit.segment.runtime_id,
+                    node_ids=unit.segment.node_ids,
+                    reason="out_of_memory",
+                    reason_code=failure.reason_code,
+                    exception_type=failure.exception_type,
+                    message=failure.message,
+                    retryable=failure.retryable,
+                    cleanup_succeeded=segment_cleanup.succeeded,
+                    memory_estimate=unit.segment.memory_estimate,
+                    memory_topology=(
+                        snapshot.topology if snapshot is not None else None
+                    ),
+                    device_total_bytes=(
+                        snapshot.device_total_bytes if snapshot is not None else None
+                    ),
+                    device_free_bytes=(
+                        snapshot.device_free_bytes if snapshot is not None else None
+                    ),
+                    runtime_live_bytes=(
+                        snapshot.runtime_live_bytes if snapshot is not None else 0
+                    ),
+                    runtime_reserved_bytes=(
+                        snapshot.runtime_reserved_bytes if snapshot is not None else 0
+                    ),
+                    out_of_pool_bytes=(
+                        snapshot.out_of_pool_bytes if snapshot is not None else 0
+                    ),
                 )
+                try:
+                    provisional = _execute_cpu_segment_fallback(
+                        unit,
+                        pipeline,
+                        runtime,
+                        committed,
+                        prepare_call,
+                        cancel_callback,
+                        node_outputs_callback,
+                    )
+                except OperationCancelled as exc:
+                    fallback_attempt = replace(
+                        fallback_attempt,
+                        cpu_retry_succeeded=False,
+                    )
+                    fallback_records.append(fallback_attempt)
+                    raise DeviceExecutionCancelled(
+                        str(exc),
+                        cleanup_succeeded=cleanup_succeeded,
+                        fallback_records=tuple(fallback_records),
+                    ) from None
+                except Exception as exc:
+                    fallback_attempt = replace(
+                        fallback_attempt,
+                        cpu_retry_succeeded=False,
+                    )
+                    fallback_records.append(fallback_attempt)
+                    _attach_fallback_records(exc, fallback_records)
+                    raise
                 fallback_segments.append(unit.segment.segment_id)
+                fallback_records.append(
+                    replace(fallback_attempt, cpu_retry_succeeded=True)
+                )
             else:
-                error = DeviceExecutionError(unit.segment.segment_id, failure)
+                error = DeviceExecutionError(
+                    unit.segment.segment_id,
+                    failure,
+                    runtime_id=unit.segment.runtime_id,
+                    cleanup_succeeded=cleanup_succeeded,
+                    fallback_records=tuple(fallback_records),
+                )
                 if failure_cause is None:
                     raise error from None
                 raise error from failure_cause
@@ -788,9 +904,10 @@ def _execute_device_plan_under_leases(
 
     _ensure_host_only(committed, tuple(runtimes.values()))
     return DeviceExecutionResult(
-        committed,
-        tuple(fallback_segments),
-        cleanup_succeeded,
+        host_values=committed,
+        fallback_segment_ids=tuple(fallback_segments),
+        fallback_records=tuple(fallback_records),
+        cleanup_succeeded=cleanup_succeeded,
     )
 
 
@@ -1445,6 +1562,27 @@ def _best_effort_synchronize(runtime: RuntimeProtocol, device_id: str) -> None:
         pass
 
 
+def _best_effort_memory_snapshot(runtime: RuntimeProtocol, device_id: str):
+    try:
+        return runtime.memory_snapshot(device_id=device_id)
+    except Exception:
+        return None
+
+
+def _attach_fallback_records(
+    exc: BaseException,
+    records: Sequence[ExecutionFallbackRecord],
+) -> None:
+    """Preserve earlier fallback attempts without replacing exception taxonomy."""
+
+    if not records:
+        return
+    try:
+        exc.vipp_fallback_records = tuple(records)
+    except Exception:
+        return
+
+
 def _check_cancelled(callback: Callable[[], bool] | None) -> None:
     if callback is not None and callback():
         raise OperationCancelled("Operation cancelled.")
@@ -1490,6 +1628,7 @@ def _contains_device_value(
 
 
 __all__ = [
+    "DeviceExecutionCancelled",
     "DeviceExecutionError",
     "DeviceExecutionResult",
     "DeviceGraphPlan",

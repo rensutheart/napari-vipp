@@ -36,6 +36,7 @@ from napari_vipp.core.compute_specs import (
     compute_specs_for,
 )
 from napari_vipp.core.device_execution import (
+    DeviceExecutionCancelled,
     DeviceExecutionError,
     DeviceMemoryPreflightError,
     DeviceSegmentUnit,
@@ -597,7 +598,7 @@ def test_device_plan_cancels_while_waiting_for_process_accelerator_lease():
     timer = threading.Timer(0.1, cancelled.set)
     timer.start()
     try:
-        with pytest.raises(OperationCancelled, match="waiting"):
+        with pytest.raises(DeviceExecutionCancelled, match="waiting") as raised:
             execute_device_plan(
                 plan,
                 pipeline,
@@ -609,6 +610,8 @@ def test_device_plan_cancels_while_waiting_for_process_accelerator_lease():
                 prepare_call=_prepare_call(pipeline),
                 cancel_callback=cancelled.is_set,
             )
+        assert raised.value.cleanup_succeeded is True
+        assert raised.value.fallback_records == ()
     finally:
         timer.join(timeout=5)
         release_lease.set()
@@ -1055,7 +1058,7 @@ def test_cancellation_releases_all_live_device_values_without_materializing():
         request,
     )
 
-    with pytest.raises(OperationCancelled):
+    with pytest.raises(DeviceExecutionCancelled) as raised:
         execute_device_plan(
             plan,
             pipeline,
@@ -1066,6 +1069,7 @@ def test_cancellation_releases_all_live_device_values_without_materializing():
             cancel_callback=lambda: runtime.operation_count >= 1,
         )
 
+    assert raised.value.cleanup_succeeded is True
     assert runtime.operation_count == 1
     assert runtime.device_to_host_count == 0
     assert runtime.live == {}
@@ -1182,6 +1186,7 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
                 prepare_call=_prepare_call(pipeline),
             )
         assert error.value.failure.kind is RuntimeExceptionKind.OUT_OF_MEMORY
+        assert error.value.cleanup_succeeded is True
     else:
         result = execute_device_plan(
             plan,
@@ -1192,6 +1197,9 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
             prepare_call=_prepare_call(pipeline),
         )
         assert result.fallback_segment_ids == (plan.segments[0].segment_id,)
+        assert len(result.fallback_records) == 1
+        assert result.fallback_records[0].reason_code == "fake_oom"
+        assert result.fallback_records[0].cpu_retry_succeeded is True
         np.testing.assert_allclose(
             result.host_values[OutputPortKey(gaussian.id, 0)],
             data,
@@ -1206,6 +1214,57 @@ def test_only_typed_retryable_oom_gets_one_visible_cpu_fallback(
     assert runtime.device_to_host_count == 0
     assert runtime.live == {}
     assert runtime.classified_inside_scope == [True]
+    registry.close()
+
+
+@pytest.mark.parametrize("cancelled", (False, True))
+def test_oom_record_survives_failed_or_cancelled_cpu_retry(cancelled: bool):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    runtime = _FakeRuntime()
+    runtime.oom_remaining = 1
+    registry, specs = _registry(runtime, (("gaussian_blur", _device_oom_once),))
+    request = _request(FallbackPolicy.VISIBLE)
+    plan = plan_device_execution(
+        pipeline,
+        _decisions(pipeline, specs),
+        registry,
+        request,
+    )
+
+    def fail_retry(*_args):
+        if cancelled:
+            raise OperationCancelled("cancelled during CPU retry")
+        raise ValueError("CPU retry failed")
+
+    exception_type = DeviceExecutionCancelled if cancelled else ValueError
+    with pytest.raises(exception_type) as raised:
+        execute_device_plan(
+            plan,
+            pipeline,
+            registry,
+            request,
+            host_values={
+                OutputPortKey("input", 0): np.ones((5, 5), dtype=np.float32)
+            },
+            prepare_call=_prepare_call(pipeline),
+            node_outputs_callback=fail_retry,
+        )
+
+    records = (
+        raised.value.fallback_records
+        if cancelled
+        else raised.value.vipp_fallback_records
+    )
+    assert len(records) == 1
+    assert records[0].reason_code == "fake_oom"
+    assert records[0].cpu_retry_count == 1
+    assert records[0].cpu_retry_succeeded is False
+    assert records[0].cleanup_succeeded is True
+    assert runtime.live == {}
     registry.close()
 
 

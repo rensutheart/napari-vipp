@@ -808,6 +808,8 @@ class NodeExecutionDecision:
             )
         object.__setattr__(self, "decision_kind", decision_kind)
         object.__setattr__(self, "reason", reason)
+        if not isinstance(self.memory_estimate, MemoryEstimate):
+            raise TypeError("memory_estimate must be a MemoryEstimate.")
         object.__setattr__(self, "fallback_reason", fallback_reason)
 
     @property
@@ -862,13 +864,101 @@ class ExecutionPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionFallbackRecord:
+    """One classified device failure followed by an allowed CPU retry."""
+
+    segment_id: str
+    runtime_id: str
+    node_ids: tuple[str, ...]
+    reason: FallbackReason | str
+    reason_code: str
+    exception_type: str = ""
+    message: str = ""
+    retryable: bool = True
+    device_attempt_count: int = 1
+    cpu_retry_count: int = 1
+    cpu_retry_succeeded: bool | None = None
+    cleanup_succeeded: bool = True
+    memory_estimate: MemoryEstimate = MemoryEstimate()
+    memory_topology: MemoryTopology | str | None = None
+    device_total_bytes: int | None = None
+    device_free_bytes: int | None = None
+    runtime_live_bytes: int = 0
+    runtime_reserved_bytes: int = 0
+    out_of_pool_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        for name in ("segment_id", "runtime_id", "reason_code"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must not be empty.")
+            object.__setattr__(self, name, value)
+        node_ids = tuple(str(node_id).strip() for node_id in self.node_ids)
+        if not node_ids or any(not node_id for node_id in node_ids):
+            raise ValueError("node_ids must contain at least one non-empty node ID.")
+        if len(set(node_ids)) != len(node_ids):
+            raise ValueError("node_ids must not contain duplicates.")
+        object.__setattr__(self, "node_ids", node_ids)
+        reason = (
+            self.reason
+            if isinstance(self.reason, FallbackReason)
+            else FallbackReason(str(self.reason).strip().lower())
+        )
+        if reason is FallbackReason.NONE:
+            raise ValueError("A fallback record requires a typed fallback reason.")
+        object.__setattr__(self, "reason", reason)
+        topology = self.memory_topology
+        if topology is not None and not isinstance(topology, MemoryTopology):
+            topology = MemoryTopology(str(topology).strip().lower())
+        object.__setattr__(self, "memory_topology", topology)
+        for name in ("exception_type", "message"):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        for name in ("retryable", "cleanup_succeeded"):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a boolean.")
+        if self.cpu_retry_succeeded is not None and not isinstance(
+            self.cpu_retry_succeeded,
+            bool,
+        ):
+            raise TypeError("cpu_retry_succeeded must be a boolean or None.")
+        for name in ("device_attempt_count", "cpu_retry_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer.")
+        for name in (
+            "device_total_bytes",
+            "device_free_bytes",
+            "runtime_live_bytes",
+            "runtime_reserved_bytes",
+            "out_of_pool_bytes",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None.")
+
+    def as_dict(self) -> dict[str, object]:
+        return _json_safe(self)
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionReport:
     request: ComputeRequest
     environment: ComputeEnvironment
     plan: ExecutionPlan | None = None
     actual_decisions: tuple[NodeExecutionDecision, ...] = ()
+    fallback_records: tuple[ExecutionFallbackRecord, ...] = ()
     warnings: tuple[str, ...] = ()
     cleanup_succeeded: bool = True
+
+    def __post_init__(self) -> None:
+        records = tuple(self.fallback_records)
+        if any(not isinstance(record, ExecutionFallbackRecord) for record in records):
+            raise TypeError(
+                "fallback_records must contain ExecutionFallbackRecord values."
+            )
+        object.__setattr__(self, "fallback_records", records)
 
     def as_dict(self) -> dict[str, object]:
         return _json_safe(self)
@@ -1275,6 +1365,7 @@ __all__ = [
     "DecisionKind",
     "DecisionReason",
     "ExecutionPlan",
+    "ExecutionFallbackRecord",
     "ExecutionReport",
     "ExecutionSegment",
     "FallbackReason",

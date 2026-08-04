@@ -31,6 +31,7 @@ from napari_vipp.core.compute import (
     ComputeRequest,
     DecisionKind,
     DecisionReason,
+    ExecutionFallbackRecord,
     ExecutionPlan,
     ExecutionReport,
     FallbackReason,
@@ -262,6 +263,78 @@ class PipelineRunRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class PipelineExecutionFailure:
+    """Provider-neutral terminal details for a failed or cancelled run."""
+
+    kind: str
+    error_type: str
+    message: str
+    reason_code: str = ""
+    segment_id: str = ""
+    runtime_id: str = ""
+    retryable: bool = False
+    required_bytes: int | None = None
+    available_bytes: int | None = None
+    cleanup_succeeded: bool | None = None
+    fallback_records: tuple[ExecutionFallbackRecord, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in (
+            "kind",
+            "error_type",
+            "message",
+            "reason_code",
+            "segment_id",
+            "runtime_id",
+        ):
+            object.__setattr__(self, name, str(getattr(self, name)).strip())
+        if not self.kind or not self.error_type or not self.message:
+            raise ValueError("Failure kind, error_type, and message must not be empty.")
+        if not isinstance(self.retryable, bool):
+            raise TypeError("retryable must be a boolean.")
+        for name in ("required_bytes", "available_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None.")
+        if self.cleanup_succeeded is not None and not isinstance(
+            self.cleanup_succeeded,
+            bool,
+        ):
+            raise TypeError("cleanup_succeeded must be a boolean or None.")
+        object.__setattr__(self, "fallback_records", tuple(self.fallback_records))
+        if any(
+            not isinstance(record, ExecutionFallbackRecord)
+            for record in self.fallback_records
+        ):
+            raise TypeError(
+                "fallback_records must contain ExecutionFallbackRecord values."
+            )
+
+    def as_dict(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "kind": self.kind,
+            "error_type": self.error_type,
+            "message": self.message,
+            "retryable": self.retryable,
+        }
+        for name in ("reason_code", "segment_id", "runtime_id"):
+            value = getattr(self, name)
+            if value:
+                result[name] = value
+        for name in ("required_bytes", "available_bytes", "cleanup_succeeded"):
+            value = getattr(self, name)
+            if value is not None:
+                result[name] = value
+        if self.fallback_records:
+            result["fallback_records"] = [
+                record.as_dict() for record in self.fallback_records
+            ]
+        return result
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineRunResult:
     """Success, cancellation, or explicit error from one execution attempt."""
 
@@ -272,6 +345,7 @@ class PipelineRunResult:
     cancelled: bool = False
     source_revisions: tuple[object, ...] = ()
     execution_report: ExecutionReport | None = None
+    failure: PipelineExecutionFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,8 +376,17 @@ def execute_pipeline_request(
     compute_registry: ComputeRegistry | None = None,
     compute_planner: ComputePlanner | None = None,
     array_facts_cache: ArrayFactsCache | None = None,
+    raise_errors: bool = False,
 ) -> PipelineRunResult:
-    """Execute ``request`` without Qt and return errors as typed results."""
+    """Execute ``request`` without Qt and return errors as typed results.
+
+    ``raise_errors`` exists for generated-library compatibility: it re-raises
+    the same scientific exception only after the shared execution/cleanup
+    boundary has classified it. Interactive and batch callers retain the
+    default detached-result contract.
+    """
+    if not isinstance(raise_errors, bool):
+        raise TypeError("raise_errors must be a boolean.")
     pipeline: PrototypePipeline | None = None
     try:
         workflow = deserialize_workflow(deepcopy(request.workflow))
@@ -408,20 +491,34 @@ def execute_pipeline_request(
                 source_scientific_contexts=source_scientific_contexts,
             )
     except OperationCancelled as exc:
+        failure = _pipeline_execution_failure(
+            exc,
+            cancelled=True,
+            cpu_only=request.compute_request.mode is ComputeMode.CPU,
+        )
+        if raise_errors:
+            _attach_pipeline_execution_failure(exc, failure)
+            raise
         return PipelineRunResult(
             request.run_id,
             request.workflow,
             error=str(exc),
             cancelled=True,
             source_revisions=request.source_revisions,
+            failure=failure,
         )
     except Exception as exc:
+        failure = _pipeline_execution_failure(exc)
+        if raise_errors:
+            _attach_pipeline_execution_failure(exc, failure)
+            raise
         return PipelineRunResult(
             request.run_id,
             request.workflow,
             pipeline=pipeline,
             error=str(exc),
             source_revisions=request.source_revisions,
+            failure=failure,
         )
     return PipelineRunResult(
         request.run_id,
@@ -430,6 +527,88 @@ def execute_pipeline_request(
         source_revisions=request.source_revisions,
         execution_report=execution_report,
     )
+
+
+def _pipeline_execution_failure(
+    exc: BaseException,
+    *,
+    cancelled: bool = False,
+    cpu_only: bool = False,
+) -> PipelineExecutionFailure:
+    """Detach stable terminal facts without importing an optional provider."""
+
+    error_type = type(exc).__name__
+    message = str(exc).strip() or error_type
+    cleanup = getattr(exc, "cleanup_succeeded", None)
+    if cleanup is not None:
+        cleanup = bool(cleanup)
+    fallback_records = tuple(
+        getattr(exc, "fallback_records", ())
+        or getattr(exc, "vipp_fallback_records", ())
+    )
+    if cancelled:
+        return PipelineExecutionFailure(
+            kind="cancelled",
+            error_type=error_type,
+            message=message,
+            reason_code="operation_cancelled",
+            cleanup_succeeded=True if cpu_only else cleanup,
+            fallback_records=fallback_records,
+        )
+
+    failure = getattr(exc, "failure", None)
+    failure_kind = getattr(getattr(failure, "kind", None), "value", "")
+    if failure is not None and failure_kind:
+        return PipelineExecutionFailure(
+            kind=str(failure_kind),
+            error_type=str(getattr(failure, "exception_type", "")).strip()
+            or error_type,
+            message=str(getattr(failure, "message", "")).strip() or message,
+            reason_code=str(getattr(failure, "reason_code", "")).strip(),
+            segment_id=str(getattr(exc, "segment_id", "")).strip(),
+            runtime_id=str(getattr(exc, "runtime_id", "")).strip(),
+            retryable=bool(getattr(failure, "retryable", False)),
+            cleanup_succeeded=cleanup,
+            fallback_records=fallback_records,
+        )
+
+    required = getattr(exc, "required_bytes", None)
+    available = getattr(exc, "available_bytes", None)
+    runtime_id = str(getattr(exc, "runtime_id", "")).strip()
+    segment_id = str(getattr(exc, "segment_id", "")).strip()
+    if required is not None or available is not None:
+        return PipelineExecutionFailure(
+            kind="memory_preflight",
+            error_type=error_type,
+            message=message,
+            reason_code="device_memory_preflight",
+            segment_id=segment_id,
+            runtime_id=runtime_id,
+            required_bytes=required,
+            available_bytes=available,
+            cleanup_succeeded=True,
+            fallback_records=fallback_records,
+        )
+    return PipelineExecutionFailure(
+        kind="execution_error",
+        error_type=error_type,
+        message=message,
+        reason_code="unclassified_execution_error",
+        cleanup_succeeded=cleanup,
+        fallback_records=fallback_records,
+    )
+
+
+def _attach_pipeline_execution_failure(
+    exc: BaseException,
+    failure: PipelineExecutionFailure,
+) -> None:
+    """Best-effort JSON-safe detail on a compatibility re-raised exception."""
+
+    try:
+        exc.vipp_execution_failure = failure.as_dict()
+    except Exception:
+        return
 
 
 def _execute_accelerated_pipeline(
@@ -685,6 +864,7 @@ def _execute_accelerated_pipeline(
             environment=planning.environment,
             plan=execution_plan,
             actual_decisions=actual_decisions,
+            fallback_records=device_result.fallback_records,
             warnings=tuple(warnings),
             cleanup_succeeded=device_result.cleanup_succeeded,
         )
@@ -3071,6 +3251,7 @@ __all__ = [
     "NodeFinishedCallback",
     "NodeStartedCallback",
     "PipelineNodeResult",
+    "PipelineExecutionFailure",
     "PipelineRunRequest",
     "PipelineRunResult",
     "ProgressCallback",

@@ -787,6 +787,24 @@ def test_device_oom_reports_actual_cpu_fallback_decision():
     assert actual.decision_kind is DecisionKind.FALLBACK_CPU
     assert actual.runtime_id == "cpu-numpy"
     assert actual.fallback_reason.value == "out_of_memory"
+    assert len(result.execution_report.fallback_records) == 1
+    fallback = result.execution_report.fallback_records[0]
+    assert fallback.segment_id
+    assert fallback.runtime_id == "cuda-cupy"
+    assert fallback.node_ids == (gaussian.id,)
+    assert fallback.reason.value == "out_of_memory"
+    assert fallback.reason_code == "fake_oom"
+    assert fallback.exception_type == "_FakeOOM"
+    assert fallback.retryable
+    assert fallback.device_attempt_count == 1
+    assert fallback.cpu_retry_count == 1
+    assert fallback.cleanup_succeeded
+    assert fallback.memory_topology.value == "discrete"
+    assert fallback.device_total_bytes == runtime.free_bytes
+    assert fallback.device_free_bytes == runtime.free_bytes
+    serialized = result.execution_report.as_dict()["fallback_records"][0]
+    assert serialized["reason_code"] == "fake_oom"
+    assert serialized["memory_topology"] == "discrete"
     assert result.execution_report.warnings
     registry.close()
 
