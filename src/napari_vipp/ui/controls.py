@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 )
 
 from napari_vipp.core.io import MICROSCOPE_FILE_FILTER
+from napari_vipp.ui import recent_paths
 
 
 @dataclass(frozen=True)
@@ -767,7 +768,10 @@ class ImageSourceControl(QWidget):
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "Select image source",
-            self.path_edit.text(),
+            recent_paths.initial_directory(
+                recent_paths.INPUT_DIRECTORY,
+                self.path_edit.text(),
+            ),
             "Images and arrays (*.ome.tif *.ome.tiff *.tif *.tiff *.png *.jpg "
             "*.jpeg *.jpe *.jfif *.bmp *.dib *.gif *.webp *.tga *.pbm *.pgm "
             "*.ppm *.pnm *.npy *.npz *.nd2 *.czi *.lsm *.lif *.lof *.xlif "
@@ -776,15 +780,26 @@ class ImageSourceControl(QWidget):
             "All files (*.*)",
         )
         if path:
+            recent_paths.remember_file_directory(
+                recent_paths.INPUT_DIRECTORY,
+                path,
+            )
             self.path_edit.setText(path)
 
     def _browse_zarr_path(self) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
             "Select OME-Zarr source",
-            self.path_edit.text(),
+            recent_paths.initial_directory(
+                recent_paths.INPUT_DIRECTORY,
+                self.path_edit.text(),
+            ),
         )
         if path:
+            recent_paths.remember_directory(
+                recent_paths.INPUT_DIRECTORY,
+                path,
+            )
             self.path_edit.setText(path)
 
     def _on_changed(self, *_args) -> None:

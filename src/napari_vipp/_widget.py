@@ -236,6 +236,7 @@ from napari_vipp.core.workflow import (
     serialize_workflow,
     workflow_snapshot_from_pipeline,
 )
+from napari_vipp.ui import recent_paths
 from napari_vipp.ui.axis_controls import (
     AxisIntervalSlider as AxisIntervalSlider,
 )
@@ -996,6 +997,7 @@ class VippWidget(QWidget):
         self._interactive_collection_batch_plan_stale = False
         self._interactive_collection_batch_workflow_stale = False
         self._active_collection_batch_dialog: CollectionBatchDialog | None = None
+        self._collection_batch_workspace_engaged = False
         self._collection_batch_running = False
         self._collection_batch_graph_refresh_pending = False
         self._last_workflow_load_detail = ""
@@ -1205,6 +1207,12 @@ class VippWidget(QWidget):
             "Bind collections, preview paired representatives through the "
             "graph, run the full batch, and inspect progress."
         )
+        self.leave_batch_button = QPushButton("Leave batch mode")
+        self.leave_batch_button.setToolTip(
+            "Discard the active Batch workspace and its representative source "
+            "overrides, then return the graph to ordinary single-image inputs."
+        )
+        self.leave_batch_button.hide()
         self.export_ome_button = QPushButton("Export OME dataset...")
         self.settings_menu_button = QToolButton()
         self.settings_menu_button.setText("Settings")
@@ -1838,6 +1846,7 @@ class VippWidget(QWidget):
         self._batch_toolbar_left_separator = _toolbar_separator()
         workflow_row.addWidget(self._batch_toolbar_left_separator)
         workflow_row.addWidget(self.batch_button)
+        workflow_row.addWidget(self.leave_batch_button)
         self._batch_toolbar_right_separator = _toolbar_separator()
         workflow_row.addWidget(self._batch_toolbar_right_separator)
         workflow_row.addWidget(self.export_button)
@@ -2243,6 +2252,9 @@ class VippWidget(QWidget):
         self.export_button.clicked.connect(self._export_python_dialog)
         self.batch_button.clicked.connect(
             lambda _checked=False: self._batch_collection_dialog()
+        )
+        self.leave_batch_button.clicked.connect(
+            self._leave_collection_batch_workspace
         )
         self.batch_navigator.itemSelected.connect(
             self._preview_interactive_collection_batch_item
@@ -4006,11 +4018,18 @@ class VippWidget(QWidget):
         path, _filter = QFileDialog.getSaveFileName(
             self,
             "Save VIPP workflow",
-            "vipp_workflow.json",
+            recent_paths.initial_file_path(
+                recent_paths.WORKFLOW_DIRECTORY,
+                "vipp_workflow.json",
+            ),
             "VIPP workflow (*.json);;All files (*.*)",
         )
         if not path:
             return
+        recent_paths.remember_file_directory(
+            recent_paths.WORKFLOW_DIRECTORY,
+            path,
+        )
         if not path.lower().endswith(".json"):
             path += ".json"
         try:
@@ -4041,11 +4060,17 @@ class VippWidget(QWidget):
         path, _filter = QFileDialog.getOpenFileName(
             self,
             "Load VIPP workflow",
-            "",
+            recent_paths.recent_directory(
+                recent_paths.WORKFLOW_DIRECTORY,
+            ),
             "VIPP workflow (*.json);;All files (*.*)",
         )
         if not path:
             return
+        recent_paths.remember_file_directory(
+            recent_paths.WORKFLOW_DIRECTORY,
+            path,
+        )
         try:
             loaded = self.load_workflow_file(path)
         except Exception as exc:
@@ -4294,10 +4319,16 @@ class VippWidget(QWidget):
             actions=self._collection_batch_dialog_actions(),
         )
         self._active_collection_batch_dialog = dialog
+        dialog.rejected.connect(
+            lambda active=dialog: self._collection_batch_dialog_rejected(active)
+        )
         dialog.runRequested.connect(
             lambda values, active=dialog: self._run_collection_batch_from_workspace(
                 active, values
             )
+        )
+        dialog.previewInvalidated.connect(
+            lambda active=dialog: self._engage_collection_batch_workspace(active)
         )
         dialog.previewInvalidated.connect(
             lambda active=dialog: self._mark_interactive_collection_batch_stale(active)
@@ -4324,10 +4355,54 @@ class VippWidget(QWidget):
                 self._discard_collection_batch_dialog(dialog)
                 self.status_label.setText(f"Could not open batch workspace: {exc}")
                 return None
+        if config_path is not None or config is not None:
+            self._engage_collection_batch_workspace(dialog)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
         return dialog
+
+    def _engage_collection_batch_workspace(
+        self,
+        dialog: CollectionBatchDialog,
+    ) -> None:
+        """Mark a configured or used dialog as retained batch-workspace state."""
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        self._collection_batch_workspace_engaged = True
+        self.leave_batch_button.show()
+
+    def _collection_batch_dialog_rejected(
+        self,
+        dialog: CollectionBatchDialog,
+    ) -> None:
+        """Forget a front door that was closed before batch mode was entered."""
+        if dialog is not self._active_collection_batch_dialog:
+            return
+        if self._collection_batch_workspace_engaged:
+            return
+        self._active_collection_batch_dialog = None
+        self.leave_batch_button.hide()
+        dialog.deleteLater()
+
+    def _leave_collection_batch_workspace(self) -> None:
+        """Discard retained batch state and resume ordinary source resolution."""
+        if self._collection_batch_running:
+            self.status_label.setText(
+                "Wait for the active batch run to finish before leaving batch mode."
+            )
+            return
+        had_source_overrides = bool(self._interactive_collection_source_paths)
+        if self._active_pipeline_run_id is not None and had_source_overrides:
+            self._abandon_background_pipeline_run()
+        self._clear_interactive_collection_batch_session()
+        if had_source_overrides:
+            self._invalidate_pipeline_cache()
+            self._refresh_image_source_options()
+            self.run_pipeline()
+        self.status_label.setText(
+            "Left Batch workspace; the workflow is in single-image mode."
+        )
 
     def _discard_collection_batch_dialog(
         self,
@@ -4336,6 +4411,8 @@ class VippWidget(QWidget):
         """Permanently discard a replaced workspace instead of hiding it."""
         if dialog is self._active_collection_batch_dialog:
             self._active_collection_batch_dialog = None
+            self._collection_batch_workspace_engaged = False
+            self.leave_batch_button.hide()
         dialog.close()
         dialog.deleteLater()
 
@@ -4347,6 +4424,7 @@ class VippWidget(QWidget):
         """Execute a full batch while retaining its workspace and progress."""
         if dialog is not self._active_collection_batch_dialog:
             return
+        self._engage_collection_batch_workspace(dialog)
         if self._collection_batch_running:
             self.status_label.setText("A collection batch is already running.")
             return
@@ -5000,6 +5078,9 @@ class VippWidget(QWidget):
             self._discard_collection_batch_dialog(
                 self._active_collection_batch_dialog,
             )
+        elif close_workspace:
+            self._collection_batch_workspace_engaged = False
+            self.leave_batch_button.hide()
 
     def _load_collection_batch_demo_preview(
         self,
