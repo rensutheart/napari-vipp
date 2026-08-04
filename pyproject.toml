@@ -139,6 +139,9 @@ napari_vipp = [
 [tool.pytest.ini_options]
 testpaths = ["src/napari_vipp/_tests"]
 addopts = ["-ra"]
+markers = [
+    "real_cuda: opt-in tests that require and verify a real CUDA device",
+]
 
 [tool.ruff]
 line-length = 88

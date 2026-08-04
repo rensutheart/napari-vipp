@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np
@@ -19,6 +22,13 @@ from napari_vipp._tests.test_device_execution import (
     _implementation_spec,
     _library_descriptor,
     _runtime_descriptor,
+)
+from napari_vipp.core.batch import (
+    BatchConfig,
+    BatchOutputConfig,
+    BatchSourceConfig,
+    run_batch,
+    scientific_workflow_hash,
 )
 from napari_vipp.core.compute import (
     ComputeEnvironment,
@@ -44,6 +54,7 @@ from napari_vipp.core.compute_registry import (
 from napari_vipp.core.compute_specs import OperationComputeSpec, compute_specs_for
 from napari_vipp.core.execution import PipelineRunRequest, execute_pipeline_request
 from napari_vipp.core.operations import canny_edges as cpu_canny_edges
+from napari_vipp.core.operations import gaussian_blur as cpu_gaussian_blur
 from napari_vipp.core.operations import otsu_threshold as cpu_otsu_threshold
 from napari_vipp.core.pipeline import EXECUTION_READY, PrototypePipeline, SourcePayload
 from napari_vipp.core.tables import TableData, TableState
@@ -363,6 +374,279 @@ def _accelerated_request(
             frozenset() if cached is None else frozenset(cached.completed_node_ids)
         ),
     )
+
+
+def test_run_batch_reuses_fake_cuda_after_visible_oom_fallback(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    arrays = (
+        np.arange(30, dtype=np.float32).reshape(5, 6),
+        np.arange(30, dtype=np.float32).reshape(5, 6) + 10,
+    )
+    for index, array in enumerate(arrays, start=1):
+        np.save(inputs / f"{index:02d}.npy", array)
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    output = pipeline.add_node("batch_output")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    pipeline.set_param(output.id, "tag", "result")
+    pipeline.set_param(output.id, "format", "npy")
+    assert pipeline.connect("input", gaussian.id).success
+    assert pipeline.connect(gaussian.id, output.id).success
+
+    request = ComputeRequest(
+        mode=ComputeMode.AUTO,
+        runtime_id="cuda-cupy",
+        device_id="cuda:0",
+    )
+    workflow = serialize_workflow(pipeline, compute_request=request)
+    config = BatchConfig(
+        workflow_file=Path("workflow.json"),
+        workflow_sha256=scientific_workflow_hash(workflow),
+        output_dir=tmp_path / "outputs",
+        sources=(BatchSourceConfig("input", "Input", inputs, "*.npy"),),
+        outputs=(
+            BatchOutputConfig(
+                output.id,
+                "Batch Output",
+                "result",
+                "image",
+                "npy",
+                "",
+                "{source_stem}__{tag}",
+            ),
+        ),
+        default_image_format="npy",
+        save_python_script=False,
+        compute_request=request,
+    )
+    runtime = _ShapeAwareRuntime()
+    runtime.oom_remaining = 1
+    registry, specs = _test_registry(
+        runtime,
+        (("gaussian_blur", _device_oom_once),),
+    )
+    planner = _StaticPlanner(
+        request,
+        (_decision(gaussian.id, specs["gaussian_blur"]),),
+    )
+
+    try:
+        result = run_batch(
+            workflow,
+            config,
+            compute_registry=registry,
+            compute_planner=planner,
+        )
+        document = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+        assert document["summary"] == {
+            "completed": 2,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 0,
+        }
+        assert document["compute"]["configured_request"] == request.as_dict()
+        assert document["compute"]["effective_request"] == request.as_dict()
+        assert document["compute"]["runtime_cleanup_succeeded"] is True
+        assert all(
+            item["execution"]["cleanup_succeeded"] is True
+            for item in document["items"]
+        )
+
+        first, second = document["items"]
+        first_gaussian = next(
+            node
+            for node in first["execution"]["nodes"]
+            if node["node_id"] == gaussian.id
+        )
+        assert first_gaussian["decision_kind"] == "fallback_cpu"
+        assert first_gaussian["actual_implementation"]["runtime_id"] == "cpu-numpy"
+        assert first_gaussian["actual_implementation"]["implementation_id"] == (
+            "cpu-gaussian_blur-v1"
+        )
+        assert len(first["execution"]["fallback_records"]) == 1
+        fallback = first["execution"]["fallback_records"][0]
+        assert fallback["reason_code"] == "fake_oom"
+        assert fallback["device_attempt_count"] == 1
+        assert fallback["cpu_retry_count"] == 1
+        assert fallback["cpu_retry_succeeded"] is True
+        assert fallback["cleanup_succeeded"] is True
+
+        second_gaussian = next(
+            node
+            for node in second["execution"]["nodes"]
+            if node["node_id"] == gaussian.id
+        )
+        assert second_gaussian["decision_kind"] == "selected"
+        assert second_gaussian["actual_implementation"]["runtime_id"] == "cuda-cupy"
+        assert second_gaussian["actual_implementation"][
+            "implementation_library_id"
+        ] == "cupyx"
+        assert second_gaussian["actual_implementation"]["implementation_id"] == (
+            "fake-gaussian_blur-v1"
+        )
+        assert second["execution"]["fallback_records"] == []
+
+        for item, expected in zip(document["items"], arrays, strict=True):
+            output_record = item["outputs"][0]
+            assert output_record["execution_provenance_sha256"] == item[
+                "execution_provenance_sha256"
+            ]
+            np.testing.assert_array_equal(np.load(output_record["path"]), expected)
+
+        assert runtime.host_to_device_count == 2
+        assert runtime.device_to_host_count == 1
+        assert runtime.operation_count == 2
+        assert runtime.release_count == 3
+        assert runtime.live == {}
+        assert sum(
+            isinstance(event, tuple) and event[0] == "scope-enter"
+            for event in runtime.events
+        ) == 2
+        assert sum(
+            isinstance(event, tuple) and event[0] == "scope-exit"
+            for event in runtime.events
+        ) == 2
+    finally:
+        registry.close()
+
+
+@pytest.mark.real_cuda
+def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
+    if os.environ.get("VIPP_RUN_REAL_CUDA_BATCH") != "1":
+        pytest.skip("Set VIPP_RUN_REAL_CUDA_BATCH=1 to run the real CUDA batch smoke.")
+    if importlib.util.find_spec("cupy") is None:
+        pytest.fail("Real CUDA batch smoke requested, but CuPy is not installed.")
+
+    registry = ComputeRegistry()
+    try:
+        probe = registry.probe_runtime("cuda-cupy", refresh=True)
+        if not probe.available or not probe.selected_device_id:
+            pytest.fail(
+                "Real CUDA batch smoke requested, but CUDA is unavailable: "
+                + (probe.message or "no selected device")
+            )
+        expected_device = os.environ.get("VIPP_EXPECT_CUDA_DEVICE", "").strip()
+        selected = next(
+            (
+                device
+                for device in probe.devices
+                if device.device_id == probe.selected_device_id
+            ),
+            None,
+        )
+        if expected_device:
+            assert selected is not None
+            assert expected_device.casefold() in selected.name.casefold()
+        library = registry.probe_library("cupyx", refresh=True)
+        if not library.available:
+            pytest.fail(
+                "Real CUDA batch smoke requested, but CuPyX is unavailable: "
+                + library.message
+            )
+
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        rng = np.random.default_rng(20260804)
+        arrays = tuple(
+            rng.normal(size=(256, 320)).astype(np.float32) for _ in range(2)
+        )
+        for index, array in enumerate(arrays, start=1):
+            np.save(inputs / f"{index:02d}.npy", array)
+
+        pipeline = PrototypePipeline()
+        pipeline.reset_empty_graph()
+        gaussian = pipeline.add_node("gaussian_blur")
+        output = pipeline.add_node("batch_output")
+        pipeline.set_param(gaussian.id, "sigma", 1.25)
+        pipeline.set_param(output.id, "tag", "result")
+        pipeline.set_param(output.id, "format", "npy")
+        assert pipeline.connect("input", gaussian.id).success
+        assert pipeline.connect(gaussian.id, output.id).success
+        request = ComputeRequest(
+            mode=ComputeMode.SELECTIVE,
+            node_preferences={
+                gaussian.id: "implementation:cupyx-gaussian-blur-v1",
+                output.id: "cpu",
+            },
+            runtime_id="cuda-cupy",
+            device_id=probe.selected_device_id,
+            fallback_policy=FallbackPolicy.STRICT,
+        )
+        workflow = serialize_workflow(pipeline, compute_request=request)
+        config = BatchConfig(
+            workflow_file=Path("workflow.json"),
+            workflow_sha256=scientific_workflow_hash(workflow),
+            output_dir=tmp_path / "outputs",
+            sources=(BatchSourceConfig("input", "Input", inputs, "*.npy"),),
+            outputs=(
+                BatchOutputConfig(
+                    output.id,
+                    "Batch Output",
+                    "result",
+                    "image",
+                    "npy",
+                    "",
+                    "{source_stem}__{tag}",
+                ),
+            ),
+            default_image_format="npy",
+            save_python_script=False,
+            compute_request=request,
+        )
+        nested_progress = []
+        runtime = registry.runtime("cuda-cupy")
+
+        result = run_batch(
+            workflow,
+            config,
+            compute_registry=registry,
+            execution_progress_callback=nested_progress.append,
+        )
+        document = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+        assert document["summary"]["completed"] == 2
+        assert document["summary"]["failed"] == 0
+        assert document["compute"]["runtime_cleanup_succeeded"] is True
+        assert {progress.item_index for progress in nested_progress} == {1, 2}
+        assert any(
+            progress.node_id == gaussian.id and progress.message == "Node started."
+            for progress in nested_progress
+        )
+        for item, source in zip(document["items"], arrays, strict=True):
+            gaussian_record = next(
+                node
+                for node in item["execution"]["nodes"]
+                if node["node_id"] == gaussian.id
+            )
+            identity = gaussian_record["actual_implementation"]
+            assert gaussian_record["decision_kind"] == "selected"
+            assert identity["runtime_id"] == "cuda-cupy"
+            assert identity["implementation_library_id"] == "cupyx"
+            assert identity["implementation_id"] == "cupyx-gaussian-blur-v1"
+            assert item["execution"]["fallback_records"] == []
+            assert item["execution"]["cleanup_succeeded"] is True
+            output_record = item["outputs"][0]
+            assert output_record["execution_provenance_sha256"] == item[
+                "execution_provenance_sha256"
+            ]
+            actual = np.load(output_record["path"])
+            parity = operation_parity(
+                "gaussian_blur",
+                cpu_gaussian_blur(source, sigma=1.25),
+                actual,
+                input_dtypes=(source.dtype,),
+            )
+            assert parity.passed, parity.detail
+
+        assert registry.runtime("cuda-cupy") is runtime
+        _assert_private_cuda_scope_clean(runtime, probe.selected_device_id)
+    finally:
+        registry.close()
 
 
 def test_headless_device_chain_uses_one_transfer_and_propagates_metadata():
