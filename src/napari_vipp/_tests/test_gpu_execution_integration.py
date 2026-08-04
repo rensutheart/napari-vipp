@@ -660,6 +660,48 @@ def test_real_run_batch_gpu_provenance_cleanup_and_reuse(tmp_path):
             )
             assert parity.passed, parity.detail
 
+        cancel_event = threading.Event()
+        cancellation_progress = []
+
+        def cancel_after_first_device_node(progress):
+            cancellation_progress.append(progress)
+            if (
+                progress.item_index == 1
+                and progress.node_id == gaussian.id
+                and progress.message == "Node started."
+            ):
+                cancel_event.set()
+
+        cancelled_config = replace(
+            config,
+            output_dir=tmp_path / "cancelled-outputs",
+        )
+        cancelled_result = run_batch(
+            workflow,
+            cancelled_config,
+            compute_registry=registry,
+            cancel_event=cancel_event,
+            execution_progress_callback=cancel_after_first_device_node,
+        )
+        cancelled_document = json.loads(
+            cancelled_result.manifest_path.read_text(encoding="utf-8")
+        )
+        assert cancelled_result.cancelled
+        assert not cancelled_result.has_failures
+        assert cancelled_result.saved_paths == ()
+        assert cancelled_document["summary"]["cancelled"] == 1
+        assert cancelled_document["summary"]["skipped"] == 1
+        cancelled_item = cancelled_document["items"][0]
+        assert cancelled_item["execution"]["outcome"] == "cancelled"
+        assert cancelled_item["execution"]["cleanup_succeeded"] is True
+        assert cancelled_item["execution"]["failure"]["kind"] == "cancelled"
+        assert not list(cancelled_config.output_dir.glob("*.npy"))
+        assert any(
+            progress.node_id == gaussian.id
+            and progress.message == "Node started."
+            for progress in cancellation_progress
+        )
+
         assert registry.runtime("cuda-cupy") is runtime
         _assert_private_cuda_scope_clean(runtime, probe.selected_device_id)
     finally:
