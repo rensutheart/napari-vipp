@@ -10,6 +10,9 @@ reviewing VIPP itself.
   workflows.
 - [Image import and export](io-user-guide.md): supported formats, optional
   microscope readers, batch input binding, and output choices.
+- [Durable GPU execution](durable-gpu-execution.md): batch/config migration,
+  generated Python and CLI overrides, exact provenance, OOM fallback,
+  two-level progress, cancellation, and publication safety.
 - [Cache and memory](cache-and-memory.md): cache modes, memory guard, and
   large-data tradeoffs.
 - [Operator tips](operator-tips.md): background work, cancellation, previews,
@@ -66,9 +69,9 @@ reviewing VIPP itself.
   evidence plus implemented public-candidate regions for Phase 1, ordinary
   Richardson-Lucy, Richardson-Lucy TV, Canny, Otsu, Sigma Filter, and Connected
   Components. Validated regions are available in normal Auto/Selective
-  pipelines on that branch; unsupported regions visibly use CPU. This remains
-  branch-scoped evidence rather than a released cross-platform GPU-support
-  claim.
+  pipelines and the durable batch/generated-Python/CLI/export surfaces on that
+  branch; unsupported regions visibly use CPU. This remains branch-scoped
+  evidence rather than a released cross-platform GPU-support claim.
 
 ## Implementation Records
 

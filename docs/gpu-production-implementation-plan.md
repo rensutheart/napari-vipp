@@ -367,10 +367,11 @@ and source-currentness context.
 Current limits remain explicit: RL and RL-TV expose only their exact validated
 regions; portable broad Auto admission is not claimed; exact benchmarking still requires one output and
 excludes writers; pipeline optimization still supports
-one accelerator runtime; batch/generated/CLI/export stay CPU-only; native Linux
-and secondary Windows hardware evidence is pending; and the UI's separately
-captured optimizer inputs have not yet been replaced with one immutable
-application snapshot.
+one accelerator runtime; native Linux and secondary Windows hardware evidence
+is pending; and the UI's separately captured optimizer inputs have not yet been
+replaced with one immutable application snapshot. Batch, generated Python/CLI,
+and standalone export now use the same admitted CPU/GPU implementations and
+durable execution contract as the interactive service.
 
 ### Phase 3A Canny and Otsu status (2026-07-29)
 
@@ -2491,10 +2492,12 @@ permission to rewrite adjacent code.
   Measurements slice are implemented. Time-box the full cuCIM/Clara
   Windows investigation and Apple M1 Max provider
   feasibility.
-- **Phase 4 — remaining durable execution surfaces:** Passes 5 and 8 add batch,
-  generated Python/CLI overrides, effective-config/artifact hash and provenance
-  integration, and export sidecars using the already frozen workflow v4 compute
-  block and canonical hash.
+- **Phase 4 — durable execution surfaces (implemented 2026-08-04):** Passes 5
+  and 8 add batch, generated Python/CLI overrides, effective-config/artifact
+  hash and provenance integration, export sidecars, nested progress,
+  cooperative cancellation,
+  structured OOM/fallback evidence, and cleanup-gated publication using the
+  already frozen workflow v4 compute block and canonical hash.
 - **Phase 5 — broad reasonable-node coverage and release hardening:** Passes
   9-10 promote remaining filtering, pointwise operations, morphology,
   segmentation, label cleanup, colocalization, and other families where a
@@ -2807,6 +2810,13 @@ built. Only one agent edits `_widget.py`; only one edits `_graph.py`.
 
 ### Pass 5 — Batch execution
 
+**Status (2026-08-04): implemented.** Batch config/manifest schema 2, full
+saved/effective compute requests, shared CPU/GPU execution, exact per-item/node
+provenance, structured OOM records, nested progress, cooperative cancellation,
+cancelled status, item cleanup, and fail-closed publication are integrated.
+Schema-1 configs migrate to CPU. The saved runner supports one-run CLI
+overrides, both progress levels, SIGINT cleanup, and exit code 130.
+
 **Depends on:** Pass 4.
 **Owns:** `core/batch.py`, `core/batch_setup.py`, batch manifest/config versions,
 `ui/batch.py`, `ui/batch_controller.py`, `ui/batch_navigator.py`, and focused
@@ -2837,8 +2847,8 @@ not change workflow schema.
 **Acceptance/rollback:** every item has zero live device values after cleanup;
 all v0.12 staged-write, source-identity, skip, attached-config/hash, and atomic
 promotion guarantees still pass; and the runner replays its recorded request.
-Rollback forces CPU and continues producing the new manifest fields. **Still
-disabled:** generated/CLI/export integration until Pass 8.
+Rollback forces CPU and continues producing the new manifest fields. Generated
+Python/CLI/export integration is now supplied by completed Pass 8.
 
 **Parallelism:** batch UI can be developed against fake core records with
 separate owners, but `core/batch.py` has one owner. Can overlap Pass 6's CuPy RL
@@ -2848,11 +2858,12 @@ algorithm tests after Pass 4 if no shared files are edited.
 
 **Status (2026-07-29):** the headless implementation, exact node/optimizer
 benchmark substrate, and exact-region public Auto/Selective visibility are
-implemented. Batch exposure, broader real-data evidence, and cross-platform
-qualification remain gated.
+implemented. Durable batch/generated/CLI/export exposure was completed on
+2026-08-04; broader real-data evidence and cross-platform qualification remain
+gated.
 
-**Depends on:** Passes 1, 4, and the batch cleanup contract if batch exposure is
-included.
+**Depends on:** Passes 1 and 4; durable exposure also depends on Pass 5's batch
+cleanup contract.
 **Owns:** new `core/gpu/cupy_rl.py`; RL declaration/policy blocks; RL-specific
 memory model; new `_tests/test_gpu_rl.py`; focused additions to
 `_tests/test_operations.py` and `_tests/test_execution.py`, plus
@@ -2872,9 +2883,9 @@ cancel/sync, exact two-input evidence, cleanup, and optimizer reuse. The
 implemented exact parity gate is NRMSE `<= 2e-6` plus
 `max_abs <= 1e-6 + 5e-6 * reference_peak`, with maximum ULP distance retained
 as a diagnostic. Iteration-500 stress outside the initial admitted region,
-wider calibrated real-data performance, RL-specific OOM recovery,
-cross-platform evidence, and batch cleanup remain
-promotion work where not already covered by common substrate tests.
+wider calibrated real-data performance, RL-specific real-OOM evidence, and
+cross-platform evidence remain promotion work beyond the common durable
+substrate tests.
 
 **Migration:** none; declarations only widen runtime capability.
 
@@ -2883,8 +2894,8 @@ memory-model, cleanup, exact-benchmark, and iteration-progress gates and is
 visible as a public candidate. Auto selection still requires the section 5.4
 end-to-end benefit rule using the production adapter; unvalidated environments
 and parameter regions remain on CPU. No parameter is hard-coded from the spike.
-Rollback removes the RL declaration. **Still disabled:** batch/generated/export
-GPU execution and any new RL initialization/boundary/default.
+Rollback removes the RL declaration. **Still disabled:** any new RL
+initialization/boundary/default outside the accepted CPU contract.
 
 **Parallelism:** algorithm/parity work can overlap Pass 5 batch work after Pass
 4 with disjoint files; final batch tests wait for Pass 5. One owner controls
@@ -2895,8 +2906,9 @@ shared RL provider primitives.
 **Status (2026-07-29):** the headless implementation, exact lambda-zero and
 positive-TV regions, ordered-input benchmarking, iteration
 progress/cancellation, conservative memory model, fixed/holdout evidence, and
-exact-region public Auto/Selective visibility are implemented. Batch exposure,
-calibrated biological data, and cross-platform qualification remain gated.
+exact-region public Auto/Selective visibility are implemented. Durable
+batch/generated/CLI/export exposure was completed on 2026-08-04; calibrated
+biological data and cross-platform qualification remain gated.
 
 **Depends on:** Pass 6 and the existing RL-TV validation baseline.
 **Owns:** new `core/gpu/cupy_rl_tv.py` (or an RL-TV-only extension of a shared
@@ -2912,7 +2924,7 @@ checkpoint protocol.
 **Tests/documentation:** lambda-zero equivalence, current TV sign/stencil/
 epsilon/floor semantics, phantom feature retention, PSF/grid behavior,
 2D/3D/iteration extremes, real calibrated datasets, progress/cancel, memory,
-OOM, and batch cleanup when batch exposure is enabled.
+OOM, and durable batch cleanup.
 
 **Migration:** none. Do not change shipped examples, defaults, formula,
 initialization, padding, PSF preparation, or TV spacing.
@@ -2929,6 +2941,16 @@ initialization, reflect padding, and fast precision.
 integration waits for Pass 6 and has one owner for shared RL files.
 
 ### Pass 8 — Generated Python and cross-surface persistence
+
+**Status (2026-08-04): implemented.** Generated callables and CLIs now honor
+the embedded or explicit compute request, preserve manual-node/full-pipeline
+semantics, report the formal execution result, serialize exact actual node
+identities and structured fallback/failure records, bind provenance to each
+output, and write atomic sidecars. CLI overrides are non-mutating, progress and
+SIGINT cancellation are wired, cancellation exits 130, and publication fails
+closed when cleanup is not proven. The generated folder loop is explicitly
+labelled non-durable; production collection replay delegates to Pass 5's saved
+runner.
 
 **Depends on:** Passes 4-7 and stable batch request/provenance contracts.
 **Owns:** integration-only changes around the frozen Pass 4 workflow-v4 compute
@@ -3170,7 +3192,7 @@ not reasons to redesign Phase 1.
 | D1 | Compute intent | Global modes are CPU, Auto, and Selective; Auto is the new-session default. Selective provides per-node Follow-pipeline/CPU choices, one choice per GPU library, and Best GPU only when multiple libraries compete; exact pins are advanced-only. `Find fastest` treats these as the current assignment and searches all eligible implementations unless a distinct optimizer lock is set. | Keep lock state separate from execution intent and scientific identity. |
 | D2 | Fallback | Auto choosing CPU normally is not fallback. Selective uses visible CPU fallback by default; a strict option fails closed. | Finalize which typed reasons are retryable before Pass 1. |
 | D3 | OOM | Auto may clean and retry one affected transactional segment once on CPU and must report it. Selective follows visible/strict policy. | Validate no partial commit, leak, or duplicate side effect. |
-| D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Separate validated VIPP UI metadata stores optimizer-locked node IDs without changing the scientific workflow hash. Pass 4 atomically updates the canonical workflow hash for compute intent and every existing reader/writer preserves the block while unsupported surfaces force CPU. Resolved hardware and timings stay local. | Complete GPU activation, effective override hashes, and provenance for generated/batch/export surfaces in Passes 5 and 8. |
+| D4 | Persistence | Workflow v4 stores global intent, fallback, and authored node preferences; v3 migrates to CPU. Separate validated VIPP UI metadata stores optimizer-locked node IDs without changing the scientific workflow hash. Pass 4 atomically updates the canonical workflow hash for compute intent. Batch config v2 stores its full effective request and v1 migrates to CPU; generated/batch/export surfaces execute that intent and record configured/effective hashes plus actual provenance. Resolved hardware and timings remain outside portable workflow JSON. | Implemented across interactive, batch, generated Python/CLI, and export; cross-platform replay evidence remains a release gate. |
 | D5 | Installation UX | Start with provider-aware diagnostics and a safe copyable command. A later in-app installer requires explicit consent, an isolated supported environment, progress, verification, and restart; never mutate an arbitrary napari environment silently. | Validate CUDA-13 and CUDA-12 packages before publishing extras or commands. |
 | D6 | Result caching | Key results by actual implementation/version and scientific semantics. Identical actual CPU execution may be reused across Auto/Selective; different implementations remain separate unless a reviewed bitwise-equivalence group exists. | Prove stale-run and exact-pin behavior in Pass 4. |
 | D7 | Initial hardware | CUDA acceleration targets validated native Windows and Linux first, including RTX 5090 and RTX 40-series laptops. WSL2 is a separate Linux deployment. macOS uses CPU initially while M1 Max Metal/MPS/MLX support is investigated. | Name public OS/Python/CUDA/device tiers only after clean-host evidence. |
@@ -3178,7 +3200,7 @@ not reasons to redesign Phase 1.
 | D9 | CI | Every PR keeps CPU/package checks on Windows, macOS, and Linux. Scheduled real-GPU jobs cover Windows CUDA 13 and native Linux CUDA 12/13; releases expand the matrix. | Secure stable GPU hosts and define maintenance ownership before public promotion. |
 | D10 | Device identity | Exact device/driver/runtime belongs in local benchmark identity and run provenance, not scientific result identity unless it changes semantics. Portable artifacts use descriptive tiers and privacy-preserving identifiers. | Review the provenance schema in Pass 4. |
 | D11 | Memory | Discrete CUDA starts with an 80% cap and `max(512 MiB, 10%)` reserve, separate from host RAM. Unified-memory providers use one shared budget and never add RAM plus nominal VRAM. | Tune on the 5090, laptop GPUs, and M1 Max before broad defaults ship. |
-| D12 | Sidecars | Recommended: atomic `.vipp-provenance.json` beside standalone exports; batch keeps equivalent data in its manifest. | Confirm the default before Pass 8 because it creates an additional file. |
+| D12 | Sidecars | Atomic `.vipp-provenance.json` is the default beside standalone generated exports; batch keeps equivalent per-item execution documents and per-output digest links in its manifest/checkpoints. | Implemented; retain normalized-path, failure-sidecar, and atomic-write regression tests. |
 | D13 | Precision | Ship strict scientific-default behavior only; no global fast/mixed-precision control. | Add any relaxed precision only as operation-specific, versioned evidence-backed work. |
 | D14 | Cross-platform meaning | VIPP remains supported on Windows, macOS, and Linux. CUDA is only one provider; lack of CUDA on macOS does not preclude a later Apple GPU provider. | Apple feasibility and packaging have their own gate; never imply NVIDIA code runs on macOS. |
 | D15 | cuCIM/Clara | Use cuCIM operation-by-operation and keep CuPy independent. Clara is outside Phase 1 but must receive a named near-term feature-completeness/upstream review; the desired end state is not a permanently hobbled skimage-only fork. | Reproducible target packages, VIPP-adapter parity, Linux evidence, and a maintainable Clara decision. |
@@ -3229,7 +3251,8 @@ not reasons to redesign Phase 1.
 
 ## Ordered next suggested steps (maintained 2026-08-04)
 
-This is the implementation queue after the basic Measurements vertical slice.
+This is the implementation queue after the basic Measurements vertical slice
+and the completed durable batch/generated-Python/CLI/export integration.
 Update this section when a wave lands so the branch and handoff report retain
 one explicit order. The completed public Canny/Otsu contracts and their separate evidence
 protocol are recorded in
@@ -3244,23 +3267,27 @@ Measurements' typed host boundary, exact basic schemas, public regions, and
 workload-dependent timings are recorded in the
 [Phase 6 report](gpu-phase6-measurements-implementation-report.md).
 
-1. **Convert Dtype and inexpensive residency bridges:** support only explicit
-   authored conversions and scientifically faithful low-cost operations that can
-   keep useful segments resident. Never insert a cast or bridge merely to improve
-   a benchmark.
-2. **Native platform evidence:** validate supported native Linux targets and the
+1. **Native platform evidence:** validate supported native Linux targets and the
    available Windows RTX 40-series laptops, including clean setup, real kernels,
    parity, memory, cancellation, cleanup, and end-to-end selection. WSL2 is
    secondary evidence, not a substitute for native Windows/Linux claims.
-3. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
-   with unified-memory accounting. Keep the CPU path as the honest fallback
-   unless an operation family passes scientific and performance gates.
-4. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
+2. **CPU-only and optional-GPU packaging evidence:** keep base wheel import,
+   workflow, batch, generated-Python, CLI, and export checks green on native
+   Windows/macOS/Linux without accelerator packages. Produce reproducible,
+   mutually exclusive CUDA 12/13 installation and clean-environment evidence
+   before broad distribution claims.
+3. **cuCIM/Clara feature-complete investigation:** perform the named near-term,
    time-boxed packaging/upstream review. Prefer a maintainable feature-complete
    cuCIM route; do not normalize a permanently hobbled skimage-only fork.
-5. **Durable execution surfaces:** add batch, generated Python/CLI, and export
-   GPU execution and provenance after the core interactive operation coverage
-   and lifecycle contracts are stable.
+4. **Apple M1 Max study:** evaluate Metal/MPS/MLX through the provider contracts
+   with unified-memory accounting. Keep the CPU path as the honest fallback
+   unless an operation family passes scientific and performance gates.
+5. **Convert Dtype, inexpensive residency bridges, and broader reasonable-node
+   coverage:** support only explicit authored conversions and scientifically
+   faithful operations that can keep useful segments resident. Never insert a
+   cast or bridge merely to improve a benchmark. Promotion still requires the
+   same parity, memory, progress, cancellation, cleanup, and durable-surface
+   tests.
 
 The UI immutable-snapshot/lifecycle hardening listed above remains a prerequisite
 for broad optimizer claims and should be completed alongside the early operation
@@ -3291,8 +3318,11 @@ selected workload rather than eagerly decoding a complete ND2 acquisition.
    and packaged policy artifact v5. Basic morphology and intensity Measurements
    are complete with a cuCIM resident provider, mandatory typed host-table
    finalizer, visible exact-region fallback, and RTX workload evidence.
-   Continue in the maintained order above: explicit Convert Dtype/residency bridges;
-   platform/provider evidence; then durable batch/generated/CLI/export surfaces.
+   Durable batch/generated-Python/CLI/export execution is now complete for
+   supported node regions, including exact provenance, structured fallback,
+   nested progress, cancellation, and cleanup-gated publication. Continue in
+   the maintained order above: native/packaging evidence, provider-completeness
+   review, Apple feasibility, then explicit bridges and broader node coverage.
 5. **Admission rule:** scientific validity, memory, progress, cancellation,
    cleanup, and runtime evidence make a region a normal public Selective
    candidate; incomplete/unvalidated work alone remains `developer_hidden`.

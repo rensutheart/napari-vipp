@@ -60,6 +60,23 @@ changing the workflow hash. Complete the generated run and confirm three
 completed items, nine outputs, retained workspace statuses, and a finalized
 latest manifest, archive, and three item sidecars.
 
+For a release containing durable GPU execution, repeat the batch smoke with a
+mixed admitted CPU/GPU pipeline and inspect the manifest rather than relying on
+badges alone. Confirm BatchConfig/manifest schema 2, configured and effective
+requests/hashes, exact implementation version/parity identity for every
+computed node, per-output execution digest links, and true cleanup. Run the
+saved `vipp_batch_pipeline.py --progress` once with its recorded request and
+once with an explicit mode or node override. Confirm both item and operation
+progress, then cancel a third run and verify cancelled status, no unpublished
+output, finalized manifests/checkpoints, and exit code 130.
+
+Also run a CPU-only environment smoke with no CuPy/cuCIM installed: import the
+plugin and an exported script, replay CPU and Auto workflows, and run a fully
+skipped batch without an accelerator import/probe. Use deterministic tests to
+exercise visible one-retry OOM provenance, strict no-retry behavior, and
+cleanup-false publication blocking; do not induce a real OOM in an uncontrolled
+operator run.
+
 For a release that changes runtime or responsive UI code, also confirm the
 batch representative strip remains usable at a 420 px dock width on Windows
 and that macOS cache status reports RAM without launching a subprocess. The
@@ -194,6 +211,10 @@ If not updated after indexing delay:
       example workflows
 - [ ] Deterministic batch demo completed with 3 items, 9 outputs, exact
       ground-truth validation, manifest archive, and 3 finalized sidecars
+- [ ] Durable CPU/GPU replay verified configured/effective requests, exact node
+      identities, output digest links, both progress levels, cancellation 130,
+      structured OOM policy, and cleanup-gated publication
+- [ ] CPU-only import/generated/batch replay passed without optional GPU imports
 - [ ] Build and twine checks pass
 - [ ] Companion documentation strict build passes and release page is published
 - [ ] Uploaded to PyPI

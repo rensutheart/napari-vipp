@@ -104,7 +104,8 @@ still needs validation against a broader corpus of real acquisition files.
    representative slider or a preview-table row without running or saving the
    full batch. Preview is not required: `Run batch` performs its own preflight.
 9. Run the collection from the retained workspace with one click, where
-   item-level progress, final statuses, validation, and the
+   overall-item and current-operation progress, cancellation, final statuses,
+   validation, and the
    `vipp_batch_manifest.json` path remain available for inspection.
 10. To validate the complete batch path without your own files, choose
    `Open example...` -> `Deterministic Batch & Provenance` -> `Open batch
@@ -122,11 +123,13 @@ portable compute intent under `execution.compute`: mode, fallback policy,
 per-node preferences, precision policy, and workload policy. Machine-local
 runtime/device choices, memory limits, experimental admission, and benchmark
 evidence are deliberately excluded. Schema-3 workflows load with an explicit
-CPU policy. `Export Python...` and collection batch preserve this authored
-intent in their workflow artifacts but continue to execute through the
-established CPU headless path in this phase, including normalized `ImageState`
-propagation. See the [user guide](docs/user-guide.md) for source binding,
-runtime-version, and command-line details.
+CPU policy. Collection batch config version 2 and generated Python now execute
+that intent through the same CPU/GPU service as interactive VIPP, support
+explicit run overrides, and record the exact implementation actually used.
+Version-1 batch configs migrate to CPU. See the
+[durable GPU execution guide](docs/durable-gpu-execution.md) for request
+precedence, provenance, OOM fallback, progress, cancellation, CLI commands, and
+current limitations.
 
 ## Documentation
 
@@ -186,8 +189,13 @@ non-scientific UI metadata preserves explicit optimizer locks without changing
 the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
 with every node unlocked until the user explicitly opts into Auto or Selective.
 Machine-local runtime/device selection, memory limits, provider admission,
-and benchmark evidence are not copied between machines. Batch and generated
-Python exports retain the compute block but execute on CPU in this phase.
+and benchmark evidence are not copied between machines. Batch config version 2
+captures the full effective run request, while generated Python embeds the
+portable workflow request. Both use the shared execution service, preserve
+per-node choices, report exact actual implementations, and remain import-safe
+on a CPU-only installation. The saved batch runner and exported CLI add
+compute/fallback/node overrides, nested or operation progress, cooperative
+cancellation, exit code 130, structured OOM records, and atomic provenance.
 `Settings > Compute setup and memory…` verifies optional packages and hardware
 on a worker and presents system RAM plus discrete VRAM, or one shared budget on
 unified-memory machines. In Selective mode, eligible single-output nodes with
@@ -557,6 +565,17 @@ targets validated Windows systems first, with native Linux next. macOS
 continues to use VIPP's CPU path
 while an M1 Max Metal/MPS/MLX provider is investigated; Apple unified memory
 must be reported as one shared budget, not RAM plus VRAM.
+
+For production collection replay on this branch, let `Batch workspace...`
+write `vipp_batch_pipeline.py` and its config/workflow companions, then run:
+
+```powershell
+.\.venv-gpu-cu13\Scripts\python.exe .\results\vipp_batch_pipeline.py --progress
+```
+
+The runner uses the saved compute request unless explicit CLI overrides are
+provided. See [Durable GPU execution](docs/durable-gpu-execution.md) before
+using `--compute-mode`, `--fallback-policy`, or `--node-preference`.
 
 Run the required checks:
 

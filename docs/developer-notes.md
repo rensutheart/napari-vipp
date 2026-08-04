@@ -102,8 +102,14 @@ napari / npe2
    item; later promotion failures are recorded as partial rather than hidden.
 9. **Export uses the same executor.** Generated Python embeds a validated
    workflow snapshot and reconstructs `PrototypePipeline` per call. It carries
-   source/output states and records the VIPP runtime version; do not replace
-   this with hand-written direct operation calls that omit semantic injection.
+   source/output states, the effective `ComputeRequest`, the formal execution
+   report, exact implementation provenance, and the VIPP runtime version; do
+   not replace this with hand-written direct operation calls that omit semantic
+   injection or bypass cleanup/fallback policy.
+10. **Durable publication requires cleanup proof.** Batch and generated output
+   surfaces may publish only after the shared executor has returned host values
+   and accelerator cleanup is explicitly true. Unknown or failed cleanup is a
+   terminal publication failure, not a warning.
 
 See [Scientific Integrity Boundaries](architecture.md#scientific-integrity-boundaries)
 for the exact owning modules and limitations.
@@ -181,10 +187,42 @@ for the exact owning modules and limitations.
   bump or explicitly reject the old schema, update golden tests and bundled
   examples, and avoid an implicit migration that changes scientific meaning.
 - Batch configuration must retain the exact scientific workflow hash and
-  deterministic source/output plan.
+  deterministic source/output plan. Batch config schema 2 also retains the full
+  effective `ComputeRequest`; schema 1 migrates to explicit CPU.
 - Never publish a batch output before all source-dependent bytes are staged and
   every source identity has been reverified. Preserve collision policy and
-  per-item/output provenance.
+  per-item/output provenance. Cleanup proof is an additional publication gate.
+- A runtime override must change the effective config/artifact fingerprint but
+  must not mutate the canonical workflow or saved config. Persist configured
+  and effective requests separately in run provenance.
+- Preserve both batch progress layers: item progress and tagged node/operation
+  checkpoints. Cancellation is one shared cooperative token across execution,
+  staging, source verification, and item boundaries; finalized manifests need
+  a distinct cancelled status.
+- Serialize actual decisions from `ExecutionReport`, not requested preferences.
+  Intermediate nodes remain in provenance after their host cache is pruned.
+  An incomplete external implementation identity must say
+  `identity_complete: false` rather than inventing a version/parity policy.
+- A classified retryable runtime OOM may retry one complete cleaned segment on
+  CPU only under visible fallback. Persist the structured
+  `ExecutionFallbackRecord`; do not reduce it to a warning string.
+
+### Change Generated Python Or CLI
+
+- Keep `core.execution.execute_pipeline_request()` as the only execution seam.
+  The generated callable accepts a full run override; CLI flags overlay only
+  explicitly named mode/fallback/per-node fields.
+- Keep the embedded workflow immutable and version-locked. Unknown preference
+  node IDs fail before execution.
+- `PipelineResults` owns the effective request, execution report, serialized
+  execution provenance, and output-specific provenance binding. Atomic
+  `.vipp-provenance.json` sidecars belong beside the normalized saved path.
+- Preserve native scientific exception types in the callable API after the
+  shared cleanup boundary. CLI cancellation returns 130; other execution or
+  publication failures return nonzero with failure provenance where possible.
+- Do not describe generated `batch_process()` as durable batch. It is a
+  one-primary-source convenience without the core batch manifest, checkpoints,
+  collision plan, staging, or source-reverification guarantees.
 
 ## Testing Ladder
 
@@ -210,6 +248,10 @@ python -m pytest -q \
   src/napari_vipp/_tests/test_batch_setup.py \
   src/napari_vipp/_tests/test_batch_controller.py \
   src/napari_vipp/_tests/test_batch.py
+python -m pytest -q \
+  src/napari_vipp/_tests/test_execution.py \
+  src/napari_vipp/_tests/test_device_execution.py \
+  src/napari_vipp/_tests/test_export.py
 ```
 
 Required repository checks:

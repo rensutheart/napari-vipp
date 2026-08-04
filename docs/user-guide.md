@@ -502,7 +502,10 @@ Collection batches run for the tab that launched them. Because the headless
 batch engine runs on one background worker, another tab can be selected and
 edited while the batch continues. Progress and completion stay associated with
 the originating tab. A second batch, closing the origin tab, or closing VIPP is
-blocked until that uncancellable batch run completes.
+blocked until that batch reaches a safe terminal state. `Cancel run` requests
+cooperative cancellation: VIPP waits for the current supported checkpoint,
+synchronizes and cleans any accelerator scope, records the active item as
+cancelled, skips later unstarted items, and finalizes the manifests.
 
 ### Save Workflow JSON
 
@@ -581,6 +584,8 @@ save_image(
     results["threshold"],
     "threshold.ome.tif",
     image_state=results.image_states["threshold"],
+    provenance=results,
+    output_node_id="threshold",
 )
 ```
 
@@ -595,15 +600,25 @@ for multiple varying sources.
 
 The embedded schema-4 workflow retains `execution.compute` so authored intent
 is not lost in review, version control, or later regeneration. Generated Python
-and collection batch execution still use the established CPU executor in this
-phase; they do not silently activate a GPU from the preserved intent.
+and collection batch use the same CPU/GPU execution service as interactive
+VIPP. They preserve CPU/Auto/Selective mode and per-node choices, apply the
+same scientific eligibility and visible/strict fallback rules, and report the
+actual implementation for every completed computed node. A CPU-only
+installation remains import-safe and `Auto` uses CPU when no admitted GPU is
+available.
 
 An export records the exact VIPP version that created it and refuses a different
 runtime. Deliberately regenerate and revalidate the export when upgrading. The
 script does not reproduce interactive caches because those caches are not part
 of the scientific workflow. A batch-created `vipp_batch_pipeline.py` instead
 defaults to its sibling batch config, resolves the workflow recorded there, and
-delegates to the shared collection runner.
+delegates to the shared collection runner. Both CLIs support compute-mode,
+fallback-policy, repeatable per-node overrides, progress, and cooperative
+cancellation. Generated CLI output saves write an atomic
+`.vipp-provenance.json` sidecar by default; cancellation returns exit code 130.
+See [Durable GPU execution](durable-gpu-execution.md) for the callable API,
+exact commands, precedence, provenance schema, and the important difference
+between the durable batch runner and the generated folder convenience.
 
 ### Batch Output Basics
 
@@ -672,13 +687,25 @@ representative. `Run batch` performs a fresh plan-only preflight and starts the
 full collection directly when no reviewed plan is current.
 The single `Batch workspace...` action is visually separated between workflow
 loading and the export actions in the main toolbar. `Save config...` writes a
-versioned `vipp_batch_config.json`; `Load config...` restores its source
+versioned `vipp_batch_config.json`. Current config version 2 also records the
+complete effective compute request: mode, fallback, per-node choices,
+runtime/device, memory limits, policy IDs, and experimental admission. Version
+1 loads as explicit CPU because it predates accelerator execution. `Load
+config...` restores its source
 bindings, output folder, default format, existing-file policy, continuation
 behavior, required workflow companion, and optional runner choice, and validates
 the resolved output declarations against the current graph. The saved workflow
 and config carry enough information to reproduce which outputs are selected and
 how their file names are planned. A workflow-hash mismatch is reported rather
 than silently running a different graph under an old configuration.
+
+A loaded config's compute request remains selected while the toolbar compute
+request is unchanged from load time. Changing any toolbar compute setting makes
+the complete current toolbar request effective for the next preview, save, or
+run; VIPP does not merge half of a loaded request with half of the toolbar.
+Headless replay uses the saved config request unless an explicit run/CLI
+override is supplied. The manifest records both configured and effective
+requests and hashes the effective override separately.
 
 For interactive convenience, `Save workflow...` can instead attach that
 versioned config to the workflow file after a Yes/No/Cancel prompt. A standalone
@@ -705,14 +732,31 @@ headless replay uses its existing config and workflow paths. Every execution
 writes `vipp_batch_manifest.json` beside the outputs. The manifest records the
 workflow and config hashes, VIPP and runtime package versions, input identity
 and available source metadata, every planned output path/policy, and
-per-item/output status. It embeds the canonical config and scientific graph;
+per-item/output status. It also records the actual CPU/CuPy/cuCIM identity and
+version selected for every completed node, the environment and decision
+reasons, structured OOM/CPU-retry records, warnings, and cleanup evidence. It
+embeds the canonical config and scientific graph;
 run-id archives preserve prior runs, while small per-item sidecars are updated
 during execution. Output records use `pending`,
-`completed`, `skipped`, or `failed`; item records additionally use `running`
-and `partial`. An item failure is recorded without discarding successful
-outputs from the same or earlier items, and later items continue to run by
-default. The final summary separates completed, partial, skipped, and failed
-items.
+`completed`, `skipped`, `cancelled`, or `failed`; item records additionally use
+`running` and `partial`. Each published output links to the exact item execution
+with `execution_provenance_sha256`. An item failure is recorded without
+discarding successful outputs from the same or earlier items, and later items
+continue to run by default. The final summary separates completed, partial,
+skipped, cancelled, and failed items.
+
+During a run the workspace shows two progress bars. Overall progress advances
+across collection items; current-operation progress names the active item,
+node/operation, and truthful checkpoint. Iterative and tiled operations update
+between synchronized checkpoints. A monolithic library call or file writer may
+finish its current call before either progress or cancellation can advance.
+VIPP does not invent percentages inside work the library cannot expose.
+
+If a retryable GPU out-of-memory failure occurs under `visible` fallback, VIPP
+cleans the complete device segment and retries it once on CPU. `strict` records
+the failure instead. If accelerator cleanup is false or cannot be proven,
+publication is blocked: privately staged outputs are not promoted. The manifest
+records this separately from an ordinary scientific or writer error.
 
 ## Manual Calculation Nodes
 

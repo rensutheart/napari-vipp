@@ -138,7 +138,7 @@ quietly changing a scientific result.
 | Scientific parameters and inputs | `core/operations.py`, operation tests | Invalid, ambiguous, unordered, non-finite, or incomplete parameters are rejected where silently clamping, swapping, defaulting, or dropping values would change the requested method. Dynamic choices have persisted grammars rather than accepting arbitrary non-empty text. RGB/luminance behavior requires an explicit channel declaration. Representative operation tests use read-only inputs and verify that upstream buffers are not mutated. |
 | Viewer presentation | `_widget.py`, `core/diagnostics.py` | Generated inspect and pin layers receive non-writeable views of cached arrays, preventing napari writes without duplicating full volumes; a Labels layer alone may require a presentation conversion. Compatible Image layers reuse the same layer object while their data reference and display properties are reset. Large generated layers and incremental node cards may start with provisional dtype-based contrast solely to keep Qt responsive, followed by exact finite extrema in a stale-safe worker after final graph publication. Viewer contrast, colormaps, and thumbnails never enter operation inputs. |
 | Workflow and provenance artifacts | `core/atomic_io.py`, `core/workflow.py`, `core/batch.py` | Each JSON/text artifact is written to a same-directory temporary file, flushed and fsynced, then atomically replaced. Non-finite JSON is rejected. Each file is atomic; a set of related workflow/config/manifest files is not a single filesystem transaction. |
-| Headless Python export | `core/export.py`, `core/pipeline.py` | Generated programs embed a validated immutable workflow and reconstruct the shared executor for every call. They carry `ImageState` from `ImageDataset`/`SourcePayload`, preserve output states when saving, reject missing or ambiguous source bindings, and refuse a different VIPP runtime version. Export never recreates metadata-dependent behavior with incomplete direct operation calls. |
+| Headless Python export | `core/export.py`, `core/execution_provenance.py`, `core/pipeline.py` | Generated programs embed a validated immutable workflow and reconstruct the shared CPU/GPU executor for every call. They carry `ImageState` from `ImageDataset`/`SourcePayload`, preserve output states when saving, reject missing or ambiguous source bindings, record exact actual node implementations and output-bound provenance digests, and refuse a different VIPP runtime version. Export never recreates metadata-dependent behavior with incomplete direct operation calls. |
 | Batch publication | `core/batch.py` | Each item captures every source identity before reading, fully writes available outputs to private staged files, reverifies every source, and only then promotes staged files to final paths. Promotions are atomic per output. A changed source fails the item and removes its staged files, so no apparently complete result is published from a mixed revision. Multi-output promotion can still end in an explicitly recorded partial item if a later promotion fails. |
 
 When a new feature crosses one of these boundaries, extend the focused contract
@@ -1308,12 +1308,21 @@ Python export:
 - The generated program embeds validated canonical workflow JSON and creates a
   fresh shared headless executor for every call, so it uses the same graph,
   port, parameter, semantic-axis, and scientific-operation contracts as VIPP.
-- The embedded schema-4 document preserves `execution.compute`, but generated
-  Python deliberately executes with the established CPU executor in this
-  phase. Preserving intent does not implicitly activate an available GPU.
+- The embedded schema-4 document supplies the default `ComputeRequest` to the
+  shared CPU/GPU executor. `run_pipeline(..., compute_request=...)` can replace
+  it for one call; CLI mode/fallback/node-preference flags overlay only fields
+  explicitly supplied and never mutate `_WORKFLOW_JSON`.
 - `ImageDataset` and `SourcePayload` bindings carry explicit source data,
   metadata, names, and `ImageState`; returned `PipelineResults` preserve output
-  states for metadata-aware saving.
+  states for metadata-aware saving plus the formal `ExecutionReport`, effective
+  request, actual per-node implementation provenance, and a canonical execution
+  digest. `provenance_for()` binds that evidence to one output node/port;
+  `save_image(..., provenance=...)` writes it atomically beside the actual
+  normalized output path.
+- Execution, generated CLI, and saved batch CLI share cooperative cancellation
+  and typed failure classification. Generated CLIs return 130 for cancellation
+  and can preserve failure/publication provenance even when no scientific
+  output is published.
 
 Selected-node benchmarking:
 
@@ -1367,8 +1376,10 @@ Collection batch UI:
   separate plan-only preflight and can execute without that representative.
   Execution compares fresh preflight with any reviewed full plan and revalidates
   pinned representative source identities, stopping for review when either
-  changes unexpectedly. It reports accurate item-level progress, final manifest
-  statuses, validation, and the manifest path in the workspace.
+  changes unexpectedly. It reports overall item progress plus nested
+  node/operation checkpoints, final manifest statuses, validation, and the
+  manifest path in the workspace. Cancellation uses one shared token through
+  execution, staging, source verification, and item boundaries.
 - The main toolbar is the sole Batch workspace entry point. The representative
   navigator owns sample selection and progress only, avoiding a second button
   that could be mistaken for a different batch surface.
@@ -1400,7 +1411,9 @@ Collection batch UI:
 - `vipp_batch_config.json` is a versioned schema independent of the workflow
   schema. It persists source bindings and patterns, output location and
   default format, existing-file policy, the required workflow companion, the
-  optional runner choice, the workflow hash, and resolved output declarations.
+  optional runner choice, the workflow hash, resolved output declarations, and
+  the full effective `ComputeRequest` in schema version 2. Version 1 migrates to
+  explicit CPU because it had no compute field.
   Load validates the workflow hash so a configuration cannot silently select
   outputs from a different graph.
 - An active workspace may attach the exact versioned config as optional
@@ -1411,9 +1424,16 @@ Collection batch UI:
   validates the config against the containing graph and path, restores the form
   without a preview calculation, and leaves standalone config/runner export
   unchanged.
-- Batch artifacts preserve schema-4 compute intent and validate it as part of
-  the workflow, while batch calculation remains on the established CPU path in
-  this phase.
+- A new workspace captures the current toolbar request. A loaded config keeps
+  its saved request while toolbar intent remains unchanged since load; the
+  first toolbar compute change replaces it with the complete current request.
+  Headless replay defaults to the config and accepts an explicit one-run
+  override. The manifest records configured/effective requests and fingerprints
+  plus both saved and effective config hashes.
+- Batch calculation uses the shared CPU/GPU execution service. Each item stores
+  exact actual node identities, decision reasons, structured fallback records,
+  environment and cleanup evidence. A fallback on one item does not mutate the
+  request used to plan later items.
 - The batch-level existing-file choices are `Error`, `Skip`, and `Overwrite`.
   A `Batch Output` node with an explicit `yes` or `no` overwrite value takes
   precedence over the default. Collision state is part of the plan and shown
@@ -1428,10 +1448,12 @@ Collection batch UI:
   after every output. The final manifest contains hashes, software versions,
   input identity and available source metadata, output policy/path/status,
   errors, and summary counts. Output statuses are `pending`, `completed`,
-  `skipped`, and `failed`; item statuses additionally include `running` and
-  `partial`. After an interrupted process, the sidecars are the recovery
-  checkpoints; the canonical latest/archive manifests are finalized on normal
-  runner exit rather than reconciled automatically.
+  `skipped`, `cancelled`, and `failed`; item statuses additionally include
+  `running` and `partial`. Published output records link to the item's canonical
+  execution document with `execution_provenance_sha256`. After an interrupted
+  process, the sidecars are the recovery checkpoints; the canonical
+  latest/archive manifests are finalized on normal runner exit rather than
+  reconciled automatically.
 - For each item, the runner captures exact identities for all collection-bound
   and fixed file sources before reading. It fully writes every available output
   to a private same-directory staging path, including forcing lazy output bytes,
@@ -1441,15 +1463,28 @@ Collection batch UI:
   time under their declared `Error`, `Skip`, or `Overwrite` policy. A later
   promotion failure can therefore produce an explicitly recorded partial item,
   but no output is published from mixed source revisions.
-- Batch failures are isolated at item/output boundaries. Successful writes and
-  manifest records remain available; later items continue by default or are
-  marked skipped when continuation is disabled. The returned summary
-  distinguishes completed, partial, skipped, and failed items.
+- Execution cleanup is also a publication gate. If GPU cleanup is false or
+  cannot be proven, private outputs are removed, the item fails with typed
+  cleanup evidence, and no new output is promoted. Under visible fallback only,
+  one classified retryable runtime OOM may retry the complete cleaned segment
+  once on CPU; strict policy returns the typed failure without that retry.
+- Batch failures and cancellation are isolated at item/output boundaries.
+  Successful writes and manifest records remain available; later items continue
+  by default or are marked skipped when continuation is disabled. A cooperative
+  cancel marks the active item/outputs cancelled and later unstarted items
+  skipped. The returned
+  summary distinguishes completed, partial, skipped, cancelled, and failed
+  items.
 - The dialog can additionally write a thin `vipp_batch_pipeline.py` launcher
   beside the required workflow/config artifacts. The launcher resolves the
   workflow recorded by its config unless an override is supplied and delegates
   to the shared headless batch core; it is distinct from the immutable
   shared-executor workflow program emitted by `Export Python...`.
+- The saved runner exposes config/workflow paths, mode/fallback/per-node
+  overrides, two-level progress, SIGINT cancellation, and exit code 130. The
+  generated export's folder helper is explicitly non-durable and does not claim
+  the batch runner's multi-source identity, staging, checkpoint, or manifest
+  guarantees.
 - Collection execution remains local-folder oriented. Semantic-axis iteration
   and plate/well/field HCS traversal are deliberately deferred rather than
   inferred from array axes or directory names.

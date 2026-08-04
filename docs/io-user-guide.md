@@ -145,13 +145,17 @@ the graph keeps showing the earlier verified bytes rather than silently mixing
 revisions.
 
 The workspace remains available during and after execution. Its determinate
-progress bar reports completed items, the `Run status` column tracks each
-displayed row, and the final summary retains completed/partial/skipped/failed
-counts, validation text, and the manifest path. Progress is item-level; a long
-single item can therefore remain on `running` until that graph invocation
-finishes. On smaller displays, the workspace body scrolls vertically while
-`Run batch` and `Close` remain fixed at the bottom. Reopen the same workspace
-from the main toolbar's `Batch workspace...` button.
+overall progress bar reports collection items, while a second current-operation
+bar identifies the active item, node/operation, and truthful synchronized
+checkpoint. The `Run status` column tracks each displayed row, and the final
+summary retains completed/partial/skipped/cancelled/failed counts, validation
+text, and the manifest path. A monolithic library call or file writer may
+finish its current call before the operation bar moves; VIPP does not invent
+internal percentages. `Cancel run` sets the shared cooperative token and waits
+for synchronization and cleanup before finalizing the cancelled item and
+manifest. On smaller displays, the workspace body scrolls vertically while
+`Run batch`, `Cancel run`, and `Close` remain fixed at the bottom. Reopen the
+same workspace from the main toolbar's `Batch workspace...` button.
 After a run, its preflight and row statuses remain visible as historical run
 evidence. Run preflights current paths again before replay; use Preview first
 only when you want to inspect them.
@@ -183,9 +187,21 @@ Use `Save config...` to write a versioned `vipp_batch_config.json`, and `Load
 config...` to restore it. The configuration records the source-node bindings,
 folders and patterns, output folder, default image format, existing-file
 policy, required workflow companion, optional runner choice, workflow hash, and
-resolved declarations for the selected outputs. Loading it against a different
+resolved declarations for the selected outputs. Config schema version 2 also
+stores the full effective compute request, including CPU/Auto/Selective mode,
+fallback policy, per-node preferences, runtime/device, memory cap/reserve,
+policy IDs, and experimental admission. Version-1 configs migrate to explicit
+CPU because they had no accelerator intent. Loading a config against a different
 workflow reports the hash mismatch instead of silently using stale output
 selections.
+
+In the GUI, the loaded config's compute request remains effective while the
+toolbar compute request is unchanged from load time. Changing any toolbar
+compute setting selects the complete current toolbar request for the next
+preview, save, or run. In headless replay, the config request is the default and
+an explicit function or CLI override applies only to that invocation. The
+manifest keeps both configured and effective requests plus separate saved and
+effective config hashes.
 
 When a Batch workspace is active, `Save workflow...` asks whether to include
 that validated batch config inside the workflow JSON. `Yes` creates one file;
@@ -229,16 +245,23 @@ locations rather than copying them into the output folder.
 The manifest identifies the workflow/config hashes, embeds the canonical config
 and scientific graph, records VIPP and relevant runtime package versions, each
 input and available source metadata, every planned output policy/path, and
-errors. A run-id manifest preserves each finished run. During execution, a
-run-id sidecar directory checkpoints each item and its outputs. There is a
+errors. Manifest schema version 2 additionally records the effective compute
+request/environment, exact actual implementation identity for every completed
+computed node, decision and fallback reasons, structured OOM retry/memory
+records, warnings, and cleanup proof. A run-id manifest preserves each finished
+run. During execution, a run-id sidecar directory checkpoints each item and its
+outputs. There is a
 small interruption window between promoting an output and updating its
 sidecar, so the sidecars are a recovery trail rather than a transaction log.
 After a process interruption, inspect that run-id sidecar directory for the
 last checkpoints; the canonical latest/archive manifests are finalized only
 when the runner exits normally.
-Output records move through `pending` to `completed`, `skipped`, or `failed`.
-Item records may also be `running` or `partial`; the final summary counts
-completed, partial, skipped, and failed items separately.
+Output records move through `pending` to `completed`, `skipped`, `cancelled`,
+or `failed`; item records may additionally be `running` or `partial`. Each
+published output record has
+`provenance_status: produced` and an `execution_provenance_sha256` link to the
+item's full execution document. The final summary counts completed, partial,
+skipped, cancelled, and failed items separately.
 
 The dialog always writes:
 
@@ -248,13 +271,29 @@ It can additionally write:
 
 - `vipp_batch_pipeline.py`: a thin command-line runner that defaults to the
   workflow recorded by the config and delegates to the same headless batch core
-  as the dialog. `--workflow` can override that recorded path.
+  as the dialog. `--workflow` and `--config` select artifacts;
+  `--compute-mode`, `--fallback-policy`, and repeatable
+  `--node-preference NODE_ID=PREFERENCE` override compute intent for one run;
+  and `--progress` prints both item and current-operation streams. One `Ctrl+C`
+  requests cooperative cancellation and returns exit code 130 after cleanup.
 
 This batch runner is intentionally different from `Export Python...`. The
 export embeds a validated immutable workflow and executes it through the same
 headless pipeline service as VIPP, while its command-line folder harness is a
 primary-source convenience rather than the complete multi-source collection
-configuration used by batch runs.
+configuration used by batch runs. That convenience loop does not provide batch
+source-byte identities, collision planning, private staging, checkpoints,
+manifests, or automatic replay guarantees. Use the saved batch runner for
+production collection processing. See
+[Durable GPU execution](durable-gpu-execution.md) for commands and the complete
+fallback/provenance/cancellation contract.
+
+Under visible fallback, a classified retryable runtime OOM is synchronized,
+cleaned, and retried once for that complete segment on CPU; strict policy does
+not retry. Both outcomes are structured in the item execution record. No output
+is promoted when GPU cleanup is false or unknown. The next batch item retains
+the saved request and is planned independently rather than inheriting the
+previous item's CPU fallback.
 
 Current batch execution remains local-file oriented. Time, channel, and Z stay
 inside each paired source item; VIPP does not yet iterate selected semantic-axis
