@@ -236,14 +236,18 @@ def _compute_override(args, config, restored):
     base = config.compute_request
     preferences = dict(base.node_preferences)
     preferences.update(_node_preference_overrides(args.node_preference))
+    effective_mode = base.mode if args.compute_mode is None else args.compute_mode
+    effective_fallback = (
+        base.fallback_policy
+        if args.fallback_policy is None
+        else args.fallback_policy
+    )
+    if args.compute_mode == "prefer_gpu" and args.fallback_policy is None:
+        effective_fallback = "visible"
     override = ComputeRequest(
-        mode=base.mode if args.compute_mode is None else args.compute_mode,
+        mode=effective_mode,
         node_preferences=preferences,
-        fallback_policy=(
-            base.fallback_policy
-            if args.fallback_policy is None
-            else args.fallback_policy
-        ),
+        fallback_policy=effective_fallback,
         runtime_id=base.runtime_id,
         device_id=base.device_id,
         precision_policy_id=base.precision_policy_id,
@@ -296,7 +300,7 @@ def main(argv=None):
     )
     parser.add_argument(
         "--compute-mode",
-        choices=("cpu", "auto", "selective"),
+        choices=("cpu", "auto", "prefer_gpu", "selective"),
         help="Override the saved compute mode for this run.",
     )
     parser.add_argument(
@@ -957,14 +961,21 @@ def _cli_compute_request(
     embedded = _effective_compute_request(document)
     preferences = dict(embedded.node_preferences)
     preferences.update(_node_preference_overrides(node_preferences))
+    effective_mode = embedded.mode if mode is None else mode
+    effective_fallback = (
+        embedded.fallback_policy
+        if fallback_policy is None
+        else fallback_policy
+    )
+    if (
+        getattr(effective_mode, "value", effective_mode) == "prefer_gpu"
+        and fallback_policy is None
+    ):
+        effective_fallback = "visible"
     override = ComputeRequest(
-        mode=embedded.mode if mode is None else mode,
+        mode=effective_mode,
         node_preferences=preferences,
-        fallback_policy=(
-            embedded.fallback_policy
-            if fallback_policy is None
-            else fallback_policy
-        ),
+        fallback_policy=effective_fallback,
         runtime_id=embedded.runtime_id,
         device_id=embedded.device_id,
         precision_policy_id=embedded.precision_policy_id,
@@ -1723,7 +1734,7 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",
         f'{_INDENT}{_INDENT}"--compute-mode",',
-        f'{_INDENT}{_INDENT}choices=("cpu", "auto", "selective"),',
+        f'{_INDENT}{_INDENT}choices=("cpu", "auto", "prefer_gpu", "selective"),',
         f'{_INDENT}{_INDENT}help="Override the workflow compute mode for this run.",',
         f"{_INDENT})",
         f"{_INDENT}parser.add_argument(",

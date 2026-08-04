@@ -1,10 +1,10 @@
 """Qt-free compute intent, environment, decision, and provenance contracts.
 
-The production contract distinguishes a user request (CPU, Auto, or Selective)
-from an array runtime (NumPy, CuPy, or a future Metal runtime) and from the
-implementation library used by one node (CPU, CuPyX, cuCIM, ...).  This module
-contains data and validation only: importing it must never import an optional
-accelerator package or initialize a device.
+The production contract distinguishes a user request (CPU, Auto, Prefer GPU,
+or Selective) from an array runtime (NumPy, CuPy, or a future Metal runtime)
+and from the implementation library used by one node (CPU, CuPyX, cuCIM,
+...).  This module contains data and validation only: importing it must never
+import an optional accelerator package or initialize a device.
 
 The older :class:`ComputeBackend` helpers remain as a compatibility shell for
 the original capability spike.  New execution code uses :class:`ComputeMode`,
@@ -33,6 +33,7 @@ class ComputeMode(StrEnum):
 
     CPU = "cpu"
     AUTO = "auto"
+    PREFER_GPU = "prefer_gpu"
     SELECTIVE = "selective"
 
     @classmethod
@@ -50,7 +51,7 @@ class ComputeMode(StrEnum):
 
 
 class FallbackPolicy(StrEnum):
-    """Behavior when authored Selective intent is unavailable."""
+    """Behavior when an explicitly required accelerator choice is unavailable."""
 
     VISIBLE = "visible"
     STRICT = "strict"
@@ -161,6 +162,14 @@ class ComputeRequest:
     def __post_init__(self) -> None:
         mode = ComputeMode.parse(self.mode)
         fallback = FallbackPolicy.parse(self.fallback_policy)
+        if (
+            mode is ComputeMode.PREFER_GPU
+            and fallback is not FallbackPolicy.VISIBLE
+        ):
+            raise ValueError(
+                "Prefer GPU requires visible CPU fallback so it can use GPU "
+                "wherever possible and CPU everywhere else."
+            )
         normalized: dict[str, NodeComputePreference] = {}
         if not isinstance(self.node_preferences, Mapping):
             raise TypeError("node_preferences must be a mapping keyed by node ID.")

@@ -51,6 +51,14 @@ COMPUTE_MODE_OPTIONS = (
         "Use a validated GPU implementation when it is supported and beneficial.",
     ),
     ComputeModeOption(
+        ComputeMode.PREFER_GPU,
+        "Prefer GPU",
+        (
+            "Use a scientifically eligible GPU implementation wherever possible, "
+            "even when it is not faster than CPU."
+        ),
+    ),
+    ComputeModeOption(
         ComputeMode.SELECTIVE,
         "Selective",
         "Choose pipeline policy, CPU, or a GPU library for implemented nodes.",
@@ -463,8 +471,8 @@ def compute_toolbar_summary(
     elif gpu_nodes:
         text = f"{mode} · {gpu_nodes} GPU / {cpu_nodes} CPU"
         tone = ComputePresentationTone.GPU
-    elif status.request.mode is ComputeMode.AUTO:
-        text = f"Auto · {cpu_nodes} CPU"
+    elif status.request.mode in {ComputeMode.AUTO, ComputeMode.PREFER_GPU}:
+        text = f"{mode} · {cpu_nodes} CPU"
         tone = ComputePresentationTone.CPU
     else:
         text = f"{mode} · CPU"
@@ -487,6 +495,22 @@ def compute_toolbar_summary(
             "GPU unavailable; Auto used CPU."
             if unavailable
             else "Auto selected CPU for this workload."
+        )
+    elif (
+        status.request.mode is ComputeMode.PREFER_GPU
+        and cpu_nodes
+        and not gpu_nodes
+        and not fallback_nodes
+    ):
+        unavailable = any(
+            environment.probe_status == "unavailable"
+            for environment in status.decision_environments.values()
+        )
+        details.append(
+            "GPU unavailable; Prefer GPU used CPU."
+            if unavailable
+            else "No scientifically eligible GPU implementation was available "
+            "for these node workloads."
         )
     gpu_node_ids = {
         decision.node_id
@@ -526,6 +550,11 @@ def compute_toolbar_summary(
 
 def _request_tooltip(request: ComputeRequest) -> str:
     details = [f"Compute mode: {compute_mode_label(request.mode)}."]
+    if request.mode is ComputeMode.PREFER_GPU:
+        details.append(
+            "VIPP uses GPU wherever scientifically eligible without requiring "
+            "it to outperform CPU."
+        )
     if request.mode is ComputeMode.SELECTIVE:
         details.append(f"{len(request.node_preferences)} saved per-node preference(s).")
         details.append(f"Fallback policy: {request.fallback_policy.value}.")

@@ -181,6 +181,23 @@ def test_workflow_snapshot_preserves_detached_compute_intent():
     }
 
 
+def test_workflow_snapshot_preserves_prefer_gpu_intent():
+    pipeline = PrototypePipeline()
+    request = ComputeRequest(mode="prefer_gpu")
+
+    snapshot = workflow_snapshot_from_pipeline(
+        pipeline,
+        compute_request=request,
+    )
+    document = workflow_document_from_snapshot(snapshot)
+    restored = workflow_snapshot_from_document(document)
+
+    assert snapshot.compute_request == request
+    assert restored.compute_request == request
+    assert document["execution"]["compute"]["mode"] == "prefer_gpu"
+    assert document["execution"]["compute"]["fallback_policy"] == "visible"
+
+
 def test_graph_snapshot_preserves_pipeline_collection_order():
     pipeline = PrototypePipeline()
     pipeline.add_output_tunnel("Z output", "gaussian")

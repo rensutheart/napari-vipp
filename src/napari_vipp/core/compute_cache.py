@@ -242,9 +242,10 @@ def node_compute_context_fingerprint(
 ) -> str:
     """Return a provider-free fingerprint of one node's effective run intent.
 
-    Only the selected node's preference is included.  Preferences authored for
-    sibling nodes therefore cannot invalidate an otherwise reusable upstream
-    cache entry.
+    Only the selected node's effective preference is included. Preferences
+    authored for sibling nodes cannot invalidate an otherwise reusable
+    upstream cache entry, and dormant preferences are ignored outside
+    Selective mode.
     """
 
     if not isinstance(request, ComputeRequest):
@@ -252,11 +253,16 @@ def node_compute_context_fingerprint(
     normalized_node_id = str(node_id).strip()
     if not normalized_node_id:
         raise ValueError("node_id must not be empty.")
+    preference = (
+        request.preference_for(normalized_node_id)
+        if request.mode is ComputeMode.SELECTIVE
+        else NodeComputePreference(NodePreferenceKind.AUTO)
+    )
     return canonical_digest(
         {
             "schema_id": "vipp-node-compute-context-v1",
             "mode": request.mode.value,
-            "preference": request.preference_for(normalized_node_id).as_dict(),
+            "preference": preference.as_dict(),
             "fallback_policy": request.fallback_policy.value,
             "runtime_id": request.runtime_id,
             "device_id": request.device_id,
@@ -983,10 +989,10 @@ def evaluate_cache_admissibility(
     if not result_key_matches_implementation(required_key, planned_implementation):
         return reject("required_key_identity_mismatch")
     if (
-        request.mode is ComputeMode.AUTO
+        request.mode in {ComputeMode.AUTO, ComputeMode.PREFER_GPU}
         and current_decision.requested_preference.kind is not NodePreferenceKind.AUTO
     ):
-        return reject("stale_auto_preference")
+        return reject("stale_global_policy_preference")
     authored = request.preference_for(current_decision.node_id)
     if (
         request.mode is ComputeMode.SELECTIVE
@@ -1040,6 +1046,18 @@ def evaluate_cache_admissibility(
         ):
             return reject("runtime_constraint_mismatch")
         return CacheAdmissibility(True, "admissible_current_auto_plan", required)
+
+    if request.mode is ComputeMode.PREFER_GPU:
+        if request.runtime_id and (
+            planned_implementation.runtime_id != request.runtime_id
+            or record.actual_implementation.runtime_id != request.runtime_id
+        ):
+            return reject("runtime_constraint_mismatch")
+        return CacheAdmissibility(
+            True,
+            "admissible_current_prefer_gpu_plan",
+            required,
+        )
 
     if request.runtime_id and (
         planned_implementation.runtime_id != request.runtime_id

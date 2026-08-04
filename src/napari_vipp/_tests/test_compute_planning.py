@@ -302,6 +302,57 @@ def test_public_selective_candidate_requires_explicit_selective_choice():
     registry.close()
 
 
+def test_prefer_gpu_includes_reviewed_public_selective_candidates():
+    base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    selective = replace(base, admission_tier=AdmissionTier.PUBLIC_SELECTIVE)
+    registry = ComputeRegistry(implementation_specs=(selective,))
+    workload = _workload()
+
+    result = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+        performance_evidence={},
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.SELECTED
+    assert decision.implementation_id == selective.implementation_id
+    assert "speed threshold" in decision.reason_text
+    registry.close()
+
+
+def test_prefer_gpu_requires_opt_in_for_developer_hidden_candidates():
+    public = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    hidden = replace(public, admission_tier=AdmissionTier.DEVELOPER_HIDDEN)
+    registry = ComputeRegistry(implementation_specs=(hidden,))
+    workload = _workload()
+
+    default = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+    )
+    experimental = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu", allow_experimental=True),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+    )
+
+    assert default.decisions[0].decision_kind is DecisionKind.POLICY_CPU
+    assert default.decisions[0].reason is DecisionReason.NO_VALIDATED_IMPLEMENTATION
+    assert not default.decisions[0].fallback_used
+    assert experimental.decisions[0].implementation_id == hidden.implementation_id
+    assert experimental.decisions[0].decision_kind is DecisionKind.SELECTED
+    registry.close()
+
+
 def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
     primary = compute_specs_for(
         "gaussian_blur", include_cpu=False, allow_experimental=True
@@ -335,6 +386,123 @@ def test_best_gpu_and_library_choose_fastest_of_multiple_valid_candidates():
             result.decisions[0].implementation_id == "cupyx-gaussian-blur-alternate-v1"
         )
     registry.close()
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        {},
+        {
+            ("node", "cupyx-gaussian-blur-v1"): PerformanceEvidence(
+                cpu_seconds=1.0,
+                candidate_seconds=2.0,
+                lower_confidence_speedup=0.4,
+            )
+        },
+    ),
+    ids=("missing", "gpu-measured-slower-than-cpu"),
+)
+def test_prefer_gpu_bypasses_cpu_performance_gate(evidence):
+    workload = _workload()
+
+    result = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+        performance_evidence=evidence,
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.SELECTED
+    assert decision.implementation_id == "cupyx-gaussian-blur-v1"
+    assert decision.reason is DecisionReason.SELECTED_IMPLEMENTATION
+
+
+@pytest.mark.parametrize("evidence_kind", ("missing", "partial"))
+def test_prefer_gpu_uses_deterministic_id_when_candidate_evidence_is_incomplete(
+    evidence_kind,
+):
+    base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    alphabetical = replace(base, implementation_id="aaa-gaussian-gpu-v1")
+    measured = replace(base, implementation_id="zzz-gaussian-gpu-v1")
+    registry = ComputeRegistry(implementation_specs=(measured, alphabetical))
+    workload = _workload()
+    evidence = (
+        {}
+        if evidence_kind == "missing"
+        else {
+            ("node", measured.implementation_id): PerformanceEvidence(
+                cpu_seconds=1.0,
+                candidate_seconds=0.01,
+                local_benchmark=True,
+            )
+        }
+    )
+
+    result = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+        performance_evidence=evidence,
+    )
+
+    assert result.decisions[0].implementation_id == alphabetical.implementation_id
+    registry.close()
+
+
+def test_prefer_gpu_uses_fastest_gpu_only_with_complete_candidate_evidence():
+    base = compute_specs_for("gaussian_blur", include_cpu=False)[0]
+    alphabetical = replace(base, implementation_id="aaa-gaussian-gpu-v1")
+    fastest = replace(base, implementation_id="zzz-gaussian-gpu-v1")
+    registry = ComputeRegistry(implementation_specs=(fastest, alphabetical))
+    workload = _workload()
+    evidence = {
+        ("node", alphabetical.implementation_id): PerformanceEvidence(
+            cpu_seconds=1.0,
+            candidate_seconds=0.50,
+            local_benchmark=True,
+        ),
+        ("node", fastest.implementation_id): PerformanceEvidence(
+            cpu_seconds=1.0,
+            candidate_seconds=0.25,
+            local_benchmark=True,
+        ),
+    }
+
+    result = plan_compute_decisions(
+        ComputeRequest(mode="prefer_gpu"),
+        (workload,),
+        registry=registry,
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+        performance_evidence=evidence,
+    )
+
+    assert result.decisions[0].implementation_id == fastest.implementation_id
+    registry.close()
+
+
+def test_prefer_gpu_ignores_dormant_node_preferences():
+    workload = _workload()
+    request = ComputeRequest(
+        mode="prefer_gpu",
+        node_preferences={"node": "cpu"},
+    )
+
+    result = plan_compute_decisions(
+        request,
+        (workload,),
+        environment=_environment(),
+        array_facts={"node": _facts(workload)},
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.SELECTED
+    assert decision.requested_preference.kind.value == "auto"
+    assert decision.runtime_id == "cuda-cupy"
 
 
 def test_auto_cpu_is_policy_not_fallback_until_evidence_clears_gate():
@@ -554,6 +722,66 @@ def test_invalid_axis_is_preflight_error_even_under_visible_fallback():
             environment=_environment(),
             array_facts={"node": _facts(workload)},
         )
+
+
+def test_invalid_axis_is_preflight_error_in_prefer_gpu_mode():
+    workload = _workload(parameters=(("sigma", 1.2), ("channel_axis", True)))
+
+    with pytest.raises(ComputePreflightError, match="channel"):
+        plan_compute_decisions(
+            ComputeRequest(mode="prefer_gpu"),
+            (workload,),
+            environment=_environment(),
+            array_facts={"node": _facts(workload)},
+        )
+
+
+@pytest.mark.parametrize(
+    ("workload", "compute_request", "environment", "reason"),
+    (
+        (
+            _workload(dtype="uint16"),
+            ComputeRequest(mode="prefer_gpu"),
+            _environment(),
+            DecisionReason.WORKLOAD_UNSUPPORTED,
+        ),
+        (
+            _workload(),
+            ComputeRequest(mode="prefer_gpu"),
+            _environment(runtime=False),
+            DecisionReason.ENVIRONMENT_UNSUPPORTED,
+        ),
+        (
+            _workload(),
+            ComputeRequest(
+                mode="prefer_gpu",
+                accelerator_memory_cap_bytes=1,
+            ),
+            _environment(),
+            DecisionReason.MEMORY_LIMIT,
+        ),
+    ),
+    ids=("unsupported-workload", "unavailable-environment", "memory-limit"),
+)
+def test_prefer_gpu_safe_rejections_are_policy_cpu_not_fallback(
+    workload,
+    compute_request,
+    environment,
+    reason,
+):
+    result = plan_compute_decisions(
+        compute_request,
+        (workload,),
+        environment=environment,
+        array_facts={"node": _facts(workload)},
+    )
+
+    decision = result.decisions[0]
+    assert decision.decision_kind is DecisionKind.POLICY_CPU
+    assert decision.reason is reason
+    assert not decision.fallback_used
+    assert decision.fallback_reason is FallbackReason.NONE
+    assert result.warnings == ()
 
 
 def test_memory_cap_rejects_forced_gpu_before_execution():

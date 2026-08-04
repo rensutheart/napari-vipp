@@ -570,6 +570,22 @@ def test_compute_toolbar_defaults_to_auto_and_shows_actual_cpu_badges(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
 
+    assert [
+        widget.compute_mode_combo.itemData(index)
+        for index in range(widget.compute_mode_combo.count())
+    ] == ["cpu", "auto", "prefer_gpu", "selective"]
+    assert [
+        widget.compute_mode_combo.itemText(index)
+        for index in range(widget.compute_mode_combo.count())
+    ] == ["CPU", "Auto", "Prefer GPU", "Selective"]
+    prefer_gpu_index = widget.compute_mode_combo.findData("prefer_gpu")
+    assert "scientifically eligible" in str(
+        widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
+    )
+    assert "even when it is not faster" in str(
+        widget.compute_mode_combo.itemData(prefer_gpu_index, Qt.ToolTipRole)
+    )
+    assert "Prefer GPU" in widget.compute_mode_combo.toolTip()
     assert widget.compute_mode_combo.currentData() == "auto"
     assert widget.compute_status_label.text() == "Auto · 2 CPU"
     assert widget.graph_view._cards["input"].compute_badge.isHidden()
@@ -782,6 +798,22 @@ def test_pipeline_optimizer_action_is_selective_only(qtbot):
 
     assert widget.optimize_pipeline_button.isHidden()
     widget._populate_settings_toolbar_menu()
+    assert "Find fastest pipeline…" not in {
+        action.text() for action in widget.settings_menu.actions()
+    }
+
+    with QSignalBlocker(widget.compute_mode_combo):
+        widget.compute_mode_combo.setCurrentIndex(
+            widget.compute_mode_combo.findData("prefer_gpu")
+        )
+    widget._compute_mode = ComputeMode.PREFER_GPU
+    widget.graph_view.select_node("gaussian")
+    widget._sync_node_compute_control()
+    widget._sync_compute_toolbar_summary()
+    widget._populate_settings_toolbar_menu()
+
+    assert widget.compute_group.isHidden()
+    assert widget.optimize_pipeline_button.isHidden()
     assert "Find fastest pipeline…" not in {
         action.text() for action in widget.settings_menu.actions()
     }
@@ -1236,6 +1268,7 @@ def test_scoped_compute_invalidation_preserves_clean_upstream_cache(qtbot):
     ("mode", "expected_background"),
     (
         (ComputeMode.AUTO, False),
+        (ComputeMode.PREFER_GPU, True),
         (ComputeMode.SELECTIVE, True),
     ),
 )
@@ -1253,6 +1286,40 @@ def test_non_cpu_compute_modes_use_detached_compute_service(
         widget._should_run_pipeline_in_background({"gaussian"})
         is expected_background
     )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (ComputeMode.PREFER_GPU, ComputeMode.SELECTIVE),
+)
+def test_force_sync_required_gpu_intent_still_uses_detached_compute_service(
+    qtbot,
+    monkeypatch,
+    mode,
+):
+    widget = VippWidget(_Viewer(np.ones((8, 8), dtype=np.float32)))
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._compute_mode = mode
+    captured: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        widget,
+        "_run_pipeline_synchronously",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Required GPU intent must not bypass the detached compute service"
+        ),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_start_background_pipeline_run",
+        lambda *args, **kwargs: captured.append((args, kwargs)),
+    )
+
+    widget.run_pipeline(force_sync=True)
+
+    assert len(captured) == 1
+    assert captured[0][1]["execute_synchronously"] is True
+    assert widget._current_compute_request().mode is mode
 
 
 def test_small_cpu_run_keeps_existing_responsiveness_heuristic(qtbot):
@@ -1513,6 +1580,31 @@ def test_loading_v4_workflow_restores_portable_compute_intent(qtbot, tmp_path):
     assert restored_request.allow_experimental is False
 
 
+def test_loading_v4_workflow_restores_prefer_gpu_as_global_policy(
+    qtbot,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+    path = tmp_path / "prefer-gpu-v4-workflow.json"
+    save_workflow(
+        path,
+        widget.pipeline,
+        {},
+        compute_request=ComputeRequest(mode="prefer_gpu"),
+    )
+
+    widget.load_workflow_file(path)
+
+    assert widget.compute_mode_combo.currentData() == "prefer_gpu"
+    assert widget._compute_mode is ComputeMode.PREFER_GPU
+    assert widget._current_compute_request() == ComputeRequest(mode="prefer_gpu")
+    assert widget.compute_status_label.text().startswith("Prefer GPU")
+    assert widget.compute_group.isHidden()
+    assert widget.optimize_pipeline_button.isHidden()
+
+
 def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
@@ -1553,7 +1645,39 @@ def test_compute_policy_edits_are_directly_undoable_and_redoable(qtbot):
     )
 
 
-def test_strict_selective_setting_does_not_leak_into_auto_or_cpu(qtbot):
+def test_prefer_gpu_policy_is_undoable_and_local_to_each_workflow_tab(qtbot):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget.run_pipeline = lambda *args, **kwargs: None
+
+    widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("prefer_gpu")
+    )
+    assert widget._compute_mode is ComputeMode.PREFER_GPU
+
+    widget.undo()
+    assert widget._compute_mode is ComputeMode.AUTO
+    assert widget.compute_mode_combo.currentData() == "auto"
+    widget.redo()
+    assert widget._compute_mode is ComputeMode.PREFER_GPU
+    assert widget.compute_mode_combo.currentData() == "prefer_gpu"
+
+    first = widget._workflow_tabs.current
+    assert first is not None
+    widget._new_workflow()
+    assert widget._workflow_tabs.current is not first
+    assert widget._compute_mode is ComputeMode.AUTO
+    assert widget.compute_mode_combo.currentData() == "auto"
+
+    first_index = widget._workflow_tabs.index_of(first.session_id)
+    widget.workflow_tab_bar.setCurrentIndex(first_index)
+
+    assert widget._workflow_tabs.current is first
+    assert widget._compute_mode is ComputeMode.PREFER_GPU
+    assert widget.compute_mode_combo.currentData() == "prefer_gpu"
+
+
+def test_strict_selective_setting_does_not_leak_into_other_modes(qtbot):
     widget = VippWidget(_Viewer())
     qtbot.addWidget(widget)
     widget.run_pipeline = lambda *args, **kwargs: None
@@ -1569,9 +1693,34 @@ def test_strict_selective_setting_does_not_leak_into_auto_or_cpu(qtbot):
     assert widget._current_compute_request().fallback_policy is FallbackPolicy.STRICT
 
     widget.compute_mode_combo.setCurrentIndex(
+        widget.compute_mode_combo.findData("prefer_gpu")
+    )
+    assert widget._current_compute_request().fallback_policy is FallbackPolicy.VISIBLE
+
+    widget.compute_mode_combo.setCurrentIndex(
         widget.compute_mode_combo.findData("cpu")
     )
     assert widget._current_compute_request().fallback_policy is FallbackPolicy.VISIBLE
+
+
+@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.PREFER_GPU))
+def test_synchronous_global_policy_decision_ignores_dormant_preference(
+    qtbot,
+    mode,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    widget._abandon_background_pipeline_run()
+    widget._compute_mode = mode
+    widget._compute_node_preferences["gaussian"] = NodeComputePreference("cpu")
+    request = widget._current_compute_request()
+
+    widget._record_synchronous_cpu_decisions({"gaussian"}, request)
+
+    decision = widget._accepted_compute_decisions["gaussian"]
+    assert request.preference_for("gaussian").kind.value == "cpu"
+    assert decision.requested_preference == NodeComputePreference()
+    assert decision.reason is DecisionReason.AUTO_CPU
 
 
 def test_example_workflow_dialog_groups_and_filters_examples(qtbot):

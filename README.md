@@ -189,27 +189,48 @@ Phase 3A adds exact-mask CuPy/CuPyX Canny and CuPy Otsu providers. Phase 4 adds
 the public CPU Sigma Filter node and a clean-room CuPy RawKernel provider.
 Phase 5 adds exact CuPyX Connected Components for boolean 2D/3D masks, including
 SciPy-identical `int32` label IDs and independent leading-block resets. Their
-validated regions are normal public `Auto`/`Selective` candidates on this
-alpha; unsupported regions visibly use CPU. Phase 6 adds cuCIM candidates for
+validated regions are normal public GPU candidates on this alpha; unsupported
+regions visibly use CPU. Phase 6 adds cuCIM candidates for
 the basic schemas of **Measure Objects** and **Measure Objects + Intensity**,
 with an exact typed-table finalizer after the mandatory GPU-to-host boundary.
 Both deconvolution paths use exact ordered-multi-input benchmarking. The alpha
 includes
-CPU/Auto/Selective execution contracts, visible or strict fallback,
+CPU/Auto/Prefer-GPU/Selective execution contracts, visible or strict fallback,
 transactional device execution, scientific cache identity, and per-node/
 whole-pipeline benchmark services. The toolbar controls
 now provide the first Phase 2 interactive slice: new sessions default to
-`Auto`, the main toolbar exposes `CPU`/`Auto`/`Selective`, and Selective mode
+`Auto`, the main toolbar exposes `CPU`/`Auto`/`Prefer GPU`/`Selective`, and
+Selective mode
 shows `Follow pipeline policy`, `CPU`, and one choice per declared GPU library
 where implemented. `Best GPU` appears only when multiple libraries compete;
-accepted runs add compact
-CPU/CuPy/cuCIM badges, and CPU fallback is shown in amber. VIPP uses one
-message-strip component, with major and actionable paths now severity-classified;
+accepted runs add compact CPU/CuPy/cuCIM badges, and CPU fallback is shown in
+amber. `Prefer GPU` considers every reviewed public GPU implementation,
+including `public_selective` providers that Auto does not consider. It skips
+only the CPU-versus-GPU speed gate: scientific parity, dtype, parameter,
+shape, environment, dependency, and memory admission remain mandatory, and
+VIPP never inserts a cast or changes an authored parameter to make GPU eligible.
+When all eligible GPU choices have complete comparable timing evidence, the
+fastest GPU is selected; otherwise the stable implementation ID provides a
+deterministic choice without implying that it is fastest. A node with no
+eligible GPU receives an explained ordinary CPU decision.
+
+`Prefer GPU` always uses visible fallback; a strict Prefer-GPU request is
+invalid because the policy explicitly means “GPU wherever possible, CPU
+everywhere else.” Saved per-node preferences remain intact but dormant outside
+Selective mode. Switch back to Selective to reactivate them and to use
+`Benchmark node…` or `Find fastest pipeline…`; the whole-pipeline optimizer is
+intentionally Selective-only. Developer-hidden implementations remain excluded
+unless experimental admission is explicitly enabled, which is not a public
+support claim.
+
+VIPP uses one message-strip component, with major and actionable paths now
+severity-classified;
 only actionable failures receive the full alert treatment. Workflow-v4
 persistence now records portable authored compute intent, while separate
 non-scientific UI metadata preserves explicit optimizer locks without changing
 the scientific workflow hash. Legacy workflow-v3 files load in CPU mode and
-with every node unlocked until the user explicitly opts into Auto or Selective.
+with every node unlocked until the user explicitly opts into Auto, Prefer GPU,
+or Selective.
 Machine-local runtime/device selection, memory limits, provider admission,
 and benchmark evidence are not copied between machines. Batch config version 2
 captures the full effective run request, while generated Python embeds the
@@ -265,12 +286,13 @@ and not a blanket biological-restoration or cross-platform equivalence claim.
 GPU provider visibility in this alpha follows the evidence. An implementation
 whose declared region has passed scientific parity and the required memory,
 progress, cancellation, cleanup, and runtime checks is a normal public
-`Selective` candidate and may participate in `Auto` where applicable performance
-evidence exists. `developer_hidden` is reserved for incomplete or unvalidated
-work. Promotion is region-specific: data types, parameters, shapes, or platforms
-outside a provider's reviewed region remain on CPU with a visible CPU decision
-or fallback. Public visibility does not imply that every GPU, operating system,
-dtype, parameter region, or workload has been qualified.
+`Selective` or `Prefer GPU` candidate and may participate in `Auto` where
+applicable performance evidence exists. `developer_hidden` is reserved for
+incomplete or unvalidated work and is excluded unless experimental admission
+is explicitly enabled. Promotion is region-specific: data types, parameters,
+shapes, or platforms outside a provider's reviewed region remain on CPU with a
+visible CPU decision or fallback. Public visibility does not imply that every
+GPU, operating system, dtype, parameter region, or workload has been qualified.
 
 **Sigma Filter** is an edge-preserving Lee filter compatible with the documented
 behavior of Fiji's
@@ -469,7 +491,8 @@ side-effecting, and incomplete workloads still fail closed. Unifying every UI
 optimizer input into one immutable application snapshot remains a named
 hardening task rather than a completed claim. See the
 [production GPU plan](docs/gpu-production-implementation-plan.md) for the
-CPU/Auto/Selective design, per-node and whole-pipeline benchmarking, fallback,
+CPU/Auto/Prefer-GPU/Selective design, per-node and whole-pipeline benchmarking,
+fallback,
 memory, and promotion rules. The
 [Phase 1 implementation record](docs/gpu-phase1-implementation-report.md)
 summarizes the code, exact admitted matrix, validation evidence, and deferred
@@ -627,7 +650,8 @@ guidance, and report suspected vulnerabilities privately through
 `0.13.0a1` is the current alpha. It is VIPP's first usable, evidence-gated GPU
 release while retaining CPU as the portable scientific reference path:
 
-- toolbar `CPU`/`Auto`/`Selective` policy, per-node CPU/CuPy/cuCIM choices and
+- toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` policy, per-node
+  CPU/CuPy/cuCIM choices and
   actual-run badges, setup diagnostics, RAM/VRAM reporting, node benchmarking,
   and a review-before-apply whole-pipeline optimizer;
 - public-candidate GPU regions for background subtraction, median, Gaussian,

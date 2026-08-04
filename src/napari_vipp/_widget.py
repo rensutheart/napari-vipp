@@ -1450,8 +1450,9 @@ class VippWidget(QWidget):
             self.compute_mode_combo.findData(ComputeMode.AUTO.value)
         )
         self.compute_mode_combo.setToolTip(
-            "Choose CPU for deterministic host execution, Auto for the best "
-            "validated implementation, or Selective for per-node choices."
+            "Choose CPU for host execution, Auto for GPU only when validated as "
+            "beneficial, Prefer GPU to use every scientifically eligible GPU "
+            "implementation, or Selective for per-node choices."
         )
         _configure_toolbar_combo(self.compute_mode_combo)
         self.compute_status_label = QLabel("Auto")
@@ -2416,10 +2417,16 @@ class VippWidget(QWidget):
         ) = self._toolbar_compact_stage or (False, False, False, False, False)
         added_section = False
         self._add_combo_menu(menu, "Compute policy", self.compute_mode_combo)
-        self._add_checkbox_menu_action(
+        strict_compute_action = self._add_checkbox_menu_action(
             menu,
             "Strict selective GPU choices",
             self.strict_compute_checkbox,
+        )
+        strict_compute_action.setEnabled(
+            self._compute_mode is ComputeMode.SELECTIVE
+        )
+        strict_compute_action.setToolTip(
+            "Available only in Selective mode for explicitly required GPU choices."
         )
         compute_setup_action = menu.addAction("Compute setup and memory…")
         compute_setup_action.setToolTip(
@@ -4131,7 +4138,11 @@ class VippWidget(QWidget):
                 or node_id not in self.pipeline.completed_node_ids
             ):
                 continue
-            preference = request.preference_for(node_id)
+            preference = (
+                request.preference_for(node_id)
+                if request.mode in {ComputeMode.CPU, ComputeMode.SELECTIVE}
+                else NodeComputePreference()
+            )
             explicit = (
                 request.mode is ComputeMode.CPU
                 or preference.kind is NodePreferenceKind.CPU
@@ -16341,6 +16352,7 @@ class VippWidget(QWidget):
                 )
             )
             self._abandon_background_pipeline_run()
+        compute_request = self._current_compute_request()
         if self._active_pipeline_run_id is not None or (
             not force_sync
             and self._should_run_pipeline_in_background(
@@ -16363,7 +16375,9 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
             return
-        if force_sync or self._current_compute_request().mode is ComputeMode.CPU:
+        if compute_request.mode is ComputeMode.CPU or (
+            force_sync and compute_request.mode is ComputeMode.AUTO
+        ):
             self._run_pipeline_synchronously(
                 input_data,
                 input_metadata,
@@ -16377,10 +16391,10 @@ class VippWidget(QWidget):
                 target_node_ids,
             )
         else:
-            # Small Auto workloads still use the exact same detached planner
-            # and executor as background work. Running that service inline
-            # gives a newly opened workflow one coherent initial result without
-            # an immediately stale worker racing the user's first interaction.
+            # Small automatic workloads and explicitly synchronous GPU-preferred
+            # previews use the same detached planner and accelerator executor as
+            # normal background work. Running that service inline gives the
+            # caller one coherent result without bypassing required GPU intent.
             self._start_background_pipeline_run(
                 input_data,
                 input_metadata,
@@ -16392,7 +16406,9 @@ class VippWidget(QWidget):
                 dirty_node_ids,
                 manual_node_ids,
                 target_node_ids,
-                execute_synchronously=True,
+                execute_synchronously=(
+                    force_sync or compute_request.mode is ComputeMode.AUTO
+                ),
             )
 
     def _abandon_background_pipeline_run(self) -> None:
@@ -16707,11 +16723,14 @@ class VippWidget(QWidget):
         target_node_ids: set[str] | None = None,
     ) -> bool:
         compute_request = self._current_compute_request()
-        if compute_request.mode is ComputeMode.SELECTIVE:
-            # Selective execution can require an accelerator even for a small
-            # array, so keep it off the GUI thread. Auto may use the normal
-            # responsiveness heuristic because its small synchronous path also
-            # goes through the detached compute service.
+        if compute_request.mode in {
+            ComputeMode.PREFER_GPU,
+            ComputeMode.SELECTIVE,
+        }:
+            # Prefer GPU and Selective execution can require an accelerator even
+            # for a small array, so keep them off the GUI thread. Auto may use the
+            # normal responsiveness heuristic because its small synchronous path
+            # also goes through the detached compute service.
             return True
         return (
             self._background_processing_node_id(

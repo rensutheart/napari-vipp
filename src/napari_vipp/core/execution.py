@@ -35,6 +35,7 @@ from napari_vipp.core.compute import (
     ExecutionPlan,
     ExecutionReport,
     FallbackReason,
+    NodeComputePreference,
     NodeExecutionDecision,
     NodePreferenceKind,
     OutputPortKey,
@@ -1658,13 +1659,17 @@ def _candidate_can_clear_performance_gate(
         PerformanceEvidence,
     ],
 ) -> bool:
-    preference = request.preference_for(workload.node_id)
+    preference = (
+        request.preference_for(workload.node_id)
+        if request.mode is ComputeMode.SELECTIVE
+        else NodeComputePreference(NodePreferenceKind.AUTO)
+    )
     forced = request.mode is ComputeMode.SELECTIVE and preference.kind in {
         NodePreferenceKind.BEST_GPU,
         NodePreferenceKind.LIBRARY,
         NodePreferenceKind.IMPLEMENTATION,
     }
-    if forced:
+    if forced or request.mode is ComputeMode.PREFER_GPU:
         return True
     evidence = performance_evidence.get(
         (workload.node_id, implementation.implementation_id)
@@ -1679,7 +1684,11 @@ def _candidate_specs_for_workload(
 ) -> tuple[OperationComputeSpec, ...]:
     if request.mode is ComputeMode.CPU or not workload.inputs_resolved:
         return ()
-    preference = request.preference_for(workload.node_id)
+    preference = (
+        request.preference_for(workload.node_id)
+        if request.mode is ComputeMode.SELECTIVE
+        else NodeComputePreference(NodePreferenceKind.AUTO)
+    )
     if (
         request.mode is ComputeMode.SELECTIVE
         and preference.kind is NodePreferenceKind.CPU
@@ -1689,9 +1698,9 @@ def _candidate_specs_for_workload(
         workload.operation_id,
         allow_experimental=request.allow_experimental,
     )
-    automatic_intent = (
-        request.mode is ComputeMode.AUTO
-        or preference.kind is NodePreferenceKind.AUTO
+    automatic_intent = request.mode is ComputeMode.AUTO or (
+        request.mode is ComputeMode.SELECTIVE
+        and preference.kind is NodePreferenceKind.AUTO
     )
     if automatic_intent:
         implementations = tuple(

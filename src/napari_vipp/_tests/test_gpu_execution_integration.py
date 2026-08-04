@@ -1846,6 +1846,81 @@ def test_real_headless_background_gaussian_median_forms_one_device_segment():
     )
 
 
+def test_real_prefer_gpu_runs_every_eligible_node_without_benchmark_evidence():
+    if importlib.util.find_spec("cupy") is None:
+        pytest.skip("CuPy is not installed.")
+    if importlib.util.find_spec("cucim") is None:
+        pytest.skip("The optional cuCIM wheel is not installed.")
+    try:
+        import cupy
+
+        if int(cupy.cuda.runtime.getDeviceCount()) < 1:
+            pytest.skip("No CUDA device is available.")
+        cupy.zeros(1, dtype=cupy.float32).sum().item()
+    except Exception as exc:
+        pytest.skip(f"A working CUDA device is unavailable: {exc}")
+
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    extract = pipeline.add_node("extract_channel")
+    background = pipeline.add_node("subtract_background")
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.set_param(extract.id, "channel", 1)
+    pipeline.set_param(background.id, "radius", 2.0)
+    pipeline.set_param(background.id, "spatial_mode", "2D YX")
+    pipeline.set_param(gaussian.id, "sigma", 1.2)
+    pipeline.set_param(median.id, "size", 3)
+    assert pipeline.connect("input", extract.id).success
+    assert pipeline.connect(extract.id, background.id).success
+    assert pipeline.connect(background.id, gaussian.id).success
+    assert pipeline.connect(gaussian.id, median.id).success
+
+    data = np.random.default_rng(84).integers(
+        0,
+        4096,
+        size=(2, 31, 37),
+        dtype=np.uint16,
+    )
+    pipeline.run(data, input_metadata={"axes": "CYX"})
+    expected = pipeline.outputs[median.id].copy()
+    compute_request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    request = replace(
+        _accelerated_request(pipeline, data, compute_request),
+        input_metadata={"axes": "CYX"},
+    )
+
+    result = execute_pipeline_request(request)
+
+    assert result.error == ""
+    assert result.pipeline is not None
+    assert result.execution_report is not None
+    assert result.execution_report.request.mode is ComputeMode.PREFER_GPU
+    assert result.execution_report.cleanup_succeeded
+    decisions = {
+        decision.node_id: decision
+        for decision in result.execution_report.actual_decisions
+    }
+    assert decisions[extract.id].implementation_id == "cpu-extract_channel-v1"
+    assert decisions[background.id].implementation_id == (
+        "cucim-subtract_background-v2"
+    )
+    assert decisions[gaussian.id].implementation_id == "cpu-gaussian_blur-v1"
+    assert decisions[median.id].implementation_id == "cupyx-median-filter-v1"
+    assert all(not decision.fallback_used for decision in decisions.values())
+    assert not result.execution_report.fallback_records
+    np.testing.assert_array_equal(result.pipeline.outputs[median.id], expected)
+    assert tuple(
+        axis.name for axis in result.pipeline.output_states[median.id].axes
+    ) == ("y", "x")
+    for node_id in (extract.id, background.id, gaussian.id, median.id):
+        decision = decisions[node_id]
+        provenance = result.pipeline.node_compute_provenance[node_id]
+        assert provenance.actual_implementation.implementation_id == (
+            decision.implementation_id
+        )
+
+
 def test_real_headless_rgba_canny_otsu_stays_in_one_exact_device_segment(
     monkeypatch,
 ):

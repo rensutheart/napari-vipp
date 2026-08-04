@@ -65,6 +65,22 @@ def test_compute_request_is_strict_immutable_and_json_safe():
     assert len(request.fingerprint) == 64
 
 
+def test_prefer_gpu_is_a_round_trippable_visible_fallback_policy():
+    request = ComputeRequest(
+        mode="prefer_gpu",
+        node_preferences={"dormant": "cpu"},
+    )
+
+    assert ComputeMode.PREFER_GPU.value == "prefer_gpu"
+    assert request.mode is ComputeMode.PREFER_GPU
+    assert request.fallback_policy is FallbackPolicy.VISIBLE
+    assert ComputeRequest.from_dict(request.as_dict()) == request
+    json.dumps(request.as_dict(), allow_nan=False)
+
+    with pytest.raises(ValueError, match="Prefer GPU requires visible CPU fallback"):
+        ComputeRequest(mode="prefer_gpu", fallback_policy="strict")
+
+
 def test_contract_import_does_not_import_optional_accelerators():
     completed = subprocess.run(
         [

@@ -130,13 +130,15 @@ def plan_compute_decisions(
     array_facts: Mapping[str, tuple[ArrayFacts, ...]] | None = None,
     performance_evidence: Mapping[tuple[str, str], PerformanceEvidence] | None = None,
 ) -> ComputePlanningResult:
-    """Resolve CPU/Auto/Selective intent for prepared node workloads.
+    """Resolve CPU/Auto/Prefer-GPU/Selective intent for prepared workloads.
 
     ``performance_evidence`` is keyed by ``(node_id, implementation_id)``.
     Selective library/exact pins bypass the Auto speed threshold, but never the
-    scientific, environment, or memory gates.  A strict forced preference is
-    collected into :class:`ComputePreflightError`; visible fallback returns an
-    explicit typed CPU decision and warning.
+    scientific, environment, or memory gates. Prefer GPU applies the same
+    safety gates to every visible GPU candidate while deliberately ignoring the
+    CPU-versus-GPU speed threshold. A strict forced preference is collected
+    into :class:`ComputePreflightError`; visible fallback returns an explicit
+    typed CPU decision and warning.
     """
 
     if not isinstance(request, ComputeRequest):
@@ -389,9 +391,9 @@ def _specs_for_preference(
         operation_id,
         allow_experimental=request.allow_experimental,
     )
-    automatic_intent = (
-        request.mode is ComputeMode.AUTO
-        or preference.kind is NodePreferenceKind.AUTO
+    automatic_intent = request.mode is ComputeMode.AUTO or (
+        request.mode is ComputeMode.SELECTIVE
+        and preference.kind is NodePreferenceKind.AUTO
     )
     if automatic_intent:
         specs = tuple(
@@ -584,6 +586,7 @@ def _admit_candidates(
     candidates: list[_Candidate] = []
     rejections: list[SupportDecision] = []
     forced = _is_forced_gpu_preference(request.mode, preference)
+    prefer_gpu = request.mode is ComputeMode.PREFER_GPU
     for spec in specs:
         static_support = evaluate_candidate_workload_support(
             spec,
@@ -617,7 +620,7 @@ def _admit_candidates(
             )
             continue
         candidate_evidence = evidence.get((workload.node_id, spec.implementation_id))
-        if not forced:
+        if not forced and not prefer_gpu:
             if candidate_evidence is None:
                 rejections.append(
                     SupportDecision(
@@ -686,6 +689,20 @@ def _select_candidate(
     if not candidates:
         return None, None
     forced = _is_forced_gpu_preference(request.mode, preference)
+    if request.mode is ComputeMode.PREFER_GPU:
+        measured = tuple(candidate for candidate in candidates if candidate.evidence)
+        if len(measured) == len(candidates):
+            return min(
+                measured,
+                key=lambda candidate: (
+                    candidate.evidence.end_to_end_candidate_seconds,
+                    candidate.spec.implementation_id,
+                ),
+            ), None
+        return min(
+            candidates,
+            key=lambda candidate: candidate.spec.implementation_id,
+        ), None
     if forced:
         if len(candidates) == 1:
             return candidates[0], None
@@ -780,7 +797,13 @@ def _selected_decision(
     candidate: _Candidate,
     mode: ComputeMode,
 ) -> NodeExecutionDecision:
-    if mode is ComputeMode.SELECTIVE and preference.kind not in {
+    if mode is ComputeMode.PREFER_GPU:
+        reason_text = (
+            f"{candidate.spec.implementation_id!r} is scientifically eligible, "
+            "available, and within the admitted memory bound. Prefer GPU selected "
+            "it without applying the CPU-versus-GPU speed threshold."
+        )
+    elif mode is ComputeMode.SELECTIVE and preference.kind not in {
         NodePreferenceKind.AUTO,
         NodePreferenceKind.CPU,
     }:

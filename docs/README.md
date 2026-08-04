@@ -54,7 +54,8 @@ reviewing VIPP itself.
 - [Planning and roadmap](planning.md) is the source of truth for release order
   and active priorities.
 - [Production GPU implementation plan](gpu-production-implementation-plan.md)
-  defines CPU/Auto/Selective behavior, per-node and graph-global benchmarking,
+  defines CPU/Auto/Prefer-GPU/Selective behavior, per-node and graph-global
+  benchmarking,
   the Windows/Linux CUDA path, Apple-provider investigation, implementation-
   library choices, installation UX, and release gates.
 - [cuCIM native-Windows port plan](cucim-windows-port-plan.md) defines the
@@ -71,8 +72,9 @@ reviewing VIPP itself.
   Main remains the CPU production baseline; the GPU branch contains feasibility
   evidence plus implemented public-candidate regions for Phase 1, ordinary
   Richardson-Lucy, Richardson-Lucy TV, Canny, Otsu, Sigma Filter, and Connected
-  Components. Validated regions are available in normal Auto/Selective
-  pipelines and the durable batch/generated-Python/CLI/export surfaces on that
+  Components. Validated regions are available in normal
+  Auto/Prefer-GPU/Selective pipelines and the durable
+  batch/generated-Python/CLI/export surfaces on that
   branch; unsupported regions visibly use CPU. This remains branch-scoped
   evidence rather than a released cross-platform GPU-support claim.
 

@@ -80,6 +80,28 @@ def test_node_compute_context_ignores_sibling_preferences_but_not_local_intent()
     ) != node_compute_context_fingerprint(local_changed, "node")
 
 
+def test_prefer_gpu_cache_context_ignores_dormant_preferences_but_tracks_mode():
+    baseline = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    dormant_preferences = ComputeRequest(
+        mode=ComputeMode.PREFER_GPU,
+        node_preferences={
+            "node": "cpu",
+            "sibling": "library:cucim",
+        },
+    )
+
+    baseline_context = node_compute_context_fingerprint(baseline, "node")
+    assert baseline_context == node_compute_context_fingerprint(
+        dormant_preferences,
+        "node",
+    )
+    assert baseline_context != node_compute_context_fingerprint(
+        ComputeRequest(mode=ComputeMode.AUTO),
+        "node",
+    )
+    assert baseline.fingerprint != dormant_preferences.fingerprint
+
+
 def test_source_cache_provenance_requires_exact_scientific_context():
     provenance = build_cached_source_provenance(
         node_id="input",
@@ -908,6 +930,33 @@ def test_auto_uses_only_current_plan_and_selective_constraints_remain_authoritat
         request=library_request,
         decision=_decision(gpu, "library:cupyx"),
     ).admissible
+
+
+def test_prefer_gpu_cache_branch_uses_current_gpu_plan_and_ignores_authored_choice():
+    gpu = _gpu_spec()
+    record = _record(gpu)
+    request = ComputeRequest(
+        mode=ComputeMode.PREFER_GPU,
+        node_preferences={"node": "cpu"},
+    )
+
+    admissible = _admissible(
+        record,
+        required_spec=gpu,
+        request=request,
+        decision=_decision(gpu),
+    )
+    stale_preference = _admissible(
+        record,
+        required_spec=gpu,
+        request=request,
+        decision=_decision(gpu, "cpu"),
+    )
+
+    assert admissible.admissible
+    assert admissible.reason == "admissible_current_prefer_gpu_plan"
+    assert not stale_preference.admissible
+    assert stale_preference.reason == "stale_global_policy_preference"
 
 
 def test_best_gpu_rejects_cached_cpu_and_runtime_pin_cannot_be_bypassed():

@@ -23,6 +23,7 @@ from napari_vipp.core.compute import (
     DecisionReason,
     ExecutionReport,
     FallbackReason,
+    NodeComputePreference,
     NodeExecutionDecision,
     canonical_digest,
 )
@@ -365,6 +366,11 @@ def _cpu_decision(
     node_id: str,
     operation_id: str,
 ) -> NodeExecutionDecision:
+    preference = (
+        request.preference_for(node_id)
+        if request.mode in {ComputeMode.CPU, ComputeMode.SELECTIVE}
+        else NodeComputePreference()
+    )
     reason = (
         DecisionReason.EXPLICIT_CPU
         if request.mode is ComputeMode.CPU
@@ -373,7 +379,7 @@ def _cpu_decision(
     return NodeExecutionDecision(
         node_id=node_id,
         operation_id=operation_id,
-        requested_preference=request.preference_for(node_id),
+        requested_preference=preference,
         runtime_id="cpu-numpy",
         implementation_library_id="cpu",
         implementation_id=f"cpu-{operation_id}-v1",

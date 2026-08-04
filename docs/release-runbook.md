@@ -71,6 +71,15 @@ once with an explicit mode or node override. Confirm both item and operation
 progress, then cancel a third run and verify cancelled status, no unpublished
 output, finalized manifests/checkpoints, and exit code 130.
 
+Also replay the same graph with `Prefer GPU`. Confirm every scientifically
+eligible reviewed public provider is used without requiring a CPU-speed win,
+an unsupported dtype/parameter node receives an explained ordinary CPU
+decision, no cast or parameter rewrite occurs, and the manifest records
+`prefer_gpu`, visible fallback, and the exact actual implementation per node.
+Confirm per-node preferences remain stored but inactive, the Selective-only
+`Find fastest pipeline…` action is hidden, and an explicit strict Prefer-GPU
+request is rejected before calculation or publication.
+
 Also run a CPU-only environment smoke with no CuPy/cuCIM installed: import the
 plugin and an exported script, replay CPU and Auto workflows, and run a fully
 skipped batch without an accelerator import/probe. Use deterministic tests to
@@ -83,6 +92,25 @@ batch representative strip remains usable at a 420 px dock width on Windows
 and that macOS cache status reports RAM without launching a subprocess. The
 automated suite must exercise Windows, macOS, and POSIX dispatch without
 assuming `os.sysconf` exists on Windows.
+
+### Bounded Pre-Feature Windows Evidence
+
+On 2026-08-04, the operator reported that the native-Windows napari UI smoke
+passed on development commit `ff21040`. The local schema-4 Selective workflow
+loaded the representative private ND2 acquisition and exercised the intended
+channel, navigation/display behavior, and backend-badge presentation. This is
+an operator attestation only: the retained last-run JSON was later overwritten
+by an Auto run, so it does not independently preserve the exact mixed-backend
+assignment or cleanup result. Treat the pass only as bounded UI regression
+evidence for that editable checkout.
+
+That smoke predates the addition of `Prefer GPU`; it did not qualify that mode,
+an immutable release artifact, the CPU-only path, saved batch/CLI replay,
+cancellation/OOM behavior, or another platform. The Prefer-GPU change also
+changes the candidate source commit. Build the final wheel and source archive
+from the eventual immutable release commit and repeat all applicable CPU, CUDA,
+interactive, batch, generated-CLI, provenance, fallback, cancellation, and
+cleanup checks. The operator checklist below therefore remains unchecked.
 
 ## 3. Freeze And Tag The Exact Release Commit
 
@@ -240,6 +268,9 @@ If not updated after indexing delay:
 - [ ] Durable CPU/GPU replay verified configured/effective requests, exact node
       identities, output digest links, both progress levels, cancellation 130,
       structured OOM policy, and cleanup-gated publication
+- [ ] Prefer-GPU UI and durable replay verified all eligible reviewed GPU
+      placements, explained unsupported-node CPU decisions, dormant per-node
+      preferences, visible-only fallback, and exact provenance
 - [ ] CPU-only import/generated/batch replay passed without optional GPU imports
 - [ ] Clean tagged wheel/sdist build, Twine, content, `pip check`, manifest,
       compute-policy-resource, and entry-point checks pass; SHA-256 hashes saved

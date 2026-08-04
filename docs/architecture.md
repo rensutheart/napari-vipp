@@ -1273,6 +1273,12 @@ Workflow persistence:
   semantics, and composite intensity mapping. It adds the required
   `execution.compute` object with portable `mode`, `fallback_policy`,
   `node_preferences`, `precision_policy`, and `workload_policy` fields.
+- Portable `mode` values are `cpu`, `auto`, `prefer_gpu`, and `selective`.
+  Prefer GPU requires visible fallback and considers reviewed public Selective
+  as well as Auto-candidate providers while bypassing only the CPU-performance
+  gate. Saved node preferences remain canonical but are inactive outside
+  Selective; this preserves intent when switching modes without changing what
+  the other three modes mean.
 - Version-3 documents are accepted and decoded as an explicit CPU
   `ComputeRequest`; a subsequent save emits version 4. Versions 1 and 2 are
   intentionally rejected instead of receiving inferred scientific parameter
@@ -1322,6 +1328,10 @@ Python export:
   shared CPU/GPU executor. `run_pipeline(..., compute_request=...)` can replace
   it for one call; CLI mode/fallback/node-preference flags overlay only fields
   explicitly supplied and never mutate `_WORKFLOW_JSON`.
+- Saved-batch and generated CLIs accept `--compute-mode prefer_gpu`; an omitted
+  fallback override is normalized to `visible`, while an explicit strict
+  Prefer-GPU combination fails request validation. The same effective request
+  and exact actual implementation decisions flow into execution provenance.
 - `ImageDataset` and `SourcePayload` bindings carry explicit source data,
   metadata, names, and `ImageState`; returned `PipelineResults` preserve output
   states for metadata-aware saving plus the formal `ExecutionReport`, effective

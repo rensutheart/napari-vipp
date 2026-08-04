@@ -17,7 +17,7 @@ fallback decision described below.
 The durable surfaces all submit a `ComputeRequest` to
 `core.execution.execute_pipeline_request()`:
 
-- `mode`: `cpu`, `auto`, or `selective`;
+- `mode`: `cpu`, `auto`, `prefer_gpu`, or `selective`;
 - `node_preferences`: stable choices keyed by workflow node ID;
 - `fallback_policy`: `visible` or `strict`;
 - runtime/device selection and accelerator memory cap/reserve;
@@ -30,20 +30,47 @@ transactional executor keeps device values private until synchronization and
 cleanup succeed. Manual nodes are included in full batch and generated runs,
 matching interactive full-pipeline behavior.
 
+The four policies have distinct purposes:
+
+| Mode | GPU selection contract |
+| --- | --- |
+| `cpu` | Use only the authoritative host implementation. |
+| `auto` | Consider reviewed `public_auto_candidate` implementations and use GPU only when the applicable workload evidence clears the CPU-versus-GPU benefit gate. This remains the new-session default. |
+| `prefer_gpu` | Consider every reviewed public GPU implementation, including `public_selective`, and use an eligible GPU without requiring it to beat CPU. |
+| `selective` | Apply the active per-node CPU/library/exact preferences; this is the only mode that exposes node benchmarking and `Find fastest pipeline…`. |
+
+Prefer GPU bypasses only the performance gate. Scientific parity, dtype,
+parameter, shape, optional-dependency, environment, provider, and memory gates
+remain mandatory. VIPP never inserts a cast, changes a parameter, or admits a
+developer-hidden provider merely to place more work on GPU. Developer-hidden
+implementations are considered only when the request explicitly enables
+experimental admission, and such a run is not a public support claim. If every
+eligible GPU candidate has complete comparable timing evidence, Prefer GPU
+selects the fastest GPU; otherwise it selects deterministically by stable
+implementation ID. Missing timing evidence is not itself a reason to use CPU.
+
+A Prefer-GPU request requires `fallback_policy: visible`; `strict` is invalid.
+An unsupported node receives an explained ordinary CPU planning decision,
+because “GPU wherever possible” deliberately includes CPU elsewhere. A
+retryable device OOM still follows the visible one-retry rule described below.
+
 CPU-only installations remain first-class. Importing VIPP, loading workflows,
 importing a generated program, planning a CPU batch, and completely skipping a
-batch item do not import or initialize CuPy or cuCIM. `Auto` uses CPU normally
-when no admitted accelerator is available. A Selective request follows its
-saved `visible` or `strict` policy rather than producing an optional-package
-import traceback.
+batch item do not import or initialize CuPy or cuCIM. `Auto` and `Prefer GPU`
+use CPU normally when no admitted accelerator is available. A Selective request
+follows its saved `visible` or `strict` policy rather than producing an
+optional-package import traceback.
 
 ## Saved And Effective Compute Requests
 
-Workflow schema 4 stores portable authored intent. Batch configuration schema 2
-adds a full `compute` object so a saved collection run also retains the runtime,
-device, memory, and experimental settings selected for that run. Batch config
-version 1 had no compute contract and is migrated to an explicit CPU request;
-VIPP never guesses that an old batch intended to use an accelerator.
+Workflow schema 4 stores portable authored intent, including the serialized
+`prefer_gpu` mode. Batch configuration schema 2 adds a full `compute` object so
+a saved collection run also retains the runtime, device, memory, and
+experimental settings selected for that run. Batch config version 1 had no
+compute contract and is migrated to an explicit CPU request; VIPP never guesses
+that an old batch intended to use an accelerator. Per-node preferences are
+preserved when another global mode is active but remain dormant unless the mode
+is `selective`.
 
 The precedence rules are deliberate:
 
@@ -110,11 +137,25 @@ Use explicit overrides only when the run should differ from the saved config:
   --progress
 ```
 
+To request every eligible reviewed GPU implementation without running the
+optimizer first:
+
+```powershell
+.\.venv-gpu-cu13\Scripts\python.exe .\results\vipp_batch_pipeline.py `
+  --compute-mode prefer_gpu `
+  --progress
+```
+
+When the CLI changes the mode to `prefer_gpu` and no fallback override is
+provided, it uses `visible`. Supplying `--fallback-policy strict` with
+`prefer_gpu` is rejected as an invalid request.
+
 `--node-preference` is repeatable and uses
 `NODE_ID=PREFERENCE`. Stable preference forms are `auto`, `cpu`, `best_gpu`,
 `library:<library-id>`, and `implementation:<implementation-id>`. Prefer values
 written by VIPP or copied from a reviewed config; an exact implementation pin
-may be unavailable on another computer.
+may be unavailable on another computer. These preferences are carried through
+all modes for lossless round trips but affect planning only in `selective`.
 
 The runner exits with:
 
@@ -154,8 +195,9 @@ save_image(
 )
 ```
 
-The generated CLI supports `--compute-mode`, `--fallback-policy`, repeatable
-`--node-preference`, `--progress`, and `--provenance`/`--no-provenance`. It
+The generated CLI supports `--compute-mode` (including `prefer_gpu`),
+`--fallback-policy`, repeatable `--node-preference`, `--progress`, and
+`--provenance`/`--no-provenance`. It
 returns `130` for cancellation and `2` for execution or publication failure.
 With provenance enabled, a successful output has an atomic sibling such as
 `gaussian.ome.tif.vipp-provenance.json`; a failed or cancelled single-output run
@@ -201,6 +243,10 @@ declaration. Such a record remains honest decision evidence, but it is not an
 exact implementation-reproduction claim.
 
 ## OOM, Fallback, And Cleanup
+
+An ordinary Prefer-GPU CPU decision means that no reviewed GPU candidate passed
+all admission gates for that node. It is recorded with the exact reason and is
+not an attempted-device fallback.
 
 `visible` fallback permits one CPU retry of a complete transactional device
 segment only after a classified, retryable runtime out-of-memory failure. The
@@ -261,6 +307,10 @@ are finalized on the normal cooperative-cancellation path, and the CLI exits
 - `Auto` is hardware- and workload-dependent. Reproduction requires the
   recorded environment and actual implementation provenance, not only the
   authored request.
+- `Prefer GPU` is an accelerator-placement preference, not a performance
+  promise. It can deliberately choose a GPU that is equal to or slower than
+  CPU, while still refusing scientifically or operationally inadmissible
+  regions.
 - Current collection batching is local-file, sorted-position pairing. It does
   not iterate semantic T/C/Z combinations or discover plate/well/field HCS
   layouts.

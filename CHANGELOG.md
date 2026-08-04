@@ -9,9 +9,9 @@
 This first 0.13 alpha packages VIPP's progress-to-date GPU work as a usable,
 evidence-gated feature without claiming complete GPU coverage. CPU remains the
 portable scientific reference implementation. Supported nodes may use reviewed
-CuPy, CuPyX, or cuCIM regions through `Auto` or explicit `Selective` choices;
-unsupported hardware, dependencies, dtypes, parameters, shapes, and workloads
-remain on CPU with a visible reason.
+CuPy, CuPyX, or cuCIM regions through `Auto`, `Prefer GPU`, or explicit
+`Selective` choices; unsupported hardware, dependencies, dtypes, parameters,
+shapes, and workloads remain on CPU with a visible reason.
 
 The release also unifies interactive, batch, generated-Python/CLI, and exported
 execution; adds independent workflow tabs and new colocalization tools; fixes
@@ -21,10 +21,21 @@ hardening accumulated since 0.12.0a3.
 
 ### Compute Policy And GPU Execution
 
-- Added the main-toolbar `CPU`/`Auto`/`Selective` compute policy, a Settings
-  mirror, per-node CPU/CuPy/cuCIM choices, actual-run badges, and visible CPU
-  fallback reasons. New sessions default to `Auto`; an authored node choice is
-  not an optimizer lock unless the user explicitly locks it.
+- Added the main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` compute policy, a
+  Settings mirror, per-node CPU/CuPy/cuCIM choices, actual-run badges, and
+  visible CPU fallback reasons. New sessions default to `Auto`; an authored
+  node choice is not an optimizer lock unless the user explicitly locks it.
+- Added `Prefer GPU` for users who want every scientifically eligible reviewed
+  GPU implementation even when it is no faster than CPU. It considers both
+  `public_selective` and `public_auto_candidate` providers and bypasses only the
+  CPU-versus-GPU performance gate; scientific, dtype, parameter, shape,
+  dependency, environment, and memory gates still apply, and VIPP never inserts
+  a cast. Complete comparable GPU timings choose the fastest GPU; otherwise a
+  stable implementation-ID order is deterministic. Unsupported nodes receive
+  an explained CPU decision. Prefer GPU requires visible fallback, ignores but
+  preserves dormant per-node preferences, and does not expose Selective-only
+  benchmarking or `Find fastest pipeline…`. Developer-hidden providers remain
+  excluded unless experimental admission is explicitly enabled.
 - Added worker-based compute setup diagnostics, copyable environment repair,
   system RAM plus discrete VRAM reporting, and unified-memory presentation for
   platforms such as Apple silicon. macOS remains CPU-only in this alpha.
@@ -51,8 +62,9 @@ hardening accumulated since 0.12.0a3.
 
 - Advanced workflow persistence to schema 4. It stores portable compute mode,
   fallback policy, per-node preferences, precision policy, and workload policy,
-  while excluding machine-local devices, memory limits, runtime state, and
-  benchmark evidence. Schema-3 workflows load with explicit CPU intent.
+  including the serialized/CLI `prefer_gpu` value, while excluding
+  machine-local devices, memory limits, runtime state, and benchmark evidence.
+  Schema-3 workflows load with explicit CPU intent.
 - Advanced collection batch configs and manifests to schema 2. Version-1
   configs migrate to CPU because they carried no accelerator intent.
 - Routed interactive calculation, saved batch runners, generated Python/CLI,
@@ -227,10 +239,10 @@ hardening accumulated since 0.12.0a3.
 
 ### Compute Policy Interface
 
-- Added a main-toolbar `CPU`/`Auto`/`Selective` compute policy with an actual-run
-  summary, a Settings-menu mirror, and per-node choices for nodes that declare
-  GPU implementations. Workflow-v3 files deliberately reopen in CPU mode;
-  workflow-v4 files persist portable compute intent.
+- Added a main-toolbar `CPU`/`Auto`/`Prefer GPU`/`Selective` compute policy with
+  an actual-run summary, a Settings-menu mirror, and per-node choices for nodes
+  that declare GPU implementations. Workflow-v3 files deliberately reopen in
+  CPU mode; workflow-v4 files persist portable compute intent.
 - Simplified Selective node choices to `Follow pipeline policy`, `CPU`, and one
   entry per declared GPU library. `Best GPU` appears only when multiple
   libraries compete, while loaded exact pins remain honestly visible as an

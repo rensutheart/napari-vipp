@@ -115,6 +115,30 @@ def test_batch_config_v2_roundtrip_and_v1_migration_preserve_cpu_replay(tmp_path
     assert migrated.workflow_sha256 == scientific_workflow_hash(workflow)
 
 
+def test_prefer_gpu_batch_config_and_provenance_preserve_global_policy(tmp_path):
+    workflow, config, output_id = _image_batch(tmp_path)
+    request = ComputeRequest(mode=ComputeMode.PREFER_GPU)
+    current = replace(config, compute_request=request)
+    path = tmp_path / BATCH_CONFIG_FILENAME
+
+    save_batch_config(path, current)
+    loaded = load_batch_config(path)
+    result = run_batch(workflow, loaded)
+
+    assert loaded.compute_request == request
+    assert loaded.to_dict()["compute"]["mode"] == "prefer_gpu"
+    assert loaded.to_dict()["compute"]["fallback_policy"] == "visible"
+    assert result.manifest.compute["configured_request"]["mode"] == "prefer_gpu"
+    assert result.manifest.compute["effective_request"]["mode"] == "prefer_gpu"
+    item = result.manifest.items[0]
+    assert item.execution["request"]["mode"] == "prefer_gpu"
+    decision = next(
+        node for node in item.execution["nodes"] if node["node_id"] == output_id
+    )
+    assert decision["actual_implementation"]["runtime_id"] == "cpu-numpy"
+    assert decision["fallback_used"] is False
+
+
 def test_cpu_batch_records_exact_node_provenance_and_links_output(tmp_path):
     workflow, config, output_id = _image_batch(tmp_path)
 
@@ -495,6 +519,34 @@ def test_failure_mapping_is_preserved_and_mirrors_fallback_records():
     assert payload["fallback_records"] == [fallback]
     assert payload["outcome"] == "failed"
     assert payload["cleanup_succeeded"] is True
+
+
+@pytest.mark.parametrize("mode", (ComputeMode.AUTO, ComputeMode.PREFER_GPU))
+def test_synthesized_global_policy_provenance_ignores_dormant_preference(mode):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    pipeline.set_param(gaussian.id, "sigma", 0.0)
+    assert pipeline.connect("input", gaussian.id).success
+    pipeline.run(
+        np.ones((5, 5), dtype=np.float32),
+        input_metadata={"axes": "YX"},
+    )
+    request = ComputeRequest(
+        mode=mode,
+        node_preferences={gaussian.id: "cpu"},
+    )
+
+    payload = serialize_execution_provenance(
+        request,
+        pipeline,
+        None,
+        completed_node_ids=(gaussian.id,),
+    )
+
+    assert request.preference_for(gaussian.id).kind.value == "cpu"
+    assert payload["nodes"][0]["requested_preference"] == {"kind": "auto"}
+    assert payload["nodes"][0]["reason"] == "auto_cpu"
 
 
 def test_nested_progress_covers_node_boundaries_and_resets_per_item(tmp_path):

@@ -188,7 +188,8 @@ config...` to restore it. The configuration records the source-node bindings,
 folders and patterns, output folder, default image format, existing-file
 policy, required workflow companion, optional runner choice, workflow hash, and
 resolved declarations for the selected outputs. Config schema version 2 also
-stores the full effective compute request, including CPU/Auto/Selective mode,
+stores the full effective compute request, including
+CPU/Auto/Prefer-GPU/Selective mode,
 fallback policy, per-node preferences, runtime/device, memory cap/reserve,
 policy IDs, and experimental admission. Version-1 configs migrate to explicit
 CPU because they had no accelerator intent. Loading a config against a different

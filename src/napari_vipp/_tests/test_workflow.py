@@ -134,6 +134,29 @@ def test_workflow_v4_persists_only_portable_compute_intent(tmp_path):
     assert restored.allow_experimental is False
 
 
+def test_workflow_v4_roundtrip_preserves_prefer_gpu_intent():
+    pipeline = _build_pipeline()
+    request = ComputeRequest(
+        mode="prefer_gpu",
+        fallback_policy="visible",
+        precision_policy_id="scientific-default-v2",
+        workload_policy_id="large-stack-v1",
+    )
+
+    document = serialize_workflow(pipeline, compute_request=request)
+    restored = deserialize_workflow(document)["compute_request"]
+
+    assert document["execution"]["compute"] == {
+        "mode": "prefer_gpu",
+        "fallback_policy": "visible",
+        "node_preferences": {},
+        "precision_policy": "scientific-default-v2",
+        "workload_policy": "large-stack-v1",
+    }
+    assert restored == request
+    assert restored.mode is ComputeMode.PREFER_GPU
+
+
 def test_schema_v3_migrates_to_explicit_cpu_intent():
     document = serialize_workflow(_build_pipeline())
     document["version"] = 3

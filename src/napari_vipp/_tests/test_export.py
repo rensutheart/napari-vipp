@@ -381,6 +381,77 @@ def test_exported_batch_runner_overlays_compute_flags_and_nested_progress(
     assert callable(captured["kwargs"]["execution_progress_callback"])
 
 
+def test_exported_batch_cli_accepts_prefer_gpu_and_resets_inherited_strict(
+    monkeypatch,
+    tmp_path,
+):
+    authored = ComputeRequest(
+        mode="selective",
+        node_preferences={"gaussian": "cpu"},
+        fallback_policy="strict",
+    )
+    _install_generated_batch_inputs(
+        monkeypatch,
+        tmp_path,
+        compute_request=authored,
+    )
+    captured: list[ComputeRequest | None] = []
+    result = SimpleNamespace(
+        summary={
+            "completed": 1,
+            "partial": 0,
+            "skipped": 0,
+            "cancelled": 0,
+            "failed": 0,
+        },
+        saved_paths=(),
+        manifest_path=tmp_path / "manifest.json",
+        has_failures=False,
+        cancelled=False,
+    )
+
+    def fake_run_batch(_workflow, _config, **kwargs):
+        captured.append(kwargs["compute_request"])
+        return result
+
+    monkeypatch.setattr(
+        "napari_vipp.core.batch.run_batch",
+        fake_run_batch,
+    )
+    namespace: dict[str, object] = {
+        "__name__": "exported_batch_runner",
+        "__file__": str(tmp_path / "vipp_batch_runner.py"),
+    }
+    exec(
+        compile(
+            export_batch_runner_to_python(),
+            "<exported-batch-runner>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    assert namespace["main"](["--compute-mode", "prefer_gpu"]) == 0
+    assert len(captured) == 1
+    override = captured[0]
+    assert override is not None
+    assert override.mode.value == "prefer_gpu"
+    assert override.fallback_policy.value == "visible"
+    assert override.preference_for("gaussian").kind.value == "cpu"
+
+    with pytest.raises(SystemExit) as caught:
+        namespace["main"](
+            [
+                "--compute-mode",
+                "prefer_gpu",
+                "--fallback-policy",
+                "strict",
+            ]
+        )
+    assert caught.value.code == 2
+    assert len(captured) == 1
+
+
 def test_export_produces_valid_python():
     pipeline = _starter_pipeline()
     code = export_pipeline_to_python(pipeline)
@@ -882,6 +953,40 @@ def test_generated_cli_overlays_only_explicit_compute_fields():
     with pytest.raises(ValueError, match="Duplicate node preference"):
         namespace["_cli_compute_request"](
             node_preferences=["gaussian=cpu", "gaussian=auto"],
+        )
+
+
+def test_generated_pipeline_cli_accepts_prefer_gpu_and_resets_inherited_strict():
+    authored = ComputeRequest(
+        mode="selective",
+        fallback_policy="strict",
+        node_preferences={"gaussian": "cpu"},
+    )
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(
+                _starter_pipeline(),
+                compute_request=authored,
+            ),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+
+    request = namespace["_cli_compute_request"](mode="prefer_gpu")
+
+    assert request.mode.value == "prefer_gpu"
+    assert request.fallback_policy.value == "visible"
+    assert request.preference_for("gaussian").kind.value == "cpu"
+    with pytest.raises(
+        ValueError,
+        match="Prefer GPU requires visible CPU fallback",
+    ):
+        namespace["_cli_compute_request"](
+            mode="prefer_gpu",
+            fallback_policy="strict",
         )
 
 

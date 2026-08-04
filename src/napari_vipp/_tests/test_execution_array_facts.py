@@ -467,6 +467,35 @@ def test_forced_selective_candidate_scans_without_performance_evidence(monkeypat
     assert planner.performance_evidence == {}
 
 
+def test_prefer_gpu_scans_without_evidence_and_ignores_dormant_cpu_preference(
+    monkeypatch,
+):
+    calls = _scan_spy(monkeypatch)
+    pipeline, gaussian_id, data = _float32_gaussian_pipeline()
+    planner = _CapturingPlanner()
+    compute_request = ComputeRequest(
+        mode=ComputeMode.PREFER_GPU,
+        node_preferences={gaussian_id: "cpu"},
+        runtime_id="cuda-cupy",
+    )
+
+    result = _execute_accelerated(
+        _accelerated_request(
+            pipeline,
+            data,
+            compute_request=compute_request,
+            performance_evidence={},
+        ),
+        planner,
+    )
+
+    assert result.error == ""
+    assert len(calls) == 1
+    assert planner.array_facts[gaussian_id][0].all_finite is True
+    assert planner.performance_evidence == {}
+    assert planner.calls == 1
+
+
 def test_pipeline_request_copies_and_freezes_performance_evidence():
     pipeline, _gaussian_id, data = _float32_gaussian_pipeline()
     evidence = _viable_evidence_for_pipeline(pipeline)

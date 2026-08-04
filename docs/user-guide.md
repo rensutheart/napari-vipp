@@ -64,14 +64,32 @@ positions. If wider cards overlap, VIPP reports it in the status line; use
 
 ### Compute Policy And Benchmarking (Development Branch)
 
-The compute selector in the main toolbar has three policies:
+The compute selector in the main toolbar has four policies. New sessions use
+`Auto` by default.
 
-- `Auto` uses the best scientifically admitted implementation available on this
-  machine and falls back visibly to CPU.
-- `CPU` keeps every operation on the established host implementation.
-- `Selective` exposes a compact per-node preference in the Inspector wherever
-  a GPU implementation is declared. Node-card badges report what the accepted
-  run actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
+| Policy | Behavior |
+| --- | --- |
+| `CPU` | Keep every operation on the established host implementation. |
+| `Auto` | Use a reviewed Auto candidate only when the applicable evidence says the GPU is beneficial; otherwise use CPU. |
+| `Prefer GPU` | Use a reviewed GPU implementation wherever it is scientifically eligible, even if it is only slightly faster, tied, or slower than CPU. |
+| `Selective` | Expose a compact per-node preference in the Inspector wherever a GPU implementation is declared. |
+
+`Prefer GPU` considers both public Selective and public Auto-candidate
+implementations. It bypasses only the CPU-versus-GPU speed requirement. It does
+not bypass scientific parity, dtype, parameter, shape, optional-dependency,
+environment, or memory gates, and it never inserts a dtype conversion or alters
+an authored parameter. When every eligible GPU has complete comparable timing
+evidence, VIPP chooses the fastest GPU; otherwise it chooses deterministically
+by stable implementation ID. A node without an eligible accelerator receives
+an explained ordinary CPU decision, not a misleading GPU success.
+
+Prefer GPU therefore requires `visible` fallback; `strict` is not a valid
+combination. Per-node choices remain saved but are dormant until you switch
+back to Selective. `Benchmark node…` and `Find fastest pipeline…` are also
+Selective-only. Developer-hidden implementations are not considered unless an
+advanced request explicitly enables experimental admission; doing so is not a
+public support claim. Node-card badges always report what the accepted run
+actually used: CPU, CuPy, cuCIM, or an amber CPU fallback.
 
 For an eligible selected node, `Benchmark node…` captures its exact current
 input and parameters and compares CPU with every scientifically eligible GPU
@@ -535,12 +553,12 @@ runs the workflow.
 
 Schema-version-3 workflows remain supported. Because version 3 had no compute
 policy, VIPP migrates them to an explicit CPU request; saving the loaded graph
-writes version 4. Select `Auto` or `Selective` deliberately if that workflow
-should use admitted GPU implementations. Versions 1 and 2 are intentionally
-rejected because silently inventing threshold, cutoff, channel axis, color, or
-intensity-mapping choices could change scientific results. Keep the VIPP
-environment that created such an older workflow to inspect and run it
-unchanged, then use its graph and JSON as references while recreating and
+writes version 4. Select `Auto`, `Prefer GPU`, or `Selective` deliberately if
+that workflow should use admitted GPU implementations. Versions 1 and 2 are
+intentionally rejected because silently inventing threshold, cutoff, channel
+axis, color, or intensity-mapping choices could change scientific results.
+Keep the VIPP environment that created such an older workflow to inspect and
+run it unchanged, then use its graph and JSON as references while recreating and
 verifying it in the current release. Do not change the JSON version number
 alone; version 3 introduced required scientific parameters and version 4 adds
 the required compute-intent block.
@@ -603,8 +621,8 @@ for multiple varying sources.
 The embedded schema-4 workflow retains `execution.compute` so authored intent
 is not lost in review, version control, or later regeneration. Generated Python
 and collection batch use the same CPU/GPU execution service as interactive
-VIPP. They preserve CPU/Auto/Selective mode and per-node choices, apply the
-same scientific eligibility and visible/strict fallback rules, and report the
+VIPP. They preserve CPU/Auto/Prefer-GPU/Selective mode and per-node choices,
+apply the same scientific eligibility and valid fallback rules, and report the
 actual implementation for every completed computed node. A CPU-only
 installation remains import-safe and `Auto` uses CPU when no admitted GPU is
 available.

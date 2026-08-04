@@ -72,14 +72,22 @@ def test_compute_mode_options_have_stable_public_order_and_labels():
     assert [option.mode.value for option in COMPUTE_MODE_OPTIONS] == [
         "cpu",
         "auto",
+        "prefer_gpu",
         "selective",
     ]
     assert [option.label for option in COMPUTE_MODE_OPTIONS] == [
         "CPU",
         "Auto",
+        "Prefer GPU",
         "Selective",
     ]
     assert compute_mode_label("AUTO") == "Auto"
+    assert compute_mode_label("PREFER_GPU") == "Prefer GPU"
+    prefer_gpu = next(
+        option for option in COMPUTE_MODE_OPTIONS if option.mode.value == "prefer_gpu"
+    )
+    assert "scientifically eligible" in prefer_gpu.description
+    assert "even when it is not faster" in prefer_gpu.description
 
 
 def test_node_preference_value_round_trip_preserves_stable_identifiers():
@@ -461,6 +469,37 @@ def test_toolbar_summary_covers_authored_selective_state_before_a_run():
     assert summary.text == "Selective · 2 choices"
     assert summary.tone is ComputePresentationTone.NEUTRAL
     assert "Experimental GPU candidates are enabled" in summary.tooltip
+
+
+def test_toolbar_summary_explains_prefer_gpu_before_and_after_cpu_only_run():
+    request = ComputeRequest(mode="prefer_gpu")
+
+    authored = compute_toolbar_summary(request)
+
+    assert authored.text == "Prefer GPU"
+    assert authored.tone is ComputePresentationTone.NEUTRAL
+    assert "wherever scientifically eligible" in authored.tooltip
+    assert "without requiring it to outperform CPU" in authored.tooltip
+
+    report = ExecutionReport(
+        request,
+        ComputeEnvironment(probe_status="unavailable"),
+        actual_decisions=(
+            _decision(
+                node_id="gaussian",
+                operation_id="gaussian_blur",
+                runtime_id="cpu-numpy",
+                library_id="cpu",
+                implementation_id="cpu-gaussian_blur-v1",
+            ),
+        ),
+    )
+
+    actual = compute_toolbar_summary(request, report)
+
+    assert actual.text == "Prefer GPU · 1 CPU"
+    assert actual.tone is ComputePresentationTone.CPU
+    assert "GPU unavailable; Prefer GPU used CPU" in actual.tooltip
 
 
 def test_toolbar_summary_reports_mixed_actual_run_and_fallback():

@@ -49,7 +49,8 @@ authoring remain later milestones.
 - [psf-and-deconvolution-plan.md](psf-and-deconvolution-plan.md): PSF
   generation, deconvolution, and microscope metadata requirements.
 - [gpu-production-implementation-plan.md](gpu-production-implementation-plan.md):
-  CPU/Auto/Selective architecture, per-node and whole-pipeline benchmarking,
+  CPU/Auto/Prefer-GPU/Selective architecture, per-node and whole-pipeline
+  benchmarking,
   implementation-library selection, fallbacks, memory/provenance, packaging,
   validation gates, and delivery order. Implemented public-candidate regions
   cover background subtraction, median, Gaussian, RL/RL-TV, Canny, Otsu,
@@ -124,7 +125,8 @@ Implemented and documented work includes:
   used by PSF generation and provenance checks;
 - slice/stack thumbnail contrast range controls, cached stack contrast limits,
   and a linked/unlinked napari/VIPP slider setting for large data review;
-- CPU/Auto/Selective compute policy, per-node implementation choices and actual
+- CPU/Auto/Prefer-GPU/Selective compute policy, per-node implementation choices
+  and actual
   backend badges, exact-workload node benchmarking, review-first pipeline
   optimization, setup diagnostics, and RAM/VRAM accounting;
 - public-candidate accelerated regions for background subtraction, median,
@@ -152,8 +154,8 @@ either already implemented enough to build on or intentionally deferred.
 
 ### GPU Completion And Platform Qualification
 
-Phase 1 is implemented headlessly and interactively: CPU/Auto/Selective and
-per-node/benchmark contracts, unified
+Phase 1 is implemented headlessly and interactively:
+CPU/Auto/Prefer-GPU/Selective and per-node/benchmark contracts, unified
 execution, the dedicated CUDA development/doctor path, and production-parity
 Rolling-Ball/Subtract Background, median, and 2D/3D Gaussian adapters. Phase 2B
 also has a public-candidate ordinary CuPy Richardson-Lucy backend, ordered
@@ -208,9 +210,11 @@ cancellation, zero-residue cleanup, source-integrity, and strict private-metadat
 checks. See the
 [Canny/Otsu evidence](benchmarks/canny-otsu-cupy-windows-rtx5090.md); these are
 single-host descriptive measurements, not portable Auto choices.
-The toolbar now has the CPU/Auto/Selective policy slice,
-Selective node choices, actual backend badges, and a single message-strip
-component with major/actionable paths severity-classified. Optimizer UI
+The toolbar now has the CPU/Auto/Prefer-GPU/Selective policy slice. Prefer GPU
+uses every reviewed eligible accelerator region without applying Auto's speed
+gate; Selective retains node choices and benchmarking. Actual backend badges
+and a single message-strip component with major/actionable paths
+severity-classified. Optimizer UI
 lifecycle/snapshot hardening continues alongside the maintained next order.
 RL/RL-TV evidence ownership is isolated from broad shared-file hashes;
 Measurements and durable batch/generated/export execution are implemented.
@@ -239,7 +243,7 @@ Still needed before positioning restoration as publication-ready:
 - release-facing tutorial screenshots or walkthroughs for measured PSF,
   generated PSF, baseline RL, and RL-TV comparison workflows;
 - performance profiling on larger 3D volumes to calibrate chunking, CPU vector
-  work, GPU memory estimates, and Auto/Selective admission policies;
+  work, GPU memory estimates, and Auto/Prefer-GPU/Selective admission policies;
 - continued documentation of wavelength, numerical aperture, refractive index,
   pixel size, z step, channel selection, and when metadata is being used versus
   manually overridden.
