@@ -418,10 +418,10 @@ def _compare_fixture(
     from napari_vipp.core.gpu.cupy_rl import (
         richardson_lucy_deconvolution as gpu_rl,
     )
-    from napari_vipp.core.operations import (
+    from napari_vipp.core.progress import ProgressContext
+    from napari_vipp.core.richardson_lucy import (
         richardson_lucy_deconvolution as cpu_rl,
     )
-    from napari_vipp.core.progress import ProgressContext
 
     kwargs = {
         "spatial_mode": fixture.spatial_mode,

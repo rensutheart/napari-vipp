@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from napari_vipp.core.operations import _tv_divergence
+from napari_vipp.core.richardson_lucy import _tv_divergence
 from scripts.validate_rl_tv_phantoms import (
     _production_tv,
     calculate_metrics,

@@ -13,7 +13,7 @@ from numbers import Integral
 from pathlib import Path
 
 import numpy as np
-from scipy import integrate, signal, special
+from scipy import integrate, special
 from scipy import ndimage as ndi
 from scipy.spatial import ConvexHull, QhullError
 from skimage import (
@@ -31,6 +31,12 @@ from napari_vipp.core.connected_components import (
     label_connected_components as label_connected_components,
 )
 from napari_vipp.core.io import write_image
+from napari_vipp.core.richardson_lucy import (
+    richardson_lucy_deconvolution as richardson_lucy_deconvolution,
+)
+from napari_vipp.core.richardson_lucy import (
+    richardson_lucy_tv_deconvolution as richardson_lucy_tv_deconvolution,
+)
 from napari_vipp.core.sigma_filter import sigma_filter as sigma_filter
 from napari_vipp.core.sigma_filter import (
     sigma_filter_footprint as sigma_filter_footprint,
@@ -522,139 +528,6 @@ def prepare_validate_psf(
     if bool(normalize_sum):
         psf = psf / np.float32(psf.sum(dtype=np.float64))
     return np.ascontiguousarray(psf.astype(np.float32, copy=False))
-
-
-def richardson_lucy_deconvolution(
-    inputs,
-    spatial_mode: str = "Auto from axes",
-    iterations: int = 25,
-    normalize_psf: bool = True,
-    clip_negative_input: bool = True,
-    clip_output_negative: bool = True,
-    preserve_input_scale: bool = True,
-    filter_epsilon: float = 1e-12,
-    resolved_spatial_ndim: int | None = None,
-    progress=None,
-) -> np.ndarray:
-    """Restore an image with baseline Richardson-Lucy deconvolution."""
-    image, psf = _deconvolution_inputs(inputs)
-    image_arr = np.asarray(image)
-    spatial_ndim = _resolved_deconvolution_spatial_ndim(
-        image_arr,
-        spatial_mode,
-        resolved_spatial_ndim,
-    )
-    kernel = _deconvolution_psf(
-        psf,
-        spatial_ndim,
-        normalize_psf=bool(normalize_psf),
-    )
-    iterations = max(int(iterations), 1)
-
-    def restore_block(block: np.ndarray, iteration_done=None) -> np.ndarray:
-        values, output_scale = _deconvolution_observed_block(
-            block,
-            clip_negative_input=bool(clip_negative_input),
-            preserve_input_scale=bool(preserve_input_scale),
-        )
-        if progress is None:
-            restored = restoration.richardson_lucy(
-                values,
-                kernel,
-                num_iter=iterations,
-                clip=False,
-                filter_epsilon=float(filter_epsilon),
-            )
-        else:
-            restored = _richardson_lucy_native_block(
-                values,
-                kernel,
-                iterations=iterations,
-                filter_epsilon=float(filter_epsilon),
-                iteration_done=iteration_done,
-                check_cancelled=(
-                    progress.check_cancelled if progress is not None else None
-                ),
-            )
-        return _deconvolution_output_block(
-            restored,
-            output_scale=output_scale,
-            clip_output_negative=bool(clip_output_negative),
-        )
-
-    return _apply_deconvolution_blocks(
-        image_arr,
-        spatial_ndim,
-        restore_block,
-        iterations=iterations,
-        progress=progress,
-        progress_message="Richardson-Lucy deconvolution",
-    )
-
-
-def richardson_lucy_tv_deconvolution(
-    inputs,
-    spatial_mode: str = "Auto from axes",
-    iterations: int = 25,
-    tv_regularization: float = 0.002,
-    tv_epsilon: float = 1e-6,
-    normalize_psf: bool = True,
-    clip_negative_input: bool = True,
-    clip_output_negative: bool = True,
-    preserve_input_scale: bool = True,
-    filter_epsilon: float = 1e-12,
-    denominator_floor: float = 0.05,
-    resolved_spatial_ndim: int | None = None,
-    progress=None,
-) -> np.ndarray:
-    """Restore an image with Richardson-Lucy total-variation deconvolution."""
-    image, psf = _deconvolution_inputs(inputs)
-    image_arr = np.asarray(image)
-    spatial_ndim = _resolved_deconvolution_spatial_ndim(
-        image_arr,
-        spatial_mode,
-        resolved_spatial_ndim,
-    )
-    kernel = _deconvolution_psf(
-        psf,
-        spatial_ndim,
-        normalize_psf=bool(normalize_psf),
-    )
-    iterations = max(int(iterations), 1)
-
-    def restore_block(block: np.ndarray, iteration_done=None) -> np.ndarray:
-        values, output_scale = _deconvolution_observed_block(
-            block,
-            clip_negative_input=bool(clip_negative_input),
-            preserve_input_scale=bool(preserve_input_scale),
-        )
-        restored = _richardson_lucy_tv_native_block(
-            values,
-            kernel,
-            iterations=iterations,
-            tv_regularization=max(float(tv_regularization), 0.0),
-            tv_epsilon=max(float(tv_epsilon), 1e-12),
-            filter_epsilon=float(filter_epsilon),
-            denominator_floor=max(float(denominator_floor), 1e-6),
-            iteration_done=iteration_done,
-            check_cancelled=(
-                progress.check_cancelled if progress is not None else None
-            ),
-        )
-        return _deconvolution_output_block(
-            restored,
-            output_scale=output_scale,
-            clip_output_negative=bool(clip_output_negative),
-        )
-
-    return _apply_deconvolution_blocks(
-        image_arr,
-        spatial_ndim,
-        restore_block,
-        iterations=iterations,
-        progress=progress,
-        progress_message="Richardson-Lucy TV deconvolution",
-    )
 
 
 def median_filter(
@@ -4105,9 +3978,7 @@ def colocalization_populated_ranges(
     ch1 = np.asarray(channel_1)
     ch2 = np.asarray(channel_2)
     if ch1.shape != ch2.shape or ch1.size == 0:
-        raise ValueError(
-            "Scatter channels must be non-empty and have matching shapes."
-        )
+        raise ValueError("Scatter channels must be non-empty and have matching shapes.")
     if not np.isfinite(ch1).all() or not np.isfinite(ch2).all():
         raise ValueError("Scatter ranges require finite channel intensities.")
 
@@ -4183,8 +4054,7 @@ def _coloc_populated_axis_range(
         maximum = float(np.max(values))
     else:
         minimum, maximum = (
-            float(value)
-            for value in np.percentile(values, (tail, 100.0 - tail))
+            float(value) for value in np.percentile(values, (tail, 100.0 - tail))
         )
     return _coloc_finalize_axis_range(minimum, maximum)
 
@@ -4245,9 +4115,7 @@ def colocalization_metrics(
         **{name: [value] for name, value in metrics.items()},
         "costes_slope": [float("nan") if costes is None else costes["slope"]],
         "costes_intercept": [float("nan") if costes is None else costes["intercept"]],
-        "costes_pearson_any_channel_below_threshold": [
-            costes_pearson_any_below
-        ],
+        "costes_pearson_any_channel_below_threshold": [costes_pearson_any_below],
         # Compatibility alias retained for existing table consumers.
         "costes_pearson_below": [costes_pearson_any_below],
         "costes_iterations": [0 if costes is None else int(costes["iterations"])],
@@ -7015,53 +6883,6 @@ def _validated_resolved_spatial_ndim(value) -> int:
     return resolved
 
 
-def _deconvolution_inputs(inputs) -> tuple[np.ndarray, np.ndarray]:
-    try:
-        image, psf = list(inputs)[:2]
-    except Exception as exc:
-        raise ValueError("Deconvolution requires two inputs: Image and PSF.") from exc
-    if image is None or psf is None:
-        raise ValueError("Deconvolution requires connected Image and PSF inputs.")
-    return np.asarray(image), np.asarray(psf)
-
-
-def _resolved_deconvolution_spatial_ndim(
-    arr: np.ndarray,
-    spatial_mode: str,
-    resolved_spatial_ndim: int | None,
-) -> int:
-    spatial_ndim = _resolved_spatial_ndim(
-        arr,
-        spatial_mode,
-        resolved_spatial_ndim,
-    )
-    if spatial_ndim not in {2, 3}:
-        raise ValueError("Deconvolution requires 2D YX or 3D ZYX spatial processing.")
-    return spatial_ndim
-
-
-def _deconvolution_psf(
-    psf,
-    spatial_ndim: int,
-    *,
-    normalize_psf: bool,
-) -> np.ndarray:
-    kernel = np.asarray(psf, dtype=np.float32)
-    if kernel.ndim != spatial_ndim:
-        raise ValueError(
-            f"PSF dimensionality ({kernel.ndim}D) must match the resolved "
-            f"spatial dimensionality ({spatial_ndim}D)."
-        )
-    if kernel.size == 0 or any(size <= 0 for size in kernel.shape):
-        raise ValueError("PSF is empty.")
-    kernel = np.nan_to_num(kernel, nan=0.0, posinf=0.0, neginf=0.0)
-    kernel = np.maximum(kernel, 0.0)
-    kernel = _validate_psf_sum(kernel, minimum_valid_sum=1e-12)
-    if bool(normalize_psf):
-        kernel = kernel / np.float32(kernel.sum(dtype=np.float64))
-    return np.ascontiguousarray(kernel.astype(np.float32, copy=False))
-
-
 def _validate_psf_sum(
     psf: np.ndarray,
     *,
@@ -7160,176 +6981,6 @@ def _integer_shift_zero_fill(psf: np.ndarray, shift: tuple[int, ...]) -> np.ndar
             target_slices.append(slice(None))
     shifted[tuple(target_slices)] = psf[tuple(source_slices)]
     return shifted
-
-
-def _deconvolution_observed_block(
-    block: np.ndarray,
-    *,
-    clip_negative_input: bool,
-    preserve_input_scale: bool,
-) -> tuple[np.ndarray, float]:
-    values = np.asarray(block, dtype=np.float32)
-    finite = values[np.isfinite(values)]
-    posinf_value = float(finite.max()) if finite.size else 0.0
-    values = np.nan_to_num(
-        values,
-        nan=0.0,
-        posinf=max(posinf_value, 0.0),
-        neginf=0.0,
-    ).astype(np.float32, copy=False)
-    if bool(clip_negative_input):
-        values = np.maximum(values, 0.0)
-    finite = values[np.isfinite(values)]
-    scale = float(finite.max()) if finite.size else 0.0
-    if not np.isfinite(scale) or scale <= 0.0:
-        return np.zeros_like(values, dtype=np.float32), 1.0
-    if bool(preserve_input_scale):
-        return (values / np.float32(scale)).astype(np.float32, copy=False), scale
-    return values.astype(np.float32, copy=False), 1.0
-
-
-def _deconvolution_output_block(
-    restored: np.ndarray,
-    *,
-    output_scale: float,
-    clip_output_negative: bool,
-) -> np.ndarray:
-    output = np.asarray(restored, dtype=np.float32) * np.float32(output_scale)
-    output = np.nan_to_num(output, nan=0.0, posinf=0.0, neginf=0.0)
-    if bool(clip_output_negative):
-        output = np.maximum(output, 0.0)
-    return output.astype(np.float32, copy=False)
-
-
-def _apply_deconvolution_blocks(
-    arr: np.ndarray,
-    spatial_ndim: int,
-    block_func: Callable[[np.ndarray, Callable[[], None] | None], np.ndarray],
-    *,
-    iterations: int,
-    progress=None,
-    progress_message: str,
-) -> np.ndarray:
-    arr = np.asarray(arr)
-    block_count = _spatial_block_count(arr, spatial_ndim)
-    total = max(block_count * int(iterations), 1)
-    completed = 0
-    if progress is not None:
-        progress.report(0, total, progress_message)
-
-    def iteration_done() -> None:
-        nonlocal completed
-        completed += 1
-        if progress is not None:
-            progress.report(completed, total, progress_message)
-
-    if arr.ndim <= spatial_ndim:
-        if progress is not None:
-            progress.check_cancelled()
-        return np.ascontiguousarray(
-            block_func(arr, iteration_done if progress is not None else None)
-        )
-
-    result = np.empty(arr.shape, dtype=np.float32)
-    leading_shape = arr.shape[: arr.ndim - spatial_ndim]
-    for index in np.ndindex(leading_shape):
-        if progress is not None:
-            progress.check_cancelled()
-        result[index] = block_func(
-            arr[index],
-            iteration_done if progress is not None else None,
-        )
-    return np.ascontiguousarray(result)
-
-
-def _richardson_lucy_native_block(
-    image: np.ndarray,
-    psf: np.ndarray,
-    *,
-    iterations: int,
-    filter_epsilon: float,
-    iteration_done: Callable[[], None] | None = None,
-    check_cancelled: Callable[[], None] | None = None,
-) -> np.ndarray:
-    estimate = np.full(image.shape, 0.5, dtype=np.float32)
-    psf_mirror = np.flip(psf)
-    eps = np.float32(1e-12)
-    filter_epsilon = float(filter_epsilon)
-    for _ in range(int(iterations)):
-        if check_cancelled is not None:
-            check_cancelled()
-        blurred = signal.convolve(estimate, psf, mode="same") + eps
-        if filter_epsilon > 0:
-            relative_blur = np.where(blurred < filter_epsilon, 0.0, image / blurred)
-        else:
-            relative_blur = image / blurred
-        estimate *= signal.convolve(relative_blur, psf_mirror, mode="same")
-        estimate = np.nan_to_num(estimate, nan=0.0, posinf=0.0, neginf=0.0)
-        estimate = np.maximum(estimate, 0.0).astype(np.float32, copy=False)
-        if iteration_done is not None:
-            iteration_done()
-    return estimate.astype(np.float32, copy=False)
-
-
-def _richardson_lucy_tv_native_block(
-    image: np.ndarray,
-    psf: np.ndarray,
-    *,
-    iterations: int,
-    tv_regularization: float,
-    tv_epsilon: float,
-    filter_epsilon: float,
-    denominator_floor: float,
-    iteration_done: Callable[[], None] | None = None,
-    check_cancelled: Callable[[], None] | None = None,
-) -> np.ndarray:
-    estimate = np.full(image.shape, 0.5, dtype=np.float32)
-    psf_mirror = np.flip(psf)
-    eps = np.float32(1e-12)
-    filter_epsilon = float(filter_epsilon)
-    for _ in range(int(iterations)):
-        if check_cancelled is not None:
-            check_cancelled()
-        blurred = signal.convolve(estimate, psf, mode="same") + eps
-        if filter_epsilon > 0:
-            relative_blur = np.where(blurred < filter_epsilon, 0.0, image / blurred)
-        else:
-            relative_blur = image / blurred
-        correction = signal.convolve(relative_blur, psf_mirror, mode="same")
-        if tv_regularization > 0:
-            tv = _tv_divergence(estimate, epsilon=tv_epsilon)
-            denom = np.maximum(
-                1.0 - np.float32(tv_regularization) * tv,
-                np.float32(denominator_floor),
-            )
-            estimate = estimate * correction / denom
-        else:
-            estimate *= correction
-        estimate = np.nan_to_num(estimate, nan=0.0, posinf=0.0, neginf=0.0)
-        estimate = np.maximum(estimate, 0.0).astype(np.float32, copy=False)
-        if iteration_done is not None:
-            iteration_done()
-    return estimate.astype(np.float32, copy=False)
-
-
-def _tv_divergence(values: np.ndarray, *, epsilon: float) -> np.ndarray:
-    gradients = np.gradient(values.astype(np.float32, copy=False))
-    norm = np.sqrt(
-        np.sum(
-            np.stack([gradient * gradient for gradient in gradients], axis=0),
-            axis=0,
-            dtype=np.float32,
-        )
-        + np.float32(epsilon) ** 2
-    )
-    normalized = [gradient / norm for gradient in gradients]
-    divergence = np.zeros(values.shape, dtype=np.float32)
-    for axis, component in enumerate(normalized):
-        divergence += np.gradient(component.astype(np.float32, copy=False), axis=axis)
-    return np.nan_to_num(divergence, nan=0.0, posinf=0.0, neginf=0.0).astype(
-        np.float32,
-        copy=False,
-    )
 
 
 def _estimate_rolling_ball_background(
@@ -13037,11 +12688,7 @@ def _coloc_scatter_plot_image(
     display_span_2 = display_max_2 - display_min_2
     x_pos = int(
         np.clip(
-            round(
-                (threshold_1 - display_min_1)
-                / display_span_1
-                * (output_size - 1)
-            ),
+            round((threshold_1 - display_min_1) / display_span_1 * (output_size - 1)),
             0,
             output_size - 1,
         )
@@ -13052,9 +12699,7 @@ def _coloc_scatter_plot_image(
         - int(
             np.clip(
                 round(
-                    (threshold_2 - display_min_2)
-                    / display_span_2
-                    * (output_size - 1)
+                    (threshold_2 - display_min_2) / display_span_2 * (output_size - 1)
                 ),
                 0,
                 output_size - 1,

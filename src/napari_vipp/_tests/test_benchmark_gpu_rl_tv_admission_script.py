@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from napari_vipp.core.operations import richardson_lucy_tv_deconvolution
 from napari_vipp.core.progress import ProgressContext
+from napari_vipp.core.richardson_lucy import richardson_lucy_tv_deconvolution
 from scripts import benchmark_gpu_rl_tv_admission as evidence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

@@ -32,9 +32,9 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from napari_vipp.core.grid import validate_psf_image_states
 from napari_vipp.core.metadata import AxisMetadata, image_state_from_array
-from napari_vipp.core.operations import (
+from napari_vipp.core.operations import born_wolf_psf
+from napari_vipp.core.richardson_lucy import (
     _tv_divergence,
-    born_wolf_psf,
     richardson_lucy_deconvolution,
     richardson_lucy_tv_deconvolution,
 )

@@ -16,13 +16,13 @@ from napari_vipp.core.compute_policy import estimate_candidate_memory
 from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.gpu import cupy_rl, cupy_rl_tv
 from napari_vipp.core.gpu.cupy_runtime import CuPyRuntime
-from napari_vipp.core.operations import (
+from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.richardson_lucy import (
     _tv_divergence as cpu_tv_divergence,
 )
-from napari_vipp.core.operations import (
+from napari_vipp.core.richardson_lucy import (
     richardson_lucy_tv_deconvolution as cpu_rl_tv,
 )
-from napari_vipp.core.progress import OperationCancelled, ProgressContext
 from scripts.validate_rl_tv_phantoms import (
     calculate_metrics,
     make_phantom_2d,

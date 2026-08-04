@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
-from hashlib import sha256
-
 import numpy as np
 import pytest
 
@@ -11,7 +7,9 @@ from napari_vipp.core.compute import WorkloadDescriptor
 from napari_vipp.core.compute_benchmark_adapter import operation_parity
 from napari_vipp.core.compute_policy import estimate_candidate_memory
 from napari_vipp.core.compute_specs import compute_specs_for
-
+from napari_vipp.core.richardson_lucy_compute import (
+    canonical_richardson_lucy_spec_digest,
+)
 
 _SPEC_DIGESTS = {
     "richardson_lucy_deconvolution": (
@@ -29,13 +27,10 @@ def _accelerator_spec(operation_id: str):
 
 @pytest.mark.parametrize("operation_id", tuple(_SPEC_DIGESTS))
 def test_rl_accelerator_spec_serialization_is_frozen(operation_id: str) -> None:
-    payload = json.dumps(
-        asdict(_accelerator_spec(operation_id)),
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    assert sha256(payload).hexdigest() == _SPEC_DIGESTS[operation_id]
+    assert (
+        canonical_richardson_lucy_spec_digest(_accelerator_spec(operation_id))
+        == _SPEC_DIGESTS[operation_id]
+    )
 
 
 @pytest.mark.parametrize(

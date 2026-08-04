@@ -224,7 +224,7 @@ def run_benchmarks(
     )
     from napari_vipp.core.compute_registry import ComputeRegistry
     from napari_vipp.core.node_execution import PreparedNodeCall
-    from napari_vipp.core.operations import richardson_lucy_tv_deconvolution
+    from napari_vipp.core.richardson_lucy import richardson_lucy_tv_deconvolution
 
     selected_profile = str(profile).strip().lower()
     if selected_profile != "practical":

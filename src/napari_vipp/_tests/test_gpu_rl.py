@@ -16,8 +16,10 @@ from napari_vipp.core.compute_policy import estimate_candidate_memory
 from napari_vipp.core.compute_specs import compute_specs_for
 from napari_vipp.core.gpu import cupy_rl
 from napari_vipp.core.gpu.cupy_runtime import CuPyRuntime
-from napari_vipp.core.operations import richardson_lucy_deconvolution as cpu_rl
 from napari_vipp.core.progress import OperationCancelled, ProgressContext
+from napari_vipp.core.richardson_lucy import (
+    richardson_lucy_deconvolution as cpu_rl,
+)
 
 RL_FLOAT32_NRMSE_LIMIT = 2e-6
 

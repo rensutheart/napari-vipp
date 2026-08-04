@@ -270,13 +270,13 @@ def run_evidence(*, device_index: int = 0) -> dict[str, object]:
         richardson_lucy_tv_deconvolution as gpu_tv,
     )
     from napari_vipp.core.gpu.cupy_runtime import CuPyRuntime
-    from napari_vipp.core.operations import (
+    from napari_vipp.core.progress import ProgressContext
+    from napari_vipp.core.richardson_lucy import (
         richardson_lucy_deconvolution as cpu_rl,
     )
-    from napari_vipp.core.operations import (
+    from napari_vipp.core.richardson_lucy import (
         richardson_lucy_tv_deconvolution as cpu_tv,
     )
-    from napari_vipp.core.progress import ProgressContext
 
     runtime = CuPyRuntime()
     try:
@@ -616,10 +616,10 @@ def _reference_positive_diagnostics(
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Replay the authoritative native loop while counting guard activity."""
 
-    from napari_vipp.core import operations
+    from napari_vipp.core import richardson_lucy as cpu_contract
 
-    kernel = operations._deconvolution_psf(psf, psf.ndim, normalize_psf=True)
-    values, output_scale = operations._deconvolution_observed_block(
+    kernel = cpu_contract._deconvolution_psf(psf, psf.ndim, normalize_psf=True)
+    values, output_scale = cpu_contract._deconvolution_observed_block(
         image,
         clip_negative_input=True,
         preserve_input_scale=True,
@@ -642,7 +642,7 @@ def _reference_positive_diagnostics(
         threshold_iterations += int(threshold_count > 0)
         ratio = np.where(threshold_mask, 0.0, values / blurred)
         correction = scipy_signal.convolve(ratio, mirror, mode="same")
-        divergence = operations._tv_divergence(
+        divergence = cpu_contract._tv_divergence(
             estimate,
             epsilon=POSITIVE_TV_EPSILON,
         )
@@ -671,7 +671,7 @@ def _reference_positive_diagnostics(
             np.nan_to_num(estimate, nan=0.0, posinf=0.0, neginf=0.0),
             0.0,
         ).astype(np.float32, copy=False)
-    output = operations._deconvolution_output_block(
+    output = cpu_contract._deconvolution_output_block(
         estimate,
         output_scale=output_scale,
         clip_output_negative=True,
@@ -698,7 +698,9 @@ def _run_phantom_matrix(
     selected_device: str,
     progress_type: Any,
 ) -> list[dict[str, object]]:
-    from napari_vipp.core.operations import richardson_lucy_tv_deconvolution as cpu_tv
+    from napari_vipp.core.richardson_lucy import (
+        richardson_lucy_tv_deconvolution as cpu_tv,
+    )
     from scripts.validate_rl_tv_phantoms import (
         calculate_metrics,
         make_phantom_2d,
