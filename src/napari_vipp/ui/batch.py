@@ -107,6 +107,7 @@ class CollectionBatchDialog(QDialog):
     """Front door for running a workflow over one or more local collections."""
 
     runRequested = Signal(object)
+    cancelRequested = Signal()
     previewInvalidated = Signal()
 
     def __init__(
@@ -331,6 +332,18 @@ class CollectionBatchDialog(QDialog):
             QSizePolicy.Ignored,
             QSizePolicy.Preferred,
         )
+        self.operation_progress_bar = QProgressBar()
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("Not run")
+        self.operation_progress_bar.setTextVisible(True)
+        self.operation_progress_label = QLabel("No node operation is active.")
+        self.operation_progress_label.setWordWrap(True)
+        self.operation_progress_label.setMinimumWidth(0)
+        self.operation_progress_label.setSizePolicy(
+            QSizePolicy.Ignored,
+            QSizePolicy.Preferred,
+        )
         self.run_result_label = QLabel("")
         self.run_result_label.setWordWrap(True)
         self.run_result_label.setMinimumWidth(0)
@@ -344,6 +357,8 @@ class CollectionBatchDialog(QDialog):
         run_layout = QVBoxLayout(self.run_group)
         run_layout.addWidget(self.run_progress_label)
         run_layout.addWidget(self.run_progress_bar)
+        run_layout.addWidget(self.operation_progress_label)
+        run_layout.addWidget(self.operation_progress_bar)
         run_layout.addWidget(self.run_result_label)
         self.run_group.hide()
 
@@ -351,6 +366,17 @@ class CollectionBatchDialog(QDialog):
         self.run_button = self.button_box.button(QDialogButtonBox.Ok)
         self.run_button.setText("Run batch")
         self.run_button.clicked.connect(self._request_run)
+        self.cancel_run_button = self.button_box.addButton(
+            "Cancel run",
+            QDialogButtonBox.ActionRole,
+        )
+        self.cancel_run_button.setToolTip(
+            "Request cooperative cancellation. The active CPU/GPU operation "
+            "stops at its next safe checkpoint; completed outputs and the final "
+            "manifest are retained."
+        )
+        self.cancel_run_button.clicked.connect(self._request_cancel)
+        self.cancel_run_button.hide()
         self.close_button = self.button_box.button(QDialogButtonBox.Close)
         self.button_box.rejected.connect(self.reject)
 
@@ -984,6 +1010,14 @@ class CollectionBatchDialog(QDialog):
         self.run_progress_label.setText(
             f"Starting full batch run with {total} planned item(s)..."
         )
+        self.operation_progress_bar.setRange(0, 0)
+        self.operation_progress_bar.setFormat("Starting")
+        self.operation_progress_label.setText(
+            "Preparing the first item and its execution plan..."
+        )
+        self.cancel_run_button.setText("Cancel run")
+        self.cancel_run_button.setEnabled(True)
+        self.cancel_run_button.show()
         self.run_result_label.clear()
         for table_row in range(self.preview_table.rowCount()):
             self._set_table_run_status(table_row, "Pending")
@@ -994,6 +1028,11 @@ class CollectionBatchDialog(QDialog):
         self.run_progress_bar.setValue(0)
         self.run_progress_bar.setFormat("Not run")
         self.run_progress_label.setText("No batch run is active.")
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("Not run")
+        self.operation_progress_label.setText("No node operation is active.")
+        self.cancel_run_button.hide()
         self.run_result_label.clear()
         self.run_group.hide()
 
@@ -1028,6 +1067,49 @@ class CollectionBatchDialog(QDialog):
         else:
             self.preview_table.clearSelection()
 
+    def update_operation_progress(
+        self,
+        item_index: int,
+        item_total: int,
+        batch_id: str,
+        node_id: str,
+        operation_id: str,
+        current: int,
+        total: int,
+        message: str = "",
+    ) -> None:
+        """Show nested progress for the currently executing CPU/GPU node."""
+        item_index = max(int(item_index), 1)
+        item_total = max(int(item_total), 0)
+        current = max(int(current), 0)
+        total = max(int(total), 0)
+        if total:
+            current = min(current, total)
+            self.operation_progress_bar.setRange(0, total)
+            self.operation_progress_bar.setValue(current)
+            self.operation_progress_bar.setFormat(f"{current} / {total}")
+        else:
+            self.operation_progress_bar.setRange(0, 0)
+            self.operation_progress_bar.setFormat("Working")
+        operation = str(operation_id).strip() or str(node_id).strip() or "operation"
+        detail = str(message).strip()
+        suffix = f" — {detail}" if detail else ""
+        self.operation_progress_label.setText(
+            f"Item {item_index} of {item_total}: {batch_id}; "
+            f"{operation} ({node_id}){suffix}."
+        )
+
+    def _request_cancel(self) -> None:
+        if not self._run_in_progress or not self.cancel_run_button.isEnabled():
+            return
+        self.cancel_run_button.setEnabled(False)
+        self.cancel_run_button.setText("Cancelling...")
+        self.operation_progress_label.setText(
+            "Cancellation requested; waiting for the active operation's next "
+            "safe checkpoint..."
+        )
+        self.cancelRequested.emit()
+
     def finish_run(
         self,
         result: BatchRunResult,
@@ -1053,9 +1135,29 @@ class CollectionBatchDialog(QDialog):
         self.run_progress_bar.setFormat(f"{total} / {total}")
         summary = result.summary
         self.run_progress_label.setText(
-            f"Batch finished: {summary['completed']} completed, "
-            f"{summary['partial']} partial, {summary['skipped']} skipped, "
-            f"{summary['failed']} failed."
+            (
+                "Batch cancelled: "
+                if bool(getattr(result, "cancelled", False))
+                else "Batch finished: "
+            )
+            + f"{summary['completed']} completed, "
+            + f"{summary['partial']} partial, {summary['skipped']} skipped, "
+            + f"{summary['failed']} failed"
+            + (
+                f", {summary.get('cancelled', 0)} cancelled."
+                if "cancelled" in summary
+                else "."
+            )
+        )
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(1)
+        self.operation_progress_bar.setFormat(
+            "Cancelled" if bool(getattr(result, "cancelled", False)) else "Complete"
+        )
+        self.operation_progress_label.setText(
+            "The batch stopped at a safe cancellation checkpoint."
+            if bool(getattr(result, "cancelled", False))
+            else "All planned item execution has finished."
         )
         details = [
             f"{len(result.saved_paths)} output(s) saved.",
@@ -1077,6 +1179,12 @@ class CollectionBatchDialog(QDialog):
         self.run_progress_label.setText("Batch failed before it could finish.")
         self.run_result_label.setText(str(message))
         self.run_progress_bar.setFormat("Failed")
+        self.operation_progress_bar.setRange(0, 1)
+        self.operation_progress_bar.setValue(0)
+        self.operation_progress_bar.setFormat("Stopped")
+        self.operation_progress_label.setText(
+            "The active operation stopped before the batch could finish."
+        )
         for table_row in range(self.preview_table.rowCount()):
             item = self.preview_table.item(table_row, 4)
             if item is None:
@@ -1090,6 +1198,7 @@ class CollectionBatchDialog(QDialog):
 
     def _finish_run_interaction(self, defer_control_restore: bool) -> None:
         """Consume queued run clicks before restoring setup controls."""
+        self.cancel_run_button.hide()
         if defer_control_restore:
             self._run_control_restore_timer.start()
             return

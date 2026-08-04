@@ -442,6 +442,10 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert not dialog.preview_button.isEnabled()
     assert not dialog.source_group.isEnabled()
     assert dialog.close_button.isEnabled()
+    assert not dialog.cancel_run_button.isHidden()
+    assert dialog.cancel_run_button.isEnabled()
+    assert dialog.operation_progress_bar.minimum() == 0
+    assert dialog.operation_progress_bar.maximum() == 0
     assert dialog.preview_table.item(0, 3).text() == "new"
     assert dialog.preview_table.item(0, 4).text() == "Pending"
 
@@ -449,6 +453,21 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert dialog.run_progress_bar.maximum() == 3
     assert dialog.run_progress_bar.value() == 1
     assert dialog.preview_table.item(1, 4).text() == "Running"
+
+    dialog.update_operation_progress(
+        2,
+        3,
+        result.items[1].batch_id,
+        "gaussian",
+        "gaussian_blur",
+        4,
+        10,
+        "Gaussian planes",
+    )
+    assert dialog.operation_progress_bar.maximum() == 10
+    assert dialog.operation_progress_bar.value() == 4
+    assert "gaussian_blur" in dialog.operation_progress_label.text()
+    assert "Gaussian planes" in dialog.operation_progress_label.text()
 
     dialog.update_run_progress(2, 3, result.items[1].batch_id, "completed")
     assert dialog.run_progress_bar.value() == 2
@@ -481,11 +500,32 @@ def test_batch_dialog_retains_determinate_progress_and_restores_controls(
     assert dialog.source_group.isEnabled()
     assert dialog.preview_item_button.isEnabled()
     assert not dialog.workflow_checkbox.isEnabled()
+    assert dialog.cancel_run_button.isHidden()
 
     assert dialog._preview_batch()
     assert dialog.run_group.isHidden()
     assert dialog.run_progress_bar.format() == "Not run"
     assert dialog.preview_table.item(0, 4).text() == "Not run"
+
+
+def test_batch_dialog_cancel_is_single_shot_and_waits_for_safe_checkpoint(
+    qtbot,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    requested: list[bool] = []
+    dialog.cancelRequested.connect(lambda: requested.append(True))
+    dialog.begin_run(3)
+
+    qtbot.mouseClick(dialog.cancel_run_button, Qt.LeftButton)
+    qtbot.mouseClick(dialog.cancel_run_button, Qt.LeftButton)
+
+    assert requested == [True]
+    assert not dialog.cancel_run_button.isEnabled()
+    assert dialog.cancel_run_button.text() == "Cancelling..."
+    assert "safe checkpoint" in dialog.operation_progress_label.text()
 
 
 def test_batch_dialog_error_restores_exact_control_state(qtbot, tmp_path):
