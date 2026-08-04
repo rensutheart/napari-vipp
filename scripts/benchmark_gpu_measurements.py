@@ -93,7 +93,11 @@ REQUIRED_REJECTION_COVERAGE = frozenset(
         "reject:intensity-dtype",
         "reject:intensity-nonfinite",
         "reject:intensity-shape",
-        "reject:extended-columns",
+        "reject:extended-shape",
+        "reject:extended-axes",
+        "reject:extended-boundary",
+        "reject:extended-ratios",
+        "reject:extended-moments",
     }
 )
 _ROOT_KEYS = frozenset(
@@ -587,10 +591,34 @@ def _rejection_cases() -> tuple[RejectionDefinition, ...]:
             ("reject:intensity-shape",),
         ),
         RejectionDefinition(
-            "reject-extended-columns",
-            "extended-columns",
+            "reject-extended-shape",
+            "extended-shape",
             r"extended measurement options",
-            ("reject:extended-columns",),
+            ("reject:extended-shape",),
+        ),
+        RejectionDefinition(
+            "reject-extended-axes",
+            "extended-axes",
+            r"extended measurement options",
+            ("reject:extended-axes",),
+        ),
+        RejectionDefinition(
+            "reject-extended-boundary",
+            "extended-boundary",
+            r"extended measurement options",
+            ("reject:extended-boundary",),
+        ),
+        RejectionDefinition(
+            "reject-extended-ratios",
+            "extended-ratios",
+            r"extended measurement options",
+            ("reject:extended-ratios",),
+        ),
+        RejectionDefinition(
+            "reject-extended-moments",
+            "extended-moments",
+            r"extended measurement options",
+            ("reject:extended-moments",),
         ),
     )
 
@@ -999,8 +1027,16 @@ def _run_rejections(cp, functions: Mapping[str, object]) -> dict[str, object]:
         elif definition.kind == "intensity-shape":
             operation_id = INTENSITY_OPERATION_ID
             intensity = intensity[:-1]
-        elif definition.kind == "extended-columns":
+        elif definition.kind == "extended-shape":
             parameters["include_shape_descriptors"] = True
+        elif definition.kind == "extended-axes":
+            parameters["include_axis_descriptors"] = True
+        elif definition.kind == "extended-boundary":
+            parameters["include_2d_boundary_descriptors"] = True
+        elif definition.kind == "extended-ratios":
+            parameters["include_derived_shape_ratios"] = True
+        elif definition.kind == "extended-moments":
+            parameters["include_2d_shape_moments"] = True
         else:  # pragma: no cover - private manifest guard
             raise RuntimeError(definition.kind)
         pool = cp.cuda.MemoryPool()
@@ -1164,13 +1200,34 @@ def _run_lifecycle(cp, functions: Mapping[str, object]) -> dict[str, object]:
         cleanup = _drain_pool(cp, pool)
         stages_per_block = 6 if intensity_dtype is not None else 4
         expected_total = 3 * stages_per_block + 1
-        if not updates or updates[0]["current"] != 0 or updates[-1]["current"] != 1:
+        expected_cancel_currents = [0, 1]
+        if [update["current"] for update in updates] != expected_cancel_currents:
             raise EvidenceError(
                 f"Cancellation progress was not staged for {operation_id}."
             )
-        if complete_updates[-1]["current"] != expected_total:
+        if [update["current"] for update in complete_updates] != list(
+            range(expected_total + 1)
+        ) or {update["total"] for update in complete_updates} != {expected_total}:
             raise EvidenceError(
                 f"Completion progress was incomplete for {operation_id}."
+            )
+        messages = "\n".join(str(update["message"]) for update in complete_updates)
+        required_messages = (
+            "preparing",
+            "compacting labels",
+            "measuring morphology",
+            "measuring topology",
+            "packing rows",
+            "assembling packed table",
+        )
+        if intensity_dtype is not None:
+            required_messages += (
+                "measuring intensity ranges and means",
+                "measuring intensity variation",
+            )
+        if any(message not in messages for message in required_messages):
+            raise EvidenceError(
+                f"Progress stage messages were incomplete for {operation_id}."
             )
         results.append(
             {
@@ -1634,6 +1691,12 @@ def _method_record(profile: str, rounds: int) -> dict[str, object]:
         "memory_model_id": MEMORY_MODEL_ID,
         "parity_policy_id": PARITY_POLICY_ID,
         "cancellation": "synchronized-measurement-block-stage-v1",
+        "provider_cache_warmup": (
+            "2d-and-3d-morphology-and-intensity-before-private-pools-v1"
+        ),
+        "provider_cache_scope": (
+            "process-lifetime-cucim-lookups-excluded-from-per-call-private-pool-v1"
+        ),
         "timing_note": (
             "The typed host table is mandatory. Resident packed compute is diagnostic; "
             "selection compares the complete public output boundary."
@@ -1802,8 +1865,10 @@ def _validate_lifecycle(value: object) -> None:
         updates = case.get("complete_updates")
         if (
             not isinstance(updates, list)
-            or not updates
-            or updates[-1].get("current") != case.get("expected_total")
+            or [update.get("current") for update in updates]
+            != list(range(int(case.get("expected_total", -1)) + 1))
+            or {update.get("total") for update in updates}
+            != {case.get("expected_total")}
         ):
             raise EvidenceError("Truthful completion progress is incomplete.")
         _validate_cleanup(case.get("cleanup"))

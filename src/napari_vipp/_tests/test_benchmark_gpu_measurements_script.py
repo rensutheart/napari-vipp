@@ -67,7 +67,10 @@ def _synthetic_document(evidence_script, *, profile: str = "quick"):
                 "operation_id": operation_id,
                 "cancellation_observed": True,
                 "post_cancellation_reuse_parity": True,
-                "complete_updates": [{"current": expected_total}],
+                "complete_updates": [
+                    {"current": current, "total": expected_total}
+                    for current in range(expected_total + 1)
+                ],
                 "expected_total": expected_total,
                 "cleanup": _cleanup(),
             }
@@ -205,7 +208,7 @@ def test_rejection_manifest_names_every_scientific_fallback(evidence_script) -> 
     definitions = evidence_script._rejection_cases()
     coverage = {tag for case in definitions for tag in case.coverage}
 
-    assert len(definitions) == 7
+    assert len(definitions) == 11
     assert evidence_script.REQUIRED_REJECTION_COVERAGE <= coverage
     assert len({case.case_id for case in definitions}) == len(definitions)
 

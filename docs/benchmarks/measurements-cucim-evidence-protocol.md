@@ -29,11 +29,17 @@ memory model, resident packed ABI, and mandatory typed host finalizer.
   scalar types, operation-owned numeric tolerances, and repeat determinism.
 - Explicit rejection of unsupported label/intensity dtypes, non-native label
   byte order, negative labels, non-finite float intensity, mismatched input
-  shapes, and extended measurement columns.
+  shapes, and each of the five extended measurement-column groups.
 - Truthful synchronized stage progress, cancellation for both operations,
   post-cancellation reuse, and zero private-pool residue.
 - Production memory-bound coverage and large confocal-like 3D volumes and 2D
   leading-plane stacks.
+
+cuCIM lazily retains tiny region-properties and Euler lookup allocations. The
+run initializes both spatial ranks before opening any per-call private pool, so
+those process-lifetime provider caches are not misclassified as transactional
+leaks. Every subsequent 2D and 3D private execution pool must still drain to
+zero used and zero reserved bytes.
 
 GPU timing is split into three views:
 
