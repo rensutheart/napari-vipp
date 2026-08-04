@@ -39,6 +39,7 @@ from napari_vipp.core.batch import (
     ExistingFilePolicy,
 )
 from napari_vipp.core.batch_demo import SyntheticBatchDemo
+from napari_vipp.ui import recent_paths
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,8 @@ class CollectionBatchDialog(QDialog):
         ]
 
         self.output_edit = QLineEdit()
+        self.output_edit.setMinimumWidth(0)
+        self.output_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.output_edit.installEventFilter(self)
         self.format_combo = QComboBox()
         self.format_combo.addItems(["ome-tiff", "imagej-tiff", "tiff", "npy"])
@@ -224,12 +227,14 @@ class CollectionBatchDialog(QDialog):
         self.output_button = QPushButton("Folder...")
         self.output_button.clicked.connect(self._browse_output)
         output_row = QWidget()
+        output_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
         output_layout.addWidget(self.output_edit, 1)
         output_layout.addWidget(self.output_button)
 
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.addRow("Output folder", output_row)
         form.addRow("Default image format", self.format_combo)
         form.addRow("Existing files", self.existing_policy_combo)
@@ -1264,18 +1269,32 @@ class CollectionBatchDialog(QDialog):
         path = QFileDialog.getExistingDirectory(
             self,
             "Select batch input folder",
-            self.input_edit.text(),
+            recent_paths.initial_directory(
+                recent_paths.INPUT_DIRECTORY,
+                self.input_edit.text(),
+            ),
         )
         if path:
+            recent_paths.remember_directory(
+                recent_paths.INPUT_DIRECTORY,
+                path,
+            )
             self.input_edit.setText(path)
 
     def _browse_source_input(self, edit: QLineEdit) -> None:
         path = QFileDialog.getExistingDirectory(
             self,
             "Select batch input folder",
-            edit.text(),
+            recent_paths.initial_directory(
+                recent_paths.INPUT_DIRECTORY,
+                edit.text(),
+            ),
         )
         if path:
+            recent_paths.remember_directory(
+                recent_paths.INPUT_DIRECTORY,
+                path,
+            )
             edit.setText(path)
 
     def _browse_output(self) -> None:

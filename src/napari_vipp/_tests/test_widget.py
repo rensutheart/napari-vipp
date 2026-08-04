@@ -152,6 +152,7 @@ from napari_vipp.core.workflow import (
     save_workflow,
     serialize_workflow,
 )
+from napari_vipp.ui import recent_paths
 
 
 class _Event:
@@ -11765,6 +11766,7 @@ def test_load_precedes_save_and_batch_is_separated_from_exports(
     save_index = layout.indexOf(widget.save_workflow_button)
     left_separator_index = layout.indexOf(widget._batch_toolbar_left_separator)
     batch_index = layout.indexOf(widget.batch_button)
+    leave_batch_index = layout.indexOf(widget.leave_batch_button)
     right_separator_index = layout.indexOf(widget._batch_toolbar_right_separator)
     export_index = layout.indexOf(widget.export_button)
     export_ome_index = layout.indexOf(widget.export_ome_button)
@@ -11774,12 +11776,14 @@ def test_load_precedes_save_and_batch_is_separated_from_exports(
         < save_index
         < left_separator_index
         < batch_index
+        < leave_batch_index
         < right_separator_index
         < export_index
         < export_ome_index
     )
     assert isinstance(widget._batch_toolbar_left_separator, QFrame)
     assert isinstance(widget._batch_toolbar_right_separator, QFrame)
+    assert widget.leave_batch_button.isHidden()
 
     widget.batch_navigator.set_session(2, 0, "0001_a", ["a.npy"])
     batch_buttons = [
@@ -12956,6 +12960,165 @@ def test_save_workflow_without_batch_workspace_does_not_prompt(
     widget._save_workflow_dialog()
 
     assert "batch_config" not in json.loads(target.read_text(encoding="utf-8"))
+
+
+def test_workflow_save_directory_is_reused_by_load(qtbot, monkeypatch, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    selected_dir = tmp_path / "saved-workflows"
+    selected_dir.mkdir()
+    target = selected_dir / "remembered.json"
+    starts = []
+
+    def select_save(_parent, _title, start, _filters):
+        starts.append(start)
+        return str(target), ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        select_save,
+    )
+    widget._save_workflow_dialog()
+    assert starts == ["vipp_workflow.json"]
+
+    load_starts = []
+
+    def cancel_load(_parent, _title, start, _filters):
+        load_starts.append(start)
+        return "", ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getOpenFileName",
+        cancel_load,
+    )
+    widget._load_workflow_dialog()
+
+    assert load_starts == [str(selected_dir.resolve())]
+    assert recent_paths.recent_directory(
+        recent_paths.WORKFLOW_DIRECTORY
+    ) == str(selected_dir.resolve())
+
+
+def test_workflow_load_directory_is_reused_by_save(qtbot, monkeypatch, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    selected_dir = tmp_path / "loaded-workflows"
+    selected_dir.mkdir()
+    selected = selected_dir / "selected.json"
+    load_starts = []
+
+    def select_load(_parent, _title, start, _filters):
+        load_starts.append(start)
+        return str(selected), ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getOpenFileName",
+        select_load,
+    )
+    monkeypatch.setattr(widget, "load_workflow_file", lambda path: Path(path))
+    widget._load_workflow_dialog()
+    assert load_starts == [""]
+
+    save_starts = []
+
+    def cancel_save(_parent, _title, start, _filters):
+        save_starts.append(start)
+        return "", ""
+
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        cancel_save,
+    )
+    widget._save_workflow_dialog()
+
+    assert save_starts == [str(selected_dir / "vipp_workflow.json")]
+    assert recent_paths.recent_directory(
+        recent_paths.WORKFLOW_DIRECTORY
+    ) == str(selected_dir.resolve())
+
+
+def test_closing_untouched_batch_workspace_leaves_single_image_mode(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    target = tmp_path / "ordinary-after-batch-cancel.json"
+
+    qtbot.mouseClick(widget.batch_button, Qt.LeftButton)
+    dialog = widget._active_collection_batch_dialog
+    assert dialog is not None
+    assert dialog.isVisible()
+    assert widget.leave_batch_button.isHidden()
+
+    qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
+
+    assert widget._active_collection_batch_dialog is None
+    assert widget._interactive_collection_batch_items == ()
+    assert widget._interactive_collection_source_paths == {}
+    assert widget.batch_navigator.isHidden()
+    assert widget.leave_batch_button.isHidden()
+    monkeypatch.setattr(
+        "napari_vipp._widget.QMessageBox.question",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Cancelling an untouched Batch workspace must not affect saving."
+        ),
+    )
+    monkeypatch.setattr(
+        "napari_vipp._widget.QFileDialog.getSaveFileName",
+        lambda *_args, **_kwargs: (str(target), ""),
+    )
+
+    widget._save_workflow_dialog()
+
+    assert "batch_config" not in json.loads(target.read_text(encoding="utf-8"))
+
+
+def test_leave_batch_mode_discards_configured_workspace(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    dialog, _input_dir, _output_dir = _configure_workflow_attached_batch(
+        widget,
+        tmp_path,
+    )
+
+    assert not widget.leave_batch_button.isHidden()
+    qtbot.mouseClick(dialog.close_button, Qt.LeftButton)
+    assert widget._active_collection_batch_dialog is dialog
+    assert dialog.isHidden()
+    assert not widget.leave_batch_button.isHidden()
+
+    qtbot.mouseClick(widget.leave_batch_button, Qt.LeftButton)
+
+    assert widget._active_collection_batch_dialog is None
+    assert widget._interactive_collection_batch_items == ()
+    assert widget._interactive_collection_source_paths == {}
+    assert widget.batch_navigator.isHidden()
+    assert widget.leave_batch_button.isHidden()
+    assert "single-image mode" in widget.status_label.text()
+
+
+def test_leave_batch_mode_clears_representative_source_overrides(qtbot, tmp_path):
+    widget = VippWidget(_Viewer())
+    qtbot.addWidget(widget)
+    demo = widget._create_collection_batch_demo(tmp_path / "demo")
+    widget._batch_collection_dialog(config_path=demo.config_path)
+
+    assert widget._interactive_collection_batch_items
+    assert widget._interactive_collection_source_paths
+    assert not widget.leave_batch_button.isHidden()
+
+    qtbot.mouseClick(widget.leave_batch_button, Qt.LeftButton)
+
+    assert widget._active_collection_batch_dialog is None
+    assert widget._interactive_collection_batch_items == ()
+    assert widget._interactive_collection_source_paths == {}
+    assert widget._interactive_collection_batch_config is None
+    assert widget.batch_navigator.isHidden()
+    for node in widget.pipeline.nodes.values():
+        if node.operation_id == "input":
+            assert widget._file_source_path_for_node(node) is None
 
 
 def test_save_workflow_can_exclude_active_batch_workspace(

@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QScrollArea
+from qtpy.QtWidgets import QFormLayout, QScrollArea, QSizePolicy
 
 from napari_vipp.core.batch import (
     BatchConfig,
@@ -13,6 +13,7 @@ from napari_vipp.core.batch import (
     BatchSourceConfig,
     BatchStatus,
 )
+from napari_vipp.ui import recent_paths
 from napari_vipp.ui.batch import (
     BatchPreviewResult,
     BatchPreviewRow,
@@ -119,6 +120,68 @@ def test_batch_output_defaults_to_primary_source_output_and_tracks_it(
     updated_primary = tmp_path / "updated-primary"
     dialog._source_rows[0]["folder"].setText(str(updated_primary))
     assert dialog.output_edit.text() == str(updated_primary / "output")
+
+
+def test_batch_output_path_expands_with_dialog(qtbot, tmp_path):
+    result = _preview_result(tmp_path)
+    dialog = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(dialog)
+    dialog.resize(640, 720)
+    dialog.show()
+    qtbot.waitUntil(dialog.isVisible)
+    qtbot.waitUntil(lambda: dialog.output_edit.width() > 0)
+
+    assert dialog.output_edit.sizePolicy().horizontalPolicy() == (
+        QSizePolicy.Expanding
+    )
+    output_row = dialog.output_edit.parentWidget()
+    assert output_row.sizePolicy().horizontalPolicy() == QSizePolicy.Expanding
+    content_layout = dialog.content_widget.layout()
+    form = next(
+        item.layout()
+        for index in range(content_layout.count())
+        if isinstance((item := content_layout.itemAt(index)).layout(), QFormLayout)
+    )
+    assert isinstance(form, QFormLayout)
+    assert form.fieldGrowthPolicy() == QFormLayout.AllNonFixedFieldsGrow
+
+    compact_width = dialog.output_edit.width()
+    dialog.resize(840, 720)
+    qtbot.waitUntil(lambda: dialog.output_edit.width() >= compact_width + 150)
+
+    assert dialog.output_edit.width() >= int(dialog.input_edit.width() * 0.65)
+
+
+def test_batch_input_folder_reuses_recent_selection_on_empty_fields(
+    qtbot,
+    monkeypatch,
+    tmp_path,
+):
+    result = _preview_result(tmp_path)
+    selected = tmp_path / "recent-input"
+    selected.mkdir()
+    starts = []
+    selections = iter((str(selected), ""))
+
+    def choose_directory(_parent, _title, start):
+        starts.append(start)
+        return next(selections)
+
+    monkeypatch.setattr(
+        "napari_vipp.ui.batch.QFileDialog.getExistingDirectory",
+        choose_directory,
+    )
+    first = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(first)
+    first._browse_source_input(first.input_edit)
+    second = CollectionBatchDialog(actions=_actions(result, []))
+    qtbot.addWidget(second)
+    second._browse_source_input(second.input_edit)
+
+    assert starts == ["", str(selected.resolve())]
+    assert recent_paths.recent_directory(recent_paths.INPUT_DIRECTORY) == str(
+        selected.resolve()
+    )
 
 
 def test_batch_output_suggestion_stops_tracking_after_user_acknowledges(
