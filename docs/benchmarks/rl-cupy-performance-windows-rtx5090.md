@@ -1,6 +1,6 @@
 # CuPy Richardson-Lucy large-stack performance
 
-- Generated: `2026-07-29T21:36:00.383807+00:00`
+- Generated: `2026-08-04T18:22:50.923912+00:00`
 - Device: `NVIDIA GeForce RTX 5090`
 - Host processor: `Intel64 Family 6 Model 165 Stepping 3, GenuineIntel`
 - Iterations: `25`
@@ -17,9 +17,9 @@ before the observed screening winner was reported.
 
 | Workload | Voxels | CPU median | GPU end-to-end | GPU resident | Transfer | Speedup | Screen winner |
 |---|---:|---:|---:|---:|---:|---:|:---|
-| Private real-acquisition single-channel ZYX volume | 8,507,700 | 24.853 s | 0.445 s | 0.388 s | 0.036 s | 55.88x | GPU-CuPy |
-| Medium 3D shape stress (synthetic) | 16,777,216 | 35.779 s | 0.465 s | 0.401 s | 0.032 s | 77.96x | GPU-CuPy |
-| Large 3D shape stress (synthetic) | 67,108,864 | 134.306 s | 1.478 s | 1.195 s | 0.170 s | 90.81x | GPU-CuPy |
+| Private real-acquisition single-channel ZYX volume | 8,507,700 | 24.907 s | 0.397 s | 0.360 s | 0.018 s | 62.79x | GPU-CuPy |
+| Medium 3D shape stress (synthetic) | 16,777,216 | 35.261 s | 0.463 s | 0.379 s | 0.033 s | 76.22x | GPU-CuPy |
+| Large 3D shape stress (synthetic) | 67,108,864 | 136.628 s | 1.548 s | 1.214 s | 0.199 s | 88.26x | GPU-CuPy |
 
 ## Interpretation
 

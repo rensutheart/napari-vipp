@@ -313,6 +313,7 @@ def test_sigma_pipeline_executes_through_the_batch_image_path(tmp_path: Path) ->
         "completed": 1,
         "partial": 0,
         "skipped": 0,
+        "cancelled": 0,
         "failed": 0,
     }
     assert len(result.saved_paths) == 1

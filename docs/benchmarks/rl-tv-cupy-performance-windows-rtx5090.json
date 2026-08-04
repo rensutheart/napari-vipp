@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-07-29T21:43:55.774255+00:00",
+  "created_utc": "2026-08-04T18:31:02.294221+00:00",
   "environment": {
     "device_class": "nvidia-cuda",
     "device_id": "cuda:0",
@@ -95,8 +95,9 @@
       "benchmark_record_digest": null,
       "candidates": [
         {
+          "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 34.96090359991649,
+          "cold_seconds": 36.11059900001419,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -113,18 +114,20 @@
           "synchronized": false,
           "timing_scope": "implementation-only",
           "transfers_included": false,
+          "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            34.58494989993051,
-            34.83043169989833,
-            35.00890840005013
+            35.74698719999287,
+            35.82397559998208,
+            35.42704969999613
           ],
           "warm_transfer_seconds": []
         },
         {
-          "cold_resident_seconds": 0.6272828000073787,
-          "cold_seconds": 0.6732162000262178,
-          "cold_transfer_seconds": 0.02371919999131933,
+          "cold_host_materialization_seconds": 0.0,
+          "cold_resident_seconds": 0.6456558999961999,
+          "cold_seconds": 0.7110372999959509,
+          "cold_transfer_seconds": 0.024859500001184642,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-tv-cupy-f32-v1",
@@ -133,27 +136,32 @@
           "paired_speedup_lower_confidence_bound": null,
           "paired_speedup_median": null,
           "parity_passed": true,
-          "peak_memory_bytes": 1002438656,
-          "peak_out_of_pool_bytes": 18462720,
+          "peak_memory_bytes": 1004535808,
+          "peak_out_of_pool_bytes": 20559872,
           "peak_runtime_live_bytes": 68097024,
           "peak_runtime_reserved_bytes": 983975936,
           "synchronized": true,
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
+          "warm_host_materialization_seconds": [
+            0.0,
+            0.0,
+            0.0
+          ],
           "warm_resident_seconds": [
-            0.3582441001199186,
-            0.5595177000795957,
-            0.4607858999806922
+            0.37868660000822274,
+            0.564887099993939,
+            0.5438779999967664
           ],
           "warm_seconds": [
-            0.4085540001105983,
-            0.6046473000606056,
-            0.5292302999878302
+            0.41387240000767633,
+            0.6123117999959504,
+            0.5925361999979941
           ],
           "warm_transfer_seconds": [
-            0.014497299998765811,
-            0.024495699995895848,
-            0.025005500006955117
+            0.01579420000052778,
+            0.025725199997395976,
+            0.02670790000411216
           ]
         }
       ],
@@ -167,7 +175,17 @@
         "invocation_count": 5,
         "terminal_snapshots": [
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
+            "device_id": "cuda:0",
+            "device_total_bytes": 34190458880,
+            "out_of_pool_bytes": 2097152,
+            "runtime_id": "cuda-cupy",
+            "runtime_live_bytes": 0,
+            "runtime_reserved_bytes": 0,
+            "topology": "discrete"
+          },
+          {
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -177,7 +195,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -187,7 +205,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -197,17 +215,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
-            "device_id": "cuda:0",
-            "device_total_bytes": 34190458880,
-            "out_of_pool_bytes": 0,
-            "runtime_id": "cuda-cupy",
-            "runtime_live_bytes": 0,
-            "runtime_reserved_bytes": 0,
-            "topology": "discrete"
-          },
-          {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -247,7 +255,7 @@
         "device_index": 0,
         "device_total_bytes": 34190458880,
         "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 16509255680,
+        "host_available_bytes": 17479790592,
         "input_bytes": 34065396,
         "required_host_bytes": 4294967296
       },
@@ -286,18 +294,18 @@
         }
       },
       "summary": {
-        "absolute_median_saving_seconds": 34.3012013999105,
-        "cpu_median_seconds": 34.83043169989833,
-        "gpu_end_to_end_median_seconds": 0.5292302999878302,
-        "gpu_resident_median_seconds": 0.4607858999806922,
-        "gpu_transfer_median_seconds": 0.024495699995895848,
-        "paired_speedup_median": 66.15061231538552,
+        "absolute_median_saving_seconds": 35.15445099999488,
+        "cpu_median_seconds": 35.74698719999287,
+        "gpu_end_to_end_median_seconds": 0.5925361999979941,
+        "gpu_resident_median_seconds": 0.5438779999967664,
+        "gpu_transfer_median_seconds": 0.025725199997395976,
+        "paired_speedup_median": 59.78883602405399,
         "paired_speedups": [
-          84.65208978633946,
-          57.60454350231477,
-          66.15061231538552
+          86.3720006439904,
+          58.50610032375499,
+          59.78883602405399
         ],
-        "peak_observed_device_bytes": 1002438656,
+        "peak_observed_device_bytes": 1004535808,
         "screening_choice": "GPU-CuPy"
       },
       "voxel_count": 8507700,
@@ -308,8 +316,9 @@
       "benchmark_record_digest": "a7f694e8aad9605e1c0a8ac4456047f8240adaffe751306c2756d47a6c7d3f34",
       "candidates": [
         {
+          "cold_host_materialization_seconds": null,
           "cold_resident_seconds": null,
-          "cold_seconds": 55.422861800005194,
+          "cold_seconds": 56.953223199987406,
           "cold_transfer_seconds": null,
           "error": "",
           "failure_kind": "",
@@ -326,18 +335,20 @@
           "synchronized": false,
           "timing_scope": "implementation-only",
           "transfers_included": false,
+          "warm_host_materialization_seconds": [],
           "warm_resident_seconds": [],
           "warm_seconds": [
-            55.526696200016886,
-            55.630162500194274,
-            55.22100959994714
+            56.70964320000712,
+            57.066752400009136,
+            56.884712100003526
           ],
           "warm_transfer_seconds": []
         },
         {
-          "cold_resident_seconds": 0.6901231999217998,
-          "cold_seconds": 0.800676599930739,
-          "cold_transfer_seconds": 0.0422326999832876,
+          "cold_host_materialization_seconds": 0.0,
+          "cold_resident_seconds": 0.5858713999950851,
+          "cold_seconds": 0.7106462999909127,
+          "cold_transfer_seconds": 0.08490840000013122,
           "error": "",
           "failure_kind": "",
           "implementation_id": "rl-tv-cupy-f32-v1",
@@ -353,20 +364,25 @@
           "synchronized": true,
           "timing_scope": "synchronized-end-to-end-v1",
           "transfers_included": true,
+          "warm_host_materialization_seconds": [
+            0.0,
+            0.0,
+            0.0
+          ],
           "warm_resident_seconds": [
-            0.44492979999631643,
-            0.6274646999954712,
-            0.4458790000353474
+            0.4535592999891378,
+            0.6925616000044101,
+            0.5046763000100327
           ],
           "warm_seconds": [
-            0.5111432999547105,
-            0.7062467999930959,
-            0.5075036000343971
+            0.5206321999867214,
+            0.8046527000042261,
+            0.5699743000077433
           ],
           "warm_transfer_seconds": [
-            0.02521970000816509,
-            0.0440511999768205,
-            0.028006399981677532
+            0.02886499999658554,
+            0.07275569999910658,
+            0.03054629999678582
           ]
         }
       ],
@@ -380,7 +396,7 @@
         "invocation_count": 5,
         "terminal_snapshots": [
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -390,7 +406,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -400,7 +416,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -410,7 +426,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -420,7 +436,7 @@
             "topology": "discrete"
           },
           {
-            "device_free_bytes": 32484884480,
+            "device_free_bytes": 32482787328,
             "device_id": "cuda:0",
             "device_total_bytes": 34190458880,
             "out_of_pool_bytes": 0,
@@ -456,11 +472,11 @@
       },
       "preflight": {
         "admitted_device_bytes": 3357718455,
-        "device_free_bytes": 32484884480,
+        "device_free_bytes": 32482787328,
         "device_index": 0,
         "device_total_bytes": 34190458880,
-        "device_usable_after_reserve_bytes": 29065838592,
-        "host_available_bytes": 16483565568,
+        "device_usable_after_reserve_bytes": 29063741440,
+        "host_available_bytes": 17295515648,
         "input_bytes": 67166524,
         "required_host_bytes": 4294967296
       },
@@ -486,16 +502,16 @@
         "generator": "numpy-pcg64-large-rl-tv-v1"
       },
       "summary": {
-        "absolute_median_saving_seconds": 55.015552900062175,
-        "cpu_median_seconds": 55.526696200016886,
-        "gpu_end_to_end_median_seconds": 0.5111432999547105,
-        "gpu_resident_median_seconds": 0.4458790000353474,
-        "gpu_transfer_median_seconds": 0.028006399981677532,
-        "paired_speedup_median": 108.6323467507777,
+        "absolute_median_saving_seconds": 56.31473779999578,
+        "cpu_median_seconds": 56.884712100003526,
+        "gpu_end_to_end_median_seconds": 0.5699743000077433,
+        "gpu_resident_median_seconds": 0.5046763000100327,
+        "gpu_transfer_median_seconds": 0.03054629999678582,
+        "paired_speedup_median": 99.80224038036579,
         "paired_speedups": [
-          108.6323467507777,
-          78.76872858147902,
-          108.80909927772812
+          108.92457900501253,
+          70.92097298587257,
+          99.80224038036579
         ],
         "peak_observed_device_bytes": 2011168768,
         "screening_choice": "GPU-CuPy"
@@ -513,7 +529,7 @@
     },
     {
       "path": "src/napari_vipp/core/compute.py",
-      "sha256": "3c9a677904973bd0e8df5a76204d08ec6a8bf85ad96f51eeae891b2e657b7f66"
+      "sha256": "fb868d464399f993bb2799f2f6d34f9a8d9fc0a214d309e18707f0acd312b0da"
     },
     {
       "path": "src/napari_vipp/core/accelerator_lease.py",
