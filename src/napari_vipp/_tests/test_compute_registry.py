@@ -737,12 +737,37 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
             events.append("rolling-ball")
             return values.copy()
 
+    class Measure:
+        @staticmethod
+        def regionprops_table(_labels, **_kwargs):
+            events.append("regionprops")
+            return {
+                "label": np.asarray([1, 2]),
+                "num_pixels": np.asarray([4, 2]),
+                "bbox-0": np.asarray([1, 2]),
+                "bbox-1": np.asarray([1, 4]),
+                "bbox-2": np.asarray([3, 4]),
+                "bbox-3": np.asarray([3, 5]),
+                "centroid-0": np.asarray([1.5, 2.5]),
+                "centroid-1": np.asarray([1.5, 4.0]),
+            }
+
+    class MeasurementKernels:
+        @staticmethod
+        def regionprops_euler(_labels, **_kwargs):
+            events.append("euler")
+            return np.asarray([1, 1])
+
     modules = {
         "cupy": Cupy(),
         "cupyx.scipy.ndimage": Ndimage(),
         "cupyx.scipy.signal": Signal(),
         "cucim": Cucim(),
         "cucim.skimage.restoration": Restoration(),
+        "cucim.skimage.measure": Measure(),
+        "cucim.skimage.measure._regionprops_gpu_misc_kernels": (
+            MeasurementKernels()
+        ),
     }
     monkeypatch.setattr(
         registry_module.importlib,
@@ -769,10 +794,10 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
         "cucim_distribution_version": "26.6.0",
         "cucim_artifact_sha256": "a" * 64,
     }
-    assert events.count("pool-created") == 2
-    assert events.count("allocator-enter") == 2
-    assert events.count("allocator-exit") == 2
-    assert events.count("free") == 2
+    assert events.count("pool-created") == 3
+    assert events.count("allocator-enter") == 3
+    assert events.count("allocator-exit") == 3
+    assert events.count("free") == 3
     assert lease_calls == [
         ("cuda-cupy", "cuda:0"),
         ("cuda-cupy", "cuda:0"),
@@ -782,6 +807,8 @@ def test_builtin_library_probes_use_private_pools_and_expose_provenance(
     assert "label" in events
     assert "convolve" in events
     assert "rolling-ball" in events
+    assert "regionprops" in events
+    assert "euler" in events
 
 
 @pytest.mark.parametrize("library_id", ("cupyx", "cucim"))
@@ -893,12 +920,35 @@ def test_builtin_gpu_library_probe_waits_for_process_device_lease(
         def rolling_ball(values, **_kwargs):
             return values.copy()
 
+    class Measure:
+        @staticmethod
+        def regionprops_table(_labels, **_kwargs):
+            return {
+                "label": np.asarray([1, 2]),
+                "num_pixels": np.asarray([4, 2]),
+                "bbox-0": np.asarray([1, 2]),
+                "bbox-1": np.asarray([1, 4]),
+                "bbox-2": np.asarray([3, 4]),
+                "bbox-3": np.asarray([3, 5]),
+                "centroid-0": np.asarray([1.5, 2.5]),
+                "centroid-1": np.asarray([1.5, 4.0]),
+            }
+
+    class MeasurementKernels:
+        @staticmethod
+        def regionprops_euler(_labels, **_kwargs):
+            return np.asarray([1, 1])
+
     modules = {
         "cupy": Cupy(),
         "cupyx.scipy.ndimage": Ndimage(),
         "cupyx.scipy.signal": Signal(),
         "cucim": Cucim(),
         "cucim.skimage.restoration": Restoration(),
+        "cucim.skimage.measure": Measure(),
+        "cucim.skimage.measure._regionprops_gpu_misc_kernels": (
+            MeasurementKernels()
+        ),
     }
     monkeypatch.setattr(
         registry_module.importlib,

@@ -8,6 +8,7 @@ callable is resolved only after an execution request explicitly asks for it.
 
 from __future__ import annotations
 
+import gc
 import importlib
 import importlib.metadata
 import json
@@ -33,6 +34,13 @@ from napari_vipp.core.compute_specs import (
     accelerator_compute_specs,
     validate_compute_specs,
 )
+
+_CUCIM_MEASUREMENT_CACHE_LOCK = threading.RLock()
+_CUCIM_MEASUREMENT_CACHE_POOLS: dict[
+    tuple[int, str],
+    tuple[object, object, object, object],
+] = {}
+_CUCIM_MEASUREMENT_CACHE_MAX_BYTES = 1 * 1024**2
 
 
 def _required_text(value: object, field_name: str) -> str:
@@ -1235,41 +1243,214 @@ def _probe_cucim_skimage_library(
     cupy = importlib.import_module("cupy")
     device_id = _cupy_current_device_id(cupy)
     with accelerator_lease("cuda-cupy", device_id):
+        try:
+            measure, regionprops_euler = _load_and_warm_cucim_measurement_caches(
+                cupy,
+                device_id=device_id,
+            )
+        except (ImportError, AttributeError, RuntimeError) as exc:
+            return ImplementationLibraryProbeResult(
+                "cucim",
+                False,
+                version=str(getattr(cucim, "__version__", "")),
+                reason_code="cucim_measurements_api_missing",
+                message=(
+                    "cuCIM could not initialize the reviewed regionprops_table "
+                    "and private robust Euler APIs required by GPU Measurements: "
+                    f"{exc}"
+                ),
+                metadata=metadata,
+            )
         return _exercise_cucim_skimage_library(
             cupy,
             cucim,
             restoration,
+            measure,
+            regionprops_euler,
             metadata,
         )
+
+
+def _load_and_warm_cucim_measurement_caches(
+    cupy: object,
+    *,
+    device_id: str,
+) -> tuple[object, object]:
+    """Prime cuCIM's process-lifetime 2D/3D measurement device caches.
+
+    cuCIM 26.06.00 retains tiny region-property and robust-Euler lookup arrays
+    from the allocator active on first use.  If first use occurs inside a VIPP
+    transaction, that private pool can never prove zero live allocations.  A
+    separate retained pool makes the library-owned lifetime explicit without
+    touching CuPy's external default pool; subsequent transaction pools drain
+    completely.  The bounded cache is keyed by exact modules, API functions,
+    and device.
+    """
+
+    key = (id(cupy), str(device_id))
+    with _CUCIM_MEASUREMENT_CACHE_LOCK:
+        existing = _CUCIM_MEASUREMENT_CACHE_POOLS.get(key)
+        if existing is not None:
+            existing_cupy, measure, regionprops_euler, _pool = existing
+            if existing_cupy is cupy:
+                return measure, regionprops_euler
+        pool = cupy.cuda.MemoryPool()
+        labels = properties = euler = None
+        try:
+            with cupy.cuda.using_allocator(pool.malloc):
+                measure = importlib.import_module("cucim.skimage.measure")
+                measurement_kernels = importlib.import_module(
+                    "cucim.skimage.measure._regionprops_gpu_misc_kernels"
+                )
+                regionprops_table = getattr(measure, "regionprops_table", None)
+                regionprops_euler = getattr(
+                    measurement_kernels,
+                    "regionprops_euler",
+                    None,
+                )
+                if not callable(regionprops_table) or not callable(
+                    regionprops_euler
+                ):
+                    raise AttributeError(
+                        "required measurement callables are unavailable"
+                    )
+                for host_labels in (
+                    _cucim_probe_labels_2d(),
+                    _cucim_probe_labels_3d(),
+                ):
+                    labels = cupy.asarray(host_labels)
+                    properties = regionprops_table(
+                        labels,
+                        properties=("label", "num_pixels", "bbox", "centroid"),
+                        batch_processing=True,
+                    )
+                    euler = regionprops_euler(
+                        labels,
+                        connectivity=None,
+                        max_label=2,
+                        robust=True,
+                    )
+                    float(cupy.asarray(properties["num_pixels"]).sum().item())
+                    float(cupy.asarray(euler).sum().item())
+                    cupy.cuda.get_current_stream().synchronize()
+                    labels = properties = euler = None
+            gc.collect()
+            pool.free_all_blocks()
+            used = int(pool.used_bytes())
+            reserved = int(pool.total_bytes())
+            if used > _CUCIM_MEASUREMENT_CACHE_MAX_BYTES or reserved > (
+                _CUCIM_MEASUREMENT_CACHE_MAX_BYTES
+            ):
+                raise RuntimeError(
+                    "cuCIM retained an unexpectedly large measurement cache "
+                    f"(used={used}, reserved={reserved})."
+                )
+            _CUCIM_MEASUREMENT_CACHE_POOLS[key] = (
+                cupy,
+                measure,
+                regionprops_euler,
+                pool,
+            )
+            return measure, regionprops_euler
+        except BaseException:
+            labels = properties = euler = None
+            gc.collect()
+            try:
+                pool.free_all_blocks()
+            except BaseException:
+                pass
+            raise
+
+
+def _cucim_probe_labels_2d() -> np.ndarray:
+    labels = np.zeros((8, 8), dtype=np.int32)
+    labels[1:3, 1:3] = 1
+    labels[5:7, 4:7] = 2
+    return labels
+
+
+def _cucim_probe_labels_3d() -> np.ndarray:
+    labels = np.zeros((5, 8, 8), dtype=np.int32)
+    labels[1:3, 1:3, 1:3] = 1
+    labels[2:5, 5:7, 4:7] = 2
+    return labels
 
 
 def _exercise_cucim_skimage_library(
     cupy: object,
     cucim: object,
     restoration: object,
+    measure: object,
+    regionprops_euler: object,
     metadata: tuple[tuple[str, str], ...],
 ) -> ImplementationLibraryProbeResult:
     pool = cupy.cuda.MemoryPool()
-    values = background = None
+    values = background = labels = properties = euler = None
     probe_error: BaseException | None = None
     try:
         with cupy.cuda.using_allocator(pool.malloc):
             values = cupy.arange(81, dtype=cupy.float32).reshape(9, 9)
             background = restoration.rolling_ball(values, radius=2)
             float(background.sum().item())
+            labels = cupy.asarray(
+                np.asarray(
+                    [
+                        [0, 0, 0, 0, 0],
+                        [0, 1, 1, 0, 0],
+                        [0, 1, 1, 0, 2],
+                        [0, 0, 0, 0, 2],
+                        [0, 0, 0, 0, 0],
+                    ],
+                    dtype=np.int32,
+                )
+            )
+            properties = measure.regionprops_table(
+                labels,
+                properties=("label", "num_pixels", "bbox", "centroid"),
+                batch_processing=True,
+            )
+            required = {
+                "label",
+                "num_pixels",
+                "bbox-0",
+                "bbox-1",
+                "bbox-2",
+                "bbox-3",
+                "centroid-0",
+                "centroid-1",
+            }
+            if not required.issubset(properties):
+                raise RuntimeError(
+                    "cuCIM measurement probe omitted required region properties."
+                )
+            euler = regionprops_euler(
+                labels,
+                connectivity=None,
+                max_label=2,
+                robust=True,
+            )
+            if tuple(int(size) for size in cupy.asarray(euler).shape) != (2,):
+                raise RuntimeError(
+                    "cuCIM measurement probe returned malformed Euler values."
+                )
+            float(cupy.asarray(properties["num_pixels"]).sum().item())
+            float(cupy.asarray(euler).sum().item())
             cupy.cuda.get_current_stream().synchronize()
         return ImplementationLibraryProbeResult(
             "cucim",
             True,
             version=str(getattr(cucim, "__version__", "")),
-            message="cuCIM completed a synchronized rolling-ball probe.",
+            message=(
+                "cuCIM completed synchronized rolling-ball, region-properties, "
+                "and robust-Euler probes."
+            ),
             metadata=metadata,
         )
     except BaseException as exc:
         probe_error = exc
         raise
     finally:
-        values = background = None
+        values = background = labels = properties = euler = None
         _drain_private_probe_pool(
             cupy,
             pool,
