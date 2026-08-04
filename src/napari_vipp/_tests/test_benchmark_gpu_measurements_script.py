@@ -13,6 +13,9 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "benchmark_gpu_measurements.py"
+ARTIFACT_PATH = (
+    PROJECT_ROOT / "docs" / "benchmarks" / "measurements-cucim-windows-rtx5090.json"
+)
 
 
 @pytest.fixture(scope="module")
@@ -418,6 +421,29 @@ def test_synthetic_round_trip_validation_and_markdown_are_cuda_safe(
     )
     assert completed.returncode == 0, completed.stderr
     assert "evidence is current" in completed.stdout
+
+
+def test_checked_in_full_artifact_is_current_and_complete(evidence_script) -> None:
+    assert evidence_script.validate_existing(ARTIFACT_PATH) == ARTIFACT_PATH.resolve()
+    raw = ARTIFACT_PATH.read_text(encoding="utf-8")
+    document = json.loads(raw)
+
+    assert raw == evidence_script._canonical_json(document)
+    assert document["profile"] == "full"
+    assert document["admission"]["case_count"] == 11
+    assert document["rejections"]["case_count"] == 11
+    assert document["lifecycle"]["case_count"] == 2
+    assert document["performance"]["case_count"] == 14
+    assert document["performance"]["all_memory_estimates_cover_observed"] is True
+    confocal = next(
+        result
+        for result in document["performance"]["results"]
+        if result["case_id"] == "confocal-volume-64x512x512-intensity-uint16"
+    )
+    assert confocal["element_count"] == 16_777_216
+    assert confocal["intensity_dtype"] == "uint16"
+    assert confocal["parity"]["passed"] is True
+    assert confocal["memory"]["estimate_with_uncertainty_covers_observed"] is True
 
 
 @pytest.mark.parametrize(
