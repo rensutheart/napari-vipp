@@ -47,7 +47,9 @@ _RESERVED_FUNCTION_NAMES = {
     "_build_export_provenance",
     "_build_failure_provenance",
     "_build_publication_failure_provenance",
+    "_atomic_publish_artifacts",
     "_cli_compute_request",
+    "_cleanup_publication_path",
     "_coerce_source_payload",
     "_dataset_metadata",
     "_effective_execution_fingerprint",
@@ -59,6 +61,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_node_preference_overrides",
     "_progress_printer",
     "_provenance_sidecar_path",
+    "_publish_output_set",
     "_raise_if_cancelled",
     "_report_generated_progress",
     "_source_provenance_records",
@@ -66,6 +69,7 @@ _RESERVED_FUNCTION_NAMES = {
     "_save_cli_failure_provenance",
     "_table_output_path",
     "_workflow_document",
+    "_write_output_uncommitted",
     "argparse",
     "batch_process",
     "is_table_data",
@@ -83,6 +87,7 @@ _RESERVED_FUNCTION_NAMES = {
     "OperationCancelled",
     "PipelineRunRequest",
     "atomic_write_json",
+    "atomic_replace",
     "canonical_digest",
     "count",
     "deserialize_workflow",
@@ -92,7 +97,9 @@ _RESERVED_FUNCTION_NAMES = {
     "serialize_execution_provenance",
     "scientific_workflow_hash",
     "signal",
+    "shutil",
     "sys",
+    "tempfile",
     "threading",
     "warnings",
 }
@@ -399,7 +406,9 @@ def _build_imports() -> str:
             "import hashlib",
             "import json",
             "import signal",
+            "import shutil",
             "import sys",
+            "import tempfile",
             "import threading",
             "import warnings",
             "from collections.abc import Mapping",
@@ -407,7 +416,7 @@ def _build_imports() -> str:
             "from pathlib import Path",
             "",
             "from napari_vipp import __version__ as VIPP_VERSION",
-            "from napari_vipp.core.atomic_io import atomic_write_json",
+            "from napari_vipp.core.atomic_io import atomic_replace, atomic_write_json",
             "from napari_vipp.core.batch import scientific_workflow_hash",
             "from napari_vipp.core.batch_setup import pipeline_from_workflow",
             "from napari_vipp.core.compute import ComputeRequest, canonical_digest",
@@ -1109,6 +1118,12 @@ def _save_cli_failure_provenance(output, output_is_dir, exc, enabled):
         if output_is_dir
         else Path(output)
     )
+    if _provenance_sidecar_path(failure_target).exists():
+        # Never replace exact provenance belonging to a pre-existing public
+        # output with evidence from a failed retry/publication attempt.
+        failure_target = failure_target.with_name(
+            f"{failure_target.name}.vipp-run-failure"
+        )
     try:
         return save_provenance_sidecar(failure_target, failure_provenance)
     except Exception as sidecar_error:
@@ -1312,8 +1327,27 @@ def save_image(
     image_state=None,
     provenance=None,
     output_node_id=None,
+    cancel_event=None,
 ):
-    """Write an output and optionally add its atomic provenance sidecar."""
+    """Transactionally publish one output and its exact provenance sidecar."""
+    saved_paths = _publish_output_set(
+        ((output_node_id, data, path, image_state),),
+        results=provenance,
+        write_provenance=provenance is not None,
+        cancel_event=cancel_event,
+    )
+    return saved_paths[0]
+
+
+def _write_output_uncommitted(
+    data,
+    path,
+    *,
+    image_state=None,
+    provenance=None,
+    output_node_id=None,
+):
+    """Write only inside a private publication directory."""
     try:
         if is_table_data(data):
             saved_path = _table_output_path(path)
@@ -1345,6 +1379,209 @@ def save_image(
             pass
         raise
     return saved_path
+
+
+def _cleanup_publication_path(path):
+    path = Path(path)
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _atomic_publish_artifacts(artifacts, stage_root, cancel_event):
+    """Promote one complete output set, rolling back caught failures."""
+    backup_root = Path(stage_root) / "backups"
+    backup_root.mkdir()
+    backups = []
+    promoted = []
+    try:
+        for index, (_staged, target) in enumerate(artifacts):
+            _raise_if_cancelled(
+                cancel_event,
+                "Output publication cancelled before commit.",
+            )
+            target = Path(target)
+            if target.exists() or target.is_symlink():
+                backup = backup_root / f"{index:04d}"
+                atomic_replace(target, backup)
+                backups.append((backup, target))
+        for staged, target in artifacts:
+            _raise_if_cancelled(
+                cancel_event,
+                "Output publication cancelled during commit.",
+            )
+            target = Path(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_replace(Path(staged), target)
+            promoted.append(target)
+        _raise_if_cancelled(
+            cancel_event,
+            "Output publication cancelled during commit.",
+        )
+    except BaseException as publication_error:
+        rollback_errors = []
+        for target in reversed(promoted):
+            try:
+                _cleanup_publication_path(target)
+            except Exception as exc:
+                rollback_errors.append(exc)
+        for backup, target in reversed(backups):
+            try:
+                _cleanup_publication_path(target)
+                atomic_replace(backup, target)
+            except Exception as exc:
+                rollback_errors.append(exc)
+        if rollback_errors:
+            raise RuntimeError(
+                "Output publication failed and its rollback could not be "
+                "completed safely. Inspect the destination before retrying."
+            ) from publication_error
+        raise
+
+
+def _publish_output_set(
+    entries,
+    *,
+    results,
+    write_provenance,
+    cancel_event,
+):
+    """Stage, validate, and commit all outputs from one execution together."""
+    entries = list(entries)
+    if not entries:
+        return ()
+    requested_entries = []
+    parents = set()
+    for node_id, data, requested_path, image_state in entries:
+        requested_path = Path(requested_path).expanduser()
+        requested_path.parent.mkdir(parents=True, exist_ok=True)
+        parent = requested_path.parent.resolve()
+        parents.add(parent)
+        normalized_node_id = None if node_id is None else str(node_id)
+        requested_entries.append(
+            (normalized_node_id, data, requested_path, image_state)
+        )
+    if len(parents) != 1:
+        raise ValueError(
+            "A transactional output set must use one destination directory."
+        )
+    target_parent = next(iter(parents))
+    stage_root = Path(
+        tempfile.mkdtemp(prefix=".vipp-publish-", dir=target_parent)
+    )
+    records = []
+    active_node_id = ""
+    active_requested_path = None
+    try:
+        for index, (
+            node_id,
+            data,
+            requested_path,
+            image_state,
+        ) in enumerate(requested_entries):
+            active_node_id = "" if node_id is None else node_id
+            active_requested_path = requested_path
+            _raise_if_cancelled(
+                cancel_event,
+                "Output publication cancelled before staging.",
+            )
+            entry_root = stage_root / f"{index:04d}"
+            entry_root.mkdir()
+            staged_request = entry_root / requested_path.name
+            staged_saved = Path(
+                _write_output_uncommitted(
+                    data,
+                    staged_request,
+                    image_state=image_state,
+                    provenance=results if write_provenance else None,
+                    output_node_id=node_id,
+                )
+            ).resolve()
+            if staged_saved.parent != entry_root.resolve():
+                raise RuntimeError(
+                    "The output writer returned a path outside its private "
+                    "publication directory."
+                )
+            if not staged_saved.exists():
+                raise RuntimeError(
+                    "The output writer returned without creating its staged "
+                    "artifact."
+                )
+            final_saved = requested_path.parent / staged_saved.name
+            staged_sidecar = _provenance_sidecar_path(staged_saved)
+            final_sidecar = _provenance_sidecar_path(final_saved)
+            if write_provenance and not staged_sidecar.is_file():
+                raise RuntimeError(
+                    "Exact output provenance was not staged; the output was "
+                    "withheld."
+                )
+            records.append(
+                {
+                    "node_id": node_id,
+                    "staged_output": staged_saved,
+                    "final_output": final_saved,
+                    "staged_sidecar": staged_sidecar,
+                    "final_sidecar": final_sidecar,
+                }
+            )
+            _raise_if_cancelled(
+                cancel_event,
+                "Output publication cancelled after staging.",
+            )
+        report = getattr(results, "execution_report", None)
+        if report is not None and not bool(
+            getattr(report, "cleanup_succeeded", False)
+        ):
+            raise PipelineExecutionError(
+                "Accelerator cleanup could not be proven; outputs were withheld.",
+                execution_report=report,
+                failure={
+                    "kind": "cleanup_failure",
+                    "error_type": "PipelineRuntimeCleanupError",
+                    "reason_code": "accelerator_cleanup_failed",
+                    "cleanup_succeeded": False,
+                },
+            )
+        artifact_keys = []
+        artifacts = []
+        # Sidecars are promoted before their outputs. A process-level crash can
+        # therefore leave an orphaned provenance record, but never a newly
+        # published output that lacks the exact provenance requested for it.
+        if write_provenance:
+            for record in records:
+                artifact_keys.append(
+                    str(Path(record["final_sidecar"]).resolve()).casefold()
+                )
+                artifacts.append(
+                    (record["staged_sidecar"], record["final_sidecar"])
+                )
+        for record in records:
+            artifact_keys.append(
+                str(Path(record["final_output"]).resolve()).casefold()
+            )
+            artifacts.append(
+                (record["staged_output"], record["final_output"])
+            )
+        if len(artifact_keys) != len(set(artifact_keys)):
+            raise ValueError(
+                "Multiple exported outputs resolve to the same publication path."
+            )
+        _raise_if_cancelled(
+            cancel_event,
+            "Output publication cancelled before commit.",
+        )
+        _atomic_publish_artifacts(artifacts, stage_root, cancel_event)
+        return tuple(Path(record["final_output"]) for record in records)
+    except BaseException as exc:
+        try:
+            exc.vipp_output_node_id = active_node_id
+            exc.vipp_output_path = str(active_requested_path or "")
+        except Exception:
+            pass
+        raise
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
 
 
 def _table_output_path(path):
@@ -1405,33 +1642,31 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"progress_callback=progress_callback,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
         f"{_INDENT}{_INDENT}{_INDENT})",
+        f"{_INDENT}{_INDENT}{_INDENT}publication_entries = []",
         f"{_INDENT}{_INDENT}{_INDENT}for name in OUTPUT_NODES:",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}output = results.get(name)",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}if output is None:",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}continue",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"'Folder output publication cancelled.',",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}saved_path = save_image(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}publication_entries.append(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f'output_dir / f"{{source_path.stem}}__{{name}}.ome.tif",',
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"image_state=results.image_states.get(name),",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"provenance=results if write_provenance else None,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output_node_id=name,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"results.image_states.get(name),",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}saved_paths.append(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}str(saved_path)",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
+        f"{_INDENT}{_INDENT}{_INDENT}saved_paths = list(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_publish_output_set(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}publication_entries,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}results=results,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"'Folder output publication cancelled.',",
+        f"write_provenance=write_provenance,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"cancel_event=cancel_event,",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
+        f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}except Exception as exc:",
         f"{_INDENT}{_INDENT}{_INDENT}failure_provenance = (",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_ensure_cli_failure_provenance(",
@@ -1460,11 +1695,13 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}records.append(",
         f"{_INDENT}{_INDENT}{_INDENT}{{",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'source_path': str(source_path),",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'saved_paths': tuple(saved_paths),",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"'saved_paths': tuple(str(path) for path in saved_paths),",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f"'workflow_sha256': results.workflow_sha256,",
         f"{_INDENT}{_INDENT}{_INDENT}}}",
         f"{_INDENT}{_INDENT})",
+        f"{_INDENT}{_INDENT}publication_entries = None",
         f"{_INDENT}{_INDENT}output = None",
         f"{_INDENT}{_INDENT}results = None",
         f"{_INDENT}return records",
@@ -1556,51 +1793,39 @@ def _build_main(source_ids: list[str], function_name: str) -> str:
         f"{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
         f"{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}out_path = Path(args.output)",
+        f"{_INDENT}{_INDENT}publication_entries = []",
         f"{_INDENT}{_INDENT}if len(OUTPUT_NODES) == 1:",
         f"{_INDENT}{_INDENT}{_INDENT}name = OUTPUT_NODES[0]",
-        f"{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'Output publication cancelled.',",
-        f"{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}save_image(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}results[name],",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}out_path,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"image_state=results.image_states.get(name),",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"provenance=results if args.provenance else None,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}output_node_id=name,",
-        f"{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}'Output publication cancelled.',",
+        f"{_INDENT}{_INDENT}{_INDENT}publication_entries.append(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}results[name],",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}out_path,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"results.image_states.get(name),",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}else:",
-        f"{_INDENT}{_INDENT}{_INDENT}out_path.mkdir(parents=True, exist_ok=True)",
         f"{_INDENT}{_INDENT}{_INDENT}for name in OUTPUT_NODES:",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}output = results.get(name)",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}if output is None:",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}continue",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"'Output publication cancelled.',",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}save_image(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}publication_entries.append(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}(",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}name,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
         f'out_path / f"{{in_path.stem}}__{{name}}.ome.tif",',
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"image_state=results.image_states.get(name),",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"provenance=results if args.provenance else None,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}output_node_id=name,",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
+        f"results.image_states.get(name),",
+        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}_raise_if_cancelled(",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}cancel_event,",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT}{_INDENT}"
-        f"'Output publication cancelled.',",
-        f"{_INDENT}{_INDENT}{_INDENT}{_INDENT})",
+        f"{_INDENT}{_INDENT}_publish_output_set(",
+        f"{_INDENT}{_INDENT}{_INDENT}publication_entries,",
+        f"{_INDENT}{_INDENT}{_INDENT}results=results,",
+        f"{_INDENT}{_INDENT}{_INDENT}write_provenance=args.provenance,",
+        f"{_INDENT}{_INDENT}{_INDENT}cancel_event=cancel_event,",
+        f"{_INDENT}{_INDENT})",
         f"{_INDENT}{_INDENT}return 0",
         f"{_INDENT}except OperationCancelled as exc:",
         f"{_INDENT}{_INDENT}_ensure_cli_failure_provenance(",

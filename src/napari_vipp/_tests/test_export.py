@@ -6,6 +6,7 @@ import json
 import threading
 import weakref
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -610,7 +611,11 @@ def test_exported_output_provenance_preserves_supplied_exact_source_identity(
             ],
         }
     ]
-    namespace["write_image"] = lambda _data, path, **_kwargs: path
+    def write_staged(_data, path, **_kwargs):
+        Path(path).write_bytes(b"staged-output")
+        return path
+
+    namespace["write_image"] = write_staged
     output_path = tmp_path / "output.tif"
     namespace["save_image"](
         results["threshold"],
@@ -908,10 +913,18 @@ def test_generated_cli_passes_run_override_and_provenance_choice(
 
     def fake_save(data, path, **kwargs):
         calls["saved"] = (data, path, kwargs)
+        path = Path(path)
+        path.write_bytes(b"staged-output")
+        if kwargs["provenance"] is not None:
+            namespace["_provenance_sidecar_path"](path).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+        return path
 
     namespace["load_image"] = lambda _path: np.ones((2, 3), dtype=np.float32)
     namespace["run_pipeline"] = fake_run
-    namespace["save_image"] = fake_save
+    namespace["_write_output_uncommitted"] = fake_save
     args = [str(tmp_path / "input.tif"), str(tmp_path / "output.tif")]
     if not write_provenance:
         args.append("--no-provenance")
@@ -1022,6 +1035,7 @@ def test_generated_cli_defers_publication_cancellation_until_writer_returns(
         return real_run(*args, **kwargs)
 
     def finish_writer_then_cancel(_data, path, **_kwargs):
+        Path(path).write_bytes(b"staged-output")
         captured["cancel_event"].set()
         return path
 
@@ -1035,6 +1049,8 @@ def test_generated_cli_defers_publication_cancellation_until_writer_returns(
     )
 
     assert "Pipeline cancelled" in capsys.readouterr().err
+    assert not output_path.exists()
+    assert not tuple(tmp_path.glob(".vipp-publish-*"))
     document = json.loads(
         (tmp_path / "output.tif.vipp-provenance.json").read_text(
             encoding="utf-8"
@@ -1042,6 +1058,179 @@ def test_generated_cli_defers_publication_cancellation_until_writer_returns(
     )
     assert document["execution"]["outcome"] == "completed"
     assert document["publication"]["outcome"] == "cancelled"
+    assert "output" not in document
+
+
+def test_generated_cli_provenance_failure_preserves_preexisting_output_set(
+    tmp_path,
+    capsys,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    namespace["load_image"] = lambda _path: np.ones(
+        (4, 5), dtype=np.float32
+    )
+    output_path = tmp_path / "output.tif"
+    output_path.write_bytes(b"pre-existing-output")
+    output_sidecar = tmp_path / "output.tif.vipp-provenance.json"
+    output_sidecar.write_text(
+        '{"type":"pre-existing-provenance"}\n',
+        encoding="utf-8",
+    )
+    real_save_provenance = namespace["save_provenance_sidecar"]
+
+    def fail_staged_provenance(path, provenance):
+        if ".vipp-publish-" in str(path):
+            raise OSError("simulated provenance write failure")
+        return real_save_provenance(path, provenance)
+
+    namespace["save_provenance_sidecar"] = fail_staged_provenance
+
+    assert namespace["main"](
+        [str(tmp_path / "input.tif"), str(output_path)]
+    ) == 2
+
+    assert "simulated provenance write failure" in capsys.readouterr().err
+    assert output_path.read_bytes() == b"pre-existing-output"
+    assert json.loads(output_sidecar.read_text(encoding="utf-8")) == {
+        "type": "pre-existing-provenance"
+    }
+    failure_sidecar = (
+        tmp_path
+        / "output.tif.vipp-run-failure.vipp-provenance.json"
+    )
+    failure = json.loads(failure_sidecar.read_text(encoding="utf-8"))
+    assert failure["publication"]["outcome"] == "failed"
+    assert failure["publication"]["fallback_used"] is False
+    assert not tuple(tmp_path.glob(".vipp-publish-*"))
+
+
+def test_generated_cli_later_multi_output_failure_publishes_none(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.connect("input", gaussian.id)
+    pipeline.connect("input", median.id)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
+        namespace,
+    )
+    namespace["load_image"] = lambda _path: np.ones(
+        (5, 6), dtype=np.float32
+    )
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    gaussian_path = output_dir / f"input__{gaussian.id}.ome.tif"
+    gaussian_sidecar = namespace["_provenance_sidecar_path"](gaussian_path)
+    gaussian_path.write_bytes(b"pre-existing-gaussian")
+    gaussian_sidecar.write_text(
+        '{"type":"pre-existing-provenance"}\n',
+        encoding="utf-8",
+    )
+    calls = 0
+
+    def fail_second_writer(_data, path, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated later output failure")
+        Path(path).write_bytes(b"new-staged-output")
+        return path
+
+    namespace["write_image"] = fail_second_writer
+
+    assert namespace["main"](
+        [str(tmp_path / "input.tif"), str(output_dir)]
+    ) == 2
+
+    median_path = output_dir / f"input__{median.id}.ome.tif"
+    assert gaussian_path.read_bytes() == b"pre-existing-gaussian"
+    assert json.loads(gaussian_sidecar.read_text(encoding="utf-8")) == {
+        "type": "pre-existing-provenance"
+    }
+    assert not median_path.exists()
+    assert not namespace["_provenance_sidecar_path"](median_path).exists()
+    failure = json.loads(
+        (
+            output_dir
+            / "vipp-run-failure.vipp-provenance.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert failure["publication"]["outcome"] == "failed"
+    assert failure["publication"]["node_id"] == median.id
+    assert not tuple(output_dir.glob(".vipp-publish-*"))
+
+
+def test_generated_cli_rolls_back_partial_multi_output_commit(tmp_path):
+    pipeline = PrototypePipeline()
+    pipeline.reset_empty_graph()
+    gaussian = pipeline.add_node("gaussian_blur")
+    median = pipeline.add_node("median_filter")
+    pipeline.connect("input", gaussian.id)
+    pipeline.connect("input", median.id)
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(export_pipeline_to_python(pipeline), "<exported>", "exec"),
+        namespace,
+    )
+    namespace["load_image"] = lambda _path: np.ones(
+        (5, 6), dtype=np.float32
+    )
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    paths = {
+        node_id: output_dir / f"input__{node_id}.ome.tif"
+        for node_id in (gaussian.id, median.id)
+    }
+    original_payloads = {}
+    for node_id, path in paths.items():
+        sidecar = namespace["_provenance_sidecar_path"](path)
+        output_bytes = f"old-output-{node_id}".encode()
+        sidecar_bytes = f'{{"old":"{node_id}"}}\n'.encode()
+        path.write_bytes(output_bytes)
+        sidecar.write_bytes(sidecar_bytes)
+        original_payloads[path] = output_bytes
+        original_payloads[sidecar] = sidecar_bytes
+
+    real_atomic_replace = namespace["atomic_replace"]
+    failed = False
+
+    def fail_last_output_promotion(source, target):
+        nonlocal failed
+        source = Path(source)
+        target = Path(target)
+        is_stage_promotion = (
+            ".vipp-publish-" in str(source)
+            and ".vipp-publish-" not in str(target)
+        )
+        if (
+            not failed
+            and is_stage_promotion
+            and target.resolve() == paths[median.id].resolve()
+        ):
+            failed = True
+            raise OSError("simulated final promotion failure")
+        return real_atomic_replace(source, target)
+
+    namespace["atomic_replace"] = fail_last_output_promotion
+
+    assert namespace["main"](
+        [str(tmp_path / "input.tif"), str(output_dir)]
+    ) == 2
+
+    assert failed
+    for path, payload in original_payloads.items():
+        assert path.read_bytes() == payload
+    assert not tuple(output_dir.glob(".vipp-publish-*"))
 
 
 def test_convenience_folder_loop_returns_only_lightweight_records(tmp_path):
@@ -1060,7 +1249,17 @@ def test_convenience_folder_loop_returns_only_lightweight_records(tmp_path):
     for name in ("first.tif", "second.tif"):
         (input_dir / name).write_bytes(b"placeholder")
     namespace["load_image"] = lambda _path: np.ones((4, 5), dtype=np.float32)
-    namespace["save_image"] = lambda _data, path, **_kwargs: path
+    def fake_save(_data, path, **kwargs):
+        path = Path(path)
+        path.write_bytes(b"staged-output")
+        if kwargs["provenance"] is not None:
+            namespace["_provenance_sidecar_path"](path).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+        return path
+
+    namespace["_write_output_uncommitted"] = fake_save
 
     with pytest.warns(FutureWarning, match="not VIPP durable"):
         records = namespace["batch_process"](input_dir, output_dir)
@@ -1121,7 +1320,17 @@ def test_convenience_folder_loop_releases_prior_outputs_before_next_run(
         return Results(threshold=output)
 
     namespace["run_pipeline"] = run_one
-    namespace["save_image"] = lambda _data, path, **_kwargs: path
+    def fake_save(_data, path, **kwargs):
+        path = Path(path)
+        path.write_bytes(b"staged-output")
+        if kwargs["provenance"] is not None:
+            namespace["_provenance_sidecar_path"](path).write_text(
+                "{}",
+                encoding="utf-8",
+            )
+        return path
+
+    namespace["_write_output_uncommitted"] = fake_save
 
     with pytest.warns(FutureWarning):
         namespace["batch_process"](input_dir, output_dir)
@@ -2131,6 +2340,7 @@ def test_exported_save_helper_passes_carried_output_state(tmp_path):
 
     def fake_write_image(data, path, **kwargs):
         captured.update(data=data, path=path, **kwargs)
+        Path(path).write_bytes(b"staged-output")
         return path
 
     namespace["write_image"] = fake_write_image
@@ -2146,7 +2356,7 @@ def test_exported_save_helper_passes_carried_output_state(tmp_path):
     assert captured["image_state"] is results.image_states[calibrated.id]
     assert captured["image_state"].axes[-1].scale == 0.2
     assert captured["image_state"].axes[-2].scale == 0.3
-    assert "image_state=results.image_states.get" in code
+    assert "results.image_states.get(name)" in code
     sidecar = tmp_path / "calibrated.ome.tif.vipp-provenance.json"
     document = json.loads(sidecar.read_text(encoding="utf-8"))
     assert document["workflow"]["sha256"] == results.workflow_sha256
@@ -2170,7 +2380,13 @@ def test_exported_save_helper_uses_the_writer_normalized_path(tmp_path):
         namespace,
     )
     normalized = tmp_path / "normalized.npy"
-    namespace["write_image"] = lambda *_args, **_kwargs: normalized
+
+    def normalize_writer(_data, path, **_kwargs):
+        staged_normalized = Path(path).with_name(normalized.name)
+        staged_normalized.write_bytes(b"staged-output")
+        return staged_normalized
+
+    namespace["write_image"] = normalize_writer
 
     saved = namespace["save_image"](
         np.ones((2, 3), dtype=np.float32),
@@ -2181,3 +2397,47 @@ def test_exported_save_helper_uses_the_writer_normalized_path(tmp_path):
     assert saved == normalized
     assert (tmp_path / "normalized.npy.vipp-provenance.json").exists()
     assert not (tmp_path / "requested.vipp-provenance.json").exists()
+
+
+def test_exported_save_helper_withholds_output_when_provenance_staging_fails(
+    tmp_path,
+):
+    namespace: dict[str, object] = {"__name__": "exported_pipeline"}
+    exec(
+        compile(
+            export_pipeline_to_python(_starter_pipeline()),
+            "<exported>",
+            "exec",
+        ),
+        namespace,
+    )
+    output_path = tmp_path / "output.tif"
+    sidecar = namespace["_provenance_sidecar_path"](output_path)
+    output_path.write_bytes(b"pre-existing-output")
+    sidecar.write_text(
+        '{"type":"pre-existing-provenance"}\n',
+        encoding="utf-8",
+    )
+
+    def staged_writer(_data, path, **_kwargs):
+        Path(path).write_bytes(b"new-staged-output")
+        return path
+
+    def fail_provenance(_path, _provenance):
+        raise OSError("simulated provenance failure")
+
+    namespace["write_image"] = staged_writer
+    namespace["save_provenance_sidecar"] = fail_provenance
+
+    with pytest.raises(OSError, match="simulated provenance failure"):
+        namespace["save_image"](
+            np.ones((2, 3), dtype=np.float32),
+            output_path,
+            provenance={"type": "exact-output-provenance"},
+        )
+
+    assert output_path.read_bytes() == b"pre-existing-output"
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+        "type": "pre-existing-provenance"
+    }
+    assert not tuple(tmp_path.glob(".vipp-publish-*"))
